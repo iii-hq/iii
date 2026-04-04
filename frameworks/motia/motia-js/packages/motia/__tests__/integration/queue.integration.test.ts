@@ -20,7 +20,7 @@ describe('queue integration', () => {
     const topic = `test-topic-${Date.now()}`
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
     })
     sdk.registerTrigger({
@@ -30,7 +30,7 @@ describe('queue integration', () => {
     })
 
     await waitForRegistration(sdk, functionId)
-    await sdk.call('enqueue', { topic, data: { order: 'abc' } })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { order: 'abc' } } })
     await sleep(1500)
 
     expect(received).toEqual({ order: 'abc' })
@@ -43,7 +43,7 @@ describe('queue integration', () => {
     const payload = { id: 'x1', count: 42, nested: { a: 1 } }
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
     })
     sdk.registerTrigger({
@@ -53,7 +53,7 @@ describe('queue integration', () => {
     })
 
     await waitForRegistration(sdk, functionId)
-    await sdk.call('enqueue', { topic, data: payload })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: payload } })
     await sleep(1500)
 
     expect(received).toEqual(payload)
@@ -65,7 +65,7 @@ describe('queue integration', () => {
     const topic = `test-topic-infra-${Date.now()}`
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
     })
     sdk.registerTrigger({
@@ -82,13 +82,13 @@ describe('queue integration', () => {
     })
 
     await waitForRegistration(sdk, functionId)
-    await sdk.call('enqueue', { topic, data: { infra: true } })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { infra: true } } })
     await sleep(1500)
 
     expect(received).toEqual({ infra: true })
   }, 15000)
 
-  it('multiple subscribers on same topic - messages delivered to exactly one subscriber', async () => {
+  it('multiple subscribers on same topic - each function receives every message (fan-out)', async () => {
     const sdk = getInstance()
     const topic = `test-topic-multi-${Date.now()}`
     const functionId1 = `test.queue.multi1.${Date.now()}`
@@ -96,10 +96,10 @@ describe('queue integration', () => {
     const received1: unknown[] = []
     const received2: unknown[] = []
 
-    sdk.registerFunction({ id: functionId1 }, async (data: unknown) => {
+    sdk.registerFunction(functionId1, async (data: unknown) => {
       received1.push(data)
     })
-    sdk.registerFunction({ id: functionId2 }, async (data: unknown) => {
+    sdk.registerFunction(functionId2, async (data: unknown) => {
       received2.push(data)
     })
     sdk.registerTrigger({
@@ -115,14 +115,16 @@ describe('queue integration', () => {
 
     await waitForRegistration(sdk, functionId1)
     await waitForRegistration(sdk, functionId2)
-    await sdk.call('enqueue', { topic, data: { msg: 1 } })
-    await sdk.call('enqueue', { topic, data: { msg: 2 } })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { msg: 1 } } })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { msg: 2 } } })
     await sleep(2000)
 
-    const total = received1.length + received2.length
-    expect(total).toBe(2)
-    expect([...received1, ...received2]).toContainEqual({ msg: 1 })
-    expect([...received1, ...received2]).toContainEqual({ msg: 2 })
+    expect(received1.length).toBe(2)
+    expect(received2.length).toBe(2)
+    expect(received1).toContainEqual({ msg: 1 })
+    expect(received1).toContainEqual({ msg: 2 })
+    expect(received2).toContainEqual({ msg: 1 })
+    expect(received2).toContainEqual({ msg: 2 })
   }, 15000)
 
   it('condition function filters messages', async () => {
@@ -132,10 +134,10 @@ describe('queue integration', () => {
     const conditionPath = `${functionId}::conditions::0`
     let handlerCalls = 0
 
-    sdk.registerFunction({ id: functionId }, async (_data: unknown) => {
+    sdk.registerFunction(functionId, async (_data: unknown) => {
       handlerCalls += 1
     })
-    sdk.registerFunction({ id: conditionPath }, async (input: { accept?: boolean }) => {
+    sdk.registerFunction(conditionPath, async (input: { accept?: boolean }) => {
       return input?.accept === true
     })
     sdk.registerTrigger({
@@ -149,8 +151,8 @@ describe('queue integration', () => {
 
     await waitForRegistration(sdk, functionId)
     await waitForRegistration(sdk, conditionPath)
-    await sdk.call('enqueue', { topic, data: { accept: false } })
-    await sdk.call('enqueue', { topic, data: { accept: true } })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { accept: false } } })
+    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { accept: true } } })
     await sleep(2000)
 
     expect(handlerCalls).toBe(1)

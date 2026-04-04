@@ -13,9 +13,11 @@ import { Route as TriggersRouteImport } from './routes/triggers'
 import { Route as TracesRouteImport } from './routes/traces'
 import { Route as StreamsRouteImport } from './routes/streams'
 import { Route as StatesRouteImport } from './routes/states'
+import { Route as QueuesRouteImport } from './routes/queues'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as FunctionsRouteImport } from './routes/functions'
 import { Route as FlowRouteImport } from './routes/flow'
+import { Route as DeadLetterRouteImport } from './routes/dead-letter'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -39,6 +41,11 @@ const StatesRoute = StatesRouteImport.update({
   path: '/states',
   getParentRoute: () => rootRouteImport,
 } as any)
+const QueuesRoute = QueuesRouteImport.update({
+  id: '/queues',
+  path: '/queues',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LogsRoute = LogsRouteImport.update({
   id: '/logs',
   path: '/logs',
@@ -52,6 +59,11 @@ const FunctionsRoute = FunctionsRouteImport.update({
 const FlowRoute = FlowRouteImport.update({
   id: '/flow',
   path: '/flow',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeadLetterRoute = DeadLetterRouteImport.update({
+  id: '/dead-letter',
+  path: '/dead-letter',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConfigRoute = ConfigRouteImport.update({
@@ -68,9 +80,11 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/config': typeof ConfigRoute
+  '/dead-letter': typeof DeadLetterRoute
   '/flow': typeof FlowRoute
   '/functions': typeof FunctionsRoute
   '/logs': typeof LogsRoute
+  '/queues': typeof QueuesRoute
   '/states': typeof StatesRoute
   '/streams': typeof StreamsRoute
   '/traces': typeof TracesRoute
@@ -79,9 +93,11 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/config': typeof ConfigRoute
+  '/dead-letter': typeof DeadLetterRoute
   '/flow': typeof FlowRoute
   '/functions': typeof FunctionsRoute
   '/logs': typeof LogsRoute
+  '/queues': typeof QueuesRoute
   '/states': typeof StatesRoute
   '/streams': typeof StreamsRoute
   '/traces': typeof TracesRoute
@@ -91,9 +107,11 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/config': typeof ConfigRoute
+  '/dead-letter': typeof DeadLetterRoute
   '/flow': typeof FlowRoute
   '/functions': typeof FunctionsRoute
   '/logs': typeof LogsRoute
+  '/queues': typeof QueuesRoute
   '/states': typeof StatesRoute
   '/streams': typeof StreamsRoute
   '/traces': typeof TracesRoute
@@ -104,9 +122,11 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/config'
+    | '/dead-letter'
     | '/flow'
     | '/functions'
     | '/logs'
+    | '/queues'
     | '/states'
     | '/streams'
     | '/traces'
@@ -115,9 +135,11 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/config'
+    | '/dead-letter'
     | '/flow'
     | '/functions'
     | '/logs'
+    | '/queues'
     | '/states'
     | '/streams'
     | '/traces'
@@ -126,9 +148,11 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/config'
+    | '/dead-letter'
     | '/flow'
     | '/functions'
     | '/logs'
+    | '/queues'
     | '/states'
     | '/streams'
     | '/traces'
@@ -138,9 +162,11 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ConfigRoute: typeof ConfigRoute
+  DeadLetterRoute: typeof DeadLetterRoute
   FlowRoute: typeof FlowRoute
   FunctionsRoute: typeof FunctionsRoute
   LogsRoute: typeof LogsRoute
+  QueuesRoute: typeof QueuesRoute
   StatesRoute: typeof StatesRoute
   StreamsRoute: typeof StreamsRoute
   TracesRoute: typeof TracesRoute
@@ -177,6 +203,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StatesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/queues': {
+      id: '/queues'
+      path: '/queues'
+      fullPath: '/queues'
+      preLoaderRoute: typeof QueuesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/logs': {
       id: '/logs'
       path: '/logs'
@@ -196,6 +229,13 @@ declare module '@tanstack/react-router' {
       path: '/flow'
       fullPath: '/flow'
       preLoaderRoute: typeof FlowRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dead-letter': {
+      id: '/dead-letter'
+      path: '/dead-letter'
+      fullPath: '/dead-letter'
+      preLoaderRoute: typeof DeadLetterRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/config': {
@@ -218,9 +258,11 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ConfigRoute: ConfigRoute,
+  DeadLetterRoute: DeadLetterRoute,
   FlowRoute: FlowRoute,
   FunctionsRoute: FunctionsRoute,
   LogsRoute: LogsRoute,
+  QueuesRoute: QueuesRoute,
   StatesRoute: StatesRoute,
   StreamsRoute: StreamsRoute,
   TracesRoute: TracesRoute,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from iii import (
-    III,
+from iii import IIIClient
+from iii.stream import (
     IStream,
     StreamDeleteInput,
     StreamGetInput,
@@ -18,31 +18,35 @@ from .models import Todo
 
 
 class StreamClient:
-    def __init__(self, iii: III) -> None:
+    def __init__(self, iii: IIIClient) -> None:
         self._iii = iii
 
     async def get(self, stream_name: str, group_id: str, item_id: str) -> Any | None:
-        return await self._iii.call(
-            "stream::get", {"stream_name": stream_name, "group_id": group_id, "item_id": item_id}
-        )
+        return await self._iii.trigger({
+            "function_id": "stream::get",
+            "payload": {"stream_name": stream_name, "group_id": group_id, "item_id": item_id},
+        })
 
     async def set(self, stream_name: str, group_id: str, item_id: str, data: Any) -> Any:
-        return await self._iii.call(
-            "stream::set", {"stream_name": stream_name, "group_id": group_id, "item_id": item_id, "data": data}
-        )
+        return await self._iii.trigger({
+            "function_id": "stream::set",
+            "payload": {"stream_name": stream_name, "group_id": group_id, "item_id": item_id, "data": data},
+        })
 
     async def delete(self, stream_name: str, group_id: str, item_id: str) -> None:
-        return await self._iii.call(
-            "stream::delete", {"stream_name": stream_name, "group_id": group_id, "item_id": item_id}
-        )
+        return await self._iii.trigger({
+            "function_id": "stream::delete",
+            "payload": {"stream_name": stream_name, "group_id": group_id, "item_id": item_id},
+        })
 
     async def get_group(self, stream_name: str, group_id: str) -> list[Any]:
-        return await self._iii.call(
-            "stream::list", {"stream_name": stream_name, "group_id": group_id}
-        )
+        return await self._iii.trigger({
+            "function_id": "stream::list",
+            "payload": {"stream_name": stream_name, "group_id": group_id},
+        })
 
     async def list_groups(self, stream_name: str) -> list[str]:
-        return await self._iii.call("stream::list_groups", {"stream_name": stream_name})
+        return await self._iii.trigger({"function_id": "stream::list_groups", "payload": {"stream_name": stream_name}})
 
 
 class TodoStream(IStream[dict[str, Any]]):
@@ -85,5 +89,5 @@ class TodoStream(IStream[dict[str, Any]]):
         return None
 
 
-def register_streams(iii: III) -> None:
+def register_streams(iii: IIIClient) -> None:
     iii.create_stream("todo", TodoStream())

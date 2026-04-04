@@ -3,82 +3,99 @@ set -eu
 
 REPO="${REPO:-iii-hq/iii}"
 BIN_NAME="${BIN_NAME:-iii}"
-CLI_INSTALL_URL="${CLI_INSTALL_URL:-https://install.iii.dev/iii-cli/main/install.sh}"
+
+telemetry_emitter=""
+install_event_prefix=""
+from_version=""
+release_version=""
+
+# Returns a JSON-encoded string (with surrounding quotes).
+# Uses jq when available; falls back to awk for escaping.
+json_str() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$1" | jq -Rs '.'
+    return
+  fi
+  printf '%s' "$1" | awk '
+    BEGIN { ORS=""; printf "\"" }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      gsub(/\r/, "\\r")
+      if (NR > 1) printf "\\n"
+      printf "%s", $0
+    }
+    END { printf "\"" }
+  '
+}
 
 err() {
+  _stage="$1"; shift
   echo "error: $*" >&2
+  if [ -n "${install_event_prefix:-}" ]; then
+    if [ "$install_event_prefix" = "upgrade" ]; then
+      payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s,"error_stage":%s,"error_message":%s}' \
+        "$(json_str "${from_version:-}")" "$(json_str "$release_version")" "$(json_str "$BIN_NAME")" "$(json_str "$_stage")" "$(json_str "$*")")
+      iii_emit_event "upgrade_failed" "$payload"
+    else
+      payload=$(printf '{"install_method":"sh","target_binary":%s,"error_stage":%s,"error_message":%s}' \
+        "$(json_str "$BIN_NAME")" "$(json_str "$_stage")" "$(json_str "$*")")
+      iii_emit_event "install_failed" "$payload"
+    fi
+  fi
   exit 1
 }
 
-install_cli() {
-  echo ""
-  echo "installing iii cli..."
+# ---------------------------------------------------------------------------
+# Telemetry helpers
+# ---------------------------------------------------------------------------
 
-  cli_tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t iii-cli-install)
-  cli_script="$cli_tmpdir/install-cli.sh"
-
-  if ! curl -fsSL "$CLI_INSTALL_URL" -o "$cli_script"; then
-    echo "warning: failed to download CLI installer, skipping" >&2
-    rm -rf "$cli_tmpdir"
-    return 1
+iii_emit_event() {
+  _event_type="$1"
+  _event_props="$2"
+  if [ -z "${telemetry_emitter:-}" ] || [ ! -x "$telemetry_emitter" ]; then
+    return 0
   fi
+  "$telemetry_emitter" \
+    --install-only-generate-ids \
+    --install-event-type "$_event_type" \
+    --install-event-properties "$_event_props" \
+    >/dev/null 2>&1 || true
+}
 
-  chmod +x "$cli_script"
-
-  cli_sh_args=""
-  if [ -n "$cli_version" ]; then
-    cli_sh_args="-v $cli_version"
-  fi
-
-  if [ -n "$cli_dir" ]; then
-    # shellcheck disable=SC2086
-    INSTALL_DIR="$cli_dir" sh "$cli_script" $cli_sh_args
+iii_detect_from_version() {
+  _iii_bin_path="$1"
+  if command -v "$_iii_bin_path" >/dev/null 2>&1; then
+    "$_iii_bin_path" --version 2>/dev/null | awk '{print $NF}' || echo ""
+  elif [ -x "$_iii_bin_path" ]; then
+    "$_iii_bin_path" --version 2>/dev/null | awk '{print $NF}' || echo ""
   else
-    # shellcheck disable=SC2086
-    sh "$cli_script" $cli_sh_args
+    echo ""
   fi
-
-  cli_exit=$?
-  rm -rf "$cli_tmpdir"
-  return $cli_exit
 }
 
 # --- Argument parsing ---
-no_cli=false
-cli_version=""
-cli_dir=""
 engine_version="${VERSION:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-cli)
-      no_cli=true
       shift
       ;;
     --cli-version)
-      if [ $# -lt 2 ]; then
-        err "--cli-version requires a value"
-      fi
-      cli_version="$2"
-      shift 2
+      if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
     --cli-dir)
-      if [ $# -lt 2 ]; then
-        err "--cli-dir requires a value"
-      fi
-      cli_dir="$2"
-      shift 2
+      if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
     -h|--help)
       cat <<'USAGE'
 Usage: install.sh [OPTIONS] [VERSION]
 
-Install the iii engine and CLI.
+Install the iii engine (includes CLI commands).
 
 Options:
-  --no-cli              Skip CLI installation
-  --cli-version VER     Install specific CLI version
-  --cli-dir DIR         Install CLI to specific directory
   -h, --help            Show this help message
 
 Environment variables:
@@ -87,12 +104,11 @@ Environment variables:
   PREFIX                Installation prefix (used if BIN_DIR not set)
   TARGET                Override target triple
   III_USE_GLIBC         Use glibc build on Linux x86_64
-  CLI_INSTALL_URL       Override CLI install script URL
 USAGE
       exit 0
       ;;
     -*)
-      err "unknown option: $1 (use --help for usage)"
+      err "args" "unknown option: $1 (use --help for usage)"
       ;;
     *)
       if [ -z "$engine_version" ]; then
@@ -106,7 +122,7 @@ done
 VERSION="$engine_version"
 
 if ! command -v curl >/dev/null 2>&1; then
-  err "curl is required"
+  err "dependency" "curl is required"
 fi
 
 if [ -n "${TARGET:-}" ]; then
@@ -126,7 +142,7 @@ else
       arch="armv7"
       ;;
     *)
-      err "unsupported architecture: $uname_m"
+      err "platform" "unsupported architecture: $uname_m"
       ;;
   esac
 
@@ -160,7 +176,7 @@ else
       esac
       ;;
     *)
-      err "unsupported OS: $uname_s"
+      err "platform" "unsupported OS: $uname_s"
       ;;
   esac
 
@@ -173,35 +189,94 @@ github_api() {
   curl -fsSL $api_headers "$1"
 }
 
-TAG_PREFIX="v"
-
 if [ -n "$VERSION" ]; then
   echo "installing version: $VERSION"
   _ver="${VERSION#iii/}"
   _ver="${_ver#v}"
-  _tag="${TAG_PREFIX}${_ver}"
+  release_version="$_ver"
+  _tag="iii/v${_ver}"
   api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
-  json=$(github_api "$api_url") || err "release tag not found: $VERSION (tried tag: ${_tag})"
+  json=$(github_api "$api_url" 2>/dev/null) || {
+    _tag="v${_ver}"
+    api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
+    json=$(github_api "$api_url") || err "download" "release tag not found: $VERSION (tried tags: iii/v${_ver}, v${_ver})"
+  }
+
+  # Reject prereleases even when a specific version is requested
+  _is_prerelease=""
+  if command -v jq >/dev/null 2>&1; then
+    _is_prerelease=$(printf '%s' "$json" | jq -r '.prerelease')
+  else
+    case "$json" in
+      *'"prerelease":true'*|*'"prerelease": true'*) _is_prerelease="true" ;;
+    esac
+  fi
+  if [ "$_is_prerelease" = "true" ]; then
+    err "download" "version $VERSION is a prerelease — use a stable release"
+  fi
 else
   echo "installing latest version"
-  api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
-  json_list=$(github_api "$api_url")
+
+  # Try /releases/latest first — single API call, GitHub guarantees non-prerelease/non-draft
+  api_url="https://api.github.com/repos/$REPO/releases/latest"
+  json=$(github_api "$api_url" 2>/dev/null) || json=""
+
+  # Validate the tag matches our expected prefix (iii/v*)
+  if [ -n "$json" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      _latest_tag=$(printf '%s' "$json" | jq -r '.tag_name // ""')
+    else
+      _latest_tag=$(printf '%s' "$json" \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -n 1 \
+        | sed -E 's/.*"([^"]+)".*/\1/')
+    fi
+
+    case "$_latest_tag" in
+      iii/v*) ;; # Tag matches expected prefix, use this release
+      *)
+        # Latest release doesn't match our prefix — fall back to listing
+        json=""
+        ;;
+    esac
+  fi
+
+  # Fallback: list releases and filter by prefix + non-prerelease
+  if [ -z "$json" ]; then
+    api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+    json_list=$(github_api "$api_url")
+    if command -v jq >/dev/null 2>&1; then
+      json=$(printf '%s' "$json_list" \
+        | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("iii/v"))))')
+      if [ "$json" = "null" ] || [ -z "$json" ]; then
+        err "download" "no stable iii release found"
+      fi
+    else
+      # No-jq path: filter for iii/v* tags from non-prerelease entries
+      _tag=$(printf '%s' "$json_list" \
+        | tr '{' '\n' \
+        | grep -v '"prerelease"[[:space:]]*:[[:space:]]*true' \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"iii/v[^"]+"' \
+        | head -n 1 \
+        | sed -E 's/.*"([^"]+)".*/\1/')
+      if [ -z "$_tag" ]; then
+        err "download" "could not determine latest release"
+      fi
+      api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
+      json=$(github_api "$api_url")
+    fi
+  fi
+fi
+
+if [ -z "$release_version" ]; then
   if command -v jq >/dev/null 2>&1; then
-    json=$(printf '%s' "$json_list" \
-      | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("v"))))')
-    if [ "$json" = "null" ] || [ -z "$json" ]; then
-      err "no stable iii release found"
-    fi
+    release_version=$(printf '%s' "$json" | jq -r '.tag_name' | sed -E 's#^(iii/)?v##')
   else
-    _tag=$(printf '%s' "$json_list" \
-      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"' \
+    release_version=$(printf '%s' "$json" \
+      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
       | head -n 1 \
-      | sed -E 's/.*"(v[^"]+)".*/\1/')
-    if [ -z "$_tag" ]; then
-      err "could not determine latest release"
-    fi
-    api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
-    json=$(github_api "$api_url")
+      | sed -E 's/.*"([^"]+)".*/\1/' \
+      | sed -E 's#^(iii/)?v##')
   fi
 fi
 
@@ -224,7 +299,7 @@ if [ -z "$asset_url" ]; then
   printf '%s' "$json" \
     | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
     | sed -E 's/.*"([^"]+)".*/\1/' >&2
-  err "no release asset found for target: $target"
+  err "download" "no release asset found for target: $target"
 fi
 
 asset_name=$(basename "$asset_url")
@@ -239,6 +314,17 @@ else
   bin_dir="$BIN_DIR"
 fi
 
+from_version=$(iii_detect_from_version "$bin_dir/$BIN_NAME")
+if [ -n "$from_version" ]; then
+  install_event_prefix="upgrade"
+  # Use the existing binary for telemetry until the new one is extracted
+  if [ -x "$bin_dir/$BIN_NAME" ]; then
+    telemetry_emitter="$bin_dir/$BIN_NAME"
+  fi
+else
+  install_event_prefix="install"
+fi
+
 mkdir -p "$bin_dir"
 
 tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t iii-install)
@@ -247,17 +333,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name"
+curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name" \
+  || err "download" "failed to download $asset_url"
 
 case "$asset_name" in
   *.tar.gz|*.tgz)
-    tar -xzf "$tmpdir/$asset_name" -C "$tmpdir"
+    tar -xzf "$tmpdir/$asset_name" -C "$tmpdir" \
+      || err "extract" "failed to extract $asset_name"
     ;;
   *.zip)
     if ! command -v unzip >/dev/null 2>&1; then
-      err "unzip is required to extract $asset_name"
+      err "extract" "unzip is required to extract $asset_name"
     fi
-    unzip -q "$tmpdir/$asset_name" -d "$tmpdir"
+    unzip -q "$tmpdir/$asset_name" -d "$tmpdir" \
+      || err "extract" "failed to extract $asset_name"
     ;;
   *)
     ;;
@@ -270,24 +359,46 @@ else
 fi
 
 if [ -z "${bin_file:-}" ] || [ ! -f "$bin_file" ]; then
-  err "binary not found in downloaded asset"
+  err "binary_lookup" "binary not found in downloaded asset"
 fi
 
-if command -v install >/dev/null 2>&1; then
-  install -m 755 "$bin_file" "$bin_dir/$BIN_NAME"
+telemetry_emitter="$bin_file"
+if [ "$install_event_prefix" = "upgrade" ]; then
+  payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
+    "$(json_str "$from_version")" "$(json_str "$release_version")" "$(json_str "$BIN_NAME")")
+  iii_emit_event "upgrade_started" "$payload"
 else
-  cp "$bin_file" "$bin_dir/$BIN_NAME"
-  chmod 755 "$bin_dir/$BIN_NAME"
+  payload=$(printf '{"install_method":"sh","target_binary":%s,"os":%s,"arch":%s}' \
+    "$(json_str "$BIN_NAME")" "$(json_str "$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)")" "$(json_str "$(uname -m 2>/dev/null || echo unknown)")")
+  iii_emit_event "install_started" "$payload"
 fi
+
+installed_version=""
+if command -v install >/dev/null 2>&1; then
+  install -m 755 "$bin_file" "$bin_dir/$BIN_NAME" \
+    || err "install" "failed to install binary to $bin_dir/$BIN_NAME"
+else
+  { cp "$bin_file" "$bin_dir/$BIN_NAME" && chmod 755 "$bin_dir/$BIN_NAME"; } \
+    || err "install" "failed to copy binary to $bin_dir/$BIN_NAME"
+fi
+
+installed_version=$("$bin_dir/$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")
 
 printf 'installed %s to %s\n' "$BIN_NAME" "$bin_dir/$BIN_NAME"
 
-# Install CLI unless --no-cli was passed
-if [ "$no_cli" = false ]; then
-  if ! install_cli; then
-    echo "warning: CLI installation failed, but engine was installed successfully" >&2
-  fi
+if [ "$install_event_prefix" = "upgrade" ]; then
+  payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
+    "$(json_str "$from_version")" "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
+  iii_emit_event "upgrade_succeeded" "$payload"
+else
+  payload=$(printf '{"installed_version":%s,"install_method":"sh","target_binary":%s}' \
+    "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
+  iii_emit_event "install_succeeded" "$payload"
 fi
+
+# Best-effort: have the binary initialize its telemetry IDs.
+# Older binaries won't have this flag — silently skip.
+"$bin_dir/$BIN_NAME" --install-only-generate-ids >/dev/null 2>&1 || true
 
 case ":$PATH:" in
   *":$bin_dir:"*)
@@ -298,4 +409,4 @@ case ":$PATH:" in
  esac
 
 echo ""
-echo "If you're new to iii, get started quickly here: https://iii.dev/docs/tutorials/quickstart"
+echo "If you're new to iii, get started quickly here: https://iii.dev/docs/quickstart"

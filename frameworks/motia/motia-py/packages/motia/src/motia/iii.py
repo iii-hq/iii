@@ -9,11 +9,11 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
 
-from iii import III
-from iii.iii import InitOptions, TelemetryOptions
+from iii import IIIClient, register_worker
+from iii.iii_constants import InitOptions, TelemetryOptions
 
 _engine_ws_url = os.environ.get("III_URL", "ws://localhost:49134")
-_instance: III | None = None
+_instance: IIIClient | None = None
 
 
 def _read_project_name() -> str | None:
@@ -26,10 +26,7 @@ def _read_project_name() -> str | None:
             try:
                 with open(pyproject, "rb") as f:
                     data = tomllib.load(f)
-                name = (
-                    data.get("project", {}).get("name")
-                    or data.get("tool", {}).get("poetry", {}).get("name")
-                )
+                name = data.get("project", {}).get("name") or data.get("tool", {}).get("poetry", {}).get("name")
                 if name:
                     return str(name)
             except Exception:
@@ -41,15 +38,15 @@ def _read_project_name() -> str | None:
     return None
 
 
-def _create_iii(otel_config: dict[str, Any] | None = None) -> III:
+def _create_iii(otel_config: dict[str, Any] | None = None) -> IIIClient:
     telemetry = TelemetryOptions(
         framework="motia",
         project_name=_read_project_name(),
     )
-    return III(_engine_ws_url, InitOptions(telemetry=telemetry, otel=otel_config))
+    return register_worker(_engine_ws_url, InitOptions(telemetry=telemetry, otel=otel_config))
 
 
-def get_instance() -> III:
+def get_instance() -> IIIClient:
     """Get the III SDK singleton instance.
 
     Creates a default instance if none exists.
@@ -60,7 +57,7 @@ def get_instance() -> III:
     return _instance
 
 
-def init_iii(otel_config: dict[str, Any] | None = None) -> III:
+def init_iii(otel_config: dict[str, Any] | None = None) -> IIIClient:
     """Initialize the III SDK with optional OpenTelemetry configuration.
 
     Args:

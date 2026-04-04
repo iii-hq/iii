@@ -1,0 +1,8 @@
+{
+  "entryPoints": ["src/index.ts", "src/stream.ts", "src/state.ts", "src/telemetry.ts"],
+  "json": "api-docs.json",
+  "tsconfig": "tsconfig.json",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeExternals": true
+}

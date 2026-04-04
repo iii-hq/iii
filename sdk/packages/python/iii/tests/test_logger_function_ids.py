@@ -3,23 +3,23 @@ import logging
 from iii.logger import Logger
 
 
-def test_logger_uses_function_name() -> None:
-    """Logger stores function_name for use in log records."""
-    logger = Logger(function_name="my.function")
-    assert logger._function_name == "my.function"
+def test_logger_uses_service_name() -> None:
+    """Logger stores service_name for use in log records."""
+    logger = Logger(service_name="my.function")
+    assert logger._service_name == "my.function"
 
 
-def test_logger_default_function_name() -> None:
-    """Logger defaults function_name to empty string."""
+def test_logger_default_service_name() -> None:
+    """Logger defaults service_name to empty string."""
     logger = Logger()
-    assert logger._function_name == ""
+    assert logger._service_name == ""
 
 
 def test_logger_falls_back_to_python_logging_when_otel_not_initialized(
     caplog: logging.LogRecord,
 ) -> None:
     """When OTel is not initialized Logger falls back to Python logging."""
-    logger = Logger(function_name="step.fn")
+    logger = Logger(service_name="step.fn")
 
     with caplog.at_level(logging.DEBUG, logger="iii.logger"):
         logger.info("info message")

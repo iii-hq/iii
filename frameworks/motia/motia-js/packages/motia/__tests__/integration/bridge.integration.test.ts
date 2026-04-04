@@ -1,3 +1,4 @@
+import { TriggerAction } from 'iii-sdk'
 import { getInstance, initIII } from '../../src/new/iii'
 import { initTestEnv, sleep, waitForReady, waitForRegistration } from './setup'
 
@@ -18,31 +19,31 @@ describe('bridge integration', () => {
     const sdk = getInstance()
     const functionId = `test.echo.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       return { status_code: 200, body: { echoed: data } }
     })
 
     await waitForRegistration(sdk, functionId)
 
-    const result = (await sdk.call(functionId, { message: 'hello' })) as Record<string, any>
+    const result = (await sdk.trigger({ function_id: functionId, payload: { message: 'hello' } })) as Record<string, any>
     expect(result).toBeDefined()
     const echoed = result.echoed ?? result.body?.echoed
     expect(echoed?.message).toBe('hello')
   }, 10000)
 
-  it('fire-and-forget invocation via callVoid', async () => {
+  it('fire-and-forget invocation via void trigger', async () => {
     const sdk = getInstance()
     const functionId = `test.receiver.${Date.now()}`
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
       return {}
     })
 
     await waitForRegistration(sdk, functionId)
 
-    sdk.callVoid(functionId, { value: 42 })
+    await sdk.trigger({ function_id: functionId, payload: { value: 42 }, action: TriggerAction.Void() })
 
     const maxWait = 3000
     const pollInterval = 100
@@ -59,13 +60,13 @@ describe('bridge integration', () => {
     const func1 = `test.list.func1.${Date.now()}`
     const func2 = `test.list.func2.${Date.now()}`
 
-    sdk.registerFunction({ id: func1 }, async () => ({}))
-    sdk.registerFunction({ id: func2 }, async () => ({}))
+    sdk.registerFunction(func1, async () => ({}))
+    sdk.registerFunction(func2, async () => ({}))
 
     await waitForRegistration(sdk, func1)
     await waitForRegistration(sdk, func2)
 
-    const result = (await sdk.call('engine::functions::list', {})) as { functions?: { function_id: string }[] }
+    const result = (await sdk.trigger({ function_id: 'engine::functions::list', payload: {} })) as { functions?: { function_id: string }[] }
     const ids = result?.functions?.map((f) => f.function_id) ?? []
     expect(ids).toContain(func1)
     expect(ids).toContain(func2)
@@ -74,7 +75,7 @@ describe('bridge integration', () => {
   it('invoke non-existent function rejects or returns error', async () => {
     const sdk = getInstance()
     try {
-      const result = await sdk.call('nonexistent.function.xyz', {})
+      const result = await sdk.trigger({ function_id: 'nonexistent.function.xyz', payload: {} })
       const hasError = result && typeof result === 'object' && ('error' in result || 'message' in result)
       expect(hasError || result === undefined).toBe(true)
     } catch (e) {

@@ -72,10 +72,12 @@ def setup_step_endpoint(iii: Any) -> None:
             }
 
     function_id = "motia_step_get"
-    iii.register_function(function_id, get_step_handler)
+    iii.register_function({"id": function_id}, get_step_handler)
     iii.register_trigger(
-        "http",
-        function_id,
-        {"api_path": "__motia/step/:stepId", "http_method": "GET"},
+        {
+            "type": "http",
+            "function_id": function_id,
+            "config": {"api_path": "__motia/step/:stepId", "http_method": "GET"},
+        }
     )
     log.info("Registered step endpoint: GET __motia/step/:stepId")

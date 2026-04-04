@@ -24,7 +24,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     logger.info("Creating new order", {"trace_id": ctx.trace_id})
 
     body = request.body or {}
@@ -46,8 +46,8 @@ async def handler(request: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) ->
         "trace_id": ctx.trace_id,
     }
 
-    await order_stream.set("pending", order_id, new_order)
-    await enqueue({"topic": "order.created", "data": new_order})
+    order_stream.set("pending", order_id, new_order)
+    enqueue({"topic": "order.created", "data": new_order})
 
     logger.info("Order created", {"order_id": order_id, "trace_id": ctx.trace_id})
     return ApiResponse(status=201, body=new_order)

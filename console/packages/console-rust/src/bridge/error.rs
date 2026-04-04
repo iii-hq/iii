@@ -6,12 +6,13 @@ pub fn error_response(error: IIIError) -> Value {
     let (status_code, message) = match error {
         IIIError::NotConnected => (503, "Bridge is not connected".to_string()),
         IIIError::Timeout => (504, "Invocation timed out".to_string()),
-        IIIError::Remote { code, message } => {
+        IIIError::Remote { code, message, .. } => {
             (502, format!("Remote error ({}): {}", code, message))
         }
         IIIError::Handler(msg) => (500, format!("Handler error: {}", msg)),
         IIIError::Serde(msg) => (500, format!("Serialization error: {}", msg)),
         IIIError::WebSocket(msg) => (503, format!("WebSocket error: {}", msg)),
+        IIIError::Runtime(msg) => (500, format!("Runtime error: {}", msg)),
     };
 
     json!({

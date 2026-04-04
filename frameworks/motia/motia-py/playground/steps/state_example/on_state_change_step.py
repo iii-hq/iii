@@ -15,7 +15,7 @@ config = {
 }
 
 
-async def handler(input: StateTriggerInput) -> None:
+def handler(input: StateTriggerInput) -> None:
     """Handle user state change."""
     logger.info(
         f"User state changed",
@@ -30,7 +30,7 @@ async def handler(input: StateTriggerInput) -> None:
     old_status = input.old_value.get("status") if isinstance(input.old_value, dict) else None
     new_status = input.new_value.get("status") if isinstance(input.new_value, dict) else None
 
-    await enqueue(
+    enqueue(
         {
             "topic": "user.status.changed",
             "data": {

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -14,6 +15,11 @@ pub enum HttpMethod {
     Delete,
 }
 
+/// Authentication configuration for HTTP-invoked functions.
+///
+/// - `Hmac` -- HMAC signature verification using a shared secret.
+/// - `Bearer` -- Bearer token authentication.
+/// - `ApiKey` -- API key sent via a custom header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HttpAuthConfig {
@@ -30,6 +36,8 @@ pub enum HttpAuthConfig {
     },
 }
 
+/// Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
+/// Workers, etc.) instead of a local handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationConfig {
     pub url: String,
@@ -47,18 +55,75 @@ fn default_http_method() -> HttpMethod {
     HttpMethod::Post
 }
 
+/// Routing action for [`TriggerRequest`]. Determines how the engine handles
+/// the invocation.
+///
+/// - `Enqueue` -- Routes through a named queue for async processing.
+/// - `Void` -- Fire-and-forget, no response.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TriggerAction {
+    /// Routes the invocation through a named queue.
+    Enqueue { queue: String },
+    /// Fire-and-forget routing.
+    Void,
+}
+
+/// Result returned by the engine when a message is successfully enqueued.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EnqueueResult {
+    #[serde(rename = "messageReceiptId")]
+    pub message_receipt_id: String,
+}
+
+/// Request object for `trigger()`. Matches the Node/Python SDK signature:
+/// `trigger({ function_id, payload, action?, timeout_ms? })`
+///
+/// ```rust
+/// # use iii_sdk::protocol::{TriggerRequest, TriggerAction};
+/// # use serde_json::json;
+/// // Simple call
+/// TriggerRequest {
+///     function_id: "my::function".to_string(),
+///     payload: json!({ "key": "value" }),
+///     action: None,
+///     timeout_ms: None,
+/// };
+///
+/// // With action
+/// TriggerRequest {
+///     function_id: "my::function".to_string(),
+///     payload: json!({}),
+///     action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
+///     timeout_ms: None,
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct TriggerRequest {
+    pub function_id: String,
+    pub payload: Value,
+    pub action: Option<TriggerAction>,
+    pub timeout_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
     RegisterTriggerType {
         id: String,
         description: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger_request_format: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        call_request_format: Option<Value>,
     },
     RegisterTrigger {
         id: String,
         trigger_type: String,
         function_id: String,
         config: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -98,6 +163,8 @@ pub enum Message {
         traceparent: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<TriggerAction>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -113,9 +180,12 @@ pub enum Message {
     },
     RegisterService {
         id: String,
+        #[serde(default)]
         name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_service_id: Option<String>,
     },
     Ping,
     Pong,
@@ -128,6 +198,10 @@ pub enum Message {
 pub struct RegisterTriggerTypeMessage {
     pub id: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_request_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_request_format: Option<Value>,
 }
 
 impl RegisterTriggerTypeMessage {
@@ -135,8 +209,21 @@ impl RegisterTriggerTypeMessage {
         Message::RegisterTriggerType {
             id: self.id.clone(),
             description: self.description.clone(),
+            trigger_request_format: self.trigger_request_format.clone(),
+            call_request_format: self.call_request_format.clone(),
         }
     }
+}
+
+/// Input for [`III::register_trigger`](crate::III::register_trigger).
+/// The `id` is auto-generated internally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterTriggerInput {
+    pub trigger_type: String,
+    pub function_id: String,
+    pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +232,8 @@ pub struct RegisterTriggerMessage {
     pub trigger_type: String,
     pub function_id: String,
     pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 impl RegisterTriggerMessage {
@@ -154,6 +243,7 @@ impl RegisterTriggerMessage {
             trigger_type: self.trigger_type.clone(),
             function_id: self.function_id.clone(),
             config: self.config.clone(),
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -202,6 +292,20 @@ pub struct RegisterFunctionMessage {
 }
 
 impl RegisterFunctionMessage {
+    pub fn with_id(name: String) -> Self {
+        RegisterFunctionMessage {
+            id: name,
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        }
+    }
+    pub fn with_description(mut self, description: String) -> Self {
+        self.description = Some(description);
+        self
+    }
     pub fn to_message(&self) -> Message {
         Message::RegisterFunction {
             id: self.id.clone(),
@@ -220,6 +324,8 @@ pub struct RegisterServiceMessage {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_service_id: Option<String>,
 }
 
 impl RegisterServiceMessage {
@@ -228,6 +334,7 @@ impl RegisterServiceMessage {
             id: self.id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
+            parent_service_id: self.parent_service_id.clone(),
         }
     }
 }

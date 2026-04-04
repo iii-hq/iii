@@ -1,7 +1,8 @@
 /* ChivoMono Brand Font - Variable Weight */
 @font-face {
   font-family: 'Chivo Mono';
-  src: url('/fonts/ChivoMono-VariableFont_wght.ttf') format('truetype-variations');
+  src: url('/fonts/ChivoMono-VariableFont_wght.ttf')
+    format('truetype-variations');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -9,7 +10,8 @@
 
 @font-face {
   font-family: 'Chivo Mono';
-  src: url('/fonts/ChivoMono-Italic-VariableFont_wght.ttf') format('truetype-variations');
+  src: url('/fonts/ChivoMono-Italic-VariableFont_wght.ttf')
+    format('truetype-variations');
   font-weight: 100 900;
   font-style: italic;
   font-display: swap;
@@ -32,10 +34,15 @@
   font-display: swap;
 }
 
-/* Prevent horizontal scroll on mobile */
+html {
+  zoom: 100%;
+}
+
+/* Prevent horizontal scroll on mobile. Use clip (not hidden) so position:sticky
+   still works site-wide — overflow-x:hidden breaks vertical sticky in WebKit/Blink. */
 html,
 body {
-  overflow-x: hidden;
+  overflow-x: clip;
   max-width: 100vw;
 }
 
@@ -149,14 +156,15 @@ body.light-mode {
 
 /* CRT Effect for Terminal */
 .crt::before {
-  content: " ";
+  content: ' ';
   display: block;
   position: absolute;
   top: 0;
   left: 0;
   bottom: 0;
   right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
+  background:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
     linear-gradient(
       90deg,
       rgba(255, 0, 0, 0.06),
@@ -164,7 +172,9 @@ body.light-mode {
       rgba(0, 0, 255, 0.06)
     );
   z-index: 2;
-  background-size: 100% 2px, 3px 100%;
+  background-size:
+    100% 2px,
+    3px 100%;
   pointer-events: none;
 }
 
@@ -178,29 +188,29 @@ body.light-mode {
   display: none;
 }
 
-/* Brand scrollbar for dark mode (yellow accent) */
+/* Brand scrollbar for dark mode (subtle accent) */
 .scrollbar-brand-dark {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-accent) var(--color-black);
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 
 .scrollbar-brand-dark::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 .scrollbar-brand-dark::-webkit-scrollbar-track {
-  background: var(--color-dark);
-  border-radius: 3px;
+  background: transparent;
+  border-radius: 2px;
 }
 
 .scrollbar-brand-dark::-webkit-scrollbar-thumb {
-  background: var(--color-accent);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
 }
 
 .scrollbar-brand-dark::-webkit-scrollbar-thumb:hover {
-  background: var(--color-accent);
+  background: rgba(255, 255, 255, 0.3);
 }
 
 /* Brand scrollbar for light mode (blue accent) */
@@ -350,7 +360,7 @@ body.light-mode {
   }
 }
 
-/* Socket/port pulsing animation */
+/* Socket/port pulsing animation (centered variant for absolutely-positioned elements) */
 @keyframes socketPulse {
   0%,
   100% {
@@ -360,6 +370,19 @@ body.light-mode {
   50% {
     transform: translate(-50%, -50%) scale(1.3);
     opacity: 0.2;
+  }
+}
+
+/* Socket/port pulsing animation (inline variant for flow-positioned buttons) */
+@keyframes socketPulseInline {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(var(--color-accent-rgb, 224, 255, 0), 0.4);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 8px 2px rgba(var(--color-accent-rgb, 224, 255, 0), 0.15);
   }
 }
 
@@ -406,21 +429,40 @@ body.light-mode {
 
 /* Category switch animation for code examples */
 @keyframes fadeSlideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.animate-fade-slide-in { animation: fadeSlideIn 200ms ease-out; }
+.animate-fade-slide-in {
+  animation: fadeSlideIn 200ms ease-out;
+}
 
 /* Three Primitives - sequential card highlight */
 @keyframes primitiveHighlight {
-  0%, 100% { border-color: rgba(243, 247, 36, 0.1); }
-  50% { border-color: rgba(243, 247, 36, 0.5); }
+  0%,
+  100% {
+    border-color: rgba(243, 247, 36, 0.1);
+  }
+  50% {
+    border-color: rgba(243, 247, 36, 0.5);
+  }
 }
 
 /* Stat counter entrance */
 @keyframes statCount {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Legend item pulse animation */

@@ -1,37 +1,33 @@
-import asyncio
+import time
 
-import pytest
-
-from iii import III, InitOptions, register_worker
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
+from iii import InitOptions, register_worker
+from iii.iii import III
 
 
-@pytest.mark.anyio
-async def test_init_schedules_connect(monkeypatch: pytest.MonkeyPatch) -> None:
-    called = asyncio.Event()
+def test_register_worker_returns_iii_instance(monkeypatch) -> None:
+    """register_worker should return an III instance with auto-connect initiated."""
+    import iii.iii as iii_module
 
-    async def fake_connect(self: III) -> None:
-        called.set()
+    async def fake_do_connect(self: III) -> None:
+        return None
 
-    monkeypatch.setattr(III, "connect", fake_connect)
+    monkeypatch.setattr("iii.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr(III, "_do_connect", fake_do_connect)
 
     client = register_worker("ws://fake")
     assert isinstance(client, III)
 
-    await asyncio.wait_for(called.wait(), timeout=0.2)
+    client.shutdown()
 
 
-def test_init_requires_running_loop() -> None:
-    with pytest.raises(RuntimeError, match="active asyncio event loop"):
-        register_worker("ws://fake")
+def test_register_worker_is_sync() -> None:
+    import inspect
+
+    assert not inspect.iscoroutinefunction(register_worker)
 
 
-@pytest.mark.anyio
-async def test_connect_consumes_otel_from_init_options(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_connect_consumes_otel_from_init_options(monkeypatch) -> None:
     import iii.telemetry as telemetry
 
     captured = {"config": None}
@@ -53,10 +49,10 @@ async def test_connect_consumes_otel_from_init_options(monkeypatch: pytest.Monke
         "ws://fake",
         InitOptions(otel={"enabled": True, "service_name": "iii-python-init-test"}),
     )
-
-    # let scheduled connect task run
-    await asyncio.sleep(0)
+    time.sleep(0.05)
 
     assert isinstance(client, III)
     assert captured["config"] is not None
     assert getattr(captured["config"], "service_name", None) == "iii-python-init-test"
+
+    client.shutdown()

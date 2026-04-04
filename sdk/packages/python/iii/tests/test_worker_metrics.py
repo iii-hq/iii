@@ -96,7 +96,7 @@ def test_worker_metrics_collector_computes_cpu_and_uses_cache(monkeypatch: pytes
 
 def test_register_worker_gauges_observes_metrics_once() -> None:
     meter = Mock()
-    gauges = [object() for _ in range(4)]
+    gauges = [object() for _ in range(9)]
     meter.create_observable_gauge.side_effect = gauges
     batch_callback: list[object] = []
     meter.add_batch_observable_callback.side_effect = lambda callback, _items: batch_callback.append(callback)
@@ -120,8 +120,8 @@ def test_register_worker_gauges_observes_metrics_once() -> None:
         callback = batch_callback[0]
         callback(result)
 
-        assert meter.create_observable_gauge.call_count == 4
-        assert result.observe.call_count == 4
+        assert meter.create_observable_gauge.call_count == 9
+        assert result.observe.call_count == 9
         result.observe.assert_any_call(
             gauges[0],
             30.5,
@@ -140,4 +140,4 @@ def test_stop_worker_gauges_resets_registration_state() -> None:
     gauges_module.stop_worker_gauges()
     gauges_module.register_worker_gauges(meter, "worker-3")
 
-    assert meter.create_observable_gauge.call_count == 8
+    assert meter.create_observable_gauge.call_count == 18

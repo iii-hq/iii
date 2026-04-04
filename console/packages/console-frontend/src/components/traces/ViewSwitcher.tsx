@@ -1,6 +1,6 @@
-import { Flame, List, Network } from 'lucide-react'
+import { Flame, GitBranch, List, Network } from 'lucide-react'
 
-export type ViewType = 'waterfall' | 'flamegraph' | 'map'
+export type ViewType = 'waterfall' | 'flamegraph' | 'map' | 'flow'
 
 interface ViewSwitcherProps {
   currentView: ViewType
@@ -12,6 +12,7 @@ export function ViewSwitcher({ currentView, onViewChange }: ViewSwitcherProps) {
     { id: 'waterfall', label: 'Waterfall', icon: List },
     { id: 'flamegraph', label: 'Flame Graph', icon: Flame },
     { id: 'map', label: 'Trace Map', icon: Network },
+    { id: 'flow', label: 'Flow', icon: GitBranch },
   ]
 
   return (

@@ -1,6 +1,8 @@
 //! Integration tests for HTTP external function invocation.
 //!
-//! Requires a running III engine. Set III_BRIDGE_URL or use ws://localhost:49134 default.
+//! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
+
+mod common;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -9,15 +11,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use iii_sdk::{HttpInvocationConfig, HttpMethod, III};
-
-fn engine_ws_url() -> String {
-    std::env::var("III_BRIDGE_URL").unwrap_or_else(|_| "ws://localhost:49134".to_string())
-}
-
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(300)).await;
-}
+use iii_sdk::{
+    HttpInvocationConfig, HttpMethod, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest,
+};
 
 fn unique_function_id(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -134,17 +130,15 @@ impl WebhookProbe {
 
 #[tokio::test]
 async fn delivers_queue_events_to_external_http_function() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("failed to connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::target::rs");
-    let topic = unique_topic("test.http_external.topic.rs");
+    let topic = unique_topic("test::http_external::topic::rs");
     let payload = json!({"hello": "world", "count": 1});
 
-    let http_fn = iii.register_function(
-        &function_id,
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -152,17 +146,27 @@ async fn delivers_queue_events_to_external_http_function() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    settle().await;
+    ));
+    common::settle().await;
 
     let _trigger = iii
-        .register_trigger("queue", &function_id, json!({"topic": topic}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "queue".to_string(),
+            function_id: function_id.clone(),
+            config: json!({"topic": topic}),
+            metadata: None,
+        })
         .expect("register trigger");
-    settle().await;
+    common::settle().await;
 
-    iii.call("enqueue", json!({"topic": topic, "data": payload}))
-        .await
-        .expect("enqueue failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic, "data": payload}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue failed");
 
     let webhook = probe
         .wait_for_webhook(Duration::from_secs(7))
@@ -176,20 +180,17 @@ async fn delivers_queue_events_to_external_http_function() {
 
     drop(_trigger);
     http_fn.unregister();
-    iii.shutdown_async().await;
 }
 
 #[tokio::test]
 async fn registers_and_unregisters_external_http_function() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("failed to connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::reg_unreg::rs");
 
-    let http_fn = iii.register_function(
-        &function_id,
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -197,8 +198,8 @@ async fn registers_and_unregisters_external_http_function() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    settle().await;
+    ));
+    common::settle().await;
 
     let found = {
         let functions = iii.list_functions().await.expect("list_functions failed");
@@ -207,34 +208,30 @@ async fn registers_and_unregisters_external_http_function() {
     assert!(found, "function should appear after registration");
 
     http_fn.unregister();
-    settle().await;
+    common::settle().await;
 
     let gone = {
         let functions = iii.list_functions().await.expect("list_functions failed");
         !functions.iter().any(|f| f.function_id == function_id)
     };
     assert!(gone, "function should be absent after unregister");
-
-    iii.shutdown_async().await;
 }
 
 #[tokio::test]
 async fn delivers_events_with_custom_headers() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("failed to connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::headers::rs");
-    let topic = unique_topic("test.http_external.headers.rs");
+    let topic = unique_topic("test::http_external::headers::rs");
     let payload = json!({"msg": "with-headers"});
 
     let mut custom_headers = HashMap::new();
     custom_headers.insert("x-custom-header".to_string(), "test-value".to_string());
     custom_headers.insert("x-another".to_string(), "123".to_string());
 
-    let http_fn = iii.register_function(
-        &function_id,
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -242,17 +239,27 @@ async fn delivers_events_with_custom_headers() {
             headers: custom_headers,
             auth: None,
         },
-    );
-    settle().await;
+    ));
+    common::settle().await;
 
     let _trigger = iii
-        .register_trigger("queue", &function_id, json!({"topic": topic}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "queue".to_string(),
+            function_id: function_id.clone(),
+            config: json!({"topic": topic}),
+            metadata: None,
+        })
         .expect("register trigger");
-    settle().await;
+    common::settle().await;
 
-    iii.call("enqueue", json!({"topic": topic, "data": payload}))
-        .await
-        .expect("enqueue failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic, "data": payload}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue failed");
 
     let webhook = probe
         .wait_for_webhook(Duration::from_secs(7))
@@ -271,26 +278,23 @@ async fn delivers_events_with_custom_headers() {
 
     drop(_trigger);
     http_fn.unregister();
-    iii.shutdown_async().await;
 }
 
 #[tokio::test]
 async fn delivers_events_to_multiple_external_functions() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("failed to connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let probe_a = WebhookProbe::start().await;
     let probe_b = WebhookProbe::start().await;
     let function_id_a = unique_function_id("test::http_external::multi_a::rs");
     let function_id_b = unique_function_id("test::http_external::multi_b::rs");
-    let topic_a = unique_topic("test.http_external.multi_a.rs");
-    let topic_b = unique_topic("test.http_external.multi_b.rs");
+    let topic_a = unique_topic("test::http_external::multi_a::rs");
+    let topic_b = unique_topic("test::http_external::multi_b::rs");
     let payload_a = json!({"source": "topic-a", "value": 1});
     let payload_b = json!({"source": "topic-b", "value": 2});
 
-    let http_fn_a = iii.register_function(
-        &function_id_a,
+    let http_fn_a = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id_a.clone()),
         HttpInvocationConfig {
             url: probe_a.url(),
             method: HttpMethod::Post,
@@ -298,9 +302,9 @@ async fn delivers_events_to_multiple_external_functions() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    let http_fn_b = iii.register_function(
-        &function_id_b,
+    ));
+    let http_fn_b = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id_b.clone()),
         HttpInvocationConfig {
             url: probe_b.url(),
             method: HttpMethod::Post,
@@ -308,23 +312,43 @@ async fn delivers_events_to_multiple_external_functions() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    settle().await;
+    ));
+    common::settle().await;
 
     let _trigger_a = iii
-        .register_trigger("queue", &function_id_a, json!({"topic": topic_a}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "queue".to_string(),
+            function_id: function_id_a.clone(),
+            config: json!({"topic": topic_a}),
+            metadata: None,
+        })
         .expect("register trigger a");
     let _trigger_b = iii
-        .register_trigger("queue", &function_id_b, json!({"topic": topic_b}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "queue".to_string(),
+            function_id: function_id_b.clone(),
+            config: json!({"topic": topic_b}),
+            metadata: None,
+        })
         .expect("register trigger b");
-    settle().await;
+    common::settle().await;
 
-    iii.call("enqueue", json!({"topic": topic_a, "data": payload_a}))
-        .await
-        .expect("enqueue a failed");
-    iii.call("enqueue", json!({"topic": topic_b, "data": payload_b}))
-        .await
-        .expect("enqueue b failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic_a, "data": payload_a}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue a failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic_b, "data": payload_b}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue b failed");
 
     let webhook_a = probe_a
         .wait_for_webhook(Duration::from_secs(7))
@@ -342,23 +366,20 @@ async fn delivers_events_to_multiple_external_functions() {
     drop(_trigger_b);
     http_fn_a.unregister();
     http_fn_b.unregister();
-    iii.shutdown_async().await;
 }
 
 #[tokio::test]
 async fn stops_delivering_events_after_unregister() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("failed to connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::stop::rs");
-    let topic = unique_topic("test.http_external.stop.rs");
+    let topic = unique_topic("test::http_external::stop::rs");
     let payload_before = json!({"phase": "before-unregister"});
     let payload_after = json!({"phase": "after-unregister"});
 
-    let http_fn = iii.register_function(
-        &function_id,
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -366,17 +387,27 @@ async fn stops_delivering_events_after_unregister() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    settle().await;
+    ));
+    common::settle().await;
 
     let trigger = iii
-        .register_trigger("queue", &function_id, json!({"topic": topic}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "queue".to_string(),
+            function_id: function_id.clone(),
+            config: json!({"topic": topic}),
+            metadata: None,
+        })
         .expect("register trigger");
-    settle().await;
+    common::settle().await;
 
-    iii.call("enqueue", json!({"topic": topic, "data": payload_before}))
-        .await
-        .expect("enqueue before failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic, "data": payload_before}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue before failed");
 
     let webhook_before = probe
         .wait_for_webhook(Duration::from_secs(7))
@@ -391,9 +422,14 @@ async fn stops_delivering_events_after_unregister() {
     http_fn.unregister();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    iii.call("enqueue", json!({"topic": topic, "data": payload_after}))
-        .await
-        .expect("enqueue after failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic, "data": payload_after}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue after failed");
 
     let received_after = probe
         .wait_for_webhook(Duration::from_secs(2))
@@ -403,23 +439,19 @@ async fn stops_delivering_events_after_unregister() {
         !received_after,
         "should not receive webhook after unregister"
     );
-
-    iii.shutdown_async().await;
 }
 
 #[tokio::test]
 async fn delivers_events_using_put_method() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("failed to connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::put_method::rs");
-    let topic = unique_topic("test.http_external.put.rs");
+    let topic = unique_topic("test::http_external::put::rs");
     let payload = json!({"method_test": "put", "value": 42});
 
-    let http_fn = iii.register_function(
-        &function_id,
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Put,
@@ -427,17 +459,27 @@ async fn delivers_events_using_put_method() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    settle().await;
+    ));
+    common::settle().await;
 
     let _trigger = iii
-        .register_trigger("queue", &function_id, json!({"topic": topic}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "queue".to_string(),
+            function_id: function_id.clone(),
+            config: json!({"topic": topic}),
+            metadata: None,
+        })
         .expect("register trigger");
-    settle().await;
+    common::settle().await;
 
-    iii.call("enqueue", json!({"topic": topic, "data": payload}))
-        .await
-        .expect("enqueue failed");
+    iii.trigger(TriggerRequest {
+        function_id: "enqueue".to_string(),
+        payload: json!({"topic": topic, "data": payload}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("enqueue failed");
 
     let webhook = probe
         .wait_for_webhook(Duration::from_secs(7))
@@ -450,5 +492,4 @@ async fn delivers_events_using_put_method() {
 
     drop(_trigger);
     http_fn.unregister();
-    iii.shutdown_async().await;
 }

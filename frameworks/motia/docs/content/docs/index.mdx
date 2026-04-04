@@ -6,7 +6,7 @@ description: "Build production-grade backends with a single primitive. APIs, bac
 **Motia** is a unified backend framework where everything is built around one core primitive: **the Step**. Instead of juggling separate frameworks for APIs, queues, cron jobs, AI agents, and real-time streaming, you write Steps — simple files with a `config` and a `handler` — and Motia connects them automatically.
 
 ```typescript
-import type { Handlers, StepConfig } from 'motia'
+import { enqueue, logger, type Handlers, type StepConfig } from 'motia'
 
 export const config = {
   name: 'CreateUser',
@@ -15,7 +15,7 @@ export const config = {
   flows: ['onboarding'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async ({ request }, { enqueue, logger }) => {
+export const handler: Handlers<typeof config> = async ({ request }) => {
   logger.info('Creating user', { email: request.body.email })
   await enqueue({ topic: 'user.created', data: request.body })
   return { status: 201, body: { success: true } }
@@ -72,7 +72,7 @@ Motia runs on the [iii engine](https://iii.dev), which manages all infrastructur
   <Card title="Why Motia?" href="/docs/why-motia">
     Learn why Motia exists and what problems it solves.
   </Card>
-  <Card title="Examples" href="/docs/examples">
+  <Card title="Examples" href="https://github.com/MotiaDev/motia-examples">
     Explore real-world examples covering APIs, AI agents, workflows, and more.
   </Card>
 </Cards>

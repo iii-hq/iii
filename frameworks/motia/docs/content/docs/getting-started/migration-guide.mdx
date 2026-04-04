@@ -5,12 +5,26 @@ description: Migrating from Motia v0.17.x to the Motia 1.0-RC Framework powered 
 
 This guide covers migrating from **Motia v0.17.x** to the **Motia 1.0-RC** framework. It is organized by area of concern so you can migrate incrementally.
 
-<Callout title="iii is required" type="warn">
-  Motia now requires the **iii engine** to run. Install iii from [iii.dev](https://iii.dev) before proceeding with the migration. All adapter and infrastructure configuration is now done through iii via a `config.yaml` file -- the SDK itself no longer handles any of this.
+<Callout title="iii engine is required" type="warn">
+  Motia 1.0 requires the **iii engine** to run. Install it before proceeding:
+
+  ```bash
+  curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+  ```
+
+  Verify with `iii -v` (should show 0.10.0 or later). All adapter and infrastructure configuration is now done through iii via a `config.yaml` file — the SDK itself no longer handles any of this.
+</Callout>
+
+<Callout title="Version numbers" type="info">
+  After migrating you will see different version numbers: `iii -v` shows 0.10.0 (the engine), your package.json has motia 1.0.x (the framework). This is expected — they version independently. See [Ecosystem Overview](/docs/getting-started/ecosystem) for details.
+</Callout>
+
+<Callout title="What goes in package.json" type="info">
+  Your package.json should have `"motia"` as a dependency. The `iii-sdk` package is included automatically as a dependency of motia — you do not need to add it separately. The `iii` engine is a separate binary, not an npm package.
 </Callout>
 
 <Callout title="MD Migration Guide" type="warn">
-  A Markdown version of this guide is available at [motia/MIGRATION_GUIDE.md](https://github.com/MotiaDev/motia/blob/main/MIGRATION_GUIDE.md).
+  A Markdown version of this guide is available at [MIGRATION_GUIDE.md](https://github.com/iii-hq/iii/blob/main/frameworks/motia/MIGRATION_GUIDE.md).
 </Callout>
 
 ## Configuration
@@ -598,7 +612,7 @@ export const handler: Handlers<typeof config> = async () => {
 
 The new engine uses a 7-field cron expression:
 
-```
+```text
 ┌──────────── second (0-59)
 │ ┌────────── minute (0-59)
 │ │ ┌──────── hour (0-23)
@@ -1121,7 +1135,7 @@ modules:
 The Motia Workbench (the local visual flow editor, configured via `motia-workbench.json`) has been replaced by the **iii Console**. The console provides a richer experience for visualizing and managing your flows, traces, and infrastructure.
 
 <Callout type="info">
-  Refer to the [iii quickstart documentation](https://iii.dev/docs/tutorials/quickstart) for iii Console installation instructions.
+  Refer to the [iii quickstart documentation](https://iii.dev/docs/quickstart) for iii Console installation instructions.
 </Callout>
 
 ### Workbench Plugins Sunset

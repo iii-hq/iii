@@ -1,11 +1,7 @@
-import React, { useState, useEffect } from "react";
-import {
-  ArrowNarrowRightIcon,
-  CopyIcon,
-  CheckedIcon,
-  TerminalIcon,
-} from "../icons";
-import { useRotatingText } from "../../lib/useRotatingText";
+import React, { useEffect, useRef, useState } from 'react';
+import { InstallShButton } from '../InstallShButton';
+import { EmailSignupForm } from '../EmailSignupForm';
+import { useRotatingText } from '../../lib/useRotatingText';
 // AUTHENTIC SVG LOGOS - Official & Community Verified Paths
 // Sources: Official branding pages, vectorlogo.zone, svgl.app, simpleicons.org
 
@@ -159,164 +155,143 @@ const KubernetesIcon = () => (
 
 export const languageLogos = [
   {
-    name: "TypeScript",
+    name: 'TypeScript',
     Icon: TypeScriptIcon,
-    hoverColor: "hover:text-[#3178C6]",
+    hoverColor: 'hover:text-[#3178C6]',
     official: true,
   },
   {
-    name: "Python",
+    name: 'Python',
     Icon: PythonIcon,
-    hoverColor: "hover:text-[#3776AB]",
+    hoverColor: 'hover:text-[#3776AB]',
     official: true,
   },
   {
-    name: "Go",
+    name: 'Go',
     Icon: GoIcon,
-    hoverColor: "hover:text-[#00ADD8]",
+    hoverColor: 'hover:text-[#00ADD8]',
     official: true,
   },
   {
-    name: "Rust",
+    name: 'Rust',
     Icon: RustIcon,
-    hoverColor: "hover:text-[#CE422B]",
+    hoverColor: 'hover:text-[#CE422B]',
     official: true,
   },
   {
-    name: "Node.js",
+    name: 'Node.js',
     Icon: NodeIcon,
-    hoverColor: "hover:text-[#339933]",
+    hoverColor: 'hover:text-[#339933]',
     official: true,
   },
   {
-    name: "Bun",
+    name: 'Bun',
     Icon: BunIcon,
-    hoverColor: "hover:text-[#FBF0DF]",
+    hoverColor: 'hover:text-[#FBF0DF]',
     official: true,
   },
 ];
 
 export const integrationLogos = [
   {
-    name: "PostgreSQL",
+    name: 'PostgreSQL',
     Icon: PostgresIcon,
-    hoverColor: "hover:text-[#4169E1]",
+    hoverColor: 'hover:text-[#4169E1]',
     official: true,
   },
   {
-    name: "MongoDB",
+    name: 'MongoDB',
     Icon: MongoIcon,
-    hoverColor: "hover:text-[#47A248]",
+    hoverColor: 'hover:text-[#47A248]',
     official: true,
   },
   {
-    name: "Redis",
+    name: 'Redis',
     Icon: RedisIcon,
-    hoverColor: "hover:text-[#DC382D]",
+    hoverColor: 'hover:text-[#DC382D]',
     official: true,
   },
   {
-    name: "Kafka",
+    name: 'Kafka',
     Icon: KafkaIcon,
-    hoverColor: "hover:text-[#231F20]",
+    hoverColor: 'hover:text-[#231F20]',
     official: true,
   },
   {
-    name: "GraphQL",
+    name: 'GraphQL',
     Icon: GraphQLIcon,
-    hoverColor: "hover:text-[#E10098]",
+    hoverColor: 'hover:text-[#E10098]',
     official: true,
   },
   {
-    name: "gRPC",
+    name: 'gRPC',
     Icon: GrpcIcon,
-    hoverColor: "hover:text-[#244C5A]",
+    hoverColor: 'hover:text-[#244C5A]',
     official: true,
   },
 ];
 
 export const cloudLogos = [
   {
-    name: "AWS",
+    name: 'AWS',
     Icon: AWSIcon,
-    hoverColor: "hover:text-[#FF9900]",
+    hoverColor: 'hover:text-[#FF9900]',
     official: true,
   },
   {
-    name: "Google Cloud",
+    name: 'Google Cloud',
     Icon: GoogleCloudIcon,
-    hoverColor: "hover:text-[#4285F4]",
+    hoverColor: 'hover:text-[#4285F4]',
     official: true,
   },
   {
-    name: "Azure",
+    name: 'Azure',
     Icon: AzureIcon,
-    hoverColor: "hover:text-[#0078D4]",
+    hoverColor: 'hover:text-[#0078D4]',
     official: true,
   },
   {
-    name: "Cloudflare",
+    name: 'Cloudflare',
     Icon: CloudflareIcon,
-    hoverColor: "hover:text-[#F38020]",
+    hoverColor: 'hover:text-[#F38020]',
     official: true,
   },
   {
-    name: "Vercel",
+    name: 'Vercel',
     Icon: VercelIcon,
-    hoverColor: "hover:text-white",
+    hoverColor: 'hover:text-white',
     official: true,
   },
   {
-    name: "Fly.io",
+    name: 'Fly.io',
     Icon: FlyIcon,
-    hoverColor: "hover:text-[#7B3FE4]",
+    hoverColor: 'hover:text-[#7B3FE4]',
     official: true,
   },
   {
-    name: "Docker",
+    name: 'Docker',
     Icon: DockerIcon,
-    hoverColor: "hover:text-[#2496ED]",
+    hoverColor: 'hover:text-[#2496ED]',
     official: true,
   },
   {
-    name: "Kubernetes",
+    name: 'Kubernetes',
     Icon: KubernetesIcon,
-    hoverColor: "hover:text-[#326CE5]",
+    hoverColor: 'hover:text-[#326CE5]',
     official: true,
   },
 ];
 
-const rotatingWords = [
-  "trigger",
-  "discover",
-  "register",
-  "observe",
-  "scale",
-  "connect",
-];
-
-const rotatingContexts = [
-  "any language",
-  "any location",
-  "any runtime",
-  "any worker",
-  "any event",
-  "any function",
-];
-
-const features = [
-  {
-    text: "Polyglot execution — any language participates through one universal protocol.",
-  },
-  {
-    text: "Complete observability — logs and traces auto-injected into every invocation.",
-  },
-  {
-    text: "Self-hosting/BYOC — connect existing domains and services, full portability.",
-  },
-  {
-    text: "Shared capabilities — State, Streaming, Observability accessible to every function.",
-  },
+const rotatingDescriptors = [
+  'simple',
+  'scalable',
+  'durable',
+  'extensible',
+  'fast',
+  'composable',
+  'observable',
+  'reliable',
+  'interoperable',
 ];
 
 interface HeroSectionProps {
@@ -324,405 +299,149 @@ interface HeroSectionProps {
 }
 
 export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
-  // Use shared rotating text hook for words
-  const { currentItem: currentWord, isAnimating } = useRotatingText({
-    items: rotatingWords,
+  const { currentItem: currentDescriptor, isAnimating } = useRotatingText({
+    items: rotatingDescriptors,
     intervalMs: 3000,
   });
+  const headlineRef = useRef<HTMLHeadingElement>(null);
+  const descriptorMeasureRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const secondLineMeasureRef = useRef<HTMLSpanElement>(null);
+  const [headlineScale, setHeadlineScale] = useState(1);
 
-  // Use shared rotating text hook for contexts
-  const { currentItem: currentContext, isAnimating: isContextAnimating } =
-    useRotatingText({
-      items: rotatingContexts,
-      intervalMs: 4200,
-    });
-
-  // Install command state
-  const [copySuccess, setCopySuccess] = useState(false);
-  const [installCmd] = useState(
-    "curl -fsSL https://install.iii.dev/iii/main/install.sh | sh",
-  );
-
-  // Email form state
-  const [email, setEmail] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(() => {
-    return localStorage.getItem("iii_access_requested") === "true";
-  });
-
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(installCmd);
-    setCopySuccess(true);
-    setTimeout(() => setCopySuccess(false), 2000);
-  };
-
-  const handleEmailSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email) return;
-
-    setIsSubmitting(true);
-
-    try {
-      const formUrl = import.meta.env.VITE_MAILMODO_FORM_URL;
-      if (formUrl) {
-        const res = await fetch(formUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email }),
-        });
-        if (!res.ok && res.status !== 409) {
-          throw new Error("Submission failed");
-        }
-      }
-      setIsSubmitted(true);
-      localStorage.setItem("iii_access_requested", "true");
-      localStorage.setItem("iii_access_email", email);
-      setEmail("");
-    } catch {
-      setIsSubmitted(true);
-      localStorage.setItem("iii_access_requested", "true");
-      localStorage.setItem("iii_access_email", email);
-      setEmail("");
-    } finally {
-      setIsSubmitting(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
     }
-  };
+
+    const updateHeadlineScale = () => {
+      const headlineEl = headlineRef.current;
+      if (!headlineEl) {
+        return;
+      }
+
+      const availableWidth = headlineEl.clientWidth;
+      if (!availableWidth) {
+        setHeadlineScale(1);
+        return;
+      }
+
+      const widestDescriptorLine = descriptorMeasureRefs.current.reduce(
+        (maxWidth, lineEl) => Math.max(maxWidth, lineEl?.scrollWidth ?? 0),
+        0,
+      );
+      const secondLineWidth = secondLineMeasureRef.current?.scrollWidth ?? 0;
+      const longestLineWidth = Math.max(widestDescriptorLine, secondLineWidth);
+      const nextScale =
+        longestLineWidth > availableWidth
+          ? availableWidth / longestLineWidth
+          : 1;
+
+      setHeadlineScale((prevScale) =>
+        Math.abs(prevScale - nextScale) < 0.001 ? prevScale : nextScale,
+      );
+    };
+
+    updateHeadlineScale();
+
+    const resizeObserver = new ResizeObserver(updateHeadlineScale);
+    if (headlineRef.current) {
+      resizeObserver.observe(headlineRef.current);
+    }
+    window.addEventListener('resize', updateHeadlineScale);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateHeadlineScale);
+    };
+  }, []);
 
   return (
     <section
-      className={`relative min-h-[60vh] sm:min-h-[70vh] overflow-x-hidden font-mono transition-colors duration-300 ${
-        isDarkMode ? "text-iii-light" : "text-iii-black"
+      className={`relative w-full overflow-x-hidden font-mono transition-colors duration-300 ${
+        isDarkMode ? 'text-iii-light' : 'text-iii-black'
       }`}
     >
-      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 pt-8 sm:pt-12 md:pt-24 pb-8 sm:pb-12 md:pb-16">
+      <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-10 md:py-14">
         <div className="flex flex-col items-center text-center">
           {/* Content */}
           <div className="space-y-4 sm:space-y-6 md:space-y-8 max-w-4xl w-full">
             {/* Main headline */}
             <div className="space-y-2">
-              <h1 className="text-2xl sm:text-3xl md:text-5xl lg:text-7xl font-bold leading-tight tracking-tighter font-chivo">
+              <h1
+                ref={headlineRef}
+                className="relative text-[clamp(1.125rem,6vw,4.5rem)] font-bold leading-[1.05] tracking-tighter font-chivo overflow-hidden"
+              >
                 <span
-                  className={
-                    isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+                  aria-hidden="true"
+                  className="absolute -z-10 pointer-events-none invisible select-none"
+                >
+                  {rotatingDescriptors.map((descriptor, idx) => (
+                    <span
+                      key={descriptor}
+                      ref={(el) => {
+                        descriptorMeasureRefs.current[idx] = el;
+                      }}
+                      className="block w-max whitespace-nowrap"
+                    >
+                      Unreasonably {descriptor}
+                    </span>
+                  ))}
+                  <span
+                    ref={secondLineMeasureRef}
+                    className="block w-max whitespace-nowrap"
+                  >
+                    backend engineering
+                  </span>
+                </span>
+
+                <span
+                  className="block"
+                  style={
+                    headlineScale < 1
+                      ? { fontSize: `${headlineScale}em` }
+                      : undefined
                   }
                 >
-                  One Engine.
-                </span>
-                <br />
-                <span
-                  className={`inline-block transition-all duration-500 ease-in-out ${
-                    isDarkMode ? "text-iii-light" : "text-iii-black"
-                  } ${
-                    isAnimating
-                      ? "opacity-0 translate-y-5 scale-80"
-                      : "opacity-100 translate-y-0 scale-100"
-                  }`}
-                >
-                  {currentWord}
-                </span>{" "}
-                <span
-                  className={`inline-block transition-all duration-500 ease-in-out ${
-                    isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
-                  } ${
-                    isContextAnimating
-                      ? "opacity-0 -translate-y-3 scale-90"
-                      : "opacity-100 translate-y-0 scale-100"
-                  }`}
-                >
-                  {currentContext}
+                  <span
+                    className={`block whitespace-nowrap ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
+                  >
+                    <span className="inline-block">Unreasonably</span>{' '}
+                    <span
+                      className={`inline-block transition-all duration-500 ease-in-out ${
+                        isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
+                      } ${
+                        isAnimating
+                          ? 'opacity-0 translate-y-5 scale-80'
+                          : 'opacity-100 translate-y-0 scale-100'
+                      }`}
+                    >
+                      {currentDescriptor}
+                    </span>{' '}
+                  </span>
+                  <span
+                    className={`block whitespace-nowrap ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
+                  >
+                    backend engineering
+                  </span>
                 </span>
               </h1>
-              <p
-                className={`text-sm sm:text-base md:text-lg lg:text-xl max-w-2xl mx-auto ${
-                  isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
-                }`}
-              >
-                The centralized orchestration runtime for distributed polyglot
-                function execution.
-              </p>
-              <p
-                className={`text-xs md:text-sm tracking-wide max-w-md mx-auto ${
-                  isDarkMode ? "text-iii-medium" : "text-iii-medium"
-                }`}
-              >
-                React simplified frontend with Component and Context. iii does
-                the same for backend.
-              </p>
             </div>
 
-            {/* Feature checklist */}
-            <ul className="space-y-2 sm:space-y-3 text-left inline-block px-2 sm:px-0">
-              {features.map((feature, index) => (
-                <li key={index} className="flex items-start gap-2 sm:gap-3">
-                  <span
-                    className={`flex-shrink-0 w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center mt-0.5 ${
-                      isDarkMode ? "bg-iii-accent/20" : "bg-iii-accent-light/20"
-                    }`}
-                  >
-                    <svg
-                      className={`w-2.5 h-2.5 sm:w-3 sm:h-3 ${
-                        isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
-                      }`}
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={3}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                  </span>
-                  <span
-                    className={`text-xs sm:text-sm md:text-base leading-tight ${
-                      isDarkMode ? "text-iii-light/80" : "text-iii-black/80"
-                    }`}
-                  >
-                    {feature.text}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <p
+              className={`mx-auto max-w-[64ch] text-sm md:text-base lg:text-lg leading-relaxed [text-wrap:pretty] ${
+                isDarkMode ? 'text-iii-light/75' : 'text-iii-black/75'
+              }`}
+            >
+              iii turns distributed backend complexity into a simple set of
+              real-time, interoperable primitives called Functions, Triggers,
+              and Workers. The result is coordinated execution that behaves as
+              if it were a single runtime.
+            </p>
 
             {/* Install Command & Email Form */}
-            <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-stretch sm:items-start pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
-              <div className="flex flex-col gap-1.5 w-full sm:w-auto">
-                <div
-                  className={`group relative flex items-center gap-2 px-2.5 py-2 sm:px-3 sm:py-2.5 md:px-4 md:py-3 border rounded transition-colors cursor-pointer w-full sm:min-w-[220px] md:min-w-[280px] ${
-                    isDarkMode
-                      ? "bg-iii-dark/50 border-iii-light hover:border-iii-light"
-                      : "bg-white/50 border-iii-dark hover:border-iii-dark"
-                  }`}
-                  onClick={copyToClipboard}
-                >
-                  {copySuccess ? (
-                    <>
-                      <CheckedIcon
-                        size={16}
-                        className={`flex-shrink-0 ${
-                          isDarkMode
-                            ? "text-iii-accent"
-                            : "text-iii-accent-light"
-                        }`}
-                      />
-                      <code
-                        className={`text-[9px] sm:text-[10px] md:text-sm flex-1 truncate ${
-                          isDarkMode ? "text-iii-light" : "text-iii-black"
-                        }`}
-                      >
-                        copied!
-                      </code>
-                    </>
-                  ) : (
-                    <>
-                      <TerminalIcon
-                        size={16}
-                        className={`transition-colors flex-shrink-0 ${
-                          isDarkMode
-                            ? "text-iii-light/50 group-hover:text-iii-accent"
-                            : "text-iii-dark/50 group-hover:text-iii-accent-light"
-                        }`}
-                      />
-                      <code
-                        className={`text-[9px] sm:text-[10px] md:text-sm flex-1 truncate ${
-                          isDarkMode ? "text-iii-light" : "text-iii-black"
-                        }`}
-                      >
-                        install.sh
-                      </code>
-                      <CopyIcon
-                        size={16}
-                        className={`transition-colors flex-shrink-0 ${
-                          isDarkMode
-                            ? "text-iii-light/50 group-hover:text-white"
-                            : "text-iii-dark/50 group-hover:text-iii-black"
-                        }`}
-                      />
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <form
-                onSubmit={handleEmailSubmit}
-                className="flex items-center w-full sm:w-auto"
-              >
-                {isSubmitted ? (
-                  <div
-                    className={`flex items-center gap-2 text-xs md:text-sm px-3 py-2.5 md:px-4 md:py-3 border rounded w-full justify-center ${
-                      isDarkMode
-                        ? "text-iii-accent bg-iii-accent/10 border-iii-accent/20"
-                        : "text-iii-accent-light bg-iii-accent-light/10 border-iii-accent-light/20"
-                    }`}
-                  >
-                    <CheckedIcon size={16} />
-                    <span className="font-mono tracking-tight text-xs sm:text-sm">
-                      SUBSCRIBED — STAY UPDATED
-                    </span>
-                  </div>
-                ) : (
-                  <div
-                    className={`flex w-full border-b transition-colors relative ${
-                      isDarkMode
-                        ? "border-iii-light focus-within:border-iii-accent"
-                        : "border-iii-dark focus-within:border-iii-accent-light"
-                    }`}
-                  >
-                    <input
-                      type="email"
-                      placeholder="EMAIL_FOR_UPDATES"
-                      className={`bg-transparent outline-none text-xs md:text-sm py-2.5 md:py-3 px-1 w-full sm:w-48 md:w-64 placeholder-iii-medium/50 font-mono ${
-                        isDarkMode ? "text-iii-light" : "text-iii-black"
-                      }`}
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className={`absolute right-0 top-1/2 -translate-y-1/2 disabled:opacity-50 transition-colors p-1.5 md:p-2 ${
-                        isDarkMode
-                          ? "text-iii-light hover:text-iii-accent"
-                          : "text-iii-black hover:text-iii-accent-light"
-                      }`}
-                    >
-                      {isSubmitting ? (
-                        "..."
-                      ) : (
-                        <ArrowNarrowRightIcon size={20} />
-                      )}
-                    </button>
-                  </div>
-                )}
-              </form>
-            </div>
-
-            {/* Tech logos section */}
-            <div className="pt-8 space-y-6 w-full max-w-3xl mx-auto">
-              {/* Languages & Integrations row - stacks on mobile */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-8">
-                {/* Languages - Left on desktop, top on mobile */}
-                <div className="space-y-3">
-                  <span
-                    className={`text-[10px] sm:text-xs tracking-wider block text-center uppercase ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
-                    }`}
-                  >
-                    Any language
-                  </span>
-                  <div className="flex items-center justify-center gap-2 sm:gap-3 flex-wrap">
-                    {languageLogos.map((logo, index) => (
-                      <div
-                        key={index}
-                        className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
-                          isDarkMode
-                            ? "bg-iii-dark border-iii-light hover:border-iii-light"
-                            : "bg-white border-iii-dark hover:border-iii-dark"
-                        }`}
-                        title={logo.name}
-                      >
-                        <div
-                          className={`${
-                            isDarkMode
-                              ? "text-iii-light/60"
-                              : "text-iii-black/60"
-                          } transition-colors ${
-                            logo.hoverColor
-                          } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
-                        >
-                          <logo.Icon />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Integrations - Right on desktop, bottom on mobile */}
-                <div className="space-y-3">
-                  <span
-                    className={`text-[10px] sm:text-xs tracking-wider block text-center uppercase ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
-                    }`}
-                  >
-                    Every integration
-                  </span>
-                  <div className="flex items-center justify-center gap-2 sm:gap-3 flex-wrap">
-                    {integrationLogos.map((logo, index) => (
-                      <div
-                        key={index}
-                        className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
-                          isDarkMode
-                            ? "bg-iii-dark border-iii-light hover:border-iii-light"
-                            : "bg-white border-iii-dark hover:border-iii-dark"
-                        }`}
-                        title={logo.name}
-                      >
-                        <div
-                          className={`${
-                            isDarkMode
-                              ? "text-iii-light/60"
-                              : "text-iii-black/60"
-                          } transition-colors ${
-                            logo.hoverColor
-                          } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
-                        >
-                          <logo.Icon />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cloud providers - Center */}
-              <div className="space-y-3 pt-4">
-                <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
-                  <div
-                    className={`hidden sm:block flex-1 h-px ${
-                      isDarkMode ? "bg-iii-light/20" : "bg-iii-black/20"
-                    }`}
-                  />
-                  <span
-                    className={`text-[10px] sm:text-xs tracking-wider max-w-xs sm:max-w-md text-center px-4 ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
-                    }`}
-                  >
-                    Workers register, engine orchestrates — one protocol,
-                    infinite possibilities.
-                  </span>
-                  <div
-                    className={`hidden sm:block flex-1 h-px ${
-                      isDarkMode ? "bg-iii-light/20" : "bg-iii-black/20"
-                    }`}
-                  />
-                </div>
-                <div className="flex items-center justify-center gap-2 sm:gap-4 flex-wrap">
-                  {cloudLogos.map((logo, index) => (
-                    <div
-                      key={index}
-                      className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
-                        isDarkMode
-                          ? "bg-iii-dark border-iii-light hover:border-iii-light"
-                          : "bg-white border-iii-dark hover:border-iii-dark"
-                      }`}
-                      title={logo.name}
-                    >
-                      <div
-                        className={`${
-                          isDarkMode ? "text-iii-light/60" : "text-iii-black/60"
-                        } transition-colors ${
-                          logo.hoverColor
-                        } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
-                      >
-                        <logo.Icon />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-center justify-center pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
+              <InstallShButton isDarkMode={isDarkMode} />
+              <EmailSignupForm isDarkMode={isDarkMode} />
             </div>
           </div>
         </div>

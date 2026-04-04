@@ -5,14 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>iii | Interoperable Invocation Interface</title>
 
-    <!-- Google tag (gtag.js) -->  
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-E4G8GW1J2Q"></script>
+    <!-- Google Tag Manager -->
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-E4G8GW1J2Q');
+      (function (w, d, s, l, i) {
+        w[l] = w[l] || [];
+        w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+        var f = d.getElementsByTagName(s)[0],
+          j = d.createElement(s),
+          dl = l != 'dataLayer' ? '&l=' + l : '';
+        j.async = true;
+        j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+        f.parentNode.insertBefore(j, f);
+      })(window, document, 'script', 'dataLayer', 'GTM-N8DCTFB8');
     </script>
+    <!-- End Google Tag Manager -->
+    <!-- CommonRoom: loaded dynamically after cookie consent (see useCookieConsent.ts) -->
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -66,48 +73,48 @@
         theme: {
           extend: {
             fontFamily: {
-              chivo: ['"Chivo Mono"', "monospace"],
+              chivo: ['"Chivo Mono"', 'monospace'],
             },
             colors: {
               iii: {
-                black: "var(--color-black)",
-                dark: "var(--color-dark)",
-                medium: "var(--color-medium)",
-                "medium-dark": "var(--color-medium-dark)",
-                "medium-light": "var(--color-medium-light)",
-                light: "var(--color-light)",
-                accent: "var(--color-accent)",
-                "accent-light": "var(--color-accent-light)",
-                info: "var(--color-info)",
-                warn: "var(--color-warn)",
-                alert: "var(--color-alert)",
-                success: "var(--color-success)",
+                black: 'var(--color-black)',
+                dark: 'var(--color-dark)',
+                medium: 'var(--color-medium)',
+                'medium-dark': 'var(--color-medium-dark)',
+                'medium-light': 'var(--color-medium-light)',
+                light: 'var(--color-light)',
+                accent: 'var(--color-accent)',
+                'accent-light': 'var(--color-accent-light)',
+                info: 'var(--color-info)',
+                warn: 'var(--color-warn)',
+                alert: 'var(--color-alert)',
+                success: 'var(--color-success)',
               },
             },
             animation: {
-              "pulse-fast": "pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite",
-              glitch: "glitch 1s linear infinite",
-              flow: "flow 20s linear infinite",
-              "fade-in-up": "fadeInUp 0.8s ease-out forwards",
-              "fade-in": "fadeIn 0.5s ease-out forwards",
+              'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              glitch: 'glitch 1s linear infinite',
+              flow: 'flow 20s linear infinite',
+              'fade-in-up': 'fadeInUp 0.8s ease-out forwards',
+              'fade-in': 'fadeIn 0.5s ease-out forwards',
             },
             keyframes: {
               fadeInUp: {
-                "0%": { opacity: "0", transform: "translateY(20px)" },
-                "100%": { opacity: "1", transform: "translateY(0)" },
+                '0%': { opacity: '0', transform: 'translateY(20px)' },
+                '100%': { opacity: '1', transform: 'translateY(0)' },
               },
               fadeIn: {
-                "0%": { opacity: "0" },
-                "100%": { opacity: "1" },
+                '0%': { opacity: '0' },
+                '100%': { opacity: '1' },
               },
               glitch: {
-                "2%, 64%": { transform: "translate(2px,0) skew(0deg)" },
-                "4%, 60%": { transform: "translate(-2px,0) skew(0deg)" },
-                "62%": { transform: "translate(0,0) skew(5deg)" },
+                '2%, 64%': { transform: 'translate(2px,0) skew(0deg)' },
+                '4%, 60%': { transform: 'translate(-2px,0) skew(0deg)' },
+                '62%': { transform: 'translate(0,0) skew(5deg)' },
               },
               flow: {
-                "0%": { backgroundPosition: "0 0" },
-                "100%": { backgroundPosition: "0 100%" },
+                '0%': { backgroundPosition: '0 0' },
+                '100%': { backgroundPosition: '0 100%' },
               },
             },
           },
@@ -118,7 +125,7 @@
       body {
         background-color: var(--color-black);
         color: var(--color-light);
-        font-family: "Chivo Mono", monospace;
+        font-family: 'Chivo Mono', monospace;
         overflow-x: hidden;
       }
     </style>
@@ -134,6 +141,16 @@
     </script>
   </head>
   <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript
+      ><iframe
+        src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8"
+        height="0"
+        width="0"
+        style="display: none; visibility: hidden"
+      ></iframe
+    ></noscript>
+    <!-- End Google Tag Manager (noscript) -->
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>

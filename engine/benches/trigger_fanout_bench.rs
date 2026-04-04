@@ -54,12 +54,12 @@ async fn build_fanout_engine(fanout: usize) -> (Engine, Arc<AtomicUsize>, Arc<No
     let notify = Arc::new(Notify::new());
 
     engine
-        .register_trigger_type(TriggerType {
-            id: "bench.trigger".to_string(),
-            _description: "criterion fanout trigger".to_string(),
-            registrator: Box::new(NoopRegistrator),
-            worker_id: None,
-        })
+        .register_trigger_type(TriggerType::new(
+            "bench.trigger",
+            "criterion fanout trigger",
+            Box::new(NoopRegistrator),
+            None,
+        ))
         .await;
 
     for idx in 0..fanout {

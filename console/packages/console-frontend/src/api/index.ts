@@ -10,7 +10,6 @@ export { fetchSamplingRules } from './alerts/sampling'
 export type { ConsoleConfig } from './config'
 export {
   getConfig,
-  getConnectionInfo,
   getDevtoolsApi,
   getManagementApi,
   getStreamsWs,
@@ -84,6 +83,18 @@ export type {
 export { clearTraces, fetchTraces, fetchTraceTree } from './observability/traces'
 // Queries (React Query)
 export * from './queries'
+// Queues & DLQ
+export type { DlqMessage, DlqTopic, QueueDetail, QueueStats, QueueTopic } from './queues'
+export {
+  discardMessage,
+  fetchDlqMessages,
+  fetchDlqTopics,
+  fetchQueueDetail,
+  fetchQueues,
+  publishToQueue,
+  redriveDlq,
+  redriveMessage,
+} from './queues'
 // State
 export type { StateGroup, StateItem } from './state/state'
 export {

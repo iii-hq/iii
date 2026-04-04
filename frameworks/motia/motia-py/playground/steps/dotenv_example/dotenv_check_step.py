@@ -16,7 +16,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[Any]) -> ApiResponse[dict[str, Any]]:
+def handler(request: ApiRequest[Any]) -> ApiResponse[dict[str, Any]]:
     """Return env vars loaded from .env."""
     greeting_prefix = os.environ.get("GREETING_PREFIX", "NOT_SET")
     app_name = os.environ.get("APP_NAME", "NOT_SET")

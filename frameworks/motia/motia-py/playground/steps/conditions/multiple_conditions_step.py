@@ -47,6 +47,6 @@ config = {
 }
 
 
-async def handler(input: Any) -> None:
+def handler(input: Any) -> None:
     """Handle orders that pass all conditions."""
     logger.info("Processing premium order", {"data": input})

@@ -15,12 +15,7 @@ export const PREFIX_METRICS = 'MTRC'
 export const PREFIX_LOGS = 'LOGS'
 
 /** Connection state for the shared WebSocket */
-export type ConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'connected'
-  | 'reconnecting'
-  | 'failed'
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
 
 /** Configuration for WebSocket reconnection behavior */
 export interface ReconnectionConfig {
@@ -57,7 +52,7 @@ export interface OtelConfig {
   serviceNamespace?: string
   /** The service instance ID to report. Defaults to SERVICE_INSTANCE_ID env var or auto-generated UUID. */
   serviceInstanceId?: string
-  /** III Engine WebSocket URL. Defaults to III_BRIDGE_URL or "ws://localhost:49134". */
+  /** III Engine WebSocket URL. Defaults to III_URL or "ws://localhost:49134". */
   engineWsUrl?: string
   /** OpenTelemetry instrumentations to register (e.g., PrismaInstrumentation). */
   instrumentations?: Instrumentation[]

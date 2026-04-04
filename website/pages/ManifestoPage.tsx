@@ -222,7 +222,7 @@ export const ManifestoPage: React.FC = () => {
             className={`text-base md:text-lg leading-relaxed ${textSecondary}`}
           >
             The future of backend engineering demands a new foundation. Not
-            another framework. Not another protocol. A{" "}
+            another framework. Not another service. A{" "}
             <span className={textPrimary}>universal execution kernel</span>{" "}
             built on primitives that compose infinitely.
           </p>

@@ -952,7 +952,12 @@ pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> Cont
     if let Some(bg) = baggage {
         carrier.insert("baggage".to_string(), bg.to_string());
     }
-    global::get_text_map_propagator(|propagator| propagator.extract(&carrier))
+
+    // Extract trace context first, then merge baggage into that context.
+    // This avoids relying on global propagator state and keeps behavior
+    // aligned with the SDK helper when one header is invalid or absent.
+    let ctx = TraceContextPropagator::new().extract(&carrier);
+    BaggagePropagator::new().extract_with_context(&ctx, &carrier)
 }
 
 // =============================================================================
@@ -4952,14 +4957,21 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_context_ignores_invalid_traceparent_and_does_not_keep_baggage() {
-        // The global composite propagator does not preserve baggage when the
-        // traceparent is invalid, so no baggage is extracted.
+    fn test_extract_context_keeps_baggage_when_traceparent_is_invalid() {
+        use opentelemetry::baggage::BaggageExt;
+
         let ctx = extract_context(Some("00-invalid"), Some("user.id=123"));
-        let baggage = inject_baggage_from_context(&ctx);
+
+        let span_context = ctx.span().span_context().clone();
+        let baggage = ctx.baggage();
+
         assert!(
-            baggage.is_none(),
-            "baggage should not be preserved when traceparent is invalid"
+            !span_context.is_valid(),
+            "invalid traceparent should not produce a valid span context"
+        );
+        assert_eq!(
+            baggage.get("user.id").map(|value| value.to_string()),
+            Some("123".to_string())
         );
     }
 
@@ -5300,7 +5312,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_span_event_preserves_exception_stacktrace() {
-        use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
+        use opentelemetry::trace::{Status, TraceContextExt, Tracer};
         use opentelemetry_sdk::trace::SdkTracerProvider;
 
         let storage = Arc::new(InMemorySpanStorage::new(100));

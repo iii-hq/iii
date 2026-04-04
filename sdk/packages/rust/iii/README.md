@@ -20,14 +20,14 @@ tokio = { version = "1", features = ["full"] }
 ## Hello World
 
 ```rust
-use iii_sdk::{init, InitOptions};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    iii.register_function("greet", |input| async move {
+    iii.register_function("greet", |input: Value| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
@@ -37,8 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "http_method": "POST"
     }))?;
 
-    let result: serde_json::Value = iii
-        .trigger("greet", json!({ "name": "world" }))
+    let result: Value = iii
+        .trigger(TriggerRequest {
+            function_id: "greet".to_string(),
+            payload: json!({ "name": "world" }),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
 
     println!("result: {result}");
@@ -48,20 +53,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## API
 
-| Operation                | Signature                                    | Description                                            |
-| ------------------------ | -------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `init(url, options)`                         | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `iii.trigger(id, data).await?`               | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger_void(id, data)?`                | Invoke a function without waiting (fire-and-forget)    |
+| Operation                | Signature                                                         | Description                                            |
+| ------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------ |
+| Initialize               | `register_worker(address, options)`                               | Create an SDK instance and auto-connect                |
+| Register function        | `iii.register_function(id, \|input: Value\| ...)`                 | Register a function that can be invoked by name        |
+| Register trigger         | `iii.register_trigger(type, fn_id, config)?`                      | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await)           | `iii.trigger(TriggerRequest { ... }).await?`                      | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Void), ... }).await?` | Fire-and-forget invocation                  |
+| Invoke (enqueue)         | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Enqueue { queue }), ... }).await?` | Route invocation through a named queue |
 
-`init()` spawns a background task that handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation.
+`register_worker()` spawns a background task that handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation.
 
 ### Registering Functions
 
 ```rust
-iii.register_function("orders.create", |input| async move {
+use serde_json::{json, Value};
+
+iii.register_function("orders.create", |input: Value| async move {
     let item = input["body"]["item"].as_str().unwrap_or("");
     Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
 });
@@ -79,48 +87,99 @@ iii.register_trigger("http", "orders.create", json!({
 ### Invoking Functions
 
 ```rust
-let result = iii.trigger("orders.create", json!({ "body": { "item": "widget" } })).await?;
+use iii_sdk::{TriggerRequest, TriggerAction};
+use serde_json::json;
 
-iii.trigger_void("analytics.track", json!({ "event": "page_view" }))?;
+// Synchronous -- waits for the result
+let result = iii.trigger(TriggerRequest {
+    function_id: "orders.create".to_string(),
+    payload: json!({ "body": { "item": "widget" } }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+
+// Fire-and-forget
+iii.trigger(TriggerRequest {
+    function_id: "analytics.track".to_string(),
+    payload: json!({ "event": "page_view" }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
+
+// Async via named queue
+iii.trigger(TriggerRequest {
+    function_id: "orders.process".to_string(),
+    payload: json!({ "order_id": "456" }),
+    action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
+    timeout_ms: None,
+}).await?;
 ```
 
-### Streams
+### Stream Operations
 
 ```rust
-use iii_sdk::{init, InitOptions, Streams};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, UpdateBuilder, UpdateOp};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let streams = Streams::new(iii.clone());
-    streams.set_field("room::123", "users", json!(["alice", "bob"])).await?;
+    // Set a stream item
+    iii.trigger(TriggerRequest {
+        function_id: "stream::set".into(),
+        payload: json!({
+            "stream_name": "users",
+            "group_id": "active",
+            "item_id": "user-1",
+            "data": { "status": "online" },
+        }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+
+    // Atomic update with UpdateBuilder
+    let ops = UpdateBuilder::new()
+        .increment("total", 100)
+        .set("status", json!("processing"))
+        .build();
+
+    iii.trigger(TriggerRequest {
+        function_id: "stream::update".into(),
+        payload: json!({
+            "stream_name": "orders",
+            "group_id": "user-123",
+            "item_id": "order-456",
+            "ops": ops,
+        }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
 
     Ok(())
 }
 ```
 
-### OpenTelemetry
+### Logger
 
-Enable the `otel` feature for full tracing and metrics support:
+```rust
+use iii_sdk::Logger;
 
-```toml
-[dependencies]
-iii-sdk = { version = "0.3", features = ["otel"] }
+let logger = Logger::new(Some("my-function".to_string()));
+logger.info("Processing started", None);
 ```
+
+The `Logger` struct emits OTel `LogRecord`s, falling back to the `tracing` crate when OTel is not initialized.
 
 ## Modules
 
-| Import               | What it provides                                    |
-| -------------------- | --------------------------------------------------- |
-| `iii_sdk`            | Core SDK (`III`, types)                             |
-| `iii_sdk::stream`    | Stream client (`Streams`, `UpdateBuilder`)          |
-| `iii_sdk::telemetry` | OpenTelemetry integration (requires `otel` feature) |
-
-## Deprecated
-
-`call()` and `call_void()` are deprecated aliases for `trigger()` and `trigger_void()`. They still work but will be removed in a future release.
+| Import               | What it provides                                            |
+| -------------------- | ----------------------------------------------------------- |
+| `iii_sdk`            | Core SDK (`III`, `register_worker`, `TriggerRequest`, etc.) |
+| `iii_sdk::stream`    | Stream update builder (`UpdateBuilder`)                     |
+| `iii_sdk::logger`    | Structured logging (`Logger`)                               |
+| `iii_sdk::telemetry` | OpenTelemetry integration                                   |
+| `iii_sdk::types`     | Shared types (`UpdateOp`, `Channel`, `ApiRequest`, etc.)    |
 
 ## Resources
 

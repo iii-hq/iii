@@ -15,7 +15,7 @@ config = {
 }
 
 
-async def handler(input: StreamTriggerInput) -> None:
+def handler(input: StreamTriggerInput) -> None:
     """Handle todo stream event."""
     logger.info(
         f"Todo stream event",
@@ -35,7 +35,7 @@ async def handler(input: StreamTriggerInput) -> None:
     elif input.event.type == "delete":
         logger.info(f"Todo deleted: {input.id}")
 
-    await enqueue(
+    enqueue(
         {
             "topic": "todo.processed",
             "data": {

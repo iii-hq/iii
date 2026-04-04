@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::future::BoxFuture;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,7 +20,7 @@ pub type RemoteFunctionHandler =
 // ============================================================================
 
 /// Represents a path to a field in a JSON object
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct FieldPath(pub String);
 
 impl FieldPath {
@@ -45,7 +46,7 @@ impl From<String> for FieldPath {
 }
 
 /// Operations that can be performed atomically on a stream value
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
@@ -118,7 +119,7 @@ impl UpdateOp {
 }
 
 /// Result of an atomic update operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
@@ -126,7 +127,7 @@ pub struct UpdateResult {
     pub new_value: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
@@ -134,19 +135,86 @@ pub struct SetResult {
     pub new_value: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
 }
 
-/// Input for the stream update function
+// ============================================================================
+// Stream Input Types
+// ============================================================================
+
+/// Input for retrieving a single stream item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamGetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+/// Input for setting a stream item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamSetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+    pub data: Value,
+}
+
+/// Input for deleting a stream item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamDeleteInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+/// Input for listing all items in a stream group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamListInput {
+    pub stream_name: String,
+    pub group_id: String,
+}
+
+/// Input for listing all groups in a stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamListGroupsInput {
+    pub stream_name: String,
+}
+
+/// Input for atomically updating a stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {
     pub stream_name: String,
     pub group_id: String,
     pub item_id: String,
     pub ops: Vec<UpdateOp>,
+}
+
+// ============================================================================
+// Stream Auth Types
+// ============================================================================
+
+/// Input for stream authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamAuthInput {
+    pub headers: HashMap<String, String>,
+    pub path: String,
+    pub query_params: HashMap<String, Vec<String>>,
+    pub addr: String,
+}
+
+/// Result of stream authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamAuthResult {
+    pub context: Option<Value>,
+}
+
+/// Result of a stream join request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamJoinResult {
+    pub unauthorized: bool,
 }
 
 #[derive(Clone)]

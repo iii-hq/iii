@@ -29,7 +29,13 @@ async function prepareDocs() {
 
     const contentDir = path.join(process.cwd(), 'content/docs')
     const allFiles = await getAllFiles(contentDir)
-    const mdFiles = allFiles.filter((file) => file.endsWith('.md') || file.endsWith('.mdx'))
+    const legacyExamplesDir = path.join(contentDir, 'examples')
+    const mdFiles = allFiles.filter((file) => {
+      if (!file.endsWith('.md') && !file.endsWith('.mdx')) return false
+      // Keep legacy examples in-repo, but do not publish them in generated LLM artifacts.
+      if (file.startsWith(legacyExamplesDir + path.sep)) return false
+      return true
+    })
 
     // Structure Prompt
     let llmsTxtContent = `<system_context>
@@ -120,10 +126,6 @@ Now follow these instructions:
       if (relativePath.startsWith('real-world-use-cases')) {
         llmsTxtContent += `\n## Use Cases\n[${title}](${url}): Real world use case\n${content}\n\n`
       }
-
-      if (relativePath.startsWith('examples')) {
-        llmsTxtContent += `\n## Examples\n[${title}](${url}): Code example\n${content}\n\n`
-      }
     }
 
     // Optional Links
@@ -144,6 +146,8 @@ Now follow these instructions:
     } catch {
       await fs.mkdir(docsDir)
     }
+    // Remove stale generated examples from older runs.
+    await fs.rm(path.join(docsDir, 'examples'), { recursive: true, force: true })
 
     for (const file of mdFiles) {
       const relativePath = path.relative(contentDir, file)

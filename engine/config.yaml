@@ -12,12 +12,6 @@ modules:
         config:
           redis_url: redis://localhost:6379
 
-  - class: modules::kv_server::KvServer
-    config:
-      store_method: file_based # Options: in_memory, file_based
-      file_path: ./data/kv_store
-      save_interval_ms: 5000
-
   - class: modules::state::StateModule
     config:
       adapter:
@@ -178,14 +172,6 @@ modules:
   #     #     remote_function: logger.info
 
   #     forward:
-  #       - local_function: remote.kv.get
-  #         remote_function: kv_server.get
-  #         timeout_ms: 5000
-
-  #       - local_function: remote.kv.set
-  #         remote_function: kv_server.set
-  #         timeout_ms: 5000
-
-  #       - local_function: remote.kv.delete
-  #         remote_function: kv_server.delete
+  #       - local_function: remote.state.get
+  #         remote_function: state::get
   #         timeout_ms: 5000

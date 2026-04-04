@@ -1,7 +1,7 @@
 # motia/tests/test_motia_framework.py
 """Integration tests for the Motia framework layer."""
 
-import asyncio
+import time
 import uuid
 from unittest.mock import patch
 
@@ -46,8 +46,8 @@ async def test_motia_api_step(bridge, api_url, patch_motia_bridge):
     # Add step to Motia runtime
     motia.add_step(config, "test_step.py", handler)
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(bridge)
+    time.sleep(0.5)
 
     # Make HTTP request
     async with httpx.AsyncClient() as client:
@@ -86,8 +86,8 @@ async def test_motia_step_with_query_params(bridge, api_url, patch_motia_bridge)
 
     motia.add_step(config, "test_query_params_step.py", handler)
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -124,8 +124,8 @@ async def test_motia_api_with_path_params(bridge, api_url, patch_motia_bridge):
 
     motia.add_step(config, "test_path_params_step.py", handler)
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/{base_path}/test123")
@@ -161,8 +161,8 @@ async def test_motia_context_trigger_metadata(bridge, api_url, patch_motia_bridg
 
     motia.add_step(config, "test_context_step.py", handler)
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/{endpoint_path}")
@@ -173,8 +173,7 @@ async def test_motia_context_trigger_metadata(bridge, api_url, patch_motia_bridg
     assert captured_context["trigger_type"] == "http"
 
 
-@pytest.mark.asyncio
-async def test_motia_step_config_validation(bridge, api_url, patch_motia_bridge):
+def test_motia_step_config_validation(bridge, api_url, patch_motia_bridge):
     """Test that invalid step configs are rejected."""
     from motia import Motia, http
 
@@ -190,8 +189,7 @@ async def test_motia_step_config_validation(bridge, api_url, patch_motia_bridge)
         motia.add_step(invalid_config, "invalid_step.py", lambda x, y: None)
 
 
-@pytest.mark.asyncio
-async def test_motia_add_stream(bridge, api_url, patch_motia_bridge):
+def test_motia_add_stream(bridge, api_url, patch_motia_bridge):
     """Test adding a stream to Motia runtime."""
     from motia import Motia
     from motia.types_stream import StreamConfig
@@ -234,8 +232,8 @@ async def test_motia_multiple_triggers(bridge, api_url, patch_motia_bridge):
 
     motia.add_step(config, "test_multi_trigger_step.py", handler)
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         get_response = await client.get(f"{api_url}/{get_path}")

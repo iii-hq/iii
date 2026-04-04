@@ -30,7 +30,7 @@ class Stream(Generic[TData]):
             self.config = config
         log.debug(f"Stream created: {self.stream_name}")
 
-    async def get(self, group_id: str, item_id: str) -> TData | None:
+    def get(self, group_id: str, item_id: str) -> TData | None:
         """Get an item from the stream."""
         with operation_span(
             "stream::get",
@@ -41,13 +41,15 @@ class Stream(Generic[TData]):
             },
         ) as span:
             try:
-                value: TData | None = await get_instance().call(
-                    "stream::get",
+                value: TData | None = get_instance().trigger(
                     {
-                        "stream_name": self.stream_name,
-                        "group_id": group_id,
-                        "item_id": item_id,
-                    },
+                        "function_id": "stream::get",
+                        "payload": {
+                            "stream_name": self.stream_name,
+                            "group_id": group_id,
+                            "item_id": item_id,
+                        },
+                    }
                 )
                 set_span_ok(span)
                 return value
@@ -55,7 +57,7 @@ class Stream(Generic[TData]):
                 record_exception(span, exc)
                 raise
 
-    async def set(self, group_id: str, item_id: str, data: TData) -> Any:
+    def set(self, group_id: str, item_id: str, data: TData) -> Any:
         """Set an item in the stream."""
         with operation_span(
             "stream::set",
@@ -66,14 +68,16 @@ class Stream(Generic[TData]):
             },
         ) as span:
             try:
-                result: Any = await get_instance().call(
-                    "stream::set",
+                result: Any = get_instance().trigger(
                     {
-                        "stream_name": self.stream_name,
-                        "group_id": group_id,
-                        "item_id": item_id,
-                        "data": data,
-                    },
+                        "function_id": "stream::set",
+                        "payload": {
+                            "stream_name": self.stream_name,
+                            "group_id": group_id,
+                            "item_id": item_id,
+                            "data": data,
+                        },
+                    }
                 )
                 set_span_ok(span)
                 return result
@@ -81,7 +85,7 @@ class Stream(Generic[TData]):
                 record_exception(span, exc)
                 raise
 
-    async def delete(self, group_id: str, item_id: str) -> None:
+    def delete(self, group_id: str, item_id: str) -> None:
         """Delete an item from the stream."""
         with operation_span(
             "stream::delete",
@@ -92,20 +96,22 @@ class Stream(Generic[TData]):
             },
         ) as span:
             try:
-                await get_instance().call(
-                    "stream::delete",
+                get_instance().trigger(
                     {
-                        "stream_name": self.stream_name,
-                        "group_id": group_id,
-                        "item_id": item_id,
-                    },
+                        "function_id": "stream::delete",
+                        "payload": {
+                            "stream_name": self.stream_name,
+                            "group_id": group_id,
+                            "item_id": item_id,
+                        },
+                    }
                 )
                 set_span_ok(span)
             except Exception as exc:
                 record_exception(span, exc)
                 raise
 
-    async def get_group(self, group_id: str) -> list[TData]:
+    def get_group(self, group_id: str) -> list[TData]:
         """Get all items in a group."""
         with operation_span(
             "stream::list",
@@ -115,12 +121,14 @@ class Stream(Generic[TData]):
             },
         ) as span:
             try:
-                items: list[TData] = await get_instance().call(
-                    "stream::list",
+                items: list[TData] = get_instance().trigger(
                     {
-                        "stream_name": self.stream_name,
-                        "group_id": group_id,
-                    },
+                        "function_id": "stream::list",
+                        "payload": {
+                            "stream_name": self.stream_name,
+                            "group_id": group_id,
+                        },
+                    }
                 )
                 set_span_ok(span)
                 return items
@@ -128,11 +136,11 @@ class Stream(Generic[TData]):
                 record_exception(span, exc)
                 raise
 
-    async def list(self, group_id: str) -> list[TData]:
+    def list(self, group_id: str) -> list[TData]:
         """List all items in a group. Alias for get_group()."""
-        return await self.get_group(group_id)
+        return self.get_group(group_id)
 
-    async def update(self, group_id: str, item_id: str, ops: _list[dict[str, Any]]) -> Any:
+    def update(self, group_id: str, item_id: str, ops: _list[dict[str, Any]]) -> Any:
         """Update an item in the stream using update operations."""
         with operation_span(
             "stream::update",
@@ -143,14 +151,16 @@ class Stream(Generic[TData]):
             },
         ) as span:
             try:
-                result = await get_instance().call(
-                    "stream::update",
+                result = get_instance().trigger(
                     {
-                        "stream_name": self.stream_name,
-                        "group_id": group_id,
-                        "item_id": item_id,
-                        "ops": ops,
-                    },
+                        "function_id": "stream::update",
+                        "payload": {
+                            "stream_name": self.stream_name,
+                            "group_id": group_id,
+                            "item_id": item_id,
+                            "ops": ops,
+                        },
+                    }
                 )
                 set_span_ok(span)
                 return result
@@ -158,7 +168,7 @@ class Stream(Generic[TData]):
                 record_exception(span, exc)
                 raise
 
-    async def list_groups(self) -> _list[str]:
+    def list_groups(self) -> _list[str]:
         """List all group IDs for the stream."""
         with operation_span(
             "stream::list_groups",
@@ -167,11 +177,13 @@ class Stream(Generic[TData]):
             },
         ) as span:
             try:
-                groups: _list[str] = await get_instance().call(
-                    "stream::list_groups",
+                groups: _list[str] = get_instance().trigger(
                     {
-                        "stream_name": self.stream_name,
-                    },
+                        "function_id": "stream::list_groups",
+                        "payload": {
+                            "stream_name": self.stream_name,
+                        },
+                    }
                 )
                 set_span_ok(span)
                 return groups

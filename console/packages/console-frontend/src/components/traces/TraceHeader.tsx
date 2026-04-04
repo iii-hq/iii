@@ -1,19 +1,48 @@
-import { AlertCircle, Clock, Copy, Layers, X } from 'lucide-react'
-import { useMemo } from 'react'
+import { AlertCircle, ChevronRight, Clock, Copy, Layers, X } from 'lucide-react'
+import { Fragment, useMemo } from 'react'
 import { getServiceColor } from '@/lib/traceColors'
-import type { WaterfallData } from '@/lib/traceTransform'
+import type { VisualizationSpan, WaterfallData } from '@/lib/traceTransform'
 import { formatDuration, getServiceName, useCopyToClipboard } from '@/lib/traceUtils'
 
 interface TraceHeaderProps {
   data: WaterfallData
   traceId: string
   onClose: () => void
+  onSpanClick?: (span: VisualizationSpan) => void
 }
 
-export function TraceHeader({ data, traceId, onClose }: TraceHeaderProps) {
+export function TraceHeader({ data, traceId, onClose, onSpanClick }: TraceHeaderProps) {
   const { copiedKey, copy } = useCopyToClipboard()
   const copied = copiedKey === 'traceId'
   const rootSpan = data.spans.find((s) => s.depth === 0)
+
+  const criticalPath = useMemo(() => {
+    if (!data.spans.length) return []
+
+    const childrenMap = new Map<string, VisualizationSpan[]>()
+    const rootSpans: VisualizationSpan[] = []
+
+    for (const span of data.spans) {
+      if (!span.parent_span_id) {
+        rootSpans.push(span)
+      } else {
+        const children = childrenMap.get(span.parent_span_id) || []
+        children.push(span)
+        childrenMap.set(span.parent_span_id, children)
+      }
+    }
+
+    const path: VisualizationSpan[] = []
+    let current = rootSpans.sort((a, b) => b.duration_ms - a.duration_ms)[0]
+
+    while (current) {
+      path.push(current)
+      const children = childrenMap.get(current.span_id) || []
+      current = children.sort((a, b) => b.duration_ms - a.duration_ms)[0]
+    }
+
+    return path
+  }, [data.spans])
 
   const { errorCount, serviceList, serviceDurations } = useMemo(() => {
     let errorCount = 0
@@ -34,10 +63,6 @@ export function TraceHeader({ data, traceId, onClose }: TraceHeaderProps) {
   const hasErrors = errorCount > 0
   const serviceCount = Math.max(serviceList.length, 1)
   const rootService = rootSpan ? getServiceName(rootSpan) : 'trace'
-
-  const copyTraceId = () => {
-    copy('traceId', traceId)
-  }
 
   return (
     <div className="bg-[#0A0A0A] border-b border-[#1D1D1D] flex-shrink-0">
@@ -67,7 +92,7 @@ export function TraceHeader({ data, traceId, onClose }: TraceHeaderProps) {
       <div className="flex items-center gap-2 px-4 pb-2.5 flex-wrap">
         <button
           type="button"
-          onClick={copyTraceId}
+          onClick={() => copy('traceId', traceId)}
           className="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-300 transition-colors font-mono group"
         >
           <span>{traceId.substring(0, 12)}</span>
@@ -139,6 +164,25 @@ export function TraceHeader({ data, traceId, onClose }: TraceHeaderProps) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Critical path breadcrumb */}
+      {criticalPath.length > 1 && (
+        <div className="flex items-center gap-1 px-4 pb-2.5 overflow-x-auto">
+          {criticalPath.map((span, i) => (
+            <Fragment key={span.span_id}>
+              {i > 0 && <ChevronRight className="w-3 h-3 text-gray-600 flex-shrink-0" />}
+              <button
+                type="button"
+                onClick={() => onSpanClick?.(span)}
+                className="text-[10px] font-mono text-gray-400 hover:text-white truncate max-w-[120px] flex-shrink-0 px-1 py-0.5 rounded hover:bg-[#1D1D1D] transition-colors"
+                title={span.name}
+              >
+                {span.name}
+              </button>
+            </Fragment>
+          ))}
         </div>
       )}
     </div>

@@ -1,10 +1,6 @@
 import { getDevtoolsApi, getManagementApi } from '../config'
 import { unwrapResponse } from '../utils'
 
-// ============================================================================
-// Trace Types (engine.otel.traces.*)
-// ============================================================================
-
 export interface SpanEvent {
   name: string
   timestamp_unix_nano: number
@@ -58,6 +54,7 @@ export interface TracesFilterParams {
   offset?: number
   limit?: number
   include_internal?: boolean
+  search_all_spans?: boolean
 }
 
 // Tree API types (engine.traces.tree)
@@ -83,92 +80,55 @@ export interface TraceTreeResponse {
   roots: SpanTreeNode[]
 }
 
-export async function fetchTraces(options?: TracesFilterParams): Promise<TracesResponse> {
-  // Build request body, filtering out undefined values
-  const body: Record<string, unknown> = {
-    offset: options?.offset ?? 0,
-    limit: options?.limit ?? 100,
-  }
-
-  // Add optional filter parameters if provided
-  if (options?.trace_id !== undefined) body.trace_id = options.trace_id
-  if (options?.service_name !== undefined) body.service_name = options.service_name
-  if (options?.name !== undefined) body.name = options.name
-  if (options?.status !== undefined) body.status = options.status
-  if (options?.span_id !== undefined) body.span_id = options.span_id
-  if (options?.parent_span_id !== undefined) body.parent_span_id = options.parent_span_id
-  if (options?.min_duration_ms !== undefined) body.min_duration_ms = options.min_duration_ms
-  if (options?.max_duration_ms !== undefined) body.max_duration_ms = options.max_duration_ms
-  if (options?.start_time !== undefined) body.start_time = options.start_time
-  if (options?.end_time !== undefined) body.end_time = options.end_time
-  if (options?.attributes !== undefined) body.attributes = options.attributes
-  if (options?.sort_by !== undefined) body.sort_by = options.sort_by
-  if (options?.sort_order !== undefined) body.sort_order = options.sort_order
-  if (options?.include_internal !== undefined) body.include_internal = options.include_internal
-
-  try {
-    const res = await fetch(`${getDevtoolsApi()}/otel/traces`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (res.ok) {
-      return unwrapResponse<TracesResponse>(res)
-    }
-  } catch {
-    // Fall through to management API
-  }
-
-  const res = await fetch(`${getManagementApi()}/otel/traces`, {
+async function postWithFallback<T>(path: string, body: unknown, errorMsg: string): Promise<T> {
+  const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  }
+
+  const primaryBase = getDevtoolsApi()
+  const fallbackBase = getManagementApi()
+  const hasFallback = primaryBase !== fallbackBase
+
+  try {
+    const res = await fetch(`${primaryBase}${path}`, init)
+    if (res.ok) return unwrapResponse<T>(res)
+    if (!hasFallback) throw new Error(errorMsg)
+    console.warn(`[traces] Primary API returned ${res.status} for ${path}, trying fallback`)
+  } catch (err) {
+    if (!hasFallback) throw err instanceof Error ? err : new Error(errorMsg)
+    console.warn(`[traces] Primary API failed for ${path}, falling through to fallback`, err)
+  }
+
+  const res = await fetch(`${fallbackBase}${path}`, init)
+  if (!res.ok) throw new Error(errorMsg)
+  return unwrapResponse<T>(res)
+}
+
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))
+}
+
+export async function fetchTraces(options?: TracesFilterParams): Promise<TracesResponse> {
+  const body = stripUndefined({
+    ...options,
+    offset: options?.offset ?? 0,
+    limit: options?.limit ?? 100,
   })
-  if (!res.ok) throw new Error('Failed to fetch traces')
-  return res.json()
+
+  return postWithFallback<TracesResponse>('/otel/traces', body, 'Failed to fetch traces')
 }
 
 export async function fetchTraceTree(traceId: string): Promise<TraceTreeResponse> {
-  const body = { trace_id: traceId }
-
-  try {
-    const res = await fetch(`${getDevtoolsApi()}/otel/traces/tree`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (res.ok) {
-      return unwrapResponse<TraceTreeResponse>(res)
-    }
-  } catch {
-    // Fall through to management API
-  }
-
-  const res = await fetch(`${getManagementApi()}/otel/traces/tree`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error('Failed to fetch trace tree')
-  return res.json()
+  return postWithFallback<TraceTreeResponse>(
+    '/otel/traces/tree',
+    { trace_id: traceId },
+    'Failed to fetch trace tree',
+  )
 }
 
 export async function clearTraces(): Promise<{ success: boolean }> {
-  try {
-    const res = await fetch(`${getDevtoolsApi()}/otel/traces/clear`, {
-      method: 'POST',
-    })
-    if (res.ok) {
-      await unwrapResponse(res)
-      return { success: true }
-    }
-  } catch {
-    // Fall through to management API
-  }
-
-  const res = await fetch(`${getManagementApi()}/otel/traces/clear`, {
-    method: 'POST',
-  })
-  if (!res.ok) throw new Error('Failed to clear traces')
+  await postWithFallback('/otel/traces/clear', {}, 'Failed to clear traces')
   return { success: true }
 }

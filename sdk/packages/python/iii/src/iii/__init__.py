@@ -1,145 +1,133 @@
 """III SDK for Python."""
 
-import asyncio
-import logging
-
-from .channels import ChannelReader, ChannelWriter, ReadableStream, WritableStream
-from .iii import III, ConnectionStateCallback, FunctionRef, IIIConnectionState, InitOptions, ReconnectionConfig
-from .iii_types import FunctionInfo, HttpAuthConfig, HttpInvocationConfig, StreamChannelRef, WorkerInfo, WorkerStatus
+from .channels import ChannelReader, ChannelWriter
+from .format_utils import extract_request_format, extract_response_format, python_type_to_format
+from .iii import TriggerAction, register_worker
+from .iii_constants import FunctionRef, InitOptions, ReconnectionConfig, TelemetryOptions
+from .iii_types import (
+    AuthInput,
+    AuthResult,
+    EnqueueResult,
+    FunctionInfo,
+    HttpAuthConfig,
+    HttpInvocationConfig,
+    MessageType,
+    MiddlewareFunctionInput,
+    OnFunctionRegistrationInput,
+    OnFunctionRegistrationResult,
+    OnTriggerRegistrationInput,
+    OnTriggerRegistrationResult,
+    OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult,
+    RegisterFunctionFormat,
+    RegisterFunctionInput,
+    RegisterFunctionMessage,
+    RegisterServiceInput,
+    RegisterTriggerInput,
+    RegisterTriggerMessage,
+    RegisterTriggerTypeInput,
+    RegisterTriggerTypeMessage,
+    StreamChannelRef,
+    TriggerActionEnqueue,
+    TriggerActionVoid,
+    TriggerInfo,
+    TriggerRequest,
+    TriggerTypeInfo,
+)
 from .logger import Logger
 from .stream import (
     IStream,
-    StreamAuthInput,
-    StreamAuthResult,
-    StreamDeleteInput,
-    StreamGetInput,
+    StreamChangeEvent,
+    StreamChangeEventDetail,
+    StreamContext,
     StreamJoinLeaveEvent,
-    StreamJoinResult,
-    StreamListGroupsInput,
-    StreamListInput,
-    StreamSetInput,
-    StreamSetResult,
-    StreamUpdateInput,
-    UpdateDecrement,
-    UpdateIncrement,
-    UpdateMerge,
-    UpdateOp,
-    UpdateRemove,
-    UpdateSet,
-)
-from .telemetry import (
-    current_span_id,
-    current_trace_id,
-    get_meter,
-    get_tracer,
-    init_otel,
-    is_initialized,
-    shutdown_otel,
+    StreamJoinLeaveTriggerConfig,
+    StreamTriggerConfig,
 )
 from .telemetry_types import OtelConfig
+from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
     ApiRequest,
     ApiResponse,
     Channel,
-    FunctionsAvailableCallback,
     HttpRequest,
     HttpResponse,
+    IIIClient,
+    InternalHttpRequest,
     RemoteFunctionHandler,
 )
-from .utils import http, is_channel_ref
-
-
-def register_worker(address: str, options: InitOptions | None = None) -> III:
-    """Create an III client and auto-start its connection task."""
-    client = III(address, options)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "iii.register_worker() requires an active asyncio event loop. "
-            "Call it inside async code or use `client = III(...); await client.connect()`"
-        ) from exc
-
-    loop.create_task(client.connect())
-    return client
-
-
-def configure_logging(level: int = logging.INFO, format: str | None = None) -> None:
-    """Configure logging for the III SDK.
-
-    Args:
-        level: Logging level (e.g., logging.DEBUG, logging.INFO)
-        format: Log format string. Defaults to a simple format.
-    """
-    if format is None:
-        format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-
-    logging.basicConfig(level=level, format=format)
-    logging.getLogger("iii").setLevel(level)
-
+from .utils import http
 
 __all__ = [
-    # Core
-    "III",
-    "register_worker",
-    "InitOptions",
-    "ReconnectionConfig",
-    "IIIConnectionState",
-    "ConnectionStateCallback",
-    "FunctionRef",
-    "Logger",
-    # API types
-    "ApiRequest",
-    "ApiResponse",
-    "HttpRequest",
-    "HttpResponse",
-    "http",
-    # Channel types
-    "Channel",
-    "ChannelWriter",
+    # Channels
     "ChannelReader",
-    "WritableStream",
-    "ReadableStream",
-    "StreamChannelRef",
-    "is_channel_ref",
-    # SDK types
+    "ChannelWriter",
+    # Core
+    "FunctionRef",
+    "InitOptions",
+    "OtelConfig",
+    "ReconnectionConfig",
+    "register_worker",
+    "TelemetryOptions",
+    "TriggerAction",
+    # RBAC types
+    "AuthInput",
+    "AuthResult",
+    "MiddlewareFunctionInput",
+    "OnFunctionRegistrationInput",
+    "OnFunctionRegistrationResult",
+    "OnTriggerRegistrationInput",
+    "OnTriggerRegistrationResult",
+    "OnTriggerTypeRegistrationInput",
+    "OnTriggerTypeRegistrationResult",
+    # Message types
+    "EnqueueResult",
     "FunctionInfo",
     "HttpAuthConfig",
     "HttpInvocationConfig",
-    "WorkerInfo",
-    "WorkerStatus",
-    # Stream types
-    "IStream",
-    "StreamAuthInput",
-    "StreamAuthResult",
-    "StreamDeleteInput",
-    "StreamListInput",
-    "StreamGetInput",
-    "StreamJoinLeaveEvent",
-    "StreamJoinResult",
-    "StreamListGroupsInput",
-    "StreamSetInput",
-    "StreamSetResult",
-    "StreamUpdateInput",
-    "UpdateDecrement",
-    "UpdateIncrement",
-    "UpdateMerge",
-    "UpdateOp",
-    "UpdateRemove",
-    "UpdateSet",
-    # Callbacks
-    "FunctionsAvailableCallback",
+    "MessageType",
+    "RegisterFunctionFormat",
+    "RegisterFunctionInput",
+    "RegisterFunctionMessage",
+    "RegisterServiceInput",
+    "RegisterTriggerInput",
+    "RegisterTriggerMessage",
+    "RegisterTriggerTypeInput",
+    "RegisterTriggerTypeMessage",
+    "StreamChannelRef",
+    "TriggerActionEnqueue",
+    "TriggerActionVoid",
+    "TriggerInfo",
+    "TriggerRequest",
+    "TriggerTypeInfo",
+    # Logger
+    "Logger",
+    # Triggers
+    "Trigger",
+    "TriggerConfig",
+    "TriggerHandler",
+    "TriggerTypeRef",
+    # Types
+    "ApiRequest",
+    "ApiResponse",
+    "Channel",
+    "HttpRequest",
+    "HttpResponse",
+    "IIIClient",
+    "InternalHttpRequest",
     "RemoteFunctionHandler",
-    # Telemetry
-    "OtelConfig",
-    "init_otel",
-    "shutdown_otel",
-    "get_tracer",
-    "get_meter",
-    "current_trace_id",
-    "current_span_id",
-    "is_initialized",
-    # Utility
-    "configure_logging",
+    # Stream
+    "IStream",
+    "StreamChangeEvent",
+    "StreamChangeEventDetail",
+    "StreamContext",
+    "StreamJoinLeaveEvent",
+    "StreamJoinLeaveTriggerConfig",
+    "StreamTriggerConfig",
+    # Utilities
+    "http",
+    # Format extraction
+    "extract_request_format",
+    "extract_response_format",
+    "python_type_to_format",
 ]

@@ -9,7 +9,7 @@ pub mod metrics;
 pub mod otel;
 mod sampler;
 
-mod config;
+pub(crate) mod config;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use colored::Colorize;
 use function_macros::{function, service};
 use futures::Future;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock as TokioRwLock;
@@ -34,7 +35,7 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct TracesListInput {
     /// Filter by specific trace ID
     trace_id: Option<String>,
@@ -65,12 +66,17 @@ pub struct TracesListInput {
     /// Include internal engine traces (engine.* functions). Defaults to false.
     #[serde(default)]
     include_internal: Option<bool>,
+    /// Search across all spans in each trace, not just root spans.
+    /// When true and a `name` filter is set, traces are matched if ANY span
+    /// in the trace matches the name filter. Defaults to false.
+    #[serde(default)]
+    search_all_spans: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct TracesClearInput {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct TracesTreeInput {
     /// Trace ID to build the tree for
     trace_id: String,
@@ -83,7 +89,7 @@ pub struct SpanTreeNode {
     pub children: Vec<SpanTreeNode>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct MetricsListInput {
     /// Start time in Unix timestamp milliseconds
     pub start_time: Option<u64>,
@@ -95,7 +101,7 @@ pub struct MetricsListInput {
     pub aggregate_interval: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct LogsListInput {
     /// Start time in Unix timestamp milliseconds
     pub start_time: Option<u64>,
@@ -115,19 +121,19 @@ pub struct LogsListInput {
     pub limit: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct LogsClearInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct HealthCheckInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct AlertsListInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct AlertsEvaluateInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct RollupsListInput {
     /// Start time in Unix timestamp milliseconds
     pub start_time: Option<u64>,
@@ -239,7 +245,7 @@ impl OtelLogTriggers {
 }
 
 /// Input for OTEL log functions (log.info, log.warn, log.error)
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct OtelLogInput {
     /// Optional trace ID for correlation
     trace_id: Option<String>,
@@ -254,14 +260,14 @@ pub struct OtelLogInput {
 }
 
 /// Input for baggage.get function
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct BaggageGetInput {
     /// The baggage key to retrieve
     pub key: String,
 }
 
 /// Input for baggage.set function
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct BaggageSetInput {
     /// The baggage key to set
     pub key: String,
@@ -270,7 +276,7 @@ pub struct BaggageSetInput {
 }
 
 /// Input for baggage.getAll function (empty)
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct BaggageGetAllInput {}
 
 /// OpenTelemetry configuration module.
@@ -605,6 +611,26 @@ impl OtelModule {
                 };
 
                 let include_internal = input.include_internal.unwrap_or(false);
+                let search_all = input.search_all_spans.unwrap_or(false);
+
+                // Pre-compute trace IDs that have any span matching the name filter
+                let name_matched_trace_ids: Option<std::collections::HashSet<String>> =
+                    if search_all {
+                        if let Some(ref name_filter) = input.name {
+                            let name_lower = name_filter.to_lowercase();
+                            Some(
+                                all_spans
+                                    .iter()
+                                    .filter(|s| s.name.to_lowercase().contains(&name_lower))
+                                    .map(|s| s.trace_id.clone())
+                                    .collect(),
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
@@ -628,10 +654,20 @@ impl OtelModule {
                         {
                             return false;
                         }
-                        if let Some(ref n) = input.name
-                            && !s.name.to_lowercase().contains(&n.to_lowercase())
-                        {
-                            return false;
+                        if let Some(ref n) = input.name {
+                            if search_all {
+                                // When searching all spans, check if this root's trace_id was matched
+                                if let Some(ref matched_ids) = name_matched_trace_ids
+                                    && !matched_ids.contains(&s.trace_id)
+                                {
+                                    return false;
+                                }
+                            } else {
+                                // Original behavior: filter root span name only
+                                if !s.name.to_lowercase().contains(&n.to_lowercase()) {
+                                    return false;
+                                }
+                            }
                         }
                         if let Some(ref st) = input.status
                             && !s.status.to_lowercase().contains(&st.to_lowercase())
@@ -1423,12 +1459,12 @@ impl Module for OtelModule {
         }
 
         // Register log trigger type
-        let log_trigger_type = TriggerType {
-            id: LOG_TRIGGER_TYPE.to_string(),
-            _description: "Log event trigger".to_string(),
-            registrator: Box::new(self.clone()),
-            worker_id: None,
-        };
+        let log_trigger_type = TriggerType::new(
+            LOG_TRIGGER_TYPE,
+            "Log event trigger",
+            Box::new(self.clone()),
+            None,
+        );
 
         let _ = self.engine.register_trigger_type(log_trigger_type).await;
 
@@ -1441,13 +1477,14 @@ impl Module for OtelModule {
 
     async fn start_background_tasks(
         &self,
-        shutdown: tokio::sync::watch::Receiver<bool>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         // Start log subscriber to invoke triggers for all logs
         {
             let triggers = self.triggers.clone();
             let engine = self.engine.clone();
-            let mut shutdown_rx = shutdown.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
                 // Wait a bit for log storage to be initialized
@@ -1498,7 +1535,7 @@ impl Module for OtelModule {
 
         // Spawn background task for metrics retention cleanup and rollup processing
         if let Some(storage) = metrics::get_metric_storage() {
-            let mut shutdown_rx = shutdown.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -1527,7 +1564,7 @@ impl Module for OtelModule {
 
         // Spawn background task for alert evaluation
         if !self._config.alerts.is_empty() {
-            let mut shutdown_rx = shutdown.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
@@ -1599,7 +1636,7 @@ impl Module for OtelModule {
                     .with_flush_interval(std::time::Duration::from_millis(flush_interval_ms));
             }
 
-            exporter.start_with_shutdown(rx, shutdown.clone());
+            exporter.start_with_shutdown(rx, shutdown_rx.clone());
 
             tracing::info!(
                 "{} OTLP logs exporter started (endpoint: {})",
@@ -1629,34 +1666,13 @@ impl Module for OtelModule {
     }
 }
 
-crate::register_module!(
-    "modules::observability::OtelModule",
-    OtelModule,
-    enabled_by_default = false
-);
+crate::register_module!("modules::observability::OtelModule", OtelModule, mandatory);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::collections::HashMap;
-
-    fn with_env_var<T>(key: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let previous = std::env::var(key).ok();
-        match value {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-
-        let result = f();
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-
-        result
-    }
 
     // =========================================================================
     // Helper: create a StoredSpan with configurable fields
@@ -3782,6 +3798,7 @@ mod tests {
                 sort_order: Some("asc".to_string()),
                 attributes: Some(vec![vec!["http.method".to_string(), "GET".to_string()]]),
                 include_internal: Some(false),
+                search_all_spans: None,
             })
             .await;
 
@@ -3947,7 +3964,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
-            .start_background_tasks(shutdown_rx)
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
             .await
             .expect("start_background_tasks");
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;

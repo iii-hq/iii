@@ -164,7 +164,7 @@ When enqueuing to FIFO queues, pass a `messageGroupId`:
 <Tab value='TypeScript'>
 
 ```typescript
-import { enqueue } from 'motia'
+import { enqueue, type Handlers } from 'motia'
 
 export const handler: Handlers<typeof config> = async ({ request }) => {
   const { orderId, customerId } = request.body

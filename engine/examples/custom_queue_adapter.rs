@@ -11,10 +11,10 @@ use std::{
 use async_trait::async_trait;
 use futures::Future;
 use iii::{
+    EngineBuilder,
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::{FunctionHandler, FunctionResult},
     modules::{
-        config::EngineBuilder,
         module::{AdapterEntry, AdapterFactory, ConfigurableModule, Module},
         registry::{AdapterFuture, AdapterRegistrationEntry},
     },
@@ -309,11 +309,8 @@ impl FunctionHandler for CustomQueueModule {
 // 5. Register module and run
 // =============================================================================
 
-#[allow(deprecated)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    iii::logging::init_log("config.yaml");
-
     // Register the custom module and add it to the engine using EngineBuilder
     EngineBuilder::new()
         .register_module::<CustomQueueModule>("my::CustomQueueModule")
@@ -329,7 +326,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             })),
         )
-        .address("127.0.0.1:49134")
         .build()
         .await?;
 

@@ -22,11 +22,7 @@ import {
 } from '@opentelemetry/api'
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
-import {
-  CompositePropagator,
-  W3CBaggagePropagator,
-  W3CTraceContextPropagator,
-} from '@opentelemetry/core'
+import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from '@opentelemetry/core'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { registerInstrumentations } from '@opentelemetry/instrumentation'
 import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs'
@@ -65,8 +61,7 @@ let serviceName: string = 'iii-node-iii'
  * This should be called once at application startup.
  */
 export function initOtel(config: OtelConfig = {}): void {
-  const enabled =
-    config.enabled ?? parseBoolEnv(process.env.OTEL_ENABLED, DEFAULT_OTEL_CONFIG.enabled)
+  const enabled = config.enabled ?? parseBoolEnv(process.env.OTEL_ENABLED, DEFAULT_OTEL_CONFIG.enabled)
 
   if (!enabled) {
     console.debug(
@@ -76,15 +71,11 @@ export function initOtel(config: OtelConfig = {}): void {
   }
 
   // Configure service identity
-  serviceName =
-    config.serviceName ?? process.env.OTEL_SERVICE_NAME ?? DEFAULT_OTEL_CONFIG.serviceName
-  const serviceVersion =
-    config.serviceVersion ?? process.env.SERVICE_VERSION ?? DEFAULT_OTEL_CONFIG.serviceVersion
+  serviceName = config.serviceName ?? process.env.OTEL_SERVICE_NAME ?? DEFAULT_OTEL_CONFIG.serviceName
+  const serviceVersion = config.serviceVersion ?? process.env.SERVICE_VERSION ?? DEFAULT_OTEL_CONFIG.serviceVersion
   const serviceNamespace = config.serviceNamespace ?? process.env.SERVICE_NAMESPACE
-  const serviceInstanceId =
-    config.serviceInstanceId ?? process.env.SERVICE_INSTANCE_ID ?? randomUUID()
-  const engineWsUrl =
-    config.engineWsUrl ?? process.env.III_BRIDGE_URL ?? DEFAULT_OTEL_CONFIG.engineWsUrl
+  const serviceInstanceId = config.serviceInstanceId ?? process.env.SERVICE_INSTANCE_ID ?? randomUUID()
+  const engineWsUrl = config.engineWsUrl ?? process.env.III_URL ?? DEFAULT_OTEL_CONFIG.engineWsUrl
 
   // Build resource attributes
   const resourceAttributes: Record<string, string> = {
@@ -121,13 +112,11 @@ export function initOtel(config: OtelConfig = {}): void {
 
   // Initialize metrics (enabled by default, opt-out via config or env)
   const metricsEnabled =
-    config.metricsEnabled ??
-    parseBoolEnv(process.env.OTEL_METRICS_ENABLED, DEFAULT_OTEL_CONFIG.metricsEnabled)
+    config.metricsEnabled ?? parseBoolEnv(process.env.OTEL_METRICS_ENABLED, DEFAULT_OTEL_CONFIG.metricsEnabled)
 
   if (metricsEnabled) {
     const metricsExporter = new EngineMetricsExporter(sharedConnection)
-    const exportIntervalMs =
-      config.metricsExportIntervalMs ?? DEFAULT_OTEL_CONFIG.metricsExportIntervalMs
+    const exportIntervalMs = config.metricsExportIntervalMs ?? DEFAULT_OTEL_CONFIG.metricsExportIntervalMs
 
     const metricReader = new PeriodicExportingMetricReader({
       exporter: metricsExporter,
@@ -157,8 +146,7 @@ export function initOtel(config: OtelConfig = {}): void {
   }
 
   // Patch global fetch for runtime-agnostic HTTP client tracing (works on Bun, Node.js, Deno)
-  const fetchEnabled =
-    config.fetchInstrumentationEnabled ?? DEFAULT_OTEL_CONFIG.fetchInstrumentationEnabled
+  const fetchEnabled = config.fetchInstrumentationEnabled ?? DEFAULT_OTEL_CONFIG.fetchInstrumentationEnabled
 
   if (fetchEnabled) {
     patchGlobalFetch(tracer)
@@ -172,9 +160,7 @@ export function initOtel(config: OtelConfig = {}): void {
     parseNumberEnv(process.env.OTEL_LOGS_FLUSH_INTERVAL_MS, 0) ??
     DEFAULT_OTEL_CONFIG.logsFlushIntervalMs
   const logsMaxExportBatchSize =
-    config.logsBatchSize ??
-    parseIntegerEnv(process.env.OTEL_LOGS_BATCH_SIZE, 1) ??
-    DEFAULT_OTEL_CONFIG.logsBatchSize
+    config.logsBatchSize ?? parseIntegerEnv(process.env.OTEL_LOGS_BATCH_SIZE, 1) ?? DEFAULT_OTEL_CONFIG.logsBatchSize
 
   loggerProvider = new LoggerProvider({ resource })
   loggerProvider.addLogRecordProcessor(
@@ -185,9 +171,7 @@ export function initOtel(config: OtelConfig = {}): void {
   )
   logger = loggerProvider.getLogger(serviceName)
 
-  console.debug(
-    `[OTel] Logs initialized: delay=${logsScheduledDelayMillis}ms, batch=${logsMaxExportBatchSize}`,
-  )
+  console.debug(`[OTel] Logs initialized: delay=${logsScheduledDelayMillis}ms, batch=${logsMaxExportBatchSize}`)
 }
 
 /**
@@ -272,38 +256,22 @@ export async function withSpan<T>(
     return fn(noopSpan)
   }
 
-  const parentContext = options.traceparent
-    ? extractTraceparent(options.traceparent)
-    : context.active()
+  const parentContext = options.traceparent ? extractTraceparent(options.traceparent) : context.active()
 
-  return tracer.startActiveSpan(
-    name,
-    { kind: options.kind ?? SpanKind.INTERNAL },
-    parentContext,
-    async span => {
-      try {
-        const result = await fn(span)
-        span.setStatus({ code: SpanStatusCode.OK })
-        return result
-      } catch (error) {
-        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message })
-        span.recordException(error as Error)
-        throw error
-      } finally {
-        span.end()
-      }
-    },
-  )
+  return tracer.startActiveSpan(name, { kind: options.kind ?? SpanKind.INTERNAL }, parentContext, async (span) => {
+    try {
+      const result = await fn(span)
+      span.setStatus({ code: SpanStatusCode.OK })
+      return result
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message })
+      span.recordException(error as Error)
+      throw error
+    } finally {
+      span.end()
+    }
+  })
 }
 
 // Re-export OTEL types for convenience
-export {
-  SpanKind,
-  SpanStatusCode,
-  SeverityNumber,
-  type Span,
-  type Context,
-  type Tracer,
-  type Meter,
-  type Logger,
-}
+export { SpanKind, SpanStatusCode, SeverityNumber, type Span, type Context, type Tracer, type Meter, type Logger }

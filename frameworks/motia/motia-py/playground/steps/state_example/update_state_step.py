@@ -14,7 +14,7 @@ config = {
 }
 
 
-async def handler(request: Any) -> dict[str, Any]:
+def handler(request: Any) -> dict[str, Any]:
     """Update user status in state."""
     # Validate path_params contains "id"
     if not request.path_params or "id" not in request.path_params:
@@ -34,7 +34,7 @@ async def handler(request: Any) -> dict[str, Any]:
 
     new_status = request.body.get("status", "active")
 
-    await stateManager.set("users", user_id, {"status": new_status})
+    stateManager.set("users", user_id, {"status": new_status})
 
     logger.info(f"Updated user {user_id} status to {new_status}")
 

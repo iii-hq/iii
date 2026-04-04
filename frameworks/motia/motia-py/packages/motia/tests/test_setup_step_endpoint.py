@@ -13,13 +13,14 @@ step_endpoint_module = importlib.import_module("motia.setup_step_endpoint")
 class FakeIII:
     def __init__(self) -> None:
         self.functions: dict[str, object] = {}
-        self.triggers: list[tuple[str, str, dict[str, object]]] = []
+        self.triggers: list[dict[str, object]] = []
 
-    def register_function(self, function_id: str, handler: object) -> None:
-        self.functions[function_id] = handler
+    def register_function(self, func: dict[str, object] | str, handler: object) -> None:
+        func_id = func["id"] if isinstance(func, dict) else func
+        self.functions[func_id] = handler
 
-    def register_trigger(self, trigger_type: str, function_id: str, config: dict[str, object]) -> None:
-        self.triggers.append((trigger_type, function_id, config))
+    def register_trigger(self, trigger: dict[str, object]) -> None:
+        self.triggers.append(trigger)
 
 
 def _create_step_file(tmp_path: Path) -> Path:
@@ -45,11 +46,11 @@ async def test_setup_step_endpoint_returns_step_content_and_features(
 
     assert "motia_step_get" in iii.functions
     assert iii.triggers == [
-        (
-            "http",
-            "motia_step_get",
-            {"api_path": "__motia/step/:stepId", "http_method": "GET"},
-        )
+        {
+            "type": "http",
+            "function_id": "motia_step_get",
+            "config": {"api_path": "__motia/step/:stepId", "http_method": "GET"},
+        }
     ]
 
     handler = iii.functions["motia_step_get"]

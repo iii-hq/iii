@@ -14,11 +14,11 @@ npm install iii-sdk
 ## Hello World
 
 ```javascript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
-iii.registerFunction({ id: 'greet' }, async (input) => {
+iii.registerFunction('greet', async (input) => {
   return { message: `Hello, ${input.name}!` }
 })
 
@@ -28,23 +28,23 @@ iii.registerTrigger({
   config: { api_path: '/greet', http_method: 'POST' },
 })
 
-const result = await iii.trigger('greet', { name: 'world' })
+const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world' } })
 ```
 
 ## API
 
 | Operation                | Signature                                            | Description                                                  |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------ |
-| Initialize               | `init(url, options?)`                                | Create and connect to the engine. Returns an `ISdk` instance |
-| Register function        | `iii.registerFunction({ id }, handler)`              | Register a function that can be invoked by name              |
+| Initialize               | `registerWorker(url, options?)`                      | Create and connect to the engine. Returns an `ISdk` instance |
+| Register function        | `iii.registerFunction(id, handler, options?)`        | Register a function that can be invoked by name              |
 | Register trigger         | `iii.registerTrigger({ type, function_id, config })` | Bind a trigger (HTTP, cron, queue, etc.) to a function       |
-| Invoke (await)           | `await iii.trigger(id, data, timeoutMs?)`            | Invoke a function and wait for the result                    |
-| Invoke (fire-and-forget) | `iii.triggerVoid(id, data)`                          | Invoke a function without waiting (fire-and-forget)          |
+| Invoke (await)           | `await iii.trigger({ function_id, payload })`       | Invoke a function and wait for the result                    |
+| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Invoke without waiting |
 
 ### Registering Functions
 
 ```javascript
-iii.registerFunction({ id: 'orders.create' }, async (input) => {
+iii.registerFunction('orders.create', async (input) => {
   return { status_code: 201, body: { id: '123', item: input.body.item } }
 })
 ```
@@ -62,23 +62,27 @@ iii.registerTrigger({
 ### Invoking Functions
 
 ```javascript
-const result = await iii.trigger('orders.create', { item: 'widget' })
+import { registerWorker, TriggerAction } from 'iii-sdk'
 
-iii.triggerVoid('analytics.track', { event: 'page_view' })
+const iii = registerWorker('ws://localhost:49134')
+
+const result = await iii.trigger({ function_id: 'orders.create', payload: { item: 'widget' } })
+
+iii.trigger({ function_id: 'analytics.track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
 ```
 
 ## Node Modules
 
 | Import              | What it provides                      |
 | ------------------- | ------------------------------------- |
-| `iii-sdk`           | Core SDK (`init`, types)              |
+| `iii-sdk`           | Core SDK (`registerWorker`, types)    |
 | `iii-sdk/stream`    | Stream client for real-time state     |
 | `iii-sdk/state`     | State client for key-value operations |
 | `iii-sdk/telemetry` | OpenTelemetry integration             |
 
-## Deprecated
+## Removed methods
 
-`call()` and `callVoid()` are deprecated aliases for `trigger()` and `triggerVoid()`. They still work but will be removed in a future release.
+`call`, `callVoid`, and `triggerVoid` have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
 
 ## Resources
 

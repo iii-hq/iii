@@ -10,7 +10,7 @@ Triggers can include a `condition` function that determines whether the Step sho
 Filter queue messages based on their content:
 
 ```typescript
-import type { Handlers, StepConfig } from 'motia'
+import { enqueue, logger, type Handlers, type StepConfig } from 'motia'
 import { z } from 'zod'
 
 const orderSchema = z.object({
@@ -36,7 +36,7 @@ export const config = {
   flows: ['orders'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
   await enqueue({ topic: 'order.premium-processed', data: input })
 }

@@ -164,30 +164,145 @@ describe('Motia', () => {
     })
   })
 
-  describe('middleware composition', () => {
-    it('executes middleware around handler for http trigger', async () => {
+  describe('middleware registration', () => {
+    it('registers middleware as function and passes IDs in trigger config', async () => {
       const motia = new Motia()
-      const order: number[] = []
-
       const middleware = async (_req: any, _ctx: any, next: () => Promise<any>) => {
-        order.push(1)
-        const result = await next()
-        order.push(3)
-        return result
-      }
-
-      const handler = async (_req: any, _ctx: any) => {
-        order.push(2)
+        await next()
         return { status: 200, body: null }
       }
+
+      const handler = async (_req: any, _ctx: any) => ({ status: 200, body: null })
 
       const config = { name: 'test', triggers: [http('GET', '/test', { middleware: [middleware] })] }
       motia.addStep(config as any, 'test.step.ts', handler, 'steps/test.step.ts')
 
-      const registeredHandler = mockRegisterFunction.mock.calls[0][1]
-      await registeredHandler({ body: {}, path_params: {}, query_params: {}, headers: {} })
+      // Middleware registered as a regular function
+      const mwCall = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
+      )
+      expect(mwCall).toBeDefined()
 
-      expect(order).toEqual([1, 2, 3])
+      // Trigger config includes middleware function IDs
+      expect(mockRegisterTrigger).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            middleware_function_ids: ['steps::test::trigger::http(GET /test)::middleware::0'],
+          }),
+        }),
+      )
+
+      // Middleware wrapper: next() called -> { action: 'continue' }
+      const mwWrapper = mwCall![1]
+      const engineReq = {
+        phase: 'preHandler',
+        request: { path_params: {}, query_params: {}, headers: {}, method: 'GET' },
+        context: {},
+      }
+      const result = await mwWrapper(engineReq)
+      expect(result).toEqual({ action: 'continue' })
+    })
+
+    it('middleware short-circuit returns respond action', async () => {
+      const motia = new Motia()
+      const authMiddleware = async () => ({ status: 401, body: { error: 'Unauthorized' } })
+
+      const config = { name: 'test', triggers: [http('GET', '/admin', { middleware: [authMiddleware] })] }
+      motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
+
+      const mwCall = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /admin)::middleware::0',
+      )
+      const mwWrapper = mwCall![1]
+      const engineReq = {
+        phase: 'preHandler',
+        request: { path_params: {}, query_params: {}, headers: {}, method: 'GET' },
+        context: {},
+      }
+      const result = await mwWrapper(engineReq)
+      expect(result).toEqual({
+        action: 'respond',
+        response: { status_code: 401, body: { error: 'Unauthorized' }, headers: undefined },
+      })
+    })
+
+    it('trigger config has no middleware_function_ids when no middleware', () => {
+      const motia = new Motia()
+      const config = { name: 'test', triggers: [http('GET', '/test')] }
+      motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
+
+      const triggerConfig = mockRegisterTrigger.mock.calls[0][0].config
+      expect(triggerConfig.middleware_function_ids).toBeUndefined()
+    })
+
+    it('middleware wrapper returns continue when middleware returns void without next', async () => {
+      const motia = new Motia()
+      const silentMiddleware = async () => {}
+
+      const config = { name: 'test', triggers: [http('GET', '/test', { middleware: [silentMiddleware as any] })] }
+      motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
+
+      const mwCall = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
+      )
+      const mwWrapper = mwCall![1]
+      const engineReq = {
+        phase: 'preHandler',
+        request: { path_params: {}, query_params: {}, headers: {}, method: 'GET' },
+        context: {},
+      }
+      const result = await mwWrapper(engineReq)
+      expect(result).toEqual({ action: 'continue' })
+    })
+
+    it('middleware wrapper propagates errors', async () => {
+      const motia = new Motia()
+      const errorMiddleware = async () => {
+        throw new Error('middleware exploded')
+      }
+
+      const config = { name: 'test', triggers: [http('GET', '/test', { middleware: [errorMiddleware as any] })] }
+      motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
+
+      const mwCall = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
+      )
+      const mwWrapper = mwCall![1]
+      const engineReq = {
+        phase: 'preHandler',
+        request: { path_params: {}, query_params: {}, headers: {}, method: 'GET' },
+        context: {},
+      }
+      await expect(mwWrapper(engineReq)).rejects.toThrow('middleware exploded')
+    })
+
+    it('registers multiple middleware with sequential IDs', () => {
+      const motia = new Motia()
+      const mw1 = async (_req: any, _ctx: any, next: () => Promise<any>) => { await next() }
+      const mw2 = async (_req: any, _ctx: any, next: () => Promise<any>) => { await next() }
+
+      const config = { name: 'test', triggers: [http('GET', '/test', { middleware: [mw1, mw2] })] }
+      motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
+
+      const mw1Call = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
+      )
+      const mw2Call = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::1',
+      )
+      expect(mw1Call).toBeDefined()
+      expect(mw2Call).toBeDefined()
+
+      expect(mockRegisterTrigger).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            middleware_function_ids: [
+              'steps::test::trigger::http(GET /test)::middleware::0',
+              'steps::test::trigger::http(GET /test)::middleware::1',
+            ],
+          }),
+        }),
+      )
     })
   })
 

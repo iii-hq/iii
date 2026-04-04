@@ -1,11 +1,46 @@
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use iii_sdk::{
-    IIIError, InitOptions, OtelConfig, Streams, UpdateBuilder, UpdateOp, register_worker,
+    InitOptions, OtelConfig, RegisterFunction, TriggerRequest, UpdateBuilder, UpdateOp,
+    register_worker,
 };
 use serde_json::json;
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EchoInput {
+    message: String,
+    repeat: u32,
+    uppercase: bool,
+    prefix: String,
+}
+
+fn echo_message(input: EchoInput) -> Result<serde_json::Value, String> {
+    let mut result = input.message.repeat(input.repeat as usize);
+    if input.uppercase {
+        result = result.to_uppercase();
+    }
+    Ok(json!({ "echo": format!("{}{}", input.prefix, result) }))
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DelayEchoInput {
+    message: String,
+    delay_ms: u64,
+    suffix: String,
+}
+
+async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, String> {
+    tokio::time::sleep(Duration::from_millis(input.delay_ms)).await;
+    Ok(
+        json!({ "echo": format!("{}{}", input.message, input.suffix), "delayed_ms": input.delay_ms }),
+    )
+}
+
+mod cron_trigger_example;
+mod custom_trigger_example;
 mod http_example;
+mod logger_example;
+mod trigger_type_example;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,81 +51,119 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
-    )?;
+    );
+
+    // Logger demo (all log levels with structured data)
+    logger_example::setup(&iii);
 
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
 
-    // Error-test handler for verifying OTEL exception.stacktrace
-    iii.register_function("api::get::error-test", |_input| async move {
-        Err(IIIError::Handler(
-            "Intentional error for OTEL stacktrace testing".into(),
-        ))
-    });
-    iii.register_trigger(
-        "http",
-        "api::get::error-test",
-        json!({
-            "api_path": "error-test",
-            "http_method": "GET",
-            "description": "Returns an error to test OTEL stack traces",
-        }),
-    )
-    .expect("failed to register error-test trigger");
+    // Custom webhook trigger type with typed config (compile-time safe)
+    trigger_type_example::setup(&iii);
 
-    // Create a Streams instance for atomic updates
-    let streams = Streams::new(iii.clone());
+    // Built-in trigger types: cron and state (untyped config)
+    cron_trigger_example::setup(&iii);
 
-    iii.register_function("example.echo", |input| async move {
-        Ok(json!({ "echo": input }))
-    });
+    // More custom triggers: schedule, file-watch (typed), custom-event (untyped fallback)
+    custom_trigger_example::setup(&iii);
+
+    // List all registered trigger types with their schemas
+    trigger_type_example::list_trigger_types_example(&iii).await;
+
+    iii.register_function(
+        RegisterFunction::new("example::echo", echo_message)
+            .description("Echo a message with repeat and formatting options"),
+    );
+
+    iii.register_function(
+        RegisterFunction::new_async("example::delay_echo", delay_echo)
+            .description("Echo with configurable delay"),
+    );
 
     let result = iii
-        .call("example.echo", json!({ "message": "hello" }))
+        .trigger(TriggerRequest {
+            function_id: "example::echo".to_string(),
+            payload: json!({"message": "hello", "repeat": 2, "uppercase": false, "prefix": "> "}),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
     println!("Echo result: {result}");
+
+    // Invoke logger demo to exercise all log levels
+    let logger_result = iii
+        .trigger(TriggerRequest {
+            function_id: "example::logger_demo".to_string(),
+            payload: json!({"test": true}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    println!("Logger demo result: {logger_result}");
 
     // =========================================================================
     // Stream Atomic Update Examples
     // =========================================================================
 
-    let stream_key = "example::demo::counter-1";
-
     // Example 1: Using UpdateOp directly
     println!("\n--- Example 1: Direct UpdateOp ---");
-    let result = streams
-        .update(
-            stream_key,
-            vec![
-                UpdateOp::set("name", json!("Counter Example")),
-                UpdateOp::set("counter", json!(0)),
-                UpdateOp::set("status", json!("initialized")),
-            ],
-        )
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": [
+                    UpdateOp::set("name", json!("Counter Example")),
+                    UpdateOp::set("counter", json!(0)),
+                    UpdateOp::set("status", json!("initialized")),
+                ],
+            }),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
-    println!("Initial value: {:?}", result.new_value);
+    println!("Initial value: {:?}", result);
 
     // Example 2: Atomic increment
     println!("\n--- Example 2: Atomic Increment ---");
-    let result = streams.increment(stream_key, "counter", 5).await?;
-    println!(
-        "After increment by 5: counter = {}",
-        result.new_value["counter"]
-    );
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": [UpdateOp::increment("counter", 5)],
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    println!("After increment by 5: {:?}", result);
 
     // Example 3: Multiple atomic operations in one call
     println!("\n--- Example 3: Multiple Operations ---");
-    let result = streams
-        .update(
-            stream_key,
-            vec![
-                UpdateOp::increment("counter", 10),
-                UpdateOp::set("status", json!("active")),
-                UpdateOp::set("lastUpdated", json!("2024-01-21T12:00:00Z")),
-            ],
-        )
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": [
+                    UpdateOp::increment("counter", 10),
+                    UpdateOp::set("status", json!("active")),
+                    UpdateOp::set("lastUpdated", json!("2024-01-21T12:00:00Z")),
+                ],
+            }),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
-    println!("After multiple ops: {:?}", result.new_value);
+    println!("After multiple ops: {:?}", result);
 
     // Example 4: Using UpdateBuilder pattern
     println!("\n--- Example 4: UpdateBuilder Pattern ---");
@@ -100,52 +173,111 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("metadata", json!({"source": "rust-sdk", "version": "1.0"}))
         .build();
 
-    let result = streams.update(stream_key, ops).await?;
-    println!("After builder ops: {:?}", result.new_value);
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": ops,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    println!("After builder ops: {:?}", result);
 
     // Example 5: Merge operation
     println!("\n--- Example 5: Merge Operation ---");
-    let result = streams
-        .merge(
-            stream_key,
-            json!({
-                "extra_field": "added via merge",
-                "another_field": 42
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": [UpdateOp::merge(json!({
+                    "extra_field": "added via merge",
+                    "another_field": 42
+                }))],
             }),
-        )
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
-    println!("After merge: {:?}", result.new_value);
+    println!("After merge: {:?}", result);
 
     // Example 6: Remove a field
     println!("\n--- Example 6: Remove Field ---");
-    let result = streams.remove_field(stream_key, "extra_field").await?;
-    println!("After removing extra_field: {:?}", result.new_value);
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": [UpdateOp::remove("extra_field")],
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    println!("After removing extra_field: {:?}", result);
 
     // Example 7: Decrement
     println!("\n--- Example 7: Decrement ---");
-    let result = streams.decrement(stream_key, "counter", 3).await?;
-    println!(
-        "After decrement by 3: counter = {}",
-        result.new_value["counter"]
-    );
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "counter-1",
+                "ops": [UpdateOp::decrement("counter", 3)],
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    println!("After decrement by 3: {:?}", result);
 
     // Example 8: Concurrent updates simulation
     println!("\n--- Example 8: Concurrent Updates ---");
-    let concurrent_key = "example::demo::concurrent-test";
 
     // Initialize
-    streams
-        .update(concurrent_key, vec![UpdateOp::set("counter", json!(0))])
-        .await?;
+    iii.trigger(TriggerRequest {
+        function_id: "stream::update".to_string(),
+        payload: json!({
+            "stream_name": "example",
+            "group_id": "demo",
+            "item_id": "concurrent-test",
+            "ops": [UpdateOp::set("counter", json!(0))],
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await?;
 
     // Spawn 10 concurrent increment tasks
     let mut handles = vec![];
     for i in 0..10 {
-        let streams_clone = streams.clone();
-        let key = concurrent_key.to_string();
+        let iii_clone = iii.clone();
         let handle = tokio::spawn(async move {
             for _ in 0..10 {
-                let _ = streams_clone.increment(&key, "counter", 1).await;
+                let _ = iii_clone
+                    .trigger(TriggerRequest {
+                        function_id: "stream::update".to_string(),
+                        payload: json!({
+                            "stream_name": "example",
+                            "group_id": "demo",
+                            "item_id": "concurrent-test",
+                            "ops": [UpdateOp::increment("counter", 1)],
+                        }),
+                        action: None,
+                        timeout_ms: None,
+                    })
+                    .await;
             }
             println!("Task {} completed 10 increments", i);
         });
@@ -158,16 +290,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Check final value (should be 100 with atomic updates)
-    let final_result = streams
-        .update(concurrent_key, vec![UpdateOp::increment("counter", 0)])
+    let final_result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::update".to_string(),
+            payload: json!({
+                "stream_name": "example",
+                "group_id": "demo",
+                "item_id": "concurrent-test",
+                "ops": [UpdateOp::increment("counter", 0)],
+            }),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
     println!(
         "Final counter after 100 concurrent increments: {}",
-        final_result.new_value["counter"]
+        final_result["new_value"]["counter"]
     );
 
-    println!("\n--- All examples completed! Waiting... ---");
-    loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
+    println!("\n--- All examples completed! Process stays alive via connection thread. ---");
+
+    sleep(Duration::from_secs(10));
+    println!("Finishing III");
+    iii.shutdown();
+    sleep(Duration::from_secs(10));
+
+    Ok(())
 }

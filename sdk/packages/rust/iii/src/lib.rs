@@ -1,50 +1,95 @@
+pub mod builtin_triggers;
 pub mod channels;
-pub mod context;
 pub mod error;
 pub mod iii;
 pub mod logger;
 pub mod protocol;
 pub mod stream;
-#[cfg(feature = "otel")]
+pub mod structs;
 pub mod telemetry;
 pub mod triggers;
 pub mod types;
 
+pub use builtin_triggers::{
+    IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
+    StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
+};
 pub use channels::{
     ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
     extract_channel_refs, is_channel_ref,
 };
-pub use context::{Context, get_context, with_context};
 pub use error::IIIError;
 pub use iii::{
-    FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IntoFunctionHandler, TriggerInfo,
-    WorkerInfo, WorkerMetadata,
+    FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIAsyncFn, IIIConnectionState, IIIFn,
+    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, RegisterTriggerType,
+    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata, iii_async_fn, iii_fn,
 };
 pub use logger::Logger;
 pub use protocol::{
-    ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod, Message,
-    RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerMessage,
-    RegisterTriggerTypeMessage,
+    EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
+    Message, RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerInput,
+    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
-pub use stream::{Streams, UpdateBuilder};
+pub use stream::UpdateBuilder;
+pub use structs::{
+    AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
+    OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
+    OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
+};
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
-    ApiRequest, ApiResponse, Channel, FieldPath, StreamUpdateInput, UpdateOp, UpdateResult,
+    ApiRequest, ApiResponse, Channel, DeleteResult, FieldPath, SetResult, StreamAuthInput,
+    StreamAuthResult, StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput,
+    StreamListInput, StreamSetInput, StreamUpdateInput, UpdateOp, UpdateResult,
 };
 
 pub use serde_json::Value;
 
+/// Configuration options passed to [`register_worker`].
+///
+/// # Examples
+/// ```rust,no_run
+/// use iii_sdk::{register_worker, InitOptions};
+///
+/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
+    /// Custom worker metadata. Auto-detected if `None`.
     pub metadata: Option<WorkerMetadata>,
-    #[cfg(feature = "otel")]
+    /// Custom HTTP headers sent during the WebSocket handshake.
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    /// OpenTelemetry configuration.
     pub otel: Option<crate::telemetry::types::OtelConfig>,
 }
 
-pub fn register_worker(address: &str, options: InitOptions) -> Result<III, IIIError> {
+/// Create and return a connected SDK instance. The WebSocket connection is
+/// established automatically in a dedicated background thread with its own
+/// tokio runtime.
+///
+/// Call [`III::shutdown`] before the end of `main` to cleanly stop the
+/// connection and join the background thread. In Rust the process exits
+/// when `main` returns, terminating all threads — so `shutdown()` must be
+/// called while `main` is still running.
+///
+/// # Arguments
+/// * `address` - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
+/// * `options` - Configuration for worker metadata and OTel.
+///
+/// # Examples
+/// ```rust,no_run
+/// use iii_sdk::{register_worker, InitOptions};
+///
+/// fn main() {
+///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
+///     // register functions, handle events, etc.
+///     iii.shutdown(); // cleanly stops the connection thread
+/// }
+/// ```
+pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {
         metadata,
-        #[cfg(feature = "otel")]
+        headers,
         otel,
     } = options;
 
@@ -54,27 +99,20 @@ pub fn register_worker(address: &str, options: InitOptions) -> Result<III, IIIEr
         III::new(address)
     };
 
-    #[cfg(feature = "otel")]
+    if let Some(h) = headers {
+        iii.set_headers(h);
+    }
+
     if let Some(cfg) = otel {
         iii.set_otel_config(cfg);
     }
 
-    let handle = tokio::runtime::Handle::try_current().map_err(|_| {
-        IIIError::Runtime("iii_sdk::register_worker requires an active Tokio runtime".into())
-    })?;
+    iii.connect();
 
-    let client = iii.clone();
-    handle.spawn(async move {
-        if let Err(err) = client.connect().await {
-            tracing::warn!(error = %err, "iii_sdk::register_worker auto-connect failed");
-        }
-    });
-
-    Ok(iii)
+    iii
 }
 
-// OpenTelemetry re-exports (behind "otel" feature flag)
-#[cfg(feature = "otel")]
+// OpenTelemetry re-exports
 pub use telemetry::{
     context::{
         current_span_id, current_trace_id, extract_baggage, extract_context, extract_traceparent,
@@ -90,7 +128,5 @@ pub use telemetry::{
 };
 
 // Re-export commonly used OpenTelemetry types for convenience
-#[cfg(feature = "otel")]
 pub use opentelemetry::trace::SpanKind;
-#[cfg(feature = "otel")]
 pub use opentelemetry::trace::Status as SpanStatus;

@@ -18,7 +18,7 @@ config = {
 }
 
 
-async def handler(data: Any, ctx: FlowContext[Any]) -> None:
+def handler(data: Any, ctx: FlowContext[Any]) -> None:
     order = data.get("data", {}) if isinstance(data, dict) else {}
     order_id = order.get("id", "unknown")
 
@@ -30,7 +30,7 @@ async def handler(data: Any, ctx: FlowContext[Any]) -> None:
         },
     )
 
-    await stateManager.set(
+    stateManager.set(
         "notifications",
         order_id,
         {

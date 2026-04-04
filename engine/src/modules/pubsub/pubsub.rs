@@ -15,6 +15,7 @@ use colored::Colorize;
 use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,7 +35,7 @@ pub struct PubSubCoreModule {
     _config: PubSubModuleConfig,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 pub struct PubSubInput {
     pub topic: String,
     pub data: Value,
@@ -146,12 +147,12 @@ impl Module for PubSubCoreModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing PubSubModule");
 
-        let trigger_type = TriggerType {
-            id: "subscribe".to_string(),
-            _description: "Subscribe to a topic".to_string(),
-            registrator: Box::new(self.clone()),
-            worker_id: None,
-        };
+        let trigger_type = TriggerType::new(
+            "subscribe",
+            "Subscribe to a topic",
+            Box::new(self.clone()),
+            None,
+        );
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 
@@ -300,6 +301,7 @@ mod tests {
             function_id: "test::listener".to_string(),
             config: json!({ "topic": "orders" }),
             worker_id: None,
+            metadata: None,
         };
 
         module
@@ -338,6 +340,7 @@ mod tests {
                 function_id: "test::listener".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger without topic");

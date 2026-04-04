@@ -29,7 +29,7 @@ export default defineConfig(({ mode }) => ({
           router: ['@tanstack/react-router'],
           query: ['@tanstack/react-query'],
           'ui-icons': ['lucide-react'],
-          'ui-components': ['@radix-ui/react-tabs', 'class-variance-authority'],
+          'ui-components': ['@radix-ui/react-tabs', '@radix-ui/react-dialog', '@radix-ui/react-slot', '@radix-ui/react-select', '@radix-ui/react-label', '@radix-ui/react-separator', 'class-variance-authority', 'cmdk', 'sonner'],
         },
       },
     },
@@ -38,6 +38,10 @@ export default defineConfig(({ mode }) => ({
     port: 3114,
     proxy: {
       '/api': 'http://localhost:3113',
+      '/ws': {
+        target: 'http://localhost:3113',
+        ws: true,
+      },
     },
   },
 }))

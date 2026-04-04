@@ -1,7 +1,7 @@
 // import { iii } from 'iii-sdk'
 import { registerWorker, Logger } from '../src/index'
 
-const ENGINE_WS_URL = process.env.III_BRIDGE_URL ?? 'ws://localhost:49199'
+const ENGINE_WS_URL = process.env.III_URL ?? 'ws://localhost:49199'
 const ENGINE_HTTP_URL = process.env.III_HTTP_URL ?? 'http://localhost:3199'
 const RETRY_LIMIT = 100
 const DELAY_MS = 100
@@ -50,7 +50,7 @@ export async function httpRequest(
 }
 
 export function sleep(duration: number): Promise<void> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     setTimeout(() => resolve(), duration)
   })
 }

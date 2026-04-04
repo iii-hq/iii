@@ -8,48 +8,28 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     future::Future,
-    net::SocketAddr,
     pin::Pin,
     sync::{Arc, RwLock},
 };
 
-use axum::{
-    Router,
-    extract::{ConnectInfo, State, ws::WebSocketUpgrade},
-    response::IntoResponse,
-    routing::get,
-};
-use colored::Colorize;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::net::TcpListener;
 
 use super::{module::Module, registry::ModuleRegistration};
 use crate::engine::Engine;
 
 // =============================================================================
-// Constants
-// =============================================================================
-
-/// Default address for the engine server
-pub const DEFAULT_PORT: u16 = 49134;
-const DEFAULT_HOST: &str = "0.0.0.0";
-
-// =============================================================================
 // EngineConfig (YAML structure)
 // =============================================================================
 
-fn default_port() -> u16 {
-    DEFAULT_PORT
-}
-
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
-    #[serde(default = "default_port")]
-    pub port: u16,
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
+    #[serde(default)]
+    pub workers: Vec<ModuleEntry>,
 }
 
 impl EngineConfig {
@@ -57,8 +37,8 @@ impl EngineConfig {
         let modules = default_module_entries();
 
         Self {
-            port: DEFAULT_PORT,
             modules,
+            workers: Vec::new(),
         }
     }
 
@@ -114,39 +94,8 @@ impl EngineConfig {
     pub fn default_config() -> Self {
         tracing::info!("Using default config (no config file)");
         Self {
-            port: DEFAULT_PORT,
             modules: default_module_entries(),
-        }
-    }
-
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `config_file()` for strict loading or `default_config()` for explicit defaults"
-    )]
-    pub fn config_file_or_default(path: &str) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(yaml_content) => {
-                let yaml_content = Self::expand_env_vars(&yaml_content);
-                let config = serde_yaml::from_str(&yaml_content);
-                match config {
-                    Ok(cfg) => {
-                        tracing::info!("Parsed config file: {}", path);
-                        Ok(cfg)
-                    }
-                    Err(err) => Err(anyhow::anyhow!(
-                        "Failed to parse config file {}: {}",
-                        path,
-                        err
-                    )),
-                }
-            }
-            Err(_) => {
-                tracing::info!("No {} found, using default modules", path);
-                Ok(Self {
-                    port: DEFAULT_PORT,
-                    modules: default_module_entries(),
-                })
-            }
+            workers: Vec::new(),
         }
     }
 }
@@ -162,30 +111,8 @@ fn default_module_entries() -> Vec<ModuleEntry> {
         .collect()
 }
 
-async fn shutdown_signal() -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        let mut sigterm = signal(SignalKind::terminate())?;
-        let mut sigint = signal(SignalKind::interrupt())?;
-
-        tokio::select! {
-            _ = sigterm.recv() => {},
-            _ = sigint.recv() => {},
-            _ = tokio::signal::ctrl_c() => {},
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await?;
-    }
-
-    Ok(())
-}
-
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModuleEntry {
     pub class: String,
     #[serde(default)]
@@ -257,23 +184,40 @@ impl ModuleRegistry {
             .insert(class.to_string(), info);
     }
 
-    /// Creates a module instance
+    /// Creates a module instance.
+    ///
+    /// First checks the built-in registry. If the class is not found, falls back
+    /// to external module resolution: checks `iii.toml` for installed modules and
+    /// spawns the corresponding binary from `iii_modules/`.
     pub async fn create_module(
         self: &Arc<Self>,
         class: &str,
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Module>> {
+        // Try built-in registry first
         let factory = {
             let factories = self.module_factories.read().expect("RwLock poisoned");
-            factories
-                .get(class)
-                .ok_or_else(|| anyhow::anyhow!("Unknown module class: {}", class))?
-                .factory
-                .clone()
+            factories.get(class).map(|info| info.factory.clone())
         };
 
-        factory(engine, config).await
+        if let Some(factory) = factory {
+            return factory(engine, config).await;
+        }
+
+        // Fallback: try external module from iii_modules/
+        if let Some(info) = super::external::resolve_external_module(class) {
+            tracing::info!(
+                "Resolved '{}' as external module '{}' ({})",
+                class,
+                info.name,
+                info.binary_path.display()
+            );
+            let module = super::external::ExternalModule::new(info, config);
+            return Ok(Box::new(module));
+        }
+
+        Err(anyhow::anyhow!("Unknown module class: {}", class))
     }
 
     // =========================================================================
@@ -319,7 +263,6 @@ impl ModuleEntry {
 /// ```ignore
 /// EngineBuilder::new()
 ///     .config_file("config.yaml")?
-///     .address("0.0.0.0:3000")
 ///     .build().await?
 ///     .serve().await?;
 /// ```
@@ -328,7 +271,6 @@ impl ModuleEntry {
 /// ```ignore
 /// EngineBuilder::new()
 ///     .default_config()
-///     .address("0.0.0.0:3000")
 ///     .build().await?
 ///     .serve().await?;
 /// ```
@@ -343,7 +285,6 @@ impl ModuleEntry {
 /// ```
 pub struct EngineBuilder {
     config: Option<EngineConfig>,
-    address: String,
     engine: Arc<Engine>,
     registry: Arc<ModuleRegistry>,
     modules: Vec<Arc<dyn Module>>,
@@ -354,41 +295,15 @@ impl EngineBuilder {
     pub fn new() -> Self {
         Self {
             config: None,
-            address: format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT),
             engine: Arc::new(Engine::new()),
             registry: Arc::new(ModuleRegistry::with_inventory()),
             modules: Vec::new(),
         }
     }
 
-    /// Sets the server address
-    pub fn address(mut self, addr: &str) -> Self {
-        self.address = addr.to_string();
-        self
-    }
-
-    /// Loads config from file if exists, otherwise uses defaults
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `config_file()` for strict loading or `default_config()` for explicit defaults"
-    )]
-    #[allow(deprecated)]
-    pub fn config_file_or_default(mut self, path: &str) -> anyhow::Result<Self> {
-        let config = EngineConfig::config_file_or_default(path)?;
-        self.config = Some(config);
-        Ok(self)
-    }
-
     /// Loads config strictly from file. Fails if file is missing or unparseable.
-    pub fn config_file(mut self, path: &str) -> anyhow::Result<Self> {
-        let config = EngineConfig::config_file(path)?;
+    pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = Some(config);
-        Ok(self)
-    }
-
-    /// Uses default config (no file). Explicit opt-in to run without a config file.
-    pub fn default_config(mut self) -> Self {
-        self.config = Some(EngineConfig::default_config());
         self
     }
 
@@ -406,7 +321,7 @@ impl EngineBuilder {
         if self.config.is_none() {
             self.config = Some(EngineConfig {
                 modules: Vec::new(),
-                port: DEFAULT_PORT,
+                workers: Vec::new(),
             });
         }
 
@@ -427,9 +342,11 @@ impl EngineBuilder {
         // This prevents panics in workers/invocation code that unconditionally calls get_engine_metrics().
         crate::modules::observability::metrics::ensure_default_meter();
 
-        tracing::info!("Building engine with {} modules", config.modules.len());
-
+        // Merge workers into the modules processing pipeline
         let mut modules = config.modules;
+        modules.extend(config.workers);
+
+        tracing::info!("Building engine with {} modules", modules.len());
         let module_classes = modules
             .iter()
             .map(|entry| entry.class.clone())
@@ -449,9 +366,14 @@ impl EngineBuilder {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)
-                .await?;
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("failed to create module '{}': {}", entry.class, err)
+                })?;
             tracing::debug!("Initializing module: {}", entry.class);
-            module.initialize().await?;
+            module.initialize().await.map_err(|err| {
+                anyhow::anyhow!("failed to initialize module '{}': {}", entry.class, err)
+            })?;
             module.register_functions(self.engine.clone());
             self.modules.push(Arc::from(module));
         }
@@ -472,13 +394,16 @@ impl EngineBuilder {
     /// Starts the engine server
     pub async fn serve(self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Start background tasks for all modules
         for module in self.modules.iter() {
-            let module_shutdown = shutdown_rx.clone();
-            if let Err(e) = module.start_background_tasks(module_shutdown).await {
+            let shutdown_rx = shutdown_rx.clone();
+            let shutdown_tx = shutdown_tx.clone();
+            if let Err(e) = module
+                .start_background_tasks(shutdown_rx, shutdown_tx)
+                .await
+            {
                 tracing::warn!(
                     module = module.name(),
                     error = %e,
@@ -490,33 +415,7 @@ impl EngineBuilder {
         // Start channel TTL sweep task
         engine.channel_manager.start_sweep_task(shutdown_rx.clone());
 
-        // Setup router
-        let app = Router::new()
-            .route("/", get(ws_handler))
-            .route(
-                "/ws/channels/{channel_id}",
-                get(crate::channels::ws_handler::channel_ws_upgrade),
-            )
-            .with_state(AppState {
-                engine,
-                shutdown_rx: shutdown_rx.clone(),
-            });
-
-        // Bind and serve
-        let listener = TcpListener::bind(&self.address).await?;
-        tracing::info!("Engine listening on address: {}", self.address.purple());
-
-        let shutdown = async move {
-            let _ = shutdown_signal().await;
-            let _ = shutdown_tx.send(true);
-        };
-
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown)
-        .await?;
+        shutdown_rx.changed().await?;
 
         self.destroy().await?;
         Ok(())
@@ -527,29 +426,6 @@ impl Default for EngineBuilder {
     fn default() -> Self {
         Self::new()
     }
-}
-// =============================================================================
-// WebSocket Handler
-// =============================================================================
-
-#[derive(Clone)]
-pub struct AppState {
-    pub engine: Arc<Engine>,
-    pub(crate) shutdown_rx: tokio::sync::watch::Receiver<bool>,
-}
-
-async fn ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-) -> impl IntoResponse {
-    let engine = state.engine.clone();
-
-    ws.on_upgrade(move |socket| async move {
-        if let Err(err) = engine.handle_worker(socket, addr, state.shutdown_rx).await {
-            tracing::error!(addr = %addr, error = ?err, "worker error");
-        }
-    })
 }
 
 #[cfg(test)]
@@ -708,10 +584,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test_config.yaml");
         let mut file = std::fs::File::create(&path).unwrap();
-        writeln!(file, "port: 9999\nmodules: []").unwrap();
+        writeln!(file, "modules: []").unwrap();
 
         let config = EngineConfig::config_file(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.port, 9999);
         assert!(config.modules.is_empty());
     }
 
@@ -726,25 +601,6 @@ mod tests {
             path,
             err_msg
         );
-    }
-
-    #[test]
-    fn test_default_config_returns_default_port_and_default_modules() {
-        let config = EngineConfig::default_config();
-        assert_eq!(config.port, DEFAULT_PORT);
-        // Default modules come from inventory — at minimum it shouldn't panic
-    }
-
-    #[test]
-    fn test_engine_builder_config_file_errors_on_missing() {
-        let result = EngineBuilder::new().config_file("/tmp/iii_builder_nonexistent_99999.yaml");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_engine_builder_default_config_succeeds() {
-        // Should not panic — builder is usable with defaults
-        let _builder = EngineBuilder::new().default_config();
     }
 
     // =========================================================================
@@ -853,11 +709,6 @@ mod tests {
                 !entry.class.is_empty(),
                 "Module entry class should not be empty"
             );
-            // Default entries have no config
-            assert!(
-                entry.config.is_none(),
-                "Default module entries should have no config"
-            );
         }
     }
 
@@ -877,6 +728,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_default_config_includes_otel_module() {
+        let config = EngineConfig::default_config();
+
+        assert!(
+            config
+                .modules
+                .iter()
+                .any(|entry| entry.class == "modules::observability::OtelModule"),
+            "default config should include OtelModule (registered as mandatory)"
+        );
+    }
+
     // =========================================================================
     // 3. Config parsing tests
     // =========================================================================
@@ -885,11 +749,9 @@ mod tests {
     fn test_config_yaml_parsing() {
         // Parse a minimal valid YAML config string
         let yaml = r#"
-port: 8080
 modules: []
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, 8080);
         assert!(config.modules.is_empty());
     }
 
@@ -897,7 +759,6 @@ modules: []
     fn test_config_yaml_with_modules() {
         // Parse config with modules section
         let yaml = r#"
-port: 3000
 modules:
   - class: "my::TestModule"
     config:
@@ -906,7 +767,6 @@ modules:
   - class: "my::OtherModule"
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, 3000);
         assert_eq!(config.modules.len(), 2);
 
         // First module has class and config
@@ -925,28 +785,17 @@ modules:
         // Parse empty/minimal YAML -- should use defaults
         let yaml = "{}";
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, DEFAULT_PORT);
-        assert!(config.modules.is_empty());
-    }
-
-    #[test]
-    fn test_config_yaml_only_port() {
-        // Parse YAML with only port, modules should default to empty vec
-        let yaml = "port: 9999";
-        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, 9999);
         assert!(config.modules.is_empty());
     }
 
     #[test]
     fn test_config_yaml_only_modules() {
-        // Parse YAML with only modules, port should default
+        // Parse YAML with only modules
         let yaml = r#"
 modules:
   - class: "test::Module"
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, DEFAULT_PORT);
         assert_eq!(config.modules.len(), 1);
         assert_eq!(config.modules[0].class, "test::Module");
     }
@@ -1091,75 +940,6 @@ modules:
     }
 
     // =========================================================================
-    // EngineConfig::default_modules
-    // =========================================================================
-
-    #[test]
-    fn test_engine_config_default_modules_resets_port() {
-        let config = EngineConfig {
-            port: 9999,
-            modules: vec![],
-        };
-        let with_defaults = config.default_modules();
-        assert_eq!(with_defaults.port, DEFAULT_PORT);
-    }
-
-    // =========================================================================
-    // EngineConfig::config_file_or_default
-    // =========================================================================
-
-    #[test]
-    fn test_config_file_or_default_missing_file() {
-        let result = EngineConfig::config_file_or_default("/nonexistent/path/config.yaml");
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.port, DEFAULT_PORT);
-    }
-
-    #[test]
-    fn test_config_file_or_default_valid_yaml_file() {
-        use std::io::Write;
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let dir = std::env::temp_dir();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = dir.join(format!("test_config_valid-{}.yaml", now));
-        let mut file = std::fs::File::create(&path).unwrap();
-        writeln!(file, "port: 7777\nmodules: []").unwrap();
-        drop(file);
-
-        let result = EngineConfig::config_file_or_default(path.to_str().unwrap());
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.port, 7777);
-        assert!(config.modules.is_empty());
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn test_config_file_or_default_invalid_yaml() {
-        use std::io::Write;
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let dir = std::env::temp_dir();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = dir.join(format!("test_config_invalid-{}.yaml", now));
-        let mut file = std::fs::File::create(&path).unwrap();
-        writeln!(file, "{{{{ not valid yaml at all }}}}}}").unwrap();
-        drop(file);
-
-        let result = EngineConfig::config_file_or_default(path.to_str().unwrap());
-        assert!(result.is_err());
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    // =========================================================================
     // ModuleEntry
     // =========================================================================
 
@@ -1190,27 +970,8 @@ config:
     #[test]
     fn test_engine_builder_default() {
         let builder = EngineBuilder::default();
-        assert_eq!(
-            builder.address,
-            format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT)
-        );
         assert!(builder.config.is_none());
         assert!(builder.modules.is_empty());
-    }
-
-    #[test]
-    fn test_engine_builder_new() {
-        let builder = EngineBuilder::new();
-        assert_eq!(
-            builder.address,
-            format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT)
-        );
-    }
-
-    #[test]
-    fn test_engine_builder_address() {
-        let builder = EngineBuilder::new().address("127.0.0.1:8080");
-        assert_eq!(builder.address, "127.0.0.1:8080");
     }
 
     #[test]
@@ -1240,14 +1001,6 @@ config:
         assert_eq!(config.modules.len(), 2);
         assert_eq!(config.modules[0].class, "test::ModA");
         assert_eq!(config.modules[1].class, "test::ModB");
-    }
-
-    #[test]
-    fn test_engine_builder_config_file_or_default_missing() {
-        let result = EngineBuilder::new().config_file_or_default("/nonexistent.yaml");
-        assert!(result.is_ok());
-        let builder = result.unwrap();
-        assert!(builder.config.is_some());
     }
 
     // =========================================================================
@@ -1320,23 +1073,8 @@ config:
     // =========================================================================
 
     #[test]
-    fn test_config_yaml_large_port() {
-        let yaml = "port: 65535\nmodules: []";
-        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, 65535);
-    }
-
-    #[test]
-    fn test_config_yaml_port_zero() {
-        let yaml = "port: 0\nmodules: []";
-        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.port, 0);
-    }
-
-    #[test]
     fn test_config_yaml_module_with_complex_config() {
         let yaml = r#"
-port: 3000
 modules:
   - class: "my::Module"
     config:
@@ -1496,5 +1234,41 @@ modules:
 
         builder.destroy().await.expect("destroy engine");
         assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn engine_builder_reports_module_class_on_stream_bind_failure() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let port = occupied.local_addr().expect("local addr").port();
+
+        let err = EngineBuilder::new()
+            .add_module(
+                "modules::stream::StreamModule",
+                Some(serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "adapter": {
+                        "class": "modules::stream::adapters::KvStore"
+                    }
+                })),
+            )
+            .build()
+            .await
+            .err()
+            .expect("build should fail when the stream port is occupied");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("modules::stream::StreamModule"),
+            "unexpected error message: {message}"
+        );
+        assert!(
+            message.contains(&format!("127.0.0.1:{port}")),
+            "unexpected error message: {message}"
+        );
+        assert!(
+            message.contains("already in use"),
+            "unexpected error message: {message}"
+        );
     }
 }

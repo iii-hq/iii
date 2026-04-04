@@ -1,9 +1,9 @@
 import { Stream } from '../src/new/stream'
 
-const mockCall = jest.fn()
+const mockTrigger = jest.fn()
 
 jest.mock('../src/new/iii', () => ({
-  getInstance: () => ({ call: mockCall }),
+  getInstance: () => ({ trigger: mockTrigger }),
 }))
 
 describe('Stream', () => {
@@ -13,81 +13,84 @@ describe('Stream', () => {
     baseConfig: { storageType: 'default' as const },
   }
 
-  let stream: Stream<{ id: string; value: string }>
+  let stream: Stream<typeof config>
 
   beforeEach(() => {
-    mockCall.mockClear()
+    mockTrigger.mockClear()
     stream = new Stream(config as any)
   })
 
   it('get() calls stream::get with stream_name, group_id, item_id', async () => {
-    mockCall.mockResolvedValue({ id: '1', value: 'data' })
+    mockTrigger.mockResolvedValue({ id: '1', value: 'data' })
     await stream.get('group1', 'item1')
-    expect(mockCall).toHaveBeenCalledWith('stream::get', {
-      stream_name: 'test-stream',
-      group_id: 'group1',
-      item_id: 'item1',
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::get',
+      payload: { stream_name: 'test-stream', group_id: 'group1', item_id: 'item1' },
     })
   })
 
   it('set() calls stream::set with full payload', async () => {
-    mockCall.mockResolvedValue(null)
-    await stream.set('group1', 'item1', { id: '1', value: 'x' })
-    expect(mockCall).toHaveBeenCalledWith('stream::set', {
-      stream_name: 'test-stream',
-      group_id: 'group1',
-      item_id: 'item1',
-      data: { id: '1', value: 'x' },
+    mockTrigger.mockResolvedValue(null)
+    await stream.set('group1', 'item1', { id: '1', value: 'x' } as any)
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::set',
+      payload: { stream_name: 'test-stream', group_id: 'group1', item_id: 'item1', data: { id: '1', value: 'x' } },
     })
   })
 
   it('delete() calls stream::delete', async () => {
-    mockCall.mockResolvedValue(undefined)
+    mockTrigger.mockResolvedValue(undefined)
     await stream.delete('group1', 'item1')
-    expect(mockCall).toHaveBeenCalledWith('stream::delete', {
-      stream_name: 'test-stream',
-      group_id: 'group1',
-      item_id: 'item1',
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::delete',
+      payload: { stream_name: 'test-stream', group_id: 'group1', item_id: 'item1' },
     })
   })
 
   it('list() calls stream::list', async () => {
-    mockCall.mockResolvedValue([])
+    mockTrigger.mockResolvedValue([])
     await stream.list('group1')
-    expect(mockCall).toHaveBeenCalledWith('stream::list', {
-      stream_name: 'test-stream',
-      group_id: 'group1',
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::list',
+      payload: { stream_name: 'test-stream', group_id: 'group1' },
     })
   })
 
   it('update() calls stream::update with ops', async () => {
-    mockCall.mockResolvedValue(null)
+    mockTrigger.mockResolvedValue(null)
     await stream.update('group1', 'item1', [{ type: 'set' as const, path: 'x', value: 1 }])
-    expect(mockCall).toHaveBeenCalledWith('stream::update', {
-      stream_name: 'test-stream',
-      group_id: 'group1',
-      item_id: 'item1',
-      ops: [{ type: 'set', path: 'x', value: 1 }],
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::update',
+      payload: {
+        stream_name: 'test-stream',
+        group_id: 'group1',
+        item_id: 'item1',
+        ops: [{ type: 'set', path: 'x', value: 1 }],
+      },
     })
   })
 
   it('listGroups() calls stream::list_groups', async () => {
-    mockCall.mockResolvedValue(['g1', 'g2'])
+    mockTrigger.mockResolvedValue(['g1', 'g2'])
     await stream.listGroups()
-    expect(mockCall).toHaveBeenCalledWith('stream::list_groups', {
-      stream_name: 'test-stream',
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::list_groups',
+      payload: { stream_name: 'test-stream' },
     })
   })
 
   it('send() calls stream::send with channel and event', async () => {
-    mockCall.mockResolvedValue(undefined)
+    mockTrigger.mockResolvedValue(undefined)
     await stream.send({ groupId: 'game', id: 'item1' }, { type: 'on-access-requested', data: { user: 'alice' } })
-    expect(mockCall).toHaveBeenCalledWith('stream::send', {
-      stream_name: 'test-stream',
-      group_id: 'game',
-      id: 'item1',
-      type: 'on-access-requested',
-      data: { user: 'alice' },
+    expect(mockTrigger).toHaveBeenCalledWith({
+      function_id: 'stream::send',
+      payload: {
+        stream_name: 'test-stream',
+        group_id: 'game',
+        id: 'item1',
+        type: 'on-access-requested',
+        data: { user: 'alice' },
+      },
     })
   })
 })

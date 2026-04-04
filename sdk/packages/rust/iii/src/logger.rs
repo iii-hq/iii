@@ -1,12 +1,10 @@
 use serde_json::Value;
 
-#[cfg(feature = "otel")]
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider as _, Severity};
 
 /// Convert a `serde_json::Value` into an OpenTelemetry `AnyValue` so that
 /// nested objects and arrays are preserved as structured OTLP attributes
 /// (`kvlistValue` / `arrayValue`) instead of being stringified.
-#[cfg(feature = "otel")]
 fn json_value_to_anyvalue(v: &Value) -> AnyValue {
     match v {
         Value::String(s) => AnyValue::String(s.clone().into()),
@@ -30,21 +28,45 @@ fn json_value_to_anyvalue(v: &Value) -> AnyValue {
     }
 }
 
+/// Structured logger that emits logs as OpenTelemetry LogRecords.
+///
+/// Every log call automatically captures the active trace and span context,
+/// correlating your logs with distributed traces without any manual wiring.
+/// When OTel is not initialized, Logger gracefully falls back to the `tracing`
+/// crate.
+///
+/// Pass structured data as the second argument to any log method. Using a
+/// `serde_json::Value` object of key-value pairs (instead of string
+/// interpolation) lets you filter, aggregate, and build dashboards in your
+/// observability backend.
+///
+/// # Examples
+///
+/// ```rust
+/// use iii_sdk::Logger;
+/// use serde_json::json;
+///
+/// let logger = Logger::new();
+///
+/// // Basic logging — trace context is injected automatically
+/// logger.info("Worker connected", None);
+///
+/// // Structured context for dashboards and alerting
+/// logger.info("Order processed", Some(json!({ "order_id": "ord_123", "amount": 49.99, "currency": "USD" })));
+/// logger.warn("Retry attempt", Some(json!({ "attempt": 3, "max_retries": 5, "endpoint": "/api/charge" })));
+/// logger.error("Payment failed", Some(json!({ "order_id": "ord_123", "gateway": "stripe", "error_code": "card_declined" })));
+/// ```
 #[derive(Clone, Default)]
-pub struct Logger {
-    function_name: String,
-}
+pub struct Logger {}
 
 impl Logger {
-    pub fn new(function_name: Option<String>) -> Self {
-        Self {
-            function_name: function_name.unwrap_or_default(),
-        }
+    /// Create a new Logger instance.
+    pub fn new() -> Self {
+        Self {}
     }
 
     /// Emit a LogRecord via the OTel LoggerProvider with trace context from the active span.
     /// Returns `true` if the log was emitted via OTel, `false` otherwise.
-    #[cfg(feature = "otel")]
     fn emit_otel(&self, message: &str, severity: Severity, data: Option<&Value>) -> bool {
         let Some(provider) = crate::telemetry::get_logger_provider() else {
             return false;
@@ -58,9 +80,6 @@ impl Logger {
         record.set_severity_number(severity);
         record.set_body(message.to_string().into());
 
-        if !self.function_name.is_empty() {
-            record.add_attribute("function_name", self.function_name.clone());
-        }
         if let Some(d) = data {
             record.add_attribute("log.data", json_value_to_anyvalue(d));
         }
@@ -83,56 +102,99 @@ impl Logger {
         true
     }
 
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
+    /// Log an info-level message.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Human-readable log message.
+    /// * `data` - Structured context attached as OTel log attributes.
+    ///   Use `serde_json::json!` objects to enable filtering and aggregation
+    ///   in your observability backend (e.g. Grafana, Datadog, New Relic).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use iii_sdk::Logger;
+    /// # use serde_json::json;
+    /// # let logger = Logger::new();
+    /// logger.info("Order processed", Some(json!({ "order_id": "ord_123", "status": "completed" })));
+    /// ```
     pub fn info(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Info, data.as_ref()) {
             return;
         }
-        tracing::info!(function = %self.function_name, message = %message);
+        tracing::info!(message = %message);
     }
 
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
+    /// Log a warning-level message.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Human-readable log message.
+    /// * `data` - Structured context attached as OTel log attributes.
+    ///   Use `serde_json::json!` objects to enable filtering and aggregation
+    ///   in your observability backend (e.g. Grafana, Datadog, New Relic).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use iii_sdk::Logger;
+    /// # use serde_json::json;
+    /// # let logger = Logger::new();
+    /// logger.warn("Retry attempt", Some(json!({ "attempt": 3, "max_retries": 5, "endpoint": "/api/charge" })));
+    /// ```
     pub fn warn(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Warn, data.as_ref()) {
             return;
         }
-        tracing::warn!(function = %self.function_name, message = %message);
+        tracing::warn!(message = %message);
     }
 
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
+    /// Log an error-level message.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Human-readable log message.
+    /// * `data` - Structured context attached as OTel log attributes.
+    ///   Use `serde_json::json!` objects to enable filtering and aggregation
+    ///   in your observability backend (e.g. Grafana, Datadog, New Relic).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use iii_sdk::Logger;
+    /// # use serde_json::json;
+    /// # let logger = Logger::new();
+    /// logger.error("Payment failed", Some(json!({ "order_id": "ord_123", "gateway": "stripe", "error_code": "card_declined" })));
+    /// ```
     pub fn error(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Error, data.as_ref()) {
             return;
         }
-        tracing::error!(function = %self.function_name, message = %message);
+        tracing::error!(message = %message);
     }
 
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
+    /// Log a debug-level message.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Human-readable log message.
+    /// * `data` - Structured context attached as OTel log attributes.
+    ///   Use `serde_json::json!` objects to enable filtering and aggregation
+    ///   in your observability backend (e.g. Grafana, Datadog, New Relic).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use iii_sdk::Logger;
+    /// # use serde_json::json;
+    /// # let logger = Logger::new();
+    /// logger.debug("Cache lookup", Some(json!({ "key": "user:42", "hit": false })));
+    /// ```
     pub fn debug(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Debug, data.as_ref()) {
             return;
         }
-        tracing::debug!(function = %self.function_name, message = %message);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn logger_uses_function_name() {
-        let logger = Logger::new(Some("my-function".to_string()));
-        assert_eq!(logger.function_name, "my-function");
-    }
-
-    #[test]
-    fn logger_default_function_name() {
-        let logger = Logger::new(None);
-        assert_eq!(logger.function_name, "");
+        tracing::debug!(message = %message);
     }
 }

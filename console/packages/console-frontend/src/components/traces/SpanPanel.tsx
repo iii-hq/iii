@@ -1,12 +1,16 @@
+import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Clock, Copy, Layers, X, Zap } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
+import { fetchOtelLogs } from '@/api'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { VisualizationSpan, WaterfallData } from '@/lib/traceTransform'
 import { formatDuration, getServiceName, STATUS_CONFIG, useCopyToClipboard } from '@/lib/traceUtils'
 import { SpanBaggageTab } from './SpanBaggageTab'
 import { SpanErrorsTab } from './SpanErrorsTab'
 import { SpanInfoTab } from './SpanInfoTab'
+import { SpanLinksTab } from './SpanLinksTab'
 import { SpanLogsTab } from './SpanLogsTab'
+import { SpanOtelLogsTab } from './SpanOtelLogsTab'
 import { SpanTagsTab } from './SpanTagsTab'
 
 interface SpanPanelProps {
@@ -14,9 +18,16 @@ interface SpanPanelProps {
   traceData: WaterfallData | null
   onClose: () => void
   onNavigateToSpan: (span: VisualizationSpan) => void
+  onNavigateToTrace?: (traceId: string) => void
 }
 
-export function SpanPanel({ span, traceData, onClose, onNavigateToSpan }: SpanPanelProps) {
+export function SpanPanel({
+  span,
+  traceData,
+  onClose,
+  onNavigateToSpan,
+  onNavigateToTrace,
+}: SpanPanelProps) {
   const { copiedKey: copiedField, copy: copyToClipboard } = useCopyToClipboard()
 
   useEffect(() => {
@@ -37,11 +48,19 @@ export function SpanPanel({ span, traceData, onClose, onNavigateToSpan }: SpanPa
     return { parentSpan, childSpans, selfTime, childDuration }
   }, [span, traceData])
 
+  const { data: logsData } = useQuery({
+    queryKey: ['span-otel-logs', span?.trace_id, span?.span_id],
+    queryFn: () => fetchOtelLogs({ trace_id: span?.trace_id ?? undefined, span_id: span?.span_id }),
+    enabled: !!span?.trace_id && !!span?.span_id,
+  })
+  const logCount = logsData?.logs?.length ?? 0
+
   if (!span) return null
 
   const hasError = span.status === 'error'
   const attrCount = Object.keys(span.attributes || {}).length
   const eventCount = span.events?.length || 0
+  const linkCount = span.links?.length || 0
   const service = getServiceName(span)
   const statusConfig = STATUS_CONFIG[span.status] ?? STATUS_CONFIG.default
 
@@ -150,9 +169,7 @@ export function SpanPanel({ span, traceData, onClose, onNavigateToSpan }: SpanPa
           <div className="px-4 pb-2.5">
             <button
               type="button"
-              onClick={() => {
-                if (traceContext.parentSpan) onNavigateToSpan(traceContext.parentSpan)
-              }}
+              onClick={() => traceContext.parentSpan && onNavigateToSpan(traceContext.parentSpan)}
               className="flex items-center gap-1.5 w-full px-2.5 py-1.5 bg-[#141414] border border-[#1D1D1D] rounded hover:bg-[#1A1A1A] hover:border-[#252525] transition-colors group text-left"
             >
               <ArrowUp className="w-3 h-3 text-gray-500 group-hover:text-[#F3F724] transition-colors flex-shrink-0" />
@@ -170,7 +187,7 @@ export function SpanPanel({ span, traceData, onClose, onNavigateToSpan }: SpanPa
 
       {/* Tabbed content */}
       <div className="flex-1 overflow-hidden min-h-0">
-        <Tabs defaultValue="info" className="h-full flex flex-col">
+        <Tabs defaultValue={hasError ? 'errors' : 'info'} className="h-full flex flex-col">
           <TabsList className="px-4 pt-2 pb-0 bg-transparent">
             <TabsTrigger value="info" className="text-[11px]">
               Info
@@ -197,9 +214,25 @@ export function SpanPanel({ span, traceData, onClose, onNavigateToSpan }: SpanPa
                 <span className="ml-1 w-1.5 h-1.5 bg-red-500 rounded-full inline-block" />
               )}
             </TabsTrigger>
+            <TabsTrigger value="otel-logs" className="text-[11px]">
+              Logs
+              {logCount > 0 && (
+                <span className="ml-1 px-1 py-0.5 text-[9px] bg-[#1D1D1D] rounded font-mono">
+                  {logCount}
+                </span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="baggage" className="text-[11px]">
               Context
             </TabsTrigger>
+            {linkCount > 0 && (
+              <TabsTrigger value="links" className="text-[11px]">
+                Links
+                <span className="ml-1 px-1 py-0.5 text-[9px] bg-[#1D1D1D] rounded font-mono">
+                  {linkCount}
+                </span>
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <div className="flex-1 overflow-y-auto min-h-0">
@@ -215,9 +248,17 @@ export function SpanPanel({ span, traceData, onClose, onNavigateToSpan }: SpanPa
             <TabsContent value="errors" className="mt-0">
               <SpanErrorsTab span={span} />
             </TabsContent>
+            <TabsContent value="otel-logs" className="mt-0">
+              <SpanOtelLogsTab span={span} />
+            </TabsContent>
             <TabsContent value="baggage" className="mt-0">
               <SpanBaggageTab span={span} />
             </TabsContent>
+            {linkCount > 0 && (
+              <TabsContent value="links" className="mt-0">
+                <SpanLinksTab span={span} onNavigateToTrace={onNavigateToTrace} />
+              </TabsContent>
+            )}
           </div>
         </Tabs>
       </div>

@@ -335,9 +335,89 @@ impl QueueAdapter for RedisAdapter {
         ))
     }
 
+    async fn redrive_dlq_message(&self, _topic: &str, _message_id: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!(
+            "RedisAdapter does not support DLQ operations (pub/sub only)"
+        ))
+    }
+
+    async fn discard_dlq_message(&self, _topic: &str, _message_id: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!(
+            "RedisAdapter does not support DLQ operations (pub/sub only)"
+        ))
+    }
+
     async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
         Err(anyhow::anyhow!(
             "RedisAdapter does not support DLQ operations (pub/sub only)"
         ))
+    }
+
+    async fn publish_to_function_queue(
+        &self,
+        queue_name: &str,
+        function_id: &str,
+        data: Value,
+        message_id: &str,
+        _max_retries: u32,
+        _backoff_ms: u64,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) {
+        let channel = format!("__queue::{}", queue_name);
+        let publisher = Arc::clone(&self.publisher);
+
+        let envelope = serde_json::json!({
+            "__trace": {
+                "traceparent": traceparent,
+                "baggage": baggage,
+            },
+            "function_id": function_id,
+            "message_id": message_id,
+            "data": data,
+        });
+
+        let json = match serde_json::to_string(&envelope) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, queue = %queue_name, "Failed to serialize function queue data");
+                return;
+            }
+        };
+
+        tracing::debug!(queue = %queue_name, function_id = %function_id, "Publishing to Redis function queue channel");
+
+        let mut conn = publisher.lock().await;
+
+        if let Err(e) = conn.publish::<_, _, ()>(&channel, &json).await {
+            tracing::error!(error = %e, queue = %queue_name, "Failed to publish to Redis function queue channel");
+        }
+    }
+
+    async fn consume_function_queue(
+        &self,
+        _queue_name: &str,
+        _prefetch: u32,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::modules::queue::QueueMessage>> {
+        anyhow::bail!("Redis function queue consumer not yet implemented")
+    }
+
+    async fn list_topics(&self) -> anyhow::Result<Vec<crate::modules::queue::TopicInfo>> {
+        // Redis adapter keys subscriptions by topic name directly.
+        // Multiple subscriptions can exist per topic, so count them.
+        let subs = self.subscriptions.read().await;
+        let mut topic_counts: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for topic in subs.keys() {
+            *topic_counts.entry(topic.clone()).or_insert(0) += 1;
+        }
+        Ok(topic_counts
+            .into_iter()
+            .map(|(name, count)| crate::modules::queue::TopicInfo {
+                name,
+                broker_type: "redis".to_string(),
+                subscriber_count: count,
+            })
+            .collect())
     }
 }

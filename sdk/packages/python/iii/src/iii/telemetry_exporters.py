@@ -4,6 +4,7 @@ Spans   → binary WS frame: b"OTLP" + OTLP JSON bytes
 Logs    → binary WS frame: b"LOGS" + OTLP JSON bytes
 Metrics → binary WS frame: b"MTRC" + OTLP JSON bytes
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -98,7 +99,8 @@ class SharedEngineConnection:
         if self._task:
             self._task.cancel()
             try:
-                await self._task
+                if self._loop is not None and self._loop is asyncio.get_running_loop():
+                    await self._task
             except asyncio.CancelledError:
                 pass
 
@@ -186,15 +188,19 @@ def _serialize_spans(spans: Sequence[Any]) -> bytes:
                     span_json["parentSpanId"] = format(span.parent.span_id, "016x")
                 spans_json.append(span_json)
 
-            scope_spans.append({
-                "scope": {"name": scope_name, "version": scope_version},
-                "spans": spans_json,
-            })
+            scope_spans.append(
+                {
+                    "scope": {"name": scope_name, "version": scope_version},
+                    "spans": spans_json,
+                }
+            )
 
-        resource_spans.append({
-            "resource": {"attributes": _attrs_to_otlp(resource.attributes)},
-            "scopeSpans": scope_spans,
-        })
+        resource_spans.append(
+            {
+                "resource": {"attributes": _attrs_to_otlp(resource.attributes)},
+                "scopeSpans": scope_spans,
+            }
+        )
 
     return json.dumps({"resourceSpans": resource_spans}).encode()
 
@@ -245,16 +251,20 @@ def _serialize_logs(batch: Sequence[Any]) -> bytes:
                     log_json["spanId"] = format(span_id, "016x")
                 log_records_json.append(log_json)
 
-            scope_logs.append({
-                "scope": {"name": scope_name, "version": scope_version},
-                "logRecords": log_records_json,
-            })
+            scope_logs.append(
+                {
+                    "scope": {"name": scope_name, "version": scope_version},
+                    "logRecords": log_records_json,
+                }
+            )
 
         resource_attrs = getattr(resource, "attributes", None) if resource else None
-        resource_logs.append({
-            "resource": {"attributes": _attrs_to_otlp(resource_attrs)},
-            "scopeLogs": scope_logs,
-        })
+        resource_logs.append(
+            {
+                "resource": {"attributes": _attrs_to_otlp(resource_attrs)},
+                "scopeLogs": scope_logs,
+            }
+        )
 
     return json.dumps({"resourceLogs": resource_logs}).encode()
 
@@ -337,19 +347,9 @@ def _serialize_metrics(metrics_data: Any) -> bytes:
 
                 for pt in data.data_points:
                     dp: dict[str, Any] = {
-                        "attributes": _attrs_to_otlp(
-                            pt.attributes if hasattr(pt, "attributes") else None
-                        ),
-                        "startTimeUnixNano": str(
-                            pt.start_time_unix_nano
-                            if hasattr(pt, "start_time_unix_nano")
-                            else 0
-                        ),
-                        "timeUnixNano": str(
-                            pt.time_unix_nano
-                            if hasattr(pt, "time_unix_nano")
-                            else 0
-                        ),
+                        "attributes": _attrs_to_otlp(pt.attributes if hasattr(pt, "attributes") else None),
+                        "startTimeUnixNano": str(pt.start_time_unix_nano if hasattr(pt, "start_time_unix_nano") else 0),
+                        "timeUnixNano": str(pt.time_unix_nano if hasattr(pt, "time_unix_nano") else 0),
                     }
 
                     # NumberDataPoint: has value as int or float
@@ -364,9 +364,7 @@ def _serialize_metrics(metrics_data: Any) -> bytes:
                     if hasattr(pt, "bucket_counts"):
                         dp["count"] = str(pt.count) if hasattr(pt, "count") else "0"
                         dp["sum"] = pt.sum if hasattr(pt, "sum") else 0
-                        dp["bucketCounts"] = [
-                            str(c) for c in pt.bucket_counts
-                        ]
+                        dp["bucketCounts"] = [str(c) for c in pt.bucket_counts]
                         dp["explicitBounds"] = list(pt.explicit_bounds) if hasattr(pt, "explicit_bounds") else []
                         dp["min"] = pt.min if hasattr(pt, "min") else 0
                         dp["max"] = pt.max if hasattr(pt, "max") else 0
@@ -394,20 +392,24 @@ def _serialize_metrics(metrics_data: Any) -> bytes:
 
                 metrics_json.append(metric_json)
 
-            scope_metrics_json.append({
-                "scope": {
-                    "name": scope.name if scope else "",
-                    "version": scope.version if scope else "",
-                },
-                "metrics": metrics_json,
-            })
+            scope_metrics_json.append(
+                {
+                    "scope": {
+                        "name": scope.name if scope else "",
+                        "version": scope.version if scope else "",
+                    },
+                    "metrics": metrics_json,
+                }
+            )
 
-        resource_metrics.append({
-            "resource": {
-                "attributes": _attrs_to_otlp(resource.attributes if resource else None),
-            },
-            "scopeMetrics": scope_metrics_json,
-        })
+        resource_metrics.append(
+            {
+                "resource": {
+                    "attributes": _attrs_to_otlp(resource.attributes if resource else None),
+                },
+                "scopeMetrics": scope_metrics_json,
+            }
+        )
 
     return json.dumps({"resourceMetrics": resource_metrics}).encode()
 

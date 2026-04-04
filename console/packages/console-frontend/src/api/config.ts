@@ -1,6 +1,3 @@
-// Console configuration types and getter-based module
-// Config is set once at startup by ConfigProvider, then available everywhere.
-
 export interface ConsoleConfig {
   engineHost: string
   enginePort: number
@@ -26,31 +23,21 @@ export function getConfig(): ConsoleConfig {
 }
 
 export function getDevtoolsApi(): string {
-  const c = getConfig()
-  const protocol = typeof window !== 'undefined' ? window.location.protocol : 'http:'
-  return `${protocol}//${c.engineHost}:${c.enginePort}/_console`
+  return '/api/engine/_console'
 }
 
 export function getManagementApi(): string {
-  const c = getConfig()
-  const protocol = typeof window !== 'undefined' ? window.location.protocol : 'http:'
-  return `${protocol}//${c.engineHost}:${c.enginePort}/_console`
+  return getDevtoolsApi()
 }
 
 export function getStreamsWs(): string {
-  const c = getConfig()
   const wsProtocol =
     typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${wsProtocol}//${c.engineHost}:${c.wsPort}`
+  const c = getConfig()
+  const host = typeof window !== 'undefined' ? window.location.host : `localhost:${c.consolePort}`
+  return `${wsProtocol}//${host}/ws/streams`
 }
 
-export function getConnectionInfo() {
-  const c = getConfig()
-  return {
-    engineHost: c.engineHost,
-    enginePort: String(c.enginePort),
-    wsPort: String(c.wsPort),
-    devtoolsApi: getDevtoolsApi(),
-    streamsWs: getStreamsWs(),
-  }
+export function getEngineBaseUrl(): string {
+  return '/api/engine'
 }

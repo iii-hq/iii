@@ -5,7 +5,6 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod builtins;
-pub mod channels;
 pub mod condition;
 pub mod config;
 pub mod engine;
@@ -16,14 +15,16 @@ pub mod protocol;
 pub mod services;
 pub mod telemetry;
 pub mod trigger;
+pub mod trigger_formats;
 pub mod workers;
 
 pub mod modules {
     pub mod bridge_client;
     pub mod config;
     pub mod cron;
+    pub mod engine_fn;
+    pub mod external;
     pub mod http_functions;
-    pub mod kv_server;
     pub mod module;
     pub mod observability;
     pub mod pubsub;

@@ -4,42 +4,32 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::{
-    III, UpdateOp, UpdateResult,
+    III, InitOptions, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest, UpdateOp,
+    UpdateResult, register_worker,
     types::{DeleteResult, SetResult},
 };
-use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     builtins::pubsub_lite::BuiltInPubSubLite,
     engine::Engine,
     modules::{
-        kv_server::{
-            KvDeleteInput, KvSetInput,
-            structs::{KvGetInput, KvListInput, KvListKeysWithPrefixInput, KvUpdateInput},
-        },
         pubsub::{PubSubInput, SubscribeTrigger},
         stream::{
             StreamMetadata, StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
+            structs::{
+                StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput,
+                StreamSetInput, StreamUpdateInput,
+            },
         },
     },
 };
-
-type TopicName = String;
-type GroupId = String;
-type ItemId = String;
-type ItemsDataAsString = HashMap<ItemId, String>;
-type StoreKey = (TopicName, GroupId);
-
-#[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
-pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
 
 pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 
@@ -53,23 +43,14 @@ impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(III::new(&bridge_url));
+        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
         let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
-        let res = bridge.connect().await;
-
-        if let Err(error) = res {
-            panic!("Failed to connect to bridge: {}", error);
-        }
 
         Ok(Self {
             bridge,
             pub_sub: Arc::new(BuiltInPubSubLite::new(None)),
             handler_function_id,
         })
-    }
-
-    fn gen_key(&self, stream_name: &str, group_id: &str) -> String {
-        format!("{}::{}", stream_name, group_id)
     }
 }
 
@@ -82,20 +63,25 @@ impl StreamAdapter for BridgeAdapter {
         item_id: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
-        let index = self.gen_key(stream_name, group_id);
-        let update_data = KvUpdateInput {
-            index: index.clone(),
-            key: item_id.to_string(),
+        let data = StreamUpdateInput {
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            item_id: item_id.to_string(),
             ops,
         };
 
-        let update_result = self
+        let result = self
             .bridge
-            .call("kv_server.update", update_data)
+            .trigger(TriggerRequest {
+                function_id: "stream::update".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to update value in kv_server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to update value via bridge: {}", e))?;
 
-        serde_json::from_value::<UpdateResult>(update_result)
+        serde_json::from_value::<UpdateResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize update result: {}", e))
     }
 
@@ -114,7 +100,12 @@ impl StreamAdapter for BridgeAdapter {
         tracing::debug!(data = ?data.clone(), "Emitting event");
 
         self.bridge
-            .call("publish", data)
+            .trigger(TriggerRequest {
+                function_id: "publish".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to publish event: {}", e))?;
         Ok(())
@@ -127,23 +118,25 @@ impl StreamAdapter for BridgeAdapter {
         item_id: &str,
         data: Value,
     ) -> anyhow::Result<SetResult> {
-        let set_data = KvSetInput {
-            index: self.gen_key(stream_name, group_id),
-            key: item_id.to_string(),
-            value: data.clone(),
+        let input = StreamSetInput {
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            item_id: item_id.to_string(),
+            data,
         };
-        let set_result = self
+        let result = self
             .bridge
-            .call("kv_server::set", set_data)
+            .trigger(TriggerRequest {
+                function_id: "stream::set".to_string(),
+                payload: serde_json::to_value(input).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to set value via bridge: {}", e))?;
 
-        match serde_json::from_value::<SetResult>(set_result) {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                return Err(anyhow::anyhow!("Failed to deserialize set result: {}", e));
-            }
-        }
+        serde_json::from_value::<SetResult>(result)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 
     async fn get(
@@ -152,17 +145,23 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
     ) -> anyhow::Result<Option<Value>> {
-        let data = KvGetInput {
-            index: self.gen_key(stream_name, group_id),
-            key: item_id.to_string(),
+        let data = StreamGetInput {
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            item_id: item_id.to_string(),
         };
-        let value = self
+        let result = self
             .bridge
-            .call("kv_server::get", data)
+            .trigger(TriggerRequest {
+                function_id: "stream::get".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to get value via bridge: {}", e))?;
 
-        serde_json::from_value::<Option<Value>>(value)
+        serde_json::from_value::<Option<Value>>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize get result: {}", e))
     }
 
@@ -172,53 +171,67 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
     ) -> anyhow::Result<DeleteResult> {
-        let delete_data = KvDeleteInput {
-            index: self.gen_key(stream_name, group_id),
-            key: item_id.to_string(),
+        let data = StreamDeleteInput {
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            item_id: item_id.to_string(),
         };
-        let delete_result = self
+        let result = self
             .bridge
-            .call("kv_server::delete", delete_data)
+            .trigger(TriggerRequest {
+                function_id: "stream::delete".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to delete value via bridge: {}", e))?;
 
-        serde_json::from_value::<DeleteResult>(delete_result)
+        serde_json::from_value::<DeleteResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize delete result: {}", e))
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {
-        let data = KvListInput {
-            index: self.gen_key(stream_name, group_id),
+        let data = StreamListInput {
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
         };
 
-        let value = self
+        let result = self
             .bridge
-            .call("kv_server::list", data)
+            .trigger(TriggerRequest {
+                function_id: "stream::list".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get group from kv_server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to get group via bridge: {}", e))?;
 
-        serde_json::from_value::<Vec<Value>>(value)
+        serde_json::from_value::<Vec<Value>>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize get group result: {}", e))
     }
 
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
-        let data = KvListKeysWithPrefixInput {
-            prefix: self.gen_key(stream_name, ""),
+        let data = StreamListGroupsInput {
+            stream_name: stream_name.to_string(),
         };
-        let value = self
+        let result = self
             .bridge
-            .call("kv_server::list_keys_with_prefix", data)
+            .trigger(TriggerRequest {
+                function_id: "stream::list_groups".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to list groups via bridge: {}", e))?;
 
-        serde_json::from_value::<Vec<String>>(value).map_err(|e| {
-            anyhow::anyhow!("Failed to deserialize list keys with prefix result: {}", e)
-        })
+        serde_json::from_value::<Vec<String>>(result)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize list groups result: {}", e))
     }
 
     async fn list_all_stream(&self) -> anyhow::Result<Vec<StreamMetadata>> {
-        // Bridge adapter cannot discover stream on its own
-        // Would need to implement a bridge function on the remote side to support this
         Ok(vec![])
     }
 
@@ -238,8 +251,16 @@ impl StreamAdapter for BridgeAdapter {
     async fn watch_events(&self) -> anyhow::Result<()> {
         let handler_function_id = self.handler_function_id.clone();
         let pub_sub = self.pub_sub.clone();
-        self.bridge
-            .register_function(handler_function_id.clone(), move |data| {
+        self.bridge.register_function((
+            RegisterFunctionMessage {
+                id: handler_function_id.clone(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            },
+            move |data| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
@@ -259,15 +280,18 @@ impl StreamAdapter for BridgeAdapter {
                         }
                     }
                 }
-            });
-
-        let _ = self.bridge.register_trigger(
-            "subscribe",
-            handler_function_id,
-            SubscribeTrigger {
-                topic: STREAM_EVENTS_TOPIC.to_string(),
             },
-        );
+        ));
+
+        let _ = self.bridge.register_trigger(RegisterTriggerInput {
+            trigger_type: "subscribe".to_string(),
+            function_id: handler_function_id,
+            config: serde_json::to_value(SubscribeTrigger {
+                topic: STREAM_EVENTS_TOPIC.to_string(),
+            })
+            .unwrap_or_default(),
+            metadata: None,
+        });
 
         self.pub_sub.watch_events().await;
         Ok(())

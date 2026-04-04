@@ -17,11 +17,11 @@ def state_manager(bridge) -> StateManager:
     return StateManager()
 
 
-async def _check_state_available(state_manager, bridge):
+def _check_state_available(state_manager, bridge):
     """Check if state functions are available in the engine."""
     try:
         with patch("motia.state.get_instance", return_value=bridge):
-            await state_manager.get(f"test_{uuid.uuid4().hex}", "check")
+            state_manager.get(f"test_{uuid.uuid4().hex}", "check")
         return True
     except Exception as e:
         if "function_not_found" in str(e).lower():
@@ -30,75 +30,71 @@ async def _check_state_available(state_manager, bridge):
         return True
 
 
-@pytest.mark.asyncio
-async def test_state_set_and_get(state_manager, bridge):
+def test_state_set_and_get(state_manager, bridge):
     """Test setting and getting state."""
     with patch("motia.state.get_instance", return_value=bridge):
-        if not await _check_state_available(state_manager, bridge):
+        if not _check_state_available(state_manager, bridge):
             pytest.skip("State module not available in engine configuration")
 
         scope = f"test_scope_{uuid.uuid4().hex[:8]}"
         key = f"test_key_{uuid.uuid4().hex[:8]}"
         value = {"status": "active", "count": 10}
 
-        await state_manager.set(scope, key, value)
+        state_manager.set(scope, key, value)
 
-        result = await state_manager.get(scope, key)
+        result = state_manager.get(scope, key)
 
         assert result is not None
         assert result["status"] == "active"
         assert result["count"] == 10
 
 
-@pytest.mark.asyncio
-async def test_state_delete(state_manager, bridge):
+def test_state_delete(state_manager, bridge):
     """Test deleting state."""
     with patch("motia.state.get_instance", return_value=bridge):
-        if not await _check_state_available(state_manager, bridge):
+        if not _check_state_available(state_manager, bridge):
             pytest.skip("State module not available in engine configuration")
 
         scope = f"delete_scope_{uuid.uuid4().hex[:8]}"
         key = f"delete_key_{uuid.uuid4().hex[:8]}"
 
-        await state_manager.set(scope, key, {"temp": True})
+        state_manager.set(scope, key, {"temp": True})
 
         # Verify exists
-        result = await state_manager.get(scope, key)
+        result = state_manager.get(scope, key)
         assert result is not None
 
         # Delete
-        await state_manager.delete(scope, key)
+        state_manager.delete(scope, key)
 
         # Verify deleted
-        result = await state_manager.get(scope, key)
+        result = state_manager.get(scope, key)
         assert result is None
 
 
-@pytest.mark.asyncio
-async def test_state_get_nonexistent(state_manager, bridge):
+def test_state_get_nonexistent(state_manager, bridge):
     """Test getting non-existent state returns None."""
     with patch("motia.state.get_instance", return_value=bridge):
-        if not await _check_state_available(state_manager, bridge):
+        if not _check_state_available(state_manager, bridge):
             pytest.skip("State module not available in engine configuration")
 
-        result = await state_manager.get(f"nonexistent_{uuid.uuid4().hex}", "nonexistent")
+        result = state_manager.get(f"nonexistent_{uuid.uuid4().hex}", "nonexistent")
         assert result is None
 
 
-@pytest.mark.asyncio
-async def test_state_list(state_manager, bridge):
+def test_state_list(state_manager, bridge):
     """Test listing all items in a state scope."""
     with patch("motia.state.get_instance", return_value=bridge):
-        if not await _check_state_available(state_manager, bridge):
+        if not _check_state_available(state_manager, bridge):
             pytest.skip("State module not available in engine configuration")
 
         scope = f"list_scope_{uuid.uuid4().hex[:8]}"
 
         # Add items
         for i in range(3):
-            await state_manager.set(scope, f"item_{i}", {"index": i})
+            state_manager.set(scope, f"item_{i}", {"index": i})
 
         # List
-        items = await state_manager.list(scope)
+        items = state_manager.list(scope)
 
         assert len(items) == 3

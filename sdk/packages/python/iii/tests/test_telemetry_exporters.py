@@ -1,4 +1,5 @@
 """Tests for SharedEngineConnection, EngineSpanExporter, EngineLogExporter."""
+
 import asyncio
 import json
 from unittest.mock import MagicMock
@@ -11,8 +12,10 @@ from iii.telemetry_exporters import EngineLogExporter, EngineSpanExporter, Share
 def _make_mock_connection():
     conn = MagicMock(spec=SharedEngineConnection)
     sent = []
+
     def capture(prefix, payload):
         sent.append((prefix, payload))
+
     conn.send_threadsafe.side_effect = capture
     conn._sent = sent
     return conn
@@ -39,6 +42,7 @@ def test_engine_span_exporter_sends_otlp_prefix():
     span = _make_readable_span()
 
     from opentelemetry.sdk.trace.export import SpanExportResult
+
     result = exporter.export([span])
 
     assert result == SpanExportResult.SUCCESS
@@ -107,6 +111,7 @@ def test_engine_span_exporter_returns_failure_on_error():
     span = _make_readable_span()
 
     from opentelemetry.sdk.trace.export import SpanExportResult
+
     result = exporter.export([span])
     assert result == SpanExportResult.FAILURE
 
@@ -135,6 +140,7 @@ def test_engine_log_exporter_sends_logs_prefix():
     record = ReadableLogRecord(log_record=log_record, resource=Resource.create({}))
 
     from opentelemetry.sdk._logs.export import LogExportResult
+
     result = exporter.export([record])
 
     assert result == LogExportResult.SUCCESS
@@ -181,9 +187,11 @@ async def test_start_drains_pre_start_buffer_into_queue():
     conn.send_threadsafe(b"LOGS", b"log1")
 
     loop = asyncio.get_event_loop()
+
     # Patch _run to be a no-op so we don't attempt real connection
     async def _noop():
         await asyncio.sleep(9999)
+
     conn._run = _noop
 
     conn.start(loop)

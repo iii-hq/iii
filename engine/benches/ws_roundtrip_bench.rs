@@ -6,7 +6,6 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use iii::{EngineBuilder, protocol::Message};
 use serde_json::json;
-use tempfile::NamedTempFile;
 use tokio::{runtime::Runtime, task::JoinHandle, time, time::sleep};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as WsMessage,
@@ -40,13 +39,16 @@ impl WsBenchRuntime {
 
     async fn try_start() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let ws_port = reserve_local_port();
-        let config = write_ws_only_config();
-        let ws_addr = format!("127.0.0.1:{ws_port}");
-        let ws_url = format!("ws://{ws_addr}");
+        let ws_url = format!("ws://127.0.0.1:{ws_port}");
 
         let builder = EngineBuilder::new()
-            .address(&ws_addr)
-            .config_file_or_default(config.path().to_str().expect("config path"))?
+            .add_module(
+                "modules::worker::WorkerModule",
+                Some(json!({
+                    "host": "127.0.0.1",
+                    "port": ws_port,
+                })),
+            )
             .build()
             .await?;
 
@@ -112,15 +114,6 @@ fn reserve_local_port() -> u16 {
     port
 }
 
-fn write_ws_only_config() -> NamedTempFile {
-    use std::io::Write;
-    let mut file = NamedTempFile::new().expect("create temp config file");
-    let yaml = "modules: []\n";
-    file.write_all(yaml.as_bytes()).expect("write config");
-    file.flush().expect("flush config");
-    file
-}
-
 async fn wait_for_ws_server(ws_url: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
@@ -142,6 +135,7 @@ async fn wait_for_worker_ready(ws_url: &str) {
                 data: serde_json::json!({"probe": true}),
                 traceparent: None,
                 baggage: None,
+                action: None,
             };
             let _ = socket
                 .send(WsMessage::Text(
@@ -222,6 +216,7 @@ async fn run_service_worker(ws_url: String) {
                         data,
                         traceparent,
                         baggage,
+                        ..
                     } => {
                         let invocation_id = invocation_id.unwrap_or_else(Uuid::new_v4);
                         let response = Message::InvocationResult {
@@ -263,6 +258,7 @@ async fn invoke_and_wait(
         data: payload.clone(),
         traceparent: None,
         baggage: None,
+        action: None,
     };
     writer
         .send(WsMessage::Text(

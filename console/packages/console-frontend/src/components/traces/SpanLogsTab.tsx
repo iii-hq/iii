@@ -1,27 +1,10 @@
 import { Clock } from 'lucide-react'
 import type { VisualizationSpan } from '@/lib/traceTransform'
 import { toMs } from '@/lib/traceTransform'
+import { formatRelative, formatTimestamp } from '@/lib/traceUtils'
 
 interface SpanLogsTabProps {
   span: VisualizationSpan
-}
-
-function formatTimestamp(timestamp: number): string {
-  const date = new Date(timestamp)
-  return date.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    fractionalSecondDigits: 3,
-  })
-}
-
-function formatRelative(offsetMs: number): string {
-  if (offsetMs < 0) return `-${formatRelative(-offsetMs)}`
-  if (offsetMs < 1) return `+${(offsetMs * 1000).toFixed(0)}μs`
-  if (offsetMs < 1000) return `+${offsetMs.toFixed(1)}ms`
-  return `+${(offsetMs / 1000).toFixed(2)}s`
 }
 
 export function SpanLogsTab({ span }: SpanLogsTabProps) {
@@ -43,7 +26,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
     )
   }
 
-  const firstEventMs = sortedEvents.length > 0 ? toMs(sortedEvents[0].timestamp_unix_nano) : 0
+  const firstEventMs = toMs(sortedEvents[0].timestamp_unix_nano)
 
   return (
     <div className="p-5 space-y-2">

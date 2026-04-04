@@ -4,11 +4,17 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 
 use tracing::Instrument;
 
@@ -17,7 +23,7 @@ use crate::{
         kv::BuiltinKvStore,
         pubsub_lite::BuiltInPubSubLite,
         queue::{
-            BuiltinQueue, JobHandler, QueueConfig, QueueMode, SubscriptionConfig,
+            BuiltinQueue, Job, JobHandler, QueueConfig, QueueMode, SubscriptionConfig,
             SubscriptionHandle,
         },
         queue_kv::QueueKvStore,
@@ -31,10 +37,20 @@ use crate::{
     telemetry::SpanExt,
 };
 
+struct DeliveryInfo {
+    queue_name: String,
+    job_id: String,
+}
+
 pub struct BuiltinQueueAdapter {
     queue: Arc<BuiltinQueue>,
     engine: Arc<Engine>,
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionHandle>>>,
+    topic_functions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    trigger_function_map: Arc<RwLock<HashMap<String, (String, String)>>>,
+    delivery_map: Arc<RwLock<HashMap<u64, DeliveryInfo>>>,
+    delivery_counter: Arc<AtomicU64>,
+    poll_intervals: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 struct FunctionHandler {
@@ -128,6 +144,11 @@ impl BuiltinQueueAdapter {
             queue,
             engine,
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            topic_functions: Arc::new(RwLock::new(HashMap::new())),
+            trigger_function_map: Arc::new(RwLock::new(HashMap::new())),
+            delivery_map: Arc::new(RwLock::new(HashMap::new())),
+            delivery_counter: Arc::new(AtomicU64::new(0)),
+            poll_intervals: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -138,6 +159,11 @@ impl Clone for BuiltinQueueAdapter {
             queue: Arc::clone(&self.queue),
             engine: Arc::clone(&self.engine),
             subscriptions: Arc::clone(&self.subscriptions),
+            topic_functions: Arc::clone(&self.topic_functions),
+            trigger_function_map: Arc::clone(&self.trigger_function_map),
+            delivery_map: Arc::clone(&self.delivery_map),
+            delivery_counter: Arc::clone(&self.delivery_counter),
+            poll_intervals: Arc::clone(&self.poll_intervals),
         }
     }
 }
@@ -174,7 +200,22 @@ impl QueueAdapter for BuiltinQueueAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) {
-        self.queue.push(topic, data, traceparent, baggage).await;
+        let tf = self.topic_functions.read().await;
+        if let Some(function_ids) = tf.get(topic) {
+            for fid in function_ids {
+                let internal_queue = format!("{}::{}", topic, fid);
+                self.queue
+                    .push(
+                        &internal_queue,
+                        data.clone(),
+                        traceparent.clone(),
+                        baggage.clone(),
+                    )
+                    .await;
+            }
+        } else {
+            self.queue.push(topic, data, traceparent, baggage).await;
+        }
     }
 
     async fn subscribe(
@@ -185,6 +226,8 @@ impl QueueAdapter for BuiltinQueueAdapter {
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
+        let internal_queue = format!("{}::{}", topic, function_id);
+
         let handler: Arc<dyn JobHandler> = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
             function_id: function_id.to_string(),
@@ -203,33 +246,361 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
         let handle = self
             .queue
-            .subscribe(topic, handler, subscription_config)
+            .subscribe(&internal_queue, handler, subscription_config)
             .await;
 
-        let mut subs = self.subscriptions.write().await;
-        subs.insert(format!("{}:{}", topic, id), handle);
+        {
+            let mut tf = self.topic_functions.write().await;
+            tf.entry(topic.to_string())
+                .or_default()
+                .insert(function_id.to_string());
+        }
 
-        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, "Subscribed to queue via BuiltinQueueAdapter");
+        {
+            let sub_key = format!("{}:{}", topic, id);
+            let mut tfm = self.trigger_function_map.write().await;
+            tfm.insert(
+                sub_key.clone(),
+                (topic.to_string(), function_id.to_string()),
+            );
+            let mut subs = self.subscriptions.write().await;
+            subs.insert(sub_key, handle);
+        }
+
+        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, internal_queue = %internal_queue, "Subscribed to queue via BuiltinQueueAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
         let key = format!("{}:{}", topic, id);
-        let mut subs = self.subscriptions.write().await;
 
-        if let Some(handle) = subs.remove(&key) {
-            self.queue.unsubscribe(handle).await;
-            tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
-        } else {
-            tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
+        let removed_mapping = {
+            let mut tfm = self.trigger_function_map.write().await;
+            tfm.remove(&key)
+        };
+
+        {
+            let mut subs = self.subscriptions.write().await;
+            if let Some(handle) = subs.remove(&key) {
+                self.queue.unsubscribe(handle).await;
+                tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
+            } else {
+                tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
+            }
+        }
+
+        if let Some((mapped_topic, mapped_fid)) = removed_mapping {
+            let still_has_triggers = {
+                let tfm = self.trigger_function_map.read().await;
+                tfm.values()
+                    .any(|(t, f)| t == &mapped_topic && f == &mapped_fid)
+            };
+
+            if !still_has_triggers {
+                let mut tf = self.topic_functions.write().await;
+                if let Some(fids) = tf.get_mut(&mapped_topic) {
+                    fids.remove(&mapped_fid);
+                    if fids.is_empty() {
+                        tf.remove(&mapped_topic);
+                    }
+                }
+            }
         }
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.queue.dlq_redrive(topic).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut total = 0u64;
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                total += self.queue.dlq_redrive(&iq).await;
+            }
+            Ok(total)
+        } else {
+            Ok(self.queue.dlq_redrive(topic).await)
+        }
+    }
+
+    async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                if self.queue.dlq_redrive_message(&iq, message_id).await {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        } else {
+            Ok(self.queue.dlq_redrive_message(topic, message_id).await)
+        }
+    }
+
+    async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                if self.queue.dlq_discard_message(&iq, message_id).await {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        } else {
+            Ok(self.queue.dlq_discard_message(topic, message_id).await)
+        }
     }
 
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.queue.dlq_count(topic).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut total = 0u64;
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                total += self.queue.dlq_count(&iq).await;
+            }
+            Ok(total)
+        } else {
+            Ok(self.queue.dlq_count(topic).await)
+        }
+    }
+
+    async fn dlq_messages(
+        &self,
+        topic: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut all = Vec::new();
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                all.extend(self.queue.dlq_messages(&iq, count).await);
+            }
+            Ok(all)
+        } else {
+            Ok(self.queue.dlq_messages(topic, count).await)
+        }
+    }
+
+    async fn setup_function_queue(
+        &self,
+        queue_name: &str,
+        config: &crate::modules::queue::FunctionQueueConfig,
+    ) -> anyhow::Result<()> {
+        self.poll_intervals
+            .write()
+            .await
+            .insert(queue_name.to_string(), config.poll_interval_ms);
+        Ok(())
+    }
+
+    async fn publish_to_function_queue(
+        &self,
+        queue_name: &str,
+        function_id: &str,
+        data: Value,
+        message_id: &str,
+        max_retries: u32,
+        backoff_ms: u64,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) {
+        let namespaced_queue = format!("__fn_queue::{}", queue_name);
+        let job = Job {
+            function_id: Some(function_id.to_string()),
+            message_id: Some(message_id.to_string()),
+            ..Job::new(
+                &namespaced_queue,
+                data,
+                max_retries,
+                backoff_ms,
+                traceparent,
+                baggage,
+            )
+        };
+        self.queue.push_job(job).await;
+    }
+
+    async fn consume_function_queue(
+        &self,
+        queue_name: &str,
+        prefetch: u32,
+    ) -> anyhow::Result<mpsc::Receiver<crate::modules::queue::QueueMessage>> {
+        use crate::modules::queue::QueueMessage;
+
+        let poll_interval_ms = self
+            .poll_intervals
+            .read()
+            .await
+            .get(queue_name)
+            .copied()
+            .unwrap_or(100);
+
+        let (tx, rx) = mpsc::channel(prefetch as usize);
+        let queue = Arc::clone(&self.queue);
+        let delivery_map = Arc::clone(&self.delivery_map);
+        let delivery_counter = Arc::clone(&self.delivery_counter);
+        let namespaced_queue = format!("__fn_queue::{}", queue_name);
+
+        tokio::spawn(async move {
+            let poll_interval = std::time::Duration::from_millis(poll_interval_ms);
+            loop {
+                if tx.is_closed() {
+                    break;
+                }
+
+                // Move delayed jobs to waiting
+                if let Err(e) = queue.move_delayed_to_waiting(&namespaced_queue).await {
+                    tracing::error!(error = %e, queue = %namespaced_queue, "Failed to move delayed jobs");
+                }
+
+                if let Some(job) = queue.pop(&namespaced_queue).await {
+                    let delivery_id = delivery_counter.fetch_add(1, Ordering::SeqCst);
+
+                    delivery_map.write().await.insert(
+                        delivery_id,
+                        DeliveryInfo {
+                            queue_name: namespaced_queue.clone(),
+                            job_id: job.id.clone(),
+                        },
+                    );
+
+                    let msg = QueueMessage {
+                        delivery_id,
+                        function_id: job.function_id.unwrap_or_default(),
+                        data: job.data,
+                        attempt: job.attempts_made,
+                        message_id: job.message_id,
+                        traceparent: job.traceparent,
+                        baggage: job.baggage,
+                    };
+
+                    if tx.send(msg).await.is_err() {
+                        // Channel closed — nack the job so it returns to the queue
+                        if let Some(info) = delivery_map.write().await.remove(&delivery_id)
+                            && let Err(e) = queue
+                                .nack(&info.queue_name, &info.job_id, "consumer channel closed")
+                                .await
+                        {
+                            tracing::error!(error = %e, "Failed to nack stranded job");
+                        }
+                        break;
+                    }
+                } else {
+                    tokio::time::sleep(poll_interval).await;
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn ack_function_queue(&self, _queue_name: &str, delivery_id: u64) -> anyhow::Result<()> {
+        let info = self.delivery_map.write().await.remove(&delivery_id);
+        if let Some(info) = info {
+            self.queue.ack(&info.queue_name, &info.job_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn nack_function_queue(
+        &self,
+        _queue_name: &str,
+        delivery_id: u64,
+        _attempt: u32,
+        _max_retries: u32,
+    ) -> anyhow::Result<()> {
+        let info = self.delivery_map.write().await.remove(&delivery_id);
+        if let Some(info) = info {
+            // BuiltinQueue::nack() handles retry vs DLQ internally
+            // using the job's own attempts_made and max_attempts fields.
+            self.queue
+                .nack(&info.queue_name, &info.job_id, "function call failed")
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn list_topics(&self) -> anyhow::Result<Vec<crate::modules::queue::TopicInfo>> {
+        let mut topic_counts: HashMap<String, u64> = HashMap::new();
+
+        {
+            let tfm = self.trigger_function_map.read().await;
+            for (topic, _fid) in tfm.values() {
+                *topic_counts.entry(topic.clone()).or_insert(0) += 1;
+            }
+        }
+
+        {
+            let intervals = self.poll_intervals.read().await;
+            for queue_name in intervals.keys() {
+                let namespaced = format!("__fn_queue::{}", queue_name);
+                topic_counts.entry(namespaced).or_insert(0);
+            }
+        }
+
+        Ok(topic_counts
+            .into_iter()
+            .map(|(name, count)| crate::modules::queue::TopicInfo {
+                name,
+                broker_type: "builtin".to_string(),
+                subscriber_count: count,
+            })
+            .collect())
+    }
+
+    async fn topic_stats(&self, topic: &str) -> anyhow::Result<crate::modules::queue::TopicStats> {
+        let consumer_count = {
+            let tfm = self.trigger_function_map.read().await;
+            tfm.values().filter(|(t, _)| t == topic).count() as u64
+        };
+
+        let tf = self.topic_functions.read().await;
+        let mut depth = 0u64;
+        let mut dlq_depth = 0u64;
+        if let Some(fids) = tf.get(topic) {
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                depth += self.queue.queue_depth(&iq).await;
+                dlq_depth += self.queue.dlq_count(&iq).await;
+            }
+        } else {
+            depth = self.queue.queue_depth(topic).await;
+            dlq_depth = self.queue.dlq_count(topic).await;
+        }
+
+        Ok(crate::modules::queue::TopicStats {
+            depth,
+            consumer_count,
+            dlq_depth,
+            config: None,
+        })
+    }
+
+    async fn dlq_peek(
+        &self,
+        topic: &str,
+        offset: u64,
+        limit: u64,
+    ) -> anyhow::Result<Vec<crate::modules::queue::DlqMessage>> {
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut all = Vec::new();
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                all.extend(self.queue.dlq_peek(&iq, 0, offset + limit).await);
+            }
+            all.sort_by(|a, b| b.failed_at.cmp(&a.failed_at));
+            let result = all
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
+            Ok(result)
+        } else {
+            Ok(self.queue.dlq_peek(topic, offset, limit).await)
+        }
     }
 }
 
@@ -246,7 +617,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use std::collections::HashSet;
+    use std::time::Duration;
+
     use crate::modules::queue::SubscriberQueueConfig;
+    use crate::modules::queue::config::FunctionQueueConfig;
     use crate::{
         builtins::queue::{Job, QueueMode},
         function::{Function, FunctionResult},
@@ -262,7 +637,7 @@ mod tests {
 
     fn register_test_function(engine: &Arc<Engine>, function_id: &str, success: bool) {
         let function = Function {
-            handler: Arc::new(move |_invocation_id, _input| {
+            handler: Arc::new(move |_invocation_id, _input, _session| {
                 Box::pin(async move {
                     if success {
                         FunctionResult::Success(Some(json!({ "ok": true })))
@@ -496,5 +871,667 @@ mod tests {
             .enqueue("jobs", json!({ "task": "queued" }), None, None)
             .await;
         assert_eq!(adapter.dlq_count("jobs").await.unwrap(), 0);
+    }
+
+    // =========================================================================
+    // Function queue transport integration tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn publish_and_consume_delivers_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        let mut rx = adapter
+            .consume_function_queue("test-q", 1)
+            .await
+            .expect("consume should return receiver");
+
+        adapter
+            .publish_to_function_queue(
+                "test-q",
+                "fn::handler",
+                json!({"key": "value"}),
+                "test-msg-id",
+                3,
+                1000,
+                None,
+                None,
+            )
+            .await;
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("channel should not be closed");
+
+        assert_eq!(msg.function_id, "fn::handler");
+        assert_eq!(msg.data, json!({"key": "value"}));
+        assert_eq!(msg.attempt, 0);
+        // delivery_id is assigned, just verify it exists (u64)
+        let _ = msg.delivery_id;
+    }
+
+    #[tokio::test]
+    async fn ack_removes_delivery_tracking() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        let mut rx = adapter
+            .consume_function_queue("test-q", 1)
+            .await
+            .expect("consume should return receiver");
+
+        adapter
+            .publish_to_function_queue(
+                "test-q",
+                "fn::handler",
+                json!({"ack": true}),
+                "test-msg-id",
+                3,
+                1000,
+                None,
+                None,
+            )
+            .await;
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("channel should not be closed");
+
+        let result = adapter.ack_function_queue("test-q", msg.delivery_id).await;
+        assert!(result.is_ok(), "ack should succeed");
+
+        assert!(
+            adapter.delivery_map.read().await.is_empty(),
+            "delivery_map should be empty after ack"
+        );
+    }
+
+    #[tokio::test]
+    async fn nack_removes_delivery_tracking() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        let mut rx = adapter
+            .consume_function_queue("test-q", 1)
+            .await
+            .expect("consume should return receiver");
+
+        adapter
+            .publish_to_function_queue(
+                "test-q",
+                "fn::handler",
+                json!({"nack": true}),
+                "test-msg-id",
+                3,
+                1000,
+                None,
+                None,
+            )
+            .await;
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("channel should not be closed");
+
+        let result = adapter
+            .nack_function_queue("test-q", msg.delivery_id, 0, 3)
+            .await;
+        assert!(result.is_ok(), "nack should succeed");
+
+        assert!(
+            adapter.delivery_map.read().await.is_empty(),
+            "delivery_map should be empty after nack"
+        );
+    }
+
+    #[tokio::test]
+    async fn consume_multiple_messages_in_order() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        let mut rx = adapter
+            .consume_function_queue("test-q", 10)
+            .await
+            .expect("consume should return receiver");
+
+        for i in 0..3 {
+            adapter
+                .publish_to_function_queue(
+                    "test-q",
+                    "fn::handler",
+                    json!({"order": i}),
+                    "test-msg-id",
+                    3,
+                    1000,
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        let mut delivery_ids = Vec::new();
+        for i in 0..3 {
+            let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("should receive message {} within timeout", i))
+                .unwrap_or_else(|| panic!("channel should not be closed for message {}", i));
+
+            assert_eq!(
+                msg.data,
+                json!({"order": i}),
+                "messages should arrive in order"
+            );
+            delivery_ids.push(msg.delivery_id);
+        }
+
+        // All delivery IDs must be unique
+        let unique: HashSet<u64> = delivery_ids.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "each message should have a unique delivery_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_ids_are_unique() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        let mut rx = adapter
+            .consume_function_queue("test-q", 10)
+            .await
+            .expect("consume should return receiver");
+
+        for i in 0..5 {
+            adapter
+                .publish_to_function_queue(
+                    "test-q",
+                    "fn::handler",
+                    json!({"idx": i}),
+                    "test-msg-id",
+                    3,
+                    1000,
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        let mut ids = HashSet::new();
+        for i in 0..5 {
+            let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("should receive message {} within timeout", i))
+                .unwrap_or_else(|| panic!("channel should not be closed for message {}", i));
+            ids.insert(msg.delivery_id);
+        }
+
+        assert_eq!(ids.len(), 5, "all 5 delivery_ids should be unique");
+    }
+
+    #[tokio::test]
+    async fn publish_with_trace_context_propagates() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        let mut rx = adapter
+            .consume_function_queue("test-q", 1)
+            .await
+            .expect("consume should return receiver");
+
+        adapter
+            .publish_to_function_queue(
+                "test-q",
+                "fn::handler",
+                json!({"traced": true}),
+                "test-msg-id",
+                3,
+                1000,
+                Some("00-abc-def-01".to_string()),
+                Some("key=value".to_string()),
+            )
+            .await;
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("channel should not be closed");
+
+        assert_eq!(
+            msg.traceparent.as_deref(),
+            Some("00-abc-def-01"),
+            "traceparent should propagate"
+        );
+        assert_eq!(
+            msg.baggage.as_deref(),
+            Some("key=value"),
+            "baggage should propagate"
+        );
+    }
+
+    // =========================================================================
+    // Helper: adapter with custom QueueConfig (e.g. max_attempts=1 for DLQ)
+    // =========================================================================
+
+    fn make_adapter_with_config(
+        engine: Arc<Engine>,
+        queue_config: QueueConfig,
+    ) -> BuiltinQueueAdapter {
+        let base_kv = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = Arc::new(QueueKvStore::new(base_kv, None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        BuiltinQueueAdapter::new(kv_store, pubsub, engine, queue_config)
+    }
+
+    fn dlq_queue_config() -> QueueConfig {
+        QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 0,
+            ..QueueConfig::default()
+        }
+    }
+
+    /// Push a job, pop it, and nack it so it lands in the DLQ.
+    /// Returns the job id of the message now in the DLQ.
+    async fn push_to_dlq(adapter: &BuiltinQueueAdapter, topic: &str, data: Value) -> String {
+        let job_id = adapter.queue.push(topic, data, None, None).await;
+        let job = adapter
+            .queue
+            .pop(topic)
+            .await
+            .expect("should pop the job we just pushed");
+        assert_eq!(job.id, job_id);
+        adapter
+            .queue
+            .nack(topic, &job_id, "force to dlq")
+            .await
+            .expect("nack should succeed");
+        job_id
+    }
+
+    // =========================================================================
+    // redrive_dlq_message tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn redrive_dlq_message_returns_true_for_existing_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let job_id = push_to_dlq(&adapter, "test-topic", json!({"key": "val"})).await;
+
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 1);
+
+        let result = adapter.redrive_dlq_message("test-topic", &job_id).await;
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "redrive should return true for an existing DLQ message"
+        );
+
+        // After redrive the DLQ should be empty
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn redrive_dlq_message_returns_false_for_nonexistent_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let result = adapter
+            .redrive_dlq_message("test-topic", "no-such-id")
+            .await;
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "redrive should return false when message does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn redrive_dlq_message_only_redrives_targeted_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let _id1 = push_to_dlq(&adapter, "test-topic", json!({"msg": 1})).await;
+        let id2 = push_to_dlq(&adapter, "test-topic", json!({"msg": 2})).await;
+
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 2);
+
+        let redriven = adapter
+            .redrive_dlq_message("test-topic", &id2)
+            .await
+            .unwrap();
+        assert!(redriven);
+
+        // Only one message should remain in the DLQ
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 1);
+    }
+
+    // =========================================================================
+    // discard_dlq_message tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn discard_dlq_message_returns_true_for_existing_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let job_id = push_to_dlq(&adapter, "test-topic", json!({"discard": true})).await;
+
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 1);
+
+        let result = adapter.discard_dlq_message("test-topic", &job_id).await;
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "discard should return true for an existing DLQ message"
+        );
+
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn discard_dlq_message_returns_false_for_nonexistent_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let result = adapter
+            .discard_dlq_message("test-topic", "no-such-id")
+            .await;
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "discard should return false when message does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_dlq_message_only_discards_targeted_message() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let id1 = push_to_dlq(&adapter, "test-topic", json!({"msg": 1})).await;
+        let _id2 = push_to_dlq(&adapter, "test-topic", json!({"msg": 2})).await;
+
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 2);
+
+        let discarded = adapter
+            .discard_dlq_message("test-topic", &id1)
+            .await
+            .unwrap();
+        assert!(discarded);
+
+        assert_eq!(adapter.dlq_count("test-topic").await.unwrap(), 1);
+    }
+
+    // =========================================================================
+    // list_topics tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn list_topics_returns_empty_when_no_subscriptions() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        let topics = adapter.list_topics().await.unwrap();
+        assert!(
+            topics.is_empty(),
+            "no topics should exist without subscriptions"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_topics_returns_subscribed_topics() {
+        let engine = Arc::new(Engine::new());
+        register_test_function(&engine, "fn.handler", true);
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        adapter
+            .subscribe("orders", "sub1", "fn.handler", None, None)
+            .await;
+        adapter
+            .subscribe("payments", "sub2", "fn.handler", None, None)
+            .await;
+
+        let topics = adapter.list_topics().await.unwrap();
+        assert_eq!(topics.len(), 2);
+
+        let names: HashSet<String> = topics.iter().map(|t| t.name.clone()).collect();
+        assert!(names.contains("orders"));
+        assert!(names.contains("payments"));
+
+        for t in &topics {
+            assert_eq!(t.broker_type, "builtin");
+            assert_eq!(t.subscriber_count, 1);
+        }
+
+        // Cleanup: unsubscribe to stop background tasks
+        adapter.unsubscribe("orders", "sub1").await;
+        adapter.unsubscribe("payments", "sub2").await;
+    }
+
+    #[tokio::test]
+    async fn list_topics_counts_multiple_subscribers_per_topic() {
+        let engine = Arc::new(Engine::new());
+        register_test_function(&engine, "fn.handler", true);
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        adapter
+            .subscribe("events", "sub-a", "fn.handler", None, None)
+            .await;
+        adapter
+            .subscribe("events", "sub-b", "fn.handler", None, None)
+            .await;
+        adapter
+            .subscribe("events", "sub-c", "fn.handler", None, None)
+            .await;
+
+        let topics = adapter.list_topics().await.unwrap();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].name, "events");
+        assert_eq!(topics[0].subscriber_count, 3);
+
+        adapter.unsubscribe("events", "sub-a").await;
+        adapter.unsubscribe("events", "sub-b").await;
+        adapter.unsubscribe("events", "sub-c").await;
+    }
+
+    #[tokio::test]
+    async fn list_topics_includes_function_queue_topics() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("my-fn-queue", &config)
+            .await
+            .expect("setup should succeed");
+
+        let topics = adapter.list_topics().await.unwrap();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].name, "__fn_queue::my-fn-queue");
+        assert_eq!(topics[0].broker_type, "builtin");
+        assert_eq!(topics[0].subscriber_count, 0);
+    }
+
+    // =========================================================================
+    // topic_stats tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn topic_stats_empty_topic() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        let stats = adapter.topic_stats("nonexistent").await.unwrap();
+        assert_eq!(stats.depth, 0);
+        assert_eq!(stats.consumer_count, 0);
+        assert_eq!(stats.dlq_depth, 0);
+        assert!(stats.config.is_none());
+    }
+
+    #[tokio::test]
+    async fn topic_stats_counts_subscribers() {
+        let engine = Arc::new(Engine::new());
+        register_test_function(&engine, "fn.handler", true);
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        adapter
+            .subscribe("stats-topic", "s1", "fn.handler", None, None)
+            .await;
+        adapter
+            .subscribe("stats-topic", "s2", "fn.handler", None, None)
+            .await;
+
+        let stats = adapter.topic_stats("stats-topic").await.unwrap();
+        assert_eq!(stats.consumer_count, 2);
+
+        adapter.unsubscribe("stats-topic", "s1").await;
+        adapter.unsubscribe("stats-topic", "s2").await;
+    }
+
+    #[tokio::test]
+    async fn topic_stats_reflects_queue_depth() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        // Enqueue a message (no subscriber to consume it)
+        adapter
+            .queue
+            .push("depth-topic", json!({"a": 1}), None, None)
+            .await;
+        adapter
+            .queue
+            .push("depth-topic", json!({"b": 2}), None, None)
+            .await;
+
+        let stats = adapter.topic_stats("depth-topic").await.unwrap();
+        assert_eq!(stats.depth, 2);
+        assert_eq!(stats.consumer_count, 0);
+        assert_eq!(stats.dlq_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn topic_stats_reflects_dlq_depth() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        push_to_dlq(&adapter, "dlq-topic", json!({"fail": 1})).await;
+        push_to_dlq(&adapter, "dlq-topic", json!({"fail": 2})).await;
+
+        let stats = adapter.topic_stats("dlq-topic").await.unwrap();
+        assert_eq!(stats.dlq_depth, 2);
+    }
+
+    // =========================================================================
+    // dlq_peek tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn dlq_peek_returns_empty_when_no_dlq_messages() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        let messages = adapter.dlq_peek("empty-topic", 0, 10).await.unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dlq_peek_returns_messages_in_dlq() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let job_id = push_to_dlq(&adapter, "peek-topic", json!({"peek": "me"})).await;
+
+        let messages = adapter.dlq_peek("peek-topic", 0, 10).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, job_id);
+        assert_eq!(messages[0].payload, json!({"peek": "me"}));
+        assert_eq!(messages[0].error, "force to dlq");
+        assert!(messages[0].failed_at > 0);
+        assert_eq!(messages[0].retries, 1); // attempts_made incremented to 1 by nack
+    }
+
+    #[tokio::test]
+    async fn dlq_peek_respects_offset_and_limit() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        let mut ids = Vec::new();
+        for i in 0..5 {
+            let id = push_to_dlq(&adapter, "peek-topic", json!({"idx": i})).await;
+            ids.push(id);
+        }
+
+        assert_eq!(adapter.dlq_count("peek-topic").await.unwrap(), 5);
+
+        // Peek with limit 2 from offset 0
+        let page1 = adapter.dlq_peek("peek-topic", 0, 2).await.unwrap();
+        assert_eq!(page1.len(), 2);
+
+        // Peek with offset 2, limit 2
+        let page2 = adapter.dlq_peek("peek-topic", 2, 2).await.unwrap();
+        assert_eq!(page2.len(), 2);
+
+        // Peek beyond the end
+        let page_beyond = adapter.dlq_peek("peek-topic", 10, 5).await.unwrap();
+        assert!(page_beyond.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dlq_peek_does_not_remove_messages() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter_with_config(Arc::clone(&engine), dlq_queue_config());
+
+        push_to_dlq(&adapter, "peek-topic", json!({"stable": true})).await;
+
+        // Peek twice - count should remain the same
+        let first = adapter.dlq_peek("peek-topic", 0, 10).await.unwrap();
+        let second = adapter.dlq_peek("peek-topic", 0, 10).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(adapter.dlq_count("peek-topic").await.unwrap(), 1);
     }
 }

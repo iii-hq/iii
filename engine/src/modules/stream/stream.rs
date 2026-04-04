@@ -41,8 +41,8 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 EventData, StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
-                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSendInput,
-                StreamSetInput, StreamUpdateInput,
+                StreamListAllInput, StreamListAllResult, StreamListGroupsInput, StreamListInput,
+                StreamSendInput, StreamSetInput, StreamUpdateInput,
             },
             trigger::{
                 JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
@@ -151,43 +151,46 @@ impl Module for StreamCoreModule {
             self.config.auth_function.clone(),
             self.triggers.clone(),
         ));
-        let addr = format!("{}:{}", self.config.host, self.config.port)
-            .parse::<SocketAddr>()
-            .unwrap();
+        let raw_addr = format!("{}:{}", self.config.host, self.config.port);
+        let addr: SocketAddr = raw_addr
+            .parse()
+            .map_err(|err| anyhow::anyhow!("invalid stream bind address {}: {}", raw_addr, err))?;
         tracing::info!("Starting StreamCoreModule on {}", addr.to_string().purple());
-        let listener = TcpListener::bind(addr).await.unwrap();
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|err| crate::modules::module::bind_address_error(addr, err))?;
         let app = Router::new()
             .route("/", get(ws_handler))
             .with_state(socket_manager);
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: JOIN_TRIGGER_TYPE.to_string(),
-                _description: "Stream join trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                JOIN_TRIGGER_TYPE,
+                "Stream join trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: LEAVE_TRIGGER_TYPE.to_string(),
-                _description: "Stream leave trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                LEAVE_TRIGGER_TYPE,
+                "Stream leave trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: STREAM_TRIGGER_TYPE.to_string(),
-                _description: "Stream trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                STREAM_TRIGGER_TYPE,
+                "Stream trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         tokio::spawn(async move {
@@ -678,25 +681,13 @@ impl StreamCoreModule {
     pub async fn list_all(
         &self,
         _input: StreamListAllInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<StreamListAllResult, ErrorBody> {
         let adapter = self.adapter.clone();
 
         match adapter.list_all_stream().await {
             Ok(stream) => {
-                let stream_json: Vec<Value> = stream
-                    .iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "id": s.id,
-                            "groups": s.groups,
-                        })
-                    })
-                    .collect();
-
-                FunctionResult::Success(Some(serde_json::json!({
-                    "stream": stream_json,
-                    "count": stream_json.len()
-                })))
+                let count = stream.len();
+                FunctionResult::Success(StreamListAllResult { stream, count })
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to list all stream");
@@ -1430,13 +1421,13 @@ mod tests {
         }
 
         match module.list_all(StreamListAllInput {}).await {
-            FunctionResult::Success(Some(value)) => {
-                assert_eq!(value["count"], 2);
-                assert_eq!(value["stream"][0]["id"], "stream-a");
-                assert_eq!(
-                    value["stream"][1]["groups"],
-                    serde_json::json!(["group-b", "group-c"])
-                );
+            FunctionResult::Success(result) => {
+                assert_eq!(result.count, 2);
+                assert_eq!(result.stream.len(), 2);
+                assert_eq!(result.stream[0].id, "stream-a");
+                assert_eq!(result.stream[0].groups, vec!["group-a"]);
+                assert_eq!(result.stream[1].id, "stream-b");
+                assert_eq!(result.stream[1].groups, vec!["group-b", "group-c"]);
             }
             _ => panic!("expected list_all success"),
         }
@@ -1810,6 +1801,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1828,6 +1820,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1846,6 +1839,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1864,6 +1858,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1882,6 +1877,7 @@ mod tests {
                     function_id: "test::stream_handler_fail".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1968,5 +1964,37 @@ mod tests {
 
         module.destroy().await.expect("stream destroy should work");
         assert!(adapter.destroy_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stream_initialize_returns_addr_in_use_error_with_address() {
+        crate::modules::observability::metrics::ensure_default_meter();
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let port = occupied.local_addr().expect("local addr").port();
+
+        let engine = Arc::new(Engine::new());
+        let adapter: Arc<dyn StreamAdapter> = Arc::new(FakeStreamAdapter::default());
+        let module = StreamCoreModule::build(
+            engine,
+            StreamModuleConfig {
+                port,
+                host: "127.0.0.1".to_string(),
+                auth_function: None,
+                adapter: Some(crate::modules::module::AdapterEntry {
+                    class: "test-adapter".to_string(),
+                    config: None,
+                }),
+            },
+            adapter,
+        );
+
+        let err = module
+            .initialize()
+            .await
+            .expect_err("stream init should fail when the port is occupied");
+
+        let message = err.to_string();
+        assert!(message.contains(&format!("127.0.0.1:{port}")));
+        assert!(message.contains("already in use"));
     }
 }

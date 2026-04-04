@@ -1,6 +1,9 @@
+use schemars::JsonSchema;
+use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Debug, Error, Clone)]
+/// Errors returned by the III SDK.
+#[derive(Debug, Error, Clone, Serialize, JsonSchema)]
 pub enum IIIError {
     #[error("iii is not connected")]
     NotConnected,

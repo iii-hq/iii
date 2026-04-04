@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, List, TypeVar
+from typing import Any, Generic, List, Literal, TypeVar
 
 from pydantic import BaseModel
 
@@ -23,6 +23,9 @@ class StreamAuthResult(BaseModel):
     """Result of stream authentication."""
 
     context: Any | None = None
+
+
+StreamContext = Any
 
 
 class StreamJoinLeaveEvent(BaseModel):
@@ -92,7 +95,20 @@ class StreamSetResult(BaseModel, Generic[TData]):
     """Result of stream set operation."""
 
     old_value: TData | None = None
-    new_value: TData | None = None
+    new_value: TData
+
+
+class StreamUpdateResult(BaseModel, Generic[TData]):
+    """Result of stream update operation."""
+
+    old_value: TData | None = None
+    new_value: TData
+
+
+class StreamDeleteResult(BaseModel):
+    """Result of stream delete operation."""
+
+    old_value: Any | None = None
 
 
 class UpdateSet(BaseModel):
@@ -137,6 +153,39 @@ class UpdateMerge(BaseModel):
 UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateRemove | UpdateMerge
 
 
+class StreamTriggerConfig(BaseModel):
+    """Trigger config for ``stream`` triggers. Filters which item changes fire the handler."""
+
+    stream_name: str
+    group_id: str | None = None
+    item_id: str | None = None
+    condition_function_id: str | None = None
+
+
+class StreamJoinLeaveTriggerConfig(BaseModel):
+    """Trigger config for ``stream:join`` and ``stream:leave`` triggers."""
+
+    condition_function_id: str | None = None
+
+
+class StreamChangeEventDetail(BaseModel):
+    """Detail of a stream change event containing the mutation type and data."""
+
+    type: Literal["create", "update", "delete"]
+    data: Any
+
+
+class StreamChangeEvent(BaseModel):
+    """Handler input for ``stream`` triggers, fired when an item changes."""
+
+    type: Literal["stream"]
+    timestamp: int
+    streamName: str
+    groupId: str
+    id: str | None = None
+    event: StreamChangeEventDetail
+
+
 class IStream(ABC, Generic[TData]):
     """Abstract interface for stream operations."""
 
@@ -151,7 +200,7 @@ class IStream(ABC, Generic[TData]):
         ...
 
     @abstractmethod
-    async def delete(self, input: StreamDeleteInput) -> None:
+    async def delete(self, input: StreamDeleteInput) -> StreamDeleteResult:
         """Delete an item from the stream."""
         ...
 
@@ -166,6 +215,6 @@ class IStream(ABC, Generic[TData]):
         ...
 
     @abstractmethod
-    async def update(self, input: StreamUpdateInput) -> StreamSetResult[TData] | None:
-        """Update an item in the stream."""
+    async def update(self, input: StreamUpdateInput) -> StreamUpdateResult[TData] | None:
+        """Apply atomic update operations to a stream item."""
         ...

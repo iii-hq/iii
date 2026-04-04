@@ -1,0 +1,634 @@
+---
+title: "Browser SDK"
+description: "API reference for the iii SDK for Browser / TypeScript."
+---
+
+{/* AUTO-GENERATED FILE. Do not edit manually. Run the generate-api-docs pipeline. */}
+
+## Installation
+
+```bash
+npm install iii-browser-sdk
+```
+
+## Initialization
+
+Creates and returns a connected SDK instance. The WebSocket connection is
+established automatically -- there is no separate `connect()` call.
+
+```typescript
+import { registerWorker } from 'iii-browser-sdk'
+
+const iii = registerWorker('ws://localhost:49135')
+```
+
+## Methods
+
+### createChannel
+
+Creates a streaming channel pair for worker-to-worker data transfer.
+Returns a Channel with a local writer/reader and serializable refs that
+can be passed as fields in the invocation data to other functions.
+
+**Signature**
+
+```typescript
+createChannel(bufferSize: number) => Promise<Channel>
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bufferSize` | `number` | Yes | Optional buffer size for the channel (default: 64) |
+
+#### Example
+
+```typescript
+const channel = await iii.createChannel()
+
+// Pass the writer ref to another function
+await iii.trigger({
+  function_id: 'stream-producer',
+  payload: { outputChannel: channel.writerRef },
+})
+
+// Read data locally
+channel.reader.onMessage((msg) => {
+  console.log('Received:', msg)
+})
+```
+
+### createStream
+
+Creates a new stream implementation.
+
+This overrides the default stream implementation.
+
+**Signature**
+
+```typescript
+createStream(streamName: string, stream: IStream<TData>) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `streamName` | `string` | Yes | The name of the stream |
+| `stream` | [`IStream`](#istream)&lt;TData&gt; | Yes | The stream implementation |
+
+#### Example
+
+```typescript
+iii.createStream('sessions', {
+  async get({ group_id, item_id }) { return null },
+  async set({ group_id, item_id, data }) { return { new_value: data } },
+  async delete({ group_id, item_id }) { return {} },
+  async list({ group_id }) { return [] },
+  async listGroups() { return [] },
+  async update() { return null },
+})
+```
+
+### listFunctions
+
+Lists all registered functions.
+
+**Signature**
+
+```typescript
+listFunctions() => Promise<FunctionInfo[]>
+```
+
+#### Example
+
+```typescript
+const functions = await iii.listFunctions()
+for (const fn of functions) {
+  console.log(`${fn.function_id}: ${fn.description}`)
+}
+```
+
+### listTriggers
+
+Lists all registered triggers.
+
+**Signature**
+
+```typescript
+listTriggers(includeInternal: boolean) => Promise<TriggerInfo[]>
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `includeInternal` | `boolean` | Yes | Whether to include internal triggers (default: false) |
+
+### listTriggerTypes
+
+Lists all trigger types registered with the engine.
+
+**Signature**
+
+```typescript
+listTriggerTypes(includeInternal: boolean) => Promise<TriggerTypeInfo[]>
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `includeInternal` | `boolean` | Yes | Whether to include internal trigger types (default: false) |
+
+#### Example
+
+```typescript
+const triggerTypes = await iii.listTriggerTypes()
+for (const tt of triggerTypes) {
+  console.log(`${tt.id}: ${tt.description}`)
+}
+```
+
+### onFunctionsAvailable
+
+Registers a callback to receive the current functions list
+when the engine announces changes.
+
+**Signature**
+
+```typescript
+onFunctionsAvailable(callback: FunctionsAvailableCallback) => () => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `callback` | `FunctionsAvailableCallback` | Yes | - |
+
+#### Example
+
+```typescript
+const unsubscribe = iii.onFunctionsAvailable((functions) => {
+  console.log(`${functions.length} functions available:`)
+  for (const fn of functions) {
+    console.log(`  - ${fn.function_id}`)
+  }
+})
+
+// Later, stop listening
+unsubscribe()
+```
+
+### registerFunction
+
+Registers a new function with a local handler or an HTTP invocation config.
+
+**Signature**
+
+```typescript
+registerFunction(functionId: string, handler: RemoteFunctionHandler, options: RegisterFunctionOptions) => FunctionRef
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `functionId` | `string` | Yes | Unique function identifier |
+| `handler` | [`RemoteFunctionHandler`](#remotefunctionhandler) | Yes | Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.) |
+| `options` | [`RegisterFunctionOptions`](#registerfunctionoptions) | Yes | Optional function registration options (description, request/response formats, metadata) |
+
+#### Example
+
+```typescript
+// Local handler
+const ref = iii.registerFunction(
+  'greet',
+  async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
+  { description: 'Returns a greeting' },
+)
+
+// Later, remove the function
+ref.unregister()
+```
+
+### registerService
+
+Registers a new service.
+
+**Signature**
+
+```typescript
+registerService(message: RegisterServiceInput) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | [`RegisterServiceInput`](#registerserviceinput) | Yes | The service to register |
+
+### registerTrigger
+
+Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
+
+**Signature**
+
+```typescript
+registerTrigger(trigger: RegisterTriggerInput) => Trigger
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger` | [`RegisterTriggerInput`](#registertriggerinput) | Yes | The trigger to register |
+
+#### Example
+
+```typescript
+const trigger = iii.registerTrigger({
+  type: 'cron',
+  function_id: 'my-service::process-batch',
+  config: { schedule: '*/5 * * * *' },
+})
+
+// Later, remove the trigger
+trigger.unregister()
+```
+
+### registerTriggerType
+
+Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
+
+**Signature**
+
+```typescript
+registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>) => TriggerTypeRef<TConfig>
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `triggerType` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) | Yes | The trigger type to register |
+| `handler` | [`TriggerHandler`](#triggerhandler)&lt;TConfig&gt; | Yes | The handler for the trigger type |
+
+#### Example
+
+```typescript
+type CronConfig = { schedule: string }
+
+iii.registerTriggerType<CronConfig>(
+  { id: 'cron', description: 'Fires on a cron schedule' },
+  {
+    async registerTrigger({ id, function_id, config }) {
+      startCronJob(id, config.schedule, () =>
+        iii.trigger({ function_id, payload: {} }),
+      )
+    },
+    async unregisterTrigger({ id }) {
+      stopCronJob(id)
+    },
+  },
+)
+```
+
+### shutdown
+
+Gracefully shutdown the iii, cleaning up all resources.
+
+**Signature**
+
+```typescript
+shutdown() => Promise<void>
+```
+
+#### Example
+
+```typescript
+await iii.shutdown()
+```
+
+### trigger
+
+Invokes a function using a request object.
+
+**Signature**
+
+```typescript
+trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | [`TriggerRequest`](#triggerrequest)&lt;TInput&gt; | Yes | The trigger request containing function_id, payload, and optional action/timeout |
+
+#### Example
+
+```typescript
+// Synchronous invocation
+const result = await iii.trigger<{ name: string }, { message: string }>({
+  function_id: 'greet',
+  payload: { name: 'World' },
+  timeoutMs: 5000,
+})
+console.log(result.message) // "Hello, World!"
+
+// Fire-and-forget
+await iii.trigger({
+  function_id: 'send-email',
+  payload: { to: 'user@example.com' },
+  action: TriggerAction.Void(),
+})
+
+// Enqueue for async processing
+const receipt = await iii.trigger({
+  function_id: 'process-order',
+  payload: { orderId: '123' },
+  action: TriggerAction.Enqueue({ queue: 'orders' }),
+})
+```
+
+### unregisterTriggerType
+
+Unregisters a trigger type.
+
+**Signature**
+
+```typescript
+unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `triggerType` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) | Yes | The trigger type to unregister |
+
+#### Example
+
+```typescript
+iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
+```
+
+## Subpath Exports
+
+The `iii-sdk` package provides additional entry points:
+
+| Import path | Contents |
+|---|---|
+| `iii-sdk` | `MessageType`, `ChannelReader`, `ChannelWriter`, `ISdk`, `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, `EnqueueResult`, etc. |
+| `iii-sdk/stream` | `IStream`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamJoinLeaveEvent`, `StreamJoinLeaveTriggerConfig`, `StreamJoinResult`, `StreamTriggerConfig`, `DeleteResult`, `StreamContext`, etc. |
+| `iii-sdk/state` | `StateEventType`, `IState`, `StateEventData`, `DeleteResult`, `StateDeleteInput`, `StateDeleteResult`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, etc. |
+
+## Types
+
+[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`InitOptions`](#initoptions) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult)
+
+### MessageType
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `InvocationResult` | `"invocationresult"` | Yes | - |
+| `InvokeFunction` | `"invokefunction"` | Yes | - |
+| `RegisterFunction` | `"registerfunction"` | Yes | - |
+| `RegisterService` | `"registerservice"` | Yes | - |
+| `RegisterTrigger` | `"registertrigger"` | Yes | - |
+| `RegisterTriggerType` | `"registertriggertype"` | Yes | - |
+| `TriggerRegistrationResult` | `"triggerregistrationresult"` | Yes | - |
+| `UnregisterFunction` | `"unregisterfunction"` | Yes | - |
+| `UnregisterTrigger` | `"unregistertrigger"` | Yes | - |
+| `UnregisterTriggerType` | `"unregistertriggertype"` | Yes | - |
+| `WorkerRegistered` | `"workerregistered"` | Yes | - |
+
+### ChannelReader
+
+Read end of a streaming channel. Uses native browser WebSocket.
+
+### ChannelWriter
+
+Write end of a streaming channel. Uses native browser WebSocket.
+
+### Channel
+
+A streaming channel pair for worker-to-worker data transfer. Created via
+ISdk.createChannel.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reader` | [`ChannelReader`](#channelreader) | Yes | Reader end of the channel. |
+| `readerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the reader (can be sent to other workers). |
+| `writer` | [`ChannelWriter`](#channelwriter) | Yes | Writer end of the channel. |
+| `writerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the writer (can be sent to other workers). |
+
+### FunctionRef
+
+Handle returned by ISdk.registerFunction. Contains the function's
+`id` and an `unregister()` method.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | Yes | The unique function identifier. |
+| `unregister` | `() => void` | Yes | Removes this function from the engine. |
+
+### InitOptions
+
+Configuration options passed to registerWorker.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `headers` | `Record<string, string>` | No | Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. |
+| `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
+| `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
+
+### RegisterFunctionMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | No | The description of the function |
+| `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
+| `message_type` | [`MessageType`](#messagetype).RegisterFunction | Yes | - |
+| `metadata` | `Record<string, unknown>` | No | - |
+| `request_format` | `RegisterFunctionFormat` | No | The request format of the function |
+| `response_format` | `RegisterFunctionFormat` | No | The response format of the function |
+
+### RegisterFunctionOptions
+
+```typescript
+type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id">
+```
+
+### RegisterServiceInput
+
+```typescript
+type RegisterServiceInput = Omit<RegisterServiceMessage, "message_type">
+```
+
+### RegisterTriggerInput
+
+```typescript
+type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
+```
+
+### RegisterTriggerMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `unknown` | Yes | - |
+| `function_id` | `string` | Yes | - |
+| `id` | `string` | Yes | - |
+| `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | - |
+| `type` | `string` | Yes | - |
+
+### RegisterTriggerTypeInput
+
+```typescript
+type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
+```
+
+### RegisterTriggerTypeMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | Yes | - |
+| `id` | `string` | Yes | - |
+| `message_type` | [`MessageType`](#messagetype).RegisterTriggerType | Yes | - |
+
+### RemoteFunctionHandler
+
+Async function handler for a registered function. Receives the invocation
+payload and returns the result.
+
+```typescript
+type RemoteFunctionHandler = (data: TInput) => Promise<TOutput>
+```
+
+### StreamChannelRef
+
+Serializable reference to one end of a streaming channel. Can be included
+in invocation payloads to pass channel endpoints between workers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `string` | Yes | Access key for authentication. |
+| `channel_id` | `string` | Yes | Unique channel identifier. |
+| `direction` | `"read" \| "write"` | Yes | Whether this ref is for reading or writing. |
+
+### Trigger
+
+Handle returned by ISdk.registerTrigger. Use `unregister()` to
+remove the trigger from the engine.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `unregister` | `void` | Yes | Removes this trigger from the engine. |
+
+### TriggerHandler
+
+Handler interface for custom trigger types. Passed to
+`ISdk.registerTriggerType`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `registerTrigger` | `Promise<void>` | Yes | Called when a trigger instance is registered. |
+| `unregisterTrigger` | `Promise<void>` | Yes | Called when a trigger instance is unregistered. |
+
+### TriggerInfo
+
+Information about a registered trigger.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `unknown` | No | Trigger-specific configuration. |
+| `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
+| `id` | `string` | Yes | Unique trigger identifier. |
+| `trigger_type` | `string` | Yes | Type of the trigger (e.g. `http`, `cron`, `queue`). |
+
+### TriggerRequest
+
+Request object passed to ISdk.trigger.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | `TriggerAction` | No | Routing action. Omit for synchronous request/response. |
+| `function_id` | `string` | Yes | ID of the function to invoke. |
+| `payload` | `TInput` | Yes | Payload to pass to the function. |
+| `timeoutMs` | `number` | No | Override the default invocation timeout in milliseconds. |
+
+### TriggerTypeInfo
+
+Information about a registered trigger type, returned by `ISdk.listTriggerTypes`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `call_request_format` | `unknown` | No | JSON Schema for the call request payload. |
+| `description` | `string` | Yes | Human-readable description of the trigger type. |
+| `id` | `string` | Yes | Trigger type identifier (e.g. `http`, `cron`, `queue`). |
+| `trigger_request_format` | `unknown` | No | JSON Schema for the trigger configuration. |
+
+### TriggerTypeRef
+
+Typed handle returned by ISdk.registerTriggerType.
+
+Provides convenience methods to register triggers and functions scoped
+to this trigger type, so callers don't need to repeat the `type` field.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | Yes | The trigger type identifier. |
+| `registerFunction` | [`FunctionRef`](#functionref) | Yes | Register a function and immediately bind it to this trigger type. |
+| `registerTrigger` | [`Trigger`](#trigger) | Yes | Register a trigger bound to this trigger type. |
+| `unregister` | `void` | Yes | Unregister this trigger type from the engine. |
+
+### IStream
+
+Interface for custom stream implementations. Passed to `ISdk.createStream`
+to override the engine's built-in stream storage.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `delete` | Promise&lt;[`DeleteResult`](#deleteresult)&gt; | Yes | Delete a stream item. |
+| `get` | `Promise<TData \| null>` | Yes | Retrieve a single item by group and item ID. |
+| `list` | `Promise<TData[]>` | Yes | List all items in a group. |
+| `listGroups` | `Promise<string[]>` | Yes | List all group IDs in a stream. |
+| `set` | Promise&lt;[`StreamSetResult`](#streamsetresult)&lt;TData&gt; \| null&gt; | Yes | Set (create or overwrite) a stream item. |
+| `update` | Promise&lt;[`StreamUpdateResult`](#streamupdateresult)&lt;TData&gt; \| null&gt; | Yes | Apply atomic update operations to a stream item. |
+
+### DeleteResult
+
+Result of a stream delete operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `any` | No | Previous value (if it existed). |
+
+### StreamSetResult
+
+Result of a stream set operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new_value` | `TData` | Yes | New value that was stored. |
+| `old_value` | `TData` | No | Previous value (if it existed). |
+
+### StreamUpdateResult
+
+Result of a stream update operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new_value` | `TData` | Yes | New value after the update. |
+| `old_value` | `TData` | No | Previous value (if it existed). |
+
+### DeleteResult
+
+Result of a state delete operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `any` | No | Previous value (if it existed). |

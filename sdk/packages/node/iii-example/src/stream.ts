@@ -6,26 +6,24 @@ export const streams = {
     stream_name: string,
     group_id: string,
     item_id: string,
-  ): Promise<T | null> => {
-    return iii.call('stream::get', { stream_name, group_id, item_id })
-  },
+  ): Promise<T | null> =>
+    iii.trigger({ function_id: 'stream::get', payload: { stream_name, group_id, item_id } }),
   set: async <T = unknown>(
     stream_name: string,
     group_id: string,
     item_id: string,
     data: T,
-  ): Promise<T> => {
-    return iii.call('stream::set', { stream_name, group_id, item_id, data })
-  },
-  delete: async (stream_name: string, group_id: string, item_id: string): Promise<void> => {
-    return iii.call('stream::delete', { stream_name, group_id, item_id })
-  },
-  list: async <T = unknown>(stream_name: string, group_id: string): Promise<T[]> => {
-    return iii.call('stream::list', { stream_name, group_id })
-  },
-  listGroups: async (stream_name: string): Promise<string[]> => {
-    return iii.call('stream::list_groups', { stream_name })
-  },
+  ): Promise<T> =>
+    iii.trigger({ function_id: 'stream::set', payload: { stream_name, group_id, item_id, data } }),
+  delete: async (stream_name: string, group_id: string, item_id: string): Promise<void> =>
+    iii.trigger({
+      function_id: 'stream::delete',
+      payload: { stream_name, group_id, item_id },
+    }),
+  list: async <T = unknown>(stream_name: string, group_id: string): Promise<T[]> =>
+    iii.trigger({ function_id: 'stream::list', payload: { stream_name, group_id } }),
+  listGroups: async (stream_name: string): Promise<string[]> =>
+    iii.trigger({ function_id: 'stream::list_groups', payload: { stream_name } }),
 }
 
 let todoState: Todo[] = []

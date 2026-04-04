@@ -49,31 +49,29 @@ const capabilities = [
   {
     name: "AI Agent with Tools",
     code: {
-      typescript: `import { init, Logger } from "iii-sdk"
-const iii = init(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
+      typescript: `import { registerWorker, Logger } from "iii-sdk"
+const iii = registerWorker(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
 const logger = new Logger()
 
 const tools = await iii.listFunctions()
 
-iii.registerFunction(
-  { id: "agent.research" },
-  async ({ query }) => {
+iii.registerFunction("agent::research", async ({ query }) => {
     const response = await callLLM(query, { tools })
 
     while (response.toolCall) {
-      const result = await iii.trigger(
-        response.toolCall.function,
-        response.toolCall.args
-      )
+      const result = await iii.trigger({
+        function_id: response.toolCall.function,
+        payload: response.toolCall.args
+      })
       logger.info("Tool used", { tool: response.toolCall.function })
       response = await callLLM(query, { tools, toolResult: result })
     }
     return response
   }
 )`,
-      python: `from iii import III
+      python: `from iii import register_worker, Logger
 
-iii = init(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
+iii = register_worker(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
 
 async def research_handler(input):
     logger = Logger()
@@ -82,26 +80,25 @@ async def research_handler(input):
 
     while response.get("tool_call"):
         tc = response["tool_call"]
-        result = await iii.trigger(tc["function"], tc["args"])
+        result = await iii.trigger({'function_id': tc["function"], 'payload': tc["args"]})
         logger.info("Tool used", tool=tc["function"])
         response = await call_llm(input["query"], tools=tools, tool_result=result)
     return response
 
 iii.register_function("agent::research", research_handler)`,
-      rust: `use iii_sdk::{III, Logger};
+      rust: `use iii_sdk::{register_worker, RegisterFunction, InitOptions, Logger, TriggerRequest};
 
-let iii = III::new("ws://localhost:49134");
-iii.connect().await?;
-let logger = Logger();
+let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
+let logger = Logger::new();
 let tools = iii.list_functions().await?;
 
 iii.register_function(
-    RegisterFunctionInput { id: "agent.research".into(), ..Default::default() },
+    RegisterFunctionOptions { id: "agent::research".into(), ..Default::default() },
     |input| async move {
         let mut response = call_llm(&input.query, &tools).await?;
 
         while let Some(tool_call) = &response.tool_call {
-            let result = iii.trigger(&tool_call.function, &tool_call.args).await?;
+            let result = iii.trigger(TriggerRequest::new(&tool_call.function, &tool_call.args)).await?;
             logger.info("Tool used", &tool_call.function);
             response = call_llm(&input.query, &tools, Some(result)).await?;
         }
@@ -113,64 +110,70 @@ iii.register_function(
   {
     name: "Multi-Agent Network",
     code: {
-      typescript: `iii.registerFunction({ id: "agents::researcher" }, async ({ topic }) => {
-  const sources = await iii.trigger("tools::webSearch", { query: topic })
-  return iii.trigger("agents::analyzer", { sources, topic })
+      typescript: `import { TriggerAction } from "iii-sdk"
+
+iii.registerFunction("agents::researcher", async ({ topic }) => {
+  const sources = await iii.trigger({ function_id: "tools::webSearch", payload: { query: topic } })
+  return iii.trigger({ function_id: "agents::analyzer", payload: { sources, topic } })
 })
 
-iii.registerFunction({ id: "agents::analyzer" }, async ({ sources, topic }) => {
+iii.registerFunction("agents::analyzer", async ({ sources, topic }) => {
   const insights = await callLLM("Analyze these sources", { sources })
-  return iii.trigger("agents::writer", { insights, topic })
+  return iii.trigger({ function_id: "agents::writer", payload: { insights, topic } })
 })
 
-iii.registerFunction({ id: "agents::writer" }, async ({ insights, topic }) => {
+iii.registerFunction("agents::writer", async ({ insights, topic }) => {
   const draft = await callLLM("Write a report", { insights })
-  await iii.trigger("state::set", {
+  await iii.trigger({ function_id: "state::set", payload: {
     scope: "reports", key: topic, value: draft
-  })
-  iii.triggerVoid("publish", { topic: "report.ready", data: { topic } })
+  } })
+  iii.trigger({ function_id: "publish", payload: { topic: "report.ready", data: { topic } }, action: TriggerAction.Void() })
   return draft
 })`,
-      python: `async def researcher(input):
-    sources = await iii.trigger("tools::webSearch", {"query": input["topic"]})
-    return await iii.trigger("agents::analyzer", {"sources": sources, "topic": input["topic"]})
+      python: `from iii import TriggerAction
+
+async def researcher(input):
+    sources = await iii.trigger({"function_id": "tools::webSearch", "payload": {"query": input["topic"]}})
+    return await iii.trigger({"function_id": "agents::analyzer", "payload": {"sources": sources, "topic": input["topic"]}})
 
 async def analyzer(input):
     insights = await call_llm("Analyze these sources", sources=input["sources"])
-    return await iii.trigger("agents::writer", {"insights": insights, "topic": input["topic"]})
+    return await iii.trigger({"function_id": "agents::writer", "payload": {"insights": insights, "topic": input["topic"]}})
 
 async def writer(input):
     draft = await call_llm("Write a report", insights=input["insights"])
-    await iii.trigger("state::set", {
+    await iii.trigger({"function_id": "state::set", "payload": {
         "scope": "reports", "key": input["topic"], "value": draft
-    })
-    iii.trigger_void("publish", {"topic": "report.ready", "data": {"topic": input["topic"]}})
+    }})
+    await iii.trigger({"function_id": "publish", "payload": {"topic": "report.ready", "data": {"topic": input["topic"]}}, "action": TriggerAction.Void()})
     return draft
 
 iii.register_function("agents::researcher", researcher)
 iii.register_function("agents::analyzer", analyzer)
 iii.register_function("agents::writer", writer)`,
-      rust: `iii.register_function(
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest, TriggerAction};
+
+iii.register_function(
     reg("agents::researcher"), |input| async move {
-        let sources = iii.trigger("tools::webSearch", json!({"query": input.topic})).await?;
-        iii.trigger("agents::analyzer", json!({"sources": sources, "topic": input.topic})).await
+        let sources = iii.trigger(TriggerRequest::new("tools::webSearch", json!({"query": input.topic}))).await?;
+        iii.trigger(TriggerRequest::new("agents::analyzer", json!({"sources": sources, "topic": input.topic}))).await
     },
 )?;
 
 iii.register_function(
     reg("agents::analyzer"), |input| async move {
         let insights = call_llm("Analyze these sources", &input.sources).await?;
-        iii.trigger("agents::writer", json!({"insights": insights, "topic": input.topic})).await
+        iii.trigger(TriggerRequest::new("agents::writer", json!({"insights": insights, "topic": input.topic}))).await
     },
 )?;
 
 iii.register_function(
     reg("agents::writer"), |input| async move {
         let draft = call_llm("Write a report", &input.insights).await?;
-        iii.trigger("state::set", json!({
+        iii.trigger(TriggerRequest::new("state::set", json!({
             "scope": "reports", "key": input.topic, "value": draft
-        })).await?;
-        iii.trigger_void("publish", json!({"topic": "report.ready"}));
+        }))).await?;
+        iii.trigger(TriggerRequest::new("publish", json!({"topic": "report.ready"})).action(TriggerAction::void())).await?;
         Ok(draft)
     },
 )?;`,
@@ -179,25 +182,25 @@ iii.register_function(
   {
     name: "Durable Workflows",
     code: {
-      typescript: `iii.registerFunction({ id: "orders::process" }, async ({ orderId }) => {
+      typescript: `iii.registerFunction("orders::process", async ({ orderId }) => {
   const logger = new Logger()
 
-  const step = await iii.trigger("state::get", {
+  const step = await iii.trigger({ function_id: "state::get", payload: {
     scope: orderId, key: "step"
-  }) ?? 0
+  } }) ?? 0
 
   const pipeline = [
-    () => iii.trigger("payments::charge", { orderId }),
-    () => iii.trigger("inventory::reserve", { orderId }),
-    () => iii.trigger("shipping::create", { orderId }),
-    () => iii.trigger("notifications::send", { orderId }),
+    () => iii.trigger({ function_id: "payments::charge", payload: { orderId } }),
+    () => iii.trigger({ function_id: "inventory::reserve", payload: { orderId } }),
+    () => iii.trigger({ function_id: "shipping::create", payload: { orderId } }),
+    () => iii.trigger({ function_id: "notifications::send", payload: { orderId } }),
   ]
 
   for (let i = step; i < pipeline.length; i++) {
     await pipeline[i]()
-    await iii.trigger("state::set", {
+    await iii.trigger({ function_id: "state::set", payload: {
       scope: orderId, key: "step", value: i + 1
-    })
+    } })
     logger.info("Step completed", { orderId, step: i + 1 })
   }
   return { status: "completed" }
@@ -206,34 +209,36 @@ iii.register_function(
     logger = Logger()
     order_id = input["orderId"]
 
-    step = await iii.trigger("state::get", {
+    step = await iii.trigger({"function_id": "state::get", "payload": {
         "scope": order_id, "key": "step"
-    }) or 0
+    }}) or 0
 
     pipeline = [
-        lambda: iii.trigger("payments::charge", {"orderId": order_id}),
-        lambda: iii.trigger("inventory::reserve", {"orderId": order_id}),
-        lambda: iii.trigger("shipping::create", {"orderId": order_id}),
-        lambda: iii.trigger("notifications::send", {"orderId": order_id}),
+        lambda: iii.trigger({"function_id": "payments::charge", "payload": {"orderId": order_id}}),
+        lambda: iii.trigger({"function_id": "inventory::reserve", "payload": {"orderId": order_id}}),
+        lambda: iii.trigger({"function_id": "shipping::create", "payload": {"orderId": order_id}}),
+        lambda: iii.trigger({"function_id": "notifications::send", "payload": {"orderId": order_id}}),
     ]
 
     for i in range(step, len(pipeline)):
         await pipeline[i]()
-        await iii.trigger("state::set", {
+        await iii.trigger({"function_id": "state::set", "payload": {
             "scope": order_id, "key": "step", "value": i + 1
-        })
+        }})
         logger.info("Step completed", order_id=order_id, step=i + 1)
     return {"status": "completed"}
 
 iii.register_function("orders::process", process_order)`,
-      rust: `iii.register_function(
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
+
+iii.register_function(
     reg("orders::process"), |input| async move {
-        let logger = Logger();
+        let logger = Logger::new();
         let order_id = &input.order_id;
 
-        let step: usize = iii.trigger("state::get", json!({
+        let step: usize = iii.trigger(TriggerRequest::new("state::get", json!({
             "scope": order_id, "key": "step"
-        })).await.unwrap_or(0);
+        }))).await.unwrap_or(0);
 
         let pipeline = [
             "payments::charge", "inventory::reserve",
@@ -241,10 +246,10 @@ iii.register_function("orders::process", process_order)`,
         ];
 
         for (i, func) in pipeline.iter().enumerate().skip(step) {
-            iii.trigger(func, json!({"orderId": order_id})).await?;
-            iii.trigger("state::set", json!({
+            iii.trigger(TriggerRequest::new(func, json!({"orderId": order_id}))).await?;
+            iii.trigger(TriggerRequest::new("state::set", json!({
                 "scope": order_id, "key": "step", "value": i + 1
-            })).await?;
+            }))).await?;
             logger.info("Step completed", &format!("{}: {}", order_id, i + 1));
         }
         Ok(json!({"status": "completed"}))
@@ -255,29 +260,29 @@ iii.register_function("orders::process", process_order)`,
   {
     name: "Polyglot Workers",
     code: {
-      typescript: `import { init } from "iii-sdk"
-const iii = init(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
+      typescript: `import { registerWorker, TriggerAction } from "iii-sdk"
+const iii = registerWorker(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
 
-iii.registerFunction({ id: "api.users" }, async (req) => {
+iii.registerFunction("api::users", async (req) => {
   const user = await db.createUser(req)
-  iii.triggerVoid("publish", { topic: "user.created", data: user })
+  iii.trigger({ function_id: "publish", payload: { topic: "user.created", data: user }, action: TriggerAction.Void() })
   return user
 })
 
 iii.registerTrigger({
   type: "http",
-  function_id: "api.users",
-  config: { api_path: "/users", http_method: "POST" }
+  function_id: "api::users",
+  config: { api_path: "users", http_method: "POST" }
 })
 
 iii.registerTrigger({
   type: "subscribe",
-  function_id: "ml.onboarding",
+  function_id: "ml::onboarding",
   config: { topic: "user.created" }
 })`,
-      python: `from iii import III
+      python: `from iii import register_worker, Logger
 
-iii = init(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
+iii = register_worker(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
 
 async def predict_handler(input):
     logger = Logger()
@@ -290,26 +295,26 @@ async def recommend_handler(input):
     embeddings = await get_embeddings(input["user"])
     return vector_db.search(embeddings, top_k=10)
 
-iii.register_function("ml.onboarding", predict_handler)
-iii.register_function("ml.recommend", recommend_handler)`,
-      rust: `use iii_sdk::{init, InitOptions};
+iii.register_function("ml::onboarding", predict_handler)
+iii.register_function("ml::recommend", recommend_handler)`,
+      rust: `use iii_sdk::{register_worker, RegisterFunction, InitOptions, TriggerRequest};
 
-let iii = init("ws://localhost:49134", InitOptions::default())?;
+let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
 
 iii.register_function(
-    reg("transform.images"), |input| async move {
+    reg("transform::images"), |input| async move {
         let image = decode_image(&input.data)?;
         let resized = image.resize(800, 600, FilterType::Lanczos3);
         let compressed = encode_webp(&resized, 85)?;
-        iii.trigger("storage.upload", json!({
+        iii.trigger(TriggerRequest::new("storage::upload", json!({
             "key": input.key, "data": compressed
-        })).await?;
+        }))).await?;
         Ok(json!({"size": compressed.len()}))
     },
 )?;
 
 iii.register_function(
-    reg("transform.video"), |input| async move {
+    reg("transform::video"), |input| async move {
         let frames = extract_frames(&input.data, 30)?;
         Ok(json!({"frames": frames.len()}))
     },
@@ -319,23 +324,23 @@ iii.register_function(
   {
     name: "Real-Time Streaming",
     code: {
-      typescript: `iii.registerFunction({ id: "chat::send" }, async ({ roomId, message }) => {
+      typescript: `iii.registerFunction("chat::send", async ({ roomId, message }) => {
   const logger = new Logger()
 
-  await iii.trigger("stream::set", {
+  await iii.trigger({ function_id: "stream::set", payload: {
     stream_name: "chat", group_id: roomId,
     item_id: crypto.randomUUID(), data: message
-  })
+  } })
 
-  const history = await iii.trigger("stream::list", {
+  const history = await iii.trigger({ function_id: "stream::list", payload: {
     stream_name: "chat", group_id: roomId
-  })
+  } })
 
   if (history.length > 100) {
-    const summary = await iii.trigger("agents::summarize", { history })
-    await iii.trigger("state::set", {
+    const summary = await iii.trigger({ function_id: "agents::summarize", payload: { history } })
+    await iii.trigger({ function_id: "state::set", payload: {
       scope: roomId, key: "summary", value: summary
-    })
+    } })
   }
   logger.info("Message sent", { roomId, messages: history.length })
 })
@@ -346,20 +351,20 @@ iii.onFunctionsAvailable((fns) => {
       python: `async def send_message(input):
     logger = Logger()
 
-    await iii.trigger("stream::set", {
+    await iii.trigger({"function_id": "stream::set", "payload": {
         "stream_name": "chat", "group_id": input["roomId"],
         "item_id": str(uuid4()), "data": input["message"],
-    })
+    }})
 
-    history = await iii.trigger("stream::list", {
+    history = await iii.trigger({"function_id": "stream::list", "payload": {
         "stream_name": "chat", "group_id": input["roomId"],
-    })
+    }})
 
     if len(history) > 100:
-        summary = await iii.trigger("agents::summarize", {"history": history})
-        await iii.trigger("state::set", {
+        summary = await iii.trigger({"function_id": "agents::summarize", "payload": {"history": history}})
+        await iii.trigger({"function_id": "state::set", "payload": {
             "scope": input["roomId"], "key": "summary", "value": summary,
-        })
+        }})
     logger.info("Message sent", room=input["roomId"], count=len(history))
 
 iii.register_function("chat::send", send_message)
@@ -367,25 +372,27 @@ iii.register_function("chat::send", send_message)
 iii.on_functions_available(
     lambda fns: Logger().info("Topology changed", count=len(fns))
 )`,
-      rust: `iii.register_function(
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
+
+iii.register_function(
     reg("chat::send"), |input| async move {
-        let logger = Logger();
+        let logger = Logger::new();
         let room_id = &input.room_id;
 
-        iii.trigger("stream::set", json!({
+        iii.trigger(TriggerRequest::new("stream::set", json!({
             "stream_name": "chat", "group_id": room_id,
             "item_id": Uuid::new_v4().to_string(), "data": input.message,
-        })).await?;
+        }))).await?;
 
-        let history: Vec<Message> = iii.trigger("stream::list", json!({
+        let history: Vec<Message> = iii.trigger(TriggerRequest::new("stream::list", json!({
             "stream_name": "chat", "group_id": room_id,
-        })).await?;
+        }))).await?;
 
         if history.len() > 100 {
-            let summary = iii.trigger("agents::summarize", json!({"history": history})).await?;
-            iii.trigger("state::set", json!({
+            let summary = iii.trigger(TriggerRequest::new("agents::summarize", json!({"history": history}))).await?;
+            iii.trigger(TriggerRequest::new("state::set", json!({
                 "scope": room_id, "key": "summary", "value": summary,
-            })).await?;
+            }))).await?;
         }
         logger.info("Message sent", &format!("{}: {}", room_id, history.len()));
         Ok(json!({"messages": history.len()}))
@@ -400,14 +407,14 @@ iii.on_functions_available(|fns| {
   {
     name: "Deep Research Agent",
     code: {
-      typescript: `iii.registerFunction({ id: "research::deep" }, async ({ question, depth = 3 }) => {
+      typescript: `iii.registerFunction("research::deep", async ({ question, depth = 3 }) => {
   const logger = new Logger()
   let context: string[] = []
 
   for (let i = 0; i < depth; i++) {
     const subQueries = await callLLM("Break this into sub-questions", { question, context })
     const results = await Promise.all(
-      subQueries.map((q: string) => iii.trigger("tools::webSearch", { query: q }))
+      subQueries.map((q: string) => iii.trigger({ function_id: "tools::webSearch", payload: { query: q } }))
     )
     context.push(...results.flat())
 
@@ -417,7 +424,7 @@ iii.on_functions_available(|fns| {
   }
 
   const report = await callLLM("Write a comprehensive answer", { question, context })
-  await iii.trigger("state::set", { scope: "research", key: question, value: report })
+  await iii.trigger({ function_id: "state::set", payload: { scope: "research", key: question, value: report } })
   return report
 })`,
       python: `async def deep_research(input):
@@ -429,7 +436,7 @@ iii.on_functions_available(|fns| {
             "question": input["question"], "context": context,
         })
         results = await asyncio.gather(*[
-            iii.trigger("tools::webSearch", {"query": q}) for q in sub_queries
+            iii.trigger({"function_id": "tools::webSearch", "payload": {"query": q}}) for q in sub_queries
         ])
         context.extend([r for batch in results for r in batch])
 
@@ -443,15 +450,17 @@ iii.on_functions_available(|fns| {
     report = await call_llm("Write a comprehensive answer", {
         "question": input["question"], "context": context,
     })
-    await iii.trigger("state::set", {
+    await iii.trigger({"function_id": "state::set", "payload": {
         "scope": "research", "key": input["question"], "value": report,
-    })
+    }})
     return report
 
 iii.register_function("research::deep", deep_research)`,
-      rust: `iii.register_function(
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
+
+iii.register_function(
     reg("research::deep"), |input| async move {
-        let logger = Logger();
+        let logger = Logger::new();
         let mut context: Vec<String> = vec![];
 
         for i in 0..input.depth.unwrap_or(3) {
@@ -460,7 +469,7 @@ iii.register_function("research::deep", deep_research)`,
             })).await?;
 
             let results = futures::future::join_all(
-                sub_queries.iter().map(|q| iii.trigger("tools::webSearch", json!({"query": q})))
+                sub_queries.iter().map(|q| iii.trigger(TriggerRequest::new("tools::webSearch", json!({"query": q}))))
             ).await;
             context.extend(results.into_iter().flatten());
 
@@ -474,9 +483,9 @@ iii.register_function("research::deep", deep_research)`,
         let report = call_llm("Write comprehensive answer", json!({
             "question": input.question, "context": context,
         })).await?;
-        iii.trigger("state::set", json!({
+        iii.trigger(TriggerRequest::new("state::set", json!({
             "scope": "research", "key": input.question, "value": report,
-        })).await?;
+        }))).await?;
         Ok(report)
     },
 )?;`,
@@ -485,22 +494,25 @@ iii.register_function("research::deep", deep_research)`,
   {
     name: "Event-Driven Pipelines",
     code: {
-      typescript: `iii.registerFunction({ id: "pipeline::onUserCreated" }, async ({ user }) => {
+      typescript: `import { TriggerAction } from "iii-sdk"
+
+iii.registerFunction("pipeline::onUserCreated", async ({ user }) => {
   const logger = new Logger()
 
   await Promise.all([
-    iii.trigger("crm::syncContact", { user }),
-    iii.trigger("analytics::track", { event: "signup", user }),
-    iii.trigger("ml::computeSegment", { user }),
+    iii.trigger({ function_id: "crm::syncContact", payload: { user } }),
+    iii.trigger({ function_id: "analytics::track", payload: { event: "signup", user } }),
+    iii.trigger({ function_id: "ml::computeSegment", payload: { user } }),
   ])
 
-  const segment = await iii.trigger("state::get", {
+  const segment = await iii.trigger({ function_id: "state::get", payload: {
     scope: user.id, key: "segment"
-  })
+  } })
 
-  await iii.trigger("enqueue", {
-    topic: "emails",
-    data: { template: segment === "enterprise" ? "white-glove" : "welcome", user }
+  await iii.trigger({
+    function_id: "emails::send",
+    payload: { template: segment === "enterprise" ? "white-glove" : "welcome", user },
+    action: TriggerAction.Enqueue({ queue: "emails" })
   })
   logger.info("Pipeline complete", { userId: user.id, segment })
 })
@@ -509,52 +521,56 @@ iii.registerTrigger({
   type: "subscribe", function_id: "pipeline::onUserCreated",
   config: { topic: "user.created" }
 })`,
-      python: `async def on_user_created(input):
+      python: `from iii import TriggerAction
+
+async def on_user_created(input):
     logger = Logger()
     user = input["user"]
 
     await asyncio.gather(
-        iii.trigger("crm::syncContact", {"user": user}),
-        iii.trigger("analytics::track", {"event": "signup", "user": user}),
-        iii.trigger("ml::computeSegment", {"user": user}),
+        iii.trigger({"function_id": "crm::syncContact", "payload": {"user": user}}),
+        iii.trigger({"function_id": "analytics::track", "payload": {"event": "signup", "user": user}}),
+        iii.trigger({"function_id": "ml::computeSegment", "payload": {"user": user}}),
     )
 
-    segment = await iii.trigger("state::get", {
+    segment = await iii.trigger({"function_id": "state::get", "payload": {
         "scope": user["id"], "key": "segment",
-    })
+    }})
 
-    await iii.trigger("enqueue", {
-        "topic": "emails",
-        "data": {
+    await iii.trigger({
+        "function_id": "emails::send",
+        "payload": {
             "template": "white-glove" if segment == "enterprise" else "welcome",
             "user": user,
         },
+        "action": TriggerAction.Enqueue(queue="emails"),
     })
     logger.info("Pipeline complete", user_id=user["id"], segment=segment)
 
 iii.register_function("pipeline::onUserCreated", on_user_created)
 
 iii.register_trigger("subscribe", "pipeline::onUserCreated", {"topic": "user.created"})`,
-      rust: `iii.register_function(
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest, TriggerAction};
+
+iii.register_function(
     reg("pipeline::onUserCreated"), |input| async move {
-        let logger = Logger();
+        let logger = Logger::new();
         let user = &input.user;
 
         futures::future::join_all(vec![
-            iii.trigger("crm::syncContact", json!({"user": user})),
-            iii.trigger("analytics::track", json!({"event": "signup", "user": user})),
-            iii.trigger("ml::computeSegment", json!({"user": user})),
+            iii.trigger(TriggerRequest::new("crm::syncContact", json!({"user": user}))),
+            iii.trigger(TriggerRequest::new("analytics::track", json!({"event": "signup", "user": user}))),
+            iii.trigger(TriggerRequest::new("ml::computeSegment", json!({"user": user}))),
         ]).await;
 
-        let segment: String = iii.trigger("state::get", json!({
+        let segment: String = iii.trigger(TriggerRequest::new("state::get", json!({
             "scope": user.id, "key": "segment",
-        })).await?;
+        }))).await?;
 
         let template = if segment == "enterprise" { "white-glove" } else { "welcome" };
-        iii.trigger("enqueue", json!({
-            "topic": "emails",
-            "data": {"template": template, "user": user},
-        })).await?;
+        iii.trigger(TriggerRequest::new("emails::send", json!({
+            "template": template, "user": user,
+        })).action(TriggerAction::enqueue("emails"))).await?;
         logger.info("Pipeline complete", &format!("{}: {}", user.id, segment));
         Ok(json!({"status": "ok"}))
     },
@@ -570,30 +586,30 @@ iii.register_trigger(
   {
     name: "Scheduled Intelligence",
     code: {
-      typescript: `iii.registerFunction({ id: "monitor::anomalies" }, async () => {
+      typescript: `iii.registerFunction("monitor::anomalies", async () => {
   const logger = new Logger()
 
-  const metrics = await iii.trigger("metrics::getLast24h", {})
-  const baseline = await iii.trigger("state::get", {
+  const metrics = await iii.trigger({ function_id: "metrics::getLast24h", payload: {} })
+  const baseline = await iii.trigger({ function_id: "state::get", payload: {
     scope: "monitor", key: "baseline"
-  })
+  } })
 
   const analysis = await callLLM(
     "Analyze these metrics against baseline. Flag anomalies.", { metrics, baseline }
   )
 
   if (analysis.anomalies.length > 0) {
-    await iii.trigger("alerts::send", {
+    await iii.trigger({ function_id: "alerts::send", payload: {
       channel: "slack", message: analysis.summary,
       severity: analysis.anomalies[0].severity
-    })
+    } })
     logger.info("Anomalies detected", { count: analysis.anomalies.length })
   }
 
-  await iii.trigger("state::set", {
+  await iii.trigger({ function_id: "state::set", payload: {
     scope: "monitor", key: "baseline",
     value: { ...baseline, ...metrics.averages }
-  })
+  } })
 })
 
 iii.registerTrigger({
@@ -603,10 +619,10 @@ iii.registerTrigger({
       python: `async def detect_anomalies(input):
     logger = Logger()
 
-    metrics = await iii.trigger("metrics::getLast24h", {})
-    baseline = await iii.trigger("state::get", {
+    metrics = await iii.trigger({"function_id": "metrics::getLast24h", "payload": {}})
+    baseline = await iii.trigger({"function_id": "state::get", "payload": {
         "scope": "monitor", "key": "baseline",
-    })
+    }})
 
     analysis = await call_llm(
         "Analyze metrics against baseline. Flag anomalies.",
@@ -614,28 +630,30 @@ iii.registerTrigger({
     )
 
     if analysis["anomalies"]:
-        await iii.trigger("alerts::send", {
+        await iii.trigger({"function_id": "alerts::send", "payload": {
             "channel": "slack", "message": analysis["summary"],
             "severity": analysis["anomalies"][0]["severity"],
-        })
+        }})
         logger.info("Anomalies detected", count=len(analysis["anomalies"]))
 
-    await iii.trigger("state::set", {
+    await iii.trigger({"function_id": "state::set", "payload": {
         "scope": "monitor", "key": "baseline",
         "value": {**baseline, **metrics["averages"]},
-    })
+    }})
 
 iii.register_function("monitor::anomalies", detect_anomalies)
 
 iii.register_trigger("cron", "monitor::anomalies", {"pattern": "*/15 * * * *"})`,
-      rust: `iii.register_function(
-    reg("monitor::anomalies"), |_| async move {
-        let logger = Logger();
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
 
-        let metrics = iii.trigger("metrics::getLast24h", json!({})).await?;
-        let baseline = iii.trigger("state::get", json!({
+iii.register_function(
+    reg("monitor::anomalies"), |_| async move {
+        let logger = Logger::new();
+
+        let metrics = iii.trigger(TriggerRequest::new("metrics::getLast24h", json!({}))).await?;
+        let baseline = iii.trigger(TriggerRequest::new("state::get", json!({
             "scope": "monitor", "key": "baseline",
-        })).await?;
+        }))).await?;
 
         let analysis = call_llm(
             "Analyze metrics against baseline. Flag anomalies.",
@@ -643,17 +661,17 @@ iii.register_trigger("cron", "monitor::anomalies", {"pattern": "*/15 * * * *"})`
         ).await?;
 
         if !analysis.anomalies.is_empty() {
-            iii.trigger("alerts::send", json!({
+            iii.trigger(TriggerRequest::new("alerts::send", json!({
                 "channel": "slack", "message": analysis.summary,
                 "severity": analysis.anomalies[0].severity,
-            })).await?;
+            }))).await?;
             logger.info("Anomalies detected", analysis.anomalies.len());
         }
 
-        iii.trigger("state::set", json!({
+        iii.trigger(TriggerRequest::new("state::set", json!({
             "scope": "monitor", "key": "baseline",
             "value": merge_json(&baseline, &metrics.averages),
-        })).await?;
+        }))).await?;
         Ok(json!({"checked": true}))
     },
 )?;

@@ -15,66 +15,63 @@ pip install iii-sdk
 ## Hello World
 
 ```python
-import asyncio
-from iii import init
+from iii import register_worker
 
-async def main():
-    iii = init("ws://localhost:49134")
+iii = register_worker("ws://localhost:49134")
 
-    async def greet(data):
-        return {"message": f"Hello, {data['name']}!"}
+def greet(data):
+    return {"message": f"Hello, {data['name']}!"}
 
-    iii.register_function("greet", greet)
+iii.register_function({"id": "greet"}, greet)
 
-    iii.register_trigger(
-        type="http",
-        function_id="greet",
-        config={"api_path": "/greet", "http_method": "POST"}
-    )
+iii.register_trigger({
+    "type": "http",
+    "function_id": "greet",
+    "config": {"api_path": "/greet", "http_method": "POST"},
+})
 
-    result = await iii.trigger("greet", {"name": "world"})
-    print(result)
+iii.connect()
 
-asyncio.run(main())
+result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
+print(result)  # {"message": "Hello, world!"}
 ```
 
 ## API
 
 | Operation                | Signature                                         | Description                                            |
 | ------------------------ | ------------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `init(url, options?)`                             | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function(id, handler)`              | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger(type, function_id, config)` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `await iii.trigger(id, data)`                     | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger_void(id, data)`                      | Invoke a function without waiting (fire-and-forget)    |
+| Initialize               | `register_worker(url, options?)`                  | Create an SDK instance and auto-connect                |
+| Register function        | `iii.register_function({"id": id}, handler)`      | Register a function that can be invoked by name        |
+| Register trigger         | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await result)    | `iii.trigger({"function_id": id, "payload": data})` | Invoke a function and wait for the result           |
+| Invoke (fire-and-forget) | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Void()})` | Fire-and-forget |
+| Shutdown                 | `iii.shutdown()`                                  | Disconnect and stop background thread                  |
 
-`init()` must be called inside an async context. It creates the SDK instance and auto-connects to the engine.
+`register_worker()` creates the SDK instance and auto-connects to the engine.
 
 ### Registering Functions
 
 ```python
-async def create_order(data):
+def create_order(data):
     return {"status_code": 201, "body": {"id": "123", "item": data["body"]["item"]}}
 
-iii.register_function("orders.create", create_order)
+iii.register_function({"id": "orders.create"}, create_order)
 ```
 
 ### Registering Triggers
 
 ```python
-iii.register_trigger(
-    type="http",
-    function_id="orders.create",
-    config={"api_path": "/orders", "http_method": "POST"}
-)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "orders.create",
+    "config": {"api_path": "/orders", "http_method": "POST"},
+})
 ```
 
 ### Invoking Functions
 
 ```python
-result = await iii.trigger("orders.create", {"body": {"item": "widget"}})
-
-iii.trigger_void("analytics.track", {"event": "page_view"})
+result = iii.trigger({"function_id": "orders.create", "payload": {"body": {"item": "widget"}}})
 ```
 
 ## Modules
@@ -104,10 +101,6 @@ mypy src
 ```bash
 ruff check src
 ```
-
-## Deprecated
-
-`call()` and `call_void()` are deprecated aliases for `trigger()` and `trigger_void()`. They still work but will be removed in a future release.
 
 ## Resources
 

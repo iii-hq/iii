@@ -199,8 +199,7 @@ class StreamClient:
                 await self._rejoin_all()
             except ImportError as exc:
                 raise ImportError(
-                    "websockets package is required for StreamClient. "
-                    "Install it with: pip install websockets"
+                    "websockets package is required for StreamClient. Install it with: pip install websockets"
                 ) from exc
 
     async def disconnect(self) -> None:
@@ -252,10 +251,12 @@ class StreamClient:
             listener.listener(message)
 
         if message.get("id") and message.get("event", {}).get("type") != "sync":
-            group_room = self._room_name({
-                "streamName": message.get("streamName"),
-                "groupId": message.get("groupId"),
-            })
+            group_room = self._room_name(
+                {
+                    "streamName": message.get("streamName"),
+                    "groupId": message.get("groupId"),
+                }
+            )
             for listener in list(self._listeners.get(group_room, set())):
                 listener.listener(message)
 

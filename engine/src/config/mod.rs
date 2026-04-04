@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::invocation::url_validator::UrlValidatorConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     #[serde(default)]
     pub url_allowlist: Vec<String>,
@@ -133,5 +134,15 @@ mod tests {
         assert_eq!(validator_config.allowlist, vec!["*".to_string()]);
         assert!(validator_config.block_private_ips);
         assert!(validator_config.require_https);
+    }
+
+    #[test]
+    fn security_config_deny_unknown_fields() {
+        let json = r#"{"url_allowlist": [], "fake_key": true}"#;
+        let result: Result<SecurityConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in SecurityConfig"
+        );
     }
 }

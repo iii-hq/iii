@@ -9,7 +9,7 @@ export class StateManager implements InternalStateManager {
       span.setAttribute('motia.state.scope', scope)
       span.setAttribute('motia.state.key', key)
       try {
-        return (await getInstance().call('state::get', { scope, key })) as T | null
+        return (await getInstance().trigger({ function_id: 'state::get', payload: { scope, key } })) as T | null
       } catch (err) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
         span.recordException(err as Error)
@@ -23,10 +23,9 @@ export class StateManager implements InternalStateManager {
       span.setAttribute('motia.state.scope', scope)
       span.setAttribute('motia.state.key', key)
       try {
-        return (await getInstance().call('state::set', {
-          scope,
-          key,
-          value,
+        return (await getInstance().trigger({
+          function_id: 'state::set',
+          payload: { scope, key, value },
         })) as StreamSetResult<T> | null
       } catch (err) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
@@ -41,7 +40,7 @@ export class StateManager implements InternalStateManager {
       span.setAttribute('motia.state.scope', scope)
       span.setAttribute('motia.state.key', key)
       try {
-        return (await getInstance().call('state::delete', { scope, key })) as T | null
+        return (await getInstance().trigger({ function_id: 'state::delete', payload: { scope, key } })) as T | null
       } catch (err) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
         span.recordException(err as Error)
@@ -54,7 +53,7 @@ export class StateManager implements InternalStateManager {
     return withSpan('state::list', {}, async (span) => {
       span.setAttribute('motia.state.scope', scope)
       try {
-        return (await getInstance().call('state::list', { scope })) as T[]
+        return (await getInstance().trigger({ function_id: 'state::list', payload: { scope } })) as T[]
       } catch (err) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
         span.recordException(err as Error)
@@ -66,7 +65,7 @@ export class StateManager implements InternalStateManager {
   async listGroups(): Promise<string[]> {
     return withSpan('state::list_groups', {}, async (span) => {
       try {
-        return (await getInstance().call('state::list_groups', {})) as string[]
+        return (await getInstance().trigger({ function_id: 'state::list_groups', payload: {} })) as string[]
       } catch (err) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
         span.recordException(err as Error)
@@ -80,7 +79,7 @@ export class StateManager implements InternalStateManager {
       span.setAttribute('motia.state.scope', scope)
       span.setAttribute('motia.state.key', key)
       try {
-        return (await getInstance().call('state::update', { scope, key, ops })) as StreamSetResult<T> | null
+        return (await getInstance().trigger({ function_id: 'state::update', payload: { scope, key, ops } })) as StreamSetResult<T> | null
       } catch (err) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
         span.recordException(err as Error)

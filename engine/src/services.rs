@@ -72,7 +72,7 @@ impl ServicesRegistry {
     }
 
     fn get_service_name_from_function_id(function_id: &str) -> Option<String> {
-        let parts: Vec<&str> = function_id.split(".").collect();
+        let parts: Vec<&str> = function_id.split("::").collect();
         if parts.len() < 2 {
             return None;
         }
@@ -80,11 +80,11 @@ impl ServicesRegistry {
     }
 
     fn get_function_name_from_function_id(function_id: &str) -> Option<String> {
-        let parts: Vec<&str> = function_id.split(".").collect();
+        let parts: Vec<&str> = function_id.split("::").collect();
         if parts.len() < 2 {
             return None;
         }
-        Some(parts[1..].join("."))
+        Some(parts[1..].join("::"))
     }
 
     pub fn register_service_from_function_id(&self, function_id: &str) {
@@ -121,6 +121,7 @@ impl ServicesRegistry {
 pub struct Service {
     _id: String,
     name: String,
+    pub parent_service_id: Option<String>,
     functions: HashSet<String>,
 }
 
@@ -129,6 +130,16 @@ impl Service {
         Service {
             _id: id,
             name,
+            parent_service_id: None,
+            functions: HashSet::new(),
+        }
+    }
+
+    pub fn with_parent(name: String, id: String, parent_service_id: Option<String>) -> Self {
+        Service {
+            _id: id,
+            name,
+            parent_service_id,
             functions: HashSet::new(),
         }
     }
@@ -287,13 +298,13 @@ mod tests {
 
     #[test]
     fn get_service_name_valid() {
-        let result = ServicesRegistry::get_service_name_from_function_id("service.function");
+        let result = ServicesRegistry::get_service_name_from_function_id("service::function");
         assert_eq!(result, Some("service".to_string()));
     }
 
     #[test]
     fn get_service_name_deep_path() {
-        let result = ServicesRegistry::get_service_name_from_function_id("service.sub.function");
+        let result = ServicesRegistry::get_service_name_from_function_id("service::sub::function");
         assert_eq!(result, Some("service".to_string()));
     }
 
@@ -305,14 +316,14 @@ mod tests {
 
     #[test]
     fn get_function_name_valid() {
-        let result = ServicesRegistry::get_function_name_from_function_id("service.function");
+        let result = ServicesRegistry::get_function_name_from_function_id("service::function");
         assert_eq!(result, Some("function".to_string()));
     }
 
     #[test]
     fn get_function_name_deep_path() {
-        let result = ServicesRegistry::get_function_name_from_function_id("service.sub.function");
-        assert_eq!(result, Some("sub.function".to_string()));
+        let result = ServicesRegistry::get_function_name_from_function_id("service::sub::function");
+        assert_eq!(result, Some("sub::function".to_string()));
     }
 
     #[test]
@@ -328,7 +339,7 @@ mod tests {
     #[test]
     fn register_service_from_function_id_creates_service_and_function() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("my_svc.my_func");
+        reg.register_service_from_function_id("my_svc::my_func");
         assert!(reg.services.contains_key("my_svc"));
         let entry = reg.services.get("my_svc").unwrap();
         assert!(entry.functions.contains("my_func"));
@@ -337,8 +348,8 @@ mod tests {
     #[test]
     fn register_service_from_function_id_adds_to_existing_service() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("svc.func_a");
-        reg.register_service_from_function_id("svc.func_b");
+        reg.register_service_from_function_id("svc::func_a");
+        reg.register_service_from_function_id("svc::func_b");
         let entry = reg.services.get("svc").unwrap();
         assert!(entry.functions.contains("func_a"));
         assert!(entry.functions.contains("func_b"));
@@ -358,9 +369,9 @@ mod tests {
     #[test]
     fn remove_function_removes_function_from_service() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("svc.func_a");
-        reg.register_service_from_function_id("svc.func_b");
-        reg.remove_function_from_services("svc.func_a");
+        reg.register_service_from_function_id("svc::func_a");
+        reg.register_service_from_function_id("svc::func_b");
+        reg.remove_function_from_services("svc::func_a");
         let entry = reg.services.get("svc").unwrap();
         assert!(!entry.functions.contains("func_a"));
         assert!(entry.functions.contains("func_b"));
@@ -369,8 +380,8 @@ mod tests {
     #[test]
     fn remove_function_removes_service_when_empty() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("svc.func_a");
-        reg.remove_function_from_services("svc.func_a");
+        reg.register_service_from_function_id("svc::func_a");
+        reg.remove_function_from_services("svc::func_a");
         assert!(!reg.services.contains_key("svc"));
     }
 
@@ -383,6 +394,6 @@ mod tests {
     #[test]
     fn remove_function_nonexistent_service_no_panic() {
         let reg = ServicesRegistry::new();
-        reg.remove_function_from_services("nonexistent.func");
+        reg.remove_function_from_services("nonexistent::func");
     }
 }

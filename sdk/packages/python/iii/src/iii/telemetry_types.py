@@ -1,4 +1,5 @@
 """OTel configuration types for the III Python SDK."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ class OtelConfig:
     """Service instance ID. Defaults to a random UUID."""
 
     engine_ws_url: str | None = None
-    """III Engine WebSocket URL. Defaults to env III_BRIDGE_URL or 'ws://localhost:49134'."""
+    """III Engine WebSocket URL. Defaults to env III_URL or 'ws://localhost:49134'."""
 
     fetch_instrumentation_enabled: bool = True
     """Auto-instrument urllib HTTP calls via URLLibInstrumentor. Defaults to True."""

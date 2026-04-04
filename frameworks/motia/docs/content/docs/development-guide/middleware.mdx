@@ -360,7 +360,7 @@ export const config = {
     Learn more about Triggers
   </Card>
 
-  <Card href="/docs/examples" title="Examples">
+  <Card href="https://github.com/MotiaDev/motia-examples" title="Examples">
     Explore real-world examples and patterns
   </Card>
 </Cards>

@@ -30,6 +30,28 @@ export function safeStringify(value: unknown): string {
   }
 }
 
+/**
+ * Helper that wraps an HTTP-style handler (with separate `req`/`res` arguments)
+ * into the function handler format expected by the SDK.
+ *
+ * @param callback - Async handler receiving an {@link HttpRequest} and {@link HttpResponse}.
+ * @returns A function handler compatible with {@link ISdk.registerFunction}.
+ *
+ * @example
+ * ```typescript
+ * import { http } from 'iii-sdk'
+ *
+ * iii.registerFunction(
+ *   'my-api',
+ *   http(async (req, res) => {
+ *     res.status(200)
+ *     res.headers({ 'content-type': 'application/json' })
+ *     res.stream.end(JSON.stringify({ hello: 'world' }))
+ *     res.close()
+ *   }),
+ * )
+ * ```
+ */
 export const http = (
   // biome-ignore lint/suspicious/noConfusingVoidType: void is necessary here
   callback: (req: HttpRequest, res: HttpResponse) => Promise<void | ApiResponse>,
@@ -50,6 +72,12 @@ export const http = (
   }
 }
 
+/**
+ * Type guard that checks if a value is a {@link StreamChannelRef}.
+ *
+ * @param value - Value to check.
+ * @returns `true` if the value is a valid `StreamChannelRef`.
+ */
 export const isChannelRef = (value: unknown): value is StreamChannelRef => {
   if (typeof value !== 'object' || value === null) return false
   const maybe = value as Partial<StreamChannelRef>

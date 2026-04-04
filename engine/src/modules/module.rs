@@ -21,10 +21,26 @@ use crate::{
 
 // use across modules
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdapterEntry {
     pub class: String,
     #[serde(default)]
     pub config: Option<Value>,
+}
+
+pub(crate) fn bind_address_error(
+    addr: impl std::fmt::Display,
+    err: std::io::Error,
+) -> anyhow::Error {
+    let addr = addr.to_string();
+
+    if err.kind() == std::io::ErrorKind::AddrInUse {
+        tracing::error!("address {} is already in use", addr);
+        anyhow::anyhow!("address {} is already in use", addr)
+    } else {
+        tracing::error!(address = %addr, error = %err, "failed to bind address");
+        anyhow::Error::new(err).context(format!("failed to bind to {}", addr))
+    }
 }
 
 #[async_trait::async_trait]
@@ -46,7 +62,8 @@ pub trait Module: Send + Sync {
 
     async fn start_background_tasks(
         &self,
-        _shutdown: tokio::sync::watch::Receiver<bool>,
+        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -501,9 +518,9 @@ mod tests {
 
         assert_eq!(module.name(), "SimpleModule");
 
-        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let (tx, rx) = tokio::sync::watch::channel(false);
         module
-            .start_background_tasks(rx)
+            .start_background_tasks(rx, tx)
             .await
             .expect("default background tasks should succeed");
         module
@@ -522,11 +539,11 @@ mod tests {
 
     #[tokio::test]
     async fn module_default_trait_methods_on_concrete_type_work() {
-        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let (tx, rx) = tokio::sync::watch::channel(false);
         let module = SimpleModule;
 
         module
-            .start_background_tasks(rx)
+            .start_background_tasks(rx, tx)
             .await
             .expect("default background tasks should succeed");
         module

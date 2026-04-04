@@ -1,6 +1,6 @@
 # iii
 
-iii is a single engine that replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability pipeline with two primitives: **Function** and **Trigger**. You write functions, declare what triggers them, and the engine handles discovery, routing, retries, and observability.
+iii is a single engine that replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability pipeline with three primitives: **Function**, **Trigger**, and **Worker**. You write functions, declare what triggers them, connect a worker, and the engine handles routing, retries, and observability.
 
 See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
 
@@ -22,11 +22,11 @@ See the [engine README](../engine/README.md) for architecture details and the [d
 ### Node.js
 
 ```javascript
-import { init } from 'iii-sdk';
+import { registerWorker } from 'iii-sdk';
 
-const iii = init('ws://localhost:49134');
+const iii = registerWorker('ws://localhost:49134');
 
-iii.registerFunction({ id: 'greet' }, async (input) => {
+iii.registerFunction('greet', async (input) => {
   return { message: `Hello, ${input.name}!` };
 });
 
@@ -36,56 +36,52 @@ iii.registerTrigger({
   config: { api_path: '/greet', http_method: 'POST' },
 });
 
-const result = await iii.trigger('greet', { name: 'world' });
+const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world' } });
 ```
 
 ### Python
 
 ```python
-import asyncio
-from iii import init
+from iii import register_worker
 
-async def main():
-    iii = init("ws://localhost:49134")
+iii = register_worker("ws://localhost:49134")
 
-    async def greet(data):
-        return {"message": f"Hello, {data['name']}!"}
+def greet(data):
+    return {"message": f"Hello, {data['name']}!"}
 
-    iii.register_function("greet", greet)
+iii.register_function({"id": "greet"}, greet)
 
-    iii.register_trigger(
-        type="http",
-        function_id="greet",
-        config={"api_path": "/greet", "http_method": "POST"}
-    )
+iii.register_trigger({
+    "type": "http",
+    "function_id": "greet",
+    "config": {"api_path": "/greet", "http_method": "POST"}
+})
 
-    result = await iii.trigger("greet", {"name": "world"})
-
-asyncio.run(main())
+result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{init, InitOptions};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("greet", |input| async move {
+    iii.register_function(RegisterFunctionMessage::with_id("greet".into()), |input| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
 
-    iii.register_trigger("http", "greet", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "greet".into(), config: json!({
         "api_path": "/greet",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     let result: serde_json::Value = iii
-        .trigger("greet", json!({ "name": "world" }))
+        .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
         .await?;
 
     Ok(())
@@ -96,15 +92,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Operation                | Node.js                                              | Python                                      | Rust                                         | Description                                            |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `init(url)`                                          | `init(url, options?)`                       | `init(url, options)`                         | Create an SDK instance and auto-connect                |
-| Register function        | `iii.registerFunction({ id }, handler)`              | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger(type, fn_id, config)` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `await iii.trigger(id, data)`                        | `await iii.trigger(id, data)`               | `iii.trigger(id, data).await?`               | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.triggerVoid(id, data)`                          | `iii.trigger_void(id, data)`                | `iii.trigger_void(id, data)?`                | Invoke a function without waiting                      |
+| Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
+| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |
 
-`init()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
+`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
 
-> `call()` and `callVoid()` / `call_void()` are deprecated and will be removed in a future release. Use `trigger()` and `triggerVoid()` / `trigger_void()`.
+> `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
 
 For language-specific details (modules, streams, OpenTelemetry), see the per-SDK READMEs linked in the table above.
 

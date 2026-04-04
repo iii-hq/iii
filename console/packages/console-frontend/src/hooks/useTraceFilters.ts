@@ -80,10 +80,7 @@ export function useTraceFilters() {
     }
   }, [])
 
-  /**
-   * Update a single filter field
-   * Resets page to 1 when any filter changes (except page/pageSize)
-   */
+  /** Update a single filter field. Resets page to 1 when any filter changes (except page/pageSize). */
   const updateFilter = useCallback((key: keyof TraceFilterState, value: unknown) => {
     setFilters((prev) => {
       const newFilters = { ...prev, [key]: value }
@@ -114,9 +111,6 @@ export function useTraceFilters() {
     }
   }, [])
 
-  /**
-   * Reset all filters to defaults
-   */
   const resetFilters = useCallback(() => {
     setFilters(defaultFilters)
     setDebouncedServiceName(undefined)
@@ -125,14 +119,11 @@ export function useTraceFilters() {
     if (operationNameTimerRef.current) clearTimeout(operationNameTimerRef.current)
   }, [])
 
-  /**
-   * Count active (non-default) filters
-   */
   const getActiveFilterCount = useCallback(() => {
     let count = 0
     if (filters.serviceName) count++
     if (filters.operationName) count++
-    if (filters.status !== null && filters.status !== undefined) count++
+    if (filters.status != null) count++
     if (filters.minDurationMs !== null) count++
     if (filters.maxDurationMs !== null) count++
     if (filters.startTime !== null) count++
@@ -143,26 +134,19 @@ export function useTraceFilters() {
     return count
   }, [filters])
 
-  /**
-   * Convert filter state to API params object
-   * Maps camelCase state properties to snake_case API parameters
-   * Filters out undefined, null, and empty strings
-   */
-  // Filter-only params (excludes pagination) - stable reference when only page changes
+  // Filter-only params (excludes pagination) -- stable reference when only page changes
   const { filterOnlyParams, computedWarnings } = useMemo(() => {
     const params: TracesFilterParams = {}
     const warnings: { durationSwapped?: boolean; timeRangeSwapped?: boolean } = {}
 
     if (filters.serviceName) params.service_name = filters.serviceName
-    if (filters.operationName) params.name = filters.operationName
-    if (filters.status !== null && filters.status !== undefined) params.status = filters.status
+    if (filters.operationName) {
+      params.name = filters.operationName
+      params.search_all_spans = true
+    }
+    if (filters.status != null) params.status = filters.status
 
-    if (
-      filters.minDurationMs !== null &&
-      filters.minDurationMs !== undefined &&
-      filters.maxDurationMs !== null &&
-      filters.maxDurationMs !== undefined
-    ) {
+    if (filters.minDurationMs != null && filters.maxDurationMs != null) {
       if (filters.minDurationMs > filters.maxDurationMs) {
         params.min_duration_ms = filters.maxDurationMs
         params.max_duration_ms = filters.minDurationMs
@@ -172,18 +156,11 @@ export function useTraceFilters() {
         params.max_duration_ms = filters.maxDurationMs
       }
     } else {
-      if (filters.minDurationMs !== null && filters.minDurationMs !== undefined)
-        params.min_duration_ms = filters.minDurationMs
-      if (filters.maxDurationMs !== null && filters.maxDurationMs !== undefined)
-        params.max_duration_ms = filters.maxDurationMs
+      if (filters.minDurationMs != null) params.min_duration_ms = filters.minDurationMs
+      if (filters.maxDurationMs != null) params.max_duration_ms = filters.maxDurationMs
     }
 
-    if (
-      filters.startTime !== null &&
-      filters.startTime !== undefined &&
-      filters.endTime !== null &&
-      filters.endTime !== undefined
-    ) {
+    if (filters.startTime != null && filters.endTime != null) {
       if (filters.startTime > filters.endTime) {
         params.start_time = filters.endTime
         params.end_time = filters.startTime
@@ -193,10 +170,8 @@ export function useTraceFilters() {
         params.end_time = filters.endTime
       }
     } else {
-      if (filters.startTime !== null && filters.startTime !== undefined)
-        params.start_time = filters.startTime
-      if (filters.endTime !== null && filters.endTime !== undefined)
-        params.end_time = filters.endTime
+      if (filters.startTime != null) params.start_time = filters.startTime
+      if (filters.endTime != null) params.end_time = filters.endTime
     }
 
     if (filters.attributes && filters.attributes.length > 0) params.attributes = filters.attributes

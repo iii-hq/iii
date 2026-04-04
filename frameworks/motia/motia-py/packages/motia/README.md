@@ -141,7 +141,6 @@ The coverage command above measures the unit-testable Python package code under 
 The integration test suite covers:
 - Bridge connection and function registration
 - API triggers (HTTP endpoints)
-- KV Server operations
 - PubSub messaging
 - Logging module
 - Motia framework integration

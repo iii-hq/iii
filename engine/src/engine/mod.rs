@@ -6,7 +6,10 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::{
+    extract::ws::{Message as WsMessage, WebSocket},
+    http::{HeaderMap, Uri},
+};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -17,10 +20,14 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
-    channels::ChannelManager,
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    modules::{http_functions::HttpFunctionsModule, worker::TRIGGER_WORKERS_AVAILABLE},
+    modules::worker::rbac_session::Session,
+    modules::{
+        engine_fn::TRIGGER_WORKERS_AVAILABLE,
+        http_functions::HttpFunctionsModule,
+        worker::{WorkerConfig, channels::ChannelManager, rbac_session},
+    },
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -30,6 +37,36 @@ use crate::{
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
 };
+
+/// Abstraction for enqueuing messages to named queues.
+///
+/// This trait decouples the Engine from the concrete QueueCoreModule
+/// so that dispatch routing can push work onto a named queue without
+/// creating a circular dependency.
+#[async_trait::async_trait]
+pub trait QueueEnqueuer: Send + Sync {
+    async fn enqueue_to_function_queue(
+        &self,
+        queue_name: &str,
+        function_id: &str,
+        data: serde_json::Value,
+        message_id: String,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> anyhow::Result<()>;
+
+    async fn function_queue_dlq_count(&self, _queue_name: &str) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    async fn function_queue_dlq_messages(
+        &self,
+        _queue_name: &str,
+        _count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(vec![])
+    }
+}
 
 /// Magic prefix for OTLP binary frames (used by SDKs for trace spans)
 const OTLP_WS_PREFIX: &[u8] = b"OTLP";
@@ -91,6 +128,7 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
+#[derive(Debug)]
 pub struct RegisterFunctionRequest {
     pub function_id: String,
     pub description: Option<String>,
@@ -99,14 +137,40 @@ pub struct RegisterFunctionRequest {
     pub metadata: Option<Value>,
 }
 
+pub type HandlerOutput = FunctionResult<Option<Value>, ErrorBody>;
+
+pub trait HandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> HandlerFn<F> for H
+where
+    H: Fn(Value) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
+pub trait SessionHandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> SessionHandlerFn<F> for H
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
 pub struct Handler<H> {
-    f: H,
+    pub f: H,
 }
 
 impl<H, F> Handler<H>
 where
     H: Fn(Value) -> F + Send + Sync + 'static,
-    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
 {
     pub fn new(f: H) -> Self {
         Self { f }
@@ -114,6 +178,20 @@ where
 
     pub fn call(&self, input: Value) -> F {
         (self.f)(input)
+    }
+}
+
+pub struct SessionHandler<H> {
+    pub f: H,
+}
+
+impl<H, F> SessionHandler<H>
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+    pub fn new(f: H) -> Self {
+        Self { f }
     }
 }
 
@@ -135,11 +213,18 @@ pub trait EngineTrait: Send + Sync {
         request: RegisterFunctionRequest,
         handler: Handler<H>,
     ) where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerRegistry>,
     pub functions: Arc<FunctionsRegistry>,
@@ -147,6 +232,13 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
+    pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Engine {
@@ -158,7 +250,12 @@ impl Engine {
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
+            queue_module: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
+        *self.queue_module.write().await = Some(module);
     }
 
     async fn send_msg(&self, worker: &Worker, msg: Message) -> bool {
@@ -198,6 +295,8 @@ impl Engine {
                 worker.add_invocation(invocation_id).await;
             }
 
+            let session = worker.session.clone();
+
             self.invocations
                 .handle_invocation(
                     invocation_id,
@@ -207,6 +306,7 @@ impl Engine {
                     function,
                     traceparent,
                     baggage,
+                    session,
                 )
                 .await
         } else {
@@ -220,6 +320,134 @@ impl Engine {
         }
     }
 
+    /// Spawns the standard invoke-function flow as a background task.
+    ///
+    /// When `invocation_id` is `Some`, an `InvocationResult` is sent back
+    /// to the caller once the function completes.  When `None`, the call
+    /// is fire-and-forget (used by the `Void` action).
+    fn spawn_invoke_function(
+        &self,
+        worker: &Worker,
+        function_id: &str,
+        data: &Value,
+        traceparent: &Option<String>,
+        baggage: &Option<String>,
+        invocation_id: Option<Uuid>,
+    ) {
+        let span = tracing::info_span!(
+            "handle_invocation",
+            otel.name = %format!("handle_invocation {}", function_id),
+            worker_id = %worker.id,
+            function_id = %function_id,
+            invocation_id = ?invocation_id,
+            otel.kind = "server",
+            otel.status_code = tracing::field::Empty,
+        )
+        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+
+        let engine = self.clone();
+        let worker = worker.clone();
+        let function_id = function_id.to_string();
+
+        // Add caller's worker_id to invocation data as standard metadata
+        let data = {
+            let mut data = data.clone();
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert(
+                    "_caller_worker_id".to_string(),
+                    serde_json::json!(worker.id.to_string()),
+                );
+            }
+            data
+        };
+        let incoming_traceparent = traceparent.clone();
+        let incoming_baggage = baggage.clone();
+
+        tokio::spawn(
+            async move {
+                let result = engine
+                    .remember_invocation(
+                        &worker,
+                        invocation_id,
+                        &function_id,
+                        data,
+                        incoming_traceparent.clone(),
+                        incoming_baggage.clone(),
+                    )
+                    .await;
+
+                if let Some(invocation_id) = invocation_id {
+                    let current_ctx = tracing::Span::current().context();
+                    let response_traceparent =
+                        inject_traceparent_from_context(&current_ctx).or(incoming_traceparent);
+                    let response_baggage =
+                        inject_baggage_from_context(&current_ctx).or(incoming_baggage);
+
+                    match result {
+                        Ok(result) => match result {
+                            Ok(result) => {
+                                tracing::Span::current().record("otel.status_code", "OK");
+                                engine
+                                    .send_msg(
+                                        &worker,
+                                        Message::InvocationResult {
+                                            invocation_id,
+                                            function_id: function_id.clone(),
+                                            result: result.clone(),
+                                            error: None,
+                                            traceparent: response_traceparent.clone(),
+                                            baggage: response_baggage.clone(),
+                                        },
+                                    )
+                                    .await;
+                            }
+                            Err(err) => {
+                                tracing::Span::current().record("otel.status_code", "ERROR");
+                                engine
+                                    .send_msg(
+                                        &worker,
+                                        Message::InvocationResult {
+                                            invocation_id,
+                                            function_id: function_id.clone(),
+                                            result: None,
+                                            error: Some(err.clone()),
+                                            traceparent: response_traceparent.clone(),
+                                            baggage: response_baggage.clone(),
+                                        },
+                                    )
+                                    .await;
+                            }
+                        },
+                        Err(err) => {
+                            tracing::Span::current().record("otel.status_code", "ERROR");
+                            tracing::error!(error = ?err, "Error remembering invocation");
+                            engine
+                                .send_msg(
+                                    &worker,
+                                    Message::InvocationResult {
+                                        invocation_id,
+                                        function_id: function_id.clone(),
+                                        result: None,
+                                        error: Some(ErrorBody {
+                                            code: "invocation_error".into(),
+                                            message: err.to_string(),
+                                            stacktrace: None,
+                                        }),
+                                        traceparent: response_traceparent,
+                                        baggage: response_baggage,
+                                    },
+                                )
+                                .await;
+                        }
+                    }
+
+                    worker.remove_invocation(&invocation_id).await;
+                }
+            }
+            .instrument(span),
+        );
+    }
+
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
@@ -231,19 +459,78 @@ impl Engine {
                 tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
                 Ok(())
             }
-            Message::RegisterTriggerType { id, description } => {
+            Message::RegisterTriggerType {
+                id,
+                description,
+                trigger_request_format,
+                call_request_format,
+            } => {
                 tracing::debug!(
                     worker_id = %worker.id,
                     trigger_type_id = %id,
                     description = %description,
                     "RegisterTriggerType"
                 );
-                let trigger_type = TriggerType {
-                    id: id.clone(),
-                    _description: description.clone(),
-                    registrator: Box::new(worker.clone()),
-                    worker_id: Some(worker.id),
-                };
+
+                let mut reg_id = id.clone();
+                let mut reg_description = description.clone();
+
+                if let Some(session) = &worker.session {
+                    if !session.allow_trigger_type_registration {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            trigger_type_id = %id,
+                            "trigger type registration not allowed for this session"
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(hook_fn_id) = session
+                        .config
+                        .rbac
+                        .as_ref()
+                        .and_then(|c| c.on_trigger_type_registration_function_id.as_ref())
+                    {
+                        let hook_input = serde_json::json!({
+                            "trigger_type_id": id,
+                            "description": description,
+                            "context": session.context,
+                        });
+                        match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) if v.is_object() => {
+                                if let Some(s) = v.get("trigger_type_id").and_then(|v| v.as_str()) {
+                                    reg_id = s.to_string();
+                                }
+                                if let Some(s) = v.get("description").and_then(|v| v.as_str()) {
+                                    reg_description = s.to_string();
+                                }
+                            }
+                            other => {
+                                tracing::warn!(
+                                    worker_id = %worker.id,
+                                    trigger_type_id = %id,
+                                    result = ?other,
+                                    "trigger type registration denied by hook"
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                let mut trigger_type = TriggerType::new(
+                    reg_id,
+                    reg_description,
+                    Box::new(worker.clone()),
+                    Some(worker.id),
+                );
+                // Allow SDK workers to override formats from the protocol message
+                if let Some(fmt) = trigger_request_format {
+                    trigger_type.trigger_request_format = Some(fmt.clone());
+                }
+                if let Some(fmt) = call_request_format {
+                    trigger_type.call_request_format = Some(fmt.clone());
+                }
 
                 let _ = self
                     .trigger_registry
@@ -257,6 +544,7 @@ impl Engine {
                 trigger_type,
                 function_id,
                 config,
+                metadata,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
@@ -266,14 +554,82 @@ impl Engine {
                     "RegisterTrigger"
                 );
 
+                let mut reg_trigger_id = id.clone();
+                let mut reg_trigger_type = trigger_type.clone();
+                let mut reg_function_id = function_id.clone();
+                let mut reg_config = config.clone();
+
+                if let Some(session) = &worker.session {
+                    if let Some(allowed_trigger_types) = &session.allowed_trigger_types
+                        && !allowed_trigger_types.iter().any(|t| t == trigger_type)
+                    {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            trigger_type = %trigger_type,
+                            "trigger registration not allowed for type"
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(hook_fn_id) = session
+                        .config
+                        .rbac
+                        .as_ref()
+                        .and_then(|c| c.on_trigger_registration_function_id.as_ref())
+                    {
+                        let hook_input = serde_json::json!({
+                            "trigger_id": id,
+                            "trigger_type": trigger_type,
+                            "function_id": function_id,
+                            "config": config,
+                            "metadata": metadata,
+                            "context": session.context,
+                        });
+                        match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) if v.is_object() => {
+                                if let Some(s) = v.get("trigger_id").and_then(|v| v.as_str()) {
+                                    reg_trigger_id = s.to_string();
+                                }
+                                if let Some(s) = v.get("trigger_type").and_then(|v| v.as_str()) {
+                                    reg_trigger_type = s.to_string();
+                                }
+                                if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
+                                    reg_function_id = s.to_string();
+                                }
+                                if let Some(c) = v.get("config").cloned() {
+                                    reg_config = c;
+                                }
+                            }
+                            other => {
+                                tracing::warn!(
+                                    worker_id = %worker.id,
+                                    trigger_id = %id,
+                                    result = ?other,
+                                    "trigger registration denied by hook"
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(prefix) = worker
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.function_registration_prefix.as_ref())
+                {
+                    reg_function_id = format!("{prefix}::{reg_function_id}");
+                }
+
                 let _ = self
                     .trigger_registry
                     .register_trigger(Trigger {
-                        id: id.clone(),
-                        trigger_type: trigger_type.clone(),
-                        function_id: function_id.clone(),
-                        config: config.clone(),
+                        id: reg_trigger_id,
+                        trigger_type: reg_trigger_type,
+                        function_id: reg_function_id,
+                        config: reg_config,
                         worker_id: Some(worker.id),
+                        metadata: metadata.clone(),
                     })
                     .await;
                 crate::modules::telemetry::collector::track_trigger_registered();
@@ -301,6 +657,7 @@ impl Engine {
                 data,
                 traceparent,
                 baggage,
+                action,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -308,130 +665,190 @@ impl Engine {
                     function_id = %function_id,
                     traceparent = ?traceparent,
                     baggage = ?baggage,
+                    action = ?action,
                     payload = ?data,
                     "InvokeFunction"
                 );
 
-                // Create a span that's linked to the incoming trace context (if any)
-                let span = tracing::info_span!(
-                    "handle_invocation",
-                    otel.name = %format!("handle_invocation {}", function_id),
-                    worker_id = %worker.id,
-                    function_id = %function_id,
-                    invocation_id = ?invocation_id,
-                    otel.kind = "server",
-                    otel.status_code = tracing::field::Empty,
-                )
-                .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
-
-                let engine = self.clone();
-                let worker = worker.clone();
-                let invocation_id = *invocation_id;
-                let function_id = function_id.to_string();
-
-                // Add caller's worker_id to invocation data as standard metadata
-                let data = {
-                    let mut data = data.clone();
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert(
-                            "_caller_worker_id".to_string(),
-                            serde_json::json!(worker.id.to_string()),
-                        );
+                if let Some(session) = &worker.session {
+                    let function = self.functions.get(function_id);
+                    if !crate::modules::worker::rbac_config::is_function_allowed(
+                        function_id,
+                        session.config.rbac.clone(),
+                        &session.allowed_functions,
+                        &session.forbidden_functions,
+                        function.as_ref(),
+                    ) {
+                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: inv_id,
+                                function_id: function_id.clone(),
+                                result: None,
+                                error: Some(ErrorBody::new("FORBIDDEN", "function not allowed")),
+                                traceparent: traceparent.clone(),
+                                baggage: baggage.clone(),
+                            },
+                        )
+                        .await;
+                        return Ok(());
                     }
-                    data
-                };
-                let incoming_traceparent = traceparent.clone();
-                let incoming_baggage = baggage.clone();
 
-                tokio::spawn(
-                    async move {
-                        let result = engine
-                            .remember_invocation(
-                                &worker,
-                                invocation_id,
-                                &function_id,
-                                data,
-                                incoming_traceparent.clone(),
-                                incoming_baggage.clone(),
-                            )
-                            .await;
+                    if let Some(middleware_id) = &session.config.middleware_function_id {
+                        if !function_id.starts_with("engine::") {
+                            let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                            let middleware_input = serde_json::json!({
+                                "function_id": function_id,
+                                "payload": data,
+                                "action": action,
+                                "context": session.context,
+                            });
+                            let engine = self.clone();
+                            let w = worker.clone();
+                            let middleware_id = middleware_id.clone();
+                            let function_id = function_id.clone();
+                            let traceparent = traceparent.clone();
+                            let baggage = baggage.clone();
 
-                        if let Some(invocation_id) = invocation_id {
-                            // Inject traceparent/baggage from the span's explicit context
-                            // (using tracing::Span::current().context() for reliable propagation)
-                            let current_ctx = tracing::Span::current().context();
-                            let response_traceparent =
-                                inject_traceparent_from_context(&current_ctx)
-                                    .or(incoming_traceparent);
-                            let response_baggage =
-                                inject_baggage_from_context(&current_ctx).or(incoming_baggage);
-
-                            match result {
-                                Ok(result) => match result {
-                                    Ok(result) => {
-                                        tracing::Span::current().record("otel.status_code", "OK");
-                                        engine
-                                            .send_msg(
-                                                &worker,
-                                                Message::InvocationResult {
-                                                    invocation_id,
-                                                    function_id: function_id.clone(),
-                                                    result: result.clone(),
-                                                    error: None,
-                                                    traceparent: response_traceparent.clone(),
-                                                    baggage: response_baggage.clone(),
-                                                },
-                                            )
-                                            .await;
-                                    }
-                                    Err(err) => {
-                                        tracing::Span::current()
-                                            .record("otel.status_code", "ERROR");
-                                        engine
-                                            .send_msg(
-                                                &worker,
-                                                Message::InvocationResult {
-                                                    invocation_id,
-                                                    function_id: function_id.clone(),
-                                                    result: None,
-                                                    error: Some(err.clone()),
-                                                    traceparent: response_traceparent.clone(),
-                                                    baggage: response_baggage.clone(),
-                                                },
-                                            )
-                                            .await;
-                                    }
-                                },
-                                Err(err) => {
-                                    tracing::Span::current().record("otel.status_code", "ERROR");
-                                    tracing::error!(error = ?err, "Error remembering invocation");
-                                    engine
-                                        .send_msg(
-                                            &worker,
-                                            Message::InvocationResult {
-                                                invocation_id,
-                                                function_id: function_id.clone(),
-                                                result: None,
-                                                error: Some(ErrorBody {
-                                                    code: "invocation_error".into(),
-                                                    message: err.to_string(),
-                                                    stacktrace: None,
-                                                }),
-                                                traceparent: response_traceparent,
-                                                baggage: response_baggage,
-                                            },
-                                        )
-                                        .await;
-                                }
-                            }
-
-                            worker.remove_invocation(&invocation_id).await;
+                            tokio::spawn(async move {
+                                let response =
+                                    match engine.call(&middleware_id, middleware_input).await {
+                                        Ok(result) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result,
+                                            error: None,
+                                            traceparent,
+                                            baggage,
+                                        },
+                                        Err(err) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result: None,
+                                            error: Some(err),
+                                            traceparent,
+                                            baggage,
+                                        },
+                                    };
+                                engine.send_msg(&w, response).await;
+                            });
+                            return Ok(());
                         }
                     }
-                    .instrument(span),
-                );
+                }
 
-                Ok(())
+                match action {
+                    Some(crate::protocol::TriggerAction::Enqueue { queue }) => {
+                        let engine = self.clone();
+                        let worker = worker.clone();
+                        let invocation_id = *invocation_id;
+                        let function_id = function_id.to_string();
+                        let queue = queue.to_string();
+                        let message_receipt_id = Uuid::new_v4().to_string();
+                        let data = data.clone();
+                        let traceparent = traceparent.clone();
+                        let baggage = baggage.clone();
+
+                        let span = tracing::info_span!(
+                            "enqueue_action",
+                            otel.name = %format!("enqueue {} → {}", function_id, queue),
+                            function_id = %function_id,
+                            queue = %queue,
+                        )
+                        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+
+                        tokio::spawn(
+                            async move {
+                                let queue_module = engine.queue_module.read().await;
+                                let result = match queue_module.as_ref() {
+                                    Some(qm) => {
+                                        qm.enqueue_to_function_queue(
+                                            &queue,
+                                            &function_id,
+                                            data.clone(),
+                                            message_receipt_id.clone(),
+                                            traceparent.clone(),
+                                            baggage.clone(),
+                                        )
+                                        .await
+                                    }
+                                    None => Err(anyhow::anyhow!("QueueModule not loaded")),
+                                };
+
+                                if let Some(invocation_id) = invocation_id {
+                                    match result {
+                                        Ok(()) => {
+                                            engine
+                                                .send_msg(
+                                                    &worker,
+                                                    Message::InvocationResult {
+                                                        invocation_id,
+                                                        function_id: function_id.clone(),
+                                                        result: Some(serde_json::json!({
+                                                            "messageReceiptId": message_receipt_id
+                                                        })),
+                                                        error: None,
+                                                        traceparent: traceparent.clone(),
+                                                        baggage: baggage.clone(),
+                                                    },
+                                                )
+                                                .await;
+                                        }
+                                        Err(err) => {
+                                            engine
+                                                .send_msg(
+                                                    &worker,
+                                                    Message::InvocationResult {
+                                                        invocation_id,
+                                                        function_id: function_id.clone(),
+                                                        result: None,
+                                                        error: Some(ErrorBody::new(
+                                                            "enqueue_error",
+                                                            err.to_string(),
+                                                        )),
+                                                        traceparent: traceparent.clone(),
+                                                        baggage: baggage.clone(),
+                                                    },
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                }
+                            }
+                            .instrument(span),
+                        );
+
+                        Ok(())
+                    }
+
+                    Some(crate::protocol::TriggerAction::Void) => {
+                        // Fire-and-forget: invoke function but never send
+                        // InvocationResult back to the caller.
+                        self.spawn_invoke_function(
+                            worker,
+                            function_id,
+                            data,
+                            traceparent,
+                            baggage,
+                            None, // force invocation_id to None — no result sent
+                        );
+                        Ok(())
+                    }
+
+                    None => {
+                        // Default behavior: invoke and (optionally) return result.
+                        self.spawn_invoke_function(
+                            worker,
+                            function_id,
+                            data,
+                            traceparent,
+                            baggage,
+                            *invocation_id,
+                        );
+                        Ok(())
+                    }
+                }
             }
             Message::InvocationResult {
                 invocation_id,
@@ -520,7 +937,67 @@ impl Engine {
                     "RegisterFunction"
                 );
 
-                self.service_registry.register_service_from_function_id(id);
+                let mut reg_id = id.clone();
+                let mut reg_description = description.clone();
+                let mut reg_metadata = metadata.clone();
+
+                if let Some(session) = &worker.session {
+                    if !session.allow_function_registration {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %id,
+                            "function registration not allowed for this session"
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(hook_fn_id) = session
+                        .config
+                        .rbac
+                        .as_ref()
+                        .and_then(|c| c.on_function_registration_function_id.as_ref())
+                    {
+                        let hook_input = serde_json::json!({
+                            "function_id": id,
+                            "description": description,
+                            "metadata": metadata,
+                            "context": session.context,
+                        });
+                        match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) if v.is_object() => {
+                                if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
+                                    reg_id = s.to_string();
+                                }
+                                if let Some(s) = v.get("description").and_then(|v| v.as_str()) {
+                                    reg_description = Some(s.to_string());
+                                }
+                                if let Some(m) = v.get("metadata").cloned() {
+                                    reg_metadata = Some(m);
+                                }
+                            }
+                            other => {
+                                tracing::warn!(
+                                    worker_id = %worker.id,
+                                    function_id = %id,
+                                    result = ?other,
+                                    "function registration denied by hook"
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(prefix) = worker
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.function_registration_prefix.as_ref())
+                {
+                    reg_id = format!("{prefix}::{reg_id}");
+                }
+
+                self.service_registry
+                    .register_service_from_function_id(&reg_id);
 
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
@@ -529,23 +1006,23 @@ impl Engine {
                     else {
                         tracing::error!(
                             worker_id = %worker.id,
-                            function_id = %id,
+                            function_id = %reg_id,
                             "HTTP functions module not loaded"
                         );
                         return Ok(());
                     };
 
                     let config = HttpFunctionConfig {
-                        function_path: id.clone(),
+                        function_path: reg_id.clone(),
                         url: invocation.url.clone(),
                         method: invocation.method.clone(),
                         timeout_ms: invocation.timeout_ms,
                         headers: invocation.headers.clone(),
                         auth: invocation.auth.clone(),
-                        description: description.clone(),
+                        description: reg_description.clone(),
                         request_format: req.clone(),
                         response_format: res.clone(),
-                        metadata: metadata.clone(),
+                        metadata: reg_metadata.clone(),
                         registered_at: Some(Utc::now()),
                         updated_at: None,
                     };
@@ -553,40 +1030,43 @@ impl Engine {
                     if let Err(err) = http_module.register_http_function(config).await {
                         tracing::error!(
                             worker_id = %worker.id,
-                            function_id = %id,
+                            function_id = %reg_id,
                             error = ?err,
                             "Failed to register HTTP invocation function"
                         );
                         return Ok(());
                     }
 
-                    worker.include_external_function_id(id).await;
+                    worker.include_external_function_id(&reg_id).await;
                     return Ok(());
                 }
 
                 self.register_function(
                     RegisterFunctionRequest {
-                        function_id: id.clone(),
-                        description: description.clone(),
+                        function_id: reg_id.clone(),
+                        description: reg_description,
                         request_format: req.clone(),
                         response_format: res.clone(),
-                        metadata: metadata.clone(),
+                        metadata: reg_metadata,
                     },
                     Box::new(worker.clone()),
                 );
 
-                worker.include_function_id(id).await;
+                worker.include_function_id(&reg_id).await;
                 Ok(())
             }
             Message::RegisterService {
                 id,
                 name,
                 description,
+                parent_service_id,
             } => {
+                let effective_name = if name.is_empty() { &id } else { &name };
                 tracing::debug!(
                     service_id = %id,
-                    service_name = %name,
+                    service_name = %effective_name,
                     description = ?description,
+                    parent_service_id = ?parent_service_id,
                     "RegisterService"
                 );
                 let services = self
@@ -597,8 +1077,11 @@ impl Engine {
                     .collect::<Vec<_>>();
                 tracing::debug!(services = ?services, "Current services");
 
-                self.service_registry
-                    .insert_service(Service::new(name.clone(), id.clone()));
+                self.service_registry.insert_service(Service::with_parent(
+                    effective_name.to_string(),
+                    id.clone(),
+                    parent_service_id.clone(),
+                ));
 
                 Ok(())
             }
@@ -639,7 +1122,7 @@ impl Engine {
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
                 }
-                .instrument(tracing::info_span!(parent: parent, "fire_trigger", function_id = %span_function_id, otel.status_code = tracing::field::Empty))
+                .instrument(tracing::info_span!(parent: parent, "trigger", otel.name = %format!("trigger {}", span_function_id), function_id = %span_function_id, otel.status_code = tracing::field::Empty))
             );
         }
     }
@@ -648,10 +1131,32 @@ impl Engine {
         &self,
         socket: WebSocket,
         peer: SocketAddr,
+        uri: Uri,
+        headers: HeaderMap,
+        config: Arc<WorkerConfig>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
         tracing::debug!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
+
+        let session =
+            match rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers)
+                .await
+            {
+                Ok(session) => session,
+                Err(err) => {
+                    let error_msg = serde_json::json!({
+                        "type": "error",
+                        "error": { "code": err.code, "message": err.message }
+                    });
+                    let _ = ws_tx
+                        .send(WsMessage::Text(error_msg.to_string().into()))
+                        .await;
+                    let _ = ws_tx.send(WsMessage::Close(None)).await;
+                    return Ok(());
+                }
+            };
+
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
 
         let writer = tokio::spawn(async move {
@@ -673,7 +1178,7 @@ impl Engine {
             }
         });
 
-        let worker = Worker::with_ip(tx.clone(), peer.ip().to_string());
+        let worker = Worker::with_session(tx.clone(), session);
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
@@ -831,6 +1336,7 @@ impl EngineTrait for Engine {
                     function,
                     traceparent,
                     baggage,
+                    None,
                 )
                 .await;
 
@@ -885,7 +1391,7 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input, _session| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
@@ -903,15 +1409,42 @@ impl EngineTrait for Engine {
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
     where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input| {
+            handler: Arc::new(move |_id, input, _session| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
+            }),
+            _function_id: request.function_id.clone(),
+            _description: request.description,
+            request_format: request.request_format,
+            response_format: request.response_format,
+            metadata: request.metadata,
+        };
+
+        self.functions
+            .register_function(request.function_id, function);
+    }
+
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
+    {
+        let handler_arc: Arc<H> = Arc::new(handler.f);
+
+        let function = Function {
+            handler: Arc::new(move |_id, input, session| {
+                let handler = handler_arc.clone();
+                let session = session.clone();
+                Box::pin(async move { handler(input, session).await })
             }),
             _function_id: request.function_id.clone(),
             _description: request.description,
@@ -944,10 +1477,10 @@ mod tests {
         config::SecurityConfig,
         function::FunctionResult,
         modules::{
+            engine_fn::TRIGGER_WORKERS_AVAILABLE,
             http_functions::{HttpFunctionsModule, config::HttpFunctionsConfig},
             module::Module,
             observability::metrics::ensure_default_meter,
-            worker::TRIGGER_WORKERS_AVAILABLE,
         },
         protocol::{HttpInvocationRef, Message},
         workers::Worker,
@@ -1178,6 +1711,8 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "my_trigger_type".to_string(),
             description: "A test trigger type".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -1198,6 +1733,7 @@ mod tests {
             trigger_type: "my_trigger_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -1225,6 +1761,8 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "unreg_type".to_string(),
             description: "Trigger type for unregister test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -1237,6 +1775,7 @@ mod tests {
             trigger_type: "unreg_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -1306,6 +1845,7 @@ mod tests {
             data: serde_json::json!({"input": "test"}),
             traceparent: None,
             baggage: None,
+            action: None,
         };
 
         engine
@@ -1353,6 +1893,7 @@ mod tests {
             data: json!({ "value": 1 }),
             traceparent: None,
             baggage: None,
+            action: None,
         };
 
         engine
@@ -1417,6 +1958,7 @@ mod tests {
             data: json!({ "value": 2 }),
             traceparent: None,
             baggage: None,
+            action: None,
         };
 
         engine
@@ -1464,6 +2006,7 @@ mod tests {
             data: json!({}),
             traceparent: None,
             baggage: None,
+            action: None,
         };
 
         engine
@@ -1610,20 +2153,20 @@ mod tests {
         let worker = Worker::new(tx);
 
         engine
-            .register_trigger_type(crate::trigger::TriggerType {
-                id: "duplicate".to_string(),
-                _description: "first".to_string(),
-                registrator: Box::new(worker.clone()),
-                worker_id: Some(worker.id),
-            })
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "duplicate",
+                "first",
+                Box::new(worker.clone()),
+                Some(worker.id),
+            ))
             .await;
         engine
-            .register_trigger_type(crate::trigger::TriggerType {
-                id: "duplicate".to_string(),
-                _description: "second".to_string(),
-                registrator: Box::new(worker.clone()),
-                worker_id: Some(worker.id),
-            })
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "duplicate",
+                "second",
+                Box::new(worker.clone()),
+                Some(worker.id),
+            ))
             .await;
 
         assert_eq!(engine.trigger_registry.trigger_types.len(), 1);
@@ -1661,6 +2204,7 @@ mod tests {
                 function_id: "engine::fire".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
         engine.trigger_registry.triggers.insert(
@@ -1671,6 +2215,7 @@ mod tests {
                 function_id: "engine::fire".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -1884,6 +2429,8 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "cleanup_trigger_type".to_string(),
             description: "Trigger type for cleanup test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -1896,6 +2443,7 @@ mod tests {
             trigger_type: "cleanup_trigger_type".to_string(),
             function_id: "some_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2150,6 +2698,7 @@ mod tests {
             id: "service-1".to_string(),
             name: "my-service".to_string(),
             description: Some("A test service".to_string()),
+            parent_service_id: None,
         };
 
         engine
@@ -2175,6 +2724,7 @@ mod tests {
             id: "service-2".to_string(),
             name: "minimal-service".to_string(),
             description: None,
+            parent_service_id: None,
         };
 
         engine
@@ -2297,6 +2847,8 @@ mod tests {
         let tt_msg = Message::RegisterTriggerType {
             id: "cleanup_trigger_type".to_string(),
             description: "Test trigger type for cleanup".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &tt_msg)
@@ -2309,6 +2861,7 @@ mod tests {
             trigger_type: "cleanup_trigger_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &t_msg)
@@ -2445,5 +2998,54 @@ mod tests {
             handled,
             "OTLP prefix with empty payload should still be handled"
         );
+    }
+
+    #[tokio::test]
+    async fn test_router_msg_register_trigger_with_metadata() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = Worker::new(tx);
+
+        let register_type_msg = Message::RegisterTriggerType {
+            id: "metadata_type".to_string(),
+            description: "Trigger type for metadata test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&worker, &register_type_msg)
+            .await
+            .unwrap();
+
+        let register_trigger_msg = Message::RegisterTrigger {
+            id: "trigger_meta_1".to_string(),
+            trigger_type: "metadata_type".to_string(),
+            function_id: "handler_func".to_string(),
+            config: serde_json::json!({"key": "value"}),
+            metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
+        };
+        engine
+            .router_msg(&worker, &register_trigger_msg)
+            .await
+            .unwrap();
+
+        assert!(
+            engine
+                .trigger_registry
+                .triggers
+                .contains_key("trigger_meta_1")
+        );
+        let trigger = engine
+            .trigger_registry
+            .triggers
+            .get("trigger_meta_1")
+            .unwrap();
+        assert_eq!(
+            trigger.metadata,
+            Some(serde_json::json!({"team": "platform", "env": "staging"}))
+        );
+
+        while rx.try_recv().is_ok() {}
     }
 }

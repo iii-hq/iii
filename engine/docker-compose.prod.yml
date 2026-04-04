@@ -18,6 +18,8 @@ services:
     image: iiidev/iii:latest
     volumes:
       - ./config.prod.yaml:/app/config.yaml:ro
+    environment:
+      - III_EXECUTION_CONTEXT=docker
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 3111 || exit 1"]
       interval: 10s

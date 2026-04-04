@@ -7,7 +7,10 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use iii_sdk::{III, IIIError};
+use iii_sdk::{
+    III, IIIError, InitOptions, RegisterFunctionMessage, RegisterServiceMessage, TriggerAction,
+    TriggerRequest, register_worker,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -19,6 +22,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BridgeClientConfig {
     #[serde(default)]
     pub url: Option<String>,
@@ -33,6 +37,7 @@ pub struct BridgeClientConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExposeFunctionConfig {
     pub local_function: String,
     #[serde(default)]
@@ -40,6 +45,7 @@ pub struct ExposeFunctionConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForwardFunctionConfig {
     pub local_function: String,
     pub remote_function: String,
@@ -78,10 +84,10 @@ impl Module for BridgeClientModule {
         let url = config
             .url
             .clone()
-            .or_else(|| std::env::var("III_BRIDGE_URL").ok())
+            .or_else(|| std::env::var("III_URL").ok())
             .unwrap_or_else(|| "ws://0.0.0.0:49134".to_string());
 
-        let bridge = III::new(&url);
+        let bridge = register_worker(&url, InitOptions::default());
 
         Ok(Box::new(Self {
             engine,
@@ -122,12 +128,17 @@ impl Module for BridgeClientModule {
                         .unwrap_or_else(|| Duration::from_secs(30));
 
                     match bridge
-                        .call_with_timeout(&invoke.function_id, invoke.data, timeout)
+                        .trigger(TriggerRequest {
+                            function_id: invoke.function_id,
+                            payload: invoke.data,
+                            action: None,
+                            timeout_ms: Some(timeout.as_millis() as u64),
+                        })
                         .await
                     {
                         Ok(result) => FunctionResult::Success(Some(result)),
                         Err(err) => {
-                            tracing::error!(error = ?err, "Bridge call_with_timeout failed");
+                            tracing::error!(error = ?err, "Bridge trigger failed");
                             FunctionResult::Failure(ErrorBody {
                                 code: "bridge_error".into(),
                                 message: err.to_string(),
@@ -163,8 +174,16 @@ impl Module for BridgeClientModule {
                         }
                     };
 
-                    if let Err(err) = bridge.call_void(&invoke.function_id, invoke.data) {
-                        tracing::error!(error = ?err, "Bridge call_void failed");
+                    if let Err(err) = bridge
+                        .trigger(TriggerRequest {
+                            function_id: invoke.function_id,
+                            payload: invoke.data,
+                            action: Some(TriggerAction::Void),
+                            timeout_ms: None,
+                        })
+                        .await
+                    {
+                        tracing::error!(error = ?err, "Bridge fire-and-forget failed");
                         return FunctionResult::Failure(ErrorBody {
                             code: "bridge_error".into(),
                             message: err.to_string(),
@@ -200,12 +219,17 @@ impl Module for BridgeClientModule {
                             .unwrap_or_else(|| Duration::from_secs(30));
 
                         match bridge
-                            .call_with_timeout(&remote_function, input, timeout)
+                            .trigger(TriggerRequest {
+                                function_id: remote_function,
+                                payload: input,
+                                action: None,
+                                timeout_ms: Some(timeout.as_millis() as u64),
+                            })
                             .await
                         {
                             Ok(result) => FunctionResult::Success(Some(result)),
                             Err(err) => {
-                                tracing::error!(error = ?err, "Bridge call_with_timeout failed");
+                                tracing::error!(error = ?err, "Bridge trigger failed");
                                 FunctionResult::Failure(ErrorBody {
                                     code: "bridge_error".into(),
                                     message: err.to_string(),
@@ -220,19 +244,18 @@ impl Module for BridgeClientModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        self.bridge
-            .connect()
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-
         if let Some(service_id) = &self.config.service_id {
             let name = self
                 .config
                 .service_name
                 .clone()
                 .unwrap_or_else(|| service_id.clone());
-            self.bridge
-                .register_service_with_name(service_id.clone(), name, None);
+            self.bridge.register_service(RegisterServiceMessage {
+                id: service_id.clone(),
+                name,
+                description: None,
+                parent_service_id: None,
+            });
         }
 
         for expose in &self.config.expose {
@@ -244,20 +267,30 @@ impl Module for BridgeClientModule {
                 .clone()
                 .unwrap_or_else(|| local_function.clone());
 
-            bridge.register_function(remote_function, move |input| {
-                let engine = engine.clone();
-                let local_function = local_function.clone();
-                async move {
-                    match engine.call(&local_function, input).await {
-                        Ok(result) => Ok(result.unwrap_or(Value::Null)),
-                        Err(err) => Err(IIIError::Remote {
-                            code: err.code,
-                            message: err.message,
-                            stacktrace: err.stacktrace,
-                        }),
+            bridge.register_function((
+                RegisterFunctionMessage {
+                    id: remote_function,
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+                move |input| {
+                    let engine = engine.clone();
+                    let local_function = local_function.clone();
+                    async move {
+                        match engine.call(&local_function, input).await {
+                            Ok(result) => Ok(result.unwrap_or(Value::Null)),
+                            Err(err) => Err(IIIError::Remote {
+                                code: err.code,
+                                message: err.message,
+                                stacktrace: err.stacktrace,
+                            }),
+                        }
                     }
-                }
-            });
+                },
+            ));
         }
 
         Ok(())
@@ -285,7 +318,7 @@ mod tests {
     fn build_module(config: BridgeClientConfig) -> BridgeClientModule {
         BridgeClientModule {
             engine: Arc::new(Engine::new()),
-            bridge: III::new("ws://127.0.0.1:9"),
+            bridge: register_worker("ws://127.0.0.1:9", InitOptions::default()),
             config,
         }
     }
@@ -336,6 +369,7 @@ mod tests {
                                 data: json!({ "source": "server" }),
                                 traceparent: None,
                                 baggage: None,
+                                action: None,
                             };
                             websocket
                                 .send(WsMessage::Text(
@@ -395,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn bridge_client_create_register_initialize_and_handlers_work() {
         unsafe {
-            std::env::remove_var("III_BRIDGE_URL");
+            std::env::remove_var("III_URL");
         }
 
         let created = BridgeClientModule::create(Arc::new(Engine::new()), None)
@@ -433,7 +467,7 @@ mod tests {
             .expect("bridge.invoke handler");
         match invoke
             .clone()
-            .call_handler(None, json!({ "bad": true }))
+            .call_handler(None, json!({ "bad": true }), None)
             .await
         {
             FunctionResult::Failure(err) => assert_eq!(err.code, "deserialization_error"),
@@ -447,6 +481,7 @@ mod tests {
                     "data": { "hello": "world" },
                     "timeout_ms": 1
                 }),
+                None,
             )
             .await
         {
@@ -468,6 +503,7 @@ mod tests {
                     "function_id": "remote.echo",
                     "data": { "hello": "world" }
                 }),
+                None,
             )
             .await
         {
@@ -479,7 +515,10 @@ mod tests {
             .functions
             .get("forward.echo")
             .expect("forward handler");
-        match forward.call_handler(None, json!({ "value": 1 })).await {
+        match forward
+            .call_handler(None, json!({ "value": 1 }), None)
+            .await
+        {
             FunctionResult::Failure(err) => {
                 assert_eq!(err.code, "bridge_error");
                 assert!(!err.message.is_empty());
@@ -534,7 +573,7 @@ mod tests {
             .get("bridge.invoke_async")
             .expect("bridge.invoke_async handler");
         match invoke_async
-            .call_handler(None, json!({ "bad": true }))
+            .call_handler(None, json!({ "bad": true }), None)
             .await
         {
             FunctionResult::Failure(err) => assert_eq!(err.code, "deserialization_error"),

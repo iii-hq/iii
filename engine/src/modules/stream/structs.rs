@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use axum::extract::ws::Message as WsMessage;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -74,7 +75,7 @@ pub enum StreamOutbound {
     Raw(WsMessage),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSetInput {
     pub stream_name: String,
     pub group_id: String,
@@ -82,27 +83,27 @@ pub struct StreamSetInput {
     pub data: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamGetInput {
     pub stream_name: String,
     pub group_id: String,
     pub item_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamDeleteInput {
     pub stream_name: String,
     pub group_id: String,
     pub item_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamListInput {
     pub stream_name: String,
     pub group_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamListGroupsInput {
     pub stream_name: String,
 }
@@ -135,7 +136,7 @@ pub struct StreamJoinResult {
 }
 
 /// Input for atomic stream update operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamUpdateInput {
     pub stream_name: String,
     pub group_id: String,
@@ -144,10 +145,10 @@ pub struct StreamUpdateInput {
 }
 
 /// Input for stream.listAll (empty struct)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamListAllInput {}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSendInput {
     pub stream_name: String,
     pub group_id: String,
@@ -158,10 +159,16 @@ pub struct StreamSendInput {
 }
 
 /// Metadata for a stream (used by stream.listAll)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamMetadata {
     pub id: String,
     pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StreamListAllResult {
+    pub stream: Vec<StreamMetadata>,
+    pub count: usize,
 }
 
 #[cfg(test)]

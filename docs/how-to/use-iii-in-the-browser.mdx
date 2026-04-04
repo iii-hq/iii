@@ -1,0 +1,221 @@
+---
+title: 'Use iii in the Browser'
+description: 'Connect your frontend directly to iii using the browser SDK for real-time, bi-directional communication.'
+---
+
+## Goal
+
+Connect a browser application directly to the iii engine over WebSocket so frontend code can call backend functions and receive live invocations — without HTTP endpoints in between.
+
+## Why the browser SDK instead of HTTP calls
+
+With a traditional HTTP setup, every interaction follows the same pattern: the browser sends a request, waits for a response, and repeats. Real-time features require polling or bolting on a separate WebSocket layer.
+
+The browser SDK turns your frontend into a **first-class iii worker**:
+
+- **Persistent connection** — one WebSocket replaces many HTTP round-trips. No per-request handshake, no CORS preflight on every call.
+- **Bi-directional** — the engine can invoke functions registered in the browser. Backend workers push data to the frontend with `trigger()`, enabling real-time patterns without polling.
+- **Same API** — `registerFunction`, `trigger`, `registerTrigger`, `onFunctionsAvailable` — all the primitives you use server-side work identically in the browser.
+- **Type-safe** — the same TypeScript types (`ISdk`, `TriggerRequest`, `ApiRequest`) are shared between `iii-sdk` and `iii-browser-sdk`.
+
+## Prerequisites
+
+- A running iii engine with the **WorkerModule** enabled and RBAC configured (see [Worker RBAC](/how-to/worker-rbac)).
+- `iii-browser-sdk` installed in your frontend project.
+
+## Steps
+
+### 1. Install the browser SDK
+
+```bash
+npm install iii-browser-sdk
+```
+
+### 2. Enable the WorkerModule with RBAC
+
+Browser workers connect through the RBAC port, not the internal bridge. Add a `WorkerModule` to your engine config:
+
+```yaml title="iii-config.yaml"
+modules:
+  # ... your existing modules ...
+
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49135
+      rbac:
+        expose_functions:
+          - match("api::*")
+          - match("stream::*")
+          - match("state::*")
+```
+
+<Info title="Security">
+  For production, add an `auth_function_id` to validate tokens from the browser. See [Worker RBAC](/how-to/worker-rbac) for full auth setup.
+</Info>
+
+### 3. Connect from the browser
+
+```typescript title="iii.ts"
+import { registerWorker } from 'iii-browser-sdk'
+
+const iii = registerWorker('ws://localhost:49135')
+
+export { iii }
+```
+
+### 4. Register functions and triggers
+
+```typescript title="app.ts"
+import { iii } from './iii'
+
+// Register a function the backend can call
+iii.registerFunction(
+  { id: 'ui::show-notification' },
+  async (data: { title: string; body: string }) => {
+    showToast(data.title, data.body)
+    return { displayed: true }
+  },
+)
+
+// Call a backend function directly
+const users = await iii.trigger({
+  function_id: 'api::get::users',
+  payload: {},
+})
+```
+
+## Example: Real-time dashboard
+
+A metrics dashboard that updates instantly when backend data changes — no polling.
+
+**Backend worker** registers a function that pushes metrics to all browser workers:
+
+```typescript title="metrics-worker.ts"
+import { registerWorker, TriggerAction } from 'iii-sdk'
+
+const iii = registerWorker('ws://localhost:49134')
+
+iii.registerFunction('metrics::collect', async () => {
+  const metrics = await collectSystemMetrics()
+
+  // Push to every browser that registered ui::update-dashboard
+  await iii.trigger({
+    function_id: 'ui::update-dashboard',
+    payload: metrics,
+    action: TriggerAction.Void(),
+  })
+
+  return { collected: true }
+})
+
+// Run every 5 seconds
+iii.registerTrigger({
+  type: 'cron',
+  function_id: 'metrics::collect',
+  config: { expression: '*/5 * * * * *' },
+})
+```
+
+**Browser worker** receives dashboard updates:
+
+```typescript title="dashboard.tsx"
+import { registerWorker } from 'iii-browser-sdk'
+
+const iii = registerWorker('ws://localhost:49135')
+
+iii.registerFunction(
+  { id: 'ui::update-dashboard' },
+  async (metrics: { cpu: number; memory: number; requests: number }) => {
+    document.getElementById('cpu')!.textContent = `${metrics.cpu}%`
+    document.getElementById('memory')!.textContent = `${metrics.memory}MB`
+    document.getElementById('requests')!.textContent = `${metrics.requests}/s`
+    return null
+  },
+)
+```
+
+Compare this to the HTTP alternative: a `setInterval` polling `GET /metrics` every 5 seconds, getting stale data and wasting bandwidth when nothing changes. With iii, the backend pushes only when metrics actually update.
+
+## Example: Collaborative task board
+
+A task board where multiple browser tabs see changes in real time — both reading and writing through iii.
+
+**Backend worker** handles task persistence:
+
+```typescript title="tasks-worker.ts"
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker('ws://localhost:49134')
+
+iii.registerFunction(
+  { id: 'tasks::create' },
+  async (input: { title: string; assignee: string }) => {
+    const taskId = crypto.randomUUID()
+
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: 'tasks', key: taskId, value: { ...input, taskId, status: 'open' } },
+    })
+
+    return { taskId }
+  },
+)
+
+iii.registerFunction(
+  { id: 'tasks::list' },
+  async () => {
+    return await iii.trigger({
+      function_id: 'state::list',
+      payload: { scope: 'tasks' },
+    })
+  },
+)
+```
+
+**Browser worker** creates tasks and reacts to state changes:
+
+```typescript title="task-board.tsx"
+import { registerWorker } from 'iii-browser-sdk'
+
+const iii = registerWorker('ws://localhost:49135')
+
+// Create a task — calls the backend function directly
+async function createTask(title: string, assignee: string) {
+  const { taskId } = await iii.trigger<
+    { title: string; assignee: string },
+    { taskId: string }
+  >({
+    function_id: 'tasks::create',
+    payload: { title, assignee },
+  })
+
+  console.log('Task created', { taskId })
+  return taskId
+}
+
+// Register a function the backend can call when tasks change
+iii.registerFunction(
+  { id: 'ui::tasks-updated' },
+  async (data: { tasks: Array<{ taskId: string; title: string; status: string }> }) => {
+    renderTaskList(data.tasks)
+    return null
+  },
+)
+
+// Subscribe to state changes so we get live updates
+iii.registerTrigger({
+  type: 'state',
+  function_id: 'ui::tasks-updated',
+  config: { scope: 'tasks' },
+})
+```
+
+Every browser tab connected to the engine sees task changes the moment they happen. Tab A creates a task, Tab B's `ui::tasks-updated` function fires instantly.
+
+## Result
+
+Your browser is a full iii worker. It registers functions, calls backend functions with `trigger()`, and receives live invocations over a single WebSocket connection. No REST endpoints, no polling, no separate real-time layer.
+
+<Info title="API Reference">
+  The browser SDK exposes the same `ISdk` interface as the Node SDK. See the [Browser SDK Reference](/api-reference/sdk-browser) for the full API.
+</Info>

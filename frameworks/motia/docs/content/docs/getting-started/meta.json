@@ -1,5 +1,5 @@
 {
   "title": "Getting Started",
   "defaultOpen": true,
-  "pages": ["quick-start", "migration-guide", "handler-migration-guide"]
+  "pages": ["quick-start", "ecosystem", "migration-guide", "handler-migration-guide"]
 }

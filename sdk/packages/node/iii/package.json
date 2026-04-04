@@ -1,6 +1,6 @@
 {
   "name": "iii-sdk",
-  "version": "0.8.3",
+  "version": "0.10.0",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "docs:json": "typedoc",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest"
@@ -57,9 +58,10 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^2.1.0",
     "@types/ws": "^8.18.1",
-    "tsdown": "^0.17.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "tsdown": "^0.21.4",
+    "typedoc": "^0.28.17",
     "typescript": "^5.9.3",
     "vitest": "^2.1.0"
   }

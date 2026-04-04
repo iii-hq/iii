@@ -23,6 +23,6 @@ config = {
 }
 
 
-async def handler(input: Any) -> None:
+def handler(input: Any) -> None:
     """Handle orders that pass single condition."""
     logger.info("Processing high-value order", {"data": input})

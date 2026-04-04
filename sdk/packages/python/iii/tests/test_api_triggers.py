@@ -2,13 +2,15 @@
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlencode
 
 import aiohttp
 import pytest
 
-from iii import III, http
+from iii import http
+from iii.iii import III
 from iii.types import HttpRequest, HttpResponse
 
 TEST_ASSETS_DIR = Path(__file__).parent.parent.parent.parent.parent / "test-assets"
@@ -19,20 +21,22 @@ TEST_FILE = TEST_ASSETS_DIR / "handbook.pdf"
 async def test_get_endpoint(engine_http_url, iii_client: III):
     """Register a GET endpoint and verify the JSON response."""
 
-    async def handler(input_data):
+    def handler(input_data):
         return {"status_code": 200, "body": {"message": "Hello from GET"}}
 
-    fn_ref = iii_client.register_function("test.api.get.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.get.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.get.py",
         {
-            "api_path": "test/py/hello",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.get.py",
+            "config": {
+                "api_path": "test/py/hello",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/hello") as resp:
@@ -48,24 +52,26 @@ async def test_get_endpoint(engine_http_url, iii_client: III):
 async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
     """Register a POST endpoint and verify the request body is received."""
 
-    async def handler(input_data):
+    def handler(input_data):
         body = input_data.get("body", {})
         return {
             "status_code": 201,
             "body": {"received": body, "created": True},
         }
 
-    fn_ref = iii_client.register_function("test.api.post.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.post.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.post.py",
         {
-            "api_path": "test/py/items",
-            "http_method": "POST",
-        },
+            "type": "http",
+            "function_id": "test.api.post.py",
+            "config": {
+                "api_path": "test/py/items",
+                "http_method": "POST",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -85,23 +91,25 @@ async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
 async def test_path_parameters(engine_http_url, iii_client: III):
     """Verify path parameters are extracted correctly."""
 
-    async def handler(input_data):
+    def handler(input_data):
         return {
             "status_code": 200,
             "body": {"id": input_data.get("path_params", {}).get("id")},
         }
 
-    fn_ref = iii_client.register_function("test.api.getbyid.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.getbyid.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.getbyid.py",
         {
-            "api_path": "test/py/items/:id",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.getbyid.py",
+            "config": {
+                "api_path": "test/py/items/:id",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/items/abc123") as resp:
@@ -117,7 +125,7 @@ async def test_path_parameters(engine_http_url, iii_client: III):
 async def test_query_parameters(engine_http_url, iii_client: III):
     """Verify query parameters are passed through."""
 
-    async def handler(input_data):
+    def handler(input_data):
         qp = input_data.get("query_params", {})
         q = qp.get("q")
         limit = qp.get("limit")
@@ -130,17 +138,19 @@ async def test_query_parameters(engine_http_url, iii_client: III):
             "body": {"query": q, "limit": limit},
         }
 
-    fn_ref = iii_client.register_function("test.api.search.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.search.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.search.py",
         {
-            "api_path": "test/py/search",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.search.py",
+            "config": {
+                "api_path": "test/py/search",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/search?q=hello&limit=10") as resp:
@@ -157,20 +167,22 @@ async def test_query_parameters(engine_http_url, iii_client: III):
 async def test_custom_status_code(engine_http_url, iii_client: III):
     """Verify a custom HTTP status code is returned."""
 
-    async def handler(input_data):
+    def handler(input_data):
         return {"status_code": 404, "body": {"error": "Not found"}}
 
-    fn_ref = iii_client.register_function("test.api.notfound.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.notfound.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.notfound.py",
         {
-            "api_path": "test/py/missing",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.notfound.py",
+            "config": {
+                "api_path": "test/py/missing",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/missing") as resp:
@@ -197,17 +209,19 @@ async def test_download_pdf_streaming(engine_http_url, iii_client: III):
         await response.writer.write(original_pdf)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function("test.api.download.pdf.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.download.pdf.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.download.pdf.py",
         {
-            "api_path": "test/py/download/pdf",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.download.pdf.py",
+            "config": {
+                "api_path": "test/py/download/pdf",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/download/pdf") as resp:
@@ -246,17 +260,19 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
         await response.writer.write(body)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function("test.api.upload.pdf.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.upload.pdf.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.upload.pdf.py",
         {
-            "api_path": "test/py/upload/pdf",
-            "http_method": "POST",
-        },
+            "type": "http",
+            "function_id": "test.api.upload.pdf.py",
+            "config": {
+                "api_path": "test/py/upload/pdf",
+                "http_method": "POST",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -307,17 +323,19 @@ async def test_sse_streaming(engine_http_url, iii_client: III):
 
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function("test.api.sse.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.sse.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.sse.py",
         {
-            "api_path": "test/py/sse",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.sse.py",
+            "config": {
+                "api_path": "test/py/sse",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/sse") as resp:
@@ -380,17 +398,19 @@ async def test_urlencoded_form_data(engine_http_url, iii_client: III):
         await response.writer.write(result)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function("test.api.form.urlencoded.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.form.urlencoded.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.form.urlencoded.py",
         {
-            "api_path": "test/py/form/urlencoded",
-            "http_method": "POST",
-        },
+            "type": "http",
+            "function_id": "test.api.form.urlencoded.py",
+            "config": {
+                "api_path": "test/py/form/urlencoded",
+                "http_method": "POST",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     form_body = urlencode({"name": "John Doe", "email": "john@example.com", "age": "30"})
 
@@ -448,17 +468,19 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
         await response.writer.write(result)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function("test.api.form.multipart.py", handler)
+    fn_ref = iii_client.register_function({"id": "test.api.form.multipart.py"}, handler)
     trigger = iii_client.register_trigger(
-        "http",
-        "test.api.form.multipart.py",
         {
-            "api_path": "test/py/form/multipart",
-            "http_method": "POST",
-        },
+            "type": "http",
+            "function_id": "test.api.form.multipart.py",
+            "config": {
+                "api_path": "test/py/form/multipart",
+                "http_method": "POST",
+            },
+        }
     )
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     form_data = aiohttp.FormData()
     form_data.add_field("title", "Test Document")

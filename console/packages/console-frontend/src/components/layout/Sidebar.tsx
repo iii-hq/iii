@@ -6,9 +6,12 @@ import {
   Database,
   GitBranch,
   Layers,
+  ListOrdered,
   Menu,
+  Moon,
   Server,
   Settings,
+  Sun,
   Terminal,
   Workflow,
   X,
@@ -17,12 +20,14 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HealthComponent } from '@/api'
 import { healthQuery, useConfig } from '@/api'
+import { useTheme } from '@/hooks/useTheme'
 
 const BASE_NAV_ITEMS = [
   { name: 'Functions', href: '/functions', icon: Server },
   { name: 'Triggers', href: '/triggers', icon: Zap },
   { name: 'States', href: '/states', icon: Database },
   { name: 'Streams', href: '/streams', icon: Layers },
+  { name: 'Queues', href: '/queues', icon: ListOrdered },
   { name: 'Traces', href: '/traces', icon: GitBranch },
   { name: 'Logs', href: '/logs', icon: Terminal },
   { name: 'Config', href: '/config', icon: Settings },
@@ -58,6 +63,7 @@ export function Sidebar() {
   const location = useLocation()
   const pathname = location.pathname
   const config = useConfig()
+  const { theme, toggleTheme } = useTheme()
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [showHealth, setShowHealth] = useState(false)
   const healthPanelRef = useRef<HTMLDivElement>(null)
@@ -122,10 +128,10 @@ export function Sidebar() {
         <div className="flex items-center gap-3">
           <img src="/iii-white1.1.svg" alt="iii logo" className="w-6 h-6" />
           <div className="leading-tight">
-            <span className="text-[10px] tracking-[0.15em] text-muted uppercase block">
+            <span className="text-[10px] tracking-[0.15em] text-secondary uppercase block font-sans">
               Developer
             </span>
-            <span className="text-[10px] tracking-[0.15em] text-muted uppercase block">
+            <span className="text-[10px] tracking-[0.15em] text-secondary uppercase block font-sans">
               Console
             </span>
           </div>
@@ -134,7 +140,7 @@ export function Sidebar() {
         <button
           type="button"
           onClick={() => setIsMobileMenuOpen(false)}
-          className="lg:hidden p-2 rounded-lg hover:bg-dark-gray transition-colors"
+          className="lg:hidden p-2 rounded-[var(--radius-md)] hover:bg-hover transition-colors"
           aria-label="Close menu"
         >
           <X className="w-5 h-5" />
@@ -153,10 +159,10 @@ export function Sidebar() {
               to={item.href}
               onClick={() => setIsMobileMenuOpen(false)}
               className={clsx(
-                'flex items-center gap-3 px-3 py-2.5 text-xs tracking-wide rounded transition-all duration-150',
+                'flex items-center gap-3 px-3 py-2.5 text-xs tracking-wide rounded-[var(--radius-md)] transition-all duration-150 font-sans',
                 isActive
-                  ? 'bg-white text-black font-medium'
-                  : 'text-muted hover:text-foreground hover:bg-[#1D1D1D]',
+                  ? 'bg-accent-subtle text-foreground font-medium'
+                  : 'text-secondary hover:text-foreground hover:bg-hover',
               )}
             >
               <Icon className="w-4 h-4 flex-shrink-0" strokeWidth={1.5} />
@@ -170,12 +176,12 @@ export function Sidebar() {
       <div className="relative p-4 border-t border-border" ref={healthPanelRef}>
         {/* Health Popover */}
         {showHealth && health && (
-          <div className="absolute bottom-full left-3 right-3 mb-2 bg-[#0A0A0A] border border-[#2D2D2D] rounded-lg overflow-hidden animate-panel-in z-50">
-            <div className="px-3 py-2 border-b border-[#2D2D2D] flex items-center justify-between">
-              <span className="text-[10px] tracking-[0.15em] text-muted uppercase">
+          <div className="absolute bottom-full left-3 right-3 mb-2 bg-elevated border border-border rounded-[var(--radius-lg)] overflow-hidden animate-panel-in z-50">
+            <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+              <span className="text-[10px] tracking-[0.15em] text-secondary uppercase font-sans">
                 Engine Health
               </span>
-              <span className="text-[10px] tracking-wide text-muted/60 font-mono">
+              <span className="text-[10px] tracking-wide text-muted font-mono">
                 v{health.version}
               </span>
             </div>
@@ -187,20 +193,20 @@ export function Sidebar() {
                   return (
                     <div
                       key={name}
-                      className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-[#1D1D1D]/50 transition-colors"
+                      className="flex items-center justify-between px-2 py-1.5 rounded-[var(--radius-sm)] hover:bg-hover transition-colors"
                     >
                       <div className="flex items-center gap-2">
                         <div
                           className={clsx(
                             'w-1.5 h-1.5 rounded-full',
-                            isHealthy ? 'bg-[#22C55E]' : 'bg-[#EF4444]',
+                            isHealthy ? 'bg-success' : 'bg-error',
                           )}
                         />
-                        <span className="text-[10px] tracking-[0.1em] text-foreground uppercase">
+                        <span className="text-[10px] tracking-[0.1em] text-foreground uppercase font-sans">
                           {name}
                         </span>
                       </div>
-                      <span className="text-[10px] text-muted/60 font-mono">
+                      <span className="text-[10px] text-muted font-mono">
                         <ComponentDetail name={name} details={component.details} />
                       </span>
                     </div>
@@ -211,47 +217,62 @@ export function Sidebar() {
           </div>
         )}
 
-        {/* Status Pill */}
-        <button
-          type="button"
-          onClick={toggleHealth}
-          className="flex items-center gap-2 cursor-pointer group"
-          aria-expanded={showHealth}
-          aria-label="Toggle engine health details"
-        >
-          <div
-            className={clsx(
-              'flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors',
-              isOnline ? 'border-[#22C55E]/50' : 'border-[#EF4444]/50',
-              showHealth && 'bg-[#1D1D1D]/50',
+        {/* Theme Toggle + Status Pill */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="p-2 rounded-[var(--radius-md)] hover:bg-hover transition-colors"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? (
+              <Sun className="w-4 h-4 text-secondary" />
+            ) : (
+              <Moon className="w-4 h-4 text-secondary" />
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleHealth}
+            className="flex items-center gap-2 cursor-pointer group"
+            aria-expanded={showHealth}
+            aria-label="Toggle engine health details"
           >
             <div
               className={clsx(
-                'w-2 h-2 rounded-full',
-                isOnline
-                  ? 'bg-[#22C55E] shadow-[0_0_6px_#22C55E]'
-                  : 'bg-[#EF4444] shadow-[0_0_6px_#EF4444]',
+                'flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors',
+                isOnline ? 'border-success/50' : 'border-error/50',
+                showHealth && 'bg-hover',
               )}
-            />
-            <span className="text-[10px] tracking-[0.1em] text-foreground uppercase">
-              {isOnline ? 'Online' : 'Offline'}
-            </span>
-            {health && (
-              <span className="text-[10px] text-muted/60 font-mono">
-                {healthyCount}/{totalCount}
+            >
+              <div
+                className={clsx(
+                  'w-2 h-2 rounded-full',
+                  isOnline
+                    ? 'bg-success shadow-[0_0_6px_var(--success)]'
+                    : 'bg-error shadow-[0_0_6px_var(--error)]',
+                )}
+              />
+              <span className="text-[10px] tracking-[0.1em] text-foreground uppercase font-sans">
+                {isOnline ? 'Online' : 'Offline'}
               </span>
-            )}
-            <ChevronUp
-              className={clsx(
-                'w-3 h-3 text-muted/40 transition-transform duration-150',
-                !showHealth && 'rotate-180',
+              {health && (
+                <span className="text-[10px] text-muted font-mono">
+                  {healthyCount}/{totalCount}
+                </span>
               )}
-            />
-          </div>
-        </button>
+              <ChevronUp
+                className={clsx(
+                  'w-3 h-3 text-muted transition-transform duration-150',
+                  !showHealth && 'rotate-180',
+                )}
+              />
+            </div>
+          </button>
+        </div>
 
-        <div className="mt-3 text-[9px] text-muted/60 tracking-wide font-mono">
+        <div className="mt-3 text-[9px] text-muted tracking-wide font-mono">
           v{config.version} • {config.engineHost}:{config.enginePort}
         </div>
       </div>
@@ -261,26 +282,41 @@ export function Sidebar() {
   return (
     <>
       {/* Mobile Header Bar */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 h-14 bg-black border-b border-border flex items-center justify-between px-4">
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 h-14 bg-background border-b border-border flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <img src="/iii-white1.1.svg" alt="iii logo" className="w-5 h-5" />
-          <span className="text-xs tracking-[0.15em] text-muted uppercase">iii Console</span>
+          <span className="text-xs tracking-[0.15em] text-secondary uppercase font-sans">
+            iii Console
+          </span>
         </div>
         <div className="flex items-center gap-3">
+          {/* Theme toggle in mobile header */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="p-2 rounded-[var(--radius-md)] hover:bg-hover transition-colors"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? (
+              <Sun className="w-4 h-4 text-secondary" />
+            ) : (
+              <Moon className="w-4 h-4 text-secondary" />
+            )}
+          </button>
           {/* Status indicator */}
           <div
             className={clsx(
               'w-2 h-2 rounded-full',
               isOnline
-                ? 'bg-[#22C55E] shadow-[0_0_6px_#22C55E]'
-                : 'bg-[#EF4444] shadow-[0_0_6px_#EF4444]',
+                ? 'bg-success shadow-[0_0_6px_var(--success)]'
+                : 'bg-error shadow-[0_0_6px_var(--error)]',
             )}
           />
           {/* Hamburger button */}
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen(true)}
-            className="p-2 rounded-lg hover:bg-dark-gray transition-colors"
+            className="p-2 rounded-[var(--radius-md)] hover:bg-hover transition-colors"
             aria-label="Open menu"
           >
             <Menu className="w-5 h-5" />
@@ -304,7 +340,7 @@ export function Sidebar() {
       {/* Sidebar - Desktop: always visible, Mobile: slide-in drawer */}
       <div
         className={clsx(
-          'w-56 h-screen bg-black border-r border-border flex flex-col fixed left-0 top-0 z-50 transition-transform duration-300 ease-in-out',
+          'w-56 h-screen bg-sidebar border-r border-border flex flex-col fixed left-0 top-0 z-50 transition-transform duration-300 ease-in-out',
           // Mobile: slide in/out
           'lg:translate-x-0',
           isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',

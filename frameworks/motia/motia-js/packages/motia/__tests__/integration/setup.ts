@@ -10,14 +10,14 @@ export function initTestEnv(): void {
   process.env.III_URL = process.env.III_URL ?? TEST_ENGINE_URL
 }
 
-export async function waitForReady(sdk: { call: (id: string, data: unknown) => Promise<unknown> }): Promise<void> {
+export async function waitForReady(sdk: { trigger: (req: { function_id: string; payload: unknown }) => Promise<unknown> }): Promise<void> {
   const deadline = Date.now() + 13000
   const callTimeout = 300
   let delay = 50
   while (Date.now() < deadline) {
     try {
       await Promise.race([
-        sdk.call('engine::workers::list', {}),
+        sdk.trigger({ function_id: 'engine::workers::list', payload: {} }),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('call timeout')), callTimeout)),
       ])
       return
@@ -30,7 +30,7 @@ export async function waitForReady(sdk: { call: (id: string, data: unknown) => P
 }
 
 export async function waitForRegistration(
-  sdk: { call: (id: string, data: unknown) => Promise<unknown> },
+  sdk: { trigger: (req: { function_id: string; payload: unknown }) => Promise<unknown> },
   functionId: string,
   timeout = 5000,
 ): Promise<void> {
@@ -38,7 +38,7 @@ export async function waitForRegistration(
   const pollInterval = 100
   while (Date.now() - start < timeout) {
     try {
-      const result = (await sdk.call('engine::functions::list', {})) as {
+      const result = (await sdk.trigger({ function_id: 'engine::functions::list', payload: {} })) as {
         functions?: { function_id: string }[]
       }
       const ids = result?.functions?.map((f) => f.function_id) ?? []

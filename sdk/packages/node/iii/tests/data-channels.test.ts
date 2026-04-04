@@ -7,7 +7,7 @@ describe('Data Channels', () => {
     type Record = { name: string; value: number }
 
     const processor = iii.registerFunction(
-      { id: 'test.data.processor' },
+      'test.data.processor',
       async (input: { label: string; reader: ChannelReader }) => {
         const chunks: Buffer[] = []
         for await (const chunk of input.reader.stream) {
@@ -34,7 +34,7 @@ describe('Data Channels', () => {
     )
 
     const sender = iii.registerFunction(
-      { id: 'test.data.sender' },
+      'test.data.sender',
       async (input: { records: Record[] }) => {
         const channel = await iii.createChannel()
 
@@ -46,10 +46,10 @@ describe('Data Channels', () => {
           })
         })
 
-        const result = await iii.call('test.data.processor', {
+        const result = await iii.trigger({ function_id: 'test.data.processor', payload: {
           label: 'metrics-batch',
           reader: channel.readerRef,
-        })
+        } })
 
         await writePromise
         return result
@@ -68,7 +68,7 @@ describe('Data Channels', () => {
       ]
 
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.call<{ records: Record[] }, any>('test.data.sender', { records })
+      const result = await iii.trigger<{ records: Record[] }, any>({ function_id: 'test.data.sender', payload: { records } })
 
       expect(result.label).toBe('metrics-batch')
       expect(result.messages).toHaveLength(5)
@@ -85,7 +85,7 @@ describe('Data Channels', () => {
 
   it('should create a channel and stream data from worker to coordinator', async () => {
     const worker = iii.registerFunction(
-      { id: 'test.stream.worker' },
+      'test.stream.worker',
       async (input: { reader: ChannelReader; writer: ChannelWriter }) => {
         const { reader, writer } = input
         const chunks: Buffer[] = []
@@ -127,7 +127,7 @@ describe('Data Channels', () => {
     )
 
     const coordinator = iii.registerFunction(
-      { id: 'test.stream.coordinator' },
+      'test.stream.coordinator',
       async (input: { text: string; chunkSize: number }) => {
         const inputChannel = await iii.createChannel()
         const outputChannel = await iii.createChannel()
@@ -159,10 +159,10 @@ describe('Data Channels', () => {
           writeNext()
         })
 
-        const callPromise = iii.call('test.stream.worker', {
+        const callPromise = iii.trigger({ function_id: 'test.stream.worker', payload: {
           reader: inputChannel.readerRef,
           writer: outputChannel.writerRef,
-        })
+        } })
 
         const resultChunks: Buffer[] = []
         for await (const chunk of outputChannel.reader.stream) {
@@ -187,13 +187,13 @@ describe('Data Channels', () => {
       const text = 'The quick brown fox jumps over the lazy dog and then runs around the park'
 
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.call<{ text: string; chunkSize: number }, any>(
-        'test.stream.coordinator',
-        {
+      const result = await iii.trigger<{ text: string; chunkSize: number }, any>({
+        function_id: 'test.stream.coordinator',
+        payload: {
           text,
           chunkSize: 10,
         },
-      )
+      })
 
       const progressMessages = result.messages.filter(
         (m: { type: string }) => m.type === 'progress',

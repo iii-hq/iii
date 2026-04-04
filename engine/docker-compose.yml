@@ -12,6 +12,7 @@ services:
       - ./config.yaml:/app/config.yaml:ro
     environment:
       - RUST_LOG=info
+      - III_EXECUTION_CONTEXT=docker
     depends_on:
       redis:
         condition: service_healthy

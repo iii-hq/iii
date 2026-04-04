@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   Check,
   Copy,
+  Database,
   Edit2,
   Folder,
   Key,
@@ -21,8 +22,10 @@ import { useEffect, useMemo, useReducer, useState } from 'react'
 import type { StateItem } from '@/api'
 import { deleteStateItem, setStateItem, stateGroupsQuery, stateItemsQuery } from '@/api'
 import { Badge, Button, Input } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
 import { Pagination } from '@/components/ui/pagination'
+import { Skeleton } from '@/components/ui/skeleton'
 
 // --- addModal reducer ---
 interface AddModalState {
@@ -280,8 +283,8 @@ function StatesPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <Folder className="w-4 h-4 text-blue-400" />
+          <h1 className="font-sans font-semibold text-lg tracking-tight flex items-center gap-2">
+            <Folder className="w-5 h-5 text-blue-400" />
             States
           </h1>
           <div className="text-[10px] md:text-xs text-muted bg-dark-gray/50 px-2 py-0.5 md:py-1 rounded hidden sm:block">
@@ -381,16 +384,21 @@ function StatesPage() {
 
           <div className="flex-1 overflow-y-auto py-2">
             {loading ? (
-              <div className="flex items-center justify-center h-32">
-                <RefreshCw className="w-5 h-5 text-muted animate-spin" />
+              <div className="space-y-2 px-2 py-2">
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
               </div>
             ) : filteredGroups.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64 px-4">
-                <div className="w-12 h-12 mb-3 rounded-xl bg-dark-gray border border-border flex items-center justify-center">
+                <div className="w-12 h-12 mb-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle flex items-center justify-center">
                   <Folder className="w-6 h-6 text-muted" />
                 </div>
-                <div className="text-sm font-medium mb-1">No groups found</div>
-                <div className="text-xs text-muted text-center">
+                <div className="font-sans font-semibold text-base text-foreground mb-1">
+                  No groups found
+                </div>
+                <div className="font-sans text-[13px] text-secondary text-center">
                   {searchQuery ? 'Try a different search' : 'Create groups by setting state values'}
                 </div>
               </div>
@@ -444,11 +452,11 @@ function StatesPage() {
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-500/10 mb-6">
                 <Folder className="w-8 h-8 text-blue-400" />
               </div>
-              <h2 className="text-xl font-semibold mb-2">Select a Group</h2>
-              <p className="text-muted text-sm mb-6">
+              <h2 className="font-sans font-semibold text-xl mb-2">Select a Group</h2>
+              <p className="font-sans text-sm text-secondary mb-6">
                 Choose a group from the sidebar to view and manage its key-value data.
               </p>
-              <div className="text-left bg-dark-gray/30 rounded-lg p-4 text-xs">
+              <div className="text-left bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-4 text-xs">
                 <div className="font-medium mb-2 text-foreground">Groups contain:</div>
                 <ul className="space-y-1.5 text-muted">
                   <li className="flex items-center gap-2">
@@ -474,7 +482,7 @@ function StatesPage() {
                   <Folder className="h-5 w-5 text-blue-400" />
                 </div>
                 <div className="min-w-0">
-                  <h2 className="text-base font-semibold text-foreground truncate capitalize">
+                  <h2 className="font-sans text-base font-semibold text-foreground truncate capitalize">
                     {selectedGroupId}
                   </h2>
                   <div className="flex items-center gap-1.5 text-xs text-muted">
@@ -527,8 +535,12 @@ function StatesPage() {
             <div className="flex flex-col flex-1 overflow-hidden">
               <div className="flex-1 overflow-auto">
                 {loadingItems ? (
-                  <div className="flex items-center justify-center h-32">
-                    <RefreshCw className="w-5 h-5 text-muted animate-spin" />
+                  <div className="space-y-2 p-4">
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-full" />
                   </div>
                 ) : selectedGroupId ? (
                   items.length > 0 ? (
@@ -536,7 +548,7 @@ function StatesPage() {
                       <thead className="sticky top-0 bg-dark-gray/80 backdrop-blur-sm">
                         <tr className="border-b border-border">
                           <th
-                            className="text-left text-xs font-medium text-muted uppercase tracking-wider px-4 py-2 cursor-pointer hover:text-foreground"
+                            className="text-left font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] px-4 py-2 cursor-pointer hover:text-foreground"
                             onClick={() => toggleSort('key')}
                           >
                             <div className="flex items-center gap-1">
@@ -553,7 +565,7 @@ function StatesPage() {
                             </div>
                           </th>
                           <th
-                            className="text-left text-xs font-medium text-muted uppercase tracking-wider px-4 py-2 cursor-pointer hover:text-foreground"
+                            className="text-left font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] px-4 py-2 cursor-pointer hover:text-foreground"
                             onClick={() => toggleSort('type')}
                           >
                             <div className="flex items-center gap-1">
@@ -569,7 +581,7 @@ function StatesPage() {
                               )}
                             </div>
                           </th>
-                          <th className="text-left text-xs font-medium text-muted uppercase tracking-wider px-4 py-2">
+                          <th className="text-left font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] px-4 py-2">
                             Preview
                           </th>
                           <th className="w-20"></th>
@@ -581,15 +593,13 @@ function StatesPage() {
                             key={item.key}
                             onClick={() => setSelectedItem(item)}
                             className={`cursor-pointer transition-colors ${
-                              selectedItem?.key === item.key
-                                ? 'bg-blue-500/10'
-                                : 'hover:bg-dark-gray/30'
+                              selectedItem?.key === item.key ? 'bg-blue-500/10' : 'hover:bg-hover'
                             }`}
                           >
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
                                 <Key className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                                <span className="font-mono text-sm font-medium truncate max-w-[200px]">
+                                <span className="font-mono text-[13px] font-medium truncate max-w-[200px]">
                                   {item.key}
                                 </span>
                               </div>
@@ -600,7 +610,7 @@ function StatesPage() {
                               </Badge>
                             </td>
                             <td className="px-4 py-3">
-                              <span className="text-xs text-muted font-mono truncate block max-w-[300px]">
+                              <span className="font-mono text-[13px] text-muted truncate block max-w-[300px]">
                                 {JSON.stringify(item.value).slice(0, 50)}
                                 {JSON.stringify(item.value).length > 50 && '...'}
                               </span>
@@ -640,22 +650,15 @@ function StatesPage() {
                       </tbody>
                     </table>
                   ) : (
-                    <div className="flex flex-col items-center justify-center h-64">
-                      <div className="w-12 h-12 mb-3 rounded-xl bg-dark-gray border border-border flex items-center justify-center">
-                        <Folder className="h-6 w-6 text-muted" />
-                      </div>
-                      <p className="text-sm font-medium mb-1">No items in this group</p>
-                      <p className="text-xs text-muted mb-4">Add items to store key-value data</p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => dispatchAddModal({ type: 'OPEN_ADD_MODAL' })}
-                        className="gap-1.5"
-                      >
-                        <Plus className="w-3 h-3" />
-                        Add Item
-                      </Button>
-                    </div>
+                    <EmptyState
+                      icon={Database}
+                      title="No state entries"
+                      description="Add key-value pairs using the SDK or the button above"
+                      action={{
+                        label: 'Add Entry',
+                        onClick: () => dispatchAddModal({ type: 'OPEN_ADD_MODAL' }),
+                      }}
+                    />
                   )
                 ) : (
                   <div className="flex flex-col items-center justify-center h-64">
@@ -687,11 +690,13 @@ function StatesPage() {
 
         {/* Right Sidebar - Item Details */}
         {selectedItem && (
-          <div className="flex flex-col h-full overflow-hidden border-l border-border bg-dark-gray/10">
+          <div className="flex flex-col h-full overflow-hidden border-l border-border bg-elevated/50">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <div className="flex items-center gap-2 min-w-0">
                 <Key className="w-4 h-4 text-blue-400 shrink-0" />
-                <span className="font-mono text-sm font-medium truncate">{selectedItem.key}</span>
+                <span className="font-mono text-[13px] font-medium truncate">
+                  {selectedItem.key}
+                </span>
               </div>
               <button
                 type="button"
@@ -705,20 +710,26 @@ function StatesPage() {
             <div className="flex-1 overflow-auto p-4">
               <div className="space-y-4">
                 <div>
-                  <div className="text-xs text-muted uppercase tracking-wider mb-2">Key</div>
-                  <div className="font-mono text-sm bg-dark-gray p-2 rounded">
+                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
+                    Key
+                  </div>
+                  <div className="font-mono text-[13px] bg-elevated p-2 rounded-[var(--radius-md)]">
                     {selectedItem.key}
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-xs text-muted uppercase tracking-wider mb-2">Type</div>
+                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
+                    Type
+                  </div>
                   <Badge variant="outline">{selectedItem.type}</Badge>
                 </div>
 
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-muted uppercase tracking-wider">Value</span>
+                    <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
+                      Value
+                    </span>
                     <div className="flex items-center gap-1">
                       {editingItem === selectedItem.key ? (
                         <>
@@ -782,7 +793,7 @@ function StatesPage() {
                       className="w-full h-64 px-3 py-2 bg-dark-gray border border-border rounded-md font-mono text-xs resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   ) : (
-                    <div className="p-3 rounded-lg bg-dark-gray overflow-x-auto max-h-[400px] overflow-y-auto">
+                    <div className="p-3 rounded-[var(--radius-lg)] bg-elevated overflow-x-auto max-h-[400px] overflow-y-auto">
                       <JsonViewer data={selectedItem.value} collapsed={false} maxDepth={6} />
                     </div>
                   )}
@@ -808,9 +819,9 @@ function StatesPage() {
       {/* Add Item Modal */}
       {showAddModal && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md">
+          <div className="bg-background border border-border-subtle rounded-[var(--radius-lg)] shadow-xl w-full max-w-md">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <h3 className="font-semibold">Add State Item</h3>
+              <h3 className="font-sans font-semibold">Add State Item</h3>
               <button
                 type="button"
                 onClick={() => dispatchAddModal({ type: 'CLOSE_ADD_MODAL' })}

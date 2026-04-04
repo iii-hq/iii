@@ -14,7 +14,7 @@ motia build
 This will build your project and create a `dist` directory with your production-ready code.
 It should be just two files: `index-production.js` and `index-production.js.map`.
 
-```
+```text
 dist/
 ├── index-production.js
 └── index-production.js.map
@@ -115,7 +115,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     rm -rf /var/lib/apt/lists/*
 
 # Install iii
-RUN curl -fSL https://install.iii.dev/iii/main/install.sh | sh
+RUN curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 
 FROM oven/bun:1.1-slim
 

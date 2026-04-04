@@ -16,6 +16,6 @@ config = {
 }
 
 
-async def handler(input: Any, ctx: FlowContext[Any]) -> None:
+def handler(input: Any, ctx: FlowContext[Any]) -> None:
     """Handle multiple event triggers."""
     logger.info("Multiple events trigger fired", {"data": input, "topic": ctx.trigger.topic})

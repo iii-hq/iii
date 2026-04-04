@@ -17,7 +17,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
     """Handle delete todo request."""
     body = request.body or {}
     todo_id = body.get("todo_id")
@@ -28,7 +28,7 @@ async def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
         logger.error("todo_id is required")
         return ApiResponse(status=400, body={"error": "todo_id is required"})
 
-    await todo_stream.delete("inbox", todo_id)
+    todo_stream.delete("inbox", todo_id)
 
     logger.info("Todo deleted successfully", {"todo_id": todo_id})
 

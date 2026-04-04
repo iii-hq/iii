@@ -278,61 +278,49 @@ static TRACING: OnceLock<()> = OnceLock::new();
 /// Extract OTEL configuration from the OtelModule config in the config file.
 /// This is called early during startup, before modules are loaded.
 fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
+    use crate::modules::observability::config::OtelModuleConfig;
+
     let otel_module_name = "modules::observability::OtelModule";
     let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
 
+    let module_config: OtelModuleConfig = match otel_module_cfg {
+        Some(entry) => match &entry.config {
+            Some(cfg) => serde_json::from_value(cfg.clone()).unwrap_or_default(),
+            None => OtelModuleConfig::default(),
+        },
+        None => return OtelConfig::default(),
+    };
+
     let mut otel_cfg = OtelConfig::default();
 
-    if let Some(module_entry) = otel_module_cfg
-        && let Some(config) = &module_entry.config
-    {
-        if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
-            otel_cfg.enabled = enabled;
-        }
-        if let Some(service_name) = config.get("service_name").and_then(|v| v.as_str()) {
-            otel_cfg.service_name = service_name.to_string();
-        }
-        if let Some(exporter) = config.get("exporter").and_then(|v| v.as_str()) {
-            otel_cfg.exporter = match exporter.to_lowercase().as_str() {
-                "memory" => ExporterType::Memory,
-                _ => ExporterType::Otlp,
-            };
-        }
-        if let Some(endpoint) = config.get("endpoint").and_then(|v| v.as_str()) {
-            otel_cfg.endpoint = endpoint.to_string();
-        }
-        if let Some(sampling) = config.get("sampling_ratio").and_then(|v| v.as_f64()) {
-            otel_cfg.sampling_ratio = sampling;
-        }
-        if let Some(max_spans) = config.get("memory_max_spans").and_then(|v| v.as_u64()) {
-            otel_cfg.memory_max_spans = max_spans as usize;
-        }
+    if let Some(enabled) = module_config.enabled {
+        otel_cfg.enabled = enabled;
+    }
+    if let Some(service_name) = module_config.service_name {
+        otel_cfg.service_name = service_name;
+    }
+    if let Some(exporter) = module_config.exporter {
+        otel_cfg.exporter = match exporter {
+            crate::modules::observability::config::OtelExporterType::Memory => ExporterType::Memory,
+            crate::modules::observability::config::OtelExporterType::Otlp => ExporterType::Otlp,
+            crate::modules::observability::config::OtelExporterType::Both => ExporterType::Both,
+        };
+    }
+    if let Some(endpoint) = module_config.endpoint {
+        otel_cfg.endpoint = endpoint;
+    }
+    if let Some(sampling) = module_config.sampling_ratio {
+        otel_cfg.sampling_ratio = sampling;
+    }
+    if let Some(max_spans) = module_config.memory_max_spans {
+        otel_cfg.memory_max_spans = max_spans;
     }
 
     otel_cfg
 }
 
-#[deprecated(since = "0.2.0", note = "Use `init_log_from_config()` instead")]
-#[allow(deprecated)]
-pub fn init_log(path: &str) {
-    println!("Initializing logging from config file: {}", path);
-    let cfg = EngineConfig::config_file_or_default(path);
-    if let Err(e) = cfg {
-        println!(
-            "Failed to parse config file: {}, using default local logging. Error: {}",
-            path, e
-        );
-        init_local_log("info", &OtelConfig::default());
-        return;
-    };
-
-    let cfg = cfg.expect("Failed to parse config file");
-
-    println!("Parsed config file: {}", path);
-
-    // Extract OTEL config from OtelModule (must be done before modules are loaded)
-    let otel_cfg = extract_otel_config(&cfg);
-
+pub fn init_log_from_engine_config(cfg: &EngineConfig) {
+    let otel_cfg = extract_otel_config(cfg);
     let otel_module_name = "modules::observability::OtelModule";
     let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
 
@@ -384,33 +372,7 @@ pub fn init_log_from_config(config_path: Option<&str>) {
 
             let cfg = cfg.expect("already checked");
             println!("Parsed config file: {}", path);
-
-            let otel_cfg = extract_otel_config(&cfg);
-            let otel_module_name = "modules::observability::OtelModule";
-            let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
-
-            let log_level = otel_module_cfg
-                .and_then(|m| m.config.as_ref())
-                .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "info".to_string());
-
-            let log_format = otel_module_cfg
-                .and_then(|m| m.config.as_ref())
-                .and_then(|c| c.get("format"))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "default".to_string());
-
-            println!(
-                "Log level from config: {}, Log format: {}, OTel enabled: {}",
-                log_level, log_format, otel_cfg.enabled
-            );
-
-            if log_format.to_lowercase() == "json" {
-                init_prod_log(log_level.as_str(), &otel_cfg);
-            } else {
-                init_local_log(log_level.as_str(), &otel_cfg);
-            }
+            init_log_from_engine_config(&cfg);
         }
     }
 }
@@ -894,7 +856,6 @@ mod tests {
     #[test]
     fn test_extract_otel_config_reads_observability_module_config() {
         let cfg = EngineConfig {
-            port: 3000,
             modules: vec![ModuleEntry {
                 class: "modules::observability::OtelModule".to_string(),
                 config: Some(serde_json::json!({
@@ -906,6 +867,7 @@ mod tests {
                     "memory_max_spans": 321
                 })),
             }],
+            workers: vec![],
         };
 
         let otel = extract_otel_config(&cfg);
@@ -920,13 +882,30 @@ mod tests {
     #[test]
     fn test_extract_otel_config_defaults_when_module_missing() {
         let cfg = EngineConfig {
-            port: 3000,
             modules: vec![],
+            workers: vec![],
         };
 
         let otel = extract_otel_config(&cfg);
         assert!(!otel.enabled);
         assert!(matches!(otel.exporter, ExporterType::Otlp));
+    }
+
+    #[test]
+    fn test_extract_otel_config_reads_default_engine_config() {
+        let cfg = EngineConfig::default_config();
+
+        let otel = extract_otel_config(&cfg);
+        assert!(otel.enabled);
+        assert_eq!(otel.service_name, "iii");
+        assert!(matches!(otel.exporter, ExporterType::Memory));
+    }
+
+    #[test]
+    fn test_init_log_from_engine_config_uses_default_otel_config() {
+        let cfg = EngineConfig::default_config();
+
+        init_log_from_engine_config(&cfg);
     }
 
     #[test]
@@ -942,7 +921,6 @@ mod tests {
         ));
 
         let yaml = r#"
-port: 3000
 modules:
   - class: modules::observability::OtelModule
     config:
@@ -957,7 +935,6 @@ modules:
 "#;
 
         std::fs::write(&path, yaml).unwrap();
-        init_log(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
 
         assert!(TRACING.get().is_some());

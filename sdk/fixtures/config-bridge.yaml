@@ -1,0 +1,29 @@
+modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49197
+
+  - class: modules::stream::StreamModule
+    config:
+      port: 3114
+      host: 0.0.0.0
+      adapter:
+        class: modules::stream::adapters::Bridge
+        config:
+          bridge_url: ws://localhost:49198
+
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::Bridge
+        config:
+          bridge_url: ws://localhost:49198
+
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::LocalAdapter
+
+  - class: modules::observability::OtelModule
+    config:
+      enabled: false

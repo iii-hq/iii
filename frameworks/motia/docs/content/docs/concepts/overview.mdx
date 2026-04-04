@@ -3,10 +3,6 @@ title: Overview
 description: Build production-grade backends with a single primitive - APIs, background jobs, workflows, and AI agents unified
 ---
 
-{/* <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
-  <source src="https://assets.motia.dev/videos/mp4/site/v1/2-motia-overview-core-concepts.mp4" type="video/mp4" />
-</video> */}
-
 **Build production-grade backends with a single primitive.**
 
 Motia is a unified backend framework that combines APIs, background jobs, durable workflows, AI agents, streaming, and observability around one core primitive: **the Step**.
@@ -16,6 +12,15 @@ Need a background job? That's a Step.
 Scheduled task? Also a Step.
 
 Write each Step in whatever language makes sense — TypeScript, Python, or JavaScript. Each language runtime runs independently, managed by the iii engine, and they all share the same state and communicate through queued messages.
+
+## Naming Clarification: Motia vs iii
+
+| Name | Role |
+|---|---|
+| **Motia** | The framework/SDK you import in application code (`import { step, enqueue, stateManager } from 'motia'`) |
+| **iii** | The runtime engine that runs infrastructure modules (queue, state, stream, cron, HTTP, observability) |
+
+In short: **you write Motia code, and iii runs it**.
 
 ## How It Works
 
@@ -226,12 +231,14 @@ All three Steps work together. TypeScript API enqueues a message, Python process
 ## Core Concepts
 
 ### State Management
-Persistent key-value storage that works across all Steps and languages. `state.set` returns `{ new_value, old_value }`.
+Persistent key-value storage that works across all Steps and languages. `stateManager.set` returns `{ new_value, old_value }`.
 
 ```typescript
-const result = await state.set('users', 'user-123', { name: 'John' })
+import { stateManager } from 'motia'
+
+const result = await stateManager.set('users', 'user-123', { name: 'John' })
 // result = { new_value: { name: 'John' }, old_value: null }
-const user = await state.get('users', 'user-123')
+const user = await stateManager.get('users', 'user-123')
 ```
 
 [Learn about State](/docs/development-guide/state-management)
@@ -288,8 +295,6 @@ Visual interface for building and debugging flows:
 - View stream updates in real-time
 
 ![iii Console Dashboard](/console/dashboard.png)
-
-![Flow diagram in iii Console](/console/flow-view.png)
 
 [Learn about the iii development console](/docs/development-guide/observability)
 

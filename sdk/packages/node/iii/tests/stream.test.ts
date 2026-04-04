@@ -15,11 +15,11 @@ describe('Stream Operations', () => {
 
   beforeEach(async () => {
     await iii
-      .call('stream::delete', {
+      .trigger({ function_id: 'stream::delete', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
-      })
+      } })
       .catch(() => void 0)
   })
 
@@ -31,12 +31,12 @@ describe('Stream Operations', () => {
         metadata: { created: new Date().toISOString() },
       }
 
-      const result = await iii.call<StreamSetInput, StreamSetResult<TestData>>('stream::set', {
+      const result = await iii.trigger<StreamSetInput, StreamSetResult<TestData>>({ function_id: 'stream::set', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
         data: testData,
-      })
+      } })
 
       expect(result).toBeDefined()
       expect(result).toEqual({ old_value: null, new_value: testData })
@@ -46,19 +46,19 @@ describe('Stream Operations', () => {
       const initialData: TestData = { value: 1 }
       const updatedData: TestData = { value: 2, updated: true }
 
-      await iii.call('stream::set', {
+      await iii.trigger({ function_id: 'stream::set', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
         data: initialData,
-      })
+      } })
 
-      const result: StreamSetResult<TestData> = await iii.call('stream::set', {
+      const result: StreamSetResult<TestData> = await iii.trigger({ function_id: 'stream::set', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
         data: updatedData,
-      })
+      } })
 
       expect(result.old_value).toEqual(initialData)
       expect(result.new_value).toEqual(updatedData)
@@ -69,29 +69,29 @@ describe('Stream Operations', () => {
     it('should get an existing stream item', async () => {
       const testData: TestData = { name: 'Test', value: 100 }
 
-      await iii.call('stream::set', {
+      await iii.trigger({ function_id: 'stream::set', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
         data: testData,
-      })
+      } })
 
-      const result: TestData = await iii.call('stream::get', {
+      const result: TestData = await iii.trigger({ function_id: 'stream::get', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
-      })
+      } })
 
       expect(result).toBeDefined()
       expect(result).toEqual(testData)
     })
 
     it('should return null for non-existent item', async () => {
-      const result = await iii.call('stream::get', {
+      const result = await iii.trigger({ function_id: 'stream::get', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: 'non-existent-item',
-      })
+      } })
 
       expect(result).toBeUndefined()
     })
@@ -99,35 +99,35 @@ describe('Stream Operations', () => {
 
   describe('stream::delete', () => {
     it('should delete an existing stream item', async () => {
-      await iii.call('stream::set', {
+      await iii.trigger({ function_id: 'stream::set', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
         data: { test: true },
-      })
+      } })
 
-      await iii.call('stream::delete', {
+      await iii.trigger({ function_id: 'stream::delete', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
-      })
+      } })
 
-      const result = await iii.call('stream::get', {
+      const result = await iii.trigger({ function_id: 'stream::get', payload: {
         stream_name: testStreamName,
         group_id: testGroupId,
         item_id: testItemId,
-      })
+      } })
 
       expect(result).toBeUndefined()
     })
 
     it('should handle deleting non-existent item gracefully', async () => {
       await expect(
-        iii.call('stream::delete', {
+        iii.trigger({ function_id: 'stream::delete', payload: {
           stream_name: testStreamName,
           group_id: testGroupId,
           item_id: 'non-existent',
-        }),
+        } }),
       ).resolves.not.toThrow()
     })
   })
@@ -145,18 +145,18 @@ describe('Stream Operations', () => {
 
       // Set multiple items
       for (const item of items) {
-        await iii.call('stream::set', {
+        await iii.trigger({ function_id: 'stream::set', payload: {
           stream_name: testStreamName,
           group_id: groupId,
           item_id: item.id,
           data: item,
-        })
+        } })
       }
 
-      const result: TestDataWithId[] = await iii.call('stream::list', {
+      const result: TestDataWithId[] = await iii.trigger({ function_id: 'stream::list', payload: {
         stream_name: testStreamName,
         group_id: groupId,
-      })
+      } })
       const sort = (a: TestDataWithId, b: TestDataWithId) => a.id.localeCompare(b.id)
 
       expect(Array.isArray(result)).toBe(true)
@@ -204,13 +204,13 @@ describe('Stream Operations', () => {
         item_id: testItemId,
       }
 
-      await iii.call('stream::set', { ...getArgs, data: testData })
+      await iii.trigger({ function_id: 'stream::set', payload: { ...getArgs, data: testData } })
 
       expect(state.get(`${testGroupId}::${testItemId}`)).toEqual(testData)
 
-      await expect(iii.call('stream::get', getArgs)).resolves.toEqual(testData)
-      await iii.call('stream::delete', getArgs)
-      await expect(iii.call('stream::get', getArgs)).resolves.toEqual(undefined)
+      await expect(iii.trigger({ function_id: 'stream::get', payload: getArgs })).resolves.toEqual(testData)
+      await iii.trigger({ function_id: 'stream::delete', payload: getArgs })
+      await expect(iii.trigger({ function_id: 'stream::get', payload: getArgs })).resolves.toEqual(undefined)
     })
   })
 })

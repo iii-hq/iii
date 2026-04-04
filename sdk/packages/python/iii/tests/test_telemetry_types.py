@@ -1,4 +1,5 @@
 """Tests for OtelConfig dataclass."""
+
 from iii.telemetry_types import OtelConfig
 
 

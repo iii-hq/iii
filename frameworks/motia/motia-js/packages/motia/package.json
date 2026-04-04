@@ -1,6 +1,6 @@
 {
   "name": "motia",
-  "version": "1.0.2-rc.1",
+  "version": "1.0.4-rc.1",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -8,7 +8,8 @@
   "description": "Motia is a library for building AI-powered applications.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/MotiaDev/motia.git"
+    "url": "https://github.com/iii-hq/iii.git",
+    "directory": "frameworks/motia/motia-js/packages/motia"
   },
   "homepage": "https://www.motia.dev",
   "keywords": [

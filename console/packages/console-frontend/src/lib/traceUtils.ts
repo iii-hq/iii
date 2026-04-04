@@ -1,4 +1,33 @@
 import { useCallback, useRef, useState } from 'react'
+import type { VisualizationSpan } from '@/lib/traceTransform'
+
+export type SpanType = 'trigger' | 'enqueue' | 'function'
+
+export function classifySpanType(span: VisualizationSpan): SpanType {
+  const attrs = span.attributes || {}
+  if (attrs['messaging.operation.type'] === 'publish' || attrs['messaging.destination.name'])
+    return 'enqueue'
+  if (span.name.startsWith('trigger') || attrs['iii.function.kind'] !== undefined) return 'trigger'
+  return 'function'
+}
+
+export function formatTimestamp(timestampMs: number): string {
+  const date = new Date(timestampMs)
+  return date.toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    fractionalSecondDigits: 3,
+  })
+}
+
+export function formatRelative(offsetMs: number): string {
+  if (offsetMs < 0) return `-${formatRelative(-offsetMs)}`
+  if (offsetMs < 1) return `+${(offsetMs * 1000).toFixed(0)}μs`
+  if (offsetMs < 1000) return `+${offsetMs.toFixed(1)}ms`
+  return `+${(offsetMs / 1000).toFixed(2)}s`
+}
 
 export function formatDuration(ms: number): string {
   if (ms < 0.001) return '0μs'

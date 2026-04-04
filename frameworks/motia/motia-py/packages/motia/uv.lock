@@ -396,7 +396,7 @@ wheels = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.8.0"
+version = "0.9.0"
 source = { directory = "../../../../../sdk/packages/python/iii" }
 dependencies = [
     { name = "pydantic" },
@@ -407,6 +407,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.9" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "griffe", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "opentelemetry-api", marker = "extra == 'dev'", specifier = ">=1.25" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.25" },
@@ -529,7 +530,7 @@ wheels = [
 
 [[package]]
 name = "motia"
-version = "1.0.1rc1"
+version = "1.0.4rc1"
 source = { editable = "." }
 dependencies = [
     { name = "iii-sdk" },

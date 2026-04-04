@@ -1,4 +1,4 @@
-use iii_sdk::{IIIError, III};
+use iii_sdk::{IIIError, RegisterTriggerInput, III};
 use serde_json::json;
 use tracing::{debug, info};
 
@@ -98,6 +98,40 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
         ),
         // Function invocation endpoint
         ("engine::console::invoke", "_console/invoke", "POST"),
+        // Queue management endpoints
+        ("engine::console::queues_list", "_console/queues", "GET"),
+        (
+            "engine::console::queue_detail",
+            "_console/queues/:topic",
+            "GET",
+        ),
+        (
+            "engine::console::queue_publish",
+            "_console/queues/:topic/publish",
+            "POST",
+        ),
+        // DLQ management endpoints
+        ("engine::console::dlq_list", "_console/dlq", "GET"),
+        (
+            "engine::console::dlq_messages",
+            "_console/dlq/:topic/messages",
+            "POST",
+        ),
+        (
+            "engine::console::dlq_redrive",
+            "_console/dlq/:topic/redrive",
+            "POST",
+        ),
+        (
+            "engine::console::dlq_redrive_message",
+            "_console/dlq/:topic/messages/:id/redrive",
+            "POST",
+        ),
+        (
+            "engine::console::dlq_discard_message",
+            "_console/dlq/:topic/messages/:id/discard",
+            "DELETE",
+        ),
     ];
 
     // Register each trigger with the bridge
@@ -109,7 +143,12 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
 
         debug!("Registering API trigger: {} -> {}", api_path, function_path);
 
-        bridge.register_trigger("http", function_path, config)?;
+        bridge.register_trigger(RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: function_path.to_string(),
+            config,
+            metadata: None,
+        })?;
 
         info!(
             "Successfully registered API trigger: {} -> {}",

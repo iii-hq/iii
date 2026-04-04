@@ -96,6 +96,7 @@ pub enum AlertAction {
 
 /// Single alert rule configuration
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlertRule {
     /// Name of the alert (for identification)
     pub name: String,
@@ -141,6 +142,7 @@ fn default_true() -> bool {
 
 /// Sampling rule for per-operation or per-service sampling
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SamplingRule {
     /// Operation name pattern (supports wildcards like "api.*")
     #[serde(default)]
@@ -156,6 +158,7 @@ pub struct SamplingRule {
 
 /// Advanced sampling configuration
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SamplingConfig {
     /// Default sampling ratio for traces not matching any rule
     #[serde(default)]
@@ -176,13 +179,15 @@ pub struct SamplingConfig {
 
 /// Rate limiting configuration for trace sampling
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Maximum traces per second
     pub max_traces_per_second: u32,
 }
 
 /// OpenTelemetry module configuration (for YAML deserialization)
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OtelModuleConfig {
     /// Whether OpenTelemetry export is enabled
     #[serde(default)]
@@ -281,6 +286,38 @@ pub struct OtelModuleConfig {
     pub format: Option<String>,
 }
 
+impl Default for OtelModuleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(true),
+            service_name: Some("iii".to_string()),
+            exporter: Some(OtelExporterType::Memory),
+            metrics_enabled: Some(true),
+            metrics_exporter: Some(MetricsExporterType::Memory),
+            logs_enabled: Some(true),
+            logs_exporter: Some(LogsExporterType::Memory),
+            logs_console_output: true,
+            logs_sampling_ratio: 1.0,
+            // All other fields left as None/empty — resolved at runtime
+            service_version: None,
+            service_namespace: None,
+            endpoint: None,
+            sampling_ratio: None,
+            sampling: None,
+            memory_max_spans: None,
+            metrics_retention_seconds: None,
+            metrics_max_count: None,
+            logs_max_count: None,
+            logs_retention_seconds: None,
+            logs_batch_size: None,
+            logs_flush_interval_ms: None,
+            alerts: Vec::new(),
+            level: None,
+            format: None,
+        }
+    }
+}
+
 fn default_logs_sampling_ratio() -> f64 {
     1.0 // Keep all logs by default
 }
@@ -342,5 +379,47 @@ mod tests {
             config.alerts[0].action,
             AlertAction::Function { ref path } if path == "alerts.notify"
         ));
+    }
+
+    #[test]
+    fn otel_config_deny_unknown_fields() {
+        let json = r#"{"enabled": true, "fake_key": "value"}"#;
+        let result: Result<OtelModuleConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in OtelModuleConfig"
+        );
+    }
+
+    #[test]
+    fn alert_rule_deny_unknown_fields() {
+        let json = serde_json::json!({
+            "name": "test",
+            "metric": "m",
+            "threshold": 1.0,
+            "fake_key": true
+        });
+        let result: Result<AlertRule, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "should reject unknown fields in AlertRule");
+    }
+
+    #[test]
+    fn sampling_config_deny_unknown_fields() {
+        let json = r#"{"default": 0.5, "fake_key": true}"#;
+        let result: Result<SamplingConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in SamplingConfig"
+        );
+    }
+
+    #[test]
+    fn rate_limit_config_deny_unknown_fields() {
+        let json = r#"{"max_traces_per_second": 100, "fake_key": true}"#;
+        let result: Result<RateLimitConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in RateLimitConfig"
+        );
     }
 }

@@ -22,7 +22,7 @@ const getFeatures = async (filePath: string) => {
 export function setupStepEndpoint(iii: ISdk): void {
   const function_id = 'motia_step_get'
 
-  iii.registerFunction({ id: function_id }, async (req) => {
+  iii.registerFunction(function_id, async (req) => {
     const id = req.path_params.stepId
 
     const stepFiles = [

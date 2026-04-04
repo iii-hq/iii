@@ -21,13 +21,15 @@
     "fmt": "biome format --write . && cargo fmt --all",
     "fmt:check": "biome check . && cargo fmt --all -- --check",
     "type-check": "turbo run type-check",
-    "dev:docs": "turbo run dev --filter=docs",
+    "generate:api-docs": "bash scripts/generate-api-docs.sh",
+    "dev:docs": "cd docs && npx mint dev",
     "dev:motia-docs": "turbo run dev --filter=motia-docs",
     "dev:website": "turbo run dev --filter=iii-website",
     "dev:console": "turbo run dev --filter=console-frontend"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.6",
+    "tsx": "^4.21.0",
     "turbo": "^2.5.0"
   },
   "packageManager": "pnpm@10.19.0",

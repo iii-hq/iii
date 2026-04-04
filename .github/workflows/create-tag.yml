@@ -73,6 +73,7 @@ jobs:
             for f in engine/Cargo.toml \
                      sdk/packages/rust/iii/Cargo.toml \
                      sdk/packages/node/iii/package.json \
+                     sdk/packages/node/iii-browser/package.json \
                      sdk/packages/python/iii/pyproject.toml \
                      console/packages/console-rust/Cargo.toml; do
               if [[ ! -f "$f" ]]; then
@@ -222,6 +223,9 @@ jobs:
           jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/iii/package.json > tmp.json && mv tmp.json sdk/packages/node/iii/package.json
           echo "Updated sdk/packages/node/iii/package.json to $NEW_VERSION"
 
+          jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/iii-browser/package.json > tmp.json && mv tmp.json sdk/packages/node/iii-browser/package.json
+          echo "Updated sdk/packages/node/iii-browser/package.json to $NEW_VERSION"
+
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${PY_VERSION}\"/}" sdk/packages/python/iii/pyproject.toml
           echo "Updated sdk/packages/python/iii/pyproject.toml to $PY_VERSION"
 
@@ -273,6 +277,7 @@ jobs:
             check_cargo "engine/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/iii/Cargo.toml" "$VERSION"
             check_json "sdk/packages/node/iii/package.json" "$VERSION"
+            check_json "sdk/packages/node/iii-browser/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
           fi

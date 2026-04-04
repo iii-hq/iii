@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { TriggerAction } from '../src/iii'
 import { execute, iii, sleep } from './utils'
 
 describe('Bridge Operations', () => {
@@ -11,17 +12,17 @@ describe('Bridge Operations', () => {
   it('should register and invoke a function', async () => {
     let receivedData: Record<string, unknown> | undefined
 
-    const fn = iii.registerFunction({ id: 'test.echo' }, async (data: Record<string, unknown>) => {
+    const fn = iii.registerFunction('test.echo', async (data: Record<string, unknown>) => {
       receivedData = data
       return { echoed: data }
     })
 
     await sleep(300)
 
-    const result = await iii.call<Record<string, unknown>, { echoed: Record<string, unknown> }>(
-      'test.echo',
-      { message: 'hello' },
-    )
+    const result = await iii.trigger<Record<string, unknown>, { echoed: Record<string, unknown> }>({
+      function_id: 'test.echo',
+      payload: { message: 'hello' },
+    })
 
     expect(result).toHaveProperty('echoed')
     expect(result.echoed).toHaveProperty('message', 'hello')
@@ -38,7 +39,7 @@ describe('Bridge Operations', () => {
     })
 
     const fn = iii.registerFunction(
-      { id: 'test.receiver' },
+      'test.receiver',
       async (data: Record<string, unknown>) => {
         receivedData = data
         resolveReceived?.()
@@ -48,7 +49,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    iii.callVoid('test.receiver', { value: 42 })
+    iii.trigger({ function_id: 'test.receiver', payload: { value: 42 }, action: TriggerAction.Void() })
 
     await Promise.race([
       received,
@@ -63,8 +64,8 @@ describe('Bridge Operations', () => {
   })
 
   it('should list registered functions', async () => {
-    const fn1 = iii.registerFunction({ id: 'test.list.func1' }, async () => ({}))
-    const fn2 = iii.registerFunction({ id: 'test.list.func2' }, async () => ({}))
+    const fn1 = iii.registerFunction('test.list.func1', async () => ({}))
+    const fn2 = iii.registerFunction('test.list.func2', async () => ({}))
 
     await sleep(300)
 
@@ -79,6 +80,6 @@ describe('Bridge Operations', () => {
   })
 
   it('should reject when invoking non-existent function', async () => {
-    await expect(iii.call('nonexistent.function', {}, 2000)).rejects.toThrow()
+    await expect(iii.trigger({ function_id: 'nonexistent.function', payload: {}, timeoutMs: 2000 })).rejects.toThrow()
   })
 })

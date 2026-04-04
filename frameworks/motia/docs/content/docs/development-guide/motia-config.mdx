@@ -66,12 +66,6 @@ modules:
           store_method: file_based
           file_path: ./data/stream_store
 
-  - class: modules::kv_server::KvServer
-    config:
-      store_method: file_based
-      file_path: ./data/kv_store
-      save_interval_ms: 5000
-
   - class: modules::state::StateModule
     config:
       adapter:

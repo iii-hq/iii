@@ -1,5 +1,0 @@
-{
-  "title": "Architecture",
-  "defaultOpen": false,
-  "pages": ["engine", "workers", "modules", "context", "trigger-types", "channels"]
-}
