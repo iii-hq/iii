@@ -709,11 +709,6 @@ mod tests {
                 !entry.class.is_empty(),
                 "Module entry class should not be empty"
             );
-            // Default entries have no config
-            assert!(
-                entry.config.is_none(),
-                "Default module entries should have no config"
-            );
         }
     }
 
@@ -730,6 +725,19 @@ mod tests {
             class_names.len(),
             unique_names.len(),
             "Default module entries should have unique class names"
+        );
+    }
+
+    #[test]
+    fn test_default_config_includes_otel_module() {
+        let config = EngineConfig::default_config();
+
+        assert!(
+            config
+                .modules
+                .iter()
+                .any(|entry| entry.class == "modules::observability::OtelModule"),
+            "default config should include OtelModule (registered as mandatory)"
         );
     }
 

@@ -14,9 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest, SessionHandler},
     function::FunctionResult,
     modules::module::Module,
+    modules::worker::rbac_session::Session,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
     workers::WorkerTelemetryMeta,
@@ -74,6 +75,8 @@ pub struct TriggerInfo {
     pub trigger_type: String,
     pub function_id: String,
     pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -211,6 +214,7 @@ impl EngineFunctionsModule {
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
                     config: t.config.clone(),
+                    metadata: t.metadata.clone(),
                 }
             })
             .collect()
@@ -464,11 +468,25 @@ impl EngineFunctionsModule {
     pub async fn get_functions(
         &self,
         input: FunctionsListInput,
+        session: Option<Arc<Session>>,
     ) -> FunctionResult<FunctionsListResult, ErrorBody> {
         let mut functions = self.list_functions();
 
         if !input.include_internal.unwrap_or(false) {
             functions.retain(|f| !f.function_id.starts_with("engine::"));
+        }
+
+        if let Some(session) = &session {
+            functions.retain(|f| {
+                let function = self.engine.functions.get(&f.function_id);
+                crate::modules::worker::rbac_config::is_function_allowed(
+                    &f.function_id,
+                    session.config.rbac.clone(),
+                    &session.allowed_functions,
+                    &session.forbidden_functions,
+                    function.as_ref(),
+                )
+            });
         }
 
         FunctionResult::Success(FunctionsListResult { functions })
@@ -697,6 +715,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: serde_json::json!({"interval": 5}),
             worker_id: None,
+            metadata: None,
         };
         engine
             .trigger_registry
@@ -792,6 +811,7 @@ mod tests {
             function_id: "test::on_functions_changed".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
 
         // Register
@@ -817,6 +837,7 @@ mod tests {
                 function_id: format!("test::handler_{}", i),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             };
             module.register_trigger(trigger).await.unwrap();
         }
@@ -837,6 +858,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -884,6 +906,7 @@ mod tests {
             function_id: "test::on_workers".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -976,11 +999,38 @@ mod tests {
             trigger_type: "cron".to_string(),
             function_id: "fn::handler".to_string(),
             config: serde_json::json!({"schedule": "* * * * *"}),
+            metadata: None,
         };
         let json = serde_json::to_value(&info).expect("serialize");
         assert_eq!(json["id"], "t-1");
         assert_eq!(json["trigger_type"], "cron");
         assert_eq!(json["function_id"], "fn::handler");
+    }
+
+    #[test]
+    fn test_trigger_info_serializes_with_metadata() {
+        let info = TriggerInfo {
+            id: "t-2".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::api".to_string(),
+            config: serde_json::json!({"path": "/users"}),
+            metadata: Some(serde_json::json!({"team": "api"})),
+        };
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert_eq!(json["metadata"], serde_json::json!({"team": "api"}));
+    }
+
+    #[test]
+    fn test_trigger_info_omits_null_metadata() {
+        let info = TriggerInfo {
+            id: "t-3".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "fn::cleanup".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert!(json.get("metadata").is_none());
     }
 
     #[tokio::test]
@@ -1060,9 +1110,12 @@ mod tests {
         }
 
         let filtered = module
-            .get_functions(FunctionsListInput {
-                include_internal: None,
-            })
+            .get_functions(
+                FunctionsListInput {
+                    include_internal: None,
+                },
+                None,
+            )
             .await;
         match filtered {
             FunctionResult::Success(result) => {
@@ -1073,9 +1126,12 @@ mod tests {
         }
 
         let all = module
-            .get_functions(FunctionsListInput {
-                include_internal: Some(true),
-            })
+            .get_functions(
+                FunctionsListInput {
+                    include_internal: Some(true),
+                },
+                None,
+            )
             .await;
         match all {
             FunctionResult::Success(result) => {
@@ -1097,6 +1153,7 @@ mod tests {
                 function_id: "engine::internal".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
         module.engine.trigger_registry.triggers.insert(
@@ -1107,6 +1164,7 @@ mod tests {
                 function_id: "user::visible".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -1219,6 +1277,7 @@ mod tests {
                 function_id: "test::worker_listener".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 

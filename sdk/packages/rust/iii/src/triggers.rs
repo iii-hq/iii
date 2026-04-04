@@ -15,6 +15,8 @@ pub struct TriggerConfig {
     pub function_id: String,
     /// Trigger-specific configuration.
     pub config: Value,
+    /// Arbitrary metadata attached to the trigger.
+    pub metadata: Option<Value>,
 }
 
 /// Handler trait for custom trigger types. Implement this and pass to

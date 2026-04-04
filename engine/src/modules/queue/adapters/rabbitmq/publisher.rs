@@ -64,12 +64,34 @@ impl Publisher {
             .await
     }
 
-    pub async fn requeue(&self, topic: &str, job: &Job) -> Result<()> {
-        self.publish(topic, job).await
+    pub async fn requeue(&self, topic: &str, job: &Job, function_id: Option<&str>) -> Result<()> {
+        if let Some(fid) = function_id {
+            // Per-function subscriber queue: publish directly to the function's
+            // queue (default exchange) to avoid re-fanning out to all subscribers.
+            let names = RabbitNames::new(topic);
+            let queue_name = names.function_queue(fid);
+            let headers = self.build_headers(job);
+            self.publish_to_exchange("", &queue_name, job, Some(headers))
+                .await
+        } else {
+            self.publish(topic, job).await
+        }
     }
 
-    pub async fn publish_to_dlq(&self, topic: &str, job: &Job, error: &str) -> Result<()> {
+    pub async fn publish_to_dlq(
+        &self,
+        topic: &str,
+        job: &Job,
+        error: &str,
+        function_id: Option<&str>,
+    ) -> Result<()> {
         let names = RabbitNames::new(topic);
+        let dlq_name = if let Some(fid) = function_id {
+            names.function_dlq(fid)
+        } else {
+            names.dlq()
+        };
+
         let payload = serde_json::to_vec(&serde_json::json!({
             "job": job,
             "error": error,
@@ -86,7 +108,7 @@ impl Publisher {
         self.channel
             .basic_publish(
                 "",
-                &names.dlq(),
+                &dlq_name,
                 BasicPublishOptions::default(),
                 &payload,
                 properties,

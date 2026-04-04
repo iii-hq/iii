@@ -140,24 +140,24 @@ pub async fn handle_dispatch(command: &str, args: &[String], no_update_check: bo
     };
 
     // Run background update check (non-blocking, 500ms timeout)
-    if !no_update_check {
-        if let Some((updates, should_save)) = update::run_background_check(&app_state, 500).await {
-            // Print update notifications
-            update::print_update_notifications(&updates);
+    if !no_update_check
+        && let Some((updates, should_save)) = update::run_background_check(&app_state, 500).await
+    {
+        // Print update notifications
+        update::print_update_notifications(&updates);
 
-            // Check advisories too
-            if let Ok(client) = github::build_client() {
-                if let Ok(advisories) = advisory::fetch_advisories(&client).await {
-                    let matched = advisory::check_advisories(&advisories, &app_state);
-                    advisory::print_advisory_warnings(&matched);
-                }
-            }
+        // Check advisories too
+        if let Ok(client) = github::build_client()
+            && let Ok(advisories) = advisory::fetch_advisories(&client).await
+        {
+            let matched = advisory::check_advisories(&advisories, &app_state);
+            advisory::print_advisory_warnings(&matched);
+        }
 
-            // Save updated state
-            if should_save {
-                app_state.mark_update_checked();
-                let _ = app_state.save(&platform::state_file_path());
-            }
+        // Save updated state
+        if should_save {
+            app_state.mark_update_checked();
+            let _ = app_state.save(&platform::state_file_path());
         }
     }
 
@@ -522,10 +522,10 @@ pub async fn handle_update(target: Option<&str>) -> i32 {
     let mut self_updated = false;
     for result in &results {
         update::print_update_result(result);
-        if let Ok(update::UpdateResult::Updated { binary, .. }) = result {
-            if binary == "iii" {
-                self_updated = true;
-            }
+        if let Ok(update::UpdateResult::Updated { binary, .. }) = result
+            && binary == "iii"
+        {
+            self_updated = true;
         }
     }
 

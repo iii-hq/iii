@@ -44,7 +44,7 @@ async function trackStep(
   });
 }
 
-iii.registerFunction({ id: "orders::start" }, async (request: any) => {
+iii.registerFunction("orders::start", async (request: any) => {
   const logger = new Logger();
   const orderId = request.body.orderId ?? `ord-${Date.now()}`;
   const orderDraft = await iii.trigger({
@@ -86,7 +86,7 @@ iii.registerFunction({ id: "orders::start" }, async (request: any) => {
   return { orderId };
 });
 
-iii.registerFunction({ id: "orders::validate" }, async (data: any) => {
+iii.registerFunction("orders::validate", async (data: any) => {
   const logger = new Logger();
   await trackStep(data.orderId, "validate", "running");
   const snapshot = await iii.trigger({
@@ -137,7 +137,7 @@ iii.registerFunction({ id: "orders::validate" }, async (data: any) => {
   return { ok: true };
 });
 
-iii.registerFunction({ id: "orders::ship" }, async (data: any) => {
+iii.registerFunction("orders::ship", async (data: any) => {
   const logger = new Logger();
   await trackStep(data.orderId, "ship", "running");
   const shipment = await iii.trigger({

@@ -154,6 +154,7 @@ async fn delivers_queue_events_to_external_http_function() {
             trigger_type: "queue".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
+            metadata: None,
         })
         .expect("register trigger");
     common::settle().await;
@@ -246,6 +247,7 @@ async fn delivers_events_with_custom_headers() {
             trigger_type: "queue".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
+            metadata: None,
         })
         .expect("register trigger");
     common::settle().await;
@@ -318,6 +320,7 @@ async fn delivers_events_to_multiple_external_functions() {
             trigger_type: "queue".to_string(),
             function_id: function_id_a.clone(),
             config: json!({"topic": topic_a}),
+            metadata: None,
         })
         .expect("register trigger a");
     let _trigger_b = iii
@@ -325,6 +328,7 @@ async fn delivers_events_to_multiple_external_functions() {
             trigger_type: "queue".to_string(),
             function_id: function_id_b.clone(),
             config: json!({"topic": topic_b}),
+            metadata: None,
         })
         .expect("register trigger b");
     common::settle().await;
@@ -391,6 +395,7 @@ async fn stops_delivering_events_after_unregister() {
             trigger_type: "queue".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
+            metadata: None,
         })
         .expect("register trigger");
     common::settle().await;
@@ -462,6 +467,7 @@ async fn delivers_events_using_put_method() {
             trigger_type: "queue".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
+            metadata: None,
         })
         .expect("register trigger");
     common::settle().await;

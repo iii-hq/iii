@@ -143,7 +143,7 @@ describe('HTTP external functions', () => {
 
     try {
       httpFn = iii.registerFunction(
-        { id: functionId },
+        functionId,
         {
           url: webhookProbe.url(),
           method: 'POST',
@@ -187,7 +187,7 @@ describe('HTTP external functions', () => {
 
     try {
       httpFn = iii.registerFunction(
-        { id: functionId },
+        functionId,
         {
           url: webhookProbe.url(),
           method: 'POST',
@@ -227,7 +227,7 @@ describe('HTTP external functions', () => {
 
     try {
       httpFn = iii.registerFunction(
-        { id: functionId },
+        functionId,
         {
           url: webhookProbe.url(),
           method: 'POST',
@@ -287,7 +287,7 @@ describe('HTTP external functions', () => {
 
     try {
       httpFnA = iii.registerFunction(
-        { id: functionIdA },
+        functionIdA,
         {
           url: webhookProbeA.url(),
           method: 'POST',
@@ -296,7 +296,7 @@ describe('HTTP external functions', () => {
       )
 
       httpFnB = iii.registerFunction(
-        { id: functionIdB },
+        functionIdB,
         {
           url: webhookProbeB.url(),
           method: 'POST',
@@ -357,7 +357,7 @@ describe('HTTP external functions', () => {
 
     try {
       httpFn = iii.registerFunction(
-        { id: functionId },
+        functionId,
         {
           url: webhookProbe.url(),
           method: 'POST',
@@ -419,7 +419,7 @@ describe('HTTP external functions', () => {
 
     try {
       httpFn = iii.registerFunction(
-        { id: functionId },
+        functionId,
         {
           url: webhookProbe.url(),
           method: 'PUT',

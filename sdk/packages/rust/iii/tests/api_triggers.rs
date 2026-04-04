@@ -47,6 +47,7 @@ async fn get_endpoint() {
             "api_path": "test/rs/hello",
             "http_method": "GET",
         }),
+        metadata: None,
     })
     .expect("register trigger");
 
@@ -88,6 +89,7 @@ async fn post_endpoint_with_body() {
                 "api_path": "test/rs/items",
                 "http_method": "POST",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -132,6 +134,7 @@ async fn path_parameters() {
                 "api_path": "test/rs/items/:id",
                 "http_method": "GET",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -174,6 +177,7 @@ async fn query_parameters() {
                 "api_path": "test/rs/search",
                 "http_method": "GET",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -213,6 +217,7 @@ async fn custom_status_code() {
                 "api_path": "test/rs/missing",
                 "http_method": "GET",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -302,6 +307,7 @@ async fn download_pdf_streaming() {
                 "api_path": "test/rs/download/pdf",
                 "http_method": "GET",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -424,6 +430,7 @@ async fn upload_pdf_streaming() {
                 "api_path": "test/rs/upload/pdf",
                 "http_method": "POST",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -532,6 +539,7 @@ async fn sse_streaming() {
                 "api_path": "test/rs/sse",
                 "http_method": "GET",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -681,6 +689,7 @@ async fn urlencoded_form_data() {
                 "api_path": "test/rs/form/urlencoded",
                 "http_method": "POST",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -834,6 +843,7 @@ async fn multipart_form_data() {
                 "api_path": "test/rs/form/multipart",
                 "http_method": "POST",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 

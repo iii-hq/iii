@@ -9,7 +9,6 @@ import {
 } from './iii-constants'
 import {
   type FunctionInfo,
-  type HttpInvocationConfig,
   type IIIMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
@@ -24,8 +23,6 @@ import {
   type TriggerRegistrationResultMessage,
   type TriggerRequest,
   type TriggerTypeInfo,
-  type WorkerInfo,
-  type WorkerRegisteredMessage,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
@@ -34,6 +31,7 @@ import type {
   FunctionsAvailableCallback,
   Invocation,
   ISdk,
+  RegisterFunctionOptions,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
@@ -41,20 +39,6 @@ import type {
   TriggerTypeRef,
 } from './types'
 import { isChannelRef } from './utils'
-
-const SDK_VERSION = '0.10.0'
-
-function getBrowserInfo(): string {
-  if (typeof navigator !== 'undefined' && navigator.userAgent) {
-    return navigator.userAgent
-  }
-  return 'browser (unknown)'
-}
-
-function getDefaultWorkerName(): string {
-  const id = crypto.randomUUID().slice(0, 8)
-  return `browser:${id}`
-}
 
 /** @internal */
 export type TelemetryOptions = {
@@ -70,15 +54,12 @@ export type TelemetryOptions = {
  * @example
  * ```typescript
  * const iii = registerWorker('ws://localhost:49135', {
- *   workerName: 'my-browser-worker',
  *   invocationTimeoutMs: 10000,
  *   reconnectionConfig: { maxRetries: 5 },
  * })
  * ```
  */
 export type InitOptions = {
-  /** Display name for this worker. Defaults to `browser:<random-id>`. */
-  workerName?: string
   /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
@@ -89,8 +70,6 @@ export type InitOptions = {
   reconnectionConfig?: Partial<IIIReconnectionConfig>
   /** Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. */
   headers?: Record<string, string>
-  /** @internal */
-  telemetry?: TelemetryOptions
 }
 
 class Sdk implements ISdk {
@@ -104,8 +83,6 @@ class Sdk implements ISdk {
   private functionsAvailableTrigger?: Trigger
   private functionsAvailableFunctionPath?: string
   private messagesToSend: Record<string, unknown>[] = []
-  private workerName: string
-  private workerId?: string
   private reconnectTimeout?: ReturnType<typeof setTimeout>
   private invocationTimeoutMs: number
   private reconnectionConfig: IIIReconnectionConfig
@@ -117,7 +94,6 @@ class Sdk implements ISdk {
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
-    this.workerName = options?.workerName ?? getDefaultWorkerName()
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -166,11 +142,11 @@ class Sdk implements ISdk {
           config,
         })
       },
-      registerFunction: (func, handler, config) => {
-        const ref = this.registerFunction(func, handler)
+      registerFunction: (functionId, handler, config) => {
+        const ref = this.registerFunction(functionId, handler)
         this.registerTrigger({
           type: triggerType.id,
-          function_id: func.id,
+          function_id: functionId,
           config,
         })
         return ref
@@ -236,74 +212,61 @@ class Sdk implements ISdk {
   }
 
   /**
-   * Registers a function with the engine. The `id` is the unique identifier
+   * Registers a function with the engine. The `functionId` is the unique identifier
    * used by triggers and invocations.
    *
    * Pass a handler for local execution, or an {@link HttpInvocationConfig}
    * for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
    *
-   * @param message - Function registration input.
-   * @param message.id - Unique function identifier.
-   * @param message.description - Human-readable description.
+   * @param functionId - Unique function identifier.
    * @param handlerOrInvocation - Async handler or HTTP invocation config.
+   * @param options - Optional function registration options (description, request/response formats, metadata).
    * @returns A {@link FunctionRef} with `id` and `unregister()`.
    *
    * @example
    * ```typescript
    * const fn = iii.registerFunction(
-   *   { id: 'greet', description: 'Greets a user' },
+   *   'greet',
    *   async (input: { name: string }) => {
    *     return { message: `Hello, ${input.name}!` }
    *   },
+   *   { description: 'Greets a user' },
    * )
    * ```
    */
   registerFunction = (
-    message: Omit<RegisterFunctionMessage, 'message_type'>,
-    handlerOrInvocation: RemoteFunctionHandler | HttpInvocationConfig,
+    functionId: string,
+    handlerOrInvocation: RemoteFunctionHandler,
+    options?: RegisterFunctionOptions,
   ): FunctionRef => {
-    if (!message.id || message.id.trim() === '') {
+    if (!functionId || functionId.trim() === '') {
       throw new Error('id is required')
     }
-    if (this.functions.has(message.id)) {
-      throw new Error(`function id already registered: ${message.id}`)
+    if (this.functions.has(functionId)) {
+      throw new Error(`function id already registered: ${functionId}`)
     }
 
-    const isHandler = typeof handlerOrInvocation === 'function'
-
-    const fullMessage: RegisterFunctionMessage = isHandler
-      ? { ...message, message_type: MessageType.RegisterFunction }
-      : {
-          ...message,
-          message_type: MessageType.RegisterFunction,
-          invocation: {
-            url: handlerOrInvocation.url,
-            method: handlerOrInvocation.method ?? 'POST',
-            timeout_ms: handlerOrInvocation.timeout_ms,
-            headers: handlerOrInvocation.headers,
-            auth: handlerOrInvocation.auth,
-          },
-        }
+    const fullMessage: RegisterFunctionMessage = {
+      ...options,
+      id: functionId,
+      message_type: MessageType.RegisterFunction,
+    }
 
     this.sendMessage(MessageType.RegisterFunction, fullMessage, true)
 
-    if (isHandler) {
-      const handler = handlerOrInvocation as RemoteFunctionHandler
-      this.functions.set(message.id, {
-        message: fullMessage,
-        handler: async (input, _traceparent?: string, _baggage?: string) => {
-          return await handler(input)
-        },
-      })
-    } else {
-      this.functions.set(message.id, { message: fullMessage })
-    }
+    const handler = handlerOrInvocation as RemoteFunctionHandler
+    this.functions.set(functionId, {
+      message: fullMessage,
+      handler: async (input, _traceparent?: string, _baggage?: string) => {
+        return await handler(input)
+      },
+    })
 
     return {
-      id: message.id,
+      id: functionId,
       unregister: () => {
-        this.sendMessage(MessageType.UnregisterFunction, { id: message.id }, true)
-        this.functions.delete(message.id)
+        this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
+        this.functions.delete(functionId)
       },
     }
   }
@@ -361,7 +324,7 @@ class Sdk implements ISdk {
    *
    * @example
    * ```typescript
-   * import { TriggerAction } from 'iii-sdk-browser'
+   * import { TriggerAction } from 'iii-browser-sdk'
    *
    * // Synchronous
    * const result = await iii.trigger({ function_id: 'get-order', payload: { id: '123' } })
@@ -445,19 +408,6 @@ class Sdk implements ISdk {
     return result.functions
   }
 
-  /**
-   * Lists all connected workers.
-   *
-   * @returns An array of {@link WorkerInfo} objects.
-   */
-  listWorkers = async (): Promise<WorkerInfo[]> => {
-    const result = await this.trigger<Record<string, never>, { workers: WorkerInfo[] }>({
-      function_id: EngineFunctions.LIST_WORKERS,
-      payload: {},
-    })
-    return result.workers
-  }
-
   listTriggers = async (includeInternal = false): Promise<TriggerInfo[]> => {
     const result = await this.trigger<{ include_internal: boolean }, { triggers: TriggerInfo[] }>({
       function_id: EngineFunctions.LIST_TRIGGERS,
@@ -486,30 +436,6 @@ class Sdk implements ISdk {
     return result.trigger_types
   }
 
-  private registerWorkerMetadata(): void {
-    const telemetryOpts = this.options?.telemetry
-    const language =
-      telemetryOpts?.language ?? (typeof navigator !== 'undefined' ? navigator.language : undefined)
-
-    this.trigger({
-      function_id: EngineFunctions.REGISTER_WORKER,
-      payload: {
-        runtime: 'browser',
-        version: SDK_VERSION,
-        name: this.workerName,
-        os: getBrowserInfo(),
-        pid: 0,
-        telemetry: {
-          language,
-          project_name: telemetryOpts?.project_name,
-          framework: telemetryOpts?.framework,
-          amplitude_api_key: telemetryOpts?.amplitude_api_key,
-        },
-      },
-      action: { type: 'void' },
-    })
-  }
-
   /**
    * Registers a custom stream implementation, overriding the engine default
    * for the given stream name.
@@ -530,11 +456,11 @@ class Sdk implements ISdk {
    * ```
    */
   createStream = <TData>(streamName: string, stream: IStream<TData>): void => {
-    this.registerFunction({ id: `stream::get(${streamName})` }, stream.get.bind(stream))
-    this.registerFunction({ id: `stream::set(${streamName})` }, stream.set.bind(stream))
-    this.registerFunction({ id: `stream::delete(${streamName})` }, stream.delete.bind(stream))
-    this.registerFunction({ id: `stream::list(${streamName})` }, stream.list.bind(stream))
-    this.registerFunction({ id: `stream::list_groups(${streamName})` }, stream.listGroups.bind(stream))
+    this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))
+    this.registerFunction(`stream::set(${streamName})`, stream.set.bind(stream))
+    this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))
+    this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
+    this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
   }
 
   /**
@@ -564,7 +490,7 @@ class Sdk implements ISdk {
 
       const function_id = this.functionsAvailableFunctionPath
       if (!this.functions.has(function_id)) {
-        this.registerFunction({ id: function_id }, async ({ functions }: { functions: FunctionInfo[] }) => {
+        this.registerFunction(function_id, async ({ functions }: { functions: FunctionInfo[] }) => {
           this.functionsAvailableCallbacks.forEach((handler) => {
             handler(functions)
           })
@@ -726,8 +652,6 @@ class Sdk implements ISdk {
       }
       this.sendMessageRaw(JSON.stringify(message))
     }
-
-    this.registerWorkerMetadata()
   }
 
   private isOpen(): boolean {
@@ -916,10 +840,6 @@ class Sdk implements ISdk {
       this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown })
-    } else if (msgType === MessageType.WorkerRegistered) {
-      const { worker_id } = message as WorkerRegisteredMessage
-      this.workerId = worker_id
-      console.debug('[iii] Worker registered with ID:', worker_id)
     }
   }
 }
@@ -929,7 +849,7 @@ class Sdk implements ISdk {
  *
  * @example
  * ```typescript
- * import { TriggerAction } from 'iii-sdk-browser'
+ * import { TriggerAction } from 'iii-browser-sdk'
  *
  * // Enqueue to a named queue
  * iii.trigger({
@@ -973,11 +893,9 @@ export const TriggerAction = {
  *
  * @example
  * ```typescript
- * import { registerWorker } from 'iii-sdk-browser'
+ * import { registerWorker } from 'iii-browser-sdk'
  *
- * const iii = registerWorker('ws://localhost:49135', {
- *   workerName: 'my-browser-worker',
- * })
+ * const iii = registerWorker('ws://localhost:49135')
  * ```
  */
 export const registerWorker = (address: string, options?: InitOptions): ISdk => new Sdk(address, options)

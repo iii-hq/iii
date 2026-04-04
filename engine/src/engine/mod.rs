@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
+    modules::worker::rbac_session::Session,
     modules::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsModule,
@@ -136,14 +137,40 @@ pub struct RegisterFunctionRequest {
     pub metadata: Option<Value>,
 }
 
+pub type HandlerOutput = FunctionResult<Option<Value>, ErrorBody>;
+
+pub trait HandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> HandlerFn<F> for H
+where
+    H: Fn(Value) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
+pub trait SessionHandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> SessionHandlerFn<F> for H
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
 pub struct Handler<H> {
-    f: H,
+    pub f: H,
 }
 
 impl<H, F> Handler<H>
 where
     H: Fn(Value) -> F + Send + Sync + 'static,
-    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
 {
     pub fn new(f: H) -> Self {
         Self { f }
@@ -151,6 +178,20 @@ where
 
     pub fn call(&self, input: Value) -> F {
         (self.f)(input)
+    }
+}
+
+pub struct SessionHandler<H> {
+    pub f: H,
+}
+
+impl<H, F> SessionHandler<H>
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+    pub fn new(f: H) -> Self {
+        Self { f }
     }
 }
 
@@ -172,8 +213,15 @@ pub trait EngineTrait: Send + Sync {
         request: RegisterFunctionRequest,
         handler: Handler<H>,
     ) where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
 }
 
 #[derive(Clone)]
@@ -247,6 +295,8 @@ impl Engine {
                 worker.add_invocation(invocation_id).await;
             }
 
+            let session = worker.session.clone();
+
             self.invocations
                 .handle_invocation(
                     invocation_id,
@@ -256,6 +306,7 @@ impl Engine {
                     function,
                     traceparent,
                     baggage,
+                    session,
                 )
                 .await
         } else {
@@ -421,6 +472,9 @@ impl Engine {
                     "RegisterTriggerType"
                 );
 
+                let mut reg_id = id.clone();
+                let mut reg_description = description.clone();
+
                 if let Some(session) = &worker.session {
                     if !session.allow_trigger_type_registration {
                         tracing::warn!(
@@ -442,24 +496,31 @@ impl Engine {
                             "description": description,
                             "context": session.context,
                         });
-                        let allowed = match self.call(hook_fn_id, hook_input).await {
-                            Ok(Some(v)) => v.as_bool() == Some(true),
-                            _ => false,
-                        };
-                        if !allowed {
-                            tracing::warn!(
-                                worker_id = %worker.id,
-                                trigger_type_id = %id,
-                                "trigger type registration denied by hook"
-                            );
-                            return Ok(());
+                        match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) if v.is_object() => {
+                                if let Some(s) = v.get("trigger_type_id").and_then(|v| v.as_str()) {
+                                    reg_id = s.to_string();
+                                }
+                                if let Some(s) = v.get("description").and_then(|v| v.as_str()) {
+                                    reg_description = s.to_string();
+                                }
+                            }
+                            other => {
+                                tracing::warn!(
+                                    worker_id = %worker.id,
+                                    trigger_type_id = %id,
+                                    result = ?other,
+                                    "trigger type registration denied by hook"
+                                );
+                                return Ok(());
+                            }
                         }
                     }
                 }
 
                 let mut trigger_type = TriggerType::new(
-                    id.clone(),
-                    description.clone(),
+                    reg_id,
+                    reg_description,
                     Box::new(worker.clone()),
                     Some(worker.id),
                 );
@@ -483,6 +544,7 @@ impl Engine {
                 trigger_type,
                 function_id,
                 config,
+                metadata,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
@@ -491,6 +553,11 @@ impl Engine {
                     config = ?config,
                     "RegisterTrigger"
                 );
+
+                let mut reg_trigger_id = id.clone();
+                let mut reg_trigger_type = trigger_type.clone();
+                let mut reg_function_id = function_id.clone();
+                let mut reg_config = config.clone();
 
                 if let Some(session) = &worker.session {
                     if let Some(allowed_trigger_types) = &session.allowed_trigger_types
@@ -515,31 +582,54 @@ impl Engine {
                             "trigger_type": trigger_type,
                             "function_id": function_id,
                             "config": config,
+                            "metadata": metadata,
                             "context": session.context,
                         });
-                        let allowed = match self.call(hook_fn_id, hook_input).await {
-                            Ok(Some(v)) => v.as_bool() == Some(true),
-                            _ => false,
-                        };
-                        if !allowed {
-                            tracing::warn!(
-                                worker_id = %worker.id,
-                                trigger_id = %id,
-                                "trigger registration denied by hook"
-                            );
-                            return Ok(());
+                        match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) if v.is_object() => {
+                                if let Some(s) = v.get("trigger_id").and_then(|v| v.as_str()) {
+                                    reg_trigger_id = s.to_string();
+                                }
+                                if let Some(s) = v.get("trigger_type").and_then(|v| v.as_str()) {
+                                    reg_trigger_type = s.to_string();
+                                }
+                                if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
+                                    reg_function_id = s.to_string();
+                                }
+                                if let Some(c) = v.get("config").cloned() {
+                                    reg_config = c;
+                                }
+                            }
+                            other => {
+                                tracing::warn!(
+                                    worker_id = %worker.id,
+                                    trigger_id = %id,
+                                    result = ?other,
+                                    "trigger registration denied by hook"
+                                );
+                                return Ok(());
+                            }
                         }
                     }
+                }
+
+                if let Some(prefix) = worker
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.function_registration_prefix.as_ref())
+                {
+                    reg_function_id = format!("{prefix}::{reg_function_id}");
                 }
 
                 let _ = self
                     .trigger_registry
                     .register_trigger(Trigger {
-                        id: id.clone(),
-                        trigger_type: trigger_type.clone(),
-                        function_id: function_id.clone(),
-                        config: config.clone(),
+                        id: reg_trigger_id,
+                        trigger_type: reg_trigger_type,
+                        function_id: reg_function_id,
+                        config: reg_config,
                         worker_id: Some(worker.id),
+                        metadata: metadata.clone(),
                     })
                     .await;
                 crate::modules::telemetry::collector::track_trigger_registered();
@@ -606,43 +696,45 @@ impl Engine {
                     }
 
                     if let Some(middleware_id) = &session.config.middleware_function_id {
-                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
-                        let middleware_input = serde_json::json!({
-                            "function_id": function_id,
-                            "payload": data,
-                            "action": action,
-                            "context": session.context,
-                        });
-                        let engine = self.clone();
-                        let w = worker.clone();
-                        let middleware_id = middleware_id.clone();
-                        let function_id = function_id.clone();
-                        let traceparent = traceparent.clone();
-                        let baggage = baggage.clone();
+                        if !function_id.starts_with("engine::") {
+                            let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                            let middleware_input = serde_json::json!({
+                                "function_id": function_id,
+                                "payload": data,
+                                "action": action,
+                                "context": session.context,
+                            });
+                            let engine = self.clone();
+                            let w = worker.clone();
+                            let middleware_id = middleware_id.clone();
+                            let function_id = function_id.clone();
+                            let traceparent = traceparent.clone();
+                            let baggage = baggage.clone();
 
-                        tokio::spawn(async move {
-                            let response = match engine.call(&middleware_id, middleware_input).await
-                            {
-                                Ok(result) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result,
-                                    error: None,
-                                    traceparent,
-                                    baggage,
-                                },
-                                Err(err) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result: None,
-                                    error: Some(err),
-                                    traceparent,
-                                    baggage,
-                                },
-                            };
-                            engine.send_msg(&w, response).await;
-                        });
-                        return Ok(());
+                            tokio::spawn(async move {
+                                let response =
+                                    match engine.call(&middleware_id, middleware_input).await {
+                                        Ok(result) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result,
+                                            error: None,
+                                            traceparent,
+                                            baggage,
+                                        },
+                                        Err(err) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result: None,
+                                            error: Some(err),
+                                            traceparent,
+                                            baggage,
+                                        },
+                                    };
+                                engine.send_msg(&w, response).await;
+                            });
+                            return Ok(());
+                        }
                     }
                 }
 
@@ -845,6 +937,10 @@ impl Engine {
                     "RegisterFunction"
                 );
 
+                let mut reg_id = id.clone();
+                let mut reg_description = description.clone();
+                let mut reg_metadata = metadata.clone();
+
                 if let Some(session) = &worker.session {
                     if !session.allow_function_registration {
                         tracing::warn!(
@@ -867,22 +963,41 @@ impl Engine {
                             "metadata": metadata,
                             "context": session.context,
                         });
-                        let allowed = match self.call(hook_fn_id, hook_input).await {
-                            Ok(Some(v)) => v.as_bool() == Some(true),
-                            _ => false,
-                        };
-                        if !allowed {
-                            tracing::warn!(
-                                worker_id = %worker.id,
-                                function_id = %id,
-                                "function registration denied by hook"
-                            );
-                            return Ok(());
+                        match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) if v.is_object() => {
+                                if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
+                                    reg_id = s.to_string();
+                                }
+                                if let Some(s) = v.get("description").and_then(|v| v.as_str()) {
+                                    reg_description = Some(s.to_string());
+                                }
+                                if let Some(m) = v.get("metadata").cloned() {
+                                    reg_metadata = Some(m);
+                                }
+                            }
+                            other => {
+                                tracing::warn!(
+                                    worker_id = %worker.id,
+                                    function_id = %id,
+                                    result = ?other,
+                                    "function registration denied by hook"
+                                );
+                                return Ok(());
+                            }
                         }
                     }
                 }
 
-                self.service_registry.register_service_from_function_id(id);
+                if let Some(prefix) = worker
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.function_registration_prefix.as_ref())
+                {
+                    reg_id = format!("{prefix}::{reg_id}");
+                }
+
+                self.service_registry
+                    .register_service_from_function_id(&reg_id);
 
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
@@ -891,23 +1006,23 @@ impl Engine {
                     else {
                         tracing::error!(
                             worker_id = %worker.id,
-                            function_id = %id,
+                            function_id = %reg_id,
                             "HTTP functions module not loaded"
                         );
                         return Ok(());
                     };
 
                     let config = HttpFunctionConfig {
-                        function_path: id.clone(),
+                        function_path: reg_id.clone(),
                         url: invocation.url.clone(),
                         method: invocation.method.clone(),
                         timeout_ms: invocation.timeout_ms,
                         headers: invocation.headers.clone(),
                         auth: invocation.auth.clone(),
-                        description: description.clone(),
+                        description: reg_description.clone(),
                         request_format: req.clone(),
                         response_format: res.clone(),
-                        metadata: metadata.clone(),
+                        metadata: reg_metadata.clone(),
                         registered_at: Some(Utc::now()),
                         updated_at: None,
                     };
@@ -915,29 +1030,29 @@ impl Engine {
                     if let Err(err) = http_module.register_http_function(config).await {
                         tracing::error!(
                             worker_id = %worker.id,
-                            function_id = %id,
+                            function_id = %reg_id,
                             error = ?err,
                             "Failed to register HTTP invocation function"
                         );
                         return Ok(());
                     }
 
-                    worker.include_external_function_id(id).await;
+                    worker.include_external_function_id(&reg_id).await;
                     return Ok(());
                 }
 
                 self.register_function(
                     RegisterFunctionRequest {
-                        function_id: id.clone(),
-                        description: description.clone(),
+                        function_id: reg_id.clone(),
+                        description: reg_description,
                         request_format: req.clone(),
                         response_format: res.clone(),
-                        metadata: metadata.clone(),
+                        metadata: reg_metadata,
                     },
                     Box::new(worker.clone()),
                 );
 
-                worker.include_function_id(id).await;
+                worker.include_function_id(&reg_id).await;
                 Ok(())
             }
             Message::RegisterService {
@@ -1221,6 +1336,7 @@ impl EngineTrait for Engine {
                     function,
                     traceparent,
                     baggage,
+                    None,
                 )
                 .await;
 
@@ -1275,7 +1391,7 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input, _session| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
@@ -1293,15 +1409,42 @@ impl EngineTrait for Engine {
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
     where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input| {
+            handler: Arc::new(move |_id, input, _session| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
+            }),
+            _function_id: request.function_id.clone(),
+            _description: request.description,
+            request_format: request.request_format,
+            response_format: request.response_format,
+            metadata: request.metadata,
+        };
+
+        self.functions
+            .register_function(request.function_id, function);
+    }
+
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
+    {
+        let handler_arc: Arc<H> = Arc::new(handler.f);
+
+        let function = Function {
+            handler: Arc::new(move |_id, input, session| {
+                let handler = handler_arc.clone();
+                let session = session.clone();
+                Box::pin(async move { handler(input, session).await })
             }),
             _function_id: request.function_id.clone(),
             _description: request.description,
@@ -1590,6 +1733,7 @@ mod tests {
             trigger_type: "my_trigger_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -1631,6 +1775,7 @@ mod tests {
             trigger_type: "unreg_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2059,6 +2204,7 @@ mod tests {
                 function_id: "engine::fire".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
         engine.trigger_registry.triggers.insert(
@@ -2069,6 +2215,7 @@ mod tests {
                 function_id: "engine::fire".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -2296,6 +2443,7 @@ mod tests {
             trigger_type: "cleanup_trigger_type".to_string(),
             function_id: "some_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2713,6 +2861,7 @@ mod tests {
             trigger_type: "cleanup_trigger_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &t_msg)
@@ -2849,5 +2998,54 @@ mod tests {
             handled,
             "OTLP prefix with empty payload should still be handled"
         );
+    }
+
+    #[tokio::test]
+    async fn test_router_msg_register_trigger_with_metadata() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = Worker::new(tx);
+
+        let register_type_msg = Message::RegisterTriggerType {
+            id: "metadata_type".to_string(),
+            description: "Trigger type for metadata test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&worker, &register_type_msg)
+            .await
+            .unwrap();
+
+        let register_trigger_msg = Message::RegisterTrigger {
+            id: "trigger_meta_1".to_string(),
+            trigger_type: "metadata_type".to_string(),
+            function_id: "handler_func".to_string(),
+            config: serde_json::json!({"key": "value"}),
+            metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
+        };
+        engine
+            .router_msg(&worker, &register_trigger_msg)
+            .await
+            .unwrap();
+
+        assert!(
+            engine
+                .trigger_registry
+                .triggers
+                .contains_key("trigger_meta_1")
+        );
+        let trigger = engine
+            .trigger_registry
+            .triggers
+            .get("trigger_meta_1")
+            .unwrap();
+        assert_eq!(
+            trigger.metadata,
+            Some(serde_json::json!({"team": "platform", "env": "staging"}))
+        );
+
+        while rx.try_recv().is_ok() {}
     }
 }

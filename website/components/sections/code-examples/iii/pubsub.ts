@@ -8,7 +8,7 @@ const iii = registerWorker(
 );
 
 iii.registerFunction(
-  { id: 'orders::publish-created' },
+  'orders::publish-created',
   async (request: any) => {
     const logger = new Logger();
     const payload = {
@@ -34,7 +34,7 @@ iii.registerFunction(
   },
 );
 
-iii.registerFunction({ id: 'orders::consume-created' }, async (event: any) => {
+iii.registerFunction('orders::consume-created', async (event: any) => {
   const logger = new Logger();
   logger.info('events.consume_order_created.ack', {
     eventId: event.eventId,

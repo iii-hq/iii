@@ -128,7 +128,7 @@ def create_order(data) -> ApiResponse:
 
     return ApiResponse(status_code=201, body={"orderId": order_id, "status": "processing"})
 
-iii.register_function({"id": "orders.create"}, create_order)
+iii.register_function("orders.create", create_order)
 iii.register_trigger({
     "type": "http", "function_id": "orders.create",
     "config": {"api_path": "orders", "http_method": "POST"},
@@ -191,7 +191,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.create".into()),
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "orders.create".into(), config: json!({
     "api_path": "orders",
     "http_method": "POST",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>
@@ -277,7 +277,7 @@ def process_order(data: dict) -> None:
 
     logger.info("Order processed", {"orderId": order_id, "traceId": current_trace_id()})
 
-iii.register_function({"id": "order.process"}, process_order)
+iii.register_function("order.process", process_order)
 iii.register_trigger({"type": "queue", "function_id": "order.process", "config": {"topic": "order.process"}})
 ```
 
@@ -307,7 +307,7 @@ iii.register_function((RegisterFunctionMessage::with_id("order.process".into()),
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.process".into(), config: json!({ "topic": "order.process" }) })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.process".into(), config: json!({ "topic": "order.process" }), metadata: None })?;
 ```
 
   </Tab>
@@ -365,7 +365,7 @@ def notify_order(data: dict) -> None:
     # integrate with your notification service here
     logger.info("Order notification sent", {"orderId": order_id, "traceId": current_trace_id()})
 
-iii.register_function({"id": "order.notify"}, notify_order)
+iii.register_function("order.notify", notify_order)
 iii.register_trigger({"type": "queue", "function_id": "order.notify", "config": {"topic": "order.notify"}})
 ```
 
@@ -391,7 +391,7 @@ iii.register_function((RegisterFunctionMessage::with_id("order.notify".into()), 
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.notify".into(), config: json!({ "topic": "order.notify" }) })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.notify".into(), config: json!({ "topic": "order.notify" }), metadata: None })?;
 ```
 
   </Tab>

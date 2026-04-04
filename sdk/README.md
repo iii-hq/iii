@@ -26,7 +26,7 @@ import { registerWorker } from 'iii-sdk';
 
 const iii = registerWorker('ws://localhost:49134');
 
-iii.registerFunction({ id: 'greet' }, async (input) => {
+iii.registerFunction('greet', async (input) => {
   return { message: `Hello, ${input.name}!` };
 });
 
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Operation                | Node.js                                              | Python                                      | Rust                                         | Description                                            |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
-| Register function        | `iii.registerFunction({ id }, handler)`              | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
+| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
 | Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |

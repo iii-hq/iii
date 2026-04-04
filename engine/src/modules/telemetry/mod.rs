@@ -22,7 +22,6 @@ use crate::modules::module::Module;
 use crate::workers::WorkerTelemetryMeta;
 
 use self::amplitude::{AmplitudeClient, AmplitudeEvent};
-use self::collector::collector;
 use self::environment::EnvironmentInfo;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
@@ -132,50 +131,12 @@ fn resolve_project_context(sdk_telemetry: Option<&WorkerTelemetryMeta>) -> Proje
     }
 }
 
-fn get_or_create_install_id() -> String {
-    static INSTALL_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    INSTALL_ID
-        .get_or_init(|| {
-            if let Some(id) = environment::read_config_key("identity", "id") {
-                return id;
-            }
-
-            let base_dir = dirs::home_dir().unwrap_or_else(|| {
-                tracing::warn!(
-                    "Failed to resolve home directory, falling back to temp dir for telemetry_id"
-                );
-                std::env::temp_dir()
-            });
-
-            let legacy_path = base_dir.join(".iii").join("telemetry_id");
-            if let Ok(id) = std::fs::read_to_string(&legacy_path) {
-                let id = id.trim().to_string();
-                if !id.is_empty() {
-                    environment::set_config_key("identity", "id", &id);
-                    return id;
-                }
-            }
-
-            let id = format!("auto-{}", uuid::Uuid::new_v4());
-            environment::set_config_key("identity", "id", &id);
-            id
-        })
-        .clone()
+fn get_or_create_device_id() -> String {
+    environment::get_or_create_device_id()
 }
 
 fn check_and_mark_first_run() -> bool {
     if environment::read_config_key("state", "first_run_sent").as_deref() == Some("true") {
-        return false;
-    }
-
-    let legacy_path = dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".iii")
-        .join("state.ini");
-    if let Ok(contents) = std::fs::read_to_string(&legacy_path)
-        && contents.contains("first_run_sent=true")
-    {
-        environment::set_config_key("state", "first_run_sent", "true");
         return false;
     }
 
@@ -231,6 +192,188 @@ struct FunctionTriggerData {
     functions_non_iii_builtin_count: usize,
 }
 
+struct EngineSnapshot {
+    ft: FunctionTriggerData,
+    wd: WorkerData,
+    project: ProjectContext,
+}
+
+fn collect_engine_snapshot(engine: &Engine) -> EngineSnapshot {
+    let ft = collect_functions_and_triggers(engine);
+    let wd = collect_worker_data(engine);
+    let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+    EngineSnapshot { ft, wd, project }
+}
+
+fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "project_id".into(),
+        serde_json::json!(snap.project.project_id),
+    );
+    m.insert(
+        "project_name".into(),
+        serde_json::json!(snap.project.project_name),
+    );
+    m.insert(
+        "version".into(),
+        serde_json::json!(env!("CARGO_PKG_VERSION")),
+    );
+    m.insert(
+        "function_count".into(),
+        serde_json::json!(snap.ft.function_count),
+    );
+    m.insert(
+        "trigger_count".into(),
+        serde_json::json!(snap.ft.trigger_count),
+    );
+    m.insert("functions".into(), serde_json::json!(snap.ft.functions));
+    m.insert(
+        "trigger_types".into(),
+        serde_json::json!(snap.ft.trigger_types),
+    );
+    m.insert(
+        "functions_iii_builtin_count".into(),
+        serde_json::json!(snap.ft.functions_iii_builtin_count),
+    );
+    m.insert(
+        "functions_non_iii_builtin_count".into(),
+        serde_json::json!(snap.ft.functions_non_iii_builtin_count),
+    );
+    m.insert("client_type".into(), serde_json::json!(snap.wd.client_type));
+    m.insert(
+        "sdk_languages".into(),
+        serde_json::json!(snap.wd.sdk_languages),
+    );
+    m.insert(
+        "worker_count_total".into(),
+        serde_json::json!(snap.wd.worker_count_total),
+    );
+    for (fw, count) in &snap.wd.worker_count_by_framework {
+        m.insert(format!("worker_count_{fw}"), serde_json::json!(count));
+    }
+    m.insert("workers".into(), serde_json::json!(snap.wd.workers));
+    m
+}
+
+// TODO: Re-enable delta metrics reporting once more important dashboards are ready.
+//
+// struct DeltaAccumulator {
+//     invocations_total: u64,
+//     invocations_success: u64,
+//     invocations_error: u64,
+//     api_requests: u64,
+//     queue_emits: u64,
+//     queue_consumes: u64,
+//     pubsub_publishes: u64,
+//     pubsub_subscribes: u64,
+//     cron_executions: u64,
+// }
+//
+// impl DeltaAccumulator {
+//     fn new() -> Self {
+//         Self {
+//             invocations_total: 0,
+//             invocations_success: 0,
+//             invocations_error: 0,
+//             api_requests: 0,
+//             queue_emits: 0,
+//             queue_consumes: 0,
+//             pubsub_publishes: 0,
+//             pubsub_subscribes: 0,
+//             cron_executions: 0,
+//         }
+//     }
+//
+//     fn snapshot(&mut self) -> DeltaSnapshot {
+//         use std::sync::atomic::Ordering;
+//         let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+//         let col = collector();
+//
+//         let cur = DeltaAccumulator {
+//             invocations_total: acc.invocations_total.load(Ordering::Relaxed),
+//             invocations_success: acc.invocations_success.load(Ordering::Relaxed),
+//             invocations_error: acc.invocations_error.load(Ordering::Relaxed),
+//             api_requests: col.api_requests.load(Ordering::Relaxed),
+//             queue_emits: col.queue_emits.load(Ordering::Relaxed),
+//             queue_consumes: col.queue_consumes.load(Ordering::Relaxed),
+//             pubsub_publishes: col.pubsub_publishes.load(Ordering::Relaxed),
+//             pubsub_subscribes: col.pubsub_subscribes.load(Ordering::Relaxed),
+//             cron_executions: col.cron_executions.load(Ordering::Relaxed),
+//         };
+//
+//         let deltas = DeltaSnapshot {
+//             invocations_total: cur.invocations_total.saturating_sub(self.invocations_total),
+//             invocations_success: cur
+//                 .invocations_success
+//                 .saturating_sub(self.invocations_success),
+//             invocations_error: cur.invocations_error.saturating_sub(self.invocations_error),
+//             api_requests: cur.api_requests.saturating_sub(self.api_requests),
+//             queue_emits: cur.queue_emits.saturating_sub(self.queue_emits),
+//             queue_consumes: cur.queue_consumes.saturating_sub(self.queue_consumes),
+//             pubsub_publishes: cur.pubsub_publishes.saturating_sub(self.pubsub_publishes),
+//             pubsub_subscribes: cur.pubsub_subscribes.saturating_sub(self.pubsub_subscribes),
+//             cron_executions: cur.cron_executions.saturating_sub(self.cron_executions),
+//         };
+//
+//         *self = cur;
+//         deltas
+//     }
+// }
+//
+// struct DeltaSnapshot {
+//     invocations_total: u64,
+//     invocations_success: u64,
+//     invocations_error: u64,
+//     api_requests: u64,
+//     queue_emits: u64,
+//     queue_consumes: u64,
+//     pubsub_publishes: u64,
+//     pubsub_subscribes: u64,
+//     cron_executions: u64,
+// }
+//
+// impl DeltaSnapshot {
+//     fn insert_into(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
+//         m.insert(
+//             "delta_invocations_total".into(),
+//             serde_json::json!(self.invocations_total),
+//         );
+//         m.insert(
+//             "delta_invocations_success".into(),
+//             serde_json::json!(self.invocations_success),
+//         );
+//         m.insert(
+//             "delta_invocations_error".into(),
+//             serde_json::json!(self.invocations_error),
+//         );
+//         m.insert(
+//             "delta_api_requests".into(),
+//             serde_json::json!(self.api_requests),
+//         );
+//         m.insert(
+//             "delta_queue_emits".into(),
+//             serde_json::json!(self.queue_emits),
+//         );
+//         m.insert(
+//             "delta_queue_consumes".into(),
+//             serde_json::json!(self.queue_consumes),
+//         );
+//         m.insert(
+//             "delta_pubsub_publishes".into(),
+//             serde_json::json!(self.pubsub_publishes),
+//         );
+//         m.insert(
+//             "delta_pubsub_subscribes".into(),
+//             serde_json::json!(self.pubsub_subscribes),
+//         );
+//         m.insert(
+//             "delta_cron_executions".into(),
+//             serde_json::json!(self.cron_executions),
+//         );
+//     }
+// }
+
 fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
     let mut functions_iii_builtin_count = 0usize;
     let mut functions_non_iii_builtin_count = 0usize;
@@ -273,8 +416,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
 
 struct WorkerData {
     worker_count_total: usize,
-    worker_count_motia: usize,
-    worker_count_non_iii_sdk_framework: usize,
+    worker_count_by_framework: HashMap<String, u64>,
     worker_count_by_language: HashMap<String, u64>,
     workers: Vec<String>,
     sdk_languages: Vec<String>,
@@ -284,9 +426,9 @@ struct WorkerData {
 
 fn collect_worker_data(engine: &Engine) -> WorkerData {
     let mut runtime_counts: HashMap<String, u64> = HashMap::new();
+    let mut framework_counts: HashMap<String, u64> = HashMap::new();
     let mut best_telemetry: Option<(uuid::Uuid, WorkerTelemetryMeta)> = None;
     let mut worker_count_total = 0usize;
-    let mut worker_count_motia = 0usize;
     let mut workers: Vec<String> = Vec::new();
 
     for entry in engine.worker_registry.workers.iter() {
@@ -305,17 +447,11 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
             .and_then(|t| t.framework.clone())
             .unwrap_or_default();
 
-        if framework.to_lowercase().contains("motia")
-            || framework == "iii-js"
-            || framework == "iii-py"
-        {
-            worker_count_motia += 1;
-        }
-
-        if framework.is_empty() {
-            workers.push(runtime);
-        } else {
+        if !framework.is_empty() {
+            *framework_counts.entry(framework.clone()).or_insert(0) += 1;
             workers.push(format!("{}:{}", runtime, framework));
+        } else {
+            workers.push(runtime);
         }
 
         if let Some(telemetry) = worker.telemetry.as_ref()
@@ -340,19 +476,16 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     let sdk_languages: Vec<String> = runtime_counts
         .keys()
         .map(|r| match r.as_str() {
-            "node" => "iii-js".to_string(),
+            "node" => "iii-node".to_string(),
             "python" => "iii-py".to_string(),
             "rust" => "iii-rust".to_string(),
             other => other.to_string(),
         })
         .collect();
 
-    let worker_count_non_iii_sdk_framework = worker_count_total.saturating_sub(worker_count_motia);
-
     WorkerData {
         worker_count_total,
-        worker_count_motia,
-        worker_count_non_iii_sdk_framework,
+        worker_count_by_framework: framework_counts,
         worker_count_by_language: runtime_counts,
         workers,
         sdk_languages,
@@ -364,7 +497,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
 /// Cloneable context for building telemetry events inside spawned tasks.
 #[derive(Clone)]
 struct TelemetryContext {
-    install_id: String,
+    device_id: String,
     env_info: EnvironmentInfo,
 }
 
@@ -382,16 +515,21 @@ impl TelemetryContext {
             "environment.cpu_cores": env.cpu_cores,
             "environment.timezone": env.timezone,
             "environment.machine_id": env.machine_id,
-            "environment.is_container": env.is_container,
-            "environment.container_runtime": env.container_runtime,
+            "iii_execution_context": env.iii_execution_context,
             "env": environment::detect_env(),
             "install_method": environment::detect_install_method(),
             "iii_version": env!("CARGO_PKG_VERSION"),
         });
 
-        if let Some(host_user_id) = environment::detect_host_user_id() {
-            props["host_user_id"] = serde_json::Value::String(host_user_id);
+        let host_user_id = std::env::var("III_HOST_USER_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(environment::find_project_ini_device_id);
+
+        if let Some(id) = host_user_id {
+            props["host_user_id"] = serde_json::Value::String(id);
         }
+
         if let Some(project_id) = project.project_id {
             props["project_id"] = serde_json::Value::String(project_id);
         }
@@ -412,9 +550,8 @@ impl TelemetryContext {
             .and_then(|t| t.language.clone())
             .or_else(environment::detect_language);
         AmplitudeEvent {
-            device_id: self.install_id.clone(),
-            // user_id: currently telemetry_id, will become iii cloud user ID when accounts ship
-            user_id: Some(self.install_id.clone()),
+            device_id: self.device_id.clone(),
+            user_id: None,
             event_type: event_type.to_string(),
             event_properties: properties,
             user_properties: Some(self.build_user_properties(sdk_telemetry)),
@@ -507,7 +644,7 @@ impl Module for TelemetryModule {
             return Ok(Box::new(DisabledTelemetryModule));
         }
 
-        let install_id = get_or_create_install_id();
+        let device_id = get_or_create_device_id();
         let env_info = EnvironmentInfo::collect();
 
         tracing::info!("Anonymous telemetry enabled. Set III_TELEMETRY_ENABLED=false to disable.");
@@ -521,7 +658,7 @@ impl Module for TelemetryModule {
             .map(|key| Arc::new(AmplitudeClient::new(key.to_owned())));
 
         let ctx = TelemetryContext {
-            install_id: install_id.clone(),
+            device_id: device_id.clone(),
             env_info,
         };
 
@@ -553,14 +690,10 @@ impl Module for TelemetryModule {
         let engine_for_started = Arc::clone(&self.engine);
         let client_for_started = Arc::clone(self.active_client());
         let ctx_for_started = self.ctx.clone();
-        let start_time_boot = start_time;
-        let interval_secs_boot = interval_secs;
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
 
-            let ft = collect_functions_and_triggers(&engine_for_started);
-            let wd = collect_worker_data(&engine_for_started);
-            let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+            let snap = collect_engine_snapshot(&engine_for_started);
 
             if check_and_mark_first_run() {
                 let first_run_event = ctx_for_started.build_event(
@@ -571,48 +704,32 @@ impl Module for TelemetryModule {
                         "arch": std::env::consts::ARCH,
                         "install_method": environment::detect_install_method(),
                     }),
-                    wd.sdk_telemetry.as_ref(),
+                    snap.wd.sdk_telemetry.as_ref(),
                 );
                 let _ = client_for_started.send_event(first_run_event).await;
             }
 
-            let uptime_secs = start_time_boot.elapsed().as_secs();
+            let mut props = build_base_properties(&snap);
+            props.insert("session_start".into(), serde_json::json!(true));
+            props.insert(
+                "worker_count_by_language".into(),
+                serde_json::json!(snap.wd.worker_count_by_language),
+            );
+            props.insert("period_secs".into(), serde_json::json!(interval_secs));
+            props.insert(
+                "uptime_secs".into(),
+                serde_json::json!(start_time.elapsed().as_secs()),
+            );
+            // TODO: Re-enable delta metrics once more important dashboards are ready.
+            // let d = DeltaAccumulator::new().snapshot();
+            // props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
+            // d.insert_into(&mut props);
+
             let boot_heartbeat = ctx_for_started.build_event(
                 "heartbeat",
-                serde_json::json!({
-                    "session_start": true,
-                    "project_id": project.project_id,
-                    "project_name": project.project_name,
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "function_count": ft.function_count,
-                    "trigger_count": ft.trigger_count,
-                    "functions": ft.functions,
-                    "trigger_types": ft.trigger_types,
-                    "functions_iii_builtin_count": ft.functions_iii_builtin_count,
-                    "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
-                    "client_type": wd.client_type,
-                    "sdk_languages": wd.sdk_languages,
-                    "worker_count_total": wd.worker_count_total,
-                    "worker_count_motia": wd.worker_count_motia,
-                    "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
-                    "worker_count_by_language": wd.worker_count_by_language,
-                    "workers": wd.workers,
-                    "delta_invocations_total": 0u64,
-                    "delta_invocations_success": 0u64,
-                    "delta_invocations_error": 0u64,
-                    "delta_api_requests": 0u64,
-                    "delta_queue_emits": 0u64,
-                    "delta_queue_consumes": 0u64,
-                    "delta_pubsub_publishes": 0u64,
-                    "delta_pubsub_subscribes": 0u64,
-                    "delta_cron_executions": 0u64,
-                    "period_secs": interval_secs_boot,
-                    "uptime_secs": uptime_secs,
-                    "is_active": false,
-                }),
-                wd.sdk_telemetry.as_ref(),
+                serde_json::Value::Object(props),
+                snap.wd.sdk_telemetry.as_ref(),
             );
-
             let _ = client_for_started.send_event(boot_heartbeat).await;
         });
 
@@ -622,57 +739,23 @@ impl Module for TelemetryModule {
 
             interval.tick().await;
 
-            let acc = crate::modules::observability::metrics::get_metrics_accumulator();
-
-            let mut prev_invocations_total: u64 = 0;
-            let mut prev_invocations_success: u64 = 0;
-            let mut prev_invocations_error: u64 = 0;
-            let mut prev_api_requests: u64 = 0;
-            let mut prev_queue_emits: u64 = 0;
-            let mut prev_queue_consumes: u64 = 0;
-            let mut prev_pubsub_publishes: u64 = 0;
-            let mut prev_pubsub_subscribes: u64 = 0;
-            let mut prev_cron_executions: u64 = 0;
+            // TODO: Re-enable delta metrics once downstream dashboards are ready.
+            // let mut deltas = DeltaAccumulator::new();
 
             loop {
                 tokio::select! {
                     result = shutdown_rx.changed() => {
                         if result.is_err() || *shutdown_rx.borrow() {
-                            use std::sync::atomic::Ordering;
 
-                            let uptime_secs = start_time.elapsed().as_secs();
-                            let invocations_total = acc.invocations_total.load(Ordering::Relaxed);
-                            let invocations_success = acc.invocations_success.load(Ordering::Relaxed);
-                            let invocations_error = acc.invocations_error.load(Ordering::Relaxed);
+                            let snap = collect_engine_snapshot(&engine);
 
-                            let wd = collect_worker_data(&engine);
-                            let ft = collect_functions_and_triggers(&engine);
-                            let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+                            let mut props = build_base_properties(&snap);
+                            props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
 
                             let event = ctx.build_event(
                                 "engine_stopped",
-                                serde_json::json!({
-                                    "project_id": project.project_id,
-                                    "project_name": project.project_name,
-                                    "version": env!("CARGO_PKG_VERSION"),
-                                    "uptime_secs": uptime_secs,
-                                    "invocations_total": invocations_total,
-                                    "invocations_success": invocations_success,
-                                    "invocations_error": invocations_error,
-                                    "function_count": ft.function_count,
-                                    "trigger_count": ft.trigger_count,
-                                    "functions": ft.functions,
-                                    "trigger_types": ft.trigger_types,
-                                    "functions_iii_builtin_count": ft.functions_iii_builtin_count,
-                                    "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
-                                    "client_type": wd.client_type,
-                                    "sdk_languages": wd.sdk_languages,
-                                    "worker_count_total": wd.worker_count_total,
-                                    "worker_count_motia": wd.worker_count_motia,
-                                    "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
-                                    "workers": wd.workers,
-                                }),
-                                wd.sdk_telemetry.as_ref(),
+                                serde_json::Value::Object(props),
+                                snap.wd.sdk_telemetry.as_ref(),
                             );
 
                             let _ = tokio::time::timeout(
@@ -685,80 +768,21 @@ impl Module for TelemetryModule {
                         }
                     }
                     _ = interval.tick() => {
-                        use std::sync::atomic::Ordering;
+                        // let d = deltas.snapshot();
+                        let snap = collect_engine_snapshot(&engine);
 
-                        let invocations_total = acc.invocations_total.load(Ordering::Relaxed);
-                        let invocations_success = acc.invocations_success.load(Ordering::Relaxed);
-                        let invocations_error = acc.invocations_error.load(Ordering::Relaxed);
-                        let api_requests = collector().api_requests.load(Ordering::Relaxed);
-                        let queue_emits = collector().queue_emits.load(Ordering::Relaxed);
-                        let queue_consumes = collector().queue_consumes.load(Ordering::Relaxed);
-                        let pubsub_publishes = collector().pubsub_publishes.load(Ordering::Relaxed);
-                        let pubsub_subscribes = collector().pubsub_subscribes.load(Ordering::Relaxed);
-                        let cron_executions = collector().cron_executions.load(Ordering::Relaxed);
-
-                        let delta_invocations_total = invocations_total.saturating_sub(prev_invocations_total);
-                        let delta_invocations_success = invocations_success.saturating_sub(prev_invocations_success);
-                        let delta_invocations_error = invocations_error.saturating_sub(prev_invocations_error);
-                        let delta_api_requests = api_requests.saturating_sub(prev_api_requests);
-                        let delta_queue_emits = queue_emits.saturating_sub(prev_queue_emits);
-                        let delta_queue_consumes = queue_consumes.saturating_sub(prev_queue_consumes);
-                        let delta_pubsub_publishes = pubsub_publishes.saturating_sub(prev_pubsub_publishes);
-                        let delta_pubsub_subscribes = pubsub_subscribes.saturating_sub(prev_pubsub_subscribes);
-                        let delta_cron_executions = cron_executions.saturating_sub(prev_cron_executions);
-
-                        prev_invocations_total = invocations_total;
-                        prev_invocations_success = invocations_success;
-                        prev_invocations_error = invocations_error;
-                        prev_api_requests = api_requests;
-                        prev_queue_emits = queue_emits;
-                        prev_queue_consumes = queue_consumes;
-                        prev_pubsub_publishes = pubsub_publishes;
-                        prev_pubsub_subscribes = pubsub_subscribes;
-                        prev_cron_executions = cron_executions;
-
-                        let is_active = delta_invocations_total > 0;
-                        let uptime_secs = start_time.elapsed().as_secs();
-
-                        let ft = collect_functions_and_triggers(&engine);
-                        let wd = collect_worker_data(&engine);
-                        let project = resolve_project_context(wd.sdk_telemetry.as_ref());
-
-                        let properties = serde_json::json!({
-                            "session_start": false,
-                            "delta_invocations_total": delta_invocations_total,
-                            "delta_invocations_success": delta_invocations_success,
-                            "delta_invocations_error": delta_invocations_error,
-                            "delta_api_requests": delta_api_requests,
-                            "delta_queue_emits": delta_queue_emits,
-                            "delta_queue_consumes": delta_queue_consumes,
-                            "delta_pubsub_publishes": delta_pubsub_publishes,
-                            "delta_pubsub_subscribes": delta_pubsub_subscribes,
-                            "delta_cron_executions": delta_cron_executions,
-                            "function_count": ft.function_count,
-                            "trigger_count": ft.trigger_count,
-                            "functions": ft.functions,
-                            "trigger_types": ft.trigger_types,
-                            "functions_iii_builtin_count": ft.functions_iii_builtin_count,
-                            "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
-                            "worker_count_total": wd.worker_count_total,
-                            "worker_count_motia": wd.worker_count_motia,
-                            "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
-                            "worker_count_by_language": wd.worker_count_by_language,
-                            "workers": wd.workers,
-                            "sdk_languages": wd.sdk_languages,
-                            "client_type": wd.client_type,
-                            "project_id": project.project_id,
-                            "project_name": project.project_name,
-                            "period_secs": interval_secs,
-                            "uptime_secs": uptime_secs,
-                            "is_active": is_active,
-                        });
+                        let mut props = build_base_properties(&snap);
+                        props.insert("session_start".into(), serde_json::json!(false));
+                        props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
+                        props.insert("period_secs".into(), serde_json::json!(interval_secs));
+                        props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
+                        // props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
+                        // d.insert_into(&mut props);
 
                         let event = ctx.build_event(
                             "heartbeat",
-                            properties,
-                            wd.sdk_telemetry.as_ref(),
+                            serde_json::Value::Object(props),
+                            snap.wd.sdk_telemetry.as_ref(),
                         );
 
                         let _ = client.send_event(event).await;
@@ -855,8 +879,9 @@ mod tests {
     }
 
     fn register_test_function(engine: &Arc<Engine>, function_id: &str) {
-        let handler: Arc<HandlerFn> =
-            Arc::new(|_invocation_id, _input| Box::pin(async { FunctionResult::NoResult }));
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _input, _session| {
+            Box::pin(async { FunctionResult::NoResult })
+        });
         engine.functions.register_function(
             function_id.to_string(),
             Function {
@@ -897,12 +922,12 @@ mod tests {
     fn make_env_info() -> EnvironmentInfo {
         EnvironmentInfo {
             machine_id: "machine-1".to_string(),
-            is_container: false,
-            container_runtime: "none".to_string(),
+            iii_execution_context: "user".to_string(),
             timezone: "UTC".to_string(),
             cpu_cores: 4,
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
+            host_user_id: None,
         }
     }
 
@@ -921,7 +946,7 @@ mod tests {
             client: Arc::new(AmplitudeClient::new(String::new())),
             sdk_client: sdk_client.then(|| Arc::new(AmplitudeClient::new(String::new()))),
             ctx: TelemetryContext {
-                install_id: "test-install-id".to_string(),
+                device_id: "test-install-id".to_string(),
                 env_info: make_env_info(),
             },
             start_time: Instant::now(),
@@ -1237,20 +1262,19 @@ mod tests {
         unsafe {
             env::remove_var("III_PROJECT_ID");
             env::remove_var("III_PROJECT_ROOT");
-            env::remove_var("III_HOST_USER_ID");
             env::remove_var("III_ENV");
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "test-machine".to_string(),
-                is_container: false,
-                container_runtime: "none".to_string(),
+                iii_execution_context: "user".to_string(),
                 timezone: "UTC".to_string(),
                 cpu_cores: 4,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
+                host_user_id: None,
             },
         };
 
@@ -1261,8 +1285,7 @@ mod tests {
         assert_eq!(props["environment.cpu_cores"], 4);
         assert_eq!(props["environment.timezone"], "UTC");
         assert_eq!(props["environment.machine_id"], "test-machine");
-        assert_eq!(props["environment.is_container"], false);
-        assert_eq!(props["environment.container_runtime"], "none");
+        assert_eq!(props["iii_execution_context"], "user");
         assert_eq!(props["iii_version"], env!("CARGO_PKG_VERSION"));
         assert!(props.get("env").is_some());
         assert!(props.get("install_method").is_some());
@@ -1285,7 +1308,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1302,7 +1325,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1323,7 +1346,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1337,46 +1360,6 @@ mod tests {
         assert_eq!(props["project_name"], "my-project");
     }
 
-    #[test]
-    #[serial]
-    fn test_build_user_properties_host_user_id_included() {
-        unsafe {
-            env::set_var("III_HOST_USER_ID", "host-uuid-123");
-            env::remove_var("III_PROJECT_ID");
-            env::remove_var("III_PROJECT_ROOT");
-        }
-
-        let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
-            env_info: make_env_info(),
-        };
-
-        let props = ctx.build_user_properties(None);
-        assert_eq!(props["host_user_id"], "host-uuid-123");
-
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_build_user_properties_host_user_id_absent_when_unset() {
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
-            env::remove_var("III_PROJECT_ID");
-            env::remove_var("III_PROJECT_ROOT");
-        }
-
-        let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
-            env_info: make_env_info(),
-        };
-
-        let props = ctx.build_user_properties(None);
-        assert!(props.get("host_user_id").is_none());
-    }
-
     // =========================================================================
     // AmplitudeEvent serialization (via TelemetryContext::build_event)
     // =========================================================================
@@ -1384,22 +1367,22 @@ mod tests {
     #[test]
     fn test_build_event_basic_fields() {
         let ctx = TelemetryContext {
-            install_id: "test-install-id".to_string(),
+            device_id: "test-install-id".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "abc123".to_string(),
-                is_container: false,
-                container_runtime: "none".to_string(),
+                iii_execution_context: "user".to_string(),
                 timezone: "UTC".to_string(),
                 cpu_cores: 4,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
+                host_user_id: None,
             },
         };
 
         let event = ctx.build_event("test_event", serde_json::json!({"key": "value"}), None);
 
         assert_eq!(event.device_id, "test-install-id");
-        assert_eq!(event.user_id, Some("test-install-id".to_string()));
+        assert_eq!(event.user_id, None);
         assert_eq!(event.event_type, "test_event");
         assert_eq!(event.event_properties["key"], "value");
         assert_eq!(event.platform, "iii-engine");
@@ -1412,15 +1395,15 @@ mod tests {
     #[test]
     fn test_build_event_with_sdk_telemetry_language() {
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "m1".to_string(),
-                is_container: false,
-                container_runtime: "none".to_string(),
+                iii_execution_context: "user".to_string(),
                 timezone: "UTC".to_string(),
                 cpu_cores: 2,
                 os: "macos".to_string(),
                 arch: "aarch64".to_string(),
+                host_user_id: None,
             },
         };
 
@@ -1437,7 +1420,7 @@ mod tests {
     #[test]
     fn test_build_event_insert_id_is_unique() {
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1452,7 +1435,7 @@ mod tests {
     #[test]
     fn test_build_event_app_version_matches_cargo_pkg() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1463,7 +1446,7 @@ mod tests {
     #[test]
     fn test_build_event_country_is_none() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1474,7 +1457,7 @@ mod tests {
     #[test]
     fn test_build_event_user_properties_is_some() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1491,7 +1474,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1508,7 +1491,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1523,7 +1506,7 @@ mod tests {
     #[test]
     fn test_build_event_timestamp_is_recent() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1539,25 +1522,24 @@ mod tests {
     #[test]
     fn test_telemetry_context_clone() {
         let ctx = TelemetryContext {
-            install_id: "clone-test-id".to_string(),
+            device_id: "clone-test-id".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "m1".to_string(),
-                is_container: true,
-                container_runtime: "docker".to_string(),
+                iii_execution_context: "docker".to_string(),
                 timezone: "America/Chicago".to_string(),
                 cpu_cores: 16,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
+                host_user_id: None,
             },
         };
 
         let cloned = ctx.clone();
-        assert_eq!(cloned.install_id, ctx.install_id);
+        assert_eq!(cloned.device_id, ctx.device_id);
         assert_eq!(cloned.env_info.machine_id, ctx.env_info.machine_id);
-        assert_eq!(cloned.env_info.is_container, ctx.env_info.is_container);
         assert_eq!(
-            cloned.env_info.container_runtime,
-            ctx.env_info.container_runtime
+            cloned.env_info.iii_execution_context,
+            ctx.env_info.iii_execution_context
         );
         assert_eq!(cloned.env_info.timezone, ctx.env_info.timezone);
         assert_eq!(cloned.env_info.cpu_cores, ctx.env_info.cpu_cores);
@@ -1588,7 +1570,7 @@ mod tests {
     fn test_collect_functions_and_triggers_filters_engine_prefix() {
         let engine = make_test_engine();
 
-        let handler: Arc<crate::function::HandlerFn> = Arc::new(|_inv_id, _input| {
+        let handler: Arc<crate::function::HandlerFn> = Arc::new(|_inv_id, _input, _session| {
             Box::pin(async { crate::function::FunctionResult::NoResult })
         });
         engine.functions.register_function(
@@ -1635,6 +1617,7 @@ mod tests {
                 function_id: "my_fn".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -1646,6 +1629,7 @@ mod tests {
                 function_id: "other_fn".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -1666,8 +1650,7 @@ mod tests {
         let wd = collect_worker_data(&engine);
 
         assert_eq!(wd.worker_count_total, 0);
-        assert_eq!(wd.worker_count_motia, 0);
-        assert_eq!(wd.worker_count_non_iii_sdk_framework, 0);
+        assert!(wd.worker_count_by_framework.is_empty());
         assert!(wd.sdk_telemetry.is_none());
         assert!(wd.sdk_languages.is_empty());
     }
@@ -1682,7 +1665,7 @@ mod tests {
         worker1.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
             project_name: Some("proj-a".to_string()),
-            framework: Some("iii-js".to_string()),
+            framework: Some("iii-node".to_string()),
         });
         let w1_id = worker1.id;
         engine.worker_registry.workers.insert(w1_id, worker1);
@@ -1697,14 +1680,13 @@ mod tests {
         let wd = collect_worker_data(&engine);
 
         assert_eq!(wd.worker_count_total, 2);
-        assert_eq!(wd.worker_count_motia, 1);
-        assert_eq!(wd.worker_count_non_iii_sdk_framework, 1);
+        assert_eq!(wd.worker_count_by_framework.get("iii-node"), Some(&1));
 
         assert!(wd.sdk_telemetry.is_some());
         let telem = wd.sdk_telemetry.unwrap();
         assert_eq!(telem.language, Some("typescript".to_string()));
         assert_eq!(telem.project_name, Some("proj-a".to_string()));
-        assert_eq!(telem.framework, Some("iii-js".to_string()));
+        assert_eq!(telem.framework, Some("iii-node".to_string()));
     }
 
     #[test]
@@ -1790,8 +1772,7 @@ mod tests {
 
         let wd = collect_worker_data(&engine);
         assert_eq!(wd.worker_count_total, 1);
-        assert_eq!(wd.worker_count_motia, 1);
-        assert_eq!(wd.worker_count_non_iii_sdk_framework, 0);
+        assert_eq!(wd.worker_count_by_framework.get("motia"), Some(&1));
     }
 
     #[test]
@@ -1997,20 +1978,20 @@ mod tests {
     }
 
     // =========================================================================
-    // get_or_create_install_id
+    // get_or_create_device_id
     // =========================================================================
 
     #[test]
-    fn test_get_or_create_install_id_returns_nonempty_string() {
-        let id = get_or_create_install_id();
+    fn test_get_or_create_device_id_returns_nonempty_string() {
+        let id = get_or_create_device_id();
         assert!(!id.is_empty());
     }
 
     #[test]
-    fn test_get_or_create_install_id_is_stable() {
-        let id1 = get_or_create_install_id();
-        let id2 = get_or_create_install_id();
-        assert_eq!(id1, id2, "install_id should be stable across calls");
+    fn test_get_or_create_device_id_is_stable() {
+        let id1 = get_or_create_device_id();
+        let id2 = get_or_create_device_id();
+        assert_eq!(id1, id2, "device_id should be stable across calls");
     }
 
     // =========================================================================
@@ -2110,6 +2091,7 @@ mod tests {
                 function_id: "svc::worker".to_string(),
                 config: serde_json::json!({ "topic": "orders" }),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger");
@@ -2120,7 +2102,7 @@ mod tests {
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
             project_name: Some("telemetry-spec".to_string()),
-            framework: Some("iii-js".to_string()),
+            framework: Some("iii-node".to_string()),
         });
         engine.worker_registry.register_worker(worker);
 
@@ -2146,9 +2128,9 @@ mod tests {
             .await
             .expect("start background tasks");
 
-        tokio::time::sleep(Duration::from_millis(2200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         shutdown_tx.send(true).expect("signal shutdown");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         module.destroy().await.expect("destroy telemetry module");
 
         reset_telemetry_globals();

@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
+iii.registerFunction("accounts::set-status", async (request: any) => {
   const logger = new Logger();
   const accountId = request.params.accountId;
   const account = await iii.trigger({
@@ -35,7 +35,7 @@ iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
   return { accountId, status: account.status };
 });
 
-iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
+iii.registerFunction("accounts::on-change", async (event: any) => {
   const logger = new Logger();
   const update = event.new_value;
   iii.trigger({

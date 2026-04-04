@@ -54,35 +54,6 @@ export type RegisterServiceMessage = {
   parent_service_id?: string
 }
 
-/**
- * Authentication configuration for HTTP-invoked functions.
- *
- * - `hmac` -- HMAC signature verification using a shared secret.
- * - `bearer` -- Bearer token authentication.
- * - `api_key` -- API key sent via a custom header.
- */
-export type HttpAuthConfig =
-  | { type: 'hmac'; secret_key: string }
-  | { type: 'bearer'; token_key: string }
-  | { type: 'api_key'; header: string; value_key: string }
-
-/**
- * Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
- * Workers, etc.) instead of a local handler.
- */
-export type HttpInvocationConfig = {
-  /** URL to invoke. */
-  url: string
-  /** HTTP method. Defaults to `POST`. */
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-  /** Timeout in milliseconds. */
-  timeout_ms?: number
-  /** Custom headers to send with the request. */
-  headers?: Record<string, string>
-  /** Authentication configuration. */
-  auth?: HttpAuthConfig
-}
-
 export type RegisterFunctionFormat = {
   /**
    * The name of the parameter
@@ -95,19 +66,20 @@ export type RegisterFunctionFormat = {
   /**
    * The type of the parameter
    */
-  type: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map'
+  type?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map' | 'integer'
   /**
-   * The body of the parameter
+   * The body of the parameter (for objects)
    */
-  properties?: Record<string, RegisterFunctionFormat>
+  properties?: Record<string, unknown>
   /**
-   * The items of the parameter
+   * The items of the parameter (for arrays)
    */
-  items?: RegisterFunctionFormat
+  items?: unknown
   /**
    * Whether the parameter is required
    */
   required?: string[]
+  [key: string]: unknown
 }
 
 export type RegisterFunctionMessage = {
@@ -129,10 +101,6 @@ export type RegisterFunctionMessage = {
    */
   response_format?: RegisterFunctionFormat
   metadata?: Record<string, unknown>
-  /**
-   * HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.)
-   */
-  invocation?: HttpInvocationConfig
 }
 
 /**
@@ -176,6 +144,8 @@ export type AuthResult = {
   allow_function_registration?: boolean
   /** Arbitrary context forwarded to the middleware function on every invocation. */
   context: Record<string, unknown>
+  /** Optional prefix applied to all function IDs registered by this worker. */
+  function_registration_prefix?: string
 }
 
 /**
@@ -197,7 +167,8 @@ export type MiddlewareFunctionInput = {
 /**
  * Input passed to the `on_trigger_type_registration_function_id` hook
  * when a worker attempts to register a new trigger type through the RBAC port.
- * Return `true` to allow the registration.
+ * Return an {@link OnTriggerTypeRegistrationResult} with the (possibly mapped)
+ * fields, or throw to deny the registration.
  */
 export type OnTriggerTypeRegistrationInput = {
   /** ID of the trigger type being registered. */
@@ -209,9 +180,22 @@ export type OnTriggerTypeRegistrationInput = {
 }
 
 /**
+ * Result returned from the `on_trigger_type_registration_function_id` hook.
+ * All fields are optional -- omitted fields keep the original value from the
+ * registration request.
+ */
+export type OnTriggerTypeRegistrationResult = {
+  /** Mapped trigger type ID. */
+  trigger_type_id?: string
+  /** Mapped description. */
+  description?: string
+}
+
+/**
  * Input passed to the `on_trigger_registration_function_id` hook
  * when a worker attempts to register a trigger through the RBAC port.
- * Return `true` to allow the registration.
+ * Return an {@link OnTriggerRegistrationResult} with the (possibly mapped)
+ * fields, or throw to deny the registration.
  */
 export type OnTriggerRegistrationInput = {
   /** ID of the trigger being registered. */
@@ -227,9 +211,26 @@ export type OnTriggerRegistrationInput = {
 }
 
 /**
+ * Result returned from the `on_trigger_registration_function_id` hook.
+ * All fields are optional -- omitted fields keep the original value from the
+ * registration request.
+ */
+export type OnTriggerRegistrationResult = {
+  /** Mapped trigger ID. */
+  trigger_id?: string
+  /** Mapped trigger type. */
+  trigger_type?: string
+  /** Mapped function ID. */
+  function_id?: string
+  /** Mapped trigger configuration. */
+  config?: unknown
+}
+
+/**
  * Input passed to the `on_function_registration_function_id` hook
  * when a worker attempts to register a function through the RBAC port.
- * Return `true` to allow the registration.
+ * Return an {@link OnFunctionRegistrationResult} with the (possibly mapped)
+ * fields, or throw to deny the registration.
  */
 export type OnFunctionRegistrationInput = {
   /** ID of the function being registered. */
@@ -240,6 +241,20 @@ export type OnFunctionRegistrationInput = {
   metadata?: Record<string, unknown>
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
+}
+
+/**
+ * Result returned from the `on_function_registration_function_id` hook.
+ * All fields are optional -- omitted fields keep the original value from the
+ * registration request.
+ */
+export type OnFunctionRegistrationResult = {
+  /** Mapped function ID. */
+  function_id?: string
+  /** Mapped description. */
+  description?: string
+  /** Mapped metadata. */
+  metadata?: Record<string, unknown>
 }
 
 /**
@@ -360,42 +375,6 @@ export type TriggerTypeInfo = {
   call_request_format?: unknown
 }
 
-/** Worker connection status. */
-export type WorkerStatus = 'connected' | 'available' | 'busy' | 'disconnected'
-
-/**
- * Metadata about a connected worker, returned by `ISdk.listWorkers`.
- */
-export type WorkerInfo = {
-  /** Unique worker identifier assigned by the engine. */
-  id: string
-  /** Display name of the worker. */
-  name?: string
-  /** Runtime environment (e.g. `node`, `python`, `rust`). */
-  runtime?: string
-  /** SDK version. */
-  version?: string
-  /** Operating system info. */
-  os?: string
-  /** IP address of the worker. */
-  ip_address?: string
-  /** Current connection status. */
-  status: WorkerStatus
-  /** Timestamp (ms since epoch) when the worker connected. */
-  connected_at_ms: number
-  /** Number of functions registered by this worker. */
-  function_count: number
-  /** List of function IDs registered by this worker. */
-  functions: string[]
-  /** Number of currently active invocations. */
-  active_invocations: number
-}
-
-export type WorkerRegisteredMessage = {
-  message_type: MessageType.WorkerRegistered
-  worker_id: string
-}
-
 export type UnregisterFunctionMessage = {
   message_type: MessageType.UnregisterFunction
   id: string
@@ -425,4 +404,3 @@ export type IIIMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
-  | WorkerRegisteredMessage

@@ -72,7 +72,7 @@ def periodic_job(_data) -> None:
     })
 
 
-iii.register_function({"id": "cron.periodic_job"}, periodic_job)
+iii.register_function("cron.periodic_job", periodic_job)
 iii.register_trigger({
     "type": "cron",
     "function_id": "cron.periodic_job",
@@ -107,7 +107,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
     "expression": "* * * * *",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>
@@ -149,7 +149,7 @@ def handle_tick(data: dict) -> None:
         "message": data.get("message"),
     })
 
-iii.register_function({"id": "job.handle_tick"}, handle_tick)
+iii.register_function("job.handle_tick", handle_tick)
 iii.register_trigger({"type": "queue", "function_id": "job.handle_tick", "config": {"topic": "job.tick"}})
 ```
 
@@ -167,7 +167,7 @@ iii.register_function((RegisterFunctionMessage::with_id("job.handle_tick".into()
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }) })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }), metadata: None })?;
 ```
 
   </Tab>
@@ -268,7 +268,7 @@ def orders_sweep(_data) -> None:
 
     logger.info("Sweep complete", {"checked": len(orders), "swept": swept})
 
-iii.register_function({"id": "cron.orders_sweep"}, orders_sweep)
+iii.register_function("cron.orders_sweep", orders_sweep)
 iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "*/5 * * * *"}})
 ```
 
@@ -315,7 +315,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }) })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }), metadata: None })?;
 ```
 
   </Tab>

@@ -215,7 +215,7 @@ jobs:
     with:
       package_path: sdk/packages/node/iii-browser
       npm_tag: ${{ needs.setup.outputs.npm_tag }}
-      build_filter: iii-sdk-browser
+      build_filter: iii-browser-sdk
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: SDK Browser (npm)

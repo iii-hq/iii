@@ -36,7 +36,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'chat::send' }, async (input) => {
+iii.registerFunction('chat::send', async (input) => {
   const logger = new Logger()
   const messageId = crypto.randomUUID()
 
@@ -163,7 +163,7 @@ println!("Sent message: {}", result["messageId"]);
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="stream-reader.ts"
-iii.registerFunction({ id: 'chat::list' }, async (input) => {
+iii.registerFunction('chat::list', async (input) => {
   const logger = new Logger()
 
   const messages = await iii.trigger({
@@ -209,8 +209,8 @@ print("Messages:", messages)
 </Tab>
 <Tab title="Rust">
 ```rust title="stream_reader.rs"
-use iii_sdk::RegisterFunction;
-use serde_json::Value;
+use iii_sdk::{RegisterFunction, TriggerRequest};
+use serde_json::{json, Value};
 
 let iii_clone = iii.clone();
 let reg = RegisterFunction::new_async("chat::list", move |input: Value| {
@@ -237,8 +237,8 @@ iii.register_function(reg);
 // Then call from another function or worker
 let messages = iii
     .trigger(TriggerRequest {
-        function_id: "chat::list".into(),
-        payload: json!({ "roomId": "room-123" }),
+        function_id: "stream::list".into(),
+        payload: json!({ "stream_name": "chat", "group_id": "room-123" }),
         action: None,
         timeout_ms: None,
     })
@@ -261,11 +261,157 @@ ws.onmessage = (event) => {
 }
 ```
 
+### 5. React to stream events
+
+Register triggers to run server-side logic when clients join or when stream data changes.
+
+#### On client join
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="stream-triggers.ts"
+import { StreamJoinLeaveEvent } from 'iii-sdk/stream'
+
+const onJoin = iii.registerFunction('chat::onJoin', async (input: StreamJoinLeaveEvent) => {
+  const logger = new Logger()
+  logger.info('Client joined chat room', {
+    stream: input.stream_name,
+    group: input.group_id,
+    context: input.context,
+  })
+  return {}
+})
+
+iii.registerTrigger({
+  type: 'stream:join',
+  function_id: onJoin.id,
+  config: {},
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="stream_triggers.py"
+from iii import StreamJoinLeaveEvent
+
+def on_join(input: StreamJoinLeaveEvent):
+    logger = Logger()
+    logger.info("Client joined chat room", {
+        "stream": input.stream_name,
+        "group": input.group_id,
+        "context": input.context,
+    })
+    return {}
+
+iii.register_function("chat::onJoin", on_join)
+iii.register_trigger({"type": "stream:join", "function_id": "chat::onJoin", "config": {}})
+```
+</Tab>
+<Tab title="Rust">
+```rust title="stream_triggers.rs"
+use iii_sdk::{IIITrigger, StreamJoinLeaveCallRequest, StreamJoinLeaveTriggerConfig};
+
+let reg = RegisterFunction::new_async("chat::onJoin", move |input: Value| {
+    async move {
+        let logger = Logger::new();
+        let event: StreamJoinLeaveCallRequest = serde_json::from_value(input)?;
+        logger.info("Client joined chat room", Some(json!({
+            "stream": event.stream_name,
+            "group": event.group_id,
+            "context": event.context,
+        })));
+        Ok(json!({}))
+    }
+});
+iii.register_function(reg);
+
+iii.register_trigger(
+    IIITrigger::StreamJoin(StreamJoinLeaveTriggerConfig::new()).for_function("chat::onJoin"),
+)?;
+```
+</Tab>
+</Tabs>
+
+#### On message created
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="stream-triggers.ts"
+import { StreamChangeEvent } from 'iii-sdk/stream'
+
+const onMessage = iii.registerFunction('chat::onMessage', async (input: StreamChangeEvent) => {
+  const logger = new Logger()
+
+  if (input.event.type === 'create') {
+    logger.info('New message in room', { room: input.groupId, messageId: input.id, data: input.event.data })
+  }
+
+  return {}
+})
+
+iii.registerTrigger({
+  type: 'stream',
+  function_id: onMessage.id,
+  config: { stream_name: 'chat' },
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="stream_triggers.py"
+from iii import StreamChangeEvent
+
+def on_message(input: StreamChangeEvent):
+    logger = Logger()
+
+    if input.event.type == "create":
+        logger.info("New message in room", {
+            "room": input.groupId,
+            "messageId": input.id,
+            "data": input.event.data,
+        })
+
+    return {}
+
+iii.register_function("chat::onMessage", on_message)
+iii.register_trigger({
+    "type": "stream",
+    "function_id": "chat::onMessage",
+    "config": {"stream_name": "chat"},
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust title="stream_triggers.rs"
+use iii_sdk::{IIITrigger, StreamCallRequest, StreamEventType, StreamTriggerConfig};
+
+let reg = RegisterFunction::new_async("chat::onMessage", move |input: Value| {
+    async move {
+        let logger = Logger::new();
+        let event: StreamCallRequest = serde_json::from_value(input)?;
+
+        if event.event.event_type == StreamEventType::Create {
+            logger.info("New message in room", Some(json!({
+                "room": event.group_id,
+                "messageId": event.id,
+                "data": event.event.data,
+            })));
+        }
+
+        Ok(json!({}))
+    }
+});
+iii.register_function(reg);
+
+iii.register_trigger(
+    IIITrigger::Stream(StreamTriggerConfig::new().stream_name("chat")).for_function("chat::onMessage"),
+)?;
+```
+</Tab>
+</Tabs>
+
 ## Result
 
-Any data written to the stream via `stream::set` is immediately pushed to all connected WebSocket clients subscribed to that stream and group. No polling needed.
+Any data written to the stream via `stream::set` is immediately pushed to all connected WebSocket clients subscribed to that stream and group. Server-side triggers let you react to joins, leaves, and data changes without polling.
 
-{/* TODO: Uncomment once the Stream module reference page exists */}
-{/* <Info title="See also">
-  For stream operations like `update`, `delete`, `listGroups`, and authentication, see the [Stream module reference](/modules/module-stream).
-</Info> */}
+<Info title="See also">
+  For all stream operations, trigger payload shapes, and authentication, see the [Stream module reference](/modules/module-stream).
+</Info>

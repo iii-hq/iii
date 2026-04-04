@@ -4,8 +4,11 @@ import type {
   AuthResult,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
+  OnFunctionRegistrationResult,
   OnTriggerRegistrationInput,
+  OnTriggerRegistrationResult,
   OnTriggerTypeRegistrationInput,
+  OnTriggerTypeRegistrationResult,
 } from '../src/index'
 import { registerWorker } from '../src/index'
 import { iii, sleep } from './utils'
@@ -17,7 +20,7 @@ let triggerTypeRegCalls: OnTriggerTypeRegistrationInput[] = []
 let triggerRegCalls: OnTriggerRegistrationInput[] = []
 
 beforeAll(async () => {
-  iii.registerFunction({ id: 'test::rbac-worker::auth' }, async (input: AuthInput): Promise<AuthResult> => {
+  iii.registerFunction('test::rbac-worker::auth', async (input: AuthInput): Promise<AuthResult> => {
     authCalls.push(input)
     const token = input.headers?.['x-test-token']
 
@@ -48,34 +51,53 @@ beforeAll(async () => {
       }
     }
 
+    if (token === 'prefix-token') {
+      return {
+        allowed_functions: [],
+        forbidden_functions: [],
+        allow_trigger_type_registration: true,
+        context: { role: 'prefixed', user_id: 'user-prefix' },
+        function_registration_prefix: 'test-prefix',
+      }
+    }
+
     throw new Error('invalid token')
   })
 
-  iii.registerFunction({ id: 'test::rbac-worker::middleware' }, async (input: MiddlewareFunctionInput) => {
+  iii.registerFunction('test::rbac-worker::middleware', async (input: MiddlewareFunctionInput) => {
     const enrichedPayload = { ...input.payload, _intercepted: true, _caller: input.context.user_id }
     return iii.trigger({ function_id: input.function_id, payload: enrichedPayload })
   })
 
   iii.registerFunction(
-    { id: 'test::rbac-worker::on-function-reg' },
-    async (input: OnFunctionRegistrationInput) => {
-      return !input.function_id.startsWith('denied::')
+    'test::rbac-worker::on-function-reg',
+    async (input: OnFunctionRegistrationInput): Promise<OnFunctionRegistrationResult> => {
+      if (input.function_id.startsWith('denied::')) {
+        throw new Error('denied function registration')
+      }
+      return { function_id: input.function_id }
     },
   )
 
   iii.registerFunction(
-    { id: 'test::rbac-worker::on-trigger-type-reg' },
-    async (input: OnTriggerTypeRegistrationInput) => {
+    'test::rbac-worker::on-trigger-type-reg',
+    async (input: OnTriggerTypeRegistrationInput): Promise<OnTriggerTypeRegistrationResult> => {
       triggerTypeRegCalls.push(input)
-      return !input.trigger_type_id.startsWith('denied-tt::')
+      if (input.trigger_type_id.startsWith('denied-tt::')) {
+        throw new Error('denied trigger type registration')
+      }
+      return {}
     },
   )
 
   iii.registerFunction(
-    { id: 'test::rbac-worker::on-trigger-reg' },
-    async (input: OnTriggerRegistrationInput) => {
+    'test::rbac-worker::on-trigger-reg',
+    async (input: OnTriggerRegistrationInput): Promise<OnTriggerRegistrationResult> => {
       triggerRegCalls.push(input)
-      return !input.function_id.startsWith('denied-trig::')
+      if (input.function_id.startsWith('denied-trig::')) {
+        throw new Error('denied trigger registration')
+      }
+      return {}
     },
   )
 
@@ -88,24 +110,25 @@ beforeAll(async () => {
   )
 
   // Exposed via match("test::ew::*")
-  iii.registerFunction({ id: 'test::ew::public::echo' }, async (data: Record<string, unknown>) => {
+  iii.registerFunction('test::ew::public::echo', async (data: Record<string, unknown>) => {
     return { echoed: data }
   })
 
-  iii.registerFunction({ id: 'test::ew::valid-token-echo' }, async (data: Record<string, unknown>) => {
+  iii.registerFunction('test::ew::valid-token-echo', async (data: Record<string, unknown>) => {
     return { echoed: data, valid_token: true }
   })
 
   // Exposed via metadata filter { ew_public: true }
   iii.registerFunction(
-    { id: 'test::ew::meta-public', metadata: { ew_public: true } },
+    'test::ew::meta-public',
     async (data: Record<string, unknown>) => {
       return { meta_echoed: data }
     },
+    { metadata: { ew_public: true } },
   )
 
   // NOT exposed – no match in expose_functions config
-  iii.registerFunction({ id: 'test::ew::private' }, async () => {
+  iii.registerFunction('test::ew::private', async () => {
     return { private: true }
   })
 
@@ -238,7 +261,7 @@ describe('RBAC Workers', () => {
     })
 
     try {
-      iiiClient.registerFunction({ id: 'denied::blocked-fn' }, async () => {
+      iiiClient.registerFunction('denied::blocked-fn', async () => {
         return { should: 'not reach' }
       })
 
@@ -251,6 +274,77 @@ describe('RBAC Workers', () => {
           payload: {},
         }),
       ).rejects.toThrow()
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  it('should only list allowed functions for valid-token worker', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'valid-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      await sleep(1000)
+
+      const functions = await iiiClient.listFunctions()
+      const functionIds = functions.map((f) => f.function_id)
+
+      expect(functionIds).toContain('test::ew::valid-token-echo')
+      expect(functionIds).toContain('test::ew::public::echo')
+      expect(functionIds).toContain('test::ew::meta-public')
+
+      expect(functionIds).not.toContain('test::ew::private')
+      expect(functionIds).not.toContain('test::rbac-worker::auth')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  it('should only list exposed functions for restricted-token worker', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'restricted-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      await sleep(1000)
+
+      const functions = await iiiClient.listFunctions()
+      const functionIds = functions.map((f) => f.function_id)
+
+      expect(functionIds).toContain('test::ew::public::echo')
+      expect(functionIds).toContain('test::ew::meta-public')
+
+      expect(functionIds).not.toContain('test::ew::valid-token-echo')
+      expect(functionIds).not.toContain('test::ew::private')
+      expect(functionIds).not.toContain('test::rbac-worker::auth')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  it('should apply function_registration_prefix and strip on invocation', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'prefix-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      iiiClient.registerFunction('prefixed-echo', async (data: Record<string, unknown>) => {
+        return { echoed: data }
+      })
+
+      await sleep(1000)
+
+      // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+      const result = await iii.trigger<any, any>({
+        function_id: 'test-prefix::prefixed-echo',
+        payload: { msg: 'prefix-test' },
+      })
+
+      expect(result.echoed.msg).toBe('prefix-test')
     } finally {
       await iiiClient.shutdown()
     }

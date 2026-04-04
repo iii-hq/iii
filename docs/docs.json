@@ -15,7 +15,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.10.0",
+        "version": "latest",
         "tag": "latest",
         "tabs": [
           {
@@ -27,7 +27,10 @@
               },
               {
                 "group": "Primitives & Concepts",
-                "pages": ["primitives-and-concepts/functions-triggers-workers", "primitives-and-concepts/discovery"]
+                "pages": [
+                  "primitives-and-concepts/functions-triggers-workers",
+                  "primitives-and-concepts/discovery"
+                ]
               },
               {
                 "group": "How-to Guides",
@@ -39,6 +42,7 @@
                   "how-to/use-queues",
                   "how-to/dead-letter-queues",
                   "how-to/expose-http-endpoint",
+                  "how-to/use-http-middleware",
                   "how-to/manage-state",
                   "how-to/use-channels",
                   "how-to/react-to-state-changes",
@@ -128,9 +132,9 @@
       }
     ]
   },
-  "analytics": {
-    "ga4": {
-      "measurementId": "G-E4G8GW1J2Q"
+  "integrations": {
+    "gtm": {
+      "tagId": "GTM-N8DCTFB8"
     }
   }
 }

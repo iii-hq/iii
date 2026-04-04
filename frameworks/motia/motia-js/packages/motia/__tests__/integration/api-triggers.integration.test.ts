@@ -18,7 +18,7 @@ describe('api triggers integration', () => {
     const sdk = getInstance()
     const functionId = `test.api.get.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async () => ({
+    sdk.registerFunction(functionId, async () => ({
       status_code: 200,
       body: { message: 'Hello from GET' },
     }))
@@ -40,7 +40,7 @@ describe('api triggers integration', () => {
     const sdk = getInstance()
     const functionId = `test.api.post.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async (req: { body?: unknown }) => ({
+    sdk.registerFunction(functionId, async (req: { body?: unknown }) => ({
       status_code: 201,
       body: { received: req.body, created: true },
     }))
@@ -67,7 +67,7 @@ describe('api triggers integration', () => {
     const sdk = getInstance()
     const functionId = `test.api.getById.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async (req: { path_params?: Record<string, string> }) => ({
+    sdk.registerFunction(functionId, async (req: { path_params?: Record<string, string> }) => ({
       status_code: 200,
       body: { id: req.path_params?.id },
     }))
@@ -89,7 +89,7 @@ describe('api triggers integration', () => {
     const sdk = getInstance()
     const functionId = `test.api.search.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async (req: { query_params?: Record<string, string | string[]> }) => ({
+    sdk.registerFunction(functionId, async (req: { query_params?: Record<string, string | string[]> }) => ({
       status_code: 200,
       body: {
         query: req.query_params?.q,
@@ -115,7 +115,7 @@ describe('api triggers integration', () => {
     const sdk = getInstance()
     const functionId = `test.api.notfound.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async () => ({
+    sdk.registerFunction(functionId, async () => ({
       status_code: 404,
       body: { error: 'Not found' },
     }))

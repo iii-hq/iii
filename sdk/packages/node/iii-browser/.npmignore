@@ -2,4 +2,8 @@ src/*
 node_modules/
 tsdown.config.ts
 tsconfig.json
+api-docs.json
+typedoc.json
+vitest.integration.config.ts
+vitest.config.ts
 tests/

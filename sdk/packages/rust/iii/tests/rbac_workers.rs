@@ -13,7 +13,8 @@ use serial_test::serial;
 
 use iii_sdk::{
     AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
-    OnFunctionRegistrationInput, OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
+    OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
+    OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
     RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
 };
 
@@ -62,6 +63,7 @@ fn ensure_functions_registered() {
                             allow_trigger_type_registration: false,
                             allow_function_registration: true,
                             context: json!({ "role": "anonymous", "user_id": "anonymous" }),
+                            function_registration_prefix: None,
                         }),
                         Some("valid-token") => Ok(AuthResult {
                             allowed_functions: vec!["test::ew::valid-token-echo".to_string()],
@@ -70,6 +72,7 @@ fn ensure_functions_registered() {
                             allow_trigger_type_registration: true,
                             allow_function_registration: true,
                             context: json!({ "role": "admin", "user_id": "user-1" }),
+                            function_registration_prefix: None,
                         }),
                         Some("restricted-token") => Ok(AuthResult {
                             allowed_functions: vec![],
@@ -78,6 +81,16 @@ fn ensure_functions_registered() {
                             allow_trigger_type_registration: false,
                             allow_function_registration: true,
                             context: json!({ "role": "restricted", "user_id": "user-2" }),
+                            function_registration_prefix: None,
+                        }),
+                        Some("prefix-token") => Ok(AuthResult {
+                            allowed_functions: vec![],
+                            forbidden_functions: vec![],
+                            allowed_trigger_types: None,
+                            allow_trigger_type_registration: true,
+                            allow_function_registration: true,
+                            context: json!({ "role": "prefixed", "user_id": "user-prefix" }),
+                            function_registration_prefix: Some("test-prefix".to_string()),
                         }),
                         _ => Err(iii_sdk::IIIError::Handler("invalid token".to_string())),
                     }
@@ -117,7 +130,15 @@ fn ensure_functions_registered() {
         refs.push(iii.register_function(RegisterFunction::new_async(
             "test::rbac-worker::on-function-reg",
             |input: OnFunctionRegistrationInput| async move {
-                Ok::<_, iii_sdk::IIIError>(!input.function_id.starts_with("denied::"))
+                if input.function_id.starts_with("denied::") {
+                    return Err(iii_sdk::IIIError::Handler(
+                        "denied function registration".into(),
+                    ));
+                }
+                Ok::<_, iii_sdk::IIIError>(OnFunctionRegistrationResult {
+                    function_id: Some(input.function_id),
+                    ..Default::default()
+                })
             },
         )));
 
@@ -129,7 +150,12 @@ fn ensure_functions_registered() {
                 async move {
                     let denied = input.trigger_type_id.starts_with("denied-tt::");
                     tt_reg_calls.lock().unwrap().push(input);
-                    Ok::<_, iii_sdk::IIIError>(!denied)
+                    if denied {
+                        return Err(iii_sdk::IIIError::Handler(
+                            "denied trigger type registration".into(),
+                        ));
+                    }
+                    Ok::<_, iii_sdk::IIIError>(OnTriggerTypeRegistrationResult::default())
                 }
             },
         )));
@@ -142,7 +168,12 @@ fn ensure_functions_registered() {
                 async move {
                     let denied = input.function_id.starts_with("denied-trig::");
                     trig_reg_calls.lock().unwrap().push(input);
-                    Ok::<_, iii_sdk::IIIError>(!denied)
+                    if denied {
+                        return Err(iii_sdk::IIIError::Handler(
+                            "denied trigger registration".into(),
+                        ));
+                    }
+                    Ok::<_, iii_sdk::IIIError>(OnTriggerRegistrationResult::default())
                 }
             },
         )));
@@ -445,6 +476,7 @@ async fn should_deny_trigger_registration_via_hook() {
         trigger_type: "test-rbac-trigger".to_string(),
         function_id: "denied-trig::my-fn".to_string(),
         config: json!({ "key": "value" }),
+        metadata: None,
     });
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -459,6 +491,155 @@ async fn should_deny_trigger_registration_via_hook() {
             Some("user-1")
         );
     }
+
+    iii_client.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "prefix-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        iii_client.get_connection_state(),
+        IIIConnectionState::Connected
+    );
+
+    iii_client.register_function((
+        RegisterFunctionMessage::with_id("prefixed-echo".to_string()),
+        |input: Value| async move { Ok(json!({ "echoed": input })) },
+    ));
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let iii_server = common::shared_iii();
+    let result = iii_server
+        .trigger(TriggerRequest {
+            function_id: "test-prefix::prefixed-echo".to_string(),
+            payload: json!({ "msg": "prefix-test" }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("trigger with prefixed function_id should succeed");
+
+    assert_eq!(result["echoed"]["msg"], "prefix-test");
+
+    iii_client.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn should_only_list_allowed_functions_for_valid_token() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "valid-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let functions = iii_client
+        .list_functions()
+        .await
+        .expect("list_functions should succeed");
+    let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
+
+    assert!(
+        ids.contains(&"test::ew::valid-token-echo"),
+        "should contain allowed function"
+    );
+    assert!(
+        ids.contains(&"test::ew::public::echo"),
+        "should contain exposed public function"
+    );
+    assert!(
+        ids.contains(&"test::ew::meta-public"),
+        "should contain metadata-matched function"
+    );
+
+    assert!(
+        !ids.contains(&"test::ew::private"),
+        "should not contain private function"
+    );
+    assert!(
+        !ids.contains(&"test::rbac-worker::auth"),
+        "should not contain auth function"
+    );
+
+    iii_client.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn should_only_list_exposed_functions_for_restricted_token() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "restricted-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let functions = iii_client
+        .list_functions()
+        .await
+        .expect("list_functions should succeed");
+    let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
+
+    assert!(
+        ids.contains(&"test::ew::public::echo"),
+        "should contain exposed public function"
+    );
+    assert!(
+        ids.contains(&"test::ew::meta-public"),
+        "should contain metadata-matched function"
+    );
+
+    assert!(
+        !ids.contains(&"test::ew::valid-token-echo"),
+        "should not contain valid-token-only function"
+    );
+    assert!(
+        !ids.contains(&"test::ew::private"),
+        "should not contain private function"
+    );
+    assert!(
+        !ids.contains(&"test::rbac-worker::auth"),
+        "should not contain auth function"
+    );
 
     iii_client.shutdown_async().await;
 }

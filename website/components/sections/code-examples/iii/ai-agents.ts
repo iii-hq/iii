@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: 'agents::chat' }, async (request: any) => {
+iii.registerFunction('agents::chat', async (request: any) => {
   const logger = new Logger();
   const sessionId = request.body.sessionId ?? `session-${Date.now()}`;
   const input = String(request.body.input ?? '');

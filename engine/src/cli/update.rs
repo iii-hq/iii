@@ -205,15 +205,15 @@ pub async fn update_binary(
         None
     };
 
-    if let Some(ref actual) = detected_version {
-        if *actual >= latest_version {
-            // Sync state to match reality so future checks are fast
-            state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
-            return Ok(UpdateResult::AlreadyUpToDate {
-                binary: spec.name.to_string(),
-                version: actual.clone(),
-            });
-        }
+    if let Some(ref actual) = detected_version
+        && *actual >= latest_version
+    {
+        // Sync state to match reality so future checks are fast
+        state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
+        return Ok(UpdateResult::AlreadyUpToDate {
+            binary: spec.name.to_string(),
+            version: actual.clone(),
+        });
     }
 
     // Find asset for current platform
@@ -317,14 +317,14 @@ pub async fn self_update(
         None
     };
 
-    if let Some(ref actual) = detected_version {
-        if *actual >= latest_version {
-            state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
-            return Ok(UpdateResult::AlreadyUpToDate {
-                binary: spec.name.to_string(),
-                version: actual.clone(),
-            });
-        }
+    if let Some(ref actual) = detected_version
+        && *actual >= latest_version
+    {
+        state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
+        return Ok(UpdateResult::AlreadyUpToDate {
+            binary: spec.name.to_string(),
+            version: actual.clone(),
+        });
     }
 
     let asset_name = platform::asset_name(spec.name);

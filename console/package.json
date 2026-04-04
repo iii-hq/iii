@@ -4,7 +4,7 @@
   "description": "Workspace for iii developer console",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MotiaDev/iii-console.git"
+    "url": "git+https://github.com/iii-hq/iii.git"
   },
   "license": "Apache-2.0",
   "scripts": {

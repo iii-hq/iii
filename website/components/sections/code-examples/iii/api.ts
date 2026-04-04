@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "blog::list-posts" }, async () => {
+iii.registerFunction("blog::list-posts", async () => {
   const logger = new Logger();
   const posts =
     (await iii.trigger({
@@ -20,7 +20,7 @@ iii.registerFunction({ id: "blog::list-posts" }, async () => {
   return { posts };
 });
 
-iii.registerFunction({ id: "blog::create-post" }, async (request: any) => {
+iii.registerFunction("blog::create-post", async (request: any) => {
   const logger = new Logger();
   const draft = {
     title: String(request.body.title ?? "").trim(),

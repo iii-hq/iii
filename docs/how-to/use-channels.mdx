@@ -221,7 +221,7 @@ import { pipeline } from 'node:stream/promises'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'files::download' },
+  'files::download',
   http(async (req: HttpRequest, res: HttpResponse) => {
     const filePath = `/data/reports/${req.path_params.filename}`
 
@@ -293,7 +293,7 @@ import type { HttpRequest, HttpResponse } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'events::stream' },
+  'events::stream',
   http(async (_req: HttpRequest, res: HttpResponse) => {
     res.status(200)
     res.headers({
@@ -350,7 +350,7 @@ import type { ChannelReader } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'pipeline::consumer' },
+  'pipeline::consumer',
   async (input: { label: string; reader: ChannelReader }) => {
     const chunks: Buffer[] = []
     for await (const chunk of input.reader.stream) {
@@ -365,7 +365,7 @@ iii.registerFunction(
 )
 
 iii.registerFunction(
-  { id: 'pipeline::producer' },
+  'pipeline::producer',
   async (input: { records: { name: string; value: number }[] }) => {
     const channel = await iii.createChannel()
 
@@ -509,7 +509,7 @@ import type { ChannelReader, ChannelWriter } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'transform::worker' },
+  'transform::worker',
   async (input: { reader: ChannelReader; writer: ChannelWriter }) => {
     const chunks: Buffer[] = []
     let count = 0
@@ -528,7 +528,7 @@ iii.registerFunction(
 )
 
 iii.registerFunction(
-  { id: 'transform::coordinator' },
+  'transform::coordinator',
   async (input: { text: string }) => {
     const inputChannel = await iii.createChannel()
     const outputChannel = await iii.createChannel()

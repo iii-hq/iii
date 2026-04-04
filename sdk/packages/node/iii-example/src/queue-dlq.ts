@@ -51,7 +51,7 @@ useApi(
 const dlqLogger = new Logger(undefined, 'dlq-demo::process')
 
 iii.registerFunction(
-  { id: 'dlq-demo::process', metadata: { tags: ['queue', 'dlq'] } },
+  'dlq-demo::process',
   async payload => {
     const data = payload as { succeed?: boolean; message?: string }
 
@@ -63,4 +63,5 @@ iii.registerFunction(
     dlqLogger.warn('Job failing — will retry or move to DLQ', { payload })
     throw new Error('Simulated failure for DLQ demo')
   },
+  { metadata: { tags: ['queue', 'dlq'] } },
 )

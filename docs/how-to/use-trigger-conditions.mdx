@@ -26,13 +26,13 @@ const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 // condition
 iii.registerFunction(
-  { id: 'conditions::is-high-value' },
+  'conditions::is-high-value',
   async (event) => (event.new_value?.amount ?? 0) >= 1000,
 )
 
 // handler
 iii.registerFunction(
-  { id: 'orders::process-high-value' },
+  'orders::process-high-value',
   async (event) => ({
     status_code: 200,
     body: { processed: true, amount: event.new_value?.amount ?? 0 },
@@ -140,6 +140,7 @@ iii.register_trigger(RegisterTriggerInput {
         "key": "status",
         "condition_function_id": "conditions::is-high-value"
     }),
+    metadata: None,
 })?;
 ```
 </Tab>

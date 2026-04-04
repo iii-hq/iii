@@ -351,21 +351,51 @@ pub struct StateCallRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamJoinLeaveCallRequest {
-    pub event_type: String,
-    pub timestamp: i64,
+    pub subscription_id: String,
     pub stream_name: String,
     pub group_id: String,
     pub id: Option<String>,
+    pub context: Option<Value>,
 }
 
+/// The kind of mutation that occurred on a stream item.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamEventType {
+    Create,
+    Update,
+    Delete,
+}
+
+/// Detail of a stream change event containing the mutation type and data.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StreamEventDetail {
+    /// The kind of mutation (create, update, or delete).
+    #[serde(rename = "type")]
+    pub event_type: StreamEventType,
+    /// The data associated with the event.
+    pub data: Value,
+}
+
+/// Handler input for `stream` triggers, fired when an item changes
+/// via `stream::set`, `stream::update`, or `stream::delete`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamCallRequest {
+    /// Always `"stream"`.
+    #[serde(rename = "type")]
     pub event_type: String,
+    /// Unix timestamp (milliseconds) of the event.
     pub timestamp: i64,
+    /// The stream where the change occurred.
+    #[serde(rename = "streamName")]
     pub stream_name: String,
+    /// The group where the change occurred.
+    #[serde(rename = "groupId")]
     pub group_id: String,
+    /// The item ID that changed.
     pub id: Option<String>,
-    pub event: Value,
+    /// The event detail containing mutation type and data.
+    pub event: StreamEventDetail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -429,6 +459,7 @@ impl IIITrigger {
             trigger_type: self.trigger_type_id().to_string(),
             function_id: function_id.into(),
             config: serde_json::to_value(&self).unwrap(),
+            metadata: None,
         }
     }
 }
@@ -485,6 +516,43 @@ mod tests {
         let result = QueueTriggerConfig::new("emails").queue_config(FailingSerialize);
 
         assert!(result.is_err(), "serialization failures should be returned");
+    }
+
+    #[test]
+    fn stream_call_request_deserializes_typed_event() {
+        let request: StreamCallRequest = serde_json::from_value(json!({
+            "type": "stream",
+            "timestamp": 1700000000000_i64,
+            "streamName": "chat",
+            "groupId": "room-1",
+            "id": "msg-42",
+            "event": {
+                "type": "create",
+                "data": { "text": "hello" }
+            }
+        }))
+        .expect("stream call request should deserialize");
+
+        assert_eq!(request.event_type, "stream");
+        assert_eq!(request.stream_name, "chat");
+        assert_eq!(request.group_id, "room-1");
+        assert_eq!(request.id.as_deref(), Some("msg-42"));
+        assert!(matches!(request.event.event_type, StreamEventType::Create));
+        assert_eq!(request.event.data, json!({ "text": "hello" }));
+    }
+
+    #[test]
+    fn stream_event_type_roundtrip() {
+        for (variant, expected) in [
+            (StreamEventType::Create, "create"),
+            (StreamEventType::Update, "update"),
+            (StreamEventType::Delete, "delete"),
+        ] {
+            let json = serde_json::to_value(&variant).unwrap();
+            assert_eq!(json, expected);
+            let back: StreamEventType = serde_json::from_value(json).unwrap();
+            assert_eq!(back, variant);
+        }
     }
 
     #[test]

@@ -33,6 +33,28 @@ struct Cli {
     /// Disable background update and advisory checks
     #[arg(long, global = true)]
     no_update_check: bool,
+
+    /// Initialize telemetry IDs and optionally emit install lifecycle events.
+    #[arg(long, hide = true, global = true)]
+    install_only_generate_ids: bool,
+
+    /// Install lifecycle event type (e.g. install_succeeded, upgrade_succeeded).
+    #[arg(
+        long,
+        hide = true,
+        global = true,
+        requires = "install_only_generate_ids"
+    )]
+    install_event_type: Option<String>,
+
+    /// Install lifecycle event properties as JSON.
+    #[arg(
+        long,
+        hide = true,
+        global = true,
+        requires = "install_only_generate_ids"
+    )]
+    install_event_properties: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -58,6 +80,17 @@ enum Commands {
         disable_help_flag = true
     )]
     Create {
+        #[arg(num_args = 0..)]
+        args: Vec<String>,
+    },
+
+    /// Manage iii Cloud deployments
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
+    Cloud {
         #[arg(num_args = 0..)]
         args: Vec<String>,
     },
@@ -125,6 +158,10 @@ enum WorkerCommands {
     },
 }
 
+fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
+    cli.use_default_config
+}
+
 async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
     let config = if cli.use_default_config {
         EngineConfig::default_config()
@@ -132,11 +169,11 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         EngineConfig::config_file(&cli.config)?
     };
 
-    logging::init_log_from_config(if cli.use_default_config {
-        None
+    if should_init_logging_from_engine_config(cli) {
+        logging::init_log_from_engine_config(&config);
     } else {
-        Some(&cli.config)
-    });
+        logging::init_log_from_config(Some(&cli.config));
+    }
 
     EngineBuilder::new()
         .with_config(config)
@@ -157,6 +194,23 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if cli_args.install_only_generate_ids {
+        let _ = iii::modules::telemetry::environment::get_or_create_device_id();
+        let _ = iii::modules::telemetry::environment::resolve_execution_context();
+
+        if let Some(event_type) = cli_args.install_event_type.as_deref() {
+            let properties = if let Some(raw) = cli_args.install_event_properties.as_deref() {
+                serde_json::from_str(raw).map_err(|e| {
+                    anyhow::anyhow!("invalid --install-event-properties JSON '{}': {}", raw, e)
+                })?
+            } else {
+                serde_json::json!({})
+            };
+            cli::telemetry::send_install_lifecycle_event(event_type, properties).await;
+        }
+        return Ok(());
+    }
+
     match &cli_args.command {
         Some(Commands::Trigger(args)) => cli_trigger::run_trigger(args).await,
         Some(Commands::Console { args }) => {
@@ -165,6 +219,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Create { args }) => {
             let exit_code = cli::handle_dispatch("create", args, cli_args.no_update_check).await;
+            std::process::exit(exit_code);
+        }
+        Some(Commands::Cloud { args }) => {
+            let exit_code = cli::handle_dispatch("cloud", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Sdk(SdkCommands::Motia { args })) => {
@@ -264,6 +322,12 @@ mod tests {
         assert!(cli.version);
     }
 
+    #[test]
+    fn use_default_config_uses_engine_config_for_logging() {
+        let cli = Cli::try_parse_from(["iii", "--use-default-config"]).unwrap();
+        assert!(should_init_logging_from_engine_config(&cli));
+    }
+
     // --- New subcommand parse tests ---
 
     #[test]
@@ -310,6 +374,19 @@ mod tests {
                 assert!(args.is_empty());
             }
             _ => panic!("expected Create subcommand"),
+        }
+    }
+
+    #[test]
+    fn cloud_parses_with_passthrough_args() {
+        let cli =
+            Cli::try_parse_from(["iii", "cloud", "deploy", "--project", "abc", "--tag", "v1"])
+                .expect("should parse cloud with args");
+        match cli.command {
+            Some(Commands::Cloud { args }) => {
+                assert_eq!(args, vec!["deploy", "--project", "abc", "--tag", "v1"]);
+            }
+            _ => panic!("expected Cloud subcommand"),
         }
     }
 
@@ -459,6 +536,31 @@ mod tests {
             Some(Commands::Console { .. }) => {}
             _ => panic!("expected Console subcommand"),
         }
+    }
+
+    #[test]
+    fn hidden_install_only_generate_ids_parses() {
+        let cli = Cli::try_parse_from(["iii", "--install-only-generate-ids"])
+            .expect("should parse hidden install-only flag");
+        assert!(cli.install_only_generate_ids);
+    }
+
+    #[test]
+    fn hidden_install_event_fields_parse() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "--install-only-generate-ids",
+            "--install-event-type",
+            "install_succeeded",
+            "--install-event-properties",
+            r#"{"target_binary":"iii"}"#,
+        ])
+        .expect("should parse hidden install event flags");
+        assert_eq!(cli.install_event_type.as_deref(), Some("install_succeeded"));
+        assert_eq!(
+            cli.install_event_properties.as_deref(),
+            Some(r#"{"target_binary":"iii"}"#)
+        );
     }
 
     #[test]

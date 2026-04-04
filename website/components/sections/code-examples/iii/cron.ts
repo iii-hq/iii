@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "reports::generate" }, async () => {
+iii.registerFunction("reports::generate", async () => {
   const logger = new Logger();
   const enqueueReceipt = await iii.trigger({
     function_id: "reporting-service::generate-daily-report",

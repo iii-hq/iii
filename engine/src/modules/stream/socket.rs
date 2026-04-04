@@ -574,6 +574,7 @@ mod tests {
                 function_id: "test::leave_handler".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
 
         let (mut client, _response) = connect_async(url).await.expect("connect websocket client");

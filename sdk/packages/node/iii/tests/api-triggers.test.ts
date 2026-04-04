@@ -13,7 +13,7 @@ const pdfPath = path.join(__dirname, '..', '..', '..', '..', 'test-assets', 'han
 describe('API Triggers', () => {
   it('should register GET endpoint', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.api.get' },
+      'test.api.get',
       async (_req: HttpRequest): Promise<ApiResponse> => ({
         status_code: 200,
         body: { message: 'Hello from GET' },
@@ -42,7 +42,7 @@ describe('API Triggers', () => {
 
   it('should register POST endpoint with body', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.api.post' },
+      'test.api.post',
       async (req: HttpRequest): Promise<ApiResponse> => {
         const body = (req.body as Record<string, unknown>) ?? {}
         return {
@@ -75,7 +75,7 @@ describe('API Triggers', () => {
 
   it('should handle path parameters', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.api.getById' },
+      'test.api.getById',
       async (req: HttpRequest): Promise<ApiResponse> => ({
         status_code: 200,
         body: { id: req.path_params?.id },
@@ -104,7 +104,7 @@ describe('API Triggers', () => {
 
   it('should handle query parameters', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.api.search' },
+      'test.api.search',
       async (req: HttpRequest): Promise<ApiResponse> => {
         const q = req.query_params?.q
         const limit = req.query_params?.limit
@@ -140,7 +140,7 @@ describe('API Triggers', () => {
 
   it('should return custom status code', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.api.notfound' },
+      'test.api.notfound',
       async (_req: HttpRequest): Promise<ApiResponse<404>> => ({
         status_code: 404,
         body: { error: 'Not found' },
@@ -170,7 +170,7 @@ describe('API Triggers', () => {
   it('should download a PDF file via streaming response', async () => {
     const originalPdf = fs.readFileSync(pdfPath)
     const fn = iii.registerFunction(
-      { id: 'test.api.download.pdf' },
+      'test.api.download.pdf',
       http(async (_req: HttpRequest, response: HttpResponse) => {
         const fileStream = fs.createReadStream(pdfPath)
 
@@ -210,7 +210,7 @@ describe('API Triggers', () => {
     let receivedBuffer: Buffer = null as never
 
     const fn = iii.registerFunction(
-      { id: 'test.api.upload.pdf' },
+      'test.api.upload.pdf',
       http(async (req: HttpRequest, response: HttpResponse) => {
         const chunks: Buffer[] = []
 
@@ -265,7 +265,7 @@ describe('API Triggers', () => {
     ]
 
     const fn = iii.registerFunction(
-      { id: 'test.api.sse' },
+      'test.api.sse',
       http(async (_req: HttpRequest, response: HttpResponse) => {
         response.status(200)
         response.headers({
@@ -339,7 +339,7 @@ describe('API Triggers', () => {
 
   it('should handle application/x-www-form-urlencoded request', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.api.form.urlencoded' },
+      'test.api.form.urlencoded',
       http(async (req: HttpRequest, response: HttpResponse) => {
         const chunks: Buffer[] = []
 
@@ -402,7 +402,7 @@ describe('API Triggers', () => {
     const originalPdf = fs.readFileSync(pdfPath)
 
     const fn = iii.registerFunction(
-      { id: 'test.api.form.multipart' },
+      'test.api.form.multipart',
       http(async (req: HttpRequest, response: HttpResponse) => {
         const chunks: Buffer[] = []
 

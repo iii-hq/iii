@@ -18,7 +18,6 @@ use crate::engine::{Engine, EngineTrait};
 use crate::telemetry::SpanExt;
 
 use super::consumer::JobParser;
-use super::naming::RabbitNames;
 use super::retry::RetryHandler;
 use super::types::{Job, QueueMode};
 
@@ -58,13 +57,12 @@ impl Worker {
         function_id: String,
         condition_function_id: Option<String>,
         consumer_tag: String,
+        queue_name: String,
     ) {
-        let names = RabbitNames::new(&topic);
-
         let mut consumer = match self
             .channel
             .basic_consume(
-                &names.queue(),
+                &queue_name,
                 &consumer_tag,
                 BasicConsumeOptions::default(),
                 lapin::types::FieldTable::default(),
@@ -183,7 +181,7 @@ impl Worker {
                     .map_err(|e| format!("Failed to nack message: {}", e))?;
 
                 self.retry_handler
-                    .handle_failure(topic, &mut job, &format!("{:?}", e))
+                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(function_id))
                     .await
                     .map_err(|e| format!("Failed to handle failure: {}", e))?;
             }

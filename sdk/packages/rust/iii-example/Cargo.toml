@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-iii-sdk = { path = "../iii", features = ["otel"] }
+iii-sdk = { path = "../iii" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 schemars = "0.8"

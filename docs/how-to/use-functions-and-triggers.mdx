@@ -5,7 +5,7 @@ description: 'Learn how to register Functions and Trigger them from anywhere wit
 
 ## Registering a Function and Triggering it
 
-Function registration is just passing a function, an `id` for the function to `registerFunction({id}, func)`
+Function registration is just passing a function, an `id` for the function to `registerFunction(id, func)`
 (or the equivalent in other languages). These functions can then be Triggered from anywhere else in the
 application, and across language and service boundaries. Read more on that in the [Cross-language Triggering](#cross-language-triggering) section below.
 
@@ -20,7 +20,7 @@ import { registerWorker, Logger } from 'iii-sdk';
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134');
 
 iii.registerFunction(
-  { id: 'math::add', description: 'Add two numbers and store result' },
+  'math::add',
   async (input) => {
     const logger = new Logger();
     const result = input.a + input.b;
@@ -29,6 +29,7 @@ iii.registerFunction(
     logger.info('Math add completed', { id, result });
     return { id, result };
   },
+  { description: 'Add two numbers and store result' },
 );
 
 await iii.trigger({ function_id: 'math::add', payload: { a: 2, b: 3 } });
@@ -117,10 +118,7 @@ import { registerWorker } from 'iii-sdk';
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134');
 
 iii.registerFunction(
-  {
-    id: 'notifications::send',
-    description: 'POST notification to Service Provider webhook',
-  },
+  'notifications::send',
   {
     url: 'https://hooks.provider.example.com/notify',
     method: 'POST',
@@ -131,6 +129,7 @@ iii.registerFunction(
       token_key: 'PROVIDER_API_TOKEN',
     },
   },
+  { description: 'POST notification to Service Provider webhook' },
 );
 
 // Triggerable from any other function or worker
@@ -225,7 +224,7 @@ according to internal and external events.
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="trigger.ts"
-iii.registerFunction({ id: 'math::calculate' }, async (input) => {
+iii.registerFunction('math::calculate', async (input) => {
   const logger = new Logger();
   const result = await iii.trigger({ function_id: 'math::add', payload: { a: input.a, b: input.b } })
   logger.info('Result', result) // { result: 5 }
@@ -270,7 +269,7 @@ iii.register_function(reg);
 ```typescript title="trigger-void.ts"
 import { TriggerAction } from 'iii-sdk'
 
-iii.registerFunction({ id: 'math::calculate-async' }, async (input) => {
+iii.registerFunction('math::calculate-async', async (input) => {
   iii.trigger({ function_id: 'math::add', payload: { a: input.a, b: input.b }, action: TriggerAction.Void() })
 })
 ```
@@ -319,7 +318,7 @@ Enqueue work to a named queue for async processing. The engine acknowledges with
 ```typescript title="trigger-enqueue.ts"
 import { TriggerAction } from 'iii-sdk'
 
-iii.registerFunction({ id: 'orders::create' }, async (input) => {
+iii.registerFunction('orders::create', async (input) => {
   const order = { id: crypto.randomUUID(), ...input }
   const result = await iii.trigger({
     function_id: 'orders::process-order',
@@ -391,7 +390,7 @@ functions once that functionality is available. */}
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="http-trigger.ts"
-iii.registerFunction({ id: 'math::multiply' }, async (req) => {
+iii.registerFunction('math::multiply', async (req) => {
   const logger = new Logger();
   const { a, b } = req.body;
   const result = a * b;
@@ -456,6 +455,7 @@ iii.register_trigger(RegisterTriggerInput {
   trigger_type: "http".into(),
   function_id: "math::multiply".into(),
   config: json!({ "api_path": "/math/multiply", "http_method": "POST" }),
+  metadata: None,
 })?;
 ```
 </Tab>
@@ -468,7 +468,7 @@ This example aggregates all stored math results (from `math::add` above) every 3
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="cron-trigger.ts"
-iii.registerFunction({ id: 'math::aggregation' }, async () => {
+iii.registerFunction('math::aggregation', async () => {
   const logger = new Logger();
   const results = await iii.trigger({ function_id: 'state::list', payload: { scope: 'math' } });
   const values = results.filter((r) => typeof r === 'number');
@@ -533,6 +533,7 @@ iii.register_trigger(RegisterTriggerInput {
   trigger_type: "cron".into(),
   function_id: "math::aggregation".into(),
   config: json!({ "expression": "0 */30 * * * *" }), // every 30 minutes
+  metadata: None,
 })?;
 ```
 </Tab>
@@ -548,7 +549,7 @@ engine POSTs the state event to the webhook URL automatically.
 <Tab title="Node / TypeScript">
 ```typescript title="state-trigger.ts"
 iii.registerFunction(
-  { id: 'orders::webhook' },
+  'orders::webhook',
   {
     url: process.env.WEBHOOK_URL!,
     method: 'POST',
@@ -605,6 +606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     trigger_type: "state".into(),
     function_id: "orders::webhook".into(),
     config: json!({ "scope": "orders", "key": "status" }),
+    metadata: None,
   })?;
 
   Ok(())
@@ -644,7 +646,7 @@ Any Function can be Triggered anywhere regardless of language. The engine handle
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="cross-language.ts"
-iii.registerFunction({ id: 'math::double' }, async (input) => {
+iii.registerFunction('math::double', async (input) => {
   const logger = new Logger();
   // Trigger a function that might be implemented in Python, Rust, or any other language
   const result = await iii.trigger({ function_id: 'math::add', payload: { a: input.value, b: input.value } })
@@ -698,7 +700,7 @@ Calling it removes the registration from the engine so the function or trigger s
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="unregister.ts"
-const fn = iii.registerFunction({ id: 'orders::create' }, async (input) => {
+const fn = iii.registerFunction('orders::create', async (input) => {
   return { status_code: 201, body: { id: '123', item: input.body.item } }
 })
 
@@ -745,6 +747,7 @@ let trigger = iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "orders::create".into(),
     config: json!({ "api_path": "/orders", "http_method": "POST" }),
+    metadata: None,
 })?;
 
 fn_ref.unregister();

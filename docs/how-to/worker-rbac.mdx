@@ -36,7 +36,7 @@ import { registerWorker } from 'iii-sdk'
 const iii = registerWorker('ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'my-project::auth-function' },
+  'my-project::auth-function',
   async (input: AuthInput): Promise<AuthResult> => {
     const token = input.headers?.['authorization']?.replace(/^Bearer\s+/i, '')
     const apiKey = input.query_params?.['api_key']?.[0]
@@ -95,7 +95,7 @@ async def auth_function(data: dict) -> dict:
         },
     ).model_dump()
 
-iii.register_function({'id': 'my-project::auth-function'}, auth_function)
+iii.register_function("my-project::auth-function", auth_function)
 ```
 </Tab>
 <Tab title="Rust">
@@ -133,12 +133,17 @@ iii.register_function(RegisterFunction::new_async(
             },
             allow_trigger_type_registration: user.role == "admin",
             context: json!({ "user_id": user.id, "role": user.role }),
+            function_registration_prefix: None,
         })
     },
 ));
 ```
 </Tab>
 </Tabs>
+
+### Function Registration Prefix
+
+The auth function can optionally return a `function_registration_prefix` string. When present, the engine automatically prefixes every function ID registered by this worker with `{prefix}::`. Trigger registrations also auto-prefix the `function_id` they reference. When the engine dispatches a function invocation back to the worker, the prefix is stripped so the worker SDK finds the correct local handler. This provides transparent namespace isolation per session without the worker needing to manage prefixes.
 
 Update your config to reference the auth function:
 
@@ -163,7 +168,7 @@ A middleware sits between the worker and the target function. Use it for validat
 import type { MiddlewareFunctionInput } from 'iii-sdk'
 
 iii.registerFunction(
-  { id: 'my-project::middleware-function' },
+  'my-project::middleware-function',
   async (input: MiddlewareFunctionInput) => {
     console.log(`[audit] user=${input.context.user_id} invoking ${input.function_id}`)
 
@@ -201,7 +206,7 @@ async def middleware_function(data: dict) -> dict:
         'payload': enriched_payload,
     })
 
-iii.register_function({'id': 'my-project::middleware-function'}, middleware_function)
+iii.register_function("my-project::middleware-function", middleware_function)
 ```
 </Tab>
 <Tab title="Rust">
@@ -360,38 +365,48 @@ modules:
           - match("api::*")
 ```
 
-Each hook receives the registration details and the auth context, and must return `true` to allow the registration:
+Each hook receives the registration details and the auth context. Return a result object with the (possibly mapped) fields to allow the registration, or throw an error to deny it. Any fields omitted from the result keep their original values.
 
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
 import type {
   OnTriggerRegistrationInput,
+  OnTriggerRegistrationResult,
   OnTriggerTypeRegistrationInput,
+  OnTriggerTypeRegistrationResult,
   OnFunctionRegistrationInput,
+  OnFunctionRegistrationResult,
 } from 'iii-sdk'
 
 iii.registerFunction(
-  { id: 'my-project::on-trigger-reg' },
-  async (input: OnTriggerRegistrationInput) => {
-    if (!input.function_id.startsWith(`${input.context.role}::`)) {
-      return false
+  'my-project::on-trigger-reg',
+  async (input: OnTriggerRegistrationInput): Promise<OnTriggerRegistrationResult> => {
+    const role = input.context.role as string
+    if (!input.function_id.startsWith(`${role}::`)) {
+      throw new Error('Function ID must be prefixed with the role')
     }
-    return true
+    return { function_id: `${role}::${input.function_id}` }
   },
 )
 
 iii.registerFunction(
-  { id: 'my-project::on-trigger-type-reg' },
-  async (input: OnTriggerTypeRegistrationInput) => {
-    return input.context.role === 'admin'
+  'my-project::on-trigger-type-reg',
+  async (input: OnTriggerTypeRegistrationInput): Promise<OnTriggerTypeRegistrationResult> => {
+    if (input.context.role !== 'admin') {
+      throw new Error('Only admins can register trigger types')
+    }
+    return {}
   },
 )
 
 iii.registerFunction(
-  { id: 'my-project::on-function-reg' },
-  async (input: OnFunctionRegistrationInput) => {
-    return !input.function_id.startsWith('internal::')
+  'my-project::on-function-reg',
+  async (input: OnFunctionRegistrationInput): Promise<OnFunctionRegistrationResult> => {
+    if (input.function_id.startsWith('internal::')) {
+      throw new Error('Cannot register internal functions')
+    }
+    return { function_id: input.function_id }
   },
 )
 ```
@@ -400,34 +415,48 @@ iii.registerFunction(
 ```python
 from iii import (
     OnTriggerRegistrationInput,
+    OnTriggerRegistrationResult,
     OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult,
     OnFunctionRegistrationInput,
+    OnFunctionRegistrationResult,
 )
 
-async def on_trigger_reg(data: dict) -> bool:
-    input = OnTriggerRegistrationInput(**data)
-    if not input.function_id.startswith(f"{input.context['role']}::"):
-        return False
-    return True
+async def on_trigger_reg(data: dict) -> dict:
+    inp = OnTriggerRegistrationInput(**data)
+    role = inp.context['role']
+    if not inp.function_id.startswith(f"{role}::"):
+        raise Exception('Function ID must be prefixed with the role')
+    return OnTriggerRegistrationResult(
+        function_id=f"{role}::{inp.function_id}",
+    ).model_dump()
 
-async def on_trigger_type_reg(data: dict) -> bool:
-    input = OnTriggerTypeRegistrationInput(**data)
-    return input.context['role'] == 'admin'
+async def on_trigger_type_reg(data: dict) -> dict:
+    inp = OnTriggerTypeRegistrationInput(**data)
+    if inp.context['role'] != 'admin':
+        raise Exception('Only admins can register trigger types')
+    return OnTriggerTypeRegistrationResult().model_dump()
 
-async def on_function_reg(data: dict) -> bool:
-    input = OnFunctionRegistrationInput(**data)
-    return not input.function_id.startswith('internal::')
+async def on_function_reg(data: dict) -> dict:
+    inp = OnFunctionRegistrationInput(**data)
+    if inp.function_id.startswith('internal::'):
+        raise Exception('Cannot register internal functions')
+    return OnFunctionRegistrationResult(
+        function_id=inp.function_id,
+    ).model_dump()
 
-iii.register_function({'id': 'my-project::on-trigger-reg'}, on_trigger_reg)
-iii.register_function({'id': 'my-project::on-trigger-type-reg'}, on_trigger_type_reg)
-iii.register_function({'id': 'my-project::on-function-reg'}, on_function_reg)
+iii.register_function("my-project::on-trigger-reg", on_trigger_reg)
+iii.register_function("my-project::on-trigger-type-reg", on_trigger_type_reg)
+iii.register_function("my-project::on-function-reg", on_function_reg)
 ```
 </Tab>
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
-    OnFunctionRegistrationInput, RegisterFunction,
+    OnTriggerRegistrationInput, OnTriggerRegistrationResult,
+    OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
+    OnFunctionRegistrationInput, OnFunctionRegistrationResult,
+    RegisterFunction,
 };
 
 iii.register_function(RegisterFunction::new_async(
@@ -435,7 +464,13 @@ iii.register_function(RegisterFunction::new_async(
     |input: OnTriggerRegistrationInput| async move {
         let role = input.context.get("role").and_then(|v| v.as_str()).unwrap_or("");
         let prefix = format!("{role}::");
-        Ok::<_, iii_sdk::IIIError>(input.function_id.starts_with(&prefix))
+        if !input.function_id.starts_with(&prefix) {
+            return Err(iii_sdk::IIIError::Handler("Function ID must be prefixed with the role".into()));
+        }
+        Ok(OnTriggerRegistrationResult {
+            function_id: Some(format!("{role}::{}", input.function_id)),
+            ..Default::default()
+        })
     },
 ));
 
@@ -443,14 +478,23 @@ iii.register_function(RegisterFunction::new_async(
     "my-project::on-trigger-type-reg",
     |input: OnTriggerTypeRegistrationInput| async move {
         let role = input.context.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        Ok::<_, iii_sdk::IIIError>(role == "admin")
+        if role != "admin" {
+            return Err(iii_sdk::IIIError::Handler("Only admins can register trigger types".into()));
+        }
+        Ok(OnTriggerTypeRegistrationResult::default())
     },
 ));
 
 iii.register_function(RegisterFunction::new_async(
     "my-project::on-function-reg",
     |input: OnFunctionRegistrationInput| async move {
-        Ok::<_, iii_sdk::IIIError>(!input.function_id.starts_with("internal::"))
+        if input.function_id.starts_with("internal::") {
+            return Err(iii_sdk::IIIError::Handler("Cannot register internal functions".into()));
+        }
+        Ok(OnFunctionRegistrationResult {
+            function_id: Some(input.function_id),
+            ..Default::default()
+        })
     },
 ));
 ```
@@ -464,20 +508,14 @@ If your functions register metadata, you can use metadata filters instead of (or
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({
-  id: 'api::users::list',
-  metadata: { public: true, tier: 'free' },
-}, async (input) => {
+iii.registerFunction('api::users::list', async (input) => {
   // ...
-})
+}, { metadata: { public: true, tier: 'free' } })
 ```
 </Tab>
 <Tab title="Python">
 ```python
-iii.register_function({
-    'id': 'api::users::list',
-    'metadata': {'public': True, 'tier': 'free'},
-}, list_users)
+iii.register_function("api::users::list", list_users, metadata={'public': True, 'tier': 'free'})
 ```
 </Tab>
 <Tab title="Rust">
@@ -529,6 +567,7 @@ Return value from the auth function. Controls access and passes context to middl
 | `allowed_trigger_types` | `string[]` or omitted | omitted (permissive) | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
 | `allow_trigger_type_registration` | `boolean` | `false` | Whether the worker may register new trigger types. |
 | `allow_function_registration` | `boolean` | `true` | Whether the worker may register new functions. |
+| `function_registration_prefix` | `string` or omitted | omitted | When set, all function IDs registered by this worker are internally prefixed with `{prefix}::`. Triggers auto-prefix their `function_id` reference. The prefix is stripped when invoking the worker, so the worker SDK never sees it. |
 | `context` | `Record<string, unknown>` | `{}` | Arbitrary context forwarded to the middleware function on every invocation. |
 
 ### MiddlewareFunctionInput
@@ -544,7 +583,7 @@ Input passed to the middleware function on every invocation through the RBAC por
 
 ### OnTriggerTypeRegistrationInput
 
-Input passed to the `on_trigger_type_registration_function_id` hook. Return `true` to allow.
+Input passed to the `on_trigger_type_registration_function_id` hook. Return an `OnTriggerTypeRegistrationResult` or throw to deny.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -552,9 +591,18 @@ Input passed to the `on_trigger_type_registration_function_id` hook. Return `tru
 | `description` | `string` | Human-readable description of the trigger type. |
 | `context` | `Record<string, unknown>` | Auth context from `AuthResult.context`. |
 
+### OnTriggerTypeRegistrationResult
+
+Result returned from the `on_trigger_type_registration_function_id` hook. Omitted fields keep the original value.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_type_id` | `string` or omitted | Mapped trigger type ID. |
+| `description` | `string` or omitted | Mapped description. |
+
 ### OnTriggerRegistrationInput
 
-Input passed to the `on_trigger_registration_function_id` hook. Return `true` to allow.
+Input passed to the `on_trigger_registration_function_id` hook. Return an `OnTriggerRegistrationResult` or throw to deny.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -564,9 +612,20 @@ Input passed to the `on_trigger_registration_function_id` hook. Return `true` to
 | `config` | `unknown` | Trigger-specific configuration. |
 | `context` | `Record<string, unknown>` | Auth context from `AuthResult.context`. |
 
+### OnTriggerRegistrationResult
+
+Result returned from the `on_trigger_registration_function_id` hook. Omitted fields keep the original value.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_id` | `string` or omitted | Mapped trigger ID. |
+| `trigger_type` | `string` or omitted | Mapped trigger type. |
+| `function_id` | `string` or omitted | Mapped function ID. |
+| `config` | `unknown` or omitted | Mapped trigger configuration. |
+
 ### OnFunctionRegistrationInput
 
-Input passed to the `on_function_registration_function_id` hook. Return `true` to allow.
+Input passed to the `on_function_registration_function_id` hook. Return an `OnFunctionRegistrationResult` or throw to deny.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -574,6 +633,16 @@ Input passed to the `on_function_registration_function_id` hook. Return `true` t
 | `description` | `string` or omitted | Human-readable description of the function. |
 | `metadata` | `Record<string, unknown>` or omitted | Arbitrary metadata attached to the function. |
 | `context` | `Record<string, unknown>` | Auth context from `AuthResult.context`. |
+
+### OnFunctionRegistrationResult
+
+Result returned from the `on_function_registration_function_id` hook. Omitted fields keep the original value.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `function_id` | `string` or omitted | Mapped function ID. |
+| `description` | `string` or omitted | Mapped description. |
+| `metadata` | `Record<string, unknown>` or omitted | Mapped metadata. |
 
 ## Full Example Config
 

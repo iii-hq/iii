@@ -46,7 +46,7 @@ jobs:
 
       # Step 1b: Extract Browser SDK docs (TypeDoc)
       - name: Extract Browser SDK docs
-        run: pnpm --filter iii-sdk-browser docs:json
+        run: pnpm --filter iii-browser-sdk docs:json
 
       # Step 2: Extract Python SDK docs (griffe)
       - name: Extract Python SDK docs
@@ -62,8 +62,7 @@ jobs:
 
       # Step 4: Generate MDX from extracted JSON
       - name: Generate MDX files
-        working-directory: docs
-        run: pnpm tsx scripts/generate-api-docs.mts
+        run: pnpm tsx docs/scripts/generate-api-docs.mts
 
       # Step 5: Commit if changed
       - name: Commit generated docs

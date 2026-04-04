@@ -388,6 +388,7 @@ mod tests {
             allow_function_registration: false,
             allow_trigger_type_registration: false,
             context: serde_json::json!({}),
+            function_registration_prefix: None,
         };
         let worker = Worker::with_session(tx, session);
         assert_eq!(

@@ -147,6 +147,7 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
             trigger_type: "http".to_string(),
             function_id: function_path.to_string(),
             config,
+            metadata: None,
         })?;
 
         info!(

@@ -283,6 +283,7 @@ mod tests {
                 "expression": "0 0 * * * *"
             }),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -299,6 +300,7 @@ mod tests {
                 "expression": ""
             }),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_err());
@@ -319,6 +321,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_err());
@@ -336,6 +339,7 @@ mod tests {
                 "condition_function_id": "test::condition_fn"
             }),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -354,6 +358,7 @@ mod tests {
                 "expression": "0 0 * * * *"
             }),
             worker_id: None,
+            metadata: None,
         };
         let _ = module.register_trigger(trigger.clone()).await;
 
@@ -371,6 +376,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_err());
@@ -471,6 +477,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({"expression": "0 0 * * * *"}),
             worker_id: None,
+            metadata: None,
         };
 
         // Register
@@ -500,6 +507,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({"expression": "0 0 * * * *"}),
             worker_id: None,
+            metadata: None,
         };
 
         let result = module.register_trigger(trigger.clone()).await;

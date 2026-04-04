@@ -12,7 +12,7 @@ describe('Bridge Operations', () => {
   it('should register and invoke a function', async () => {
     let receivedData: Record<string, unknown> | undefined
 
-    const fn = iii.registerFunction({ id: 'browser.test.echo' }, async (data: Record<string, unknown>) => {
+    const fn = iii.registerFunction('browser.test.echo', async (data: Record<string, unknown>) => {
       receivedData = data
       return { echoed: data }
     })
@@ -38,14 +38,11 @@ describe('Bridge Operations', () => {
       resolveReceived = r
     })
 
-    const fn = iii.registerFunction(
-      { id: 'browser.test.void-receiver' },
-      async (data: Record<string, unknown>) => {
-        receivedData = data
-        resolveReceived?.()
-        return {}
-      },
-    )
+    const fn = iii.registerFunction('browser.test.void-receiver', async (data: Record<string, unknown>) => {
+      receivedData = data
+      resolveReceived?.()
+      return {}
+    })
 
     await sleep(300)
 
@@ -68,8 +65,8 @@ describe('Bridge Operations', () => {
   })
 
   it('should list registered functions', async () => {
-    const fn1 = iii.registerFunction({ id: 'browser.test.list.func1' }, async () => ({}))
-    const fn2 = iii.registerFunction({ id: 'browser.test.list.func2' }, async () => ({}))
+    const fn1 = iii.registerFunction('browser.test.list.func1', async () => ({}))
+    const fn2 = iii.registerFunction('browser.test.list.func2', async () => ({}))
 
     await sleep(300)
 
@@ -89,14 +86,8 @@ describe('Bridge Operations', () => {
     ).rejects.toThrow()
   })
 
-  it('should list connected workers', async () => {
-    const workers = await execute(async () => iii.listWorkers())
-    expect(Array.isArray(workers)).toBe(true)
-    expect(workers.length).toBeGreaterThan(0)
-  })
-
   it('should handle function returning complex data', async () => {
-    const fn = iii.registerFunction({ id: 'browser.test.complex' }, async (data: { items: number[] }) => {
+    const fn = iii.registerFunction('browser.test.complex', async (data: { items: number[] }) => {
       return {
         count: data.items.length,
         sum: data.items.reduce((a, b) => a + b, 0),
@@ -119,7 +110,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should unregister function and reject subsequent calls', async () => {
-    const fn = iii.registerFunction({ id: 'browser.test.unregister' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('browser.test.unregister', async () => ({ ok: true }))
 
     await sleep(300)
 

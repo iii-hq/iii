@@ -38,7 +38,7 @@ it('keeps an active span context for handlers when tracer setup is disabled', as
   const { registerWorker, Logger } = await import('../src/index')
   const sdk = registerWorker('ws://example.test', { otel: { enabled: false } }) as any
 
-  sdk.registerFunction({ id: 'demo.handler' }, async () => {
+  sdk.registerFunction('demo.handler', async () => {
     new Logger().info('inside handler')
     return { ok: true }
   })

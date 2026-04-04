@@ -98,7 +98,11 @@ useApi(
 
 const jobLogger = new Logger(undefined, 'queue::process-job')
 
-iii.registerFunction({ id: 'queue::process-job', metadata: { tags: ['queue'] } }, async payload => {
-  jobLogger.info('Processing job', { payload })
-  return { processed: true, payload }
-})
+iii.registerFunction(
+  'queue::process-job',
+  async payload => {
+    jobLogger.info('Processing job', { payload })
+    return { processed: true, payload }
+  },
+  { metadata: { tags: ['queue'] } },
+)

@@ -115,36 +115,46 @@ iii.trigger(TriggerRequest {
 }).await?;
 ```
 
-### Streams
+### Stream Operations
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Streams, UpdateOp};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, UpdateBuilder, UpdateOp};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let streams = Streams::new(iii.clone());
+    // Set a stream item
+    iii.trigger(TriggerRequest {
+        function_id: "stream::set".into(),
+        payload: json!({
+            "stream_name": "users",
+            "group_id": "active",
+            "item_id": "user-1",
+            "data": { "status": "online" },
+        }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
 
-    // Convenience methods
-    streams.set_field("users::active::user-1", "status", "online".into()).await?;
-    streams.increment("counters::daily::page-views", "count", 1).await?;
+    // Atomic update with UpdateBuilder
+    let ops = UpdateBuilder::new()
+        .increment("total", 100)
+        .set("status", json!("processing"))
+        .build();
 
-    // Atomic multi-operation update
-    streams.update(
-        "orders::user-123::order-456",
-        vec![
-            UpdateOp::increment("total", 100),
-            UpdateOp::set("status", "processing".into()),
-        ],
-    ).await?;
-
-    // Merge an object into existing data
-    streams.merge(
-        "settings::user-1::preferences",
-        json!({"theme": "dark", "language": "en"}),
-    ).await?;
+    iii.trigger(TriggerRequest {
+        function_id: "stream::update".into(),
+        payload: json!({
+            "stream_name": "orders",
+            "group_id": "user-123",
+            "item_id": "order-456",
+            "ops": ops,
+        }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
 
     Ok(())
 }
@@ -159,25 +169,16 @@ let logger = Logger::new(Some("my-function".to_string()));
 logger.info("Processing started", None);
 ```
 
-The `Logger` struct emits OTel `LogRecord`s when OTel is active, otherwise falls back to the `tracing` crate.
-
-### OpenTelemetry
-
-Enable the `otel` feature for full tracing and metrics support:
-
-```toml
-[dependencies]
-iii-sdk = { version = "0.3", features = ["otel"] }
-```
+The `Logger` struct emits OTel `LogRecord`s, falling back to the `tracing` crate when OTel is not initialized.
 
 ## Modules
 
 | Import               | What it provides                                            |
 | -------------------- | ----------------------------------------------------------- |
 | `iii_sdk`            | Core SDK (`III`, `register_worker`, `TriggerRequest`, etc.) |
-| `iii_sdk::stream`    | Stream client (`Streams`, `UpdateBuilder`)                  |
+| `iii_sdk::stream`    | Stream update builder (`UpdateBuilder`)                     |
 | `iii_sdk::logger`    | Structured logging (`Logger`)                               |
-| `iii_sdk::telemetry` | OpenTelemetry integration (requires `otel` feature)         |
+| `iii_sdk::telemetry` | OpenTelemetry integration                                   |
 | `iii_sdk::types`     | Shared types (`UpdateOp`, `Channel`, `ApiRequest`, etc.)    |
 
 ## Resources

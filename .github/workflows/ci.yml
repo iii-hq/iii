@@ -211,13 +211,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Type check
-        run: pnpm --filter iii-sdk-browser exec tsc --noEmit
+        run: pnpm --filter iii-browser-sdk exec tsc --noEmit
 
       - name: Build
-        run: pnpm --filter iii-sdk-browser build
+        run: pnpm --filter iii-browser-sdk build
 
       - name: Run unit tests
-        run: pnpm --filter iii-sdk-browser test
+        run: pnpm --filter iii-browser-sdk test
 
       - name: Download III binary
         uses: actions/download-artifact@v4
@@ -235,7 +235,7 @@ jobs:
         env:
           III_URL: ws://localhost:49199
           III_HTTP_URL: http://localhost:3199
-        run: pnpm --filter iii-sdk-browser test:integration
+        run: pnpm --filter iii-browser-sdk test:integration
 
       - name: Stop III Engine
         if: always()

@@ -205,7 +205,7 @@ def orders_handle(data) -> dict | None:
     logger.info("Batch complete", {"count": len(pending)})
     return None
 
-iii.register_function({"id": "orders.handle"}, orders_handle)
+iii.register_function("orders.handle", orders_handle)
 
 iii.register_trigger({"type": "http", "function_id": "orders.handle",
                       "config": {"api_path": "orders/manual", "http_method": "POST"}})
@@ -320,16 +320,19 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "orders.handle".into(),
     config: json!({ "api_path": "orders/manual", "http_method": "POST" }),
+    metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "queue".into(),
     function_id: "orders.handle".into(),
     config: json!({ "topic": "order.created" }),
+    metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "orders.handle".into(),
     config: json!({ "expression": "* * * * *" }),
+    metadata: None,
 })?;
 ```
 
@@ -364,11 +367,13 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "queue".into(),
     function_id: "my.fn".into(),
     config: json!({ "topic": "events" }),
+    metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "my.fn".into(),
     config: json!({ "api_path": "events", "http_method": "POST" }),
+    metadata: None,
 })?;
 ```
 

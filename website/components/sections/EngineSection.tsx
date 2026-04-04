@@ -79,9 +79,7 @@ const concepts = [
       'Auto-cleanup when workers disconnect',
     ],
     code: {
-      typescript: `iii.registerFunction(
-  { id: 'users::create' },
-  async (input) => {
+      typescript: `iii.registerFunction('users::create', async (input) => {
     const logger = new Logger()
     logger.info('Creating user', { email: input.email })
     return { id: '123', email: input.email }
