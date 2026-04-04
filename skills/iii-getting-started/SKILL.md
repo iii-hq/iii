@@ -66,13 +66,14 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'hello::greet', description: 'Greet a user by name' },
+  'hello::greet',
   async (input) => {
     const logger = new Logger()
     const name = input?.name ?? 'world'
     logger.info('Greeting user', { name })
     return { message: `Hello, ${name}!` }
   },
+  { description: 'Greet a user by name' },
 )
 
 iii.registerTrigger({

@@ -52,7 +52,7 @@ Also available in **Rust**: [../references/state-reactions.rs](../references/sta
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker(url, { workerName })` — worker initialization
-- `registerFunction({ id }, handler)` — define the reaction handler
+- `registerFunction(id, handler)` — define the reaction handler
 - `registerTrigger({ type: 'state', config: { scope, key, condition_function_id } })` — watch for changes
 - `payload.new_value` / `payload.old_value` — compare before and after
 - `payload.event_type` — distinguish between set, update, and delete events

@@ -20,7 +20,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 // 1. Register a simple function
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::validate' }, async (data) => {
+iii.registerFunction('orders::validate', async (data) => {
   const logger = new Logger()
   logger.info('Validating order', { orderId: data.order_id })
 
@@ -42,7 +42,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 3. Queue trigger — process items from a named queue
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::fulfill' }, async (data) => {
+iii.registerFunction('orders::fulfill', async (data) => {
   const logger = new Logger()
   logger.info('Fulfilling order', { orderId: data.order_id })
   // ... fulfillment logic
@@ -58,7 +58,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 4. Cron trigger — run a function on a schedule
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'reports::daily-summary' }, async () => {
+iii.registerFunction('reports::daily-summary', async () => {
   const logger = new Logger()
   logger.info('Generating daily summary')
   return { generated_at: new Date().toISOString() }
@@ -73,7 +73,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 5. State trigger — react when a state scope/key changes
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::on-status-change' }, async (data) => {
+iii.registerFunction('orders::on-status-change', async (data) => {
   const logger = new Logger()
   logger.info('Order status changed', { key: data.key, value: data.value })
   return { notified: true }
@@ -88,7 +88,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 6. Subscribe trigger — listen for pubsub messages on a topic
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'notifications::on-order-complete' }, async (data) => {
+iii.registerFunction('notifications::on-order-complete', async (data) => {
   const logger = new Logger()
   logger.info('Order completed event received', { orderId: data.order_id })
   return { processed: true }
@@ -103,7 +103,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 7. Cross-function invocation — one function calling another
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::create' }, async (data) => {
+iii.registerFunction('orders::create', async (data) => {
   const logger = new Logger()
 
   // Synchronous call — blocks until validate returns
@@ -144,18 +144,12 @@ iii.registerTrigger({
 // Wraps a third-party API as an iii function so other functions can call it
 // with iii.trigger() like any internal function.
 // ---------------------------------------------------------------------------
-iii.registerFunction(
-  {
-    id: 'external::payment-gateway',
-    invocation: {
-      url: 'https://api.stripe.com/v1/charges',
-      method: 'POST',
-      timeout_ms: 10000,
-      auth: {
-        type: 'bearer',
-        token: process.env.STRIPE_API_KEY,
-      },
-    },
+iii.registerFunction('external::payment-gateway', {
+  url: 'https://api.stripe.com/v1/charges',
+  method: 'POST',
+  timeout_ms: 10000,
+  auth: {
+    type: 'bearer',
+    token: process.env.STRIPE_API_KEY,
   },
-  // No handler needed — the engine proxies the call to the external URL
-)
+})

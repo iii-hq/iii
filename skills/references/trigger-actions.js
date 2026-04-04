@@ -25,7 +25,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 // Helper functions used by the examples below
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'checkout::validate-cart' }, async (data) => {
+iii.registerFunction('checkout::validate-cart', async (data) => {
   const logger = new Logger()
   logger.info('Validating cart', { cartId: data.cart_id })
 
@@ -37,14 +37,14 @@ iii.registerFunction({ id: 'checkout::validate-cart' }, async (data) => {
   return { valid: true, cart_id: data.cart_id, total }
 })
 
-iii.registerFunction({ id: 'checkout::charge-payment' }, async (data) => {
+iii.registerFunction('checkout::charge-payment', async (data) => {
   const logger = new Logger()
   logger.info('Charging payment', { cart_id: data.cart_id, total: data.total })
   // Simulate payment processing
   return { charged: true, transaction_id: `txn_${Date.now()}` }
 })
 
-iii.registerFunction({ id: 'checkout::send-confirmation' }, async (data) => {
+iii.registerFunction('checkout::send-confirmation', async (data) => {
   const logger = new Logger()
   logger.info('Sending order confirmation email', { email: data.email })
   return { sent: true }
@@ -55,7 +55,7 @@ iii.registerFunction({ id: 'checkout::send-confirmation' }, async (data) => {
 // Blocks until the target function returns. The result is the function's
 // return value. Use this when the caller needs the result to continue.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'examples::sync-call' }, async (data) => {
+iii.registerFunction('examples::sync-call', async (data) => {
   const logger = new Logger()
 
   // No action parameter — defaults to synchronous
@@ -74,7 +74,7 @@ iii.registerFunction({ id: 'examples::sync-call' }, async (data) => {
 // return value is discarded. Use for side-effects like logging, notifications,
 // or analytics where the caller does not need to wait.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'examples::void-call' }, async (data) => {
+iii.registerFunction('examples::void-call', async (data) => {
   const logger = new Logger()
 
   // TriggerAction.Void() — returns null, does not wait
@@ -94,7 +94,7 @@ iii.registerFunction({ id: 'examples::void-call' }, async (data) => {
 // { messageReceiptId }. The target function processes the message when a
 // worker picks it up. Use for work that must survive crashes and be retried.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'examples::enqueue-call' }, async (data) => {
+iii.registerFunction('examples::enqueue-call', async (data) => {
   const logger = new Logger()
 
   const receipt = await iii.trigger({
@@ -113,7 +113,7 @@ iii.registerFunction({ id: 'examples::enqueue-call' }, async (data) => {
 //   2. Charge payment (enqueue) — durable, retryable, must not be lost
 //   3. Send email     (void)    — best-effort notification, don't block
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'checkout::process' }, async (data) => {
+iii.registerFunction('checkout::process', async (data) => {
   const logger = new Logger()
 
   // Step 1: synchronous validation — we need the total to charge

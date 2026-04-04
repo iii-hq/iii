@@ -24,7 +24,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 // Agent 1 — Researcher: gathers raw information on a topic
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'agents::researcher' }, async (data) => {
+iii.registerFunction('agents::researcher', async (data) => {
   const logger = new Logger()
   logger.info('Researcher agent working', { topic: data.topic })
 
@@ -64,7 +64,7 @@ iii.registerFunction({ id: 'agents::researcher' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Agent 2 — Critic: reviews and scores the researcher's output
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'agents::critic' }, async (data) => {
+iii.registerFunction('agents::critic', async (data) => {
   const logger = new Logger()
 
   const task = await iii.trigger({
@@ -111,7 +111,7 @@ iii.registerFunction({ id: 'agents::critic' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Agent 3 — Synthesizer: produces a final report from reviewed findings
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'agents::synthesizer' }, async (data) => {
+iii.registerFunction('agents::synthesizer', async (data) => {
   const logger = new Logger()
 
   const task = await iii.trigger({
@@ -153,7 +153,7 @@ iii.registerFunction({ id: 'agents::synthesizer' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Condition: only synthesize if the critic passed the findings
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'agents::is-approved' }, async (data) => {
+iii.registerFunction('agents::is-approved', async (data) => {
   const task = await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'research-tasks', key: data.task_id },
@@ -164,7 +164,7 @@ iii.registerFunction({ id: 'agents::is-approved' }, async (data) => {
 // ---------------------------------------------------------------------------
 // HTTP trigger — kick off a research task
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'agents::start-research' }, async (data) => {
+iii.registerFunction('agents::start-research', async (data) => {
   const task_id = `task-${Date.now()}`
   iii.trigger({
     function_id: 'agents::researcher',

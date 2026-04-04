@@ -22,7 +22,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 // CRUD — HTTP endpoints that write to state (the "database")
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'todos::create' }, async (data) => {
+iii.registerFunction('todos::create', async (data) => {
   const id = `todo-${Date.now()}`
   const todo = {
     _key: id,
@@ -40,7 +40,7 @@ iii.registerFunction({ id: 'todos::create' }, async (data) => {
   return todo
 })
 
-iii.registerFunction({ id: 'todos::toggle' }, async (data) => {
+iii.registerFunction('todos::toggle', async (data) => {
   const todo = await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'todos', key: data.id },
@@ -63,14 +63,14 @@ iii.registerFunction({ id: 'todos::toggle' }, async (data) => {
   return { id: data.id, completed: !todo.completed }
 })
 
-iii.registerFunction({ id: 'todos::list' }, async () => {
+iii.registerFunction('todos::list', async () => {
   return await iii.trigger({
     function_id: 'state::list',
     payload: { scope: 'todos' },
   })
 })
 
-iii.registerFunction({ id: 'todos::delete' }, async (data) => {
+iii.registerFunction('todos::delete', async (data) => {
   await iii.trigger({
     function_id: 'state::delete',
     payload: { scope: 'todos', key: data.id },
@@ -89,7 +89,7 @@ iii.registerTrigger({ type: 'http', function_id: 'todos::delete', config: { api_
 // Fires automatically whenever ANY todo in the 'todos' scope changes.
 // Clients connect via: ws://localhost:3112/stream/todos-live/all
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'todos::on-change' }, async (event) => {
+iii.registerFunction('todos::on-change', async (event) => {
   const { new_value, old_value, key } = event
   const logger = new Logger()
 
@@ -121,7 +121,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // Reactive side effect — update aggregate metrics on any change
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'todos::update-metrics' }, async (event) => {
+iii.registerFunction('todos::update-metrics', async (event) => {
   const { new_value, old_value } = event
 
   const ops = []
@@ -163,7 +163,7 @@ iii.registerTrigger({
 })
 
 // Expose metrics via HTTP
-iii.registerFunction({ id: 'todos::get-metrics' }, async () => {
+iii.registerFunction('todos::get-metrics', async () => {
   return await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'todo-metrics', key: 'global' },

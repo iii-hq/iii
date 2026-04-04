@@ -21,7 +21,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // The handler receives: { new_value, old_value, key, event_type }
 //   event_type: 'set' | 'update' | 'delete'
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'reactions::order-audit-log' }, async (event) => {
+iii.registerFunction('reactions::order-audit-log', async (event) => {
   const logger = new Logger()
   const { new_value, old_value, key, event_type } = event
 
@@ -60,14 +60,14 @@ iii.registerTrigger({
 // Conditional reaction — only fires when condition function returns true
 // The condition function receives the same event and must return a boolean.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'reactions::high-value-alert-condition' }, async (event) => {
+iii.registerFunction('reactions::high-value-alert-condition', async (event) => {
   const { new_value } = event
 
   // Only react when an order total exceeds $1000
   return new_value && new_value.total > 1000
 })
 
-iii.registerFunction({ id: 'reactions::high-value-alert' }, async (event) => {
+iii.registerFunction('reactions::high-value-alert', async (event) => {
   const logger = new Logger()
   const { new_value, key } = event
 
@@ -104,7 +104,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 
 // Reaction 1: Update aggregate metrics
-iii.registerFunction({ id: 'reactions::order-metrics' }, async (event) => {
+iii.registerFunction('reactions::order-metrics', async (event) => {
   const { new_value, old_value } = event
 
   const ops = []
@@ -134,7 +134,7 @@ iii.registerTrigger({
 })
 
 // Reaction 2: Push live update to connected clients
-iii.registerFunction({ id: 'reactions::order-live-feed' }, async (event) => {
+iii.registerFunction('reactions::order-live-feed', async (event) => {
   const { new_value, old_value, key } = event
   const action = !old_value ? 'created' : !new_value ? 'deleted' : 'updated'
 

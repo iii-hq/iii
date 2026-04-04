@@ -26,7 +26,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ===================================================================
 
 // Command: Add item to inventory
-iii.registerFunction({ id: 'cmd::add-inventory-item' }, async (data) => {
+iii.registerFunction('cmd::add-inventory-item', async (data) => {
   const logger = new Logger()
   const { sku, name, quantity, price } = data
 
@@ -55,7 +55,7 @@ iii.registerFunction({ id: 'cmd::add-inventory-item' }, async (data) => {
 })
 
 // Command: Sell items (reduce stock)
-iii.registerFunction({ id: 'cmd::sell-item' }, async (data) => {
+iii.registerFunction('cmd::sell-item', async (data) => {
   const logger = new Logger()
   const { sku, quantity } = data
 
@@ -105,7 +105,7 @@ async function appendEvent(aggregate, key, event) {
 // ===================================================================
 
 // Projection 1: Inventory catalog (current stock levels)
-iii.registerFunction({ id: 'proj::catalog-on-add' }, async (event) => {
+iii.registerFunction('proj::catalog-on-add', async (event) => {
   await iii.trigger({ function_id: 'state::set', payload: {
     scope: 'inventory-read',
     key: event.sku,
@@ -120,7 +120,7 @@ iii.registerFunction({ id: 'proj::catalog-on-add' }, async (event) => {
   } })
 })
 
-iii.registerFunction({ id: 'proj::catalog-on-sell' }, async (event) => {
+iii.registerFunction('proj::catalog-on-sell', async (event) => {
   await iii.trigger({ function_id: 'state::update', payload: {
     scope: 'inventory-read',
     key: event.sku,
@@ -132,7 +132,7 @@ iii.registerFunction({ id: 'proj::catalog-on-sell' }, async (event) => {
 })
 
 // Projection 2: Sales analytics (aggregated metrics)
-iii.registerFunction({ id: 'proj::sales-analytics' }, async (event) => {
+iii.registerFunction('proj::sales-analytics', async (event) => {
   await iii.trigger({ function_id: 'state::update', payload: {
     scope: 'sales-analytics',
     key: 'global',
@@ -153,7 +153,7 @@ iii.registerTrigger({ type: 'subscribe', function_id: 'proj::sales-analytics', c
 // ===================================================================
 // FAN-OUT — PubSub notifications to downstream systems
 // ===================================================================
-iii.registerFunction({ id: 'notify::low-stock-alert' }, async (event) => {
+iii.registerFunction('notify::low-stock-alert', async (event) => {
   const item = await iii.trigger({ function_id: 'state::get', payload: { scope: 'inventory-read', key: event.sku } })
   if (item && item.stock <= 5) {
     iii.trigger({ function_id: 'publish', payload: {
@@ -170,7 +170,7 @@ iii.registerTrigger({
 })
 
 // Fan-out subscriber: could be a separate service listening for alerts
-iii.registerFunction({ id: 'notify::slack-low-stock' }, async (data) => {
+iii.registerFunction('notify::slack-low-stock', async (data) => {
   const logger = new Logger()
   logger.warn('LOW STOCK ALERT', { sku: data.sku, remaining: data.remaining })
   // In production: POST to Slack webhook, send email, page oncall, etc.
@@ -185,15 +185,15 @@ iii.registerTrigger({
 // ===================================================================
 // QUERY ENDPOINTS — read from projections (not the event log)
 // ===================================================================
-iii.registerFunction({ id: 'query::catalog' }, async () => {
+iii.registerFunction('query::catalog', async () => {
   return await iii.trigger({ function_id: 'state::list', payload: { scope: 'inventory-read' } })
 })
 
-iii.registerFunction({ id: 'query::sales-analytics' }, async () => {
+iii.registerFunction('query::sales-analytics', async () => {
   return await iii.trigger({ function_id: 'state::get', payload: { scope: 'sales-analytics', key: 'global' } })
 })
 
-iii.registerFunction({ id: 'query::event-history' }, async (data) => {
+iii.registerFunction('query::event-history', async (data) => {
   const log = await iii.trigger({ function_id: 'state::get', payload: { scope: 'event-log', key: `inventory:${data.sku}` } })
   return log?.events || []
 })

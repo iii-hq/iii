@@ -21,7 +21,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // Hourly cleanup — runs at the top of every hour
 // Cron: 0 0 * * * * *  (second=0, minute=0, every hour)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'cron::hourly-cleanup' }, async () => {
+iii.registerFunction('cron::hourly-cleanup', async () => {
   const logger = new Logger()
   logger.info('Hourly cleanup started')
 
@@ -60,7 +60,7 @@ iii.registerTrigger({
 // Daily report — runs at midnight every day
 // Cron: 0 0 0 * * * *  (second=0, minute=0, hour=0, every day)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'cron::daily-report' }, async () => {
+iii.registerFunction('cron::daily-report', async () => {
   const logger = new Logger()
   logger.info('Daily report generation started')
 
@@ -105,7 +105,7 @@ iii.registerTrigger({
 // Health check — runs every 5 minutes
 // Cron: 0 */5 * * * * *  (second=0, every 5th minute)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'cron::health-check' }, async () => {
+iii.registerFunction('cron::health-check', async () => {
   const logger = new Logger()
   const timestamp = new Date().toISOString()
 
@@ -150,7 +150,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // Worker for enqueued cleanup tasks
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'cleanup::process-expired' }, async (data) => {
+iii.registerFunction('cleanup::process-expired', async (data) => {
   const logger = new Logger()
 
   await iii.trigger({

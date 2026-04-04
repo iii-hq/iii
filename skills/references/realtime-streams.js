@@ -22,7 +22,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // stream::set — Persist an item in a stream group
 // Payload: { stream_name, group_id, item_id, data }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'chat::post-message' }, async (data) => {
+iii.registerFunction('chat::post-message', async (data) => {
   const logger = new Logger()
   const messageId = `msg-${Date.now()}`
 
@@ -48,7 +48,7 @@ iii.registerFunction({ id: 'chat::post-message' }, async (data) => {
 // stream::get — Retrieve a single item from a stream group
 // Payload: { stream_name, group_id, item_id }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'chat::get-message' }, async (data) => {
+iii.registerFunction('chat::get-message', async (data) => {
   const message = await iii.trigger({
     function_id: 'stream::get',
     payload: {
@@ -69,7 +69,7 @@ iii.registerFunction({ id: 'chat::get-message' }, async (data) => {
 // stream::list — List all items in a stream group
 // Payload: { stream_name, group_id }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'chat::list-messages' }, async (data) => {
+iii.registerFunction('chat::list-messages', async (data) => {
   const messages = await iii.trigger({
     function_id: 'stream::list',
     payload: {
@@ -85,7 +85,7 @@ iii.registerFunction({ id: 'chat::list-messages' }, async (data) => {
 // stream::delete — Remove an item from a stream group
 // Payload: { stream_name, group_id, item_id }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'chat::delete-message' }, async (data) => {
+iii.registerFunction('chat::delete-message', async (data) => {
   await iii.trigger({
     function_id: 'stream::delete',
     payload: {
@@ -103,7 +103,7 @@ iii.registerFunction({ id: 'chat::delete-message' }, async (data) => {
 // Clients on ws://host:3112/stream/chat/{room} receive this instantly.
 // Use TriggerAction.Void() for fire-and-forget delivery.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'chat::broadcast' }, async (data) => {
+iii.registerFunction('chat::broadcast', async (data) => {
   const logger = new Logger()
   const eventId = `evt-${Date.now()}`
 
@@ -189,7 +189,7 @@ iii.createStream('presence', {
 // Presence tracking — user joins/leaves
 // Clients connect at: ws://host:3112/stream/presence/{room}
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'presence::join' }, async (data) => {
+iii.registerFunction('presence::join', async (data) => {
   await iii.trigger({
     function_id: 'stream::set',
     payload: {
@@ -216,7 +216,7 @@ iii.registerFunction({ id: 'presence::join' }, async (data) => {
   return { joined: data.room }
 })
 
-iii.registerFunction({ id: 'presence::leave' }, async (data) => {
+iii.registerFunction('presence::leave', async (data) => {
   await iii.trigger({
     function_id: 'stream::delete',
     payload: {

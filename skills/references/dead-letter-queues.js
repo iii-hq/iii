@@ -33,7 +33,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // 1. Function that processes payments — may fail and exhaust retries
 // After max_retries failures the message lands in the "payment" DLQ.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'payments::charge' }, async (data) => {
+iii.registerFunction('payments::charge', async (data) => {
   const logger = new Logger()
   logger.info('Attempting payment charge', { orderId: data.order_id })
 
@@ -56,7 +56,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 2. Enqueue a payment to demonstrate the retry / DLQ flow
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::submit-payment' }, async (data) => {
+iii.registerFunction('orders::submit-payment', async (data) => {
   const logger = new Logger()
 
   const receipt = await iii.trigger({
@@ -80,7 +80,7 @@ iii.registerTrigger({
 // Calls the built-in iii::queue::redrive function. Returns the queue name
 // and the count of redriven messages.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'admin::redrive-payments' }, async () => {
+iii.registerFunction('admin::redrive-payments', async () => {
   const logger = new Logger()
 
   const result = await iii.trigger({
@@ -108,7 +108,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // 4. DLQ inspection pattern — check how many messages are stuck
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'admin::dlq-status' }, async () => {
+iii.registerFunction('admin::dlq-status', async () => {
   const logger = new Logger()
 
   // Inspect DLQ for each configured queue
@@ -138,7 +138,7 @@ iii.registerTrigger({
 // 5. Targeted redrive — redrive a single queue from a cron schedule
 // Useful for automatically retrying failed messages every hour.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'admin::auto-redrive' }, async () => {
+iii.registerFunction('admin::auto-redrive', async () => {
   const logger = new Logger()
 
   const result = await iii.trigger({

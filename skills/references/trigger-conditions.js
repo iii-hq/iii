@@ -24,13 +24,13 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 
 // Condition function — returns true/false
-iii.registerFunction({ id: 'conditions::is-high-value' }, async (data) => {
+iii.registerFunction('conditions::is-high-value', async (data) => {
   // data is the same event the handler would receive
   return data.value?.total > 500
 })
 
 // Handler function — only runs when the condition passes
-iii.registerFunction({ id: 'orders::flag-high-value' }, async (data) => {
+iii.registerFunction('orders::flag-high-value', async (data) => {
   const logger = new Logger()
   logger.info('High-value order detected', { key: data.key, total: data.value.total })
 
@@ -61,12 +61,12 @@ iii.registerTrigger({
 // Rejects requests missing a required API key header.
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: 'conditions::has-api-key' }, async (data) => {
+iii.registerFunction('conditions::has-api-key', async (data) => {
   const apiKey = data.headers?.['x-api-key']
   return typeof apiKey === 'string' && apiKey.length > 0
 })
 
-iii.registerFunction({ id: 'api::protected-endpoint' }, async (data) => {
+iii.registerFunction('api::protected-endpoint', async (data) => {
   const logger = new Logger()
   logger.info('Authenticated request', { path: data.path })
   return { message: 'Access granted', user: data.headers['x-api-key'] }
@@ -87,11 +87,11 @@ iii.registerTrigger({
 // Only processes messages whose `event_type` is "order.placed".
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: 'conditions::is-order-placed' }, async (data) => {
+iii.registerFunction('conditions::is-order-placed', async (data) => {
   return data.event_type === 'order.placed'
 })
 
-iii.registerFunction({ id: 'orders::on-placed' }, async (data) => {
+iii.registerFunction('orders::on-placed', async (data) => {
   const logger = new Logger()
   logger.info('Processing order.placed event', { orderId: data.order_id })
 
@@ -105,7 +105,7 @@ iii.registerFunction({ id: 'orders::on-placed' }, async (data) => {
   return { processed: true, order_id: data.order_id }
 })
 
-iii.registerFunction({ id: 'orders::fulfill' }, async (data) => {
+iii.registerFunction('orders::fulfill', async (data) => {
   const logger = new Logger()
   logger.info('Fulfilling order', { orderId: data.order_id })
   return { fulfilled: true }
@@ -126,12 +126,12 @@ iii.registerTrigger({
 // enrich or validate any field the handler will use.
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: 'conditions::is-weekday' }, async (data) => {
+iii.registerFunction('conditions::is-weekday', async (data) => {
   const day = new Date().getDay()
   return day >= 1 && day <= 5 // Monday–Friday
 })
 
-iii.registerFunction({ id: 'reports::weekday-digest' }, async () => {
+iii.registerFunction('reports::weekday-digest', async () => {
   const logger = new Logger()
   logger.info('Running weekday digest')
   return { generated: true }

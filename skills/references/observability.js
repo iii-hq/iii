@@ -32,7 +32,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // current trace context. The span is automatically closed when the
 // callback completes or throws.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::process' }, async (data) => {
+iii.registerFunction('orders::process', async (data) => {
   const logger = new Logger()
 
   const result = await iii.withSpan('validate-order', { attributes: { orderId: data.order_id } }, async () => {
@@ -84,7 +84,7 @@ const latencyHistogram = meter.createHistogram('orders.latency_ms', {
   unit: 'ms',
 })
 
-iii.registerFunction({ id: 'orders::with-metrics' }, async (data) => {
+iii.registerFunction('orders::with-metrics', async (data) => {
   const start = Date.now()
 
   // ... order processing logic
@@ -102,7 +102,7 @@ iii.registerFunction({ id: 'orders::with-metrics' }, async (data) => {
 // Access the current trace ID, inject traceparent headers for outbound HTTP
 // calls, and attach baggage for cross-service context.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::call-external' }, async (data) => {
+iii.registerFunction('orders::call-external', async (data) => {
   const logger = new Logger()
 
   // Read current trace ID for correlation
@@ -135,7 +135,7 @@ iii.onLog((logEntry) => {
 // 6. Structured logging with trace correlation
 // Logger automatically attaches trace/span IDs when otel is enabled.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'debug::log-demo' }, async (data) => {
+iii.registerFunction('debug::log-demo', async (data) => {
   const logger = new Logger()
 
   logger.info('Processing request', { requestId: data.id })

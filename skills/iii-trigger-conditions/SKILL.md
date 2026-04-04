@@ -30,8 +30,8 @@ When a trigger fires, the engine first invokes the condition function with the e
 
 | Primitive                                                                   | Purpose                                           |
 | --------------------------------------------------------------------------- | ------------------------------------------------- |
-| `registerFunction({ id }, handler)` (condition)                             | Register the condition function (returns boolean) |
-| `registerFunction({ id }, handler)` (handler)                               | Register the handler function                     |
+| `registerFunction(id, handler)` (condition)                                 | Register the condition function (returns boolean) |
+| `registerFunction(id, handler)` (handler)                                   | Register the handler function                     |
 | `registerTrigger({ type, function_id, config: { condition_function_id } })` | Bind trigger with condition gate                  |
 
 ## Reference Implementation
@@ -47,8 +47,8 @@ where a business rule function filters events before the handler processes them.
 
 Code using this pattern commonly includes, when relevant:
 
-- `registerFunction({ id: 'conditions::is-high-value' }, async (input) => input.new_value?.amount >= 1000)` — condition function
-- `registerFunction({ id: 'orders::notify-high-value' }, async (input) => { ... })` — handler function
+- `registerFunction('conditions::is-high-value', async (input) => input.new_value?.amount >= 1000)` — condition function
+- `registerFunction('orders::notify-high-value', async (input) => { ... })` — handler function
 - `registerTrigger({ type: 'state', function_id: 'orders::notify-high-value', config: { scope: 'orders', key: 'status', condition_function_id: 'conditions::is-high-value' } })` — bind with condition
 - Condition returns `true` — handler executes
 - Condition returns `false` — handler is skipped silently

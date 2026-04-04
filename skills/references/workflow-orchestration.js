@@ -64,7 +64,7 @@ function trackStep(orderId, step, status, detail = {}) {
 // ---------------------------------------------------------------------------
 // Step 1 — Validate order
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::validate' }, async (data) => {
+iii.registerFunction('orders::validate', async (data) => {
   const logger = new Logger()
   logger.info('Validating order', { orderId: data.order_id })
 
@@ -87,7 +87,7 @@ iii.registerFunction({ id: 'orders::validate' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Step 2 — Charge payment (with retries for transient failures)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::charge-payment' }, async (data) => {
+iii.registerFunction('orders::charge-payment', async (data) => {
   const logger = new Logger()
   logger.info('Charging payment', { orderId: data.order_id, total: data.total })
 
@@ -130,7 +130,7 @@ iii.registerFunction({ id: 'orders::charge-payment' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Step 3 — Ship order
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::ship' }, async (data) => {
+iii.registerFunction('orders::ship', async (data) => {
   const logger = new Logger()
   logger.info('Shipping order', { orderId: data.order_id })
 
@@ -153,7 +153,7 @@ iii.registerFunction({ id: 'orders::ship' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Cron — clean up stale orders every hour
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::cleanup-stale' }, async () => {
+iii.registerFunction('orders::cleanup-stale', async () => {
   const logger = new Logger()
   const orders = await iii.trigger({
     function_id: 'state::list',
@@ -191,7 +191,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // HTTP — create a new order (entry point)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::create' }, async (data) => {
+iii.registerFunction('orders::create', async (data) => {
   const order_id = `ord-${Date.now()}`
   const force_payment_failure = Boolean(data.force_payment_failure)
   const fail_until_payment_attempt = Number(data.fail_until_payment_attempt ?? 0)

@@ -20,7 +20,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // POST /users — Create a new user
 // ApiRequest: { body, path_params, headers, method }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'users::create' }, async (req) => {
+iii.registerFunction('users::create', async (req) => {
   const logger = new Logger()
   const { name, email } = req.body
   const id = `usr-${Date.now()}`
@@ -40,7 +40,7 @@ iii.registerFunction({ id: 'users::create' }, async (req) => {
 // ---------------------------------------------------------------------------
 // GET /users/:id — Retrieve a user by path parameter
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'users::get-by-id' }, async (req) => {
+iii.registerFunction('users::get-by-id', async (req) => {
   const { id } = req.path_params
 
   const user = await iii.trigger({
@@ -58,7 +58,7 @@ iii.registerFunction({ id: 'users::get-by-id' }, async (req) => {
 // ---------------------------------------------------------------------------
 // GET /users — List all users
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'users::list' }, async () => {
+iii.registerFunction('users::list', async () => {
   const users = await iii.trigger({
     function_id: 'state::list',
     payload: { scope: 'users' },
@@ -70,7 +70,7 @@ iii.registerFunction({ id: 'users::list' }, async () => {
 // ---------------------------------------------------------------------------
 // PUT /users/:id — Update an existing user
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'users::update' }, async (req) => {
+iii.registerFunction('users::update', async (req) => {
   const { id } = req.path_params
   const updates = req.body
 
@@ -102,7 +102,7 @@ iii.registerFunction({ id: 'users::update' }, async (req) => {
 // ---------------------------------------------------------------------------
 // DELETE /users/:id — Remove a user
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'users::delete' }, async (req) => {
+iii.registerFunction('users::delete', async (req) => {
   const { id } = req.path_params
 
   const existing = await iii.trigger({

@@ -23,7 +23,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 
 // Effect: validate and parse input
-iii.registerFunction({ id: 'fx::parse-user-input' }, async (data) => {
+iii.registerFunction('fx::parse-user-input', async (data) => {
   if (!data.email || !data.email.includes('@')) {
     throw new Error('ValidationError: invalid email')
   }
@@ -39,7 +39,7 @@ iii.registerFunction({ id: 'fx::parse-user-input' }, async (data) => {
 })
 
 // Effect: check for duplicates
-iii.registerFunction({ id: 'fx::check-duplicate' }, async (data) => {
+iii.registerFunction('fx::check-duplicate', async (data) => {
   const existing = await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'users', key: data.email },
@@ -53,7 +53,7 @@ iii.registerFunction({ id: 'fx::check-duplicate' }, async (data) => {
 })
 
 // Effect: enrich with defaults
-iii.registerFunction({ id: 'fx::enrich-user' }, async (data) => {
+iii.registerFunction('fx::enrich-user', async (data) => {
   return {
     ...data,
     id: `usr-${Date.now()}`,
@@ -64,7 +64,7 @@ iii.registerFunction({ id: 'fx::enrich-user' }, async (data) => {
 })
 
 // Effect: persist to state
-iii.registerFunction({ id: 'fx::persist-user' }, async (data) => {
+iii.registerFunction('fx::persist-user', async (data) => {
   await iii.trigger({
     function_id: 'state::set',
     payload: { scope: 'users', key: data.email, value: { _key: data.email, ...data } },
@@ -73,7 +73,7 @@ iii.registerFunction({ id: 'fx::persist-user' }, async (data) => {
 })
 
 // Effect: send welcome notification (fire-and-forget side effect)
-iii.registerFunction({ id: 'fx::send-welcome' }, async (data) => {
+iii.registerFunction('fx::send-welcome', async (data) => {
   const logger = new Logger()
   logger.info('Sending welcome email', { to: data.email })
 
@@ -102,7 +102,7 @@ iii.registerFunction({ id: 'fx::send-welcome' }, async (data) => {
 //   - Each step is independently testable and retryable
 //   - Errors propagate cleanly (thrown errors bubble up)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'fx::register-user-pipeline' }, async (rawInput) => {
+iii.registerFunction('fx::register-user-pipeline', async (rawInput) => {
   const logger = new Logger()
   logger.info('Starting registration pipeline')
 
@@ -126,7 +126,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // Composition — reuse the same primitives in a different pipeline
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'fx::import-users-batch' }, async (data) => {
+iii.registerFunction('fx::import-users-batch', async (data) => {
   const logger = new Logger()
   const results = { succeeded: 0, failed: 0, errors: [] }
 

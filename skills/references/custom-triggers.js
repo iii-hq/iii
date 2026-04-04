@@ -155,7 +155,7 @@ iii.registerTriggerType({
 // ---------------------------------------------------------------------------
 // Handler function — processes events from any custom trigger above
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'custom-triggers::on-event' }, async (data) => {
+iii.registerFunction('custom-triggers::on-event', async (data) => {
   const logger = new Logger()
   logger.info('Custom trigger fired', { source: data.source, trigger_id: data.trigger_id })
   return { received: true, source: data.source }

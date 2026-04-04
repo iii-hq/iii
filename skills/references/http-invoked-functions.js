@@ -34,12 +34,13 @@ const legacyEndpoints = [
 
 legacyEndpoints.forEach(({ path, id }) => {
   iii.registerFunction(
-    { id, description: `Proxy legacy endpoint ${path}` },
+    id,
     {
       url: `${legacyBaseUrl}${path}`,
       method: 'POST',
       timeout_ms: 8000,
     },
+    { description: `Proxy legacy endpoint ${path}` },
   )
 })
 
@@ -47,10 +48,7 @@ legacyEndpoints.forEach(({ path, id }) => {
 // HTTP-invoked function: Slack webhook (bearer auth)
 // ---------------------------------------------------------------------------
 iii.registerFunction(
-  {
-    id: 'integrations::slack-notify',
-    description: 'POST notification to Slack webhook',
-  },
+  'integrations::slack-notify',
   {
     url: 'https://hooks.slack.example.com/services/incoming',
     method: 'POST',
@@ -61,16 +59,14 @@ iii.registerFunction(
       token_key: 'SLACK_WEBHOOK_TOKEN',
     },
   },
+  { description: 'POST notification to Slack webhook' },
 )
 
 // ---------------------------------------------------------------------------
 // HTTP-invoked function: Stripe charges (api_key auth)
 // ---------------------------------------------------------------------------
 iii.registerFunction(
-  {
-    id: 'integrations::stripe-charge',
-    description: 'Create a charge via Stripe API',
-  },
+  'integrations::stripe-charge',
   {
     url: 'https://api.stripe.example.com/v1/charges',
     method: 'POST',
@@ -82,31 +78,27 @@ iii.registerFunction(
       value_key: 'STRIPE_API_KEY',
     },
   },
+  { description: 'Create a charge via Stripe API' },
 )
 
 // ---------------------------------------------------------------------------
 // HTTP-invoked function: Analytics endpoint (no auth)
 // ---------------------------------------------------------------------------
 iii.registerFunction(
-  {
-    id: 'integrations::analytics-track',
-    description: 'POST event to analytics service',
-  },
+  'integrations::analytics-track',
   {
     url: 'https://analytics.internal.example.com/events',
     method: 'POST',
     timeout_ms: 3000,
   },
+  { description: 'POST event to analytics service' },
 )
 
 // ---------------------------------------------------------------------------
 // HTTP-invoked function: Order status webhook (hmac auth)
 // ---------------------------------------------------------------------------
 iii.registerFunction(
-  {
-    id: 'integrations::order-webhook',
-    description: 'POST order status change to fulfillment partner',
-  },
+  'integrations::order-webhook',
   {
     url: 'https://fulfillment.partner.example.com/webhooks/orders',
     method: 'POST',
@@ -116,12 +108,13 @@ iii.registerFunction(
       secret_key: 'ORDER_WEBHOOK_SECRET',
     },
   },
+  { description: 'POST order status change to fulfillment partner' },
 )
 
 // ---------------------------------------------------------------------------
 // Handler-based function that triggers HTTP-invoked functions
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::process' }, async (data) => {
+iii.registerFunction('orders::process', async (data) => {
   const logger = new Logger()
 
   await iii.trigger({
@@ -171,7 +164,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // Trigger: scheduled analytics ping every hour
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'integrations::hourly-heartbeat' }, async () => {
+iii.registerFunction('integrations::hourly-heartbeat', async () => {
   const logger = new Logger()
   const workerCount = await iii.trigger({ function_id: 'engine::workers::list', payload: {} })
 
@@ -195,7 +188,7 @@ iii.registerTrigger({
 // ---------------------------------------------------------------------------
 // Trigger: enqueue Stripe charges for reliable delivery with retries
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::enqueue-charge' }, async (data) => {
+iii.registerFunction('orders::enqueue-charge', async (data) => {
   const result = await iii.trigger({
     function_id: 'integrations::stripe-charge',
     payload: { amount: data.amount, currency: 'usd', source: data.paymentToken },

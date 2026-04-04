@@ -2,7 +2,7 @@
 name: iii-http-invoked-functions
 description: >-
   Registers external HTTP endpoints as iii functions using
-  registerFunction(meta, HttpInvocationConfig). Use when adapting legacy APIs,
+  registerFunction(id, HttpInvocationConfig). Use when adapting legacy APIs,
   third-party webhooks, or immutable services into triggerable iii functions,
   especially when prompts ask for endpoint maps like { path, id } iterated into
   registerFunction calls.
@@ -21,7 +21,7 @@ Use this pattern when iii should call external HTTP endpoints as functions.
 
 ## Core model
 
-- `registerFunction(meta, HttpInvocationConfig)` registers an outbound HTTP-invoked function.
+- `registerFunction(id, HttpInvocationConfig, options?)` registers an outbound HTTP-invoked function.
 - `trigger({ function_id, payload })` invokes it like any other function.
 - Trigger payload becomes request body for JSON-based calls.
 - Non-2xx and network failures are treated as invocation failures.
@@ -31,7 +31,7 @@ Use this pattern when iii should call external HTTP endpoints as functions.
 - `registerWorker(url, { workerName })`
 - Small endpoint descriptor list, then loop registration:
   - `[{ path, id }]`
-  - `registerFunction({ id }, { url: base + path, method: 'POST' })`
+  - `registerFunction(id, { url: base + path, method: 'POST' })`
 - Optional auth config with env var keys (`token_key`, `secret_key`, `value_key`)
 
 ## Guardrails

@@ -19,7 +19,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // state::set — Store a value under a scoped key
 // Payload: { scope, key, value }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'products::create' }, async (data) => {
+iii.registerFunction('products::create', async (data) => {
   const id = `prod-${Date.now()}`
   const product = {
     id,
@@ -43,7 +43,7 @@ iii.registerFunction({ id: 'products::create' }, async (data) => {
 // Payload: { scope, key }
 // Returns null if the key does not exist — always guard for null.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'products::get' }, async (data) => {
+iii.registerFunction('products::get', async (data) => {
   const product = await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'products', key: data.id },
@@ -62,7 +62,7 @@ iii.registerFunction({ id: 'products::get' }, async (data) => {
 // Payload: { scope }
 // Returns an array of all stored values.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'products::list-all' }, async () => {
+iii.registerFunction('products::list-all', async () => {
   const products = await iii.trigger({
     function_id: 'state::list',
     payload: { scope: 'products' },
@@ -75,7 +75,7 @@ iii.registerFunction({ id: 'products::list-all' }, async () => {
 // state::delete — Remove a key from a scope
 // Payload: { scope, key }
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'products::remove' }, async (data) => {
+iii.registerFunction('products::remove', async (data) => {
   const existing = await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'products', key: data.id },
@@ -99,7 +99,7 @@ iii.registerFunction({ id: 'products::remove' }, async (data) => {
 // ops: [{ type: 'set', path, value }]
 // Use update instead of get-then-set for atomic partial changes.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'products::update-price' }, async (data) => {
+iii.registerFunction('products::update-price', async (data) => {
   const existing = await iii.trigger({
     function_id: 'state::get',
     payload: { scope: 'products', key: data.id },
@@ -127,7 +127,7 @@ iii.registerFunction({ id: 'products::update-price' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Combining operations — inventory adjustment with update
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'products::adjust-stock' }, async (data) => {
+iii.registerFunction('products::adjust-stock', async (data) => {
   const logger = new Logger()
 
   const product = await iii.trigger({

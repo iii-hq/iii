@@ -27,7 +27,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ===================================================================
 
 // Node: Webhook trigger (incoming form data)
-iii.registerFunction({ id: 'auto::form-webhook' }, async (data) => {
+iii.registerFunction('auto::form-webhook', async (data) => {
   iii.trigger({
     function_id: 'auto::enrich-lead',
     payload: {
@@ -49,7 +49,7 @@ iii.registerTrigger({
 })
 
 // Node: Enrich the lead data
-iii.registerFunction({ id: 'auto::enrich-lead' }, async (data) => {
+iii.registerFunction('auto::enrich-lead', async (data) => {
   const logger = new Logger()
   logger.info('Enriching lead', { email: data.email })
 
@@ -70,7 +70,7 @@ iii.registerFunction({ id: 'auto::enrich-lead' }, async (data) => {
 })
 
 // Node: Store in "spreadsheet" (state)
-iii.registerFunction({ id: 'auto::store-lead' }, async (data) => {
+iii.registerFunction('auto::store-lead', async (data) => {
   await iii.trigger({ function_id: 'state::set', payload: {
     scope: 'leads',
     key: data.submission_id,
@@ -85,7 +85,7 @@ iii.registerFunction({ id: 'auto::store-lead' }, async (data) => {
 })
 
 // Node: Send a Slack-like notification
-iii.registerFunction({ id: 'auto::notify-team' }, async (data) => {
+iii.registerFunction('auto::notify-team', async (data) => {
   const logger = new Logger()
   logger.info('Notifying team about new lead', {
     email: data.email,
@@ -107,7 +107,7 @@ iii.registerFunction({ id: 'auto::notify-team' }, async (data) => {
 // (Like a Zapier schedule: Schedule → HTTP → Formatter → Gmail)
 // ===================================================================
 
-iii.registerFunction({ id: 'auto::daily-digest' }, async () => {
+iii.registerFunction('auto::daily-digest', async () => {
   const logger = new Logger()
 
   // Pull all leads from the "spreadsheet"

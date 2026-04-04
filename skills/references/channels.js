@@ -19,7 +19,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 // 1. Producer — creates a channel and streams data through it
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'pipeline::produce' }, async (data) => {
+iii.registerFunction('pipeline::produce', async (data) => {
   const logger = new Logger()
 
   // Create a channel pair
@@ -55,7 +55,7 @@ iii.registerFunction({ id: 'pipeline::produce' }, async (data) => {
 // ---------------------------------------------------------------------------
 // 2. Consumer — receives a channel ref and reads the stream
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'pipeline::consume' }, async (data) => {
+iii.registerFunction('pipeline::consume', async (data) => {
   const logger = new Logger()
 
   // Reconstruct reader from the ref passed in the payload

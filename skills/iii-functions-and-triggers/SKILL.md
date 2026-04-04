@@ -30,7 +30,7 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 | Primitive                                                    | Purpose                            |
 | ------------------------------------------------------------ | ---------------------------------- |
 | `registerWorker(url, options?)`                              | Connect worker to engine           |
-| `registerFunction({ id }, handler)`                          | Define a function handler          |
+| `registerFunction(id, handler)`                              | Define a function handler          |
 | `registerTrigger({ type, function_id, config, metadata? })`  | Bind an event source to a function |
 | `trigger({ function_id, payload })`                          | Invoke a function synchronously    |
 | `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation         |
@@ -49,7 +49,7 @@ Each reference shows the same patterns (function registration, trigger binding, 
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker('ws://localhost:49134', { workerName: 'my-worker' })` — connect to the engine
-- `registerFunction({ id: 'namespace::name' }, async (input) => { ... })` — register a handler
+- `registerFunction('namespace::name', async (input) => { ... })` — register a handler
 - `registerTrigger({ type: 'http', function_id, config: { api_path, http_method, middleware_function_ids? } })` — HTTP trigger (with optional middleware)
 - `registerTrigger({ type: 'queue', function_id, config: { topic } })` — queue trigger
 - `registerTrigger({ type: 'cron', function_id, config: { expression } })` — cron trigger

@@ -29,7 +29,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 // Enqueue work — standard queue (concurrent processing)
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'payments::submit' }, async (data) => {
+iii.registerFunction('payments::submit', async (data) => {
   const logger = new Logger()
 
   try {
@@ -59,7 +59,7 @@ iii.registerFunction({ id: 'payments::submit' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Process payment — handler that runs from the queue
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'payments::process' }, async (data) => {
+iii.registerFunction('payments::process', async (data) => {
   const logger = new Logger()
   logger.info('Processing payment', { orderId: data.orderId, amount: data.amount })
 
@@ -98,7 +98,7 @@ iii.registerFunction({ id: 'payments::process' }, async (data) => {
 // FIFO queues guarantee messages are processed in the order they arrive.
 // Configure fifo: true in iii-config.yaml queue_configs.
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'emails::enqueue' }, async (data) => {
+iii.registerFunction('emails::enqueue', async (data) => {
   const logger = new Logger()
 
   const result = await iii.trigger({
@@ -123,7 +123,7 @@ iii.registerFunction({ id: 'emails::enqueue' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Process email — FIFO handler preserves send order
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'emails::send' }, async (data) => {
+iii.registerFunction('emails::send', async (data) => {
   const logger = new Logger()
   logger.info('Sending email', { to: data.to, subject: data.subject })
 
@@ -152,7 +152,7 @@ iii.registerFunction({ id: 'emails::send' }, async (data) => {
 // ---------------------------------------------------------------------------
 // Receipt capture — checking enqueue acknowledgement
 // ---------------------------------------------------------------------------
-iii.registerFunction({ id: 'orders::place' }, async (data) => {
+iii.registerFunction('orders::place', async (data) => {
   const logger = new Logger()
 
   // Enqueue payment

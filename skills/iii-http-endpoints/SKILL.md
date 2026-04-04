@@ -50,7 +50,7 @@ Also available in **Rust**: [../references/http-endpoints.rs](../references/http
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker(url, { workerName })` — worker initialization
-- `registerFunction({ id }, handler)` — define the route handler
+- `registerFunction(id, handler)` — define the route handler
 - `registerTrigger({ type: 'http', config: { api_path, http_method } })` — bind path and method
 - `req.body` — parsed request body for POST/PUT
 - `req.path_params` — extracted path parameters

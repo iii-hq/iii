@@ -50,7 +50,7 @@ Also available in **Rust**: [../references/cron-scheduling.rs](../references/cro
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker(url, { workerName })` — worker initialization
-- `registerFunction({ id }, handler)` — define the scheduled handler
+- `registerFunction(id, handler)` — define the scheduled handler
 - `registerTrigger({ type: 'cron', config: { expression } })` — bind the schedule
 - `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` — offload heavy work
 - `const logger = new Logger()` — structured logging per job

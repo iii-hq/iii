@@ -22,8 +22,8 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-node>
 | Export                                                   | Purpose                                           |
 | -------------------------------------------------------- | ------------------------------------------------- |
 | `registerWorker(url, { workerName })`                    | Connect to the engine and return the client       |
-| `registerFunction({ id }, handler)`                      | Register a local async function handler           |
-| `registerFunction({ id }, httpConfig)`                   | Register an HTTP-invoked external function        |
+| `registerFunction(id, handler, options?)`                | Register a local async function handler           |
+| `registerFunction(id, httpConfig, options?)`             | Register an HTTP-invoked external function        |
 | `registerTrigger({ type, function_id, config, metadata? })` | Bind a trigger to a function (with optional metadata) |
 | `trigger({ function_id, payload, action? })`             | Invoke a function                                 |
 | `TriggerAction.Void()`                                   | Fire-and-forget invocation mode                   |
