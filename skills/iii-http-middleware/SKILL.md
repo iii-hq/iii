@@ -34,7 +34,7 @@ Use the concepts below when they fit the task. Not every middleware setup needs 
 
 | Primitive                                                    | Purpose                                          |
 | ------------------------------------------------------------ | ------------------------------------------------ |
-| `registerFunction(id, handler)`                              | Define a middleware function                      |
+| `registerFunction({ id }, handler)`                          | Define a middleware function                      |
 | `registerTrigger({ config: { middleware_function_ids } })`   | Attach middleware to an HTTP trigger              |
 | `{ action: 'continue' }`                                    | Pass to next middleware or handler                |
 | `{ action: 'respond', response: { status_code, body } }`   | Short-circuit and return response immediately     |
@@ -49,9 +49,9 @@ See [../references/http-middleware.js](../references/http-middleware.js) for the
 
 Code using this pattern commonly includes, when relevant:
 
-- `iii.registerFunction('middleware::auth', async (req) => { ... })` — auth middleware checking headers
-- `iii.registerFunction('middleware::rate-limit', async (req) => { ... })` — rate limiting middleware
-- `iii.registerFunction('middleware::request-logger', async (req) => { ... })` — request logging
+- `iii.registerFunction({ id: 'middleware::auth' }, async (req) => { ... })` — auth middleware checking headers
+- `iii.registerFunction({ id: 'middleware::rate-limit' }, async (req) => { ... })` — rate limiting middleware
+- `iii.registerFunction({ id: 'middleware::request-logger' }, async (req) => { ... })` — request logging
 - `req.request?.headers?.authorization` — reading auth tokens
 - `return { action: 'respond', response: { status_code: 401, body: { error: 'Unauthorized' } } }` — reject request
 - `return { action: 'continue' }` — allow request through

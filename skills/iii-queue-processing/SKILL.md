@@ -54,7 +54,7 @@ Also available in **Rust**: [../references/queue-processing.rs](../references/qu
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker(url, { workerName })` — worker initialization
-- `registerFunction(id, handler)` — define the consumer
+- `registerFunction({ id }, handler)` — define the consumer
 - `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` — enqueue a job
 - `payload.messageReceiptId` — track or acknowledge the job
 - `trigger({ function_id: 'state::set', payload })` — persist results after processing

@@ -1,9 +1,9 @@
-import { registerWorker, Logger } from 'iii-sdk'
+import { Logger, registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134', { workerName: 'middleware-worker' })
 const logger = new Logger(undefined, 'middleware')
 
-iii.registerFunction('middleware::auth', async (req) => {
+iii.registerFunction({ id: 'middleware::auth' }, async (req) => {
   const authHeader = req.request?.headers?.authorization
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     logger.warn('Auth rejected: missing or invalid token')
@@ -19,7 +19,7 @@ iii.registerFunction('middleware::auth', async (req) => {
   return { action: 'continue' }
 })
 
-iii.registerFunction('middleware::request-logger', async (req) => {
+iii.registerFunction({ id: 'middleware::request-logger' }, async (req) => {
   logger.info('Incoming request', {
     method: req.request?.method,
     path: req.request?.path_params,
@@ -28,7 +28,7 @@ iii.registerFunction('middleware::request-logger', async (req) => {
   return { action: 'continue' }
 })
 
-iii.registerFunction('api::health', async () => ({
+iii.registerFunction({ id: 'api::health' }, async () => ({
   status_code: 200,
   body: { status: 'ok', timestamp: new Date().toISOString() },
 }))
@@ -39,9 +39,14 @@ iii.registerTrigger({
   config: { api_path: '/health', http_method: 'GET' },
 })
 
-iii.registerFunction('api::users-list', async () => ({
+iii.registerFunction({ id: 'api::users-list' }, async () => ({
   status_code: 200,
-  body: { users: [{ id: '1', name: 'Alice' }, { id: '2', name: 'Bob' }] },
+  body: {
+    users: [
+      { id: '1', name: 'Alice' },
+      { id: '2', name: 'Bob' },
+    ],
+  },
 }))
 
 iii.registerTrigger({
@@ -54,7 +59,7 @@ iii.registerTrigger({
   },
 })
 
-iii.registerFunction('api::users-create', async (req) => {
+iii.registerFunction({ id: 'api::users-create' }, async (req) => {
   const { name, email } = req.body ?? {}
   if (!name || !email) {
     return { status_code: 400, body: { error: 'name and email are required' } }

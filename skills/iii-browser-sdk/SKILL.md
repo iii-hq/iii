@@ -23,7 +23,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-browser>
 | Export                                                   | Purpose                                           |
 | -------------------------------------------------------- | ------------------------------------------------- |
 | `registerWorker(address, options?)`                      | Connect to the engine via WebSocket               |
-| `registerFunction(id, handler)`                          | Register a browser-side function handler          |
+| `registerFunction({ id }, handler)`                      | Register a browser-side function handler          |
 | `registerTrigger({ type, function_id, config, metadata? })` | Bind a trigger to a function                  |
 | `trigger({ function_id, payload, action? })`             | Invoke a function                                 |
 | `TriggerAction.Void()`                                   | Fire-and-forget invocation mode                   |
@@ -46,7 +46,7 @@ import { registerWorker, TriggerAction } from 'iii-sdk-browser'
 
 const iii = registerWorker('ws://localhost:49135')
 
-iii.registerFunction('ui::greet', async (data) => {
+iii.registerFunction({ id: 'ui::greet' }, async (data) => {
   return { message: `Hello, ${data.name}!` }
 })
 
@@ -68,7 +68,7 @@ Code using this pattern commonly includes, when relevant:
 
 - `registerWorker('ws://host:49135')` — connect from browser
 - `registerWorker('wss://host:49135')` — connect with TLS in production
-- `iii.registerFunction(id, handler)` — register browser-side handler
+- `iii.registerFunction({ id }, handler)` — register browser-side handler
 - `iii.trigger({ function_id, payload })` — call server-side functions
 - `iii.trigger({ ..., action: TriggerAction.Void() })` — fire-and-forget from browser
 - Stream connections at `ws://host:3112/stream/{name}/{group}` for real-time updates
