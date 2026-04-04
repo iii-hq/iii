@@ -24,6 +24,7 @@ Direct mappings to iii documentation HOWTOs. Each teaches one primitive or capab
 - [engine-config](iii-engine-config/SKILL.md) — Configure the iii engine via iii-config.yaml
 - [observability](iii-observability/SKILL.md) — OpenTelemetry tracing, metrics, and logging
 - [channels](iii-channels/SKILL.md) — Binary streaming between workers
+- [http-middleware](iii-http-middleware/SKILL.md) — Engine-level middleware for HTTP triggers (auth, logging, rate limiting)
 
 ## Architecture Pattern Skills
 
@@ -42,6 +43,7 @@ Compose multiple iii primitives into common backend architectures. Each includes
 Minimal skills pointing to official SDK documentation.
 
 - [node-sdk](iii-node-sdk/SKILL.md) — Node.js/TypeScript SDK
+- [browser-sdk](iii-browser-sdk/SKILL.md) — Browser SDK (WebSocket from web apps)
 - [python-sdk](iii-python-sdk/SKILL.md) — Python SDK
 - [rust-sdk](iii-rust-sdk/SKILL.md) — Rust SDK
 

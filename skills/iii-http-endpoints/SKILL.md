@@ -18,6 +18,7 @@ Use the concepts below when they fit the task. Not every HTTP endpoint needs all
 - Handlers return `{ status_code, body, headers }` to shape the HTTP response
 - **RestApiModule** serves all registered routes on port 3111
 - Path parameters use colon syntax (e.g. `/users/:id`) and arrive in `path_params`
+- **Middleware** can run before handlers via `middleware_function_ids` in the trigger config — see `iii-http-middleware` for details
 
 ## Architecture
 
@@ -34,6 +35,7 @@ Use the concepts below when they fit the task. Not every HTTP endpoint needs all
 | `registerFunction`                                  | Define the handler for a route             |
 | `registerTrigger({ type: 'http' })`                 | Bind a route path and method to a function |
 | `config: { api_path: '/path', http_method: 'GET' }` | Route configuration on the trigger         |
+| `config: { ..., middleware_function_ids: [...] }`    | Optional middleware chain before the handler|
 
 ## Reference Implementation
 
@@ -62,13 +64,15 @@ Use the adaptations below when they apply to the task.
 - Add more routes by registering additional functions and HTTP triggers with distinct paths or methods
 - Use `path_params` for resource identifiers (e.g. `/orders/:orderId`)
 - Return appropriate status codes (201 for creation, 404 for not found, 400 for bad input)
-- For authenticated routes, inspect `req.headers` for tokens or API keys
+- For authenticated routes, use middleware (`middleware_function_ids`) or inspect `req.headers` for tokens or API keys
 - Chain work behind an endpoint by enqueuing to a queue after returning a 202 Accepted
+- For reusable auth, logging, or rate-limiting before handlers, prefer `iii-http-middleware`
 
 ## Pattern Boundaries
 
 - If the task is about calling external HTTP APIs from iii functions, prefer `iii-http-invoked-functions`.
 - If async processing is needed behind the endpoint, prefer `iii-queue-processing` for the background work.
+- If the task is specifically about middleware chains (auth, logging, rate-limiting), prefer `iii-http-middleware`.
 - Stay with `iii-http-endpoints` when iii owns the route and handles the inbound request directly.
 
 ## When to Use

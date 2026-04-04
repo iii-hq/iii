@@ -31,7 +31,7 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 | ------------------------------------------------------------ | ---------------------------------- |
 | `registerWorker(url, options?)`                              | Connect worker to engine           |
 | `registerFunction({ id }, handler)`                          | Define a function handler          |
-| `registerTrigger({ type, function_id, config })`             | Bind an event source to a function |
+| `registerTrigger({ type, function_id, config, metadata? })`  | Bind an event source to a function |
 | `trigger({ function_id, payload })`                          | Invoke a function synchronously    |
 | `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation         |
 | `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async invocation via queue |
@@ -50,13 +50,14 @@ Code using this pattern commonly includes, when relevant:
 
 - `registerWorker('ws://localhost:49134', { workerName: 'my-worker' })` — connect to the engine
 - `registerFunction({ id: 'namespace::name' }, async (input) => { ... })` — register a handler
-- `registerTrigger({ type: 'http', function_id, config: { api_path, http_method } })` — HTTP trigger
+- `registerTrigger({ type: 'http', function_id, config: { api_path, http_method, middleware_function_ids? } })` — HTTP trigger (with optional middleware)
 - `registerTrigger({ type: 'queue', function_id, config: { topic } })` — queue trigger
 - `registerTrigger({ type: 'cron', function_id, config: { expression } })` — cron trigger
 - `registerTrigger({ type: 'state', function_id, config: { scope, key } })` — state change trigger
 - `registerTrigger({ type: 'stream', function_id, config: { stream } })` — stream trigger
 - `registerTrigger({ type: 'subscribe', function_id, config: { topic } })` — pubsub subscriber
 - Cross-language invocation: a TypeScript function can trigger a Python or Rust function by ID
+- `registerTrigger({ ..., metadata: { owner: 'team', priority: 'high' } })` — optional trigger metadata
 
 ### Request/Response Format (Auto-Registration)
 

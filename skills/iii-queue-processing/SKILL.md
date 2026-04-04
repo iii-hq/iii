@@ -21,6 +21,7 @@ Use the concepts below when they fit the task. Not every queue setup needs all o
 - Failed jobs **auto-retry** with exponential backoff up to `max_retries`
 - Jobs that exhaust retries land in a **dead letter queue** for inspection
 - Each consumer function receives the job payload and a `messageReceiptId`
+- **Fan-out** distributes jobs to all worker instances registered for a function, not just one
 
 ## Architecture
 
@@ -67,10 +68,11 @@ Use the adaptations below when they apply to the task.
 - Set `max_retries` and `concurrency` in queue config to match your workload
 - Chain multiple queues for multi-stage pipelines (queue A consumer enqueues to queue B)
 - For idempotency, check state before processing to avoid duplicate work on retries
+- Use fan-out queues when every worker instance must receive each job (e.g. cache invalidation, config reload)
 
 ## Engine Configuration
 
-Named queues are declared in iii-config.yaml under `queue_configs` with per-queue `max_retries`, `concurrency`, `type`, and `backoff_ms`. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Named queues are declared in iii-config.yaml under `queue_configs` with per-queue `max_retries`, `concurrency`, `type`, `backoff_ms`, and `fanout` (boolean). When `fanout: true`, every worker instance registered for the consumer function receives the job. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

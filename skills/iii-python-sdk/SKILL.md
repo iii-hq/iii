@@ -32,6 +32,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-python>
 | `IStream`                                     | Interface for custom stream implementations     |
 | `on_functions_available(callback)`            | Listen for function discovery                   |
 | `on_connection_state_change(callback)`        | Monitor connection state                        |
+| `register_trigger(type, fn_id, config, metadata?)` | Bind a trigger with optional metadata      |
 
 ## Key Notes
 
@@ -60,8 +61,10 @@ result = iii.trigger({
 ## Pattern Boundaries
 
 - For usage patterns and working examples, see `iii-functions-and-triggers`
+- For HTTP middleware patterns, see `iii-http-middleware`
 - For Node.js SDK, see `iii-node-sdk`
 - For Rust SDK, see `iii-rust-sdk`
+- For browser-side usage, see `iii-browser-sdk`
 
 ## When to Use
 

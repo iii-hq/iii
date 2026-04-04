@@ -58,6 +58,10 @@ Code using this pattern commonly includes, when relevant:
 - `trigger({ function_id: 'stream::get', payload: { stream_name, group_id, item_id } })` — read stream item
 - `trigger({ function_id: 'stream::list', payload: { stream_name, group_id } })` — list items in group
 - `createStream(name, adapter)` — custom adapter for specialized backends
+
+### Browser Clients
+
+For browser-side WebSocket connections, use `iii-sdk-browser` instead of the Node SDK. See `iii-browser-sdk` skill for setup details. Stream authentication via literals is supported.
 - `const logger = new Logger()` — structured logging
 
 ## Adapting This Pattern

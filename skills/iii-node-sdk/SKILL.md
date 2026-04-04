@@ -19,24 +19,44 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-node>
 
 ## Key Exports
 
-| Export                                           | Purpose                                     |
-| ------------------------------------------------ | ------------------------------------------- |
-| `registerWorker(url, { workerName })`            | Connect to the engine and return the client |
-| `registerFunction({ id }, handler)`              | Register an async function handler          |
-| `registerTrigger({ type, function_id, config })` | Bind a trigger to a function                |
-| `trigger({ function_id, payload, action? })`     | Invoke a function                           |
-| `TriggerAction.Void()`                           | Fire-and-forget invocation mode             |
-| `TriggerAction.Enqueue({ queue })`               | Durable async invocation mode               |
-| `Logger`                                         | Structured logging                          |
-| `withSpan`, `getTracer`, `getMeter`              | OpenTelemetry instrumentation               |
-| `createChannel()`                                | Binary streaming between workers            |
-| `createStream(name, adapter)`                    | Custom stream implementation                |
-| `registerTriggerType(id, handler)`               | Custom trigger type registration            |
+| Export                                                   | Purpose                                           |
+| -------------------------------------------------------- | ------------------------------------------------- |
+| `registerWorker(url, { workerName })`                    | Connect to the engine and return the client       |
+| `registerFunction({ id }, handler)`                      | Register a local async function handler           |
+| `registerFunction({ id }, httpConfig)`                   | Register an HTTP-invoked external function        |
+| `registerTrigger({ type, function_id, config, metadata? })` | Bind a trigger to a function (with optional metadata) |
+| `trigger({ function_id, payload, action? })`             | Invoke a function                                 |
+| `TriggerAction.Void()`                                   | Fire-and-forget invocation mode                   |
+| `TriggerAction.Enqueue({ queue })`                       | Durable async invocation mode                     |
+| `Logger`                                                 | Structured logging                                |
+| `withSpan`, `getTracer`, `getMeter`                      | OpenTelemetry instrumentation                     |
+| `createChannel()`                                        | Binary streaming between workers                  |
+| `createStream(name, adapter)`                            | Custom stream implementation                      |
+| `registerTriggerType(id, handler)`                       | Custom trigger type registration                  |
+
+## RBAC Auth Result Fields
+
+When implementing an auth function for RBAC workers, the `AuthResult` supports:
+
+| Field                              | Purpose                                            |
+| ---------------------------------- | -------------------------------------------------- |
+| `allowed_functions: string[]`      | Additional function IDs to allow                   |
+| `forbidden_functions: string[]`    | Function IDs to deny (overrides expose_functions)  |
+| `allowed_trigger_types?: string[]` | Trigger types the worker may register              |
+| `allow_trigger_type_registration`  | Whether the worker can register new trigger types  |
+| `function_registration_prefix?`    | Prefix applied to functions registered by worker   |
+| `context: Record<string, unknown>` | Arbitrary context forwarded to middleware/handlers  |
+
+## Browser SDK
+
+For browser environments, use `iii-sdk-browser` (same API, adapted for browser WebSocket constraints). See `iii-browser-sdk` skill for details.
 
 ## Pattern Boundaries
 
 - For usage patterns and working examples, see `iii-functions-and-triggers`
 - For HTTP endpoint patterns, see `iii-http-endpoints`
+- For HTTP middleware patterns, see `iii-http-middleware`
+- For browser-side usage, see `iii-browser-sdk`
 - For Python SDK, see `iii-python-sdk`
 - For Rust SDK, see `iii-rust-sdk`
 

@@ -32,21 +32,28 @@ cargo run --release               # start engine (reads engine/config.yaml)
 pnpm dev:console                  # console frontend dev server
 pnpm dev:docs                     # docs dev server (Mintlify)
 pnpm dev:website                  # website dev server
+
+# Cloud
+iii cloud deploy --config <path>  # deploy to iii Cloud
+iii cloud list                    # list deployments
+iii cloud update <deployment-id>  # update a deployment
+iii cloud delete <deployment-id>  # delete a deployment
 ```
 
 ## Project Map
 
 ```
-engine/                   Rust engine — runtime, modules, protocol, CLI
-sdk/packages/node/iii/    TypeScript SDK (npm: iii-sdk)
-sdk/packages/python/iii/  Python SDK (PyPI: iii-sdk)
-sdk/packages/rust/iii/    Rust SDK (crates.io: iii-sdk)
-console/                  Developer dashboard (React + Rust)
-frameworks/motia/         Higher-level framework on iii-sdk
-skills/                   24 agent skills (auto-discovered by SkillKit)
-docs/                     Documentation site (Mintlify/MDX)
-website/                  iii.dev website
-scripts/                  Build and CI scripts
+engine/                          Rust engine — runtime, modules, protocol, CLI
+sdk/packages/node/iii/           TypeScript SDK (npm: iii-sdk)
+sdk/packages/node/iii-browser/   Browser SDK (npm: iii-sdk-browser)
+sdk/packages/python/iii/         Python SDK (PyPI: iii-sdk)
+sdk/packages/rust/iii/           Rust SDK (crates.io: iii-sdk)
+console/                         Developer dashboard (React + Rust)
+frameworks/motia/                Higher-level framework on iii-sdk
+skills/                          26 agent skills (auto-discovered by SkillKit)
+docs/                            Documentation site (Mintlify/MDX)
+website/                         iii.dev website
+scripts/                         Build and CI scripts
 ```
 
 **Workspaces:** `Cargo.toml` (Rust), `pnpm-workspace.yaml` (JS/TS), `turbo.json` (build orchestration).
@@ -115,11 +122,30 @@ iii.registerTrigger({
   config: { api_path: '/orders/validate', http_method: 'POST' },
 });
 
+// HTTP trigger with middleware chain
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'orders::validate',
+  config: {
+    api_path: '/orders/validate',
+    http_method: 'POST',
+    middleware_function_ids: ['middleware::auth', 'middleware::rate-limit'],
+  },
+});
+
 // Cron trigger with `expression` (not `cron`)
 iii.registerTrigger({
   type: 'cron',
   function_id: 'reports::daily-summary',
   config: { expression: '0 0 9 * * * *' },
+});
+
+// Trigger with metadata (optional, stored with the trigger)
+iii.registerTrigger({
+  type: 'cron',
+  function_id: 'reports::daily-summary',
+  config: { expression: '0 0 9 * * * *' },
+  metadata: { owner: 'billing-team', priority: 'high' },
 });
 ```
 
@@ -135,7 +161,7 @@ iii.register_trigger({
 
 ## Skills
 
-The `skills/` directory contains 24 agent skills (iii-prefixed) auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`. Reference implementations live in `skills/references/` with TypeScript, Python, and Rust variants.
+The `skills/` directory contains 26 agent skills (iii-prefixed) auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`. Reference implementations live in `skills/references/` with TypeScript, Python, and Rust variants.
 
 ## Licensing
 
