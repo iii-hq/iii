@@ -3,7 +3,7 @@ import { iii, sleep } from './utils'
 
 describe('Trigger Registration', () => {
   it('should register and list a trigger', async () => {
-    const fn = iii.registerFunction({ id: 'browser.test.triggers.fn' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('browser.test.triggers.fn', async () => ({ ok: true }))
 
     const trigger = iii.registerTrigger({
       type: 'http',
@@ -25,7 +25,7 @@ describe('Trigger Registration', () => {
   })
 
   it('should unregister a trigger', async () => {
-    const fn = iii.registerFunction({ id: 'browser.test.triggers.unreg' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('browser.test.triggers.unreg', async () => ({ ok: true }))
 
     const trigger = iii.registerTrigger({
       type: 'http',
@@ -56,7 +56,7 @@ describe('Trigger Registration', () => {
   })
 
   it('should register multiple triggers for the same function', async () => {
-    const fn = iii.registerFunction({ id: 'browser.test.triggers.multi' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('browser.test.triggers.multi', async () => ({ ok: true }))
 
     const trigger1 = iii.registerTrigger({
       type: 'http',

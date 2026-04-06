@@ -72,7 +72,7 @@ pub fn register_counting_function(
     counter: Arc<AtomicU64>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
+        handler: Arc::new(move |_invocation_id, _input, _session| {
             let count = counter.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -99,7 +99,7 @@ pub fn register_order_recording_function(
     record: Arc<Mutex<Vec<Value>>>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             let rec = record.clone();
             Box::pin(async move {
                 let value = input.get(field_name).cloned().unwrap_or(Value::Null);
@@ -127,7 +127,7 @@ pub fn register_slow_function(
     timestamps: Arc<Mutex<Vec<std::time::Instant>>>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
+        handler: Arc::new(move |_invocation_id, _input, _session| {
             let ts = timestamps.clone();
             let d = delay;
             Box::pin(async move {
@@ -159,7 +159,7 @@ pub fn register_group_order_recording_function(
     processing_delay: Duration,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             let rec = records.clone();
             let delay = processing_delay;
             Box::pin(async move {
@@ -193,7 +193,7 @@ pub fn register_failing_function(
     call_count: Arc<AtomicU64>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
+        handler: Arc::new(move |_invocation_id, _input, _session| {
             let count = call_count.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -225,7 +225,7 @@ pub fn register_failing_function_with_timestamps(
     timestamps: Arc<Mutex<Vec<std::time::Instant>>>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
+        handler: Arc::new(move |_invocation_id, _input, _session| {
             let count = call_count.clone();
             let ts = timestamps.clone();
             Box::pin(async move {
@@ -257,7 +257,7 @@ pub fn register_payload_capturing_function(
     captured: Arc<Mutex<Vec<Value>>>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             let store = captured.clone();
             Box::pin(async move {
                 store.lock().await.push(input);
@@ -285,7 +285,7 @@ pub fn register_condition_function(
 ) {
     let expected = expected_value.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             let exp = expected.clone();
             Box::pin(async move {
                 let matches = input.get(field).map(|v| *v == exp).unwrap_or(false);
@@ -311,7 +311,7 @@ pub fn register_panicking_function(
     success_count: Arc<AtomicU64>,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             let count = success_count.clone();
             Box::pin(async move {
                 let should_panic = input

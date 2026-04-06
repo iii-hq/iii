@@ -68,9 +68,7 @@ export class ChannelWriter {
     while (offset < data.length) {
       const end = Math.min(offset + ChannelWriter.FRAME_SIZE, data.length)
       const chunk = data.subarray(offset, end)
-      const buffer = chunk.buffer instanceof ArrayBuffer
-        ? chunk.buffer
-        : new ArrayBuffer(chunk.byteLength)
+      const buffer = chunk.buffer instanceof ArrayBuffer ? chunk.buffer : new ArrayBuffer(chunk.byteLength)
       if (!(chunk.buffer instanceof ArrayBuffer)) {
         new Uint8Array(buffer).set(chunk)
       }
@@ -103,8 +101,12 @@ export class ChannelWriter {
       this.ensureConnected()
       this.pendingMessages.push({
         data,
-        resolve: () => {},
-        reject: () => {},
+        resolve: () => {
+          //
+        },
+        reject: () => {
+          console.error('Failed to send message')
+        },
       })
     }
   }

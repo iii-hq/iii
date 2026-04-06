@@ -14,9 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest, SessionHandler},
     function::FunctionResult,
     modules::module::Module,
+    modules::worker::rbac_session::Session,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
     workers::WorkerTelemetryMeta,
@@ -467,11 +468,25 @@ impl EngineFunctionsModule {
     pub async fn get_functions(
         &self,
         input: FunctionsListInput,
+        session: Option<Arc<Session>>,
     ) -> FunctionResult<FunctionsListResult, ErrorBody> {
         let mut functions = self.list_functions();
 
         if !input.include_internal.unwrap_or(false) {
             functions.retain(|f| !f.function_id.starts_with("engine::"));
+        }
+
+        if let Some(session) = &session {
+            functions.retain(|f| {
+                let function = self.engine.functions.get(&f.function_id);
+                crate::modules::worker::rbac_config::is_function_allowed(
+                    &f.function_id,
+                    session.config.rbac.clone(),
+                    &session.allowed_functions,
+                    &session.forbidden_functions,
+                    function.as_ref(),
+                )
+            });
         }
 
         FunctionResult::Success(FunctionsListResult { functions })
@@ -1095,9 +1110,12 @@ mod tests {
         }
 
         let filtered = module
-            .get_functions(FunctionsListInput {
-                include_internal: None,
-            })
+            .get_functions(
+                FunctionsListInput {
+                    include_internal: None,
+                },
+                None,
+            )
             .await;
         match filtered {
             FunctionResult::Success(result) => {
@@ -1108,9 +1126,12 @@ mod tests {
         }
 
         let all = module
-            .get_functions(FunctionsListInput {
-                include_internal: Some(true),
-            })
+            .get_functions(
+                FunctionsListInput {
+                    include_internal: Some(true),
+                },
+                None,
+            )
             .await;
         match all {
             FunctionResult::Success(result) => {

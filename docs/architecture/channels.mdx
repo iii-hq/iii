@@ -207,8 +207,8 @@ def sender_handler(input_data):
 
     return result
 
-iii_client.register_function({"id": "data.processor"}, processor_handler)
-iii_client.register_function({"id": "data.sender"}, sender_handler)
+iii_client.register_function("data.processor", processor_handler)
+iii_client.register_function("data.sender", sender_handler)
 ```
 </Tab>
 <Tab title="Rust">
@@ -449,8 +449,8 @@ def coordinator_handler(input_data):
 
     return {"messages": messages, "binaryResult": binary_result}
 
-iii_client.register_function({"id": "stream.worker"}, worker_handler)
-iii_client.register_function({"id": "stream.coordinator"}, coordinator_handler)
+iii_client.register_function("stream.worker", worker_handler)
+iii_client.register_function("stream.coordinator", coordinator_handler)
 ```
 </Tab>
 <Tab title="Rust">

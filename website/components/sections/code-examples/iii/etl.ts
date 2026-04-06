@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "etl::start" }, async () => {
+iii.registerFunction("etl::start", async () => {
   const logger = new Logger();
   const runId = `run-${Date.now()}`;
   await iii.trigger({
@@ -36,7 +36,7 @@ iii.registerFunction({ id: "etl::start" }, async () => {
   return { runId, status: "queued" };
 });
 
-iii.registerFunction({ id: "etl::extract-step" }, async (data: any) => {
+iii.registerFunction("etl::extract-step", async (data: any) => {
   const logger = new Logger();
   const extracted = await iii.trigger({
     function_id: "extract-service::extract-batch",
@@ -80,7 +80,7 @@ iii.registerFunction({ id: "etl::extract-step" }, async (data: any) => {
   return { extractedCount: extracted.length };
 });
 
-iii.registerFunction({ id: "etl::transform-step" }, async (data: any) => {
+iii.registerFunction("etl::transform-step", async (data: any) => {
   const logger = new Logger();
   const transformed = await iii.trigger({
     function_id: "transform-service::normalize-batch",
@@ -129,7 +129,7 @@ iii.registerFunction({ id: "etl::transform-step" }, async (data: any) => {
   };
 });
 
-iii.registerFunction({ id: "etl::load-step" }, async (data: any) => {
+iii.registerFunction("etl::load-step", async (data: any) => {
   const logger = new Logger();
   const loaded = await iii.trigger({
     function_id: "warehouse-service::load-batch",

@@ -19,7 +19,7 @@ services:
     volumes:
       - ./config.prod.yaml:/app/config.yaml:ro
     environment:
-      - III_HOST_USER_ID=${III_HOST_USER_ID:-}
+      - III_EXECUTION_CONTEXT=docker
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 3111 || exit 1"]
       interval: 10s

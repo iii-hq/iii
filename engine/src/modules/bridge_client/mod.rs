@@ -467,7 +467,7 @@ mod tests {
             .expect("bridge.invoke handler");
         match invoke
             .clone()
-            .call_handler(None, json!({ "bad": true }))
+            .call_handler(None, json!({ "bad": true }), None)
             .await
         {
             FunctionResult::Failure(err) => assert_eq!(err.code, "deserialization_error"),
@@ -481,6 +481,7 @@ mod tests {
                     "data": { "hello": "world" },
                     "timeout_ms": 1
                 }),
+                None,
             )
             .await
         {
@@ -502,6 +503,7 @@ mod tests {
                     "function_id": "remote.echo",
                     "data": { "hello": "world" }
                 }),
+                None,
             )
             .await
         {
@@ -513,7 +515,10 @@ mod tests {
             .functions
             .get("forward.echo")
             .expect("forward handler");
-        match forward.call_handler(None, json!({ "value": 1 })).await {
+        match forward
+            .call_handler(None, json!({ "value": 1 }), None)
+            .await
+        {
             FunctionResult::Failure(err) => {
                 assert_eq!(err.code, "bridge_error");
                 assert!(!err.message.is_empty());
@@ -568,7 +573,7 @@ mod tests {
             .get("bridge.invoke_async")
             .expect("bridge.invoke_async handler");
         match invoke_async
-            .call_handler(None, json!({ "bad": true }))
+            .call_handler(None, json!({ "bad": true }), None)
             .await
         {
             FunctionResult::Failure(err) => assert_eq!(err.code, "deserialization_error"),

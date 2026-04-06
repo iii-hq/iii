@@ -33,6 +33,28 @@ struct Cli {
     /// Disable background update and advisory checks
     #[arg(long, global = true)]
     no_update_check: bool,
+
+    /// Initialize telemetry IDs and optionally emit install lifecycle events.
+    #[arg(long, hide = true, global = true)]
+    install_only_generate_ids: bool,
+
+    /// Install lifecycle event type (e.g. install_succeeded, upgrade_succeeded).
+    #[arg(
+        long,
+        hide = true,
+        global = true,
+        requires = "install_only_generate_ids"
+    )]
+    install_event_type: Option<String>,
+
+    /// Install lifecycle event properties as JSON.
+    #[arg(
+        long,
+        hide = true,
+        global = true,
+        requires = "install_only_generate_ids"
+    )]
+    install_event_properties: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -169,6 +191,23 @@ async fn main() -> anyhow::Result<()> {
 
     if cli_args.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    if cli_args.install_only_generate_ids {
+        let _ = iii::modules::telemetry::environment::get_or_create_device_id();
+        let _ = iii::modules::telemetry::environment::resolve_execution_context();
+
+        if let Some(event_type) = cli_args.install_event_type.as_deref() {
+            let properties = if let Some(raw) = cli_args.install_event_properties.as_deref() {
+                serde_json::from_str(raw).map_err(|e| {
+                    anyhow::anyhow!("invalid --install-event-properties JSON '{}': {}", raw, e)
+                })?
+            } else {
+                serde_json::json!({})
+            };
+            cli::telemetry::send_install_lifecycle_event(event_type, properties).await;
+        }
         return Ok(());
     }
 
@@ -497,6 +536,31 @@ mod tests {
             Some(Commands::Console { .. }) => {}
             _ => panic!("expected Console subcommand"),
         }
+    }
+
+    #[test]
+    fn hidden_install_only_generate_ids_parses() {
+        let cli = Cli::try_parse_from(["iii", "--install-only-generate-ids"])
+            .expect("should parse hidden install-only flag");
+        assert!(cli.install_only_generate_ids);
+    }
+
+    #[test]
+    fn hidden_install_event_fields_parse() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "--install-only-generate-ids",
+            "--install-event-type",
+            "install_succeeded",
+            "--install-event-properties",
+            r#"{"target_binary":"iii"}"#,
+        ])
+        .expect("should parse hidden install event flags");
+        assert_eq!(cli.install_event_type.as_deref(), Some("install_succeeded"));
+        assert_eq!(
+            cli.install_event_properties.as_deref(),
+            Some(r#"{"target_binary":"iii"}"#)
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
+    modules::worker::rbac_session::Session,
     modules::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsModule,
@@ -136,14 +137,40 @@ pub struct RegisterFunctionRequest {
     pub metadata: Option<Value>,
 }
 
+pub type HandlerOutput = FunctionResult<Option<Value>, ErrorBody>;
+
+pub trait HandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> HandlerFn<F> for H
+where
+    H: Fn(Value) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
+pub trait SessionHandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> SessionHandlerFn<F> for H
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
 pub struct Handler<H> {
-    f: H,
+    pub f: H,
 }
 
 impl<H, F> Handler<H>
 where
     H: Fn(Value) -> F + Send + Sync + 'static,
-    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
 {
     pub fn new(f: H) -> Self {
         Self { f }
@@ -151,6 +178,20 @@ where
 
     pub fn call(&self, input: Value) -> F {
         (self.f)(input)
+    }
+}
+
+pub struct SessionHandler<H> {
+    pub f: H,
+}
+
+impl<H, F> SessionHandler<H>
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+    pub fn new(f: H) -> Self {
+        Self { f }
     }
 }
 
@@ -172,8 +213,15 @@ pub trait EngineTrait: Send + Sync {
         request: RegisterFunctionRequest,
         handler: Handler<H>,
     ) where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
 }
 
 #[derive(Clone)]
@@ -247,6 +295,8 @@ impl Engine {
                 worker.add_invocation(invocation_id).await;
             }
 
+            let session = worker.session.clone();
+
             self.invocations
                 .handle_invocation(
                     invocation_id,
@@ -256,6 +306,7 @@ impl Engine {
                     function,
                     traceparent,
                     baggage,
+                    session,
                 )
                 .await
         } else {
@@ -645,43 +696,45 @@ impl Engine {
                     }
 
                     if let Some(middleware_id) = &session.config.middleware_function_id {
-                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
-                        let middleware_input = serde_json::json!({
-                            "function_id": function_id,
-                            "payload": data,
-                            "action": action,
-                            "context": session.context,
-                        });
-                        let engine = self.clone();
-                        let w = worker.clone();
-                        let middleware_id = middleware_id.clone();
-                        let function_id = function_id.clone();
-                        let traceparent = traceparent.clone();
-                        let baggage = baggage.clone();
+                        if !function_id.starts_with("engine::") {
+                            let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                            let middleware_input = serde_json::json!({
+                                "function_id": function_id,
+                                "payload": data,
+                                "action": action,
+                                "context": session.context,
+                            });
+                            let engine = self.clone();
+                            let w = worker.clone();
+                            let middleware_id = middleware_id.clone();
+                            let function_id = function_id.clone();
+                            let traceparent = traceparent.clone();
+                            let baggage = baggage.clone();
 
-                        tokio::spawn(async move {
-                            let response = match engine.call(&middleware_id, middleware_input).await
-                            {
-                                Ok(result) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result,
-                                    error: None,
-                                    traceparent,
-                                    baggage,
-                                },
-                                Err(err) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result: None,
-                                    error: Some(err),
-                                    traceparent,
-                                    baggage,
-                                },
-                            };
-                            engine.send_msg(&w, response).await;
-                        });
-                        return Ok(());
+                            tokio::spawn(async move {
+                                let response =
+                                    match engine.call(&middleware_id, middleware_input).await {
+                                        Ok(result) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result,
+                                            error: None,
+                                            traceparent,
+                                            baggage,
+                                        },
+                                        Err(err) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result: None,
+                                            error: Some(err),
+                                            traceparent,
+                                            baggage,
+                                        },
+                                    };
+                                engine.send_msg(&w, response).await;
+                            });
+                            return Ok(());
+                        }
                     }
                 }
 
@@ -1283,6 +1336,7 @@ impl EngineTrait for Engine {
                     function,
                     traceparent,
                     baggage,
+                    None,
                 )
                 .await;
 
@@ -1337,7 +1391,7 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input, _session| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
@@ -1355,15 +1409,42 @@ impl EngineTrait for Engine {
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
     where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input| {
+            handler: Arc::new(move |_id, input, _session| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
+            }),
+            _function_id: request.function_id.clone(),
+            _description: request.description,
+            request_format: request.request_format,
+            response_format: request.response_format,
+            metadata: request.metadata,
+        };
+
+        self.functions
+            .register_function(request.function_id, function);
+    }
+
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
+    {
+        let handler_arc: Arc<H> = Arc::new(handler.f);
+
+        let function = Function {
+            handler: Arc::new(move |_id, input, session| {
+                let handler = handler_arc.clone();
+                let session = session.clone();
+                Box::pin(async move { handler(input, session).await })
             }),
             _function_id: request.function_id.clone(),
             _description: request.description,

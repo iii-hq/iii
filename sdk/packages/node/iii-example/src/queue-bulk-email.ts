@@ -43,10 +43,11 @@ useApi(
 const sendLogger = new Logger(undefined, 'emails::send')
 
 iii.registerFunction(
-  { id: 'emails::send', metadata: { tags: ['queue', 'bulk-email'] } },
+  'emails::send',
   async payload => {
     sendLogger.info('Sending email', { to: payload.to, subject: payload.subject })
     // Simulate SMTP delivery
     return { sent: true, to: payload.to }
   },
+  { metadata: { tags: ['queue', 'bulk-email'] } },
 )

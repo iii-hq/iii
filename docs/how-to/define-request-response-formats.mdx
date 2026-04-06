@@ -79,13 +79,13 @@ async function helloWorld(input: z.infer<typeof inputSchema>): Promise<z.infer<t
 }
 
 iii.registerFunction(
+  'example::hello-world',
+  helloWorld,
   {
-    id: 'example::hello-world',
     description: 'Resolve a scoped key to a single string value',
     request_format: z.toJSONSchema(inputSchema),
     response_format: z.toJSONSchema(outputSchema),
   },
-  helloWorld,
 )
 ```
 
@@ -118,7 +118,7 @@ def create_todo(todo: Todo) -> Todo:
 iii.register_function("myscope::create_todo", create_todo)
 ```
 
-To override or supply formats manually, use the dict form: `register_function({"id": "...", "request_format": {...}, "response_format": {...}}, handler)`.
+To override or supply formats manually, pass them as keyword arguments: `register_function("...", handler, request_format={...}, response_format={...})`.
 
 </Tab>
 <Tab title="Rust">

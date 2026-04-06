@@ -220,7 +220,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("4. Connect a worker (Node.js):", "warning");
         addLog("   npm install iii-sdk", "info");
         addLog('   const iii = registerWorker("ws://127.0.0.1:49134")', "success");
-        addLog('   iii.registerFunction({ id: "my.fn" }, handler)', "success");
+        addLog('   iii.registerFunction("my.fn", handler)', "success");
         addLog("", "info");
         addLog("Read the docs at iii.dev/docs", "warning");
         break;
@@ -298,9 +298,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog('import { registerWorker } from "iii-sdk";', "success");
         addLog('const iii = registerWorker("ws://127.0.0.1:49134");', "success");
         addLog("", "info");
-        addLog("iii.registerFunction({", "success");
-        addLog('  id: "math.add"', "success");
-        addLog("}, async (input) => {", "success");
+        addLog('iii.registerFunction("math.add", async (input) => {', "success");
         addLog("  return { sum: input.a + input.b };", "success");
         addLog("});", "success");
         addLog("", "info");
@@ -319,9 +317,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("", "info");
         addLog("Register a function:", "warning");
         addLog("", "info");
-        addLog("iii.registerFunction({", "success");
-        addLog('  id: "api.echo"', "success");
-        addLog("}, async (req) => {", "success");
+        addLog('iii.registerFunction("api.echo", async (req) => {', "success");
         addLog("  return {", "success");
         addLog("    status_code: 200,", "success");
         addLog("    body: { ok: true, input: req.body }", "success");
@@ -577,9 +573,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("", "info");
         addLog('const iii = registerWorker("ws://localhost:49134");', "success");
         addLog("", "info");
-        addLog("iii.registerFunction({", "success");
-        addLog('  id: "myService.greet",', "success");
-        addLog("}, async (input) => {", "success");
+        addLog('iii.registerFunction("myService.greet", async (input) => {', "success");
         addLog("  return { message: `Hello, ${input.name}!` };", "success");
         addLog("});", "success");
         addLog("", "info");

@@ -3,7 +3,10 @@ type EventListenerEntry = {
   options?: boolean | AddEventListenerOptions
 }
 
-export class MockWebSocket implements Pick<WebSocket, 'readyState' | 'binaryType' | 'url' | 'send' | 'close' | 'addEventListener' | 'removeEventListener'> {
+export class MockWebSocket
+  implements
+    Pick<WebSocket, 'readyState' | 'binaryType' | 'url' | 'send' | 'close' | 'addEventListener' | 'removeEventListener'>
+{
   static readonly CONNECTING = 0
   static readonly OPEN = 1
   static readonly CLOSING = 2
@@ -49,7 +52,11 @@ export class MockWebSocket implements Pick<WebSocket, 'readyState' | 'binaryType
     this.readyState = MockWebSocket.CLOSED
   }
 
-  addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void {
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
     let set = this.listeners.get(type)
     if (!set) {
       set = new Set()
@@ -171,55 +178,67 @@ export class MockEngine {
   }
 
   respondToInvocation(invocationId: string, result: unknown): void {
-    this.socket.simulateMessage(JSON.stringify({
-      type: 'invocationresult',
-      invocation_id: invocationId,
-      function_id: '',
-      result,
-    }))
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'invocationresult',
+        invocation_id: invocationId,
+        function_id: '',
+        result,
+      }),
+    )
   }
 
   respondWithError(invocationId: string, error: { code: string; message: string }): void {
-    this.socket.simulateMessage(JSON.stringify({
-      type: 'invocationresult',
-      invocation_id: invocationId,
-      function_id: '',
-      error,
-    }))
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'invocationresult',
+        invocation_id: invocationId,
+        function_id: '',
+        error,
+      }),
+    )
   }
 
   invokeFunction(functionId: string, data: unknown, invocationId?: string): void {
-    this.socket.simulateMessage(JSON.stringify({
-      type: 'invokefunction',
-      invocation_id: invocationId ?? crypto.randomUUID(),
-      function_id: functionId,
-      data,
-    }))
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'invokefunction',
+        invocation_id: invocationId ?? crypto.randomUUID(),
+        function_id: functionId,
+        data,
+      }),
+    )
   }
 
   invokeFunctionVoid(functionId: string, data: unknown): void {
-    this.socket.simulateMessage(JSON.stringify({
-      type: 'invokefunction',
-      function_id: functionId,
-      data,
-    }))
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'invokefunction',
+        function_id: functionId,
+        data,
+      }),
+    )
   }
 
   sendWorkerRegistered(workerId?: string): void {
-    this.socket.simulateMessage(JSON.stringify({
-      type: 'workerregistered',
-      worker_id: workerId ?? `worker-${crypto.randomUUID().slice(0, 8)}`,
-    }))
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'workerregistered',
+        worker_id: workerId ?? `worker-${crypto.randomUUID().slice(0, 8)}`,
+      }),
+    )
   }
 
   sendRegisterTrigger(triggerType: string, id: string, functionId: string, config: unknown): void {
-    this.socket.simulateMessage(JSON.stringify({
-      type: 'registertrigger',
-      trigger_type: triggerType,
-      id,
-      function_id: functionId,
-      config,
-    }))
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'registertrigger',
+        trigger_type: triggerType,
+        id,
+        function_id: functionId,
+        config,
+      }),
+    )
   }
 
   findSent(type: string): Record<string, unknown> | undefined {
@@ -231,9 +250,7 @@ export class MockEngine {
   }
 
   autoRespondToInvocations(): void {
-    const origSimulateOpen = this.socket.simulateOpen.bind(this.socket)
     const socket = this.socket
-    const engine = this
 
     const originalSend = socket.send.bind(socket)
     socket.send = (data: string | ArrayBufferLike | Blob | ArrayBufferView) => {
@@ -243,10 +260,17 @@ export class MockEngine {
           const parsed = JSON.parse(data)
           if (parsed.type === 'invokefunction' && parsed.invocation_id) {
             queueMicrotask(() => {
-              engine.respondToInvocation(parsed.invocation_id, { functions: [], workers: [], triggers: [], trigger_types: [] })
+              this.respondToInvocation(parsed.invocation_id, {
+                functions: [],
+                workers: [],
+                triggers: [],
+                trigger_types: [],
+              })
             })
           }
-        } catch {}
+        } catch {
+          //
+        }
       }
     }
   }

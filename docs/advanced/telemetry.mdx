@@ -121,7 +121,7 @@ Use `withSpan` to create custom spans within a function handler:
 ```typescript
 import { withSpan } from 'iii-sdk/telemetry'
 
-iii.registerFunction({ id: 'orders::process' }, async (data) => {
+iii.registerFunction('orders::process', async (data) => {
   return withSpan('validate-order', {}, async (span) => {
     span.setAttribute('order.id', data.orderId)
     const valid = await validateOrder(data)

@@ -40,6 +40,7 @@ export type {
   InternalHttpRequest,
   ISdk,
   RegisterFunctionInput,
+  RegisterFunctionOptions,
   RegisterServiceInput,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,

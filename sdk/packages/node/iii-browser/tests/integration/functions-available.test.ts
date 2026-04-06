@@ -11,7 +11,7 @@ describe('Functions Available', () => {
       callCount++
     })
 
-    const fn = iii.registerFunction({ id: 'browser.test.fna.dynamic' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('browser.test.fna.dynamic', async () => ({ ok: true }))
 
     await execute(async () => {
       if (callCount === 0) throw new Error('Not called yet')
@@ -32,7 +32,7 @@ describe('Functions Available', () => {
       callCount++
     })
 
-    const fn1 = iii.registerFunction({ id: 'browser.test.fna.before-unsub' }, async () => ({}))
+    const fn1 = iii.registerFunction('browser.test.fna.before-unsub', async () => ({}))
 
     await execute(async () => {
       if (callCount === 0) throw new Error('Not called yet')
@@ -41,7 +41,7 @@ describe('Functions Available', () => {
     const countBeforeUnsub = callCount
     unsub()
 
-    const fn2 = iii.registerFunction({ id: 'browser.test.fna.after-unsub' }, async () => ({}))
+    const fn2 = iii.registerFunction('browser.test.fna.after-unsub', async () => ({}))
     await sleep(500)
 
     expect(callCount).toBe(countBeforeUnsub)

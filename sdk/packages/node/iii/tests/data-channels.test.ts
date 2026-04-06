@@ -7,7 +7,7 @@ describe('Data Channels', () => {
     type Record = { name: string; value: number }
 
     const processor = iii.registerFunction(
-      { id: 'test.data.processor' },
+      'test.data.processor',
       async (input: { label: string; reader: ChannelReader }) => {
         const chunks: Buffer[] = []
         for await (const chunk of input.reader.stream) {
@@ -34,7 +34,7 @@ describe('Data Channels', () => {
     )
 
     const sender = iii.registerFunction(
-      { id: 'test.data.sender' },
+      'test.data.sender',
       async (input: { records: Record[] }) => {
         const channel = await iii.createChannel()
 
@@ -85,7 +85,7 @@ describe('Data Channels', () => {
 
   it('should create a channel and stream data from worker to coordinator', async () => {
     const worker = iii.registerFunction(
-      { id: 'test.stream.worker' },
+      'test.stream.worker',
       async (input: { reader: ChannelReader; writer: ChannelWriter }) => {
         const { reader, writer } = input
         const chunks: Buffer[] = []
@@ -127,7 +127,7 @@ describe('Data Channels', () => {
     )
 
     const coordinator = iii.registerFunction(
-      { id: 'test.stream.coordinator' },
+      'test.stream.coordinator',
       async (input: { text: string; chunkSize: number }) => {
         const inputChannel = await iii.createChannel()
         const outputChannel = await iii.createChannel()

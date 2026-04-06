@@ -42,7 +42,7 @@ import {registerWorker, Logger} from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'users::create' }, async (req) => {
+iii.registerFunction('users::create', async (req) => {
   const logger = new Logger()
   const { name, email } = req.body
   const user = { id: crypto.randomUUID(), name, email }

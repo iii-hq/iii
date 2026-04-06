@@ -42,7 +42,7 @@ useApi(
 const ledgerLogger = new Logger(undefined, 'ledger::apply')
 
 iii.registerFunction(
-  { id: 'ledger::apply', metadata: { tags: ['queue', 'financial'] } },
+  'ledger::apply',
   async payload => {
     const { account_id, type, amount } = payload as {
       account_id: string
@@ -66,6 +66,7 @@ iii.registerFunction(
 
     return { applied: true, account_id, newBalance: accounts.get(account_id) }
   },
+  { metadata: { tags: ['queue', 'financial'] } },
 )
 
 // --- Read account balance ---

@@ -5,7 +5,7 @@ import { execute, httpRequest, iii } from './utils'
 describe('Healthcheck Endpoint', () => {
   it('should register a healthcheck function and trigger', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.healthcheck' },
+      'test.healthcheck',
       async (_req: ApiRequest): Promise<ApiResponse> => {
         return {
           status_code: 200,

@@ -121,7 +121,7 @@ describe('State Operations', () => {
 
       try {
         stateUpdatedFunction = iii.registerFunction(
-          { id: 'state.updated' },
+          'state.updated',
           async (event: StateEventData<TestData>) => {
             logger.info('State updated', { event })
 

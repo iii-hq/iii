@@ -3,6 +3,10 @@ import { registerWorker } from '../src/iii'
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
 
+const empty = async () => {
+  //
+}
+
 describe('Trigger Registration', () => {
   let engine: MockEngine
   let sdk: ISdk
@@ -28,13 +32,13 @@ describe('Trigger Registration', () => {
 
     const msg = engine.findSent('registertrigger')
     expect(msg).toBeDefined()
-    expect(msg!.trigger_type).toBe('http')
-    expect(msg!.function_id).toBe('api::get::users')
-    expect(msg!.config).toEqual({ api_path: '/users', http_method: 'GET' })
-    expect(msg!.id).toBeDefined()
-    expect(typeof msg!.id).toBe('string')
+    expect(msg?.trigger_type).toBe('http')
+    expect(msg?.function_id).toBe('api::get::users')
+    expect(msg?.config).toEqual({ api_path: '/users', http_method: 'GET' })
+    expect(msg?.id).toBeDefined()
+    expect(typeof msg?.id).toBe('string')
     // Wire format uses trigger_type, not type (type is the message type)
-    expect(msg!.type).toBe('registertrigger')
+    expect(msg?.type).toBe('registertrigger')
   })
 
   it('should unregister trigger', () => {
@@ -45,13 +49,13 @@ describe('Trigger Registration', () => {
     })
 
     const registerMsg = engine.findSent('registertrigger')
-    const triggerId = registerMsg!.id as string
+    const triggerId = registerMsg?.id as string
 
     trigger.unregister()
 
     const unregisterMsg = engine.findSent('unregistertrigger')
     expect(unregisterMsg).toBeDefined()
-    expect(unregisterMsg!.id).toBe(triggerId)
+    expect(unregisterMsg?.id).toBe(triggerId)
   })
 
   it('should register multiple triggers independently', () => {
@@ -88,23 +92,19 @@ describe('Trigger Registration', () => {
   })
 
   it('should register internal trigger for onFunctionsAvailable', () => {
-    sdk.onFunctionsAvailable(() => {})
+    sdk.onFunctionsAvailable(empty)
 
     const fnMsgs = engine.findAllSent('registerfunction')
-    const internalFn = fnMsgs.find((m) =>
-      (m.id as string).startsWith('engine.on_functions_available.'),
-    )
+    const internalFn = fnMsgs.find((m) => (m.id as string).startsWith('engine.on_functions_available.'))
     expect(internalFn).toBeDefined()
 
     const triggerMsgs = engine.findAllSent('registertrigger')
-    const internalTrigger = triggerMsgs.find(
-      (m) => m.trigger_type === 'engine::functions-available',
-    )
+    const internalTrigger = triggerMsgs.find((m) => m.trigger_type === 'engine::functions-available')
     expect(internalTrigger).toBeDefined()
   })
 
   it('should clean up onFunctionsAvailable on unsubscribe', () => {
-    const unsubscribe = sdk.onFunctionsAvailable(() => {})
+    const unsubscribe = sdk.onFunctionsAvailable(empty)
     unsubscribe()
 
     const unregisterMsgs = engine.findAllSent('unregistertrigger')

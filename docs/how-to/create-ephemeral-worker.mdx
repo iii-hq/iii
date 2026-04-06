@@ -24,7 +24,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'reports::generate' }, async (req) => {
+iii.registerFunction('reports::generate', async (req) => {
   const logger = new Logger()
   const reportId = req.body?.reportId ?? 'unknown'
   

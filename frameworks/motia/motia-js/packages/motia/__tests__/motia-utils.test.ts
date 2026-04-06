@@ -179,7 +179,7 @@ describe('Motia', () => {
 
       // Middleware registered as a regular function
       const mwCall = mockRegisterFunction.mock.calls.find(
-        (c: any) => c[0].id === 'steps::test::trigger::http(GET /test)::middleware::0',
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
       )
       expect(mwCall).toBeDefined()
 
@@ -211,7 +211,7 @@ describe('Motia', () => {
       motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
 
       const mwCall = mockRegisterFunction.mock.calls.find(
-        (c: any) => c[0].id === 'steps::test::trigger::http(GET /admin)::middleware::0',
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /admin)::middleware::0',
       )
       const mwWrapper = mwCall![1]
       const engineReq = {
@@ -243,7 +243,7 @@ describe('Motia', () => {
       motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
 
       const mwCall = mockRegisterFunction.mock.calls.find(
-        (c: any) => c[0].id === 'steps::test::trigger::http(GET /test)::middleware::0',
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
       )
       const mwWrapper = mwCall![1]
       const engineReq = {
@@ -265,7 +265,7 @@ describe('Motia', () => {
       motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
 
       const mwCall = mockRegisterFunction.mock.calls.find(
-        (c: any) => c[0].id === 'steps::test::trigger::http(GET /test)::middleware::0',
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
       )
       const mwWrapper = mwCall![1]
       const engineReq = {
@@ -285,10 +285,10 @@ describe('Motia', () => {
       motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
 
       const mw1Call = mockRegisterFunction.mock.calls.find(
-        (c: any) => c[0].id === 'steps::test::trigger::http(GET /test)::middleware::0',
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::0',
       )
       const mw2Call = mockRegisterFunction.mock.calls.find(
-        (c: any) => c[0].id === 'steps::test::trigger::http(GET /test)::middleware::1',
+        (c: any) => c[0] === 'steps::test::trigger::http(GET /test)::middleware::1',
       )
       expect(mw1Call).toBeDefined()
       expect(mw2Call).toBeDefined()

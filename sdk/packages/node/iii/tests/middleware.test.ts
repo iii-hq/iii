@@ -6,13 +6,13 @@ describe('HTTP Middleware', () => {
   it('should execute middleware that continues to handler', async () => {
     let middlewareCalled = false
 
-    const mwFn = iii.registerFunction({ id: 'test.mw.continue' }, async (_req) => {
+    const mwFn = iii.registerFunction('test.mw.continue', async (_req) => {
       middlewareCalled = true
       return { action: 'continue' }
     })
 
     const handlerFn = iii.registerFunction(
-      { id: 'test.mw.continue.handler' },
+      'test.mw.continue.handler',
       async (_req: HttpRequest): Promise<ApiResponse> => ({
         status_code: 200,
         body: { message: 'handler reached' },
@@ -45,7 +45,7 @@ describe('HTTP Middleware', () => {
   it('should short-circuit when middleware responds', async () => {
     let handlerCalled = false
 
-    const mwFn = iii.registerFunction({ id: 'test.mw.block' }, async (_req) => ({
+    const mwFn = iii.registerFunction('test.mw.block', async (_req) => ({
       action: 'respond',
       response: {
         status_code: 403,
@@ -54,7 +54,7 @@ describe('HTTP Middleware', () => {
     }))
 
     const handlerFn = iii.registerFunction(
-      { id: 'test.mw.block.handler' },
+      'test.mw.block.handler',
       async (_req: HttpRequest): Promise<ApiResponse> => {
         handlerCalled = true
         return { status_code: 200, body: { message: 'should not reach' } }
@@ -87,18 +87,18 @@ describe('HTTP Middleware', () => {
   it('should execute multiple middleware in order', async () => {
     const callOrder: string[] = []
 
-    const mw1 = iii.registerFunction({ id: 'test.mw.order.first' }, async (_req) => {
+    const mw1 = iii.registerFunction('test.mw.order.first', async (_req) => {
       callOrder.push('mw1')
       return { action: 'continue' }
     })
 
-    const mw2 = iii.registerFunction({ id: 'test.mw.order.second' }, async (_req) => {
+    const mw2 = iii.registerFunction('test.mw.order.second', async (_req) => {
       callOrder.push('mw2')
       return { action: 'continue' }
     })
 
     const handlerFn = iii.registerFunction(
-      { id: 'test.mw.order.handler' },
+      'test.mw.order.handler',
       async (_req: HttpRequest): Promise<ApiResponse> => {
         callOrder.push('handler')
         return { status_code: 200, body: { order: callOrder } }
@@ -131,13 +131,13 @@ describe('HTTP Middleware', () => {
   it('should pass request metadata to middleware', async () => {
     let receivedReq: Record<string, unknown> = {}
 
-    const mwFn = iii.registerFunction({ id: 'test.mw.meta' }, async (req) => {
+    const mwFn = iii.registerFunction('test.mw.meta', async (req) => {
       receivedReq = req
       return { action: 'continue' }
     })
 
     const handlerFn = iii.registerFunction(
-      { id: 'test.mw.meta.handler' },
+      'test.mw.meta.handler',
       async (_req: HttpRequest): Promise<ApiResponse> => ({
         status_code: 200,
         body: { ok: true },
@@ -173,7 +173,7 @@ describe('HTTP Middleware', () => {
 
   it('should work without middleware (regression)', async () => {
     const fn = iii.registerFunction(
-      { id: 'test.mw.none' },
+      'test.mw.none',
       async (_req: HttpRequest): Promise<ApiResponse> => ({
         status_code: 200,
         body: { message: 'no middleware' },

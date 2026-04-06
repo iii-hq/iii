@@ -38,7 +38,7 @@ describe('Trigger Types', () => {
       },
     )
 
-    const fn = iii.registerFunction({ id: 'browser.test.tt-trigger.fn' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('browser.test.tt-trigger.fn', async () => ({ ok: true }))
 
     await sleep(300)
 
@@ -60,7 +60,7 @@ describe('Trigger Types', () => {
       },
     )
 
-    const fnRef = ref.registerFunction({ id: 'browser.test.tt-fn.handler' }, async () => ({ ok: true }), {
+    const fnRef = ref.registerFunction('browser.test.tt-fn.handler', async () => ({ ok: true }), {
       path: '/test',
     })
 

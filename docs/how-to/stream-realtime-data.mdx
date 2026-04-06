@@ -36,7 +36,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'chat::send' }, async (input) => {
+iii.registerFunction('chat::send', async (input) => {
   const logger = new Logger()
   const messageId = crypto.randomUUID()
 
@@ -163,7 +163,7 @@ println!("Sent message: {}", result["messageId"]);
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="stream-reader.ts"
-iii.registerFunction({ id: 'chat::list' }, async (input) => {
+iii.registerFunction('chat::list', async (input) => {
   const logger = new Logger()
 
   const messages = await iii.trigger({
@@ -272,7 +272,7 @@ Register triggers to run server-side logic when clients join or when stream data
 ```typescript title="stream-triggers.ts"
 import { StreamJoinLeaveEvent } from 'iii-sdk/stream'
 
-const onJoin = iii.registerFunction({ id: 'chat::onJoin' }, async (input: StreamJoinLeaveEvent) => {
+const onJoin = iii.registerFunction('chat::onJoin', async (input: StreamJoinLeaveEvent) => {
   const logger = new Logger()
   logger.info('Client joined chat room', {
     stream: input.stream_name,
@@ -302,7 +302,7 @@ def on_join(input: StreamJoinLeaveEvent):
     })
     return {}
 
-iii.register_function({"id": "chat::onJoin"}, on_join)
+iii.register_function("chat::onJoin", on_join)
 iii.register_trigger({"type": "stream:join", "function_id": "chat::onJoin", "config": {}})
 ```
 </Tab>
@@ -338,7 +338,7 @@ iii.register_trigger(
 ```typescript title="stream-triggers.ts"
 import { StreamChangeEvent } from 'iii-sdk/stream'
 
-const onMessage = iii.registerFunction({ id: 'chat::onMessage' }, async (input: StreamChangeEvent) => {
+const onMessage = iii.registerFunction('chat::onMessage', async (input: StreamChangeEvent) => {
   const logger = new Logger()
 
   if (input.event.type === 'create') {
@@ -371,7 +371,7 @@ def on_message(input: StreamChangeEvent):
 
     return {}
 
-iii.register_function({"id": "chat::onMessage"}, on_message)
+iii.register_function("chat::onMessage", on_message)
 iii.register_trigger({
     "type": "stream",
     "function_id": "chat::onMessage",

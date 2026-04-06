@@ -7,7 +7,7 @@ describe('Service Registration', () => {
     iii.registerService({ id: 'test.svc.basic' })
     await sleep(300)
 
-    const fn = iii.registerFunction({ id: 'test.svc.basic.hello' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('test.svc.basic.hello', async () => ({ ok: true }))
 
     await sleep(300)
 
@@ -24,7 +24,7 @@ describe('Service Registration', () => {
     iii.registerService({ id: 'test.svc.named', name: 'My Named Service' })
     await sleep(300)
 
-    const fn = iii.registerFunction({ id: 'test.svc.named.ping' }, async () => ({ pong: true }))
+    const fn = iii.registerFunction('test.svc.named.ping', async () => ({ pong: true }))
 
     await sleep(300)
 
@@ -47,7 +47,7 @@ describe('Service Registration', () => {
 
     await sleep(300)
 
-    const fn = iii.registerFunction({ id: 'test.svc.child.action' }, async (data: { value: number }) => ({
+    const fn = iii.registerFunction('test.svc.child.action', async (data: { value: number }) => ({
       doubled: data.value * 2,
     }))
 
@@ -66,7 +66,7 @@ describe('Service Registration', () => {
     iii.registerService({ id: 'test.svc.default-name', description: 'No explicit name' })
     await sleep(300)
 
-    const fn = iii.registerFunction({ id: 'test.svc.default-name.check' }, async () => ({ status: 'ok' }))
+    const fn = iii.registerFunction('test.svc.default-name.check', async () => ({ status: 'ok' }))
 
     await sleep(300)
 
@@ -82,7 +82,7 @@ describe('Service Registration', () => {
 
 describe('List Triggers', () => {
   it('should list registered triggers', async () => {
-    const fn = iii.registerFunction({ id: 'test.triggers.list.func' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('test.triggers.list.func', async () => ({ ok: true }))
 
     const trigger = iii.registerTrigger({
       type: 'http',
@@ -168,7 +168,7 @@ describe('TriggerTypeRef', () => {
       },
     )
 
-    const fn = iii.registerFunction({ id: 'test.tt-ref-trigger.fn' }, async () => ({ ok: true }))
+    const fn = iii.registerFunction('test.tt-ref-trigger.fn', async () => ({ ok: true }))
 
     await sleep(300)
 
@@ -191,7 +191,7 @@ describe('TriggerTypeRef', () => {
     )
 
     const fnRef = ref.registerFunction(
-      { id: 'test.tt-ref-fn.handler' },
+      'test.tt-ref-fn.handler',
       async () => ({ ok: true }),
       { path: '/test' },
     )
@@ -229,14 +229,14 @@ describe('TriggerTypeRef', () => {
 describe('Channel readAll', () => {
   it('should read all data from a channel using readAll', async () => {
     const processor = iii.registerFunction(
-      { id: 'test.readall.processor' },
+      'test.readall.processor',
       async (input: { reader: ChannelReader }) => {
         const data = await input.reader.readAll()
         return { content: data.toString('utf-8'), size: data.length }
       },
     )
 
-    const sender = iii.registerFunction({ id: 'test.readall.sender' }, async (input: { text: string }) => {
+    const sender = iii.registerFunction('test.readall.sender', async (input: { text: string }) => {
       const channel = await iii.createChannel()
 
       const writePromise = new Promise<void>((resolve, reject) => {
@@ -275,7 +275,7 @@ describe('Channel readAll', () => {
 
   it('should read chunked data correctly with readAll', async () => {
     const processor = iii.registerFunction(
-      { id: 'test.readall.chunked.processor' },
+      'test.readall.chunked.processor',
       async (input: { reader: ChannelReader }) => {
         const data = await input.reader.readAll()
         const items = JSON.parse(data.toString('utf-8'))
@@ -283,7 +283,7 @@ describe('Channel readAll', () => {
       },
     )
 
-    const sender = iii.registerFunction({ id: 'test.readall.chunked.sender' }, async (input: { numbers: number[] }) => {
+    const sender = iii.registerFunction('test.readall.chunked.sender', async (input: { numbers: number[] }) => {
       const channel = await iii.createChannel()
 
       const writePromise = new Promise<void>((resolve, reject) => {

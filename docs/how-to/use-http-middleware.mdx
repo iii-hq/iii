@@ -32,7 +32,7 @@ import { registerWorker } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 // Middleware: check for API key
-iii.registerFunction({ id: 'middleware::require-api-key' }, async (req) => {
+iii.registerFunction('middleware::require-api-key', async (req) => {
   const apiKey = req.request?.headers?.['x-api-key']
   if (!apiKey || apiKey !== process.env.API_KEY) {
     return {
@@ -47,7 +47,7 @@ iii.registerFunction({ id: 'middleware::require-api-key' }, async (req) => {
 })
 
 // Handler: only runs if middleware continues
-iii.registerFunction({ id: 'api::secret-data' }, async (req) => ({
+iii.registerFunction('api::secret-data', async (req) => ({
   status_code: 200,
   body: { secret: 'the answer is 42' },
 }))
@@ -76,8 +76,8 @@ def get_secret_data(req):
     return {"status_code": 200, "body": {"secret": "the answer is 42"}}
 
 
-iii.register_function({"id": "middleware::require-api-key"}, require_api_key)
-iii.register_function({"id": "api::secret-data"}, get_secret_data)
+iii.register_function("middleware::require-api-key", require_api_key)
+iii.register_function("api::secret-data", get_secret_data)
 ```
 </Tab>
 </Tabs>
@@ -167,12 +167,12 @@ Global middleware runs on every HTTP request, before route-level conditions and 
 Register the global middleware functions in a worker, just like any other function:
 
 ```typescript
-iii.registerFunction({ id: 'global::rate-limiter' }, async (req) => {
+iii.registerFunction('global::rate-limiter', async (req) => {
   // rate limiting logic...
   return { action: 'continue' }
 })
 
-iii.registerFunction({ id: 'global::request-logger' }, async (req) => {
+iii.registerFunction('global::request-logger', async (req) => {
   console.log(`${req.request.method} ${JSON.stringify(req.request.path_params)}`)
   return { action: 'continue' }
 })

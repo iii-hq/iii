@@ -19,7 +19,7 @@ describe('bridge integration', () => {
     const sdk = getInstance()
     const functionId = `test.echo.${Date.now()}`
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       return { status_code: 200, body: { echoed: data } }
     })
 
@@ -36,7 +36,7 @@ describe('bridge integration', () => {
     const functionId = `test.receiver.${Date.now()}`
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
       return {}
     })
@@ -60,8 +60,8 @@ describe('bridge integration', () => {
     const func1 = `test.list.func1.${Date.now()}`
     const func2 = `test.list.func2.${Date.now()}`
 
-    sdk.registerFunction({ id: func1 }, async () => ({}))
-    sdk.registerFunction({ id: func2 }, async () => ({}))
+    sdk.registerFunction(func1, async () => ({}))
+    sdk.registerFunction(func2, async () => ({}))
 
     await waitForRegistration(sdk, func1)
     await waitForRegistration(sdk, func2)

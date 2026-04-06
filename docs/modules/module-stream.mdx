@@ -331,7 +331,7 @@ It's possible to implement a function to handle authentication.
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({ id: 'onAuth' }, (input) => ({
+iii.registerFunction('onAuth', (input) => ({
   context: { name: 'John Doe' },
 }))
 ```
@@ -341,7 +341,7 @@ iii.registerFunction({ id: 'onAuth' }, (input) => ({
 def on_auth(input):
     return {'context': {'name': 'John Doe'}}
 
-iii.register_function({'id': 'onAuth'}, on_auth)
+iii.register_function("onAuth", on_auth)
 ```
 </Tab>
 <Tab title="Rust">
@@ -393,7 +393,7 @@ Fire when a client connects or disconnects via WebSocket. Both trigger types del
 ```typescript
 import { StreamJoinLeaveEvent } from 'iii-sdk/stream'
 
-const fn = iii.registerFunction({ id: 'onJoin' }, (input: StreamJoinLeaveEvent) => {
+const fn = iii.registerFunction('onJoin', (input: StreamJoinLeaveEvent) => {
   console.log(`Joined ${input.stream_name}/${input.group_id}`, input.context)
   return {}
 })
@@ -413,7 +413,7 @@ def on_join(input: StreamJoinLeaveEvent):
     print(f"Joined {input.stream_name}/{input.group_id}", input.context)
     return {}
 
-iii.register_function({'id': 'onJoin'}, on_join)
+iii.register_function("onJoin", on_join)
 iii.register_trigger({'type': 'stream:join', 'function_id': 'onJoin', 'config': {}})
 ```
 </Tab>
@@ -477,7 +477,7 @@ The handler receives a payload with the following shape:
 ```typescript
 import { StreamChangeEvent } from 'iii-sdk/stream'
 
-const fn = iii.registerFunction({ id: 'onChatMessage' }, (input: StreamChangeEvent) => {
+const fn = iii.registerFunction('onChatMessage', (input: StreamChangeEvent) => {
   console.log(`[${input.event.type}] ${input.streamName}/${input.groupId}/${input.id}`, input.event.data)
   return {}
 })
@@ -497,7 +497,7 @@ def on_chat_message(input: StreamChangeEvent):
     print(f"[{input.event.type}] {input.streamName}/{input.groupId}/{input.id}", input.event.data)
     return {}
 
-iii.register_function({'id': 'onChatMessage'}, on_chat_message)
+iii.register_function("onChatMessage", on_chat_message)
 iii.register_trigger({
     'type': 'stream',
     'function_id': 'onChatMessage',
@@ -675,7 +675,7 @@ Register the auth function. Clients may send the token via `Authorization: Beare
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({ id: 'stream::auth' }, (input) => {
+iii.registerFunction('stream::auth', (input) => {
   const auth = input.headers?.['authorization']?.replace(/^Bearer\s+/i, '')
   const proto = input.headers?.['sec-websocket-protocol']
   const token = auth ?? (proto?.startsWith('Authorization,') ? proto.slice(13) : null)
@@ -692,7 +692,7 @@ def stream_auth(input):
         return {'context': {'userId': 'user-from-token'}}
     return {'context': None}
 
-iii.register_function({'id': 'stream::auth'}, stream_auth)
+iii.register_function("stream::auth", stream_auth)
 ```
 </Tab>
 <Tab title="Rust">
@@ -721,7 +721,7 @@ Join/leave triggers receive the auth `context`:
 ```typescript
 import { StreamJoinLeaveEvent } from 'iii-sdk/stream'
 
-const fn = iii.registerFunction({ id: 'onJoin' }, (input: StreamJoinLeaveEvent) => {
+const fn = iii.registerFunction('onJoin', (input: StreamJoinLeaveEvent) => {
   if (input.context?.userId) {
     console.log(`User ${input.context.userId} joined ${input.stream_name}/${input.group_id}/${input.id}`)
   }
@@ -744,7 +744,7 @@ def on_join(input: StreamJoinLeaveEvent):
         print(f"User {input.context['userId']} joined {input.stream_name}/{input.group_id}/{input.id}")
     return {}
 
-iii.register_function({'id': 'onJoin'}, on_join)
+iii.register_function("onJoin", on_join)
 iii.register_trigger({'type': 'stream:join', 'function_id': 'onJoin', 'config': {}})
 ```
 </Tab>
@@ -779,7 +779,7 @@ const conditionFn = iii.registerFunction(
   async (input: StreamJoinLeaveEvent) => input.context?.userId != null,
 )
 
-const fn = iii.registerFunction({ id: 'onJoin' }, (input: StreamJoinLeaveEvent) => {
+const fn = iii.registerFunction('onJoin', (input: StreamJoinLeaveEvent) => {
   console.log('User joined:', input.context?.userId, input.stream_name)
   return {}
 })
@@ -798,13 +798,13 @@ from iii import StreamJoinLeaveEvent
 def require_context(input: StreamJoinLeaveEvent):
     return input.context is not None and input.context.get('userId') is not None
 
-iii.register_function({'id': 'conditions::requireContext'}, require_context)
+iii.register_function("conditions::requireContext", require_context)
 
 def on_join(input: StreamJoinLeaveEvent):
     print('User joined:', input.context.get('userId') if input.context else None, input.stream_name)
     return {}
 
-iii.register_function({'id': 'onJoin'}, on_join)
+iii.register_function("onJoin", on_join)
 iii.register_trigger({
     'type': 'stream:join',
     'function_id': 'onJoin',

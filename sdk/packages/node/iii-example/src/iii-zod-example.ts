@@ -14,12 +14,8 @@ async function helloWorld(input: z.infer<typeof inputSchema>): Promise<z.infer<t
   return { value: `${input.scope}::${input.key}` }
 }
 
-iii.registerFunction(
-  {
-    id: 'example::hello-world',
-    description: 'description',
-    request_format: z.toJSONSchema(inputSchema),
-    response_format: z.toJSONSchema(outputSchema),
-  },
-  helloWorld,
-)
+iii.registerFunction('example::hello-world', helloWorld, {
+  description: 'description',
+  request_format: z.toJSONSchema(inputSchema),
+  response_format: z.toJSONSchema(outputSchema),
+})

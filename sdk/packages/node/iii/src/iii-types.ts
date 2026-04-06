@@ -96,19 +96,20 @@ export type RegisterFunctionFormat = {
   /**
    * The type of the parameter
    */
-  type: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map'
+  type?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map' | 'integer'
   /**
-   * The body of the parameter
+   * The body of the parameter (for objects)
    */
-  properties?: Record<string, RegisterFunctionFormat>
+  properties?: Record<string, unknown>
   /**
-   * The items of the parameter
+   * The items of the parameter (for arrays)
    */
-  items?: RegisterFunctionFormat
+  items?: unknown
   /**
    * Whether the parameter is required
    */
   required?: string[]
+  [key: string]: unknown
 }
 
 export type RegisterFunctionMessage = {

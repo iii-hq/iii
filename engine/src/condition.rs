@@ -75,11 +75,17 @@ mod tests {
             _req: crate::engine::RegisterFunctionRequest,
             _handler: crate::engine::Handler<H>,
         ) where
-            H: Fn(Value) -> F + Send + Sync + 'static,
-            F: std::future::Future<
-                    Output = crate::function::FunctionResult<Option<Value>, ErrorBody>,
-                > + Send
-                + 'static,
+            H: crate::engine::HandlerFn<F>,
+            F: std::future::Future<Output = crate::engine::HandlerOutput> + Send + 'static,
+        {
+        }
+        fn register_function_handler_with_session<H, F>(
+            &self,
+            _req: crate::engine::RegisterFunctionRequest,
+            _handler: crate::engine::SessionHandler<H>,
+        ) where
+            H: crate::engine::SessionHandlerFn<F>,
+            F: std::future::Future<Output = crate::engine::HandlerOutput> + Send + 'static,
         {
         }
     }

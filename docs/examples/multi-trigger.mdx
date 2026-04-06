@@ -205,7 +205,7 @@ def orders_handle(data) -> dict | None:
     logger.info("Batch complete", {"count": len(pending)})
     return None
 
-iii.register_function({"id": "orders.handle"}, orders_handle)
+iii.register_function("orders.handle", orders_handle)
 
 iii.register_trigger({"type": "http", "function_id": "orders.handle",
                       "config": {"api_path": "orders/manual", "http_method": "POST"}})

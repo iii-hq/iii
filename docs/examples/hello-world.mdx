@@ -146,7 +146,7 @@ def hello_api(data) -> ApiResponse:
         },
     )
 
-iii.register_function({"id": "hello::api"}, hello_api)
+iii.register_function("hello::api", hello_api)
 iii.register_trigger({
     "type": "http",
     "function_id": "hello::api",
@@ -275,7 +275,7 @@ def greet_process(data: dict) -> None:
 
     logger.info("Greeting processed", {"requestId": request_id, "greeting": greeting})
 
-iii.register_function({"id": "greet::process"}, greet_process)
+iii.register_function("greet::process", greet_process)
 iii.register_trigger({
     "type": "queue",
     "function_id": "greet::process",

@@ -637,7 +637,7 @@ mod tests {
 
     fn register_test_function(engine: &Arc<Engine>, function_id: &str, success: bool) {
         let function = Function {
-            handler: Arc::new(move |_invocation_id, _input| {
+            handler: Arc::new(move |_invocation_id, _input, _session| {
                 Box::pin(async move {
                     if success {
                         FunctionResult::Success(Some(json!({ "ok": true })))

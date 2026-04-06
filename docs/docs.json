@@ -27,7 +27,10 @@
               },
               {
                 "group": "Primitives & Concepts",
-                "pages": ["primitives-and-concepts/functions-triggers-workers", "primitives-and-concepts/discovery"]
+                "pages": [
+                  "primitives-and-concepts/functions-triggers-workers",
+                  "primitives-and-concepts/discovery"
+                ]
               },
               {
                 "group": "How-to Guides",
@@ -129,9 +132,9 @@
       }
     ]
   },
-  "analytics": {
-    "ga4": {
-      "measurementId": "G-E4G8GW1J2Q"
+  "integrations": {
+    "gtm": {
+      "tagId": "GTM-N8DCTFB8"
     }
   }
 }

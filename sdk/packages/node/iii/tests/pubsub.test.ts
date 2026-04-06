@@ -15,7 +15,7 @@ describe('PubSub', () => {
     })
 
     const fn = iii.registerFunction(
-      { id: `test.pubsub.subscriber.${topic}` },
+      `test.pubsub.subscriber.${topic}`,
       async (data: Record<string, unknown>) => {
         receivedMessages.push(data)
         resolveReceived?.()
@@ -62,7 +62,7 @@ describe('PubSub', () => {
     })
 
     const fnA = iii.registerFunction(
-      { id: `test.pubsub.topic_a.${topicA}` },
+      `test.pubsub.topic_a.${topicA}`,
       async (data: Record<string, unknown>) => {
         receivedA.push(data)
         resolveA?.()
@@ -71,7 +71,7 @@ describe('PubSub', () => {
     )
 
     const fnB = iii.registerFunction(
-      { id: `test.pubsub.topic_b.${topicB}` },
+      `test.pubsub.topic_b.${topicB}`,
       async (data: Record<string, unknown>) => {
         receivedB.push(data)
         return {}

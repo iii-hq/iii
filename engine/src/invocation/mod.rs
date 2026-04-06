@@ -18,6 +18,7 @@ use crate::telemetry::SpanExt;
 use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
+    modules::worker::rbac_session::Session,
     protocol::ErrorBody,
 };
 
@@ -80,6 +81,7 @@ impl InvocationHandler {
         function_handler: Function,
         traceparent: Option<String>,
         baggage: Option<String>,
+        session: Option<Arc<Session>>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
@@ -121,7 +123,7 @@ impl InvocationHandler {
             let metrics = get_engine_metrics();
 
             let result = function_handler
-                .call_handler(Some(invocation_id), body)
+                .call_handler(Some(invocation_id), body, session)
                 .await;
 
             // Calculate duration

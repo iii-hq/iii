@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "flags::set-override" }, async (request: any) => {
+iii.registerFunction("flags::set-override", async (request: any) => {
   const logger = new Logger();
   const flagKey = request.params.flagKey;
   const record = await iii.trigger({
@@ -30,7 +30,7 @@ iii.registerFunction({ id: "flags::set-override" }, async (request: any) => {
   return record;
 });
 
-iii.registerFunction({ id: "flags::evaluate" }, async (request: any) => {
+iii.registerFunction("flags::evaluate", async (request: any) => {
   const logger = new Logger();
   const flagKey = request.params.flagKey;
   const userId = String(request.query.userId || "anonymous");

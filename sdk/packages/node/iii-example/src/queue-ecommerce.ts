@@ -53,12 +53,13 @@ useApi(
 const paymentLogger = new Logger(undefined, 'orders::process-payment')
 
 iii.registerFunction(
-  { id: 'orders::process-payment', metadata: { tags: ['queue', 'ecommerce'] } },
+  'orders::process-payment',
   async payload => {
     paymentLogger.info('Processing payment', { payload })
     // Simulate payment processing
     return { charged: true, orderId: payload.orderId, amount: payload.amount }
   },
+  { metadata: { tags: ['queue', 'ecommerce'] } },
 )
 
 // --- Worker: send confirmation email ---
@@ -66,12 +67,13 @@ iii.registerFunction(
 const emailLogger = new Logger(undefined, 'emails::confirmation')
 
 iii.registerFunction(
-  { id: 'emails::confirmation', metadata: { tags: ['queue', 'ecommerce'] } },
+  'emails::confirmation',
   async payload => {
     emailLogger.info('Sending confirmation email', { payload })
     // Simulate email delivery
     return { sent: true, email: payload.email, orderId: payload.orderId }
   },
+  { metadata: { tags: ['queue', 'ecommerce'] } },
 )
 
 // --- Worker: track analytics event (fire-and-forget target) ---
@@ -79,9 +81,10 @@ iii.registerFunction(
 const analyticsLogger = new Logger(undefined, 'analytics::track')
 
 iii.registerFunction(
-  { id: 'analytics::track', metadata: { tags: ['queue', 'ecommerce'] } },
+  'analytics::track',
   async payload => {
     analyticsLogger.info('Tracking event', { payload })
     return { tracked: true }
   },
+  { metadata: { tags: ['queue', 'ecommerce'] } },
 )

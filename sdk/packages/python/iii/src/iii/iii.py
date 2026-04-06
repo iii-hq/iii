@@ -17,7 +17,13 @@ from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
 from .format_utils import extract_request_format, extract_response_format
-from .iii_constants import DEFAULT_RECONNECTION_CONFIG, MAX_QUEUE_SIZE, FunctionRef, IIIConnectionState, InitOptions
+from .iii_constants import (
+    DEFAULT_RECONNECTION_CONFIG,
+    MAX_QUEUE_SIZE,
+    FunctionRef,
+    IIIConnectionState,
+    InitOptions,
+)
 from .iii_types import (
     FunctionInfo,
     HttpInvocationConfig,
@@ -44,7 +50,14 @@ from .iii_types import (
     UnregisterTriggerTypeMessage,
     WorkerInfo,
 )
-from .stream import IStream, StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput, StreamSetInput
+from .stream import (
+    IStream,
+    StreamDeleteInput,
+    StreamGetInput,
+    StreamListGroupsInput,
+    StreamListInput,
+    StreamSetInput,
+)
 from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
@@ -61,6 +74,7 @@ def _resolve_format(fmt: Any) -> Any | None:
         return None
     if isinstance(fmt, type):
         from .format_utils import python_type_to_format
+
         return python_type_to_format(fmt)
     return fmt
 
@@ -100,10 +114,14 @@ class III:
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
         self._receiver_task: asyncio.Task[None] | None = None
-        self._functions_available_callbacks: set[Callable[[list[FunctionInfo]], None]] = set()
+        self._functions_available_callbacks: set[
+            Callable[[list[FunctionInfo]], None]
+        ] = set()
         self._functions_available_trigger: Trigger | None = None
         self._functions_available_function_id: str | None = None
-        self._reconnection_config = self._options.reconnection_config or DEFAULT_RECONNECTION_CONFIG
+        self._reconnection_config = (
+            self._options.reconnection_config or DEFAULT_RECONNECTION_CONFIG
+        )
         self._reconnect_attempt = 0
         self._connection_state: IIIConnectionState = "disconnected"
         self._worker_id: str | None = None
@@ -138,7 +156,9 @@ class III:
             raise ConnectionError(f"Connection to {self._address} failed")
         self._connected_event.wait(timeout=30)
         if cast(IIIConnectionState, self._connection_state) == "failed":
-            raise ConnectionError(f"Connection to {self._address} failed after max retries")
+            raise ConnectionError(
+                f"Connection to {self._address} failed after max retries"
+            )
 
     def shutdown(self) -> None:
         """Gracefully shut down the client, releasing all resources.
@@ -250,18 +270,27 @@ class III:
     async def _reconnect_loop(self) -> None:
         config = self._reconnection_config
         while self._running and not self._ws:
-            if config.max_retries != -1 and self._reconnect_attempt >= config.max_retries:
+            if (
+                config.max_retries != -1
+                and self._reconnect_attempt >= config.max_retries
+            ):
                 self._set_connection_state("failed")
-                log.error(f"Max reconnection retries ({config.max_retries}) reached, giving up")
+                log.error(
+                    f"Max reconnection retries ({config.max_retries}) reached, giving up"
+                )
                 return
 
-            exponential_delay = config.initial_delay_ms * (config.backoff_multiplier**self._reconnect_attempt)
+            exponential_delay = config.initial_delay_ms * (
+                config.backoff_multiplier**self._reconnect_attempt
+            )
             capped_delay = min(exponential_delay, config.max_delay_ms)
             jitter = capped_delay * config.jitter_factor * (2 * random.random() - 1)
             delay_ms = max(0, capped_delay + jitter)
 
             self._set_connection_state("reconnecting")
-            log.debug(f"Reconnecting in {delay_ms:.0f}ms (attempt {self._reconnect_attempt + 1})")
+            log.debug(
+                f"Reconnecting in {delay_ms:.0f}ms (attempt {self._reconnect_attempt + 1})"
+            )
 
             await asyncio.sleep(delay_ms / 1000.0)
             self._reconnect_attempt += 1
@@ -433,7 +462,9 @@ class III:
             carrier["traceparent"] = traceparent
         if baggage:
             carrier["baggage"] = baggage
-        parent_ctx = propagate.extract(carrier) if carrier else otel_context.get_current()
+        parent_ctx = (
+            propagate.extract(carrier) if carrier else otel_context.get_current()
+        )
         tracer = trace.get_tracer("iii-python-sdk")
         with tracer.start_as_current_span(
             f"call {handler.__name__}",
@@ -454,7 +485,11 @@ class III:
     def _resolve_channels(self, data: Any) -> Any:
         if is_channel_ref(data):
             ref = StreamChannelRef(**data)
-            return ChannelReader(self._address, ref) if ref.direction == "read" else ChannelWriter(self._address, ref)
+            return (
+                ChannelReader(self._address, ref)
+                if ref.direction == "read"
+                else ChannelWriter(self._address, ref)
+            )
         if isinstance(data, dict):
             return {k: self._resolve_channels(v) for k, v in data.items()}
         if isinstance(data, list):
@@ -499,14 +534,20 @@ class III:
                     InvocationResultMessage(
                         invocation_id=invocation_id,
                         function_id=path,
-                        error={"code": "invocation_failed", "message": str(e), "stacktrace": traceback.format_exc()},
+                        error={
+                            "code": "invocation_failed",
+                            "message": str(e),
+                            "stacktrace": traceback.format_exc(),
+                        },
                     )
                 )
             return
 
         if not invocation_id:
             task = asyncio.create_task(
-                self._invoke_with_otel_context(func.handler, resolved_data, traceparent, baggage)
+                self._invoke_with_otel_context(
+                    func.handler, resolved_data, traceparent, baggage
+                )
             )
             task.add_done_callback(self._log_task_exception)
             return
@@ -533,7 +574,11 @@ class III:
                 InvocationResultMessage(
                     invocation_id=invocation_id,
                     function_id=path,
-                    error={"code": "invocation_failed", "message": str(original), "stacktrace": traceback.format_exc()},
+                    error={
+                        "code": "invocation_failed",
+                        "message": str(original),
+                        "stacktrace": traceback.format_exc(),
+                    },
                     traceparent=te.traceparent,
                 )
             )
@@ -543,13 +588,19 @@ class III:
                 InvocationResultMessage(
                     invocation_id=invocation_id,
                     function_id=path,
-                    error={"code": "invocation_failed", "message": str(e), "stacktrace": traceback.format_exc()},
+                    error={
+                        "code": "invocation_failed",
+                        "message": str(e),
+                        "stacktrace": traceback.format_exc(),
+                    },
                 )
             )
 
     async def _handle_trigger_registration(self, data: dict[str, Any]) -> None:
         trigger_type_id = data.get("trigger_type")
-        handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
+        handler_data = (
+            self._trigger_types.get(trigger_type_id) if trigger_type_id else None
+        )
 
         trigger_id = data.get("id", "")
         function_id = data.get("function_id", "")
@@ -573,7 +624,12 @@ class III:
             await self._send(result_base)
         except Exception as e:
             log.exception(f"Error registering trigger {trigger_id}")
-            await self._send({**result_base, "error": {"code": "trigger_registration_failed", "message": str(e)}})
+            await self._send(
+                {
+                    **result_base,
+                    "error": {"code": "trigger_registration_failed", "message": str(e)},
+                }
+            )
 
     # Connection state management
 
@@ -641,7 +697,11 @@ class III:
             if isinstance(trigger_type.trigger_request_format, type)
             else None
         )
-        request_cls = trigger_type.call_request_format if isinstance(trigger_type.call_request_format, type) else None
+        request_cls = (
+            trigger_type.call_request_format
+            if isinstance(trigger_type.call_request_format, type)
+            else None
+        )
 
         msg = RegisterTriggerTypeMessage(
             id=trigger_type.id,
@@ -649,7 +709,9 @@ class III:
             trigger_request_format=_resolve_format(trigger_type.trigger_request_format),
             call_request_format=_resolve_format(trigger_type.call_request_format),
         )
-        self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(message=msg, handler=handler)
+        self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(
+            message=msg, handler=handler
+        )
         self._send_if_connected(msg)
 
         return TriggerTypeRef(
@@ -659,7 +721,9 @@ class III:
             request_cls=request_cls,
         )
 
-    def unregister_trigger_type(self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]") -> None:
+    def unregister_trigger_type(
+        self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]"
+    ) -> None:
         """Unregister a previously registered trigger type.
 
         Args:
@@ -676,7 +740,9 @@ class III:
         self._trigger_types.pop(type_id, None)
         self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id))
 
-    def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger:
+    def register_trigger(
+        self, trigger: RegisterTriggerInput | dict[str, Any]
+    ) -> Trigger:
         """Bind a trigger configuration to a registered function.
 
         Args:
@@ -715,7 +781,9 @@ class III:
 
         def unregister() -> None:
             self._triggers.pop(trigger_id, None)
-            self._send_if_connected(UnregisterTriggerMessage(id=trigger_id, trigger_type=msg.trigger_type))
+            self._send_if_connected(
+                UnregisterTriggerMessage(id=trigger_id, trigger_type=msg.trigger_type)
+            )
 
         return Trigger(unregister)
 
@@ -788,7 +856,9 @@ class III:
         """
         if isinstance(func_or_id, str):
             # Simplified API: auto-extract formats from handler type hints
-            handler_for_extraction = handler_or_invocation if callable(handler_or_invocation) else None
+            handler_for_extraction = (
+                handler_or_invocation if callable(handler_or_invocation) else None
+            )
             if request_format is None and handler_for_extraction is not None:
                 request_format = extract_request_format(handler_for_extraction)
             if response_format is None and handler_for_extraction is not None:
@@ -824,7 +894,9 @@ class III:
         else:
             if not callable(handler_or_invocation):
                 actual_type = type(handler_or_invocation).__name__
-                raise TypeError(f"handler_or_invocation must be callable or HttpInvocationConfig, got {actual_type}")
+                raise TypeError(
+                    f"handler_or_invocation must be callable or HttpInvocationConfig, got {actual_type}"
+                )
             handler = handler_or_invocation
             msg = RegisterFunctionMessage(
                 id=func.id,
@@ -973,7 +1045,9 @@ class III:
 
         self._pending[invocation_id] = future
 
-        enqueue_action: TriggerActionEnqueue | None = action if isinstance(action, TriggerActionEnqueue) else None
+        enqueue_action: TriggerActionEnqueue | None = (
+            action if isinstance(action, TriggerActionEnqueue) else None
+        )
 
         await self._send(
             InvokeFunctionMessage(
@@ -990,7 +1064,9 @@ class III:
             return await asyncio.wait_for(future, timeout=timeout_secs)
         except asyncio.TimeoutError:
             self._pending.pop(invocation_id, None)
-            raise TimeoutError(f"Invocation of '{function_id}' timed out after {timeout_ms}ms")
+            raise TimeoutError(
+                f"Invocation of '{function_id}' timed out after {timeout_ms}ms"
+            )
 
     def list_functions(self) -> list[FunctionInfo]:
         """List all functions registered with the engine across all workers.
@@ -1014,7 +1090,9 @@ class III:
             >>> for fn in await iii.list_functions_async():
             ...     print(fn.function_id, fn.description)
         """
-        result = await self.trigger_async({"function_id": "engine::functions::list", "payload": {}})
+        result = await self.trigger_async(
+            {"function_id": "engine::functions::list", "payload": {}}
+        )
         functions_data = result.get("functions", [])
         return [FunctionInfo(**f) for f in functions_data]
 
@@ -1040,7 +1118,9 @@ class III:
             >>> for w in await iii.list_workers_async():
             ...     print(w.name, w.worker_id)
         """
-        result = await self.trigger_async({"function_id": "engine::workers::list", "payload": {}})
+        result = await self.trigger_async(
+            {"function_id": "engine::workers::list", "payload": {}}
+        )
         workers_data = result.get("workers", [])
         return [WorkerInfo(**w) for w in workers_data]
 
@@ -1060,7 +1140,9 @@ class III:
         """
         return self._run_on_loop(self.list_triggers_async(include_internal))
 
-    async def list_triggers_async(self, include_internal: bool = False) -> list[TriggerInfo]:
+    async def list_triggers_async(
+        self, include_internal: bool = False
+    ) -> list[TriggerInfo]:
         """List all triggers registered with the engine.
 
         Args:
@@ -1083,7 +1165,9 @@ class III:
         triggers_data = result.get("triggers", [])
         return [TriggerInfo(**t) for t in triggers_data]
 
-    def list_trigger_types(self, include_internal: bool = False) -> list[TriggerTypeInfo]:
+    def list_trigger_types(
+        self, include_internal: bool = False
+    ) -> list[TriggerTypeInfo]:
         """List all trigger types registered with the engine.
 
         Args:
@@ -1101,7 +1185,9 @@ class III:
         """
         return self._run_on_loop(self.list_trigger_types_async(include_internal))
 
-    async def list_trigger_types_async(self, include_internal: bool = False) -> list[TriggerTypeInfo]:
+    async def list_trigger_types_async(
+        self, include_internal: bool = False
+    ) -> list[TriggerTypeInfo]:
         """List all trigger types registered with the engine.
 
         Args:
@@ -1193,14 +1279,18 @@ class III:
 
         telemetry_opts = self._options.telemetry
         language = (
-            (telemetry_opts.language if telemetry_opts else None) or os.environ.get("LANG", "").split(".")[0] or None
+            (telemetry_opts.language if telemetry_opts else None)
+            or os.environ.get("LANG", "").split(".")[0]
+            or None
         )
 
         telemetry: dict[str, Any] = {
             "language": language,
             "project_name": telemetry_opts.project_name if telemetry_opts else None,
-            "framework": telemetry_opts.framework if telemetry_opts else None,
-            "amplitude_api_key": telemetry_opts.amplitude_api_key if telemetry_opts else None,
+            "framework": (telemetry_opts.framework if telemetry_opts else None) or "iii-py",
+            "amplitude_api_key": (
+                telemetry_opts.amplitude_api_key if telemetry_opts else None
+            ),
         }
 
         return {
@@ -1222,7 +1312,9 @@ class III:
         )
         asyncio.run_coroutine_threadsafe(self._send(msg), self._loop)
 
-    def on_functions_available(self, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
+    def on_functions_available(
+        self, callback: Callable[[list[FunctionInfo]], None]
+    ) -> Callable[[], None]:
         """Subscribe to function-availability events from the engine.
 
         The callback fires whenever the set of available functions changes
@@ -1249,7 +1341,9 @@ class III:
 
         if not self._functions_available_trigger:
             if not self._functions_available_function_id:
-                self._functions_available_function_id = f"iii.on_functions_available.{uuid.uuid4()}"
+                self._functions_available_function_id = (
+                    f"iii.on_functions_available.{uuid.uuid4()}"
+                )
 
             function_id = self._functions_available_function_id
             if function_id not in self._functions:
@@ -1263,12 +1357,19 @@ class III:
                 self.register_function({"id": function_id}, handler)
 
             self._functions_available_trigger = self.register_trigger(
-                {"type": "engine::functions-available", "function_id": function_id, "config": {}}
+                {
+                    "type": "engine::functions-available",
+                    "function_id": function_id,
+                    "config": {},
+                }
             )
 
         def unsubscribe() -> None:
             self._functions_available_callbacks.discard(callback)
-            if len(self._functions_available_callbacks) == 0 and self._functions_available_trigger:
+            if (
+                len(self._functions_available_callbacks) == 0
+                and self._functions_available_trigger
+            ):
                 self._functions_available_trigger.unregister()
                 self._functions_available_trigger = None
 
@@ -1316,14 +1417,18 @@ class III:
             return await stream.list(input_data)
 
         async def list_groups_handler(data: Any) -> list[str]:
-            input_data = StreamListGroupsInput(**data) if isinstance(data, dict) else data
+            input_data = (
+                StreamListGroupsInput(**data) if isinstance(data, dict) else data
+            )
             return await stream.list_groups(input_data)
 
         self.register_function({"id": f"stream::get({stream_name})"}, get_handler)
         self.register_function({"id": f"stream::set({stream_name})"}, set_handler)
         self.register_function({"id": f"stream::delete({stream_name})"}, delete_handler)
         self.register_function({"id": f"stream::list({stream_name})"}, list_handler)
-        self.register_function({"id": f"stream::list_groups({stream_name})"}, list_groups_handler)
+        self.register_function(
+            {"id": f"stream::list_groups({stream_name})"}, list_groups_handler
+        )
 
 
 class TriggerAction:

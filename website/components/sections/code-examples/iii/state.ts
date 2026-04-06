@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "carts::add-item" }, async (request: any) => {
+iii.registerFunction("carts::add-item", async (request: any) => {
   const logger = new Logger();
   const cartId = request.params.cartId;
   const lineItem = {
@@ -39,7 +39,7 @@ iii.registerFunction({ id: "carts::add-item" }, async (request: any) => {
   return { cart };
 });
 
-iii.registerFunction({ id: "carts::get" }, async (request: any) => {
+iii.registerFunction("carts::get", async (request: any) => {
   const logger = new Logger();
   let cart = await iii.trigger({
     function_id: "state::get",

@@ -42,7 +42,7 @@ export function safeStringify(value: unknown): string {
  * import { http } from 'iii-sdk'
  *
  * iii.registerFunction(
- *   { id: 'my-api' },
+ *   'my-api',
  *   http(async (req, res) => {
  *     res.status(200)
  *     res.headers({ 'content-type': 'application/json' })

@@ -436,7 +436,7 @@ import { registerWorker, TriggerAction, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'orders::create' }, async (req) => {
+iii.registerFunction('orders::create', async (req) => {
   const logger = new Logger()
   const order = { id: crypto.randomUUID(), ...req.body }
 
@@ -582,7 +582,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'orders::process-order' }, async (order) => {
+iii.registerFunction('orders::process-order', async (order) => {
   const logger = new Logger()
   logger.info('Processing payment', { orderId: order.id })
   // ...payment logic...
@@ -636,7 +636,7 @@ A worker can also enqueue further work, creating processing pipelines:
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({ id: 'orders::process-order' }, async (order) => {
+iii.registerFunction('orders::process-order', async (order) => {
   // ...charge the customer...
 
   await iii.trigger({
@@ -748,7 +748,7 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'campaigns::launch' }, async (campaign) => {
+iii.registerFunction('campaigns::launch', async (campaign) => {
   for (const recipient of campaign.recipients) {
     await iii.trigger({
       function_id: 'emails::send',
@@ -764,7 +764,7 @@ iii.registerFunction({ id: 'campaigns::launch' }, async (campaign) => {
   return { enqueued: campaign.recipients.length }
 })
 
-iii.registerFunction({ id: 'emails::send' }, async (email) => {
+iii.registerFunction('emails::send', async (email) => {
   const response = await fetch('https://smtp-provider.example/send', {
     method: 'POST',
     body: JSON.stringify(email),
@@ -903,7 +903,7 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'transactions::submit' }, async (req) => {
+iii.registerFunction('transactions::submit', async (req) => {
   const { account_id, type, amount } = req.body
 
   const receipt = await iii.trigger({
@@ -915,7 +915,7 @@ iii.registerFunction({ id: 'transactions::submit' }, async (req) => {
   return { status_code: 202, body: { receiptId: receipt.messageReceiptId } }
 })
 
-iii.registerFunction({ id: 'ledger::apply' }, async (txn) => {
+iii.registerFunction('ledger::apply', async (txn) => {
   const { account_id, type, amount } = txn
   if (type === 'deposit') {
     await db.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amount, account_id])

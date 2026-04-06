@@ -275,6 +275,48 @@ class TestRbacWorkers:
         finally:
             iii_client.shutdown()
 
+    def test_list_functions_only_returns_allowed_for_valid_token(self, iii_server):
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            time.sleep(1.0)
+
+            functions = iii_client.list_functions()
+            function_ids = [f.function_id for f in functions]
+
+            assert "test::ew::valid-token-echo" in function_ids
+            assert "test::ew::public::echo" in function_ids
+            assert "test::ew::meta-public" in function_ids
+
+            assert "test::ew::private" not in function_ids
+            assert "test::rbac-worker::auth" not in function_ids
+        finally:
+            iii_client.shutdown()
+
+    def test_list_functions_only_returns_exposed_for_restricted_token(self, iii_server):
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "restricted-token"}),
+        )
+
+        try:
+            time.sleep(1.0)
+
+            functions = iii_client.list_functions()
+            function_ids = [f.function_id for f in functions]
+
+            assert "test::ew::public::echo" in function_ids
+            assert "test::ew::meta-public" in function_ids
+
+            assert "test::ew::valid-token-echo" not in function_ids
+            assert "test::ew::private" not in function_ids
+            assert "test::rbac-worker::auth" not in function_ids
+        finally:
+            iii_client.shutdown()
+
     def test_function_registration_prefix(self, iii_server):
         iii_client = register_worker(
             EW_URL,

@@ -24,40 +24,20 @@ describe('Bridge Operations', () => {
   })
 
   it('should send registerfunction message', () => {
-    sdk.registerFunction({ id: 'test.echo' }, async (data) => ({ echoed: data }))
+    sdk.registerFunction('test.echo', async (data) => ({ echoed: data }))
 
     const msg = engine.findSent('registerfunction')
     expect(msg).toBeDefined()
-    expect(msg!.id).toBe('test.echo')
+    expect(msg?.id).toBe('test.echo')
   })
 
   it('should throw on empty function id', () => {
-    expect(() =>
-      sdk.registerFunction({ id: '' }, async () => ({})),
-    ).toThrow('id is required')
+    expect(() => sdk.registerFunction('', async () => ({}))).toThrow('id is required')
   })
 
   it('should throw on duplicate function id', () => {
-    sdk.registerFunction({ id: 'test.dup' }, async () => ({}))
-    expect(() =>
-      sdk.registerFunction({ id: 'test.dup' }, async () => ({})),
-    ).toThrow('function id already registered: test.dup')
-  })
-
-  it('should register HTTP invocation function', () => {
-    sdk.registerFunction(
-      { id: 'external::my-lambda' },
-      { url: 'https://example.com/invoke', method: 'POST', timeout_ms: 5000 },
-    )
-
-    const msg = engine.findSent('registerfunction')
-    expect(msg).toBeDefined()
-    expect(msg!.id).toBe('external::my-lambda')
-    expect(msg!.invocation).toEqual({
-      url: 'https://example.com/invoke',
-      method: 'POST',
-      timeout_ms: 5000,
-    })
+    sdk.registerFunction('test.dup', async () => ({}))
+    expect(() => sdk.registerFunction('test.dup', async () => ({}))).toThrow('function id already registered: test.dup')
   })
 
   it('should trigger sync invocation and resolve on result', async () => {
@@ -71,19 +51,16 @@ describe('Bridge Operations', () => {
     const invokeMsgs = engine.findAllSent('invokefunction')
     const invokeMsg = invokeMsgs.find((m) => m.function_id === 'remote.echo')
     expect(invokeMsg).toBeDefined()
-    expect(invokeMsg!.data).toEqual({ msg: 'hello' })
+    expect(invokeMsg?.data).toEqual({ msg: 'hello' })
 
-    engine.respondToInvocation(
-      invokeMsg!.invocation_id as string,
-      { echoed: { msg: 'hello' } },
-    )
+    engine.respondToInvocation(invokeMsg?.invocation_id as string, { echoed: { msg: 'hello' } })
 
     const result = await triggerPromise
     expect(result).toEqual({ echoed: { msg: 'hello' } })
   })
 
   it('should trigger void and return undefined', async () => {
-    sdk.registerFunction({ id: 'test.void-target' }, async () => ({}))
+    sdk.registerFunction('test.void-target', async () => ({}))
 
     const result = await sdk.trigger({
       function_id: 'test.void-target',
@@ -95,8 +72,8 @@ describe('Bridge Operations', () => {
 
     const invokeMsg = engine.findSent('invokefunction')
     expect(invokeMsg).toBeDefined()
-    expect(invokeMsg!.action).toEqual({ type: 'void' })
-    expect(invokeMsg!.invocation_id).toBeUndefined()
+    expect(invokeMsg?.action).toEqual({ type: 'void' })
+    expect(invokeMsg?.invocation_id).toBeUndefined()
   })
 
   it('should trigger enqueue and resolve with receipt', async () => {
@@ -111,12 +88,9 @@ describe('Bridge Operations', () => {
     const invokeMsgs = engine.findAllSent('invokefunction')
     const invokeMsg = invokeMsgs.find((m) => m.function_id === 'queue.job')
     expect(invokeMsg).toBeDefined()
-    expect(invokeMsg!.action).toEqual({ type: 'enqueue', queue: 'work' })
+    expect(invokeMsg?.action).toEqual({ type: 'enqueue', queue: 'work' })
 
-    engine.respondToInvocation(
-      invokeMsg!.invocation_id as string,
-      { messageReceiptId: 'receipt-123' },
-    )
+    engine.respondToInvocation(invokeMsg?.invocation_id as string, { messageReceiptId: 'receipt-123' })
 
     const result = await triggerPromise
     expect(result).toEqual({ messageReceiptId: 'receipt-123' })
@@ -132,12 +106,14 @@ describe('Bridge Operations', () => {
     await expect(triggerPromise).rejects.toThrow('Invocation timeout after 50ms: slow.function')
 
     // Absorb the shutdown rejection that would otherwise be unhandled
-    triggerPromise.catch(() => {})
+    triggerPromise.catch(() => {
+      //
+    })
   })
 
   it('should handle engine-initiated function invocation', async () => {
     let receivedData: unknown
-    sdk.registerFunction({ id: 'test.handler' }, async (data) => {
+    sdk.registerFunction('test.handler', async (data) => {
       receivedData = data
       return { processed: true }
     })
@@ -151,13 +127,13 @@ describe('Bridge Operations', () => {
 
     const resultMsg = engine.findSent('invocationresult')
     expect(resultMsg).toBeDefined()
-    expect(resultMsg!.invocation_id).toBe(invocationId)
-    expect(resultMsg!.result).toEqual({ processed: true })
-    expect(resultMsg!.error).toBeUndefined()
+    expect(resultMsg?.invocation_id).toBe(invocationId)
+    expect(resultMsg?.result).toEqual({ processed: true })
+    expect(resultMsg?.error).toBeUndefined()
   })
 
   it('should send error result when handler throws', async () => {
-    sdk.registerFunction({ id: 'test.failing' }, async () => {
+    sdk.registerFunction('test.failing', async () => {
       throw new Error('handler exploded')
     })
 
@@ -168,9 +144,9 @@ describe('Bridge Operations', () => {
 
     const resultMsg = engine.findSent('invocationresult')
     expect(resultMsg).toBeDefined()
-    expect(resultMsg!.invocation_id).toBe(invocationId)
-    expect(resultMsg!.error).toBeDefined()
-    const error = resultMsg!.error as Record<string, unknown>
+    expect(resultMsg?.invocation_id).toBe(invocationId)
+    expect(resultMsg?.error).toBeDefined()
+    const error = resultMsg?.error as Record<string, unknown>
     expect(error.code).toBe('invocation_failed')
     expect(error.message).toBe('handler exploded')
   })
@@ -183,17 +159,17 @@ describe('Bridge Operations', () => {
 
     const resultMsg = engine.findSent('invocationresult')
     expect(resultMsg).toBeDefined()
-    const error = resultMsg!.error as Record<string, unknown>
+    const error = resultMsg?.error as Record<string, unknown>
     expect(error.code).toBe('function_not_found')
   })
 
   it('should send unregister message on unregister', () => {
-    const fn = sdk.registerFunction({ id: 'test.removable' }, async () => ({}))
+    const fn = sdk.registerFunction('test.removable', async () => ({}))
     fn.unregister()
 
     const msg = engine.findSent('unregisterfunction')
     expect(msg).toBeDefined()
-    expect(msg!.id).toBe('test.removable')
+    expect(msg?.id).toBe('test.removable')
   })
 
   it('should close WS and reject pending invocations on shutdown', async () => {
@@ -210,7 +186,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should re-register functions and triggers on reconnect', async () => {
-    sdk.registerFunction({ id: 'test.persist' }, async () => ({ ok: true }))
+    sdk.registerFunction('test.persist', async () => ({ ok: true }))
     sdk.registerTrigger({
       type: 'cron',
       function_id: 'test.persist',
@@ -218,7 +194,6 @@ describe('Bridge Operations', () => {
     })
 
     const firstSocket = engine.socket
-    const initialRegisterCount = firstSocket.findAllSent('registerfunction').length
 
     firstSocket.simulateClose()
 

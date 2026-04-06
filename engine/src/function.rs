@@ -12,6 +12,7 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::modules::worker::rbac_session::Session;
 use crate::protocol::*;
 
 pub enum FunctionResult<T, E> {
@@ -21,7 +22,8 @@ pub enum FunctionResult<T, E> {
     NoResult,
 }
 type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
-pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
+pub type HandlerFn =
+    dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>) -> HandlerFuture + Send + Sync;
 
 #[derive(Clone)]
 pub struct Function {
@@ -38,8 +40,9 @@ impl Function {
         self,
         invocation_id: Option<Uuid>,
         data: Value,
+        session: Option<Arc<Session>>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        (self.handler)(invocation_id, data.clone()).await
+        (self.handler)(invocation_id, data.clone(), session).await
     }
 }
 
@@ -121,7 +124,7 @@ mod tests {
     /// Helper: create a dummy function with a simple handler
     fn make_function(id: &str) -> Function {
         Function {
-            handler: Arc::new(|_invocation_id, _input| {
+            handler: Arc::new(|_invocation_id, _input, _session| {
                 Box::pin(async { FunctionResult::Success(Some(serde_json::json!({"ok": true}))) })
             }),
             _function_id: id.to_string(),
@@ -269,7 +272,7 @@ mod tests {
     fn registry_overwrite_existing_function() {
         let reg = FunctionsRegistry::new();
         let func1 = Function {
-            handler: Arc::new(|_, _| Box::pin(async { FunctionResult::Success(None) })),
+            handler: Arc::new(|_, _, _| Box::pin(async { FunctionResult::Success(None) })),
             _function_id: "fn".to_string(),
             _description: Some("version 1".to_string()),
             request_format: None,
@@ -277,7 +280,7 @@ mod tests {
             metadata: None,
         };
         let func2 = Function {
-            handler: Arc::new(|_, _| Box::pin(async { FunctionResult::Success(None) })),
+            handler: Arc::new(|_, _, _| Box::pin(async { FunctionResult::Success(None) })),
             _function_id: "fn".to_string(),
             _description: Some("version 2".to_string()),
             request_format: None,
@@ -293,7 +296,7 @@ mod tests {
     #[test]
     fn function_metadata_and_formats() {
         let func = Function {
-            handler: Arc::new(|_, _| Box::pin(async { FunctionResult::Success(None) })),
+            handler: Arc::new(|_, _, _| Box::pin(async { FunctionResult::Success(None) })),
             _function_id: "fn".to_string(),
             _description: None,
             request_format: Some(json!({"type": "object"})),
@@ -313,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn call_handler_returns_success() {
         let func = make_function("test");
-        let result = func.call_handler(None, json!({})).await;
+        let result = func.call_handler(None, json!({}), None).await;
         match result {
             FunctionResult::Success(Some(val)) => {
                 assert_eq!(val, json!({"ok": true}));
@@ -326,7 +329,7 @@ mod tests {
     async fn call_handler_with_invocation_id() {
         let invocation_id = Uuid::new_v4();
         let func = Function {
-            handler: Arc::new(move |inv_id, _input| {
+            handler: Arc::new(move |inv_id, _input, _session| {
                 Box::pin(async move {
                     if inv_id.is_some() {
                         FunctionResult::Success(Some(json!({"has_id": true})))
@@ -341,7 +344,9 @@ mod tests {
             response_format: None,
             metadata: None,
         };
-        let result = func.call_handler(Some(invocation_id), json!({})).await;
+        let result = func
+            .call_handler(Some(invocation_id), json!({}), None)
+            .await;
         match result {
             FunctionResult::Success(Some(val)) => {
                 assert_eq!(val["has_id"], true);
@@ -353,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn call_handler_failure() {
         let func = Function {
-            handler: Arc::new(|_, _| {
+            handler: Arc::new(|_, _, _| {
                 Box::pin(async {
                     FunctionResult::Failure(ErrorBody {
                         code: "test_error".to_string(),
@@ -368,7 +373,7 @@ mod tests {
             response_format: None,
             metadata: None,
         };
-        let result = func.call_handler(None, json!({})).await;
+        let result = func.call_handler(None, json!({}), None).await;
         match result {
             FunctionResult::Failure(e) => {
                 assert_eq!(e.code, "test_error");

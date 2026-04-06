@@ -125,7 +125,7 @@ def on_order_shipped(data):
     print('Order shipped:', data)
     return {}
 
-iii.register_function({'id': 'notifications::onOrderShipped'}, on_order_shipped)
+iii.register_function("notifications::onOrderShipped", on_order_shipped)
 iii.register_trigger({'type': 'subscribe', 'function_id': 'notifications::onOrderShipped', 'config': {'topic': 'orders.shipped'}})
 
 iii.trigger({
@@ -221,8 +221,8 @@ def send_push_alert(data):
     send_push_notification(data['userId'], f"Order {data['orderId']} shipped")
     return {}
 
-iii.register_function({'id': 'notifications::sendEmailAlert'}, send_email_alert)
-iii.register_function({'id': 'notifications::sendPushAlert'}, send_push_alert)
+iii.register_function("notifications::sendEmailAlert", send_email_alert)
+iii.register_function("notifications::sendPushAlert", send_push_alert)
 
 iii.register_trigger({'type': 'subscribe', 'function_id': 'notifications::sendEmailAlert', 'config': {'topic': 'orders.shipped'}})
 iii.register_trigger({'type': 'subscribe', 'function_id': 'notifications::sendPushAlert', 'config': {'topic': 'orders.shipped'}})

@@ -28,7 +28,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'cleanup::expired-sessions' }, async () => {
+iii.registerFunction('cleanup::expired-sessions', async () => {
   const logger = new Logger()
   // ...cleanup logic here...
   logger.info('Cleanup ran', { timestamp: new Date().toISOString() })
