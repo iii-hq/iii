@@ -43,6 +43,16 @@ Get started with iii by following the [Quickstart guide](https://iii.dev/docs/qu
 | Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk` |
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`   |
 
+## Agent Skills
+
+Give your AI coding agent full context on iii:
+
+```bash
+npx skills add iii-hq/iii
+```
+
+25 skills covering every iii primitive — HTTP endpoints, queues, cron, state, streams, custom triggers, and more. Works with Claude Code, Cursor, Gemini CLI, Codex, and [30+ other agents](https://agentskills.io). See [skills/](skills/) for the full list.
+
 ## Console
 
 The [iii-console](console/) is a developer and operations dashboard for inspecting functions, triggers, traces, and real-time state. See the [Console docs](https://iii.dev/docs/console) for setup and usage.
@@ -55,6 +65,7 @@ The [iii-console](console/) is a developer and operations dashboard for inspecti
 | `sdk/`         | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)          |
 | `console/`     | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md)  |
 | `frameworks/`  | Higher-level frameworks built on the SDK                 | [frameworks/motia/](frameworks/motia/)  |
+| `skills/`      | Agent skills for AI coding agents (25 skills)            | [skills/README.md](skills/README.md)    |
 | `website/`     | iii website                                              | [website/](website/)                    |
 | `docs/`        | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)        |
 
