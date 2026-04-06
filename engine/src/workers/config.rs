@@ -727,7 +727,7 @@ mod tests {
             config
                 .modules
                 .iter()
-                .any(|entry| entry.name == "workers::observability::ObservabilityWorker"),
+                .any(|entry| entry.name == "iii-observability"),
             "default config should include ObservabilityWorker (registered as mandatory)"
         );
     }
@@ -970,9 +970,9 @@ config:
         let builder = EngineBuilder::new().add_worker("test::Module", None);
         assert!(builder.config.is_some());
         let config = builder.config.unwrap();
-        assert_eq!(config.modules.len(), 1);
-        assert_eq!(config.modules[0].name, "test::Module");
-        assert!(config.modules[0].config.is_none());
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name, "test::Module");
+        assert!(config.workers[0].config.is_none());
     }
 
     #[test]
@@ -980,7 +980,7 @@ config:
         let builder = EngineBuilder::new()
             .add_worker("test::Module", Some(serde_json::json!({"key": "value"})));
         let config = builder.config.unwrap();
-        assert_eq!(config.modules[0].config.as_ref().unwrap()["key"], "value");
+        assert_eq!(config.workers[0].config.as_ref().unwrap()["key"], "value");
     }
 
     #[test]
@@ -989,9 +989,9 @@ config:
             .add_worker("test::ModA", None)
             .add_worker("test::ModB", Some(serde_json::json!({"port": 3000})));
         let config = builder.config.unwrap();
-        assert_eq!(config.modules.len(), 2);
-        assert_eq!(config.modules[0].name, "test::ModA");
-        assert_eq!(config.modules[1].name, "test::ModB");
+        assert_eq!(config.workers.len(), 2);
+        assert_eq!(config.workers[0].name, "test::ModA");
+        assert_eq!(config.workers[1].name, "test::ModB");
     }
 
     // =========================================================================

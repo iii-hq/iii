@@ -857,7 +857,7 @@ mod tests {
     fn test_extract_otel_config_reads_observability_module_config() {
         let cfg = EngineConfig {
             modules: vec![WorkerEntry {
-                name: "workers::observability::ObservabilityWorker".to_string(),
+                name: "iii-observability".to_string(),
                 config: Some(serde_json::json!({
                     "enabled": true,
                     "service_name": "test-service",

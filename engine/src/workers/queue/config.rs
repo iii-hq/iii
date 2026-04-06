@@ -184,7 +184,7 @@ queue_configs:
     type: fifo
     message_group_field: transaction_id
 adapter:
-  name: workers::queue::BuiltinQueueAdapter
+  name: builtin
 "#;
         let config: QueueModuleConfig = serde_yaml::from_str(yaml).unwrap();
 
