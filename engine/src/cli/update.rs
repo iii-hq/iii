@@ -395,6 +395,8 @@ pub async fn self_update(
 }
 
 /// Update all installed binaries (including iii itself).
+/// Silently skips binaries not supported on the current platform
+/// (e.g., iii-init on macOS/Windows).
 pub async fn update_all(
     client: &reqwest::Client,
     state: &mut AppState,
@@ -403,7 +405,9 @@ pub async fn update_all(
     let mut results = vec![self_update(client, state).await];
 
     for spec in registry::all_binaries() {
-        results.push(update_binary(client, spec, state).await);
+        if platform::check_platform_support(spec).is_ok() {
+            results.push(update_binary(client, spec, state).await);
+        }
     }
     results
 }
