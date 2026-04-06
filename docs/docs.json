@@ -272,6 +272,19 @@
                 ]
               }
             ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "pages": ["changelog"]
+              },
+              {
+                "group": "0.11.0",
+                "pages": ["changelog/0-11-0/everything-is-a-worker"]
+              }
+            ]
           }
         ]
       }
