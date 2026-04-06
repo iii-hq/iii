@@ -615,15 +615,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-{/* TODO: Update this, enqueue is its entirely own thing */}
+<Info title="Queue triggers vs named queues">
+  Use a `queue` trigger when you want a Function to consume a topic such as `user.created`. Publish to that topic via the built-in `enqueue` function.
 
-{/* <Info title="Queue uses enqueue">
-  Queue messaging uses `enqueue` — a built-in function, no trigger registration needed:
-  Node `trigger({ function_id: 'enqueue', payload: { topic: 'user.created', data: {...} } })`,
-  Python `trigger({'function_id': 'enqueue', 'payload': {'topic': 'user.created', 'data': {...}}})`,
-  Rust `trigger(TriggerRequest::new("enqueue", json!({"topic": "user.created", "data": {...}})))`.
-  See the [Queue module](/modules/module-queue) for details.
-</Info> */}
+  Named queues are separate: use `TriggerAction.Enqueue({ queue: 'name' })` to enqueue a direct Function invocation with retries and queue-level configuration. That flow does not register a `queue` trigger.
+
+  See [Use Queues](/how-to/use-queues), [Trigger Actions](/how-to/trigger-actions), and the [Queue module](/modules/module-queue) for the full model.
+</Info>
 
 ## Trigger Types
 
