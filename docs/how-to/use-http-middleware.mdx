@@ -152,7 +152,7 @@ iii.registerTrigger({
 Global middleware runs on every HTTP request, before route-level conditions and per-route middleware. Configure it in `iii-config.yaml`:
 
 ```yaml title="iii-config.yaml"
-- class: modules::api::RestApiModule
+- name: iii-http
   config:
     port: 3111
     middleware:

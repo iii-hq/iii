@@ -36,7 +36,7 @@ Running `npm run dev` starts the iii runtime, which reads `config.yaml` and boot
 The portion of `config.yaml` specific to Motia is the **Shell Exec module**, which tells iii how to build and run your Motia application:
 
 ```yaml title="config.yaml (Motia portion)"
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts
@@ -55,26 +55,26 @@ The portion of `config.yaml` specific to Motia is the **Shell Exec module**, whi
 A complete `config.yaml` for local development. The iii infrastructure modules use file-based storage by default:
 
 ```yaml title="config.yaml"
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}
       host: 127.0.0.1
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/stream_store
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/state_store.db
 
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111
       host: 127.0.0.1
@@ -92,31 +92,31 @@ modules:
           - DELETE
           - OPTIONS
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based
           file_path: ./data/queue_store
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::LocalAdapter
+        name: local
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii-engine}
       exporter: ${OTEL_EXPORTER_TYPE:memory}
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts

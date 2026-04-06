@@ -6,7 +6,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::observability::metrics::ensure_default_meter,
+    workers::observability::metrics::ensure_default_meter,
 };
 use tokio::runtime::Runtime;
 

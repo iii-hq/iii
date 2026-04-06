@@ -6,7 +6,7 @@ description: 'Build durable streams for real-time data subscriptions.'
 Durable streams for real-time data subscriptions.
 
 ```
-modules::stream::StreamModule
+iii-stream
 ```
 
 ## Architecture
@@ -47,12 +47,12 @@ Clients subscribe at the group level by connecting to `ws://host:port/stream/{st
 ## Sample Configuration
 
 ```yaml
-- class: modules::stream::StreamModule
+- name: iii-stream
   config:
     port: ${STREAM_PORT:3112}
     host: 0.0.0.0
     adapter:
-      class: modules::stream::adapters::RedisAdapter
+      name: redis
       config:
         redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -79,12 +79,12 @@ Clients subscribe at the group level by connecting to `ws://host:port/stream/{st
 
 ## Adapters
 
-### modules::stream::adapters::RedisAdapter
+### redis
 
 Uses Redis as the backend for the streams. Stores stream data in Redis and leverages Redis Pub/Sub for real-time event delivery.
 
 ```yaml
-class: modules::stream::adapters::RedisAdapter
+name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -95,12 +95,12 @@ config:
   The URL of the Redis instance to use.
 </ResponseField>
 
-### modules::stream::adapters::KvStore
+### kv
 
 Built-in key-value store. Supports in-memory or file-based persistence. No external dependencies required.
 
 ```yaml
-class: modules::stream::adapters::KvStore
+name: kv
 config:
   store_method: file_based
   file_path: ./data/streams_store.db
@@ -357,7 +357,7 @@ iii.register_function((RegisterFunctionMessage::with_id("onAuth".into()), |_inpu
 2. Make sure you add the function to the configuration file.
 
 ```yaml
-- class: modules::stream::StreamModule
+- name: iii-stream
   config:
     auth_function: onAuth
 ```
@@ -658,13 +658,13 @@ Clients connect via WebSocket to `ws://host:3112/stream/presence/room-1/` and re
 Configure the stream module with an auth function:
 
 ```yaml
-- class: modules::stream::StreamModule
+- name: iii-stream
   config:
     port: 3112
     host: 0.0.0.0
     auth_function: stream::auth
     adapter:
-      class: modules::stream::adapters::KvStore
+      name: kv
       config:
         store_method: file_based
         file_path: ./data/stream_store

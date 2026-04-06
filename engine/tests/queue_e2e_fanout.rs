@@ -10,8 +10,8 @@ use tokio::sync::Mutex;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Module, queue::QueueCoreModule},
     trigger::Trigger,
+    workers::{queue::QueueWorker, traits::Worker},
 };
 
 use common::queue_helpers::{builtin_queue_config, enqueue_to_topic};
@@ -63,12 +63,12 @@ fn register_counting_fn(engine: &Arc<Engine>, function_id: &str) -> Arc<AtomicU6
 }
 
 async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) -> Arc<Engine> {
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
@@ -125,14 +125,14 @@ async fn fanout_two_functions_same_topic_both_receive() {
 #[tokio::test]
 async fn fanout_replicas_compete_within_function() {
     let topic = format!("replica-{}", uuid::Uuid::new_v4());
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
     let counter = register_counting_fn(&engine, "test::replica_fn");
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
@@ -167,15 +167,15 @@ async fn fanout_replicas_compete_within_function() {
 #[tokio::test]
 async fn fanout_mixed_functions_and_replicas() {
     let topic = format!("mixed-{}", uuid::Uuid::new_v4());
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
     let counter_a = register_counting_fn(&engine, "test::mix_a");
     let counter_b = register_counting_fn(&engine, "test::mix_b");
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
@@ -253,15 +253,15 @@ async fn fanout_single_subscriber_unchanged() {
 #[tokio::test]
 async fn fanout_unsubscribe_stops_delivery() {
     let topic = format!("unsub-{}", uuid::Uuid::new_v4());
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
     let cap_a = register_capturing_function(&engine, "test::unsub_a");
     let cap_b = register_capturing_function(&engine, "test::unsub_b");
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
@@ -362,7 +362,7 @@ async fn fanout_payload_integrity() {
 #[tokio::test]
 async fn fanout_with_condition_function() {
     let topic = format!("cond-fanout-{}", uuid::Uuid::new_v4());
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
     let cap_always = register_capturing_function(&engine, "test::cond_always");
@@ -375,9 +375,9 @@ async fn fanout_with_condition_function() {
         json!("important"),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 

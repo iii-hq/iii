@@ -30,18 +30,18 @@ export default config({
 **After (`config.yaml`):**
 
 ```yaml
-modules:
-  - class: modules::state::StateModule
+workers:
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 ```

@@ -3,16 +3,16 @@ title: 'HTTP'
 description: 'Expose functions as HTTP endpoints.'
 ---
 
-The HTTP Module exposes registered functions as HTTP endpoints.
+The HTTP Worker exposes registered functions as HTTP endpoints.
 
 ```
-modules::api::RestApiModule
+iii-http
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::api::RestApiModule
+- name: iii-http
   config:
     port: 3111
     host: 0.0.0.0
@@ -204,7 +204,7 @@ The HTTP module supports middleware functions that run before the handler. There
 </ResponseField>
 
 ```yaml
-- class: modules::api::RestApiModule
+- name: iii-http
   config:
     port: 3111
     middleware:

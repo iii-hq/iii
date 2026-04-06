@@ -9,14 +9,14 @@ Run a Function at regular intervals (cleanup jobs, report generation, health che
 
 ## Steps
 
-### 1. Enable the Cron module
+### 1. Enable the Cron worker
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::cron::CronModule
+workers:
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv
 ```
 
 ### 2. Register the Function

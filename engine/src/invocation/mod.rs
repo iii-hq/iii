@@ -17,9 +17,9 @@ use crate::telemetry::SpanExt;
 
 use crate::{
     function::{Function, FunctionResult},
-    modules::observability::metrics::get_engine_metrics,
-    modules::worker::rbac_session::Session,
     protocol::ErrorBody,
+    workers::observability::metrics::get_engine_metrics,
+    workers::worker::rbac_session::Session,
 };
 
 pub mod auth;
@@ -151,7 +151,7 @@ impl InvocationHandler {
                     );
 
                     // Update accumulator for readable metrics
-                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
@@ -186,7 +186,7 @@ impl InvocationHandler {
                     );
 
                     // Update accumulator for readable metrics
-                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
@@ -214,7 +214,7 @@ impl InvocationHandler {
                     );
 
                     // Update accumulator for readable metrics
-                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
@@ -241,7 +241,7 @@ impl InvocationHandler {
                     );
 
                     // Update accumulator for readable metrics
-                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_deferred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);

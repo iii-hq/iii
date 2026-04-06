@@ -11,8 +11,8 @@ use uuid::Uuid;
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::{module::Module, rest_api::RestApiCoreModule},
     trigger::Trigger,
+    workers::{rest_api::HttpWorker, traits::Worker},
 };
 
 // ---------------------------------------------------------------------------
@@ -28,13 +28,13 @@ fn reserve_local_port() -> u16 {
     port
 }
 
-/// Creates an Engine and a started `RestApiCoreModule` bound to `port`.
+/// Creates an Engine and a started `HttpWorker` bound to `port`.
 /// Returns `(engine, base_url)`.
 async fn start_api_server(port: u16) -> (Arc<Engine>, String) {
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let module = RestApiCoreModule::create(
+    let module = HttpWorker::create(
         engine.clone(),
         Some(json!({
             "host": "127.0.0.1",
@@ -43,7 +43,7 @@ async fn start_api_server(port: u16) -> (Arc<Engine>, String) {
         })),
     )
     .await
-    .expect("RestApiCoreModule::create should succeed");
+    .expect("HttpWorker::create should succeed");
 
     module
         .initialize()
@@ -54,16 +54,16 @@ async fn start_api_server(port: u16) -> (Arc<Engine>, String) {
     (engine, base_url)
 }
 
-/// Creates an Engine and a started `RestApiCoreModule` bound to `port` with
+/// Creates an Engine and a started `HttpWorker` bound to `port` with
 /// global middleware configured at the RestApi level.
 async fn start_api_server_with_global_middleware(
     port: u16,
     middleware_function_id: &str,
 ) -> (Arc<Engine>, String) {
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let module = RestApiCoreModule::create(
+    let module = HttpWorker::create(
         engine.clone(),
         Some(json!({
             "host": "127.0.0.1",
@@ -79,7 +79,7 @@ async fn start_api_server_with_global_middleware(
         })),
     )
     .await
-    .expect("RestApiCoreModule::create should succeed");
+    .expect("HttpWorker::create should succeed");
 
     module
         .initialize()

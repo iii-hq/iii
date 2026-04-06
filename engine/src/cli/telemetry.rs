@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use iii::modules::telemetry::environment;
+use iii::workers::telemetry::environment;
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";

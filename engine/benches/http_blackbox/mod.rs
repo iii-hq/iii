@@ -45,16 +45,16 @@ impl BenchRuntime {
         let base_http_url = format!("http://127.0.0.1:{http_port}");
 
         let builder = EngineBuilder::new()
-            .add_module(
-                "modules::api::RestApiModule",
+            .add_worker(
+                "iii-http",
                 Some(json!({
                     "host": "127.0.0.1",
                     "port": http_port,
                     "default_timeout": 120000,
                 })),
             )
-            .add_module(
-                "modules::worker::WorkerModule",
+            .add_worker(
+                "iii-worker-manager",
                 Some(json!({
                     "port": ws_port,
                 })),
@@ -208,6 +208,7 @@ async fn run_worker(ws_url: String, route_count: usize) {
                         "api_path": common::http_api_path(idx),
                         "http_method": "POST",
                     }),
+                    metadata: None,
                 })
                 .expect("serialize RegisterTrigger")
                 .into(),

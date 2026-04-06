@@ -42,8 +42,8 @@ impl WsBenchRuntime {
         let ws_url = format!("ws://127.0.0.1:{ws_port}");
 
         let builder = EngineBuilder::new()
-            .add_module(
-                "modules::worker::WorkerModule",
+            .add_worker(
+                "iii-worker-manager",
                 Some(json!({
                     "host": "127.0.0.1",
                     "port": ws_port,
