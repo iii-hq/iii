@@ -17,6 +17,12 @@ A Function is anything that does work. A Trigger is what causes it to run - an H
 
 One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI - iii gives your backend a single model for execution.
 
+These primitives result in an execution model and system traits that make iii unreasonably good at creating backend software:
+
+**Execution model** — Durable orchestration across workers and triggers. Interoperable execution across languages as if it were one runtime. Simple primitives that collapse distributed backend design into a paradigm humans and agents can reason about.
+
+**Live system traits** — Functions and triggers exposed by one worker become visible and usable across the system in real time (live discovery). Add new workers and capabilities to a live iii system without redesigning the architecture (live extensibility). Observe operations, traces, and system behavior across the entire connected stack in real time (live observability).
+
 ## Three Concepts
 
 | Concept       | What it does |

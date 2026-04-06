@@ -1,5 +1,7 @@
 # Engine
 
+The iii engine provides durable orchestration, interoperable cross-language execution, live discovery of functionality, live system extensibility, and live system observability from three simple primitives: Function, Trigger, and Worker.
+
 For complete documentation on iii please visit [iii.dev/docs](https://iii.dev/docs).
 
 ## Install
