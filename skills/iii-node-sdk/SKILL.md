@@ -49,7 +49,7 @@ When implementing an auth function for RBAC workers, the `AuthResult` supports:
 
 ## Browser SDK
 
-For browser environments, use `iii-sdk-browser` (same API, adapted for browser WebSocket constraints). See `iii-browser-sdk` skill for details.
+For browser environments, use `iii-browser-sdk` (same API, adapted for browser WebSocket constraints). See `iii-browser-sdk` skill for details.
 
 ## Pattern Boundaries
 
