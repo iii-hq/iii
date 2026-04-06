@@ -11,428 +11,19 @@
 //! for crash isolation.
 
 use anyhow::{Context, Result};
-use colored::Colorize;
 use std::collections::HashMap;
-use std::path::Component;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-/// Maximum total extracted size (10 GiB).
-const MAX_TOTAL_SIZE: u64 = 10 * 1024 * 1024 * 1024;
-/// Maximum single file size (5 GiB).
-const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024 * 1024;
-/// Maximum number of tar entries.
-const MAX_ENTRY_COUNT: u64 = 1_000_000;
-/// Maximum path depth.
-const MAX_PATH_DEPTH: usize = 128;
-
-fn expected_oci_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "amd64",
-        other => other,
-    }
-}
-
-fn read_cached_rootfs_arch(rootfs_dir: &std::path::Path) -> Option<String> {
-    let config_path = rootfs_dir.join(".oci-config.json");
-    let data = std::fs::read_to_string(config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-    json.get("architecture")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
+use crate::cli::rootfs::clone_rootfs;
+use super::oci::{
+    expected_oci_arch, pull_and_extract_rootfs, read_cached_rootfs_arch,
+    read_oci_entrypoint, read_oci_env,
+};
 
 /// Check if libkrun runtime is available on this system.
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.
 pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
-}
-
-/// OCI image to use as rootfs for each language.
-fn oci_image_for_language(language: &str) -> (&'static str, &'static str) {
-    match language {
-        "typescript" | "javascript" => ("docker.io/iiidev/node:latest", "node"),
-        "python" => ("docker.io/iiidev/python:latest", "python"),
-        "rust" => ("docker.io/library/rust:slim-bookworm", "rust"),
-        _ => ("docker.io/iiidev/node:latest", "node"),
-    }
-}
-
-/// Determine the rootfs path for a given language.
-/// If the rootfs doesn't exist locally, pulls the OCI image and extracts it.
-pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
-    let (oci_image, rootfs_name) = oci_image_for_language(language);
-
-    let search_paths = rootfs_search_paths(rootfs_name);
-    for path in &search_paths {
-        if path.exists() && path.join("bin").exists() {
-            return Ok(path.clone());
-        }
-    }
-
-    let rootfs_dir = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".iii")
-        .join("rootfs")
-        .join(rootfs_name);
-
-    eprintln!("  Pulling rootfs {} ({})...", rootfs_name, oci_image);
-
-    pull_and_extract_rootfs(oci_image, &rootfs_dir).await?;
-
-    let workspace = rootfs_dir.join("workspace");
-    std::fs::create_dir_all(&workspace).ok();
-
-    let hosts_path = rootfs_dir.join("etc/hosts");
-    if !hosts_path.exists() {
-        let _ = std::fs::write(&hosts_path, "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n");
-    }
-
-    Ok(rootfs_dir)
-}
-
-/// Extract a single OCI layer with safety limits.
-fn extract_layer_with_limits(
-    data: &[u8],
-    dest: &std::path::Path,
-    layer_index: usize,
-    layer_count: usize,
-    total_size: &mut u64,
-) -> Result<()> {
-    let decoder = flate2::read::GzDecoder::new(data);
-    let mut archive = tar::Archive::new(decoder);
-    archive.set_preserve_permissions(true);
-    archive.set_overwrite(true);
-
-    let mut entry_count: u64 = 0;
-
-    for entry in archive.entries().context("Failed to read layer tar")? {
-        let mut entry = entry.context("Failed to read tar entry")?;
-
-        entry_count += 1;
-        if entry_count > MAX_ENTRY_COUNT {
-            anyhow::bail!(
-                "Layer {}/{}: exceeded max entry count ({})",
-                layer_index + 1,
-                layer_count,
-                MAX_ENTRY_COUNT
-            );
-        }
-
-        let path = entry
-            .path()
-            .context("Failed to get entry path")?
-            .into_owned();
-
-        if path.is_absolute() {
-            anyhow::bail!(
-                "Layer {}/{}: absolute path in tar entry: {}",
-                layer_index + 1,
-                layer_count,
-                path.display()
-            );
-        }
-
-        for component in path.components() {
-            if matches!(component, Component::ParentDir) {
-                anyhow::bail!(
-                    "Layer {}/{}: path traversal in tar entry: {}",
-                    layer_index + 1,
-                    layer_count,
-                    path.display()
-                );
-            }
-        }
-
-        let depth = path
-            .components()
-            .filter(|c| matches!(c, Component::Normal(_)))
-            .count();
-        if depth > MAX_PATH_DEPTH {
-            anyhow::bail!(
-                "Layer {}/{}: path too deep ({} components): {}",
-                layer_index + 1,
-                layer_count,
-                depth,
-                path.display()
-            );
-        }
-
-        let entry_size = entry.size();
-        if entry_size > MAX_FILE_SIZE {
-            anyhow::bail!(
-                "Layer {}/{}: file too large: {} bytes (max {})",
-                layer_index + 1,
-                layer_count,
-                entry_size,
-                MAX_FILE_SIZE
-            );
-        }
-
-        *total_size += entry_size;
-        if *total_size > MAX_TOTAL_SIZE {
-            anyhow::bail!(
-                "Layer {}/{}: total extraction size exceeded {} bytes",
-                layer_index + 1,
-                layer_count,
-                MAX_TOTAL_SIZE
-            );
-        }
-
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with(".wh.") {
-                let target = path.parent().unwrap_or(&path).join(&name[4..]);
-                let full_target = dest.join(&target);
-                let _ = std::fs::remove_file(&full_target);
-                let _ = std::fs::remove_dir_all(&full_target);
-                continue;
-            }
-        }
-
-        entry
-            .unpack_in(dest)
-            .with_context(|| format!("Failed to extract: {}", path.display()))?;
-    }
-
-    Ok(())
-}
-
-/// Pull an OCI image and extract it as a rootfs directory.
-async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
-    use oci_client::client::ClientConfig;
-    use oci_client::secrets::RegistryAuth;
-    use oci_client::{Client, Reference};
-
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("Failed to create rootfs directory: {}", dest.display()))?;
-
-    let reference: Reference = image
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid image reference '{}': {}", image, e))?;
-
-    let host_arch = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    };
-
-    let available_platforms = Arc::new(Mutex::new(Vec::<String>::new()));
-    let platforms_capture = Arc::clone(&available_platforms);
-    let target_arch_str = host_arch.to_string();
-
-    let config = ClientConfig {
-        platform_resolver: Some(Box::new(move |manifests| {
-            let mut platforms = platforms_capture.lock().unwrap();
-            for m in manifests {
-                if let Some(ref platform) = m.platform {
-                    platforms.push(format!("{}/{}", platform.os, platform.architecture));
-                }
-            }
-            drop(platforms);
-
-            let target_arch = match target_arch_str.as_str() {
-                "arm64" => oci_spec::image::Arch::ARM64,
-                _ => oci_spec::image::Arch::Amd64,
-            };
-
-            for m in manifests {
-                if let Some(ref platform) = m.platform {
-                    if platform.os == oci_spec::image::Os::Linux
-                        && platform.architecture == target_arch
-                    {
-                        return Some(m.digest.clone());
-                    }
-                }
-            }
-            None
-        })),
-        ..Default::default()
-    };
-    let client = Client::new(config);
-
-    eprintln!("  Pulling image layers...");
-    let media_types: Vec<&str> = vec![
-        oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
-        oci_client::manifest::IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE,
-        oci_client::manifest::IMAGE_LAYER_MEDIA_TYPE,
-    ];
-
-    const MAX_PULL_ATTEMPTS: u32 = 3;
-    let mut image_data = None;
-    let mut last_err = None;
-
-    for attempt in 0..MAX_PULL_ATTEMPTS {
-        if attempt > 0 {
-            let delay = std::time::Duration::from_secs(3u64.pow(attempt - 1));
-            eprintln!(
-                "  Retrying in {}s (attempt {}/{})...",
-                delay.as_secs(),
-                attempt + 1,
-                MAX_PULL_ATTEMPTS
-            );
-            tokio::time::sleep(delay).await;
-        }
-
-        match client
-            .pull(&reference, &RegistryAuth::Anonymous, media_types.clone())
-            .await
-        {
-            Ok(data) => {
-                image_data = Some(data);
-                break;
-            }
-            Err(e) => {
-                eprintln!("  Pull attempt {} failed: {}", attempt + 1, e);
-                last_err = Some(e);
-            }
-        }
-    }
-
-    let image_data = match image_data {
-        Some(data) => data,
-        None => {
-            let e = last_err.unwrap();
-            let platforms = available_platforms.lock().unwrap();
-            if !platforms.is_empty() {
-                anyhow::bail!(
-                    "Architecture mismatch: no linux/{} manifest found for '{}'. Available platforms: {}",
-                    host_arch,
-                    image,
-                    platforms.join(", ")
-                );
-            }
-            return Err(e).context(format!(
-                "Failed to pull image '{}'. Check image name and network connectivity.",
-                image
-            ));
-        }
-    };
-
-    if let Some(ref digest) = image_data.digest {
-        tracing::debug!(%digest, "image digest");
-    }
-    let total_layer_bytes: usize = image_data.layers.iter().map(|l| l.data.len()).sum();
-    eprintln!(
-        "  linux/{} | {} layers | {:.1} MiB",
-        host_arch,
-        image_data.layers.len(),
-        total_layer_bytes as f64 / (1024.0 * 1024.0)
-    );
-
-    let layer_count = image_data.layers.len();
-    let pb = indicatif::ProgressBar::new(layer_count as u64);
-    pb.set_style(
-        indicatif::ProgressStyle::with_template(
-            "  [{bar:40.cyan/blue}] {pos}/{len} layers extracted",
-        )
-        .unwrap()
-        .progress_chars("=> "),
-    );
-
-    let mut total_size: u64 = 0;
-    for (i, layer) in image_data.layers.iter().enumerate() {
-        extract_layer_with_limits(&layer.data, dest, i, layer_count, &mut total_size)?;
-        pb.inc(1);
-    }
-    pb.finish();
-
-    let config_json = &image_data.config.data;
-    let config_path = dest.join(".oci-config.json");
-    let _ = std::fs::write(&config_path, config_json);
-
-    tracing::info!(path = %dest.display(), "rootfs ready");
-    eprintln!("  {} Rootfs ready", "\u{2713}".green());
-    Ok(())
-}
-
-fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("rootfs").join(name));
-        }
-    }
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".iii").join("rootfs").join(name));
-    }
-    paths.push(PathBuf::from("/usr/local/share/iii/rootfs").join(name));
-    paths
-}
-
-/// Ensure the binary has the required VM entitlements (macOS only).
-#[cfg(target_os = "macos")]
-fn ensure_macos_entitlements(binary: &std::path::Path) -> Result<()> {
-    use std::process::Command;
-
-    let output = Command::new("codesign")
-        .args(["-d", "--entitlements", "-"])
-        .arg(binary)
-        .output()
-        .context("failed to run codesign")?;
-
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    if combined.contains("com.apple.security.hypervisor")
-        && combined.contains("com.apple.security.cs.disable-library-validation")
-    {
-        return Ok(());
-    }
-
-    let entitlements_dir = std::env::temp_dir();
-    let plist_path = entitlements_dir.join("iii-vm-entitlements.plist");
-    std::fs::write(
-        &plist_path,
-        concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ",
-            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
-            "<plist version=\"1.0\">\n<dict>\n",
-            "  <key>com.apple.security.hypervisor</key>\n  <true/>\n",
-            "  <key>com.apple.security.cs.disable-library-validation</key>\n  <true/>\n",
-            "</dict>\n</plist>\n",
-        ),
-    )?;
-
-    let status = Command::new("codesign")
-        .args(["--sign", "-", "--entitlements"])
-        .arg(&plist_path)
-        .arg("--force")
-        .arg(binary)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .context("failed to run codesign")?;
-
-    if !status.success() {
-        anyhow::bail!("codesign exited with {}", status);
-    }
-
-    Ok(())
-}
-
-/// Keep the terminal's `ISIG` flag enabled so Ctrl+C generates SIGINT.
-#[cfg(unix)]
-async fn ensure_terminal_isig() {
-    use nix::libc;
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        unsafe {
-            let mut t: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(libc::STDERR_FILENO, &mut t) == 0 && (t.c_lflag & libc::ISIG == 0) {
-                t.c_lflag |= libc::ISIG;
-                libc::tcsetattr(libc::STDERR_FILENO, libc::TCSANOW, &t);
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-async fn ensure_terminal_isig() {
-    std::future::pending::<()>().await;
 }
 
 /// Run a dev worker session inside a libkrun VM.
@@ -459,7 +50,7 @@ pub async fn run_dev(
 
     #[cfg(target_os = "macos")]
     {
-        if let Err(e) = ensure_macos_entitlements(&self_exe) {
+        if let Err(e) = super::platform::ensure_macos_entitlements(&self_exe) {
             eprintln!(
                 "warning: failed to codesign for Hypervisor entitlement: {}",
                 e
@@ -467,7 +58,6 @@ pub async fn run_dev(
         }
     }
 
-    // Build command: iii-worker __vm-boot --rootfs ... --exec ...
     let mut cmd = tokio::process::Command::new(&self_exe);
     cmd.arg("__vm-boot");
     cmd.arg("--rootfs").arg(&rootfs);
@@ -484,8 +74,6 @@ pub async fn run_dev(
         cmd.arg("--arg").arg(arg);
     }
 
-    // libkrunfw is the only external dylib loaded at runtime.
-    // msb_krun (the VMM) is compiled directly into the iii-worker binary.
     if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
         cmd.env(
             crate::cli::firmware::resolve::lib_path_env_var(),
@@ -493,7 +81,6 @@ pub async fn run_dev(
         );
     }
 
-    // Detach child into its own session
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
@@ -520,13 +107,13 @@ pub async fn run_dev(
                     child.kill().await.ok();
                     0
                 }
-                _ = ensure_terminal_isig() => {
+                _ = super::platform::ensure_terminal_isig() => {
                     unreachable!()
                 }
             };
 
             #[cfg(unix)]
-            super::super::managed::restore_terminal_cooked_mode();
+            super::super::dev::restore_terminal_cooked_mode();
 
             exit_code
         }
@@ -691,7 +278,6 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
                 .map_err(|e| anyhow::anyhow!("failed to clone rootfs: {}", e))?;
         }
 
-        // Ensure iii-init is available and copy to rootfs if not embedded
         if !iii_filesystem::init::has_init() {
             let init_path = crate::cli::firmware::download::ensure_init_binary().await?;
             let dest = worker_rootfs.join("init.krun");
@@ -708,7 +294,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let self_exe = std::env::current_exe().context("cannot locate iii-worker binary")?;
         #[cfg(target_os = "macos")]
         {
-            let _ = ensure_macos_entitlements(&self_exe);
+            let _ = super::platform::ensure_macos_entitlements(&self_exe);
         }
 
         let logs_dir = Self::logs_dir(&spec.name);
@@ -778,7 +364,6 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             cmd.arg("--arg").arg(arg);
         }
 
-        // msb_krun (the VMM) is compiled directly into the iii-worker binary.
         if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
             cmd.env(
                 crate::cli::firmware::resolve::lib_path_env_var(),
@@ -871,70 +456,6 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 }
 
-/// Read entrypoint and cmd from the saved OCI image config.
-fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<String>)> {
-    let config_path = rootfs.join(".oci-config.json");
-    let data = std::fs::read_to_string(&config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-
-    let config = json.get("config")?;
-
-    let entrypoint: Vec<String> = config
-        .get("Entrypoint")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let cmd: Vec<String> = config
-        .get("Cmd")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    if !entrypoint.is_empty() {
-        let exec = entrypoint[0].clone();
-        let mut args: Vec<String> = entrypoint[1..].to_vec();
-        args.extend(cmd);
-        Some((exec, args))
-    } else if !cmd.is_empty() {
-        let exec = cmd[0].clone();
-        let args = cmd[1..].to_vec();
-        Some((exec, args))
-    } else {
-        None
-    }
-}
-
-/// Read environment variables from the saved OCI image config.
-pub(crate) fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
-    let config_path = rootfs.join(".oci-config.json");
-    let data = match std::fs::read_to_string(&config_path) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-    let json: serde_json::Value = match serde_json::from_str(&data) {
-        Ok(j) => j,
-        Err(_) => return vec![],
-    };
-    let env_arr = json
-        .get("config")
-        .and_then(|c| c.get("Env"))
-        .and_then(|e| e.as_array());
-
-    match env_arr {
-        Some(arr) => arr
-            .iter()
-            .filter_map(|v| v.as_str())
-            .filter_map(|s| {
-                let mut parts = s.splitn(2, '=');
-                Some((
-                    parts.next()?.to_string(),
-                    parts.next().unwrap_or("").to_string(),
-                ))
-            })
-            .collect(),
-        None => vec![],
-    }
-}
-
 fn k8s_mem_to_mib(value: &str) -> Option<String> {
     if let Some(n) = value.strip_suffix("Mi") {
         Some(n.to_string())
@@ -948,27 +469,6 @@ fn k8s_mem_to_mib(value: &str) -> Option<String> {
             .ok()
             .map(|v| (v / (1024 * 1024)).to_string())
     }
-}
-
-/// Clone a rootfs directory using APFS clonefile (macOS) or reflink (Linux).
-fn clone_rootfs(base: &std::path::Path, dest: &std::path::Path) -> std::result::Result<(), String> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
-    }
-    let status = std::process::Command::new("cp")
-        .args(if cfg!(target_os = "macos") {
-            vec!["-c", "-a"]
-        } else {
-            vec!["--reflink=auto", "-a"]
-        })
-        .arg(base.as_os_str())
-        .arg(dest.as_os_str())
-        .status()
-        .map_err(|e| format!("cp: {}", e))?;
-    if !status.success() {
-        return Err(format!("cp exited with {}", status));
-    }
-    Ok(())
 }
 
 fn fs_dir_size(path: &std::path::Path) -> Result<u64> {
@@ -992,30 +492,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rootfs_search_paths_includes_home() {
-        let paths = rootfs_search_paths("node");
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.to_string_lossy().contains(".iii/rootfs"))
-        );
-    }
-
-    #[test]
-    fn test_oci_image_for_language_defaults_to_node() {
-        let (image, name) = oci_image_for_language("unknown_lang");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
-    }
-
-    #[test]
-    fn test_oci_image_for_typescript() {
-        let (image, name) = oci_image_for_language("typescript");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
-    }
-
-    #[test]
     fn test_logs_dir_path() {
         let dir = LibkrunAdapter::logs_dir("test-worker");
         assert!(
@@ -1030,125 +506,28 @@ mod tests {
         let _ = result;
     }
 
-    // --- 4.1: k8s_mem_to_mib Mi ---
     #[test]
     fn test_k8s_mem_to_mib_mi() {
         assert_eq!(k8s_mem_to_mib("512Mi"), Some("512".to_string()));
     }
 
-    // --- 4.2: k8s_mem_to_mib Gi ---
     #[test]
     fn test_k8s_mem_to_mib_gi() {
         assert_eq!(k8s_mem_to_mib("2Gi"), Some("2048".to_string()));
     }
 
-    // --- 4.3: k8s_mem_to_mib Ki ---
     #[test]
     fn test_k8s_mem_to_mib_ki() {
         assert_eq!(k8s_mem_to_mib("1048576Ki"), Some("1024".to_string()));
     }
 
-    // --- 4.4: k8s_mem_to_mib bytes ---
     #[test]
     fn test_k8s_mem_to_mib_bytes() {
         assert_eq!(k8s_mem_to_mib("2147483648"), Some("2048".to_string()));
     }
 
-    // --- 4.5: k8s_mem_to_mib invalid ---
     #[test]
     fn test_k8s_mem_to_mib_invalid() {
         assert_eq!(k8s_mem_to_mib("not-a-number"), None);
-    }
-
-    // --- 4.6: read_oci_entrypoint with entrypoint and cmd ---
-    #[test]
-    fn test_read_oci_entrypoint_with_entrypoint_and_cmd() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Entrypoint": ["/usr/bin/node"], "Cmd": ["server.js"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let result = read_oci_entrypoint(dir.path()).unwrap();
-        assert_eq!(result.0, "/usr/bin/node");
-        assert_eq!(result.1, vec!["server.js"]);
-    }
-
-    // --- 4.7: read_oci_entrypoint cmd only ---
-    #[test]
-    fn test_read_oci_entrypoint_cmd_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Cmd": ["/bin/sh", "-c", "echo hello"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let result = read_oci_entrypoint(dir.path()).unwrap();
-        assert_eq!(result.0, "/bin/sh");
-        assert_eq!(result.1, vec!["-c", "echo hello"]);
-    }
-
-    // --- 4.8: read_oci_entrypoint none ---
-    #[test]
-    fn test_read_oci_entrypoint_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        assert!(read_oci_entrypoint(dir.path()).is_none());
-    }
-
-    // --- 4.9: read_oci_env ---
-    #[test]
-    fn test_read_oci_env() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Env": ["PATH=/usr/bin", "HOME=/root"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let env = read_oci_env(dir.path());
-        assert_eq!(
-            env,
-            vec![
-                ("PATH".to_string(), "/usr/bin".to_string()),
-                ("HOME".to_string(), "/root".to_string()),
-            ]
-        );
-    }
-
-    // --- 4.10: read_oci_env missing ---
-    #[test]
-    fn test_read_oci_env_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let env = read_oci_env(dir.path());
-        assert!(env.is_empty());
-    }
-
-    // --- 4.11: expected_oci_arch ---
-    #[test]
-    fn test_expected_oci_arch() {
-        let arch = expected_oci_arch();
-        if cfg!(target_arch = "aarch64") {
-            assert_eq!(arch, "arm64");
-        } else if cfg!(target_arch = "x86_64") {
-            assert_eq!(arch, "amd64");
-        }
-    }
-
-    // --- 4.12: oci_image_for_python ---
-    #[test]
-    fn test_oci_image_for_python() {
-        let (image, name) = oci_image_for_language("python");
-        assert_eq!(image, "docker.io/iiidev/python:latest");
-        assert_eq!(name, "python");
-    }
-
-    // --- 4.13: oci_image_for_rust ---
-    #[test]
-    fn test_oci_image_for_rust() {
-        let (image, name) = oci_image_for_language("rust");
-        assert_eq!(image, "docker.io/library/rust:slim-bookworm");
-        assert_eq!(name, "rust");
-    }
-
-    // --- 4.14: oci_image_for_go (falls through to default node) ---
-    #[test]
-    fn test_oci_image_for_go() {
-        let (image, name) = oci_image_for_language("go");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
     }
 }

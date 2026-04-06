@@ -6,6 +6,8 @@
 
 pub mod adapter;
 pub mod libkrun;
+pub mod oci;
+pub mod platform;
 pub mod state;
 
 use std::sync::Arc;
