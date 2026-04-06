@@ -65,6 +65,11 @@ on:
         required: false
         type: string
         default: ''
+      system_deps:
+        description: 'Space-separated list of additional apt packages to install on Linux (e.g., libcap-ng-dev)'
+        required: false
+        type: string
+        default: ''
     secrets:
       III_CI_APP_ID:
         required: true
@@ -196,6 +201,12 @@ jobs:
         with:
           name: iii-init-aarch64-unknown-linux-musl
           path: target/aarch64-unknown-linux-musl/release/
+
+      - name: Install additional system dependencies
+        if: runner.os == 'Linux' && inputs.system_deps != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system_deps }}
 
       - name: Install cross-compilation tools
         if: runner.os == 'Linux'

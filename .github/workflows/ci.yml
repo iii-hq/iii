@@ -43,6 +43,9 @@ jobs:
         run: |
           cargo build -p iii-worker
           cargo test -p iii-worker
+          cargo test -p iii-filesystem
+          cargo test -p iii-network
+          cargo test -p iii-init
 
       - name: Install iii-worker for integration tests
         run: |
