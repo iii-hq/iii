@@ -126,9 +126,9 @@ pub async fn start_managed_workers(engine_url: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::worker_manager::state::WorkerResources;
     use super::*;
     use std::collections::HashMap;
-    use super::super::worker_manager::state::WorkerResources;
 
     #[test]
     fn build_container_spec_maps_fields() {

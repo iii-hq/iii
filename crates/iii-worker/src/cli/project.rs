@@ -19,7 +19,11 @@ pub struct ProjectInfo {
     pub env: HashMap<String, String>,
 }
 
-pub fn infer_scripts(language: &str, package_manager: &str, entry: &str) -> (String, String, String) {
+pub fn infer_scripts(
+    language: &str,
+    package_manager: &str,
+    entry: &str,
+) -> (String, String, String) {
     match (language, package_manager) {
         ("typescript", "bun") => (
             "curl -fsSL https://bun.sh/install | bash".to_string(),

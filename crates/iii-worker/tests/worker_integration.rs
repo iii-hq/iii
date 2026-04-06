@@ -1,83 +1,163 @@
 //! Integration tests for iii-worker.
 //!
-//! These tests verify the worker crate's integration points:
-//! CLI argument parsing end-to-end, firmware path resolution,
-//! manifest loading, and project auto-detection working together.
+//! These tests import the real `Cli`, `Commands`, and `VmBootArgs` types from
+//! the crate library, ensuring any CLI changes are caught at compile time.
 
-/// Test 1: Worker lifecycle — CLI accepts all subcommand combinations.
+use clap::Parser;
+use iii_worker::{Cli, Commands, DEFAULT_PORT, VmBootArgs};
+
+/// All 10 subcommands parse without error.
 #[test]
-fn cli_accepts_add_subcommand() {
-    use clap::Parser;
+fn cli_parses_all_subcommands() {
+    let cases: Vec<(&[&str], fn(Commands))> = vec![
+        (&["iii-worker", "add", "pdfkit@1.0.0"], |c| {
+            assert!(matches!(c, Commands::Add { .. }))
+        }),
+        (&["iii-worker", "remove", "pdfkit"], |c| {
+            assert!(matches!(c, Commands::Remove { .. }))
+        }),
+        (&["iii-worker", "start", "pdfkit"], |c| {
+            assert!(matches!(c, Commands::Start { .. }))
+        }),
+        (&["iii-worker", "stop", "pdfkit"], |c| {
+            assert!(matches!(c, Commands::Stop { .. }))
+        }),
+        (&["iii-worker", "dev", "."], |c| {
+            assert!(matches!(c, Commands::Dev { .. }))
+        }),
+        (&["iii-worker", "list"], |c| {
+            assert!(matches!(c, Commands::List))
+        }),
+        (&["iii-worker", "logs", "my-worker"], |c| {
+            assert!(matches!(c, Commands::Logs { .. }))
+        }),
+        (
+            &[
+                "iii-worker",
+                "start-all",
+                "--engine-url",
+                "ws://localhost:49134",
+            ],
+            |c| assert!(matches!(c, Commands::StartAll { .. })),
+        ),
+        (&["iii-worker", "stop-all"], |c| {
+            assert!(matches!(c, Commands::StopAll))
+        }),
+        (
+            &[
+                "iii-worker",
+                "__vm-boot",
+                "--rootfs",
+                "/tmp/rootfs",
+                "--exec",
+                "/usr/bin/node",
+            ],
+            |c| assert!(matches!(c, Commands::VmBoot(_))),
+        ),
+    ];
 
-    // The Cli struct is in main.rs — we test the parse logic via clap
-    // by verifying subcommand names are accepted without panic.
-    #[derive(Parser)]
-    #[command(name = "iii-worker")]
-    struct TestCli {
-        #[command(subcommand)]
-        command: TestCommand,
+    for (args, check) in cases {
+        let cli = Cli::try_parse_from(args)
+            .unwrap_or_else(|e| panic!("failed to parse {:?}: {}", args, e));
+        check(cli.command);
     }
-
-    #[derive(clap::Subcommand)]
-    enum TestCommand {
-        Add { image: String },
-        List,
-        Start { name: String },
-        Stop { name: String },
-        Remove { name: String },
-        Logs { name: String },
-        Dev,
-    }
-
-    // Test add
-    let cli = TestCli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
-    assert!(matches!(cli.command, TestCommand::Add { .. }));
-
-    // Test list
-    let cli = TestCli::parse_from(["iii-worker", "list"]);
-    assert!(matches!(cli.command, TestCommand::List));
-
-    // Test start
-    let cli = TestCli::parse_from(["iii-worker", "start", "my-worker"]);
-    assert!(matches!(cli.command, TestCommand::Start { .. }));
-
-    // Test stop
-    let cli = TestCli::parse_from(["iii-worker", "stop", "my-worker"]);
-    assert!(matches!(cli.command, TestCommand::Stop { .. }));
-
-    // Test remove
-    let cli = TestCli::parse_from(["iii-worker", "remove", "my-worker"]);
-    assert!(matches!(cli.command, TestCommand::Remove { .. }));
-
-    // Test dev
-    let cli = TestCli::parse_from(["iii-worker", "dev"]);
-    assert!(matches!(cli.command, TestCommand::Dev));
 }
 
-/// Test 2: VM boot args — full roundtrip argument parsing.
+/// `add` subcommand parses worker name and applies defaults.
 #[test]
-fn vm_boot_args_roundtrip() {
-    use clap::Parser;
+fn add_subcommand_fields() {
+    let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
+    match cli.command {
+        Commands::Add {
+            worker_name,
+            runtime,
+            address,
+            port,
+        } => {
+            assert_eq!(worker_name, "ghcr.io/iii-hq/node:latest");
+            assert_eq!(runtime, "libkrun");
+            assert_eq!(address, "localhost");
+            assert_eq!(port, DEFAULT_PORT);
+        }
+        _ => panic!("expected Add"),
+    }
+}
 
+/// `dev` subcommand requires a path and supports all optional flags.
+#[test]
+fn dev_subcommand_all_flags() {
+    let cli = Cli::parse_from([
+        "iii-worker",
+        "dev",
+        "/tmp/project",
+        "--rebuild",
+        "--name",
+        "my-worker",
+        "--port",
+        "5000",
+    ]);
+    match cli.command {
+        Commands::Dev {
+            path,
+            name,
+            rebuild,
+            port,
+            ..
+        } => {
+            assert_eq!(path, "/tmp/project");
+            assert_eq!(name, Some("my-worker".to_string()));
+            assert!(rebuild);
+            assert_eq!(port, 5000);
+        }
+        _ => panic!("expected Dev"),
+    }
+}
+
+/// `dev` without a path argument fails (path is required).
+#[test]
+fn dev_requires_path() {
+    let result = Cli::try_parse_from(["iii-worker", "dev"]);
+    assert!(result.is_err(), "dev without PATH should fail");
+}
+
+/// `logs` subcommand parses worker name and --follow flag.
+#[test]
+fn logs_subcommand_with_follow() {
+    let cli = Cli::parse_from(["iii-worker", "logs", "image-resize", "--follow"]);
+    match cli.command {
+        Commands::Logs {
+            worker_name,
+            follow,
+            ..
+        } => {
+            assert_eq!(worker_name, "image-resize");
+            assert!(follow);
+        }
+        _ => panic!("expected Logs"),
+    }
+}
+
+/// `start-all` requires --engine-url.
+#[test]
+fn start_all_requires_engine_url() {
+    let result = Cli::try_parse_from(["iii-worker", "start-all"]);
+    assert!(
+        result.is_err(),
+        "start-all without --engine-url should fail"
+    );
+}
+
+/// `VmBootArgs` roundtrip with all fields including `mount`, `pid_file`,
+/// `console_output`, and `slot`.
+#[test]
+fn vm_boot_args_full_roundtrip() {
     #[derive(Parser)]
-    struct TestBootCli {
-        #[arg(long)]
-        rootfs: String,
-        #[arg(long)]
-        exec: String,
-        #[arg(long, default_value = "/")]
-        workdir: String,
-        #[arg(long, default_value_t = 2)]
-        vcpus: u32,
-        #[arg(long, default_value_t = 2048)]
-        ram: u32,
-        #[arg(long)]
-        env: Vec<String>,
-        #[arg(long)]
-        arg: Vec<String>,
+    struct Wrapper {
+        #[command(flatten)]
+        args: VmBootArgs,
     }
 
-    let cli = TestBootCli::parse_from([
+    let w = Wrapper::parse_from([
         "test",
         "--rootfs",
         "/tmp/rootfs",
@@ -89,24 +169,66 @@ fn vm_boot_args_roundtrip() {
         "4",
         "--ram",
         "4096",
+        "--mount",
+        "/host/src:/guest/src",
+        "--mount",
+        "/host/data:/guest/data",
         "--env",
         "FOO=bar",
         "--env",
         "BAZ=qux",
         "--arg",
         "server.js",
+        "--arg",
+        "--port",
+        "--arg",
+        "3000",
+        "--pid-file",
+        "/tmp/worker.pid",
+        "--console-output",
+        "/tmp/console.log",
+        "--slot",
+        "42",
     ]);
 
-    assert_eq!(cli.rootfs, "/tmp/rootfs");
-    assert_eq!(cli.exec, "/usr/bin/node");
-    assert_eq!(cli.workdir, "/workspace");
-    assert_eq!(cli.vcpus, 4);
-    assert_eq!(cli.ram, 4096);
-    assert_eq!(cli.env, vec!["FOO=bar", "BAZ=qux"]);
-    assert_eq!(cli.arg, vec!["server.js"]);
+    assert_eq!(w.args.rootfs, "/tmp/rootfs");
+    assert_eq!(w.args.exec, "/usr/bin/node");
+    assert_eq!(w.args.workdir, "/workspace");
+    assert_eq!(w.args.vcpus, 4);
+    assert_eq!(w.args.ram, 4096);
+    assert_eq!(
+        w.args.mount,
+        vec!["/host/src:/guest/src", "/host/data:/guest/data"]
+    );
+    assert_eq!(w.args.env, vec!["FOO=bar", "BAZ=qux"]);
+    assert_eq!(w.args.arg, vec!["server.js", "--port", "3000"]);
+    assert_eq!(w.args.pid_file, Some("/tmp/worker.pid".to_string()));
+    assert_eq!(w.args.console_output, Some("/tmp/console.log".to_string()));
+    assert_eq!(w.args.slot, 42);
 }
 
-/// Test: Manifest loading and project detection work end-to-end.
+/// `VmBootArgs` applies correct defaults for optional fields.
+#[test]
+fn vm_boot_args_defaults() {
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(flatten)]
+        args: VmBootArgs,
+    }
+
+    let w = Wrapper::parse_from(["test", "--rootfs", "/tmp/rootfs", "--exec", "/usr/bin/node"]);
+    assert_eq!(w.args.workdir, "/");
+    assert_eq!(w.args.vcpus, 2);
+    assert_eq!(w.args.ram, 2048);
+    assert!(w.args.mount.is_empty());
+    assert!(w.args.env.is_empty());
+    assert!(w.args.arg.is_empty());
+    assert!(w.args.pid_file.is_none());
+    assert!(w.args.console_output.is_none());
+    assert_eq!(w.args.slot, 0);
+}
+
+/// Manifest YAML roundtrip (serde pattern test, kept as-is).
 #[test]
 fn manifest_yaml_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
@@ -125,7 +247,6 @@ resources:
 "#;
     std::fs::write(dir.path().join("iii.worker.yaml"), yaml).unwrap();
 
-    // Verify the file can be parsed as valid YAML
     let content = std::fs::read_to_string(dir.path().join("iii.worker.yaml")).unwrap();
     let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
 
@@ -137,7 +258,7 @@ resources:
     assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
 }
 
-/// Test: OCI config JSON parsing for entrypoint extraction.
+/// OCI config JSON parsing (serde pattern test, kept as-is).
 #[test]
 fn oci_config_json_parsing() {
     let dir = tempfile::tempdir().unwrap();
@@ -158,7 +279,6 @@ fn oci_config_json_parsing() {
     )
     .unwrap();
 
-    // Re-parse and verify
     let content = std::fs::read_to_string(dir.path().join(".oci-config.json")).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 

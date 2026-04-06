@@ -10,7 +10,7 @@ use colored::Colorize;
 use std::collections::HashMap;
 
 use super::lifecycle::{build_container_spec, worker_status_label};
-use super::registry::{resolve_image, MANIFEST_PATH};
+use super::registry::{MANIFEST_PATH, resolve_image};
 use super::worker_manager::state::{WorkerDef, WorkerResources, WorkersFile};
 
 pub use super::dev::handle_worker_dev;

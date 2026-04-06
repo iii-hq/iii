@@ -20,3 +20,6 @@ bytes = "1"
 tokio = { version = "1", features = ["sync", "net", "io-util", "time", "rt"] }
 hickory-resolver = "0.25"
 hickory-proto = "0.25"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

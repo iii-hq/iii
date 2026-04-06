@@ -58,6 +58,25 @@ pub struct PollLoopConfig {
     pub mtu: usize,
 }
 
+/// Mutable state owned by the poll loop, factored out for testability.
+pub struct PollLoopState {
+    pub device: SmoltcpDevice,
+    pub iface: Interface,
+    pub sockets: SocketSet<'static>,
+    pub conn_tracker: ConnectionTracker,
+    pub dns_interceptor: DnsInterceptor,
+    pub udp_relay: UdpRelay,
+    pub last_cleanup: std::time::Instant,
+}
+
+/// Summary of work done in a single poll iteration.
+pub struct IterationResult {
+    /// Whether any frames were emitted to the rx_ring during this iteration.
+    pub frames_emitted: bool,
+    /// Number of new TCP connections ready for proxy spawning.
+    pub new_connections: usize,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
@@ -104,6 +123,91 @@ pub fn create_interface(device: &mut SmoltcpDevice, config: &PollLoopConfig) -> 
     iface
 }
 
+/// Run one iteration of the poll loop (phases 1–3 + final egress flush).
+///
+/// This function is factored out of [`smoltcp_poll_loop`] for testability.
+/// The caller is responsible for sleeping (`libc::poll`) and draining wake
+/// pipes between iterations.
+pub fn poll_iteration(
+    state: &mut PollLoopState,
+    shared: &Arc<SharedState>,
+    config: &PollLoopConfig,
+    tokio_handle: &tokio::runtime::Handle,
+) -> IterationResult {
+    let now = smoltcp_now();
+    let mut emitted = false;
+
+    // Phase 1: Drain all guest frames with pre-inspection.
+    while let Some(frame) = state.device.stage_next_frame() {
+        match classify_frame(frame) {
+            FrameAction::TcpSyn { src, dst } => {
+                if !state.conn_tracker.has_socket_for(&src, &dst) {
+                    state
+                        .conn_tracker
+                        .create_tcp_socket(src, dst, &mut state.sockets);
+                }
+                state
+                    .iface
+                    .poll_ingress_single(now, &mut state.device, &mut state.sockets);
+            }
+            FrameAction::UdpRelay { src, dst } => {
+                state.udp_relay.relay_outbound(frame, src, dst);
+                state.device.drop_staged_frame();
+            }
+            FrameAction::Dns | FrameAction::Passthrough => {
+                state
+                    .iface
+                    .poll_ingress_single(now, &mut state.device, &mut state.sockets);
+            }
+        }
+    }
+
+    // Phase 2: Egress + maintenance.
+    drain_egress(now, &mut state.iface, &mut state.device, &mut state.sockets);
+    state.iface.poll_maintenance(now);
+
+    if state.device.frames_emitted.swap(false, Ordering::Relaxed) {
+        shared.rx_wake.wake();
+        emitted = true;
+    }
+
+    // Phase 3: Service connections.
+    state.conn_tracker.relay_data(&mut state.sockets);
+    state.dns_interceptor.process(&mut state.sockets);
+
+    let new_conns = state.conn_tracker.take_new_connections(&mut state.sockets);
+    let new_conn_count = new_conns.len();
+    for conn in new_conns {
+        proxy::spawn_tcp_proxy(
+            tokio_handle,
+            conn.dst,
+            conn.from_smoltcp,
+            conn.to_smoltcp,
+            shared.clone(),
+            config.gateway_ipv4,
+        );
+    }
+
+    if state.last_cleanup.elapsed() >= std::time::Duration::from_secs(1) {
+        state.conn_tracker.cleanup_closed(&mut state.sockets);
+        state.udp_relay.cleanup_expired();
+        state.last_cleanup = std::time::Instant::now();
+    }
+
+    // Final egress flush.
+    drain_egress(now, &mut state.iface, &mut state.device, &mut state.sockets);
+
+    if state.device.frames_emitted.swap(false, Ordering::Relaxed) {
+        shared.rx_wake.wake();
+        emitted = true;
+    }
+
+    IterationResult {
+        frames_emitted: emitted,
+        new_connections: new_conn_count,
+    }
+}
+
 /// Main smoltcp poll loop. Runs on a dedicated OS thread.
 ///
 /// Processes guest frames with pre-inspection, drives smoltcp's TCP/IP
@@ -123,18 +227,29 @@ pub fn smoltcp_poll_loop(
     tokio_handle: tokio::runtime::Handle,
 ) {
     let mut device = SmoltcpDevice::new(shared.clone(), config.mtu);
-    let mut iface = create_interface(&mut device, &config);
-    let mut sockets = SocketSet::new(vec![]);
-    let mut conn_tracker = ConnectionTracker::new(None);
-    let mut dns_interceptor = DnsInterceptor::new(&mut sockets, shared.clone(), &tokio_handle);
-    let mut udp_relay = UdpRelay::new(
-        shared.clone(),
-        config.gateway_mac,
-        config.guest_mac,
-        tokio_handle.clone(),
-    );
+    let iface = create_interface(&mut device, &config);
 
-    let mut last_cleanup = std::time::Instant::now();
+    let mut state = PollLoopState {
+        device,
+        iface,
+        sockets: SocketSet::new(vec![]),
+        conn_tracker: ConnectionTracker::new(None),
+        dns_interceptor: DnsInterceptor::new(
+            &mut SocketSet::new(vec![]),
+            shared.clone(),
+            &tokio_handle,
+        ),
+        udp_relay: UdpRelay::new(
+            shared.clone(),
+            config.gateway_mac,
+            config.guest_mac,
+            tokio_handle.clone(),
+        ),
+        last_cleanup: std::time::Instant::now(),
+    };
+
+    // Re-create dns_interceptor with the state's socket set.
+    state.dns_interceptor = DnsInterceptor::new(&mut state.sockets, shared.clone(), &tokio_handle);
 
     let mut poll_fds = [
         libc::pollfd {
@@ -150,76 +265,12 @@ pub fn smoltcp_poll_loop(
     ];
 
     loop {
+        poll_iteration(&mut state, &shared, &config, &tokio_handle);
+
         let now = smoltcp_now();
-
-        // Phase 1: Drain all guest frames with pre-inspection.
-        while let Some(frame) = device.stage_next_frame() {
-            match classify_frame(frame) {
-                FrameAction::TcpSyn { src, dst } => {
-                    if !conn_tracker.has_socket_for(&src, &dst) {
-                        conn_tracker.create_tcp_socket(src, dst, &mut sockets);
-                    }
-                    iface.poll_ingress_single(now, &mut device, &mut sockets);
-                }
-                FrameAction::UdpRelay { src, dst } => {
-                    udp_relay.relay_outbound(frame, src, dst);
-                    device.drop_staged_frame();
-                }
-                FrameAction::Dns | FrameAction::Passthrough => {
-                    iface.poll_ingress_single(now, &mut device, &mut sockets);
-                }
-            }
-        }
-
-        // Phase 2: Egress + maintenance.
-        loop {
-            let result = iface.poll_egress(now, &mut device, &mut sockets);
-            if matches!(result, smoltcp::iface::PollResult::None) {
-                break;
-            }
-        }
-        iface.poll_maintenance(now);
-
-        if device.frames_emitted.swap(false, Ordering::Relaxed) {
-            shared.rx_wake.wake();
-        }
-
-        // Phase 3: Service connections.
-        conn_tracker.relay_data(&mut sockets);
-        dns_interceptor.process(&mut sockets);
-
-        let new_conns = conn_tracker.take_new_connections(&mut sockets);
-        for conn in new_conns {
-            proxy::spawn_tcp_proxy(
-                &tokio_handle,
-                conn.dst,
-                conn.from_smoltcp,
-                conn.to_smoltcp,
-                shared.clone(),
-                config.gateway_ipv4,
-            );
-        }
-
-        if last_cleanup.elapsed() >= std::time::Duration::from_secs(1) {
-            conn_tracker.cleanup_closed(&mut sockets);
-            udp_relay.cleanup_expired();
-            last_cleanup = std::time::Instant::now();
-        }
-
-        // Phase 4: Flush + sleep.
-        loop {
-            let result = iface.poll_egress(now, &mut device, &mut sockets);
-            if matches!(result, smoltcp::iface::PollResult::None) {
-                break;
-            }
-        }
-
-        if device.frames_emitted.swap(false, Ordering::Relaxed) {
-            shared.rx_wake.wake();
-        }
-
-        let timeout_ms = iface
-            .poll_delay(now, &sockets)
+        let timeout_ms = state
+            .iface
+            .poll_delay(now, &state.sockets)
             .map(|d| d.total_millis().min(i32::MAX as u64) as i32)
             .unwrap_or(100);
 
@@ -244,6 +295,21 @@ pub fn smoltcp_poll_loop(
 //--------------------------------------------------------------------------------------------------
 // Helpers
 //--------------------------------------------------------------------------------------------------
+
+/// Drain all pending egress frames from the smoltcp interface.
+fn drain_egress(
+    now: Instant,
+    iface: &mut Interface,
+    device: &mut SmoltcpDevice,
+    sockets: &mut SocketSet<'_>,
+) {
+    loop {
+        let result = iface.poll_egress(now, device, sockets);
+        if matches!(result, smoltcp::iface::PollResult::None) {
+            break;
+        }
+    }
+}
 
 fn classify_ipv4(payload: &[u8]) -> FrameAction {
     let Ok(ipv4) = Ipv4Packet::new_checked(payload) else {
@@ -363,6 +429,45 @@ mod tests {
         frame
     }
 
+    fn test_config() -> PollLoopConfig {
+        PollLoopConfig {
+            gateway_mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+            guest_mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x02],
+            gateway_ipv4: Ipv4Addr::new(10, 0, 2, 1),
+            guest_ipv4: Ipv4Addr::new(10, 0, 2, 2),
+            mtu: 1500,
+        }
+    }
+
+    fn build_state(
+        shared: &Arc<SharedState>,
+        config: &PollLoopConfig,
+        tokio_handle: &tokio::runtime::Handle,
+    ) -> PollLoopState {
+        let mut device = SmoltcpDevice::new(shared.clone(), config.mtu);
+        let iface = create_interface(&mut device, config);
+        let mut sockets = SocketSet::new(vec![]);
+        let dns_interceptor = DnsInterceptor::new(&mut sockets, shared.clone(), tokio_handle);
+        let udp_relay = UdpRelay::new(
+            shared.clone(),
+            config.gateway_mac,
+            config.guest_mac,
+            tokio_handle.clone(),
+        );
+
+        PollLoopState {
+            device,
+            iface,
+            sockets,
+            conn_tracker: ConnectionTracker::new(None),
+            dns_interceptor,
+            udp_relay,
+            last_cleanup: std::time::Instant::now(),
+        }
+    }
+
+    // -- classify_frame tests (existing) --
+
     #[test]
     fn classify_tcp_syn() {
         let frame = build_tcp_syn_frame([10, 0, 0, 2], [93, 184, 216, 34], 54321, 443);
@@ -418,5 +523,80 @@ mod tests {
     fn classify_garbage_is_passthrough() {
         assert!(matches!(classify_frame(&[]), FrameAction::Passthrough));
         assert!(matches!(classify_frame(&[0; 5]), FrameAction::Passthrough));
+    }
+
+    // -- poll_iteration tests --
+
+    #[tokio::test]
+    async fn poll_iteration_empty_is_noop() {
+        let shared = Arc::new(SharedState::new(64));
+        let config = test_config();
+        let handle = tokio::runtime::Handle::current();
+        let mut state = build_state(&shared, &config, &handle);
+
+        let result = poll_iteration(&mut state, &shared, &config, &handle);
+        assert!(!result.frames_emitted);
+        assert_eq!(result.new_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn poll_iteration_tcp_syn_creates_connection() {
+        let shared = Arc::new(SharedState::new(64));
+        let config = test_config();
+        let handle = tokio::runtime::Handle::current();
+        let mut state = build_state(&shared, &config, &handle);
+
+        let syn = build_tcp_syn_frame([10, 0, 2, 2], [93, 184, 216, 34], 54321, 80);
+        shared.tx_ring.push(syn).unwrap();
+
+        let src: SocketAddr = "10.0.2.2:54321".parse().unwrap();
+        let dst: SocketAddr = "93.184.216.34:80".parse().unwrap();
+
+        assert!(!state.conn_tracker.has_socket_for(&src, &dst));
+        let _result = poll_iteration(&mut state, &shared, &config, &handle);
+        assert!(
+            state.conn_tracker.has_socket_for(&src, &dst),
+            "SYN should create a tracked connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_iteration_multiple_frames() {
+        let shared = Arc::new(SharedState::new(64));
+        let config = test_config();
+        let handle = tokio::runtime::Handle::current();
+        let mut state = build_state(&shared, &config, &handle);
+
+        let syn1 = build_tcp_syn_frame([10, 0, 2, 2], [93, 184, 216, 34], 10001, 80);
+        let syn2 = build_tcp_syn_frame([10, 0, 2, 2], [93, 184, 216, 34], 10002, 443);
+        shared.tx_ring.push(syn1).unwrap();
+        shared.tx_ring.push(syn2).unwrap();
+
+        let _result = poll_iteration(&mut state, &shared, &config, &handle);
+
+        let src1: SocketAddr = "10.0.2.2:10001".parse().unwrap();
+        let dst1: SocketAddr = "93.184.216.34:80".parse().unwrap();
+        let src2: SocketAddr = "10.0.2.2:10002".parse().unwrap();
+        let dst2: SocketAddr = "93.184.216.34:443".parse().unwrap();
+
+        assert!(state.conn_tracker.has_socket_for(&src1, &dst1));
+        assert!(state.conn_tracker.has_socket_for(&src2, &dst2));
+    }
+
+    #[tokio::test]
+    async fn poll_iteration_dns_frame_processed() {
+        let shared = Arc::new(SharedState::new(64));
+        let config = test_config();
+        let handle = tokio::runtime::Handle::current();
+        let mut state = build_state(&shared, &config, &handle);
+
+        let dns_frame = build_udp_frame([10, 0, 2, 2], [10, 0, 2, 1], 12345, 53);
+        shared.tx_ring.push(dns_frame).unwrap();
+
+        let result = poll_iteration(&mut state, &shared, &config, &handle);
+        assert_eq!(
+            result.new_connections, 0,
+            "DNS should not create TCP connections"
+        );
     }
 }

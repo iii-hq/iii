@@ -44,8 +44,14 @@ mod tests {
         clone_rootfs(src.path(), &dest).unwrap();
 
         assert!(dest.join("bin/hello").exists());
-        assert_eq!(std::fs::read_to_string(dest.join("bin/hello")).unwrap(), "world");
-        assert_eq!(std::fs::read_to_string(dest.join("root.txt")).unwrap(), "data");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("bin/hello")).unwrap(),
+            "world"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("root.txt")).unwrap(),
+            "data"
+        );
     }
 
     #[test]

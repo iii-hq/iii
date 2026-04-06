@@ -5,6 +5,10 @@ edition = "2024"
 license = "Elastic-2.0"
 description = "iii managed worker runtime — VM-based isolated worker execution"
 
+[lib]
+name = "iii_worker"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-worker"
 path = "src/main.rs"

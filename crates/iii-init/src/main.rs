@@ -1,18 +1,4 @@
 #[cfg(target_os = "linux")]
-mod error;
-#[cfg(target_os = "linux")]
-mod mount;
-#[cfg(target_os = "linux")]
-mod network;
-#[cfg(target_os = "linux")]
-mod rlimit;
-#[cfg(target_os = "linux")]
-mod supervisor;
-
-#[cfg(target_os = "linux")]
-use error::InitError;
-
-#[cfg(target_os = "linux")]
 fn main() {
     if let Err(e) = run() {
         eprintln!("iii-init: {e}");
@@ -29,13 +15,13 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn run() -> Result<(), InitError> {
-    mount::mount_filesystems()?;
-    rlimit::raise_nofile()?;
-    network::configure_network()?;
-    if let Err(e) = network::write_resolv_conf() {
+fn run() -> Result<(), iii_init::InitError> {
+    iii_init::mount::mount_filesystems()?;
+    iii_init::rlimit::raise_nofile()?;
+    iii_init::network::configure_network()?;
+    if let Err(e) = iii_init::network::write_resolv_conf() {
         eprintln!("iii-init: warning: {e} (DNS may use existing resolv.conf)");
     }
-    supervisor::exec_worker()?;
+    iii_init::supervisor::exec_worker()?;
     Ok(())
 }

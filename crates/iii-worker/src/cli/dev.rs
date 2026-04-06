@@ -9,7 +9,7 @@
 use colored::Colorize;
 use std::collections::HashMap;
 
-use super::project::{load_project_info, ProjectInfo, WORKER_MANIFEST};
+use super::project::{ProjectInfo, WORKER_MANIFEST, load_project_info};
 use super::rootfs::clone_rootfs;
 
 async fn detect_lan_ip() -> Option<String> {

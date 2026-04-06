@@ -14,11 +14,11 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::cli::rootfs::clone_rootfs;
 use super::oci::{
-    expected_oci_arch, pull_and_extract_rootfs, read_cached_rootfs_arch,
-    read_oci_entrypoint, read_oci_env,
+    expected_oci_arch, pull_and_extract_rootfs, read_cached_rootfs_arch, read_oci_entrypoint,
+    read_oci_env,
 };
+use crate::cli::rootfs::clone_rootfs;
 
 /// Check if libkrun runtime is available on this system.
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.

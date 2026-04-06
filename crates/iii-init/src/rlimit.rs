@@ -1,7 +1,7 @@
 use crate::error::InitError;
 
 /// Default RLIMIT_NOFILE value (soft and hard).
-const DEFAULT_NOFILE: u64 = 65536;
+pub const DEFAULT_NOFILE: u64 = 65536;
 
 /// Raise RLIMIT_NOFILE to the value specified in `III_INIT_NOFILE` env var,
 /// or `DEFAULT_NOFILE` (65536) if not set.

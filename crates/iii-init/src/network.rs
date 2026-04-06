@@ -197,7 +197,7 @@ fn make_sockaddr_in(addr: Ipv4Addr) -> libc::sockaddr_in {
     sa
 }
 
-fn cidr_to_mask(prefix: u8) -> Ipv4Addr {
+pub fn cidr_to_mask(prefix: u8) -> Ipv4Addr {
     if prefix == 0 {
         return Ipv4Addr::new(0, 0, 0, 0);
     }
