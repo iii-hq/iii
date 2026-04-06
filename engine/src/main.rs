@@ -9,7 +9,10 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{EngineBuilder, logging, workers::{config::EngineConfig, worker::DEFAULT_PORT}};
+use iii::{
+    EngineBuilder, logging,
+    workers::{config::EngineConfig, worker::DEFAULT_PORT},
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
