@@ -14,8 +14,8 @@ use futures::Future;
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::observability::metrics::ensure_default_meter,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
+    workers::observability::metrics::ensure_default_meter,
 };
 use tokio::{runtime::Runtime, sync::Notify};
 
@@ -94,6 +94,7 @@ async fn build_fanout_engine(fanout: usize) -> (Engine, Arc<AtomicUsize>, Arc<No
                 function_id,
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger");

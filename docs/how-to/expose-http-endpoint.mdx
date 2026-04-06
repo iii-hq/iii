@@ -9,12 +9,12 @@ Expose a Function as an HTTP endpoint so external clients can call it via REST.
 
 ## Steps
 
-### 1. Enable the REST API module
+### 1. Enable the REST API worker
 
-Make sure `iii-config.yaml` has the REST API module enabled:
+Make sure `iii-config.yaml` has the REST API worker enabled:
 
 ```yaml title="iii-config.yaml"
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111
       host: localhost

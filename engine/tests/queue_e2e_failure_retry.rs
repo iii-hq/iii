@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use iii::{
     engine::Engine,
-    modules::{module::Module, queue::QueueCoreModule},
+    workers::{queue::QueueWorker, traits::Worker},
 };
 
 use common::queue_helpers::{
@@ -45,7 +45,7 @@ async fn retry_backoff_timing_is_exponential() {
     });
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -58,9 +58,9 @@ async fn retry_backoff_timing_is_exponential() {
         timestamps.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
 
     enqueue(
@@ -152,16 +152,16 @@ async fn dlq_exhaustion_preserves_payload_and_metadata() {
     });
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::dlq_handler", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
 
     // Distinctive payload for verification
@@ -266,16 +266,16 @@ async fn max_retries_zero_sends_directly_to_dlq() {
     });
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::zero_retry_handler", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
 
     // Verify DLQ starts empty

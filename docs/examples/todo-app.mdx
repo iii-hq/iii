@@ -20,15 +20,15 @@ graph LR
 
 ## Engine configuration
 
-The `iii-config.yaml` defines the engine modules:
+The `iii-config.yaml` defines the engine workers:
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49134
 
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       host: 0.0.0.0
       port: 3111
@@ -41,26 +41,26 @@ modules:
           - match("todos::delete")
           - match("todos::toggle")
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       exec:
         - pnpm dev
 
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       port: 3112
       host: 0.0.0.0
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/stream_store
 ```
 
-| Module | Port | Purpose |
+| Worker | Port | Purpose |
 | --- | --- | --- |
-| **WorkerModule** | 49134 | Internal port. The API worker connects here to register functions. |
-| **WorkerModule (RBAC)** | 3111 | Public-facing port. The browser connects here. RBAC controls which functions are exposed and runs an auth function on every new connection. |
+| **iii-worker-manager** | 49134 | Internal port. The API worker connects here to register functions. |
+| **iii-worker-manager (RBAC)** | 3111 | Public-facing port. The browser connects here. RBAC controls which functions are exposed and runs an auth function on every new connection. |
 | **ExecModule** | — | Runs `pnpm dev` to start the API worker process. |
 | **StreamModule** | 3112 | Manages stream state with a file-based KvStore adapter. The engine routes `stream::get`, `stream::set`, `stream::delete`, and `stream::list` to this module. |
 
@@ -381,6 +381,6 @@ All CRUD operations (`addTodo`, `toggleTodo`, `deleteTodo`) call `iii.trigger` w
 
 - **Single connection** — The browser opens one WebSocket to the RBAC port. Function calls and real-time stream events flow over the same connection.
 - **No HTTP routes** — The API worker registers plain iii functions. The browser invokes them directly via `iii.trigger`. There is no REST layer.
-- **RBAC** — The engine's WorkerModule supports auth functions, expose lists, and middleware. This example uses a simple auth function that creates a session. See [Worker RBAC](/docs/how-to/worker-rbac) for the full reference.
-- **Engine-managed streams** — The `StreamModule` handles persistence (file-based KvStore in this example). The API worker reads and writes through `stream::*` function triggers — no custom stream implementation required.
+- **RBAC** — The engine's iii-worker-manager supports auth functions, expose lists, and middleware. This example uses a simple auth function that creates a session. See [Worker RBAC](/docs/how-to/worker-rbac) for the full reference.
+- **Engine-managed streams** — The `iii-stream` worker handles persistence (file-based KvStore in this example). The API worker reads and writes through `stream::*` function triggers — no custom stream implementation required.
 - **Session isolation** — The auth function returns a `function_registration_prefix`. The engine prefixes every function registered by that browser session, so multiple clients can register `ui::on-todo-change` without colliding.

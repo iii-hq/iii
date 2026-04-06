@@ -29,6 +29,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 trigger_type: "http".to_string(),
                 function_id: "bench.echo".to_string(),
                 config: json!({"api_path": "bench/0", "http_method": "POST"}),
+                metadata: None,
             },
         ),
         (

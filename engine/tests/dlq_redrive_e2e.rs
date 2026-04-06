@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Module, queue::QueueCoreModule},
     protocol::ErrorBody,
+    workers::{queue::QueueWorker, traits::Worker},
 };
 
 // ---------------------------------------------------------------------------
@@ -44,15 +44,15 @@ fn queue_config_with_fast_retries() -> Value {
     })
 }
 
-/// Creates an engine with the QueueCoreModule initialized AND the module's
+/// Creates an engine with the QueueWorker initialized AND the module's
 /// built-in functions (including `iii::queue::redrive`) registered on the engine.
 async fn create_engine_with_redrive(config: Value) -> Arc<Engine> {
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     // Register macro-generated functions (iii::queue::redrive, enqueue, etc.)
     module.register_functions(engine.clone());
@@ -194,7 +194,7 @@ fn register_flaky_function(
 async fn e2e_dlq_redrive_full_lifecycle() {
     // Phase 1: set up engine, register a failing function, enqueue a message
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -204,7 +204,7 @@ async fn e2e_dlq_redrive_full_lifecycle() {
     // Register a failing function so it exhausts retries
     register_failing_function(&engine, "e2e::order_processor", fail_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -286,14 +286,14 @@ async fn e2e_dlq_redrive_full_lifecycle() {
 #[tokio::test]
 async fn e2e_redrive_multiple_dlq_messages() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::batch_handler", fail_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -402,7 +402,7 @@ async fn e2e_flaky_function_recovers_after_redrive() {
     // With max_retries=2, the first run (3 attempts) exhausts retries → DLQ.
     // After redrive, it gets 3 more attempts (calls 4,5,6). Call 6 succeeds.
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -417,7 +417,7 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         5,
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -472,14 +472,14 @@ async fn e2e_flaky_function_recovers_after_redrive() {
 #[tokio::test]
 async fn e2e_redrive_result_contains_metadata() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::meta_handler", fail_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 

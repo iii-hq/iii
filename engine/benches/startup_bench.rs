@@ -1,7 +1,7 @@
 mod common;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use iii::{EngineBuilder, modules::config::EngineConfig};
+use iii::{EngineBuilder, workers::config::EngineConfig};
 
 fn startup_benchmark(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");

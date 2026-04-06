@@ -18,8 +18,8 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
     Declare one or more named queues under `queue_configs` in your `iii-config.yaml`. Each queue has independent retry, concurrency, and ordering settings.
 
     ```yaml title="iii-config.yaml"
-    modules:
-      - class: modules::queue::QueueModule
+    workers:
+      - name: iii-queue
         config:
           queue_configs:
             default:
@@ -37,7 +37,7 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
               type: standard
               backoff_ms: 2000
           adapter:
-            class: modules::queue::BuiltinQueueAdapter
+            name: builtin
             config:
               store_method: file_based
               file_path: ./data/queue_store
@@ -382,8 +382,8 @@ An order API must respond fast. Payment processing is critical and must happen i
 **Queue configuration:**
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
+workers:
+  - name: iii-queue
     config:
       queue_configs:
         payment:
@@ -397,7 +397,7 @@ modules:
           type: standard
           backoff_ms: 2000
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based
           file_path: ./data/queue_store
@@ -1053,7 +1053,7 @@ For the full module configuration including adapter settings, see the [Queue mod
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Handle and redrive failed queue messages
   </Card>
-  <Card title="Queue Module Reference" href="/modules/module-queue" icon="gear">
+  <Card title="Queue Worker Reference" href="/modules/module-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
   <Card title="Queue Architecture" href="/architecture/queues" icon="sitemap">

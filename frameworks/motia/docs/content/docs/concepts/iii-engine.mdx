@@ -45,26 +45,26 @@ The iii development console gives you full visibility into the running engine �
 The `config.yaml` file is the single source of truth for all infrastructure configuration. It replaces the old `motia.config.ts` plugin system — no more JavaScript configuration for infrastructure concerns.
 
 ```yaml
-modules:
-  - class: modules::api::RestApiModule
+workers:
+  - name: iii-http
     config:
       port: 3111
       host: 0.0.0.0
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/state_store.db
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts
@@ -82,7 +82,7 @@ modules:
 Serves HTTP endpoints defined by your Step triggers. Configures port, host, CORS, timeouts, and concurrency limits.
 
 ```yaml
-- class: modules::api::RestApiModule
+- name: iii-http
   config:
     port: 3111
     host: 0.0.0.0
@@ -104,15 +104,15 @@ Serves HTTP endpoints defined by your Step triggers. Configures port, host, CORS
 Manages message queues for async Step-to-Step communication via `enqueue()`. Supports built-in, Redis, and RabbitMQ adapters.
 
 ```yaml
-- class: modules::queue::QueueModule
+- name: iii-queue
   config:
     adapter:
-      class: modules::queue::BuiltinQueueAdapter
+      name: builtin
       # For Redis:
-      #   class: modules::queue::RedisAdapter
+      #   name: redis
       #   config: { redis_url: "redis://localhost:6379" }
       # For RabbitMQ:
-      #   class: modules::queue::RabbitMQAdapter
+      #   name: rabbitmq
       #   config: { amqp_url: "amqp://localhost:5672" }
 ```
 
@@ -121,10 +121,10 @@ Manages message queues for async Step-to-Step communication via `enqueue()`. Sup
 Key-value state storage grouped by namespace. Supports file-based, in-memory, and Redis adapters.
 
 ```yaml
-- class: modules::state::StateModule
+- name: iii-state
   config:
     adapter:
-      class: modules::state::adapters::KvStore
+      name: kv
       config:
         store_method: file_based
         file_path: ./data/state_store.db
@@ -135,12 +135,12 @@ Key-value state storage grouped by namespace. Supports file-based, in-memory, an
 Manages real-time data streams with WebSocket support. Supports KvStore and Redis adapters.
 
 ```yaml
-- class: modules::stream::StreamModule
+- name: iii-stream
   config:
     port: 3112
     host: 0.0.0.0
     adapter:
-      class: modules::stream::adapters::KvStore
+      name: kv
       config:
         store_method: file_based
         file_path: ./data/stream_store
@@ -151,10 +151,10 @@ Manages real-time data streams with WebSocket support. Supports KvStore and Redi
 Schedules and executes cron-based triggers.
 
 ```yaml
-- class: modules::cron::CronModule
+- name: iii-cron
   config:
     adapter:
-      class: modules::cron::KvCronAdapter
+      name: kv
 ```
 
 ### PubSub Module
@@ -162,12 +162,12 @@ Schedules and executes cron-based triggers.
 Internal publish/subscribe messaging between engine components.
 
 ```yaml
-- class: modules::pubsub::PubSubModule
+- name: iii-pubsub
   config:
     adapter:
-      class: modules::pubsub::LocalAdapter
+      name: local
       # For Redis:
-      #   class: modules::pubsub::RedisAdapter
+      #   name: redis
       #   config: { redis_url: "redis://localhost:6379" }
 ```
 
@@ -176,7 +176,7 @@ Internal publish/subscribe messaging between engine components.
 Distributed traces, metrics, and structured logs for observability.
 
 ```yaml
-- class: modules::observability::OtelModule
+- name: iii-observability
   config:
     enabled: true
     service_name: my-service
@@ -195,7 +195,7 @@ Distributed traces, metrics, and structured logs for observability.
 Manages the lifecycle of your Motia SDK process. Watches files for changes and restarts on hot-reload.
 
 ```yaml
-- class: modules::shell::ExecModule
+- name: iii-exec
   config:
     watch:
       - steps/**/*.ts
@@ -220,7 +220,7 @@ Every module that manages data (queues, state, streams, cron, pubsub) supports m
 | Cron | `KvCronAdapter` | `RedisCronAdapter` |
 | PubSub | `LocalAdapter` | `RedisAdapter` |
 
-To swap adapters, change the `class` field in `config.yaml` — no application code changes needed.
+To swap adapters, change the `name` field in `config.yaml` — no application code changes needed.
 
 ---
 
@@ -229,7 +229,7 @@ To swap adapters, change the `class` field in `config.yaml` — no application c
 Use `${VAR:default}` syntax in config.yaml for environment-specific values:
 
 ```yaml
-- class: modules::api::RestApiModule
+- name: iii-http
   config:
     port: ${API_PORT:3111}
     host: ${API_HOST:0.0.0.0}
@@ -242,15 +242,15 @@ Use `${VAR:default}` syntax in config.yaml for environment-specific values:
 For projects that use both Node.js and Python, configure separate ExecModule entries:
 
 ```yaml
-modules:
-  - class: modules::shell::ExecModule
+workers:
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts
       exec:
         - npx motia dev
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.py

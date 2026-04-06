@@ -669,7 +669,7 @@ impl BuiltinQueue {
         queue: &str,
         offset: u64,
         limit: u64,
-    ) -> Vec<crate::modules::queue::DlqMessage> {
+    ) -> Vec<crate::workers::queue::DlqMessage> {
         let dlq_key = self.dlq_key(queue);
         let items = self
             .kv_store
@@ -700,7 +700,7 @@ impl BuiltinQueue {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32;
                 let size_bytes = item.len() as u64;
-                messages.push(crate::modules::queue::DlqMessage {
+                messages.push(crate::workers::queue::DlqMessage {
                     id: id.to_string(),
                     payload: data,
                     error: error.to_string(),
@@ -859,7 +859,7 @@ async fn process_job_with_inline_retry(
                 if let Err(e) = queue_impl.ack(queue_name, &job.id).await {
                     tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
                 }
-                crate::modules::telemetry::collector::track_queue_consume();
+                crate::workers::telemetry::collector::track_queue_consume();
                 return;
             }
             Err(error) => {
@@ -976,7 +976,7 @@ impl Worker {
                         if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
                             tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
                         }
-                        crate::modules::telemetry::collector::track_queue_consume();
+                        crate::workers::telemetry::collector::track_queue_consume();
                     }
                     Err(error) => {
                         if let Err(e) = queue_impl.nack(&queue_name, &job.id, &error).await {

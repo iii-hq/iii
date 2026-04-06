@@ -58,7 +58,7 @@ pub fn rabbitmq_queue_config_custom(
 ) -> Value {
     json!({
         "adapter": {
-            "class": "modules::queue::RabbitMQAdapter",
+            "name": "rabbitmq",
             "config": {
                 "amqp_url": amqp_url
             }
@@ -80,7 +80,7 @@ pub fn rabbitmq_queue_config_custom(
 pub fn rabbitmq_queue_config(amqp_url: &str, prefix: &str) -> Value {
     json!({
         "adapter": {
-            "class": "modules::queue::RabbitMQAdapter",
+            "name": "rabbitmq",
             "config": {
                 "amqp_url": amqp_url
             }
