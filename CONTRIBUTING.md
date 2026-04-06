@@ -5,7 +5,7 @@ for contributing to this project and the licensing terms that apply to all contr
 
 ## License of Contributions
 
-**All contributions to this repository are made under the
+**All external contributions to this repository are made under the
 [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).**
 
 This applies to every part of this repository, including but not limited to:
