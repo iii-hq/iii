@@ -7,9 +7,9 @@ use futures::Future;
 use iii::{
     engine::Outbound,
     function::{Function, FunctionResult, FunctionsRegistry},
-    modules::observability::metrics::ensure_default_meter,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
-    workers::{Worker, WorkerRegistry},
+    worker_connections::{WorkerConnection, WorkerConnectionRegistry},
+    workers::observability::metrics::ensure_default_meter,
 };
 use tokio::sync::mpsc;
 
@@ -34,7 +34,7 @@ impl TriggerRegistrator for NoopRegistrator {
 
 fn make_function(id: &str) -> Function {
     Function {
-        handler: std::sync::Arc::new(move |_invocation_id, input| {
+        handler: std::sync::Arc::new(move |_invocation_id, input, _session| {
             Box::pin(async move { FunctionResult::Success(Some(input)) })
         }),
         _function_id: id.to_string(),
@@ -81,13 +81,13 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
             &size,
             |b, &size| {
                 b.iter_batched(
-                    WorkerRegistry::new,
+                    WorkerConnectionRegistry::new,
                     |registry| {
                         let mut ids = Vec::with_capacity(size);
                         let mut _receivers = Vec::with_capacity(size);
                         for _ in 0..size {
                             let (tx, rx) = mpsc::channel::<Outbound>(1);
-                            let worker = Worker::new(tx);
+                            let worker = WorkerConnection::new(tx);
                             ids.push(worker.id);
                             _receivers.push(rx);
                             registry.register_worker(worker);
@@ -126,6 +126,7 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
                                     function_id: format!("bench.function.{idx}"),
                                     config: serde_json::json!({}),
                                     worker_id: None,
+                                    metadata: None,
                                 })
                                 .await
                                 .expect("register trigger");

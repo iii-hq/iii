@@ -114,13 +114,13 @@ This produces:
 - `dist/index-production.js`
 - `dist/index-production.js.map`
 
-Your `config.yaml` should reference the production bundle in the ExecModule (place this under the top-level `modules:` list):
+Your `config.yaml` should reference the production bundle in the ExecModule (place this under the top-level `workers:` list):
 
 ```yaml title="config.yaml (production ExecModule)"
-modules:
-  # ... other modules (StreamModule, StateModule, etc.) ...
+workers:
+  # ... other workers (iii-stream, iii-state, etc.) ...
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       exec:
         - bun run --enable-source-maps dist/index-production.js
@@ -134,13 +134,13 @@ Start the Motia SDK in development mode. This is typically run automatically by 
 npx motia dev
 ```
 
-Your `config.yaml` ExecModule for development (place this under the top-level `modules:` list). The `watch` array defines file patterns that trigger a rebuild, and the `exec` commands run sequentially — `npx motia dev` compiles the Steps, then `node dist/index-dev.js` starts the built output:
+Your `config.yaml` ExecModule for development (place this under the top-level `workers:` list). The `watch` array defines file patterns that trigger a rebuild, and the `exec` commands run sequentially — `npx motia dev` compiles the Steps, then `node dist/index-dev.js` starts the built output:
 
 ```yaml title="config.yaml (development ExecModule)"
-modules:
-  # ... other modules (StreamModule, StateModule, etc.) ...
+workers:
+  # ... other workers (iii-stream, iii-state, etc.) ...
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts

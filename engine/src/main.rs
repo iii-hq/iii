@@ -9,7 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{EngineBuilder, logging, modules::config::EngineConfig};
+use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -195,8 +195,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cli_args.install_only_generate_ids {
-        let _ = iii::modules::telemetry::environment::get_or_create_device_id();
-        let _ = iii::modules::telemetry::environment::resolve_execution_context();
+        let _ = iii::workers::telemetry::environment::get_or_create_device_id();
+        let _ = iii::workers::telemetry::environment::resolve_execution_context();
 
         if let Some(event_type) = cli_args.install_event_type.as_deref() {
             let properties = if let Some(raw) = cli_args.install_event_properties.as_deref() {
@@ -252,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
-    use iii::modules::worker::DEFAULT_PORT;
+    use iii::workers::worker::DEFAULT_PORT;
 
     #[test]
     fn trigger_parses_all_arguments() {

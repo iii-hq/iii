@@ -12,8 +12,8 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::modules::worker::rbac_session::Session;
 use crate::protocol::*;
+use crate::workers::worker::rbac_session::Session;
 
 pub enum FunctionResult<T, E> {
     Success(T),

@@ -8,10 +8,10 @@ use iii::{
     engine::Outbound,
     function::{Function, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    modules::observability::metrics::ensure_default_meter,
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
-    workers::{Worker, WorkerRegistry},
+    worker_connections::{WorkerConnection, WorkerConnectionRegistry},
+    workers::observability::metrics::ensure_default_meter,
 };
 use tokio::{runtime::Runtime, sync::mpsc};
 
@@ -36,7 +36,7 @@ impl TriggerRegistrator for NoopRegistrator {
 
 fn make_function(id: &str) -> Function {
     Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             Box::pin(async move { FunctionResult::Success(Some(input)) })
         }),
         _function_id: id.to_string(),
@@ -51,12 +51,12 @@ fn make_function(id: &str) -> Function {
 /// NOTE: This does not include external-function module cleanup, channel cleanup,
 /// or worker_disconnected trigger dispatch.
 async fn simulate_cleanup(
-    worker: &Worker,
+    worker: &WorkerConnection,
     functions: &FunctionsRegistry,
     service_registry: &ServicesRegistry,
     invocations: &InvocationHandler,
     trigger_registry: &TriggerRegistry,
-    worker_registry: &WorkerRegistry,
+    worker_registry: &WorkerConnectionRegistry,
 ) {
     // Step 1: Read function_ids, remove each function and service
     let function_ids: Vec<String> = worker.function_ids.read().await.iter().cloned().collect();
@@ -99,10 +99,10 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         let service_registry = ServicesRegistry::new();
                         let invocations = InvocationHandler::new();
                         let trigger_registry = TriggerRegistry::new();
-                        let worker_registry = WorkerRegistry::new();
+                        let worker_registry = WorkerConnectionRegistry::new();
 
                         let (tx, _rx) = mpsc::channel::<Outbound>(1);
-                        let worker = Worker::new(tx);
+                        let worker = WorkerConnection::new(tx);
 
                         // Register functions belonging to this worker
                         for idx in 0..function_count {
@@ -166,10 +166,10 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         let service_registry = ServicesRegistry::new();
                         let invocations = InvocationHandler::new();
                         let trigger_registry = TriggerRegistry::new();
-                        let worker_registry = WorkerRegistry::new();
+                        let worker_registry = WorkerConnectionRegistry::new();
 
                         let (tx, _rx) = mpsc::channel::<Outbound>(1);
-                        let worker = Worker::new(tx);
+                        let worker = WorkerConnection::new(tx);
 
                         // Add fake in-flight invocations to the worker
                         for _ in 0..invocation_count {
@@ -227,10 +227,10 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         let service_registry = ServicesRegistry::new();
                         let invocations = InvocationHandler::new();
                         let trigger_registry = TriggerRegistry::new();
-                        let worker_registry = WorkerRegistry::new();
+                        let worker_registry = WorkerConnectionRegistry::new();
 
                         let (tx, _rx) = mpsc::channel::<Outbound>(1);
-                        let worker = Worker::new(tx);
+                        let worker = WorkerConnection::new(tx);
 
                         // Register trigger type and triggers owned by this worker
                         tokio::task::block_in_place(|| {
@@ -253,6 +253,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                                             function_id: format!("bench.cleanup.{idx}"),
                                             config: serde_json::json!({}),
                                             worker_id: Some(worker.id),
+                                            metadata: None,
                                         })
                                         .await
                                         .expect("register trigger");

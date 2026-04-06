@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 
 use iii::{
     engine::Engine,
-    modules::{module::Module, queue::QueueCoreModule},
     trigger::Trigger,
+    workers::{queue::QueueWorker, traits::Worker},
 };
 
 use common::queue_helpers::{
@@ -24,16 +24,16 @@ use common::queue_helpers::{
 #[tokio::test]
 async fn enqueue_process_ack_preserves_payload() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let captured_payloads: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::payload_check", captured_payloads.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
 
     let sent_payload = json!({
@@ -74,7 +74,7 @@ async fn enqueue_process_ack_preserves_payload() {
 #[tokio::test]
 async fn condition_based_filtering_routes_matching_messages_only() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -95,9 +95,9 @@ async fn condition_based_filtering_routes_matching_messages_only() {
         json!("important"),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     // register_functions must be called to make the "enqueue" service function
     // available on the engine (topic-based enqueue path uses engine.call("enqueue", ...))
     module.register_functions(engine.clone());

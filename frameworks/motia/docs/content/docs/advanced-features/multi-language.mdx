@@ -40,9 +40,9 @@ Each language has its own Motia SDK and its own process. The iii engine coordina
 Configure separate ExecModule entries for each runtime:
 
 ```yaml
-modules:
+workers:
   # Node.js / TypeScript runtime
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts
@@ -52,7 +52,7 @@ modules:
         - npx motia dev
 
   # Python runtime
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.py
@@ -140,17 +140,17 @@ The mixed template structure:
 The `iii-config.yaml` uses two ExecModules — one for each runtime:
 
 ```yaml
-modules:
-  # ... shared infrastructure (StreamModule, StateModule, RestApiModule, etc.) ...
+workers:
+  # ... shared infrastructure (iii-stream, iii-state, iii-http, etc.) ...
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch: ["nodejs/src/**/*.ts"]
       exec:
         - sh -c "cd nodejs && npx motia dev"
         - sh -c "cd nodejs && node dist/index-dev.js"
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch: ["python/steps/**/*.py"]
       exec:
@@ -167,13 +167,13 @@ Motia supports both Node.js and Bun for TypeScript/JavaScript Steps. Configure y
 
 ```yaml
 # Using Node.js (default)
-- class: modules::shell::ExecModule
+- name: iii-exec
   config:
     exec:
       - npx motia dev
 
 # Using Bun (requires building first with `bun run build`)
-- class: modules::shell::ExecModule
+- name: iii-exec
   config:
     exec:
       - bun run dist/index-dev.js

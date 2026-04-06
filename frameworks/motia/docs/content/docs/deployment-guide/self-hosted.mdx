@@ -25,25 +25,25 @@ dist/
 Make sure you have a `config-production.yaml` file in your project.
 
 ```yaml title="config-production.yaml"
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}
       host: 0.0.0.0
       adapter:
-        class: modules::stream::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379} # make sure the redis url is correct
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379} # make sure the redis url is correct
 
   # Add CORS
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111 # make sure the port meets your load balancer's requirements
       host: 0.0.0.0 # make sure it has access to the internet
@@ -60,7 +60,7 @@ modules:
           - OPTIONS
 
   # Optional: Configure an OTEL server to send telemetry to
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii-engine}
@@ -80,26 +80,26 @@ modules:
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
         # We have a binary that has RabbitMQ adapter, but is not published yet
         # This built-in adapter is for 1 single instance
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379} # make sure the redis url is correct
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       exec:
         - bun run --enable-source-maps dist/index-production.js
