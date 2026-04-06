@@ -10,7 +10,7 @@ for contributing to this project and the licensing terms that apply to all contr
 
 This applies to every part of this repository, including but not limited to:
 
-- The **iii engine** (which is distributed under the [Elastic License 2.0](LICENSE))
+- The **iii engine** (which is distributed under the [Elastic License 2.0](engine/LICENSE))
 - Workers, SDKs, frameworks, CLI tools, and console
 - Documentation, examples, tests, and configuration
 - Build scripts, CI workflows, and tooling
@@ -84,9 +84,13 @@ their behalf, or your employer must have waived such rights for your contributio
 
 ### License Headers
 
-All source files must include the project license header. The expected header can be found
-in `header.txt` at the root of the repository, and is enforced by `licenserc.toml`. Make
-sure any new files you create include this header.
+Rust sources under the iii engine are checked for a license header via
+[`engine/licenserc.toml`](engine/licenserc.toml), which sets `headerPath = "header.txt"`
+(relative to `baseDir = "engine"`). Enforcement applies to the paths listed there (for
+example `engine/src/**/*.rs` and `engine/function-macros/src/**/*.rs`), not to the whole
+repository. When you add or touch files in those trees, copy the header from
+[`engine/header.txt`](engine/header.txt) (or follow `engine/licenserc.toml` if the include
+list changes).
 
 ## How to Contribute
 
