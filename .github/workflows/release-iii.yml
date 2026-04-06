@@ -144,7 +144,7 @@ jobs:
               sudo apt-get install -y musl-tools
               ;;
             aarch64-unknown-linux-musl)
-              sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+              sudo apt-get install -y musl-tools
               ;;
           esac
 
@@ -159,8 +159,6 @@ jobs:
           key: iii-init-${{ matrix.target }}
 
       - name: Build iii-init
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
         run: cargo build -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
