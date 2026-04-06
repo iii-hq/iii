@@ -204,15 +204,15 @@ When OpenTelemetry is not initialized (e.g. in unit tests), the Logger falls bac
 
 ## Configuring observability
 
-The iii engine's Observability module (`modules::observability::OtelModule`) controls how traces, logs, and metrics are collected and exported. There are two main configurations depending on your environment.
+The iii engine's Observability worker (`iii-observability`) controls how traces, logs, and metrics are collected and exported. There are two main configurations depending on your environment.
 
 ### Local development
 
 For local development, use the `memory` exporter. Traces and logs are stored in the engine's memory and can be inspected through the iii Console. This is the simplest setup and requires no external infrastructure.
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::observability::OtelModule
+workers:
+  - name: iii-observability
     config:
       enabled: true
       exporter: memory
@@ -237,8 +237,8 @@ modules:
 For production or when you want to send telemetry to an external system (Grafana, Jaeger, Datadog, or any OTLP-compatible collector), use the `otlp` exporter with an `endpoint`.
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::observability::OtelModule
+workers:
+  - name: iii-observability
     config:
       enabled: true
       exporter: otlp
@@ -253,8 +253,8 @@ modules:
 To keep local visibility through iii Console **and** export to a collector simultaneously, use `exporter: both`:
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::observability::OtelModule
+workers:
+  - name: iii-observability
     config:
       enabled: true
       exporter: both
@@ -274,7 +274,7 @@ graph LR
 ```
 
 <Info>
-  The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability module reference](/modules/module-observability) for the full list of configuration fields and environment variable overrides.
+  The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability worker reference](/workers/worker-observability) for the full list of configuration fields and environment variable overrides.
 </Info>
 
 ## Using iii Console
@@ -338,7 +338,7 @@ Your iii application is now fully observable:
   <Card title="OpenTelemetry Integration" href="/advanced/telemetry" icon="signal">
     Custom spans, metrics, and telemetry utilities
   </Card>
-  <Card title="Observability Module" href="/modules/module-observability" icon="gear">
+  <Card title="Observability Worker" href="/workers/worker-observability" icon="gear">
     Full configuration reference for traces, logs, metrics, alerts, and sampling
   </Card>
   <Card title="Observability Example" href="/examples/observability" icon="code">
