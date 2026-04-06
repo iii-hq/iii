@@ -82,7 +82,7 @@ iii.registerFunction('payments::process', async (data) => {
     },
   })
 
-  // Fire-and-forget notification
+  // Fire-and-forget notification (notifications::send is registered in a separate worker)
   iii.trigger({
     function_id: 'notifications::send',
     payload: { type: 'payment_captured', orderId: data.orderId, chargeId },

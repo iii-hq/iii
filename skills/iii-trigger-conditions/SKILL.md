@@ -74,7 +74,7 @@ Use the adaptations below when they apply to the task.
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-trigger-conditions` in the iii engine.
-- Triggers when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill when the request directly asks for this pattern or an equivalent implementation.
 
 ## Boundaries
 

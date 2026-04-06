@@ -106,6 +106,9 @@ async function appendEvent(aggregate, key, event) {
 
 // Projection 1: Inventory catalog (current stock levels)
 iii.registerFunction('proj::catalog-on-add', async (event) => {
+  const existing = await iii.trigger({ function_id: 'state::get', payload: { scope: 'inventory-read', key: event.sku } })
+  const currentStock = existing?.stock || 0
+
   await iii.trigger({ function_id: 'state::set', payload: {
     scope: 'inventory-read',
     key: event.sku,
@@ -114,7 +117,7 @@ iii.registerFunction('proj::catalog-on-add', async (event) => {
       sku: event.sku,
       name: event.name,
       price: event.price,
-      stock: event.quantity,
+      stock: currentStock + event.quantity,
       last_updated: event.timestamp,
     },
   } })

@@ -13,12 +13,12 @@ Comparable to: Socket.io, Pusher, Firebase Realtime
 
 Use the concepts below when they fit the task. Not every stream setup needs all of them.
 
-- **StreamModule** serves WebSocket connections on port 3112
-- Clients connect at `ws://host:3112/stream/{stream_name}/{group_id}`
+- **StreamModule** serves WebSocket connections on the configured stream port (default 3112)
+- Clients connect at `ws://host:{stream_port}/stream/{stream_name}/{group_id}`
 - **stream::set** / **stream::get** / **stream::list** / **stream::delete** provide CRUD for stream items
 - **stream::send** pushes events to all connected clients in a stream group
 - `createStream` registers a custom adapter for non-default stream backends
-- Each stream item is addressed by `stream_name`, `group_id`, `item_id`, and `data`
+- Each stream item is identified by `stream_name`, `group_id`, and `item_id`; `data` is the item payload
 
 ## Architecture
 

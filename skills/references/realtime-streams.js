@@ -163,12 +163,28 @@ iii.createStream('presence', {
         value: { ...data, updated_at: new Date().toISOString() },
       },
     })
+
+    // Maintain presence registry so listGroups() returns accurate data
+    const registry = await iii.trigger({ function_id: 'state::get', payload: { scope: 'presence-registry', key: 'groups' } })
+    const groups = registry?.groups || []
+    if (!groups.includes(group_id)) {
+      groups.push(group_id)
+      await iii.trigger({ function_id: 'state::set', payload: { scope: 'presence-registry', key: 'groups', value: { groups } } })
+    }
   },
   delete: async ({ group_id, item_id }) => {
     await iii.trigger({
       function_id: 'state::delete',
       payload: { scope: `presence::${group_id}`, key: item_id },
     })
+
+    // Remove empty groups from registry
+    const remaining = await iii.trigger({ function_id: 'state::list', payload: { scope: `presence::${group_id}` } })
+    if (!remaining || remaining.length === 0) {
+      const registry = await iii.trigger({ function_id: 'state::get', payload: { scope: 'presence-registry', key: 'groups' } })
+      const groups = (registry?.groups || []).filter(g => g !== group_id)
+      await iii.trigger({ function_id: 'state::set', payload: { scope: 'presence-registry', key: 'groups', value: { groups } } })
+    }
   },
   list: async ({ group_id }) => {
     return await iii.trigger({

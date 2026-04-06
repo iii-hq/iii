@@ -28,7 +28,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-browser>
 | `trigger({ function_id, payload, action? })`             | Invoke a function                                 |
 | `TriggerAction.Void()`                                   | Fire-and-forget invocation mode                   |
 | `TriggerAction.Enqueue({ queue })`                       | Durable async invocation mode                     |
-| `registerTriggerType(id, handler)`                       | Custom trigger type registration                  |
+| `registerTriggerType({ id, description }, { registerTrigger, unregisterTrigger })` | Custom trigger type registration |
 | `createChannel()`                                        | Binary streaming between workers                  |
 
 ## Key Differences from Node SDK

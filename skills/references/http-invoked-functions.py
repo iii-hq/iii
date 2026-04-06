@@ -158,7 +158,7 @@ iii.register_function("orders::process", orders_process)
 iii.register_trigger({
     "type": "state",
     "function_id": "integrations::order-webhook",
-    "config": {"scope": "orders", "key": "status"},
+    "config": {"scope": "orders"},
 })
 
 # ---

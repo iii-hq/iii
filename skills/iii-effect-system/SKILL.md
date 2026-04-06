@@ -3,7 +3,7 @@ name: iii-effect-system
 description: >-
   Builds composable, pipeable function chains on the iii engine. Use when
   building functional pipelines, effect systems, or typed composition layers
-  where each step is a pure function with distributed tracing and retry.
+  where each step is a pure function with distributed tracing.
 ---
 
 # Effect Systems & Typed Functional Infrastructure

@@ -72,7 +72,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-Named queues are declared in iii-config.yaml under `queue_configs` with per-queue `max_retries`, `concurrency`, `type`, `backoff_ms`, and `fanout` (boolean). When `fanout: true`, every worker instance registered for the consumer function receives the job. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Named queues are declared in iii-config.yaml under `queue_configs` with per-queue `max_retries`, `concurrency`, `type`, and `backoff_ms`. Fan-out is a pattern (one producer triggers multiple consumer functions), not a queue config key. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

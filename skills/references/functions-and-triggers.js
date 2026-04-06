@@ -150,6 +150,6 @@ iii.registerFunction('external::payment-gateway', {
   timeout_ms: 10000,
   auth: {
     type: 'bearer',
-    token: process.env.STRIPE_API_KEY,
+    token_key: 'STRIPE_API_KEY',
   },
 })

@@ -164,10 +164,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let iii = iii_clone.clone();
             async move {
                 // Synchronous call — blocks until validate returns
+                let order_id = input.order_id.clone();
+                let items = input.items;
+
                 let validation = iii
                     .trigger(TriggerRequest {
                         function_id: "orders::validate".into(),
-                        payload: json!({ "order_id": input.order_id, "items": input.items }),
+                        payload: json!({ "order_id": order_id, "items": items }),
                         action: None,
                         timeout_ms: None,
                     })
@@ -178,20 +181,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(json!({ "error": validation["reason"] }));
                 }
 
-                // Fire-and-forget — send a notification without waiting
                 let _ = iii
                     .trigger(TriggerRequest {
                         function_id: "notifications::on-order-complete".into(),
-                        payload: json!({ "order_id": input.order_id }),
+                        payload: json!({ "order_id": order_id.clone() }),
                         action: Some(TriggerAction::Void),
                         timeout_ms: None,
                     })
                     .await;
 
-                // Enqueue — durable async handoff to fulfillment
                 iii.trigger(TriggerRequest {
                     function_id: "orders::fulfill".into(),
-                    payload: json!({ "order_id": input.order_id, "items": input.items }),
+                    payload: json!({ "order_id": order_id.clone(), "items": items }),
                     action: Some(TriggerAction::Enqueue {
                         queue: "fulfillment".into(),
                     }),
@@ -200,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                Ok(json!({ "order_id": input.order_id, "status": "accepted" }))
+                Ok(json!({ "order_id": order_id, "status": "accepted" }))
             }
         },
     ));

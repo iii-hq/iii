@@ -17,22 +17,22 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-node>
 
 `npm install iii-sdk`
 
-## Key Exports
+## Key APIs
 
-| Export                                                   | Purpose                                           |
+| API                                                      | Purpose                                           |
 | -------------------------------------------------------- | ------------------------------------------------- |
-| `registerWorker(url, { workerName })`                    | Connect to the engine and return the client       |
-| `registerFunction(id, handler, options?)`                | Register a local async function handler           |
-| `registerFunction(id, httpConfig, options?)`             | Register an HTTP-invoked external function        |
-| `registerTrigger({ type, function_id, config, metadata? })` | Bind a trigger to a function (with optional metadata) |
-| `trigger({ function_id, payload, action? })`             | Invoke a function                                 |
+| `registerWorker(url, { workerName })`                    | Connect to the engine and return the `iii` client |
+| `iii.registerFunction(id, handler, options?)`            | Register a local async function handler           |
+| `iii.registerFunction(id, httpConfig, options?)`         | Register an HTTP-invoked external function        |
+| `iii.registerTrigger({ type, function_id, config, metadata? })` | Bind a trigger to a function (with optional metadata) |
+| `iii.trigger({ function_id, payload, action? })`         | Invoke a function                                 |
 | `TriggerAction.Void()`                                   | Fire-and-forget invocation mode                   |
 | `TriggerAction.Enqueue({ queue })`                       | Durable async invocation mode                     |
 | `Logger`                                                 | Structured logging                                |
 | `withSpan`, `getTracer`, `getMeter`                      | OpenTelemetry instrumentation                     |
-| `createChannel()`                                        | Binary streaming between workers                  |
-| `createStream(name, adapter)`                            | Custom stream implementation                      |
-| `registerTriggerType(id, handler)`                       | Custom trigger type registration                  |
+| `iii.createChannel()`                                    | Binary streaming between workers                  |
+| `iii.createStream(name, adapter)`                        | Custom stream implementation                      |
+| `iii.registerTriggerType(id, handler)`                   | Custom trigger type registration                  |
 
 ## RBAC Auth Result Fields
 

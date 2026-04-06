@@ -28,7 +28,7 @@ Use the concepts below when they fit the task. Not every HTTP endpoint needs all
           → registerFunction handler (receives ApiRequest)
             → { status_code, body, headers } response
 
-## iii Primitives Used
+## iii Primitives and HTTP Trigger Config Used
 
 | Primitive                                           | Purpose                                    |
 | --------------------------------------------------- | ------------------------------------------ |

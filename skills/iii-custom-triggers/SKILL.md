@@ -16,7 +16,7 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 
 - **registerTriggerType(id, handler)** defines a new trigger type with `registerTrigger` and `unregisterTrigger` callbacks
 - The handler receives a **TriggerConfig** containing `id`, `function_id`, and `config`
-- When the external event fires, call `iii.trigger(function_id, event)` to invoke the registered function
+- When the external event fires, call `iii.trigger({ function_id, payload: event })` to invoke the registered function
 - **unregisterTriggerType** cleans up when the trigger type is no longer needed
 - Do not reuse built-in trigger type names: `http`, `cron`, `queue`, `state`, `stream`, `subscribe`
 
@@ -24,7 +24,7 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 
     External event source (webhook, file watcher, IoT, CDC, etc.)
       → Custom trigger handler (registerTriggerType)
-        → iii.trigger(function_id, event)
+        → iii.trigger({ function_id, payload: event })
           → Registered function processes the event
 
 ## iii Primitives Used
@@ -34,7 +34,7 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 | `registerTriggerType(id, handler)`           | Define a new trigger type with lifecycle hooks     |
 | `unregisterTriggerType(id)`                  | Clean up a custom trigger type                     |
 | `TriggerConfig: { id, function_id, config }` | Configuration passed to the trigger handler        |
-| `iii.trigger(function_id, event)`            | Fire the registered function when the event occurs |
+| `iii.trigger({ function_id, payload: event })`| Fire the registered function when the event occurs |
 
 ## Reference Implementation
 
@@ -52,7 +52,7 @@ Code using this pattern commonly includes, when relevant:
 - `registerTriggerType(id, { registerTrigger, unregisterTrigger })` — define the custom trigger
 - `registerTrigger(config)` — called by iii when a function subscribes to this trigger type
 - `unregisterTrigger(config)` — called by iii when a function unsubscribes
-- `iii.trigger(config.function_id, eventPayload)` — fire the target function
+- `iii.trigger({ function_id: config.function_id, payload: eventPayload })` — fire the target function
 - Cleanup logic in `unregisterTrigger` (close connections, remove listeners, clear intervals)
 - `const logger = new Logger()` — structured logging
 
@@ -64,7 +64,7 @@ Use the adaptations below when they apply to the task.
 - In `registerTrigger`, start the listener (open socket, poll endpoint, subscribe to topic)
 - In `unregisterTrigger`, tear down the listener to avoid resource leaks
 - Store active listeners in a map keyed by `config.id` for clean unregistration
-- Pass relevant event data in the payload when calling `iii.trigger(function_id, event)`
+- Pass relevant event data in the payload when calling `iii.trigger({ function_id, payload: event })`
 
 ## Pattern Boundaries
 
