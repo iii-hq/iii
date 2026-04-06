@@ -36,12 +36,11 @@ When a trigger fires, the engine first invokes the condition function with the e
 
 ## Reference Implementation
 
-See [../references/trigger-conditions.js](../references/trigger-conditions.js) for the full working example — a condition-gated trigger
+See [../references/trigger-conditions.js](../references/trigger-conditions.js) for the full working example — a condition-gated trigger where a business rule function filters events before the handler processes them.
 
 Also available in **Python**: [../references/trigger-conditions.py](../references/trigger-conditions.py)
 
 Also available in **Rust**: [../references/trigger-conditions.rs](../references/trigger-conditions.rs)
-where a business rule function filters events before the handler processes them.
 
 ## Common Patterns
 

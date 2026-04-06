@@ -62,7 +62,6 @@ Code using this pattern commonly includes, when relevant:
 ### Browser Clients
 
 For browser-side WebSocket connections, use `iii-sdk-browser` instead of the Node SDK. See `iii-browser-sdk` skill for setup details. Stream authentication via literals is supported.
-- `const logger = new Logger()` — structured logging
 
 ## Adapting This Pattern
 

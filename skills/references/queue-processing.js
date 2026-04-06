@@ -7,14 +7,16 @@
  *
  * Retry / backoff is configured in iii-config.yaml under queue_configs:
  *   queue_configs:
- *     - name: payment
+ *     payment:
+ *       type: standard
  *       max_retries: 3
  *       backoff_ms: 1000
- *       backoff_multiplier: 2
- *     - name: email
- *       fifo: true
+ *       concurrency: 5
+ *     email:
+ *       type: fifo
  *       max_retries: 5
  *       backoff_ms: 500
+ *       concurrency: 1
  *
  * How-to references:
  *   - Queues: https://iii.dev/docs/how-to/use-queues
@@ -96,7 +98,7 @@ iii.registerFunction('payments::process', async (data) => {
 // ---------------------------------------------------------------------------
 // Enqueue work — FIFO queue (ordered processing)
 // FIFO queues guarantee messages are processed in the order they arrive.
-// Configure fifo: true in iii-config.yaml queue_configs.
+// Configure type: fifo in iii-config.yaml queue_configs.
 // ---------------------------------------------------------------------------
 iii.registerFunction('emails::enqueue', async (data) => {
   const logger = new Logger()

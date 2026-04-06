@@ -24,26 +24,26 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 
 // Condition function — returns true/false
-iii.registerFunction('conditions::is-high-value', async (data) => {
-  // data is the same event the handler would receive
-  return data.value?.total > 500
+iii.registerFunction('conditions::is-high-value', async ({ new_value }) => {
+  // State trigger payload includes new_value, old_value, key, event_type
+  return new_value?.total > 500
 })
 
 // Handler function — only runs when the condition passes
-iii.registerFunction('orders::flag-high-value', async (data) => {
+iii.registerFunction('orders::flag-high-value', async ({ new_value, key }) => {
   const logger = new Logger()
-  logger.info('High-value order detected', { key: data.key, total: data.value.total })
+  logger.info('High-value order detected', { key, total: new_value.total })
 
   await iii.trigger({
     function_id: 'state::update',
     payload: {
       scope: 'orders',
-      key: data.key,
+      key,
       ops: [{ type: 'set', path: 'flagged', value: true }],
     },
   })
 
-  return { flagged: true, order_id: data.key }
+  return { flagged: true, order_id: key }
 })
 
 // Bind the trigger with condition_function_id
