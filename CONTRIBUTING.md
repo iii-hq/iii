@@ -11,8 +11,7 @@ for contributing to this project and the licensing terms that apply to all contr
 This applies to every part of this repository, including but not limited to:
 
 - The **iii engine** (which is distributed under the [Elastic License 2.0](LICENSE))
-- Core modules (API, queue, cron, stream, observability, shell)
-- SDKs, frameworks, CLI tools, and workers
+- Workers, SDKs, frameworks, CLI tools, and console
 - Documentation, examples, tests, and configuration
 - Build scripts, CI workflows, and tooling
 
@@ -63,7 +62,7 @@ their behalf, or your employer must have waived such rights for your contributio
 ### Prerequisites
 
 - Rust 1.80+ (edition 2024)
-- Redis (only if you enable the event/cron/stream modules)
+- Redis (only if you enable the event/cron/stream workers)
 
 ### Setting Up Your Development Environment
 
