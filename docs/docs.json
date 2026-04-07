@@ -56,6 +56,7 @@
                   "how-to/use-iii-in-the-browser",
                   "how-to/worker-rbac",
                   "how-to/configure-engine",
+                  "how-to/observability-and-logs",
                   {
                     "group": "HTTP",
                     "pages": [
@@ -80,7 +81,13 @@
                       "how-to/stream-realtime-data"
                     ]
                   },
-                  "how-to/observability-and-logs"
+                  {
+                    "group": "Containers",
+                    "pages": [
+                      "how-to/managing-container-workers",
+                      "how-to/developing-sandbox-workers"
+                    ]
+                  }
                 ]
               },
               {

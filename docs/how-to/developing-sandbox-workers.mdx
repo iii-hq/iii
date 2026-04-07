@@ -1,0 +1,135 @@
+---
+title: 'Developing Sandbox Workers'
+description: 'Develop and test workers locally in an isolated microVM using iii worker dev.'
+---
+
+## Goal
+
+Use `iii worker dev` to run a worker project inside an isolated sandbox connected to the engine — no containers or Dockerfiles needed.
+
+## Context
+
+Sandbox workers give you a full development loop with process isolation (own filesystem, network, dependencies) powered by a lightweight microVM. The engine must already be running so the sandbox can connect to it.
+
+Requires **macOS Apple Silicon** or **Linux with KVM**.
+
+## Steps
+
+### 1. Create a Worker Project
+
+The CLI auto-detects your project type from well-known files and infers setup, install, and start commands.
+
+| Project type | Detected via | Default package manager |
+|---|---|---|
+| Node.js / TypeScript | `package.json` | npm (or bun if `bun.lock` exists) |
+| Python | `pyproject.toml` or `requirements.txt` | pip |
+| Rust | `Cargo.toml` | cargo |
+
+With auto-detection, you can start a sandbox immediately:
+
+```bash
+iii worker dev ./my-project
+```
+
+### 2. Add a Manifest
+
+Create an `iii.worker.yaml` at the root of your project to configure the sandbox:
+
+```yaml title="iii.worker.yaml"
+name: my-worker
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/index.ts
+resources:
+  memory: 2048
+  cpus: 2
+scripts:
+  setup: "apt-get update && apt-get install -y build-essential"
+  install: "npm install"
+  start: "npm run dev"
+env:
+  MY_API_KEY: sk-abc123
+  LOG_LEVEL: debug
+```
+
+#### Manifest Fields
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `name` | Yes | — | Worker name |
+| `runtime.language` | No | `typescript` | `typescript`, `javascript`, `python`, or `rust` |
+| `runtime.package_manager` | No | — | `npm`, `yarn`, `pnpm`, or `bun` (Node.js only) |
+| `runtime.entry` | No | — | Entrypoint file |
+| `resources.memory` | No | `2048` | Memory in MiB allocated to the sandbox VM |
+| `resources.cpus` | No | `2` | Number of vCPUs allocated to the sandbox VM |
+| `scripts.setup` | No | inferred | One-time system setup (runs only on first boot or after `--rebuild`) |
+| `scripts.install` | No | inferred | Dependency installation command |
+| `scripts.start` | No | inferred | Worker start command |
+| `env.*` | No | — | Custom environment variables injected into the sandbox |
+
+<Info title="Reserved environment variables">
+  `III_URL` and `III_ENGINE_URL` are set automatically by the dev flow and cannot be overridden through the manifest.
+</Info>
+
+If the `scripts` block is omitted entirely, commands are inferred from `runtime.language`, `runtime.package_manager`, and `runtime.entry`. For example, a TypeScript project using npm with entry `src/index.ts` infers `npm install` for install and `npx tsx src/index.ts` for start.
+
+### 3. Start the Dev Sandbox
+
+```bash
+iii worker dev ./my-project
+```
+
+The CLI loads the project configuration (manifest or auto-detected), prepares an isolated rootfs from a base OCI image matching the language, copies your project files into the sandbox, and boots the microVM.
+
+#### CLI Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--rebuild` | `false` | Clear the cached sandbox and reinstall everything from scratch |
+| `--name <NAME>` | `iii-dev-<dir>` | Custom name for the sandbox |
+| `--port <PORT>` | `49134` | Override the engine WebSocket port |
+| `--address <HOST>` | `localhost` | Engine host address |
+| `--runtime <RT>` | auto (`libkrun`) | Runtime to use (only `libkrun` is currently available) |
+
+Examples:
+
+```bash
+# Start with a custom name and port
+iii worker dev ./my-project --name my-sandbox --port 50000
+
+# Force a clean rebuild
+iii worker dev ./my-project --rebuild
+```
+
+### 4. Understand Dependency Caching
+
+Each sandbox is cached at `~/.iii/dev/<sandbox-name>/`. The caching lifecycle works as follows:
+
+**First run** — the CLI clones a base rootfs, copies your project into the sandbox, runs the `setup` and `install` scripts, then starts the worker. A marker file is written to signal that dependencies are installed.
+
+**Subsequent runs** — setup and install are skipped entirely. Only the project files are re-copied and the `start` script runs, making restarts fast.
+
+**`--rebuild`** — deletes the entire `~/.iii/dev/<sandbox-name>/` directory and re-runs the full setup from scratch. Use this when you change dependencies, update the base image, or modify install scripts.
+
+<Info title="Skipped directories">
+  When copying your project into the sandbox, the following directories are excluded automatically: `node_modules`, `.git`, `target`, `__pycache__`, `.venv`, `dist`.
+</Info>
+
+### 5. Check Platform Requirements
+
+<Warning title="Platform support">
+  Intel Macs are **not supported**. The microVM requires hardware virtualization only available on Apple Silicon or Linux with KVM.
+</Warning>
+
+**macOS (Apple Silicon)** — uses Hypervisor.framework. On first run, the CLI automatically codesigns itself with Hypervisor entitlements. This may prompt for confirmation.
+
+**Linux** — requires `/dev/kvm` to be accessible with read and write permissions. Verify with:
+
+```bash
+ls -l /dev/kvm
+```
+
+## Result
+
+Your worker runs inside an isolated microVM connected to the engine at `ws://localhost:<port>`. The sandbox has its own filesystem, network stack, and process tree. Changes to `iii.worker.yaml` (resources, scripts, env) take effect on the next `--rebuild` or when starting from a fresh sandbox.
