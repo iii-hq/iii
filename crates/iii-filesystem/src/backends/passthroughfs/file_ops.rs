@@ -90,7 +90,7 @@ pub(crate) fn do_read(
         return init_binary::read_init(w, &fs.init_file, size, offset);
     }
 
-    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?;
+    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?.clone();
     let f = data.file.read().unwrap();
     w.write_from(&f, size as usize, offset)
 }
