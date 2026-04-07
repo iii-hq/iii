@@ -51,7 +51,7 @@ Code using this pattern commonly includes, when relevant:
 - `registerWorker('ws://localhost:49134', { workerName: 'my-worker' })` — connect to the engine
 - `registerFunction('namespace::name', async (input) => { ... })` — register a handler
 - `registerTrigger({ type: 'http', function_id, config: { api_path, http_method, middleware_function_ids? } })` — HTTP trigger (with optional middleware)
-- `registerTrigger({ type: 'queue', function_id, config: { topic } })` — queue trigger
+- `registerTrigger({ type: 'durable:subscriber', function_id, config: { topic } })` — queue trigger
 - `registerTrigger({ type: 'cron', function_id, config: { expression } })` — cron trigger
 - `registerTrigger({ type: 'state', function_id, config: { scope, key } })` — state change trigger
 - `registerTrigger({ type: 'stream', function_id, config: { stream } })` — stream trigger

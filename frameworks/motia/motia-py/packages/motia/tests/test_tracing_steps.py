@@ -93,7 +93,7 @@ async def test_api_handler_creates_span(otel_exporter, mock_bridge):
 
 @pytest.mark.asyncio
 async def test_event_handler_creates_span(otel_exporter, mock_bridge):
-    """Register queue step, call handler, verify step:name span with motia.trigger.type=queue."""
+    """Register queue step, call handler, verify step:name span with motia.trigger.type=durable:subscriber."""
     from motia.runtime import Motia
 
     config = StepConfig(

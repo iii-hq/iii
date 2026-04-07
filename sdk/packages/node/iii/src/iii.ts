@@ -228,7 +228,7 @@ class Sdk implements ISdk {
    * fires, the engine invokes the target function.
    *
    * @param trigger - Trigger registration input.
-   * @param trigger.type - Trigger type (e.g. `http`, `queue`, `cron`).
+   * @param trigger.type - Trigger type (e.g. `http`, `durable:subscriber`, `cron`).
    * @param trigger.function_id - ID of the function to invoke.
    * @param trigger.config - Trigger-specific configuration.
    * @returns A {@link Trigger} handle with an `unregister()` method.
