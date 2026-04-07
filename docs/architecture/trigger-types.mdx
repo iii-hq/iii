@@ -936,7 +936,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), functio
 
 Triggers can optionally use a **condition function** to decide whether the handler should run. The engine invokes the condition with the trigger payload before the main handler. If it returns `false`, the handler is not invoked.
 
-**Supported trigger types**: http, queue, cron, stream, state
+**Supported trigger types**: http, durable:subscriber, cron, stream, state
 
 ### How It Works
 
