@@ -1,0 +1,55 @@
+---
+title: 'Concepts: Discovery'
+description: 'Every worker sees every function in the system — and gets notified when functions appear or disappear as workers connect and disconnect.'
+---
+
+When a worker connects to the engine, it receives the full list of functions registered across
+every other worker. When a new worker connects and registers functions, every existing worker gets notified.
+When a worker disconnects, its functions disappear and everyone is notified again.
+Functions can also unregister themselves.
+
+The engine maintains a live registry and pushes changes to every connected worker in real time.
+
+## Architecture
+
+```mermaid
+graph LR
+    WA["Worker A<br/><small>orders::create</small>"] -->|registers| E["Engine<br/><small>Live Registry</small>"]
+    WB["Worker B<br/><small>payments::charge</small>"] -->|registers| E
+    E -->|"functionsAvailable"| WA
+    E -->|"functionsAvailable"| WB
+    WA -.->|"trigger payments::charge"| E
+    WB -.->|"trigger orders::create"| E
+```
+
+## Why This Matters
+
+In traditional distributed systems, services need to know where other services live. This knowledge typically comes from one of several places:
+
+- **Configuration files** — hardcoded URLs or hostnames that must be updated and redeployed whenever services move
+- **DNS-based discovery** — services register with DNS and others look them up, but DNS caching creates propagation delays
+- **Service registries** — dedicated infrastructure (Consul, etcd, ZooKeeper) that services connect to separately from their actual communication path
+- **Service meshes** — infrastructure that operates at the network layer, intercepting traffic between services without knowledge of the application semantics
+
+Each approach trades off complexity, latency, and operational burden. Most require explicit registration, health checking, and some form of polling or TTL-based invalidation.
+
+iii takes a different approach: the engine itself is the registry, and it pushes changes to workers rather than waiting for them to poll.
+
+## What This Enables
+
+Traditional architectures require coordination when the system topology changes. Adding a new service means updating every service that needs to call it — changing config files, updating client libraries, or waiting for DNS to propagate.
+
+With a central registry topology changes are automatic:
+
+- **Workers scale independently** — Scale horizontally and vertically only where you need it
+- **New functionality is immediately available** — Connect a new worker with new functions and they're immediately available to the entire system
+- **Workers remove services cleanly** — Disconnect a worker and its functions disappear from the registry, no stale references
+
+<CardGroup cols={2}>
+  <Card title="How to use Functions & Triggers" href="../how-to/use-functions-and-triggers" icon="book-open">
+    Learn how to register functions, trigger them, and bind them to events.
+  </Card>
+  <Card title="Quickstart" href="../quickstart" icon="terminal">
+    Follow the Quickstart and explore a live iii application.
+  </Card>
+</CardGroup>

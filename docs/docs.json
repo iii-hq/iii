@@ -15,8 +15,119 @@
   "navigation": {
     "versions": [
       {
-        "version": "latest",
+        "version": "0.10.0",
         "tag": "latest",
+        "tabs": [
+          {
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": ["0-10-0/index", "0-10-0/quickstart"]
+              },
+              {
+                "group": "Primitives & Concepts",
+                "pages": [
+                  "0-10-0/primitives-and-concepts/functions-triggers-workers",
+                  "0-10-0/primitives-and-concepts/discovery"
+                ]
+              },
+              {
+                "group": "How-to Guides",
+                "pages": [
+                  "0-10-0/how-to/use-functions-and-triggers",
+                  "0-10-0/how-to/trigger-actions",
+                  "0-10-0/how-to/trigger-functions-from-cli",
+                  "0-10-0/how-to/define-request-response-formats",
+                  "0-10-0/how-to/use-queues",
+                  "0-10-0/how-to/dead-letter-queues",
+                  "0-10-0/how-to/expose-http-endpoint",
+                  "0-10-0/how-to/manage-state",
+                  "0-10-0/how-to/use-channels",
+                  "0-10-0/how-to/react-to-state-changes",
+                  "0-10-0/how-to/use-trigger-conditions",
+                  "0-10-0/how-to/schedule-cron-task",
+                  "0-10-0/how-to/create-ephemeral-worker",
+                  "0-10-0/how-to/stream-realtime-data",
+                  "0-10-0/how-to/create-custom-trigger-type",
+                  "0-10-0/how-to/configure-engine"
+                ]
+              },
+              {
+                "group": "Architecture",
+                "pages": [
+                  "0-10-0/architecture/index",
+                  "0-10-0/architecture/engine",
+                  "0-10-0/architecture/workers",
+                  "0-10-0/architecture/modules",
+                  "0-10-0/architecture/trigger-types",
+                  "0-10-0/architecture/channels",
+                  "0-10-0/architecture/queues"
+                ]
+              },
+              {
+                "group": "Modules",
+                "pages": [
+                  "0-10-0/modules/index",
+                  "0-10-0/modules/module-http",
+                  "0-10-0/modules/module-queue",
+                  "0-10-0/modules/module-cron",
+                  "0-10-0/modules/module-observability",
+                  "0-10-0/modules/module-stream",
+                  "0-10-0/modules/module-state",
+                  "0-10-0/modules/module-pubsub",
+                  "0-10-0/modules/module-exec",
+                  "0-10-0/modules/module-bridge"
+                ]
+              },
+              {
+                "group": "Console",
+                "pages": ["0-10-0/console/index"]
+              },
+              {
+                "group": "Advanced",
+                "pages": [
+                  "0-10-0/advanced/adapters",
+                  "0-10-0/advanced/architecture",
+                  "0-10-0/advanced/custom-modules",
+                  "0-10-0/advanced/deployment",
+                  "0-10-0/advanced/protocol",
+                  "0-10-0/advanced/telemetry"
+                ]
+              },
+              {
+                "group": "Examples",
+                "pages": [
+                  "0-10-0/examples/hello-world",
+                  "0-10-0/examples/todo-app",
+                  "0-10-0/examples/multi-trigger",
+                  "0-10-0/examples/conditions",
+                  "0-10-0/examples/state-management",
+                  "0-10-0/examples/cron",
+                  "0-10-0/examples/observability"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "API Reference",
+            "groups": [
+              {
+                "group": "SDKs",
+                "pages": [
+                  "0-10-0/api-reference/sdk-node",
+                  "0-10-0/api-reference/sdk-python",
+                  "0-10-0/api-reference/sdk-rust",
+                  "0-10-0/api-reference/disable-telemetry"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.11.0",
+        "tag": "next",
         "tabs": [
           {
             "tab": "Documentation",

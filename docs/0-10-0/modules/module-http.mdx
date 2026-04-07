@@ -1,0 +1,288 @@
+---
+title: 'HTTP'
+description: 'Expose functions as HTTP endpoints.'
+---
+
+The HTTP Module exposes registered functions as HTTP endpoints.
+
+```
+modules::api::RestApiModule
+```
+
+## Sample Configuration
+
+```yaml
+- class: modules::api::RestApiModule
+  config:
+    port: 3111
+    host: 0.0.0.0
+    cors:
+      allowed_origins:
+        - http://localhost:3000
+        - http://localhost:5173
+      allowed_methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+```
+
+## Configuration
+
+<ResponseField name="port" type="number">
+  The port to listen on. Defaults to `3111`.
+</ResponseField>
+
+<ResponseField name="host" type="string">
+  The host to listen on. Defaults to `0.0.0.0`.
+</ResponseField>
+
+<ResponseField name="default_timeout" type="number">
+  The default timeout in milliseconds for request processing. Defaults to `30000`.
+</ResponseField>
+
+<ResponseField name="concurrency_request_limit" type="number">
+  The maximum number of concurrent requests the server will handle. Defaults to `1024`.
+</ResponseField>
+
+<ResponseField name="cors" type="Cors">
+  The CORS configuration.
+
+  <Expandable title="Cors">
+    <ResponseField name="allowed_origins" type="string[]" required>
+      The allowed origins.
+    </ResponseField>
+    <ResponseField name="allowed_methods" type="string[]" required>
+      The allowed methods.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="body_limit" type="number">
+  Maximum request body size in bytes. Defaults to `1048576` (1 MB).
+</ResponseField>
+
+<ResponseField name="trust_proxy" type="boolean">
+  When `true`, the engine trusts proxy headers such as `X-Forwarded-For` for client IP resolution. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="request_id_header" type="string">
+  Header name used to propagate or generate a request ID. Defaults to `x-request-id`.
+</ResponseField>
+
+<ResponseField name="ignore_trailing_slash" type="boolean">
+  When `true`, routes with and without a trailing slash are treated as equivalent. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="not_found_function" type="string">
+  Function ID to invoke when no route matches a request. When unset, the engine returns a default 404 response.
+</ResponseField>
+
+## Trigger Type
+
+This module adds a new Trigger Type: `http`.
+
+<Expandable title="Trigger Config">
+  <ResponseField name="api_path" type="string" required>
+    The path of the API.
+  </ResponseField>
+  <ResponseField name="http_method" type="string" required>
+    The HTTP method of the API.
+  </ResponseField>
+  <ResponseField name="condition_function_id" type="string">
+    Function ID for conditional execution. The engine invokes it with the request; if it returns `false`, the handler function is not called.
+  </ResponseField>
+</Expandable>
+
+### Sample code
+
+```typescript
+const fn = iii.registerFunction({ id: 'api.getUsers' }, handler)
+iii.registerTrigger({
+  type: 'http',
+  function_id: fn.id,
+  config: {
+    api_path: '/api/v1/users',
+    http_method: 'GET',
+  },
+})
+```
+
+## Request & Response Objects
+
+### ApiRequest
+
+When an API trigger fires, the function receives an `ApiRequest` object:
+
+<ResponseField name="path" type="string">
+  The request path.
+</ResponseField>
+
+<ResponseField name="method" type="string">
+  The HTTP method of the request (e.g., `GET`, `POST`).
+</ResponseField>
+
+<ResponseField name="path_params" type="Record&lt;string, string&gt;">
+  Variables extracted from the URL path (e.g., `/users/:id`).
+</ResponseField>
+
+<ResponseField name="query_params" type="Record&lt;string, string&gt;">
+  URL query string parameters.
+</ResponseField>
+
+<ResponseField name="body" type="any">
+  The parsed request body (JSON).
+</ResponseField>
+
+<ResponseField name="headers" type="Record&lt;string, string&gt;">
+  HTTP request headers.
+</ResponseField>
+
+<ResponseField name="trigger" type="object">
+  Metadata about the trigger that fired the function.
+
+  <Expandable title="TriggerMetadata">
+    <ResponseField name="type" type="string">
+      The trigger type (e.g., `http`).
+    </ResponseField>
+    <ResponseField name="path" type="string">
+      The matched route path pattern.
+    </ResponseField>
+    <ResponseField name="method" type="string">
+      The HTTP method.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="context" type="object">
+  Request context object. Populated by middleware and available to handler functions.
+</ResponseField>
+
+### ApiResponse
+
+Functions must return an `ApiResponse` object:
+
+<ResponseField name="status_code" type="number">
+  HTTP status code (e.g., 200, 404, 500).
+</ResponseField>
+
+<ResponseField name="body" type="any">
+  The response payload.
+</ResponseField>
+
+<ResponseField name="headers" type="string[]">
+  HTTP response headers as `"Header-Name: value"` strings (e.g., `["Content-Type: application/json"]`). Optional.
+</ResponseField>
+
+## Middleware
+
+The HTTP module supports a middleware system that runs functions at defined phases of the request lifecycle. Middleware functions are registered using the `http_middleware` trigger type.
+
+### Phases
+
+| Phase | Description |
+|-------|-------------|
+| `onRequest` | Runs before route matching. |
+| `preHandler` | Runs after route match, before the handler. |
+| `postHandler` | Runs after the handler returns a response. |
+| `onResponse` | Runs after the response is sent (fire-and-forget). |
+| `onError` | Runs when the handler returns an error. |
+| `onTimeout` | Runs when the handler exceeds the configured timeout. |
+
+Phases execute in priority order (lower number = higher priority).
+
+### Middleware Trigger Config
+
+<Expandable title="Trigger Config">
+  <ResponseField name="phase" type="string" required>
+    The lifecycle phase to attach to. One of: `onRequest`, `preHandler`, `postHandler`, `onResponse`, `onError`, `onTimeout`.
+  </ResponseField>
+  <ResponseField name="scope" type="object">
+    Limits the middleware to requests matching a path prefix. When omitted, applies to all routes.
+
+    <Expandable title="Scope">
+      <ResponseField name="path" type="string" required>
+        Path prefix to match. Supports `:param` segments and a trailing `*` wildcard (e.g., `/api/*`).
+      </ResponseField>
+    </Expandable>
+  </ResponseField>
+  <ResponseField name="priority" type="number">
+    Execution order within a phase. Lower values run first. Defaults to `0`.
+  </ResponseField>
+</Expandable>
+
+### Middleware Function Contract
+
+Middleware functions receive a `MiddlewareRequest` object:
+
+<ResponseField name="phase" type="string">
+  The phase in which the middleware is executing.
+</ResponseField>
+
+<ResponseField name="request" type="object">
+  The current `ApiRequest` object.
+</ResponseField>
+
+<ResponseField name="context" type="object">
+  Accumulated context from previous middleware in the same phase.
+</ResponseField>
+
+<ResponseField name="matched_route" type="object">
+  Present on `preHandler` and later phases. Contains `function_id` and `path_pattern`.
+</ResponseField>
+
+<ResponseField name="response" type="object">
+  Present on `onResponse` phase only. The response that was sent.
+</ResponseField>
+
+Middleware must return one of:
+
+- `{ action: "continue", request?: object, context?: object }` — pass control to the next middleware. Optional `request` and `context` patches are deep-merged into the current values.
+- `{ action: "respond", response: { status_code, body, headers } }` — short-circuit and return a response immediately. Subsequent middleware in the same phase is skipped.
+
+## Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Engine
+    participant Worker
+
+    Client->>+Engine: HTTP Request (GET /users/123)
+    Note over Engine: Match route<br/>in registry
+    Engine->>+Worker: Invoke Function (JSON)
+    Note over Worker: Execute handler
+
+    Worker-->>-Engine: Return {status_code, body, headers}
+    Engine-->>-Client: HTTP Response
+```
+
+## Example Handler
+
+```typescript
+import { registerWorker } from 'iii-sdk'
+import type { ApiRequest, ApiResponse } from 'iii-sdk'
+
+const iii = registerWorker('ws://localhost:49134')
+
+async function getUser(req: ApiRequest): Promise<ApiResponse> {
+  const userId = req.path_params?.id
+  const user = await database.findUser(userId)
+  return {
+    status_code: 200,
+    body: { user },
+    headers: { 'Content-Type': 'application/json' },
+  }
+}
+
+const fn = iii.registerFunction({ id: 'api.getUser' }, getUser)
+iii.registerTrigger({
+  type: 'http',
+  function_id: fn.id,
+  config: {
+    api_path: '/users/:id',
+    http_method: 'GET',
+  },
+})
+```
