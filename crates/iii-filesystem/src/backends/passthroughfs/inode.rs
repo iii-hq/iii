@@ -553,7 +553,9 @@ pub(crate) fn open_inode_fd(fs: &PassthroughFs, inode: u64, flags: i32) -> io::R
             }
         }
 
-        let path = vol_path(data.dev, data.ino);
+        let dev = data.dev;
+        let ino_val = data.ino;
+        let path = vol_path(dev, ino_val);
         open_macos_path_hardened(path.as_ptr(), flags)
     }
 }

@@ -117,7 +117,7 @@ pub(crate) fn do_readdirplus(
                 de.type_ = platform::dirent_type_from_mode(file_type);
                 result.push((de, entry));
             }
-            Err(_) => continue, // Entry may have been removed between readdir and lookup.
+            Err(_) => continue,
         }
     }
 
@@ -257,6 +257,16 @@ fn read_dir_entries(
 ///
 /// Names are collected into a single contiguous buffer, leaked once, and tracked
 /// in `PassthroughFs::leaked_readdir_bufs` for reclamation in `destroy()`.
+///
+/// macOS `seekdir`/`telldir` cookies are NOT portable across different
+/// `fdopendir` sessions: after one session reads to EOF the shared fd position
+/// is at the end, and a new `fdopendir(dup(fd))` starts there. `seekdir` with
+/// a cookie from the old session silently fails.
+///
+/// To work around this, we:
+///  1. `lseek(fd, 0)` to rewind the underlying fd before dup/fdopendir.
+///  2. Use a sequential entry index (1-based) as `d_off` instead of `telldir`.
+///  3. When `offset > 0`, skip that many entries from the start.
 #[cfg(target_os = "macos")]
 fn read_dir_entries(
     fs: &PassthroughFs,
@@ -264,7 +274,9 @@ fn read_dir_entries(
     offset: u64,
     _size: u32,
 ) -> io::Result<Vec<DirEntry<'static>>> {
-    // Duplicate the fd so fdopendir can take ownership without closing ours.
+    // Rewind the directory fd so dup inherits position 0.
+    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+
     let dup_fd = unsafe { libc::dup(fd) };
     if dup_fd < 0 {
         return Err(platform::linux_error(io::Error::last_os_error()));
@@ -276,16 +288,11 @@ fn read_dir_entries(
         return Err(platform::linux_error(io::Error::last_os_error()));
     }
 
-    // Seek to offset if needed.
-    if offset > 0 {
-        unsafe { libc::seekdir(dirp, offset as libc::c_long) };
-    }
-
     let mut raw_entries: Vec<(u64, u64, u32, usize, usize)> = Vec::new();
     let mut names_buf: Vec<u8> = Vec::new();
+    let mut entry_index: u64 = 0;
 
     loop {
-        // Clear errno before readdir to distinguish EOF from error.
         unsafe { *libc::__error() = 0 };
 
         let ent = unsafe { libc::readdir(dirp) };
@@ -298,19 +305,25 @@ fn read_dir_entries(
             break; // EOF
         }
 
+        entry_index += 1;
+
+        // Skip entries before the requested offset.
+        if entry_index <= offset {
+            continue;
+        }
+
         let d = unsafe { &*ent };
         let name_len = d.d_namlen as usize;
+
         let name_bytes =
             unsafe { std::slice::from_raw_parts(d.d_name.as_ptr() as *const u8, name_len) };
 
         let name_offset = names_buf.len();
         names_buf.extend_from_slice(name_bytes);
 
-        let tell_offset = unsafe { libc::telldir(dirp) };
-
         raw_entries.push((
             d.d_ino,
-            tell_offset as u64,
+            entry_index, // sequential 1-based index as d_off
             d.d_type as u32,
             name_offset,
             name_len,
