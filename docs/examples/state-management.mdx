@@ -11,7 +11,7 @@ graph LR
     WriteHandler -->|"state::set scope=users"| StateStore[(State)]
     Cron -->|"every 5s"| AuditHandler
     AuditHandler -->|"state::list scope=orders"| StateStore
-    AuditHandler -->|"enqueue: notification"| Notify
+    AuditHandler -->|"durable::publish: notification"| Notify
 ```
 
 ## Writing state

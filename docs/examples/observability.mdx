@@ -8,8 +8,8 @@ Every iii function invocation receives a `traceId` (via `new Logger()`) that is 
 ```mermaid
 graph LR
     Client -->|"POST /orders"| CreateOrder
-    CreateOrder -->|"enqueue + traceId"| ProcessOrder
-    ProcessOrder -->|"enqueue + traceId"| NotifyOrder
+    CreateOrder -->|"durable::publish + traceId"| ProcessOrder
+    ProcessOrder -->|"durable::publish + traceId"| NotifyOrder
     CreateOrder & ProcessOrder & NotifyOrder -->|"structured logs"| Observability
 ```
 

@@ -8,7 +8,7 @@ This example shows the two-step pattern at the heart of most iii workflows: an *
 ```mermaid
 graph LR
     Client -->|"GET /hello"| HelloHandler
-    HelloHandler -->|"enqueue: greet::process"| ProcessHandler
+    HelloHandler -->|"durable::publish: greet::process"| ProcessHandler
     ProcessHandler -->|"state::set"| State[(State)]
 ```
 

@@ -1275,7 +1275,7 @@ import { TriggerAction } from 'iii-sdk'
 const processFn = iii.registerFunction('orders.process', async (order) => {
   await saveOrder(order)
   iii.trigger({
-    function_id: 'enqueue',
+    function_id: 'durable::publish',
     payload: { topic: 'order.processed', data: order },
     action: TriggerAction.Void(),
   })
@@ -1305,7 +1305,7 @@ from iii import TriggerAction
 def process_order(order):
     save_order(order)
     iii.trigger({
-        'function_id': 'enqueue',
+        'function_id': 'durable::publish',
         'payload': {
             'topic': 'order.processed',
             'data': order,
@@ -1344,7 +1344,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.process".into())
     async move {
         save_order(&order).await;
         iii.trigger(
-            TriggerRequest::new("enqueue", json!({
+            TriggerRequest::new("durable::publish", json!({
                 "topic": "order.processed",
                 "data": order,
             }))
