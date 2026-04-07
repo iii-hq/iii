@@ -1,0 +1,88 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
+use clap::Parser;
+use iii_worker::{Cli, Commands};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+
+    let cli_args = Cli::parse();
+
+    let exit_code = match cli_args.command {
+        Commands::Add {
+            worker_name,
+            runtime,
+            address,
+            port,
+        } => {
+            iii_worker::cli::managed::handle_managed_add(&worker_name, &runtime, &address, port)
+                .await
+        }
+        Commands::Remove {
+            worker_name,
+            address,
+            port,
+        } => iii_worker::cli::managed::handle_managed_remove(&worker_name, &address, port).await,
+        Commands::Start {
+            worker_name,
+            address,
+            port,
+        } => iii_worker::cli::managed::handle_managed_start(&worker_name, &address, port).await,
+        Commands::Stop {
+            worker_name,
+            address,
+            port,
+        } => iii_worker::cli::managed::handle_managed_stop(&worker_name, &address, port).await,
+        Commands::Dev {
+            path,
+            name,
+            runtime,
+            rebuild,
+            address,
+            port,
+        } => {
+            iii_worker::cli::managed::handle_worker_dev(
+                &path,
+                name.as_deref(),
+                runtime.as_deref(),
+                rebuild,
+                &address,
+                port,
+            )
+            .await
+        }
+        Commands::List => iii_worker::cli::managed::handle_worker_list().await,
+        Commands::Logs {
+            worker_name,
+            follow,
+            address,
+            port,
+        } => {
+            iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
+                .await
+        }
+        Commands::StartAll { engine_url } => {
+            iii_worker::cli::managed::start_managed_workers(&engine_url).await;
+            0
+        }
+        Commands::StopAll => {
+            iii_worker::cli::managed::stop_managed_workers().await;
+            0
+        }
+        Commands::VmBoot(args) => {
+            iii_worker::cli::vm_boot::run(&args);
+        }
+    };
+
+    std::process::exit(exit_code);
+}

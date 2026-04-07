@@ -17,6 +17,12 @@ A Function is anything that does work. A Trigger is what causes it to run - an H
 
 One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI - iii gives your backend a single model for execution.
 
+These primitives result in an execution model and system traits that make iii unreasonably good at creating backend software:
+
+**Execution model** — Durable orchestration across workers and triggers. Interoperable execution across languages as if it were one runtime. Simple primitives that collapse distributed backend design into a paradigm humans and agents can reason about.
+
+**Live system traits** — Functions and triggers exposed by one worker become visible and usable across the system in real time (live discovery). Add new workers and capabilities to a live iii system without redesigning the architecture (live extensibility). Observe operations, traces, and system behavior across the entire connected stack in real time (live observability).
+
 ## Three Concepts
 
 | Concept       | What it does |
@@ -37,6 +43,16 @@ Get started with iii by following the [Quickstart guide](https://iii.dev/docs/qu
 | Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk` |
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`   |
 
+## Agent Skills
+
+Give your AI coding agent full context on iii:
+
+```bash
+npx skills add iii-hq/iii
+```
+
+Skills covering every iii primitive — HTTP endpoints, queues, cron, state, streams, custom triggers, and more. Works with Claude Code, Cursor, Gemini CLI, Codex, and [30+ other agents](https://agentskills.io). See [skills/](skills/) for the full list.
+
 ## Console
 
 The [iii-console](console/) is a developer and operations dashboard for inspecting functions, triggers, traces, and real-time state. See the [Console docs](https://iii.dev/docs/console) for setup and usage.
@@ -49,6 +65,7 @@ The [iii-console](console/) is a developer and operations dashboard for inspecti
 | `sdk/`         | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)          |
 | `console/`     | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md)  |
 | `frameworks/`  | Higher-level frameworks built on the SDK                 | [frameworks/motia/](frameworks/motia/)  |
+| `skills/`      | Agent skills for AI coding agents                         | [skills/README.md](skills/README.md)    |
 | `website/`     | iii website                                              | [website/](website/)                    |
 | `docs/`        | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)        |
 

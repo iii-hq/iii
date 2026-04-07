@@ -6,13 +6,13 @@ description: 'OpenTelemetry-based traces, metrics, logs, alerts, and sampling.'
 Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance metrics, alert rules, and trace sampling — all queryable via built-in functions.
 
 ```
-modules::observability::OtelModule
+iii-observability
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::observability::OtelModule
+- name: iii-observability
   config:
     enabled: true
     service_name: my-service

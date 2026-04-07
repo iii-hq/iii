@@ -20,10 +20,10 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-use crate::modules::config::EngineConfig;
-use crate::modules::observability::logs_layer::OtelLogsLayer;
-use crate::modules::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
 use crate::telemetry::{ExporterType, OtelConfig, init_otel};
+use crate::workers::config::EngineConfig;
+use crate::workers::observability::logs_layer::OtelLogsLayer;
+use crate::workers::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
 
 /// Collected field from tracing event
 #[derive(Debug, Clone)]
@@ -275,18 +275,18 @@ where
 
 static TRACING: OnceLock<()> = OnceLock::new();
 
-/// Extract OTEL configuration from the OtelModule config in the config file.
+/// Extract OTEL configuration from the ObservabilityWorker config in the config file.
 /// This is called early during startup, before modules are loaded.
 fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
-    use crate::modules::observability::config::OtelModuleConfig;
+    use crate::workers::observability::config::ObservabilityWorkerConfig;
 
-    let otel_module_name = "modules::observability::OtelModule";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
+    let otel_module_name = "iii-observability";
+    let otel_module_cfg = cfg.modules.iter().find(|m| m.name == otel_module_name);
 
-    let module_config: OtelModuleConfig = match otel_module_cfg {
+    let module_config: ObservabilityWorkerConfig = match otel_module_cfg {
         Some(entry) => match &entry.config {
             Some(cfg) => serde_json::from_value(cfg.clone()).unwrap_or_default(),
-            None => OtelModuleConfig::default(),
+            None => ObservabilityWorkerConfig::default(),
         },
         None => return OtelConfig::default(),
     };
@@ -301,9 +301,9 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
     }
     if let Some(exporter) = module_config.exporter {
         otel_cfg.exporter = match exporter {
-            crate::modules::observability::config::OtelExporterType::Memory => ExporterType::Memory,
-            crate::modules::observability::config::OtelExporterType::Otlp => ExporterType::Otlp,
-            crate::modules::observability::config::OtelExporterType::Both => ExporterType::Both,
+            crate::workers::observability::config::OtelExporterType::Memory => ExporterType::Memory,
+            crate::workers::observability::config::OtelExporterType::Otlp => ExporterType::Otlp,
+            crate::workers::observability::config::OtelExporterType::Both => ExporterType::Both,
         };
     }
     if let Some(endpoint) = module_config.endpoint {
@@ -321,8 +321,8 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
 
 pub fn init_log_from_engine_config(cfg: &EngineConfig) {
     let otel_cfg = extract_otel_config(cfg);
-    let otel_module_name = "modules::observability::OtelModule";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
+    let otel_module_name = "iii-observability";
+    let otel_module_cfg = cfg.modules.iter().find(|m| m.name == otel_module_name);
 
     let log_level = otel_module_cfg
         .and_then(|m| m.config.as_ref())
@@ -456,7 +456,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::config::{EngineConfig, ModuleEntry};
+    use crate::workers::config::{EngineConfig, WorkerEntry};
     use serial_test::serial;
     use tracing::callsite::Identifier;
     use tracing::field::{FieldSet, Visit};
@@ -856,8 +856,8 @@ mod tests {
     #[test]
     fn test_extract_otel_config_reads_observability_module_config() {
         let cfg = EngineConfig {
-            modules: vec![ModuleEntry {
-                class: "modules::observability::OtelModule".to_string(),
+            modules: vec![WorkerEntry {
+                name: "iii-observability".to_string(),
                 config: Some(serde_json::json!({
                     "enabled": true,
                     "service_name": "test-service",
@@ -922,7 +922,7 @@ mod tests {
 
         let yaml = r#"
 modules:
-  - class: modules::observability::OtelModule
+  - class: workers::observability::ObservabilityWorker
     config:
       enabled: false
       level: debug

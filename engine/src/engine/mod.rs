@@ -22,12 +22,6 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    modules::worker::rbac_session::Session,
-    modules::{
-        engine_fn::TRIGGER_WORKERS_AVAILABLE,
-        http_functions::HttpFunctionsModule,
-        worker::{WorkerConfig, channels::ChannelManager, rbac_session},
-    },
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -35,12 +29,18 @@ use crate::{
         inject_baggage_from_context, inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
-    workers::{Worker, WorkerRegistry},
+    worker_connections::{WorkerConnection, WorkerConnectionRegistry},
+    workers::worker::rbac_session::Session,
+    workers::{
+        engine_fn::TRIGGER_WORKERS_AVAILABLE,
+        http_functions::HttpFunctionsWorker,
+        worker::{WorkerManagerConfig, channels::ChannelManager, rbac_session},
+    },
 };
 
 /// Abstraction for enqueuing messages to named queues.
 ///
-/// This trait decouples the Engine from the concrete QueueCoreModule
+/// This trait decouples the Engine from the concrete QueueWorker
 /// so that dispatch routing can push work onto a named queue without
 /// creating a circular dependency.
 #[async_trait::async_trait]
@@ -226,7 +226,7 @@ pub trait EngineTrait: Send + Sync {
 
 #[derive(Clone)]
 pub struct Engine {
-    pub worker_registry: Arc<WorkerRegistry>,
+    pub worker_registry: Arc<WorkerConnectionRegistry>,
     pub functions: Arc<FunctionsRegistry>,
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
@@ -244,7 +244,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         Self {
-            worker_registry: Arc::new(WorkerRegistry::new()),
+            worker_registry: Arc::new(WorkerConnectionRegistry::new()),
             functions: Arc::new(FunctionsRegistry::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
@@ -258,7 +258,7 @@ impl Engine {
         *self.queue_module.write().await = Some(module);
     }
 
-    async fn send_msg(&self, worker: &Worker, msg: Message) -> bool {
+    async fn send_msg(&self, worker: &WorkerConnection, msg: Message) -> bool {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
@@ -274,7 +274,7 @@ impl Engine {
 
     async fn remember_invocation(
         &self,
-        worker: &Worker,
+        worker: &WorkerConnection,
         invocation_id: Option<Uuid>,
         function_id: &str,
         body: Value,
@@ -327,7 +327,7 @@ impl Engine {
     /// is fire-and-forget (used by the `Void` action).
     fn spawn_invoke_function(
         &self,
-        worker: &Worker,
+        worker: &WorkerConnection,
         function_id: &str,
         data: &Value,
         traceparent: &Option<String>,
@@ -448,7 +448,7 @@ impl Engine {
         );
     }
 
-    async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
+    async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
                 id,
@@ -632,7 +632,7 @@ impl Engine {
                         metadata: metadata.clone(),
                     })
                     .await;
-                crate::modules::telemetry::collector::track_trigger_registered();
+                crate::workers::telemetry::collector::track_trigger_registered();
 
                 Ok(())
             }
@@ -672,7 +672,7 @@ impl Engine {
 
                 if let Some(session) = &worker.session {
                     let function = self.functions.get(function_id);
-                    if !crate::modules::worker::rbac_config::is_function_allowed(
+                    if !crate::workers::worker::rbac_config::is_function_allowed(
                         function_id,
                         session.config.rbac.clone(),
                         &session.allowed_functions,
@@ -892,7 +892,7 @@ impl Engine {
                     worker.remove_external_function_id(id).await;
                     if let Some(http_module) = self
                         .service_registry
-                        .get_service::<HttpFunctionsModule>("http_functions")
+                        .get_service::<HttpFunctionsWorker>("http_functions")
                     {
                         match http_module.unregister_http_function(id).await {
                             Ok(()) => {
@@ -1002,7 +1002,7 @@ impl Engine {
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
                         .service_registry
-                        .get_service::<HttpFunctionsModule>("http_functions")
+                        .get_service::<HttpFunctionsWorker>("http_functions")
                     else {
                         tracing::error!(
                             worker_id = %worker.id,
@@ -1133,7 +1133,7 @@ impl Engine {
         peer: SocketAddr,
         uri: Uri,
         headers: HeaderMap,
-        config: Arc<WorkerConfig>,
+        config: Arc<WorkerManagerConfig>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
         tracing::debug!(peer = %peer, "Worker connected via WebSocket");
@@ -1178,7 +1178,7 @@ impl Engine {
             }
         });
 
-        let worker = Worker::with_session(tx.clone(), session);
+        let worker = WorkerConnection::with_session(tx.clone(), session);
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
@@ -1250,7 +1250,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn cleanup_worker(&self, worker: &Worker) {
+    async fn cleanup_worker(&self, worker: &WorkerConnection) {
         let regular_functions = worker.get_regular_function_ids().await;
         let external_functions = worker.get_external_function_ids().await;
 
@@ -1262,7 +1262,7 @@ impl Engine {
         if !external_functions.is_empty() {
             if let Some(http_module) = self
                 .service_registry
-                .get_service::<HttpFunctionsModule>("http_functions")
+                .get_service::<HttpFunctionsWorker>("http_functions")
             {
                 for function_id in external_functions.iter() {
                     if let Err(err) = http_module.unregister_http_function(function_id).await {
@@ -1404,7 +1404,7 @@ impl EngineTrait for Engine {
         };
 
         self.functions.register_function(function_id, function);
-        crate::modules::telemetry::collector::track_function_registered();
+        crate::workers::telemetry::collector::track_function_registered();
     }
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
@@ -1476,14 +1476,14 @@ mod tests {
     use crate::{
         config::SecurityConfig,
         function::FunctionResult,
-        modules::{
-            engine_fn::TRIGGER_WORKERS_AVAILABLE,
-            http_functions::{HttpFunctionsModule, config::HttpFunctionsConfig},
-            module::Module,
-            observability::metrics::ensure_default_meter,
-        },
         protocol::{HttpInvocationRef, Message},
-        workers::Worker,
+        worker_connections::WorkerConnection,
+        workers::{
+            engine_fn::TRIGGER_WORKERS_AVAILABLE,
+            http_functions::{HttpFunctionsWorker, config::HttpFunctionsConfig},
+            observability::metrics::ensure_default_meter,
+            traits::Worker,
+        },
     };
 
     use super::{Engine, EngineTrait, Outbound};
@@ -1522,7 +1522,7 @@ mod tests {
             },
         };
 
-        let http_functions_module = HttpFunctionsModule::create(
+        let http_functions_module = HttpFunctionsWorker::create(
             engine.clone(),
             Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
         )
@@ -1534,7 +1534,7 @@ mod tests {
             .expect("initialize module");
 
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let register_message = Message::RegisterFunction {
             id: "external.my_lambda".to_string(),
@@ -1561,7 +1561,7 @@ mod tests {
 
         let http_module = engine
             .service_registry
-            .get_service::<HttpFunctionsModule>("http_functions")
+            .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
 
         assert!(
@@ -1590,7 +1590,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let msg = Message::RegisterFunction {
             id: "my_func".to_string(),
@@ -1625,7 +1625,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // First register a function
         let register_msg = Message::RegisterFunction {
@@ -1669,7 +1669,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let invocation_id = uuid::Uuid::new_v4();
 
@@ -1705,7 +1705,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // First register a trigger type so RegisterTrigger can succeed
         let register_type_msg = Message::RegisterTriggerType {
@@ -1755,7 +1755,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Register trigger type first
         let register_type_msg = Message::RegisterTriggerType {
@@ -1819,7 +1819,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Register a function via the worker so it becomes a deferred handler
         let register_msg = Message::RegisterFunction {
@@ -1877,7 +1877,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.register_function_handler(
             make_request("engine::success"),
@@ -1938,7 +1938,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.register_function_handler(
             make_request("engine::failure"),
@@ -1997,7 +1997,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let invocation_id = uuid::Uuid::new_v4();
         let invoke_msg = Message::InvokeFunction {
@@ -2074,7 +2074,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let sent = engine.send_msg(&worker, Message::Ping).await;
         assert!(sent, "send_msg should return true on success");
@@ -2092,7 +2092,7 @@ mod tests {
         let engine = Engine::new();
         let (tx, rx) = mpsc::channel::<Outbound>(1);
         drop(rx);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let sent = engine.send_msg(&worker, Message::Ping).await;
         assert!(!sent, "send_msg should return false on closed channels");
@@ -2150,7 +2150,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine
             .register_trigger_type(crate::trigger::TriggerType::new(
@@ -2232,7 +2232,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let register_message = Message::RegisterFunction {
             id: "external.without_module".to_string(),
@@ -2267,7 +2267,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.register_function_handler(
             make_request("external.cleanup"),
@@ -2300,7 +2300,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Attempting to remember an invocation for a non-existent function
         // should return a function_not_found error
@@ -2331,7 +2331,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Register a function
         let msg = Message::RegisterFunction {
@@ -2367,7 +2367,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Register the worker in the registry so cleanup can unregister it
         engine.worker_registry.register_worker(worker.clone());
@@ -2421,7 +2421,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.worker_registry.register_worker(worker.clone());
 
@@ -2569,7 +2569,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine
             .router_msg(&worker, &Message::Ping)
@@ -2595,7 +2595,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine
             .router_msg(&worker, &Message::Pong)
@@ -2614,7 +2614,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let msg = Message::WorkerRegistered {
             worker_id: "some-worker-id".to_string(),
@@ -2637,7 +2637,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let msg = Message::TriggerRegistrationResult {
             id: "trigger-1".to_string(),
@@ -2663,7 +2663,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let msg = Message::TriggerRegistrationResult {
             id: "trigger-1".to_string(),
@@ -2692,7 +2692,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let msg = Message::RegisterService {
             id: "service-1".to_string(),
@@ -2718,7 +2718,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let msg = Message::RegisterService {
             id: "service-2".to_string(),
@@ -2749,7 +2749,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let invocation_id = uuid::Uuid::new_v4();
         worker.add_invocation(invocation_id).await;
@@ -2786,7 +2786,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Register the worker
         engine.worker_registry.register_worker(worker.clone());
@@ -2804,7 +2804,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         // Register the worker
         engine.worker_registry.register_worker(worker.clone());
@@ -2839,7 +2839,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.worker_registry.register_worker(worker.clone());
 
@@ -2895,7 +2895,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.worker_registry.register_worker(worker.clone());
 
@@ -2917,7 +2917,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         engine.worker_registry.register_worker(worker.clone());
 
@@ -3005,7 +3005,7 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
-        let worker = Worker::new(tx);
+        let worker = WorkerConnection::new(tx);
 
         let register_type_msg = Message::RegisterTriggerType {
             id: "metadata_type".to_string(),

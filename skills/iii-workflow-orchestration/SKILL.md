@@ -1,0 +1,100 @@
+---
+name: iii-workflow-orchestration
+description: >-
+  Orchestrates durable multi-step workflow pipelines on the iii engine. Use
+  when building order fulfillment, data pipelines, task orchestration, or any
+  sequential process requiring retries, backoff, step tracking, scheduled
+  cleanup, or dead letter queue (DLQ) handling.
+---
+
+# Workflow Orchestration & Durable Execution
+
+Comparable to: Temporal, Airflow, Inngest
+
+## Key Concepts
+
+Use the concepts below when they fit the task. Not every workflow needs every durability or tracking mechanism shown here.
+
+- Each pipeline step is a registered function chained via **named queues** with config-driven retries
+- Step progress is tracked in **shared state** and broadcast via **streams**
+- A **cron trigger** handles scheduled maintenance (e.g. stale order cleanup)
+- Queue behavior (retries, backoff, concurrency, FIFO) is defined per queue in `iii-config.yaml`
+
+## Architecture
+
+```text
+HTTP (create order)
+  → Enqueue(order-validate) → validate
+    → Enqueue(order-payment) → charge-payment
+      → Enqueue(order-ship) → ship
+        → publish(order.fulfilled)
+
+Cron (hourly) → cleanup-stale
+
+Queue configs (iii-config.yaml):
+  order-validate:  max_retries: 2
+  order-payment:   max_retries: 5, type: fifo, concurrency: 2
+  order-ship:      max_retries: 3
+```
+
+## iii Primitives Used
+
+| Primitive                                                    | Purpose                                   |
+| ------------------------------------------------------------ | ----------------------------------------- |
+| `registerWorker`                                             | Initialize the worker and connect to iii  |
+| `registerFunction`                                           | Define each pipeline step                 |
+| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable step chaining via named queues    |
+| `trigger({ function_id: 'state::...', payload })`            | Track step progress                       |
+| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget stream events and publish |
+| `registerTrigger({ type: 'cron' })`                          | Scheduled maintenance                     |
+| `registerTrigger({ type: 'http' })`                          | Entry point                               |
+
+## Reference Implementation
+
+See [../references/workflow-orchestration.js](../references/workflow-orchestration.js) for the full working example — an order fulfillment pipeline
+with validate → charge → ship steps, retry configuration, stream-based progress tracking,
+and hourly stale-order cleanup.
+
+## Common Patterns
+
+Code using this pattern commonly includes, when relevant:
+
+- `registerWorker(url, { workerName })` — worker initialization
+- `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` — durable step chaining via named queues
+- `trigger({ function_id: 'state::update', payload: { scope, key, ops } })` — step progress tracking
+- Named queues with a comment referencing `iii-config.yaml` for retry/concurrency settings
+- `const logger = new Logger()` — structured logging per step
+- Each step as its own `registerFunction` with a single responsibility
+- `trigger({ function_id: 'publish', payload, action: TriggerAction.Void() })` — completion broadcast
+
+## Adapting This Pattern
+
+Use the adaptations below when they apply to the task.
+
+- Each step should do one thing and enqueue the next function on success
+- Define separate named queues in `iii-config.yaml` when steps need different retry/concurrency settings
+- Capture enqueue receipts (`messageReceiptId`) for observability and DLQ correlation when needed
+- The `trackStep` helper pattern (state update + stream event) is reusable for any pipeline
+- Failed jobs exhaust retries and move to a DLQ — see the [dead-letter-queues HOWTO](https://iii.dev/docs/how-to/dead-letter-queues)
+- DLQ support for named queues is provided by the Builtin and RabbitMQ adapters (Redis is pub/sub only)
+- Cron expressions use 7-position numeric format: `0 0 * * * * *` (every hour)
+
+## Engine Configuration
+
+Named queues for pipeline steps are declared in iii-config.yaml under `queue_configs` with per-queue retry, concurrency, and FIFO settings. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+
+## Pattern Boundaries
+
+- If the task is "model HTTP endpoints as HTTP-invoked `registerFunction` functions" (including `{ path, id }` arrays iterated into registration), prefer `iii-http-invoked-functions`.
+- Stay with `iii-workflow-orchestration` when durable step sequencing, queue retries/backoff, and workflow progress tracking are the primary concerns.
+
+## When to Use
+
+- Use this skill when the task is primarily about `iii-workflow-orchestration` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

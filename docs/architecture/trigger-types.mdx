@@ -53,18 +53,18 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), functio
 ```mermaid
 sequenceDiagram
     participant External
-    participant Module
+    participant Worker
     participant Engine
     participant ConditionFn
     participant Worker
 
     Worker->>Engine: Register trigger type
     Worker->>Engine: Register trigger (type + function_id + config)
-    Engine->>Module: Route trigger to module
-    Module-->>Engine: Trigger ready
+    Engine->>Worker: Route trigger to worker
+    Worker-->>Engine: Trigger ready
 
-    External->>Module: Event arrives (HTTP request / cron tick / queue message)
-    Module->>Engine: Fire trigger
+    External->>Worker: Event arrives (HTTP request / cron tick / queue message)
+    Worker->>Engine: Fire trigger
     Engine->>ConditionFn: Check condition function (if configured)
     alt Condition passes
         ConditionFn-->>Engine: true
@@ -95,7 +95,7 @@ graph LR
 
 Executes functions in response to HTTP requests.
 
-**Provided by**: [HTTP Module](/modules/module-http)
+**Provided by**: [HTTP Worker](/modules/module-http)
 
 **Configuration:**
 
@@ -152,7 +152,7 @@ json!({
 // Handler receives: { path_params: { userId: '123', postId: '456' } }
 ```
 
-<Card title="HTTP Module" href="/modules/module-http" icon="globe">
+<Card title="HTTP Worker" href="/modules/module-http" icon="globe">
   Learn more about the API trigger
 </Card>
 
@@ -527,7 +527,7 @@ Each SSE frame follows the standard format: `id`, `event`, and `data` fields sep
 
 Executes functions when events are published to subscribed topics.
 
-**Provided by**: [Queue Module](/modules/module-queue)
+**Provided by**: [Queue Worker](/modules/module-queue)
 
 **Configuration:**
 
@@ -575,7 +575,7 @@ json!({
 
 **Multiple Topics**: Register separate triggers for each topic.
 
-<Card title="Queue Module" href="/modules/module-queue" icon="bolt">
+<Card title="Queue Worker" href="/modules/module-queue" icon="bolt">
   Learn more about the Queue trigger
 </Card>
 
@@ -585,7 +585,7 @@ json!({
 
 Executes functions on a time-based schedule using cron expressions.
 
-**Provided by**: [Cron Module](/modules/module-cron)
+**Provided by**: [Cron Worker](/modules/module-cron)
 
 **Configuration:**
 
@@ -633,7 +633,7 @@ json!({
 
 **Cron Expression**: Standard 5-field format (minute hour day month weekday)
 
-<Card title="Cron Module" href="/modules/module-cron" icon="clock">
+<Card title="Cron Worker" href="/modules/module-cron" icon="clock">
   Learn more about the Cron trigger
 </Card>
 
@@ -643,7 +643,7 @@ json!({
 
 Executes functions when log entries match specified criteria.
 
-**Provided by**: [Observability Module](/modules/module-observability)
+**Provided by**: [Observability Worker](/modules/module-observability)
 
 **Configuration:**
 
@@ -689,7 +689,7 @@ json!({
 
 **Log Levels**: `info`, `warn`, `error`, `debug` (omit to receive all levels)
 
-<Card title="Observability Module" href="/modules/module-observability" icon="file-text">
+<Card title="Observability Worker" href="/modules/module-observability" icon="file-text">
   Learn more about the Log trigger
 </Card>
 
@@ -699,7 +699,7 @@ json!({
 
 Executes functions when clients connect to or disconnect from streams.
 
-**Provided by**: [Stream Module](/modules/module-stream)
+**Provided by**: [Stream Worker](/modules/module-stream)
 
 **Configuration:**
 
@@ -723,7 +723,7 @@ Executes functions when clients connect to or disconnect from streams.
 
 **Conditions**: Optional. Add `condition_function_id` to config for stream:join/stream:leave. See [Trigger Conditions](#trigger-conditions).
 
-<Card title="Stream Module" href="/modules/module-stream" icon="chart-line">
+<Card title="Stream Worker" href="/modules/module-stream" icon="chart-line">
   Learn more about Stream triggers
 </Card>
 
@@ -746,7 +746,7 @@ Triggers are registered by workers after establishing a connection to the engine
 sequenceDiagram
     participant W as Worker
     participant E as Engine
-    participant M as Module
+    participant M as Worker
 
     W->>E: Connect WebSocket
     W->>E: Register Function<br/>(users.create)
@@ -837,10 +837,10 @@ Trigger types are registered by core modules during engine initialization:
 ```mermaid
 sequenceDiagram
     participant E as Engine
-    participant M as Module
+    participant M as Worker
     participant R as Registry
 
-    E->>M: Initialize Module
+    E->>M: Initialize Worker
     M->>R: RegisterTriggerType("http")
     M->>R: RegisterTriggerType("queue")
     M->>R: RegisterTriggerType("cron")
@@ -1496,11 +1496,11 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), functio
 Modules can register custom trigger types by implementing the trigger interface:
 
 ```rust
-pub struct CustomModule {
-    // Module state
+pub struct CustomWorker {
+    // Worker state
 }
 
-impl CoreModule for CustomModule {
+impl CoreWorker for CustomWorker {
     fn name(&self) -> &str {
         "custom"
     }

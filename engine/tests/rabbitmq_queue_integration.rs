@@ -20,7 +20,7 @@ use uuid::Uuid;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Module, queue::QueueCoreModule},
+    workers::{queue::QueueWorker, traits::Worker},
 };
 
 use common::queue_helpers::{
@@ -43,19 +43,19 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::rmq_handler", call_count.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -87,19 +87,19 @@ async fn full_roundtrip_fifo_preserves_order() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let invocation_order: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_order_recording_function(&engine, "test::rmq_fifo", "seq", invocation_order.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -144,19 +144,19 @@ async fn retry_behavior_with_rabbitmq() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_retry", call_count.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -198,19 +198,19 @@ async fn exhausted_message_lands_in_dlq() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq", call_count.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -248,7 +248,7 @@ async fn concurrent_processing() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -260,12 +260,12 @@ async fn concurrent_processing() {
         timestamps.clone(),
     );
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -311,7 +311,7 @@ async fn multiple_queues_operate_independently() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -320,12 +320,12 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::rmq_default", default_count.clone());
     register_counting_function(&engine, "test::rmq_payment", payment_count.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -478,19 +478,19 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::rmq_payload", captured.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -535,7 +535,7 @@ async fn rmq_topology_matches_expected_configuration() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -545,12 +545,12 @@ async fn rmq_topology_matches_expected_configuration() {
     register_counting_function(&engine, "test::rmq_topo_default", default_count);
     register_counting_function(&engine, "test::rmq_topo_payment", payment_count);
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -680,7 +680,7 @@ async fn rmq_retry_backoff_timing_is_flat() {
     let max_retries: u32 = 3;
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -694,9 +694,9 @@ async fn rmq_retry_backoff_timing_is_flat() {
     );
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, max_retries, backoff_ms);
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -748,7 +748,7 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -756,9 +756,9 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
     register_failing_function(&engine, "test::rmq_dlq_content", call_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 300);
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -841,7 +841,7 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -849,9 +849,9 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     register_failing_function(&engine, "test::rmq_zero_retry", call_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 0, 200);
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -928,7 +928,7 @@ async fn rmq_fifo_multi_group_ordering() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -945,7 +945,7 @@ async fn rmq_fifo_multi_group_ordering() {
     // Build FIFO queue config inline (single queue, not the two-queue helper)
     let config = json!({
         "adapter": {
-            "class": "modules::queue::RabbitMQAdapter",
+            "name": "rabbitmq",
             "config": { "amqp_url": ctx.amqp_url }
         },
         "queue_configs": {
@@ -960,9 +960,9 @@ async fn rmq_fifo_multi_group_ordering() {
         }
     });
 
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -1029,7 +1029,7 @@ async fn rmq_handler_panic_recovery() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -1037,9 +1037,9 @@ async fn rmq_handler_panic_recovery() {
     register_panicking_function(&engine, "test::rmq_panic", success_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 200);
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -1174,19 +1174,19 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
     let topic = format!("{prefix}-fanout-both");
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let cap_a = register_rmq_capturing_function(&engine, "test::rmq_fan_a");
     let cap_b = register_rmq_capturing_function(&engine, "test::rmq_fan_b");
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
@@ -1239,18 +1239,18 @@ async fn rmq_fanout_replicas_compete_within_function() {
     let topic = format!("{prefix}-fanout-replica");
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let counter = register_rmq_counting_fn(&engine, "test::rmq_replica_fn");
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
@@ -1291,7 +1291,7 @@ async fn rmq_fanout_dlq_per_function() {
     let topic = format!("{prefix}-fanout-dlq");
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -1300,12 +1300,12 @@ async fn rmq_fanout_dlq_per_function() {
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq_fail", fail_count.clone());
 
-    let module = QueueCoreModule::create(
+    let module = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
-    .expect("QueueCoreModule::create should succeed");
+    .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 

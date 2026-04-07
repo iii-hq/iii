@@ -14,11 +14,11 @@ use iii::{
     EngineBuilder,
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::{FunctionHandler, FunctionResult},
-    modules::{
-        module::{AdapterEntry, AdapterFactory, ConfigurableModule, Module},
-        registry::{AdapterFuture, AdapterRegistrationEntry},
-    },
     protocol::ErrorBody,
+    workers::{
+        registry::{AdapterFuture, AdapterRegistrationEntry},
+        traits::{AdapterEntry, AdapterFactory, ConfigurableWorker, Worker},
+    },
 };
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -40,13 +40,13 @@ pub trait CustomQueueAdapter: Send + Sync + 'static {
 type CustomQueueAdapterFuture = AdapterFuture<dyn CustomQueueAdapter>;
 
 pub struct CustomQueueAdapterRegistration {
-    pub class: &'static str,
+    pub name: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> CustomQueueAdapterFuture,
 }
 
 impl AdapterRegistrationEntry<dyn CustomQueueAdapter> for CustomQueueAdapterRegistration {
-    fn class(&self) -> &'static str {
-        self.class
+    fn name(&self) -> &'static str {
+        self.name
     }
 
     fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomQueueAdapterFuture {
@@ -185,8 +185,8 @@ fn make_logging_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomQue
     })
 }
 
-iii::register_adapter!(<CustomQueueAdapterRegistration> "my::InMemoryQueueAdapter", make_inmemory_adapter);
-iii::register_adapter!(<CustomQueueAdapterRegistration> "my::LoggingQueueAdapter", make_logging_adapter);
+iii::register_adapter!(<CustomQueueAdapterRegistration> name: "my::InMemoryQueueAdapter", make_inmemory_adapter);
+iii::register_adapter!(<CustomQueueAdapterRegistration> name: "my::LoggingQueueAdapter", make_logging_adapter);
 
 // =============================================================================
 // 3. Define your Module Config
@@ -211,13 +211,13 @@ pub struct CustomQueueModule {
 }
 
 #[async_trait]
-impl Module for CustomQueueModule {
+impl Worker for CustomQueueModule {
     fn name(&self) -> &'static str {
         "CustomQueueModule"
     }
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
@@ -244,11 +244,11 @@ impl Module for CustomQueueModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for CustomQueueModule {
+impl ConfigurableWorker for CustomQueueModule {
     type Config = CustomQueueModuleConfig;
     type Adapter = dyn CustomQueueAdapter;
     type AdapterRegistration = CustomQueueAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "my::InMemoryQueueAdapter";
+    const DEFAULT_ADAPTER_NAME: &'static str = "my::InMemoryQueueAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomQueueAdapter>>>> =
@@ -264,14 +264,16 @@ impl ConfigurableModule for CustomQueueModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
         config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
+
+iii::register_worker!("my::CustomQueueModule", CustomQueueModule);
 
 impl FunctionHandler for CustomQueueModule {
     fn handle_function(
@@ -313,13 +315,13 @@ impl FunctionHandler for CustomQueueModule {
 async fn main() -> anyhow::Result<()> {
     // Register the custom module and add it to the engine using EngineBuilder
     EngineBuilder::new()
-        .register_module::<CustomQueueModule>("my::CustomQueueModule")
-        .add_module(
+        .register_worker::<CustomQueueModule>("my::CustomQueueModule")
+        .add_worker(
             // instead load from config file
             "my::CustomQueueModule",
             Some(serde_json::json!({
                 "adapter": {
-                    "class": "my::LoggingQueueAdapter",
+                    "name": "my::LoggingQueueAdapter",
                     "config": {
                         "inner_adapter": "my::InMemoryQueueAdapter"
                     }
@@ -346,6 +348,6 @@ async fn main() -> anyhow::Result<()> {
 //   - class: my::CustomQueueModule
 //     config:
 //       adapter:
-//         class: my::LoggingQueueAdapter  # or my::InMemoryQueueAdapter
+//         name: my::LoggingQueueAdapter  # or my::InMemoryQueueAdapter
 //         config:
 //           inner_adapter: my::InMemoryQueueAdapter

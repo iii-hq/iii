@@ -114,11 +114,11 @@ sequenceDiagram
     W2-->>E: Processing Complete
 ```
 
-## Module Architecture
+## Worker Architecture
 
-Core Modules implement the `CoreModule` trait and bridge external protocols to internal function calls.
+Core Workers implement the `CoreWorker` trait and bridge external protocols to internal function calls.
 
-### HTTP Module
+### HTTP Worker
 
 Maps HTTP routes to internal function paths using a hot router:
 
@@ -126,7 +126,7 @@ Maps HTTP routes to internal function paths using a hot router:
 - **Path Router**: Links HTTP method + path to function
 - **Request Mapping**: Converts HTTP requests to function invocations
 
-### Streams Module
+### Streams Worker
 
 Manages real-time state and WebSocket connections:
 
@@ -134,7 +134,7 @@ Manages real-time state and WebSocket connections:
 - **Real-time Sync**: WebSocket-based state synchronization
 - **Authentication**: Optional auth function for connection validation
 
-### Queue Module
+### Queue Worker
 
 Implements publish-subscribe pattern:
 
@@ -142,7 +142,7 @@ Implements publish-subscribe pattern:
 - **Topics**: Subscribe to specific event topics
 - **Async Processing**: Non-blocking event distribution
 
-### Cron Module
+### Cron Worker
 
 Handles distributed scheduling:
 
@@ -306,11 +306,11 @@ graph TD
 
 ## Extension Points
 
-### Custom Modules
+### Custom Workers
 
-Build custom core modules by implementing the `CoreModule` trait:
+Build custom core workers by implementing the `CoreWorker` trait:
 
-1. Define module configuration
+1. Define worker configuration
 2. Implement initialization logic
 3. Register trigger types
 4. Expose functions to workers
