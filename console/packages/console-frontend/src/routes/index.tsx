@@ -39,7 +39,7 @@ export const Route = createFileRoute('/')({
       queryClient.prefetchQuery(streamsQuery),
       queryClient.prefetchQuery(metricsHistoryQuery(100)),
     ])
-    throw redirect({ to: '/functions' })
+    throw redirect({ to: '/workers' })
   },
 })
 

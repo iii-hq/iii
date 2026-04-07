@@ -6,6 +6,7 @@ import {
   GitBranch,
   Layers,
   ListOrdered,
+  Monitor,
   Server,
   Settings,
   Terminal,
@@ -23,21 +24,22 @@ import {
 } from '@/components/ui/command'
 
 const PAGES = [
-  { name: 'Functions', href: '/functions', icon: Server, shortcut: '⌘1' },
-  { name: 'Triggers', href: '/triggers', icon: Zap, shortcut: '⌘2' },
-  { name: 'States', href: '/states', icon: Database, shortcut: '⌘3' },
-  { name: 'Streams', href: '/streams', icon: Layers, shortcut: '⌘4' },
-  { name: 'Queues', href: '/queues', icon: ListOrdered, shortcut: '⌘5' },
+  { name: 'Workers', href: '/workers', icon: Monitor, shortcut: '⌘1' },
+  { name: 'Functions', href: '/functions', icon: Server, shortcut: '⌘2' },
+  { name: 'Triggers', href: '/triggers', icon: Zap, shortcut: '⌘3' },
+  { name: 'States', href: '/states', icon: Database, shortcut: '⌘4' },
+  { name: 'Streams', href: '/streams', icon: Layers, shortcut: '⌘5' },
+  { name: 'Queues', href: '/queues', icon: ListOrdered, shortcut: '⌘6' },
   {
     name: 'Dead Letters',
     href: '/queues',
     icon: AlertTriangle,
-    shortcut: '⌘6',
+    shortcut: '⌘7',
     search: { tab: 'dead-letters' as const },
   },
-  { name: 'Traces', href: '/traces', icon: GitBranch, shortcut: '⌘7' },
-  { name: 'Logs', href: '/logs', icon: Terminal, shortcut: '⌘8' },
-  { name: 'Config', href: '/config', icon: Settings, shortcut: '⌘9' },
+  { name: 'Traces', href: '/traces', icon: GitBranch, shortcut: '⌘8' },
+  { name: 'Logs', href: '/logs', icon: Terminal, shortcut: '⌘9' },
+  { name: 'Config', href: '/config', icon: Settings, shortcut: '' },
 ]
 
 interface CommandPaletteProps {
