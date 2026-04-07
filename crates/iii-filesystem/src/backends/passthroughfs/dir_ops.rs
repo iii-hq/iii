@@ -275,7 +275,10 @@ fn read_dir_entries(
     _size: u32,
 ) -> io::Result<Vec<DirEntry<'static>>> {
     // Rewind the directory fd so dup inherits position 0.
-    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+    let ret = unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+    if ret < 0 {
+        return Err(platform::linux_error(io::Error::last_os_error()));
+    }
 
     let dup_fd = unsafe { libc::dup(fd) };
     if dup_fd < 0 {
