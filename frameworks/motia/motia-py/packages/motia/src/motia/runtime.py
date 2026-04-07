@@ -438,7 +438,11 @@ class Motia:
             self._register_condition(trigger, condition_path, "durable:subscriber", index)
             trigger_config[CONDITION_PATH_KEY] = condition_path
 
-        get_instance().register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": trigger_config})
+        get_instance().register_trigger({
+            "type": "durable:subscriber",
+            "function_id": function_id,
+            "config": trigger_config,
+        })
 
     def _register_cron_trigger(
         self,
