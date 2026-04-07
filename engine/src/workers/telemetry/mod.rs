@@ -157,7 +157,7 @@ fn is_iii_builtin_function_id(id: &str) -> bool {
     id.starts_with("engine::")
         || id.starts_with("state::")
         || id.starts_with("stream::")
-        || id == "durable::publish"
+        || id == "iii::durable::publish"
         || id == "publish"
         || id.starts_with("bridge.")
         || id.starts_with("iii::")
@@ -1778,7 +1778,7 @@ mod tests {
         assert!(is_iii_builtin_function_id("engine::x"));
         assert!(is_iii_builtin_function_id("state::get"));
         assert!(is_iii_builtin_function_id("stream::list"));
-        assert!(is_iii_builtin_function_id("durable::publish"));
+        assert!(is_iii_builtin_function_id("iii::durable::publish"));
         assert!(is_iii_builtin_function_id("publish"));
         assert!(is_iii_builtin_function_id("bridge.invoke"));
         assert!(is_iii_builtin_function_id("iii::queue::redrive"));

@@ -142,10 +142,10 @@ Both `notify::email` and `audit::log` are now subscribed to `order.created`. Eve
 
 ### 2. Publish events to the topic
 
-From any function, publish a message using the builtin `durable::publish` function. The engine fans it out to every subscribed function.
+From any function, publish a message using the builtin `iii::durable::publish` function. The engine fans it out to every subscribed function.
 
 <Info>
-  `durable:subscriber` uses one colon (`:`) in the previous step's code because it is a trigger type, while the `durable::publish` below uses two colons (`::`) because it is a function id.
+  `durable:subscriber` uses one colon (`:`) in the previous step's code because it is a trigger type, while the `iii::durable::publish` below uses two colons (`::`) because it is a function id.
 </Info>
 
 
@@ -153,7 +153,7 @@ From any function, publish a message using the builtin `durable::publish` functi
 <Tab title="Node / TypeScript">
 ```typescript
 await iii.trigger({
-  function_id: 'durable::publish',
+  function_id: 'iii::durable::publish',
   payload: {
     topic: 'order.created',
     data: { orderId: 'ord_789', userId: 'usr_42', total: 149.99 },
@@ -164,7 +164,7 @@ await iii.trigger({
 <Tab title="Python">
 ```python
 iii.trigger({
-    "function_id": "durable::publish",
+    "function_id": "iii::durable::publish",
     "payload": {
         "topic": "order.created",
         "data": {"orderId": "ord_789", "userId": "usr_42", "total": 149.99},
@@ -178,7 +178,7 @@ use iii_sdk::{TriggerRequest};
 use serde_json::json;
 
 iii.trigger(TriggerRequest {
-    function_id: "durable::publish".into(),
+    function_id: "iii::durable::publish".into(),
     payload: json!({
         "topic": "order.created",
         "data": { "orderId": "ord_789", "userId": "usr_42", "total": 149.99 },
@@ -359,7 +359,7 @@ iii.registerFunction('orders::create', async (req) => {
   const order = { id: crypto.randomUUID(), ...req.body }
 
   await iii.trigger({
-    function_id: 'durable::publish',
+    function_id: 'iii::durable::publish',
     payload: { topic: 'order.created', data: order },
   })
 
@@ -407,7 +407,7 @@ def create_order(req):
     order = {"id": str(uuid.uuid4()), **req.get("body", {})}
 
     iii.trigger({
-        "function_id": "durable::publish",
+        "function_id": "iii::durable::publish",
         "payload": {"topic": "order.created", "data": order},
     })
 
@@ -469,7 +469,7 @@ iii.register_function(RegisterFunction::new_async("orders::create", move |req: V
         let order_id = uuid::Uuid::new_v4().to_string();
 
         iii.trigger(TriggerRequest {
-            function_id: "durable::publish".into(),
+            function_id: "iii::durable::publish".into(),
             payload: json!({ "topic": "order.created", "data": { "id": order_id, "items": req["body"]["items"] } }),
             action: None,
             timeout_ms: None,

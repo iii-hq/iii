@@ -617,11 +617,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 {/* TODO: Update this, enqueue is its entirely own thing */}
 
-{/* <Info title="Queue uses durable::publish">
-  Queue messaging uses `durable::publish` — a built-in function, no trigger registration needed:
-  Node `trigger({ function_id: 'durable::publish', payload: { topic: 'user.created', data: {...} } })`,
-  Python `trigger({'function_id': 'durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
-  Rust `trigger(TriggerRequest::new("durable::publish", json!({"topic": "user.created", "data": {...}})))`.
+{/* <Info title="Queue uses iii::durable::publish">
+  Queue messaging uses `iii::durable::publish` — a built-in function, no trigger registration needed:
+  Node `trigger({ function_id: 'iii::durable::publish', payload: { topic: 'user.created', data: {...} } })`,
+  Python `trigger({'function_id': 'iii::durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
+  Rust `trigger(TriggerRequest::new("iii::durable::publish", json!({"topic": "user.created", "data": {...}})))`.
   See the [Queue module](/modules/module-queue) for details.
 </Info> */}
 
@@ -826,7 +826,7 @@ Durable message queue for async processing.
 
 | Function | Purpose | Parameters |
 |----------|---------|------------|
-| `durable::publish` | Publish a message | `topic`, `data` |
+| `iii::durable::publish` | Publish a message | `topic`, `data` |
 
 ### PubSub
 

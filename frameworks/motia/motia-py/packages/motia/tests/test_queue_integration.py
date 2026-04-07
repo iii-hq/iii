@@ -24,7 +24,7 @@ def test_enqueue_delivers_message_to_subscribed_handler(bridge):
     flush_bridge_queue(bridge)
     time.sleep(0.5)
 
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": {"order": "abc"}}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"order": "abc"}}})
     time.sleep(1.5)
 
     assert received == [{"order": "abc"}]
@@ -46,7 +46,7 @@ def test_handler_receives_exact_data_payload_from_enqueue(bridge):
     flush_bridge_queue(bridge)
     time.sleep(0.5)
 
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": payload}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
     time.sleep(1.5)
 
     assert received == [payload]
@@ -80,7 +80,7 @@ def test_subscription_with_queue_config_receives_messages(bridge):
     flush_bridge_queue(bridge)
     time.sleep(0.5)
 
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": {"infra": True}}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"infra": True}}})
     time.sleep(1.5)
 
     assert received == [{"infra": True}]
@@ -108,8 +108,8 @@ def test_multiple_subscribers_on_same_topic_each_receives_all(bridge):
     flush_bridge_queue(bridge)
     time.sleep(0.5)
 
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": {"msg": 1}}})
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": {"msg": 2}}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"msg": 1}}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"msg": 2}}})
     time.sleep(2.0)
 
     assert len(received1) == 2
@@ -150,8 +150,8 @@ def test_condition_function_filters_messages(bridge):
     wait_for_registration(bridge, function_id)
     wait_for_registration(bridge, condition_path)
 
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": {"accept": False}}})
-    bridge.trigger({"function_id": "durable::publish", "payload": {"topic": topic, "data": {"accept": True}}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"accept": False}}})
+    bridge.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"accept": True}}})
     time.sleep(2.0)
 
     assert len(handler_calls) == 1

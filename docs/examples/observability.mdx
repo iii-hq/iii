@@ -8,8 +8,8 @@ Every iii function invocation receives a `traceId` (via `new Logger()`) that is 
 ```mermaid
 graph LR
     Client -->|"POST /orders"| CreateOrder
-    CreateOrder -->|"durable::publish + traceId"| ProcessOrder
-    ProcessOrder -->|"durable::publish + traceId"| NotifyOrder
+    CreateOrder -->|"iii::durable::publish + traceId"| ProcessOrder
+    ProcessOrder -->|"iii::durable::publish + traceId"| NotifyOrder
     CreateOrder & ProcessOrder & NotifyOrder -->|"structured logs"| Observability
 ```
 
@@ -60,7 +60,7 @@ iii.registerFunction(
     })
 
     await iii.trigger({
-      function_id: 'durable::publish',
+      function_id: 'iii::durable::publish',
       payload: { topic: 'order.process', data: { orderId, amount, customerId, items } },
       action: TriggerAction.Void(),
     })
@@ -121,7 +121,7 @@ def create_order(data) -> ApiResponse:
     })
 
     iii.trigger({
-        "function_id": "durable::publish",
+        "function_id": "iii::durable::publish",
         "payload": {"topic": "order.process", "data": {"orderId": order_id, "amount": amount, "customerId": customer_id}},
         "action": TriggerAction.Void(),
     })
@@ -180,7 +180,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.create".into()),
         },
     })).action(TriggerAction::void())).await?;
 
-    iii.trigger(TriggerRequest::new("durable::publish", json!({
+    iii.trigger(TriggerRequest::new("iii::durable::publish", json!({
         "topic": "order.process",
         "data": { "orderId": order_id, "amount": amount, "customerId": customer_id },
     })).action(TriggerAction::void())).await?;
@@ -222,7 +222,7 @@ iii.registerFunction(
     })
 
     await iii.trigger({
-      function_id: 'durable::publish',
+      function_id: 'iii::durable::publish',
       payload: { topic: 'order.notify', data: { orderId, customerId, amount, status: 'processed' } },
       action: TriggerAction.Void(),
     })
@@ -270,7 +270,7 @@ def process_order(data: dict) -> None:
     })
 
     iii.trigger({
-        "function_id": "durable::publish",
+        "function_id": "iii::durable::publish",
         "payload": {"topic": "order.notify", "data": {"orderId": order_id, "customerId": customer_id, "amount": amount, "status": "processed"}},
         "action": TriggerAction.Void(),
     })
@@ -298,7 +298,7 @@ iii.register_function((RegisterFunctionMessage::with_id("order.process".into()),
         "traceId": current_trace_id(),
     })));
 
-    iii.trigger(TriggerRequest::new("durable::publish", json!({
+    iii.trigger(TriggerRequest::new("iii::durable::publish", json!({
         "topic": "order.notify",
         "data": { "orderId": order_id, "customerId": input["customerId"] },
     })).action(TriggerAction::void())).await?;

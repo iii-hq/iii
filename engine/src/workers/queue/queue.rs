@@ -157,7 +157,7 @@ impl QueueWorker {
         self.adapter.dlq_messages(&namespaced, count).await
     }
 
-    #[function(id = "durable::publish", description = "Enqueue a message")]
+    #[function(id = "iii::durable::publish", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let event_data = input.data;

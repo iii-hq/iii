@@ -83,7 +83,7 @@ impl BridgeAdapter {
         })
     }
 
-    const ENQUEUE_FUNCTION_ID: &'static str = "durable::publish";
+    const ENQUEUE_FUNCTION_ID: &'static str = "iii::durable::publish";
 
     /// Builds the JSON payload for enqueuing a message via the bridge.
     ///
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_enqueue_uses_enqueue_function_id() {
-        assert_eq!(BridgeAdapter::ENQUEUE_FUNCTION_ID, "durable::publish");
+        assert_eq!(BridgeAdapter::ENQUEUE_FUNCTION_ID, "iii::durable::publish");
     }
 
     #[test]

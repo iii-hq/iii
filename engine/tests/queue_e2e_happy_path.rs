@@ -98,8 +98,8 @@ async fn condition_based_filtering_routes_matching_messages_only() {
     let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
-    // register_functions must be called to make the "durable::publish" service function
-    // available on the engine (topic-based enqueue path uses engine.call("durable::publish", ...))
+    // register_functions must be called to make the "iii::durable::publish" service function
+    // available on the engine (topic-based enqueue path uses engine.call("iii::durable::publish", ...))
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 

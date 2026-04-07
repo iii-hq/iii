@@ -54,7 +54,7 @@ def test_standalone_enqueue_calls_bridge(mock_bridge: MagicMock) -> None:
         enqueue({"topic": "orders.processed", "data": {"order_id": "123"}})
 
     mock_bridge.trigger.assert_called_once_with(
-        {"function_id": "durable::publish", "payload": {"topic": "orders.processed", "data": {"order_id": "123"}}},
+        {"function_id": "iii::durable::publish", "payload": {"topic": "orders.processed", "data": {"order_id": "123"}}},
     )
 
 
