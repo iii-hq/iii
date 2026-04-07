@@ -326,11 +326,14 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             }
         }
 
+        let workdir =
+            super::oci::read_oci_workdir(&worker_rootfs).unwrap_or_else(|| "/".to_string());
+
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
         cmd.arg("--rootfs").arg(&worker_rootfs);
         cmd.arg("--exec").arg(&exec_path);
-        cmd.arg("--workdir").arg("/");
+        cmd.arg("--workdir").arg(&workdir);
         let vcpus = spec
             .cpu_limit
             .as_deref()

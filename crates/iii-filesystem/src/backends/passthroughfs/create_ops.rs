@@ -82,7 +82,7 @@ pub(crate) fn do_create(
     let data = Arc::new(HandleData {
         file: RwLock::new(file),
     });
-    fs.handles.write().unwrap().insert(handle, data);
+    fs.handles.insert(handle, data);
 
     Ok((entry, Some(handle), fs.cache_open_options()))
 }

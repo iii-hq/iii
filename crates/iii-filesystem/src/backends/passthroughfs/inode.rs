@@ -585,12 +585,11 @@ pub(crate) fn stat_inode(
     }
 
     // If a handle is provided, fstat the handle's fd directly.
-    if let Some(h) = handle {
-        let handles = fs.handles.read().unwrap();
-        if let Some(hdata) = handles.get(&h) {
-            let file = hdata.file.read().unwrap();
-            return platform::fstat(file.as_raw_fd());
-        }
+    if let Some(h) = handle
+        && let Some(hdata) = fs.handles.get(&h)
+    {
+        let file = hdata.file.read().unwrap();
+        return platform::fstat(file.as_raw_fd());
     }
 
     #[cfg(target_os = "linux")]

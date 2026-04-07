@@ -9,10 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{
-    EngineBuilder, logging,
-    workers::{config::EngineConfig, worker::DEFAULT_PORT},
-};
+use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -155,18 +152,7 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
     }
 
     let engine = EngineBuilder::new().with_config(config).build().await?;
-
-    // Start managed workers in background so engine boot is not blocked by image pulls.
-    let engine_url = format!("ws://localhost:{}", DEFAULT_PORT);
-    tokio::spawn(async move {
-        cli::managed_shim::start_managed_workers(&engine_url).await;
-    });
-
     engine.serve().await?;
-
-    // Engine shutdown complete (modules destroyed). Stop managed worker VMs.
-    cli::managed_shim::stop_managed_workers().await;
-
     Ok(())
 }
 

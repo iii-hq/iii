@@ -8,17 +8,18 @@
 //! ```
 
 use std::{
-    collections::BTreeMap,
     fs::File,
     io,
     os::fd::FromRawFd,
     path::PathBuf,
     sync::{
-        RwLock,
+        Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64},
     },
     time::Duration,
 };
+
+use dashmap::DashMap;
 
 use super::{CachePolicy, PassthroughFs};
 use crate::backends::shared::{init_binary, inode_table::MultikeyBTreeMap, platform};
@@ -143,10 +144,11 @@ impl PassthroughFsBuilder {
             root_fd,
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             next_inode: AtomicU64::new(start_inode),
-            handles: RwLock::new(BTreeMap::new()),
+            handles: DashMap::new(),
             next_handle: AtomicU64::new(start_handle),
             writeback: AtomicBool::new(false),
             init_file,
+            leaked_readdir_bufs: Mutex::new(Vec::new()),
             #[cfg(target_os = "linux")]
             has_openat2,
             #[cfg(target_os = "linux")]

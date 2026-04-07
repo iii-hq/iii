@@ -187,9 +187,35 @@ pub fn extract_layer_with_limits(
     Ok(())
 }
 
+/// Collect registry hosts that should use plain HTTP instead of HTTPS.
+/// Reads from the `III_INSECURE_REGISTRIES` env var (comma-separated).
+/// `localhost` and `127.0.0.1` (any port) are always treated as insecure.
+fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
+    let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+
+    let host = reference.registry();
+    if let Some(hostname) = host.split(':').next() {
+        if hostname == "localhost" || hostname == "127.0.0.1" {
+            if !registries.contains(&host.to_string()) {
+                registries.push(host.to_string());
+            }
+        }
+    }
+
+    if let Ok(extra) = std::env::var("III_INSECURE_REGISTRIES") {
+        for r in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !registries.contains(&r.to_string()) {
+                registries.push(r.to_string());
+            }
+        }
+    }
+
+    registries
+}
+
 /// Pull an OCI image and extract it as a rootfs directory.
 pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
-    use oci_client::client::ClientConfig;
+    use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
 
@@ -210,7 +236,15 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     let platforms_capture = Arc::clone(&available_platforms);
     let target_arch_str = host_arch.to_string();
 
+    let http_exceptions = insecure_registries(&reference);
+    let protocol = if http_exceptions.is_empty() {
+        ClientProtocol::Https
+    } else {
+        ClientProtocol::HttpsExcept(http_exceptions)
+    };
+
     let config = ClientConfig {
+        protocol,
         platform_resolver: Some(Box::new(move |manifests| {
             let mut platforms = platforms_capture.lock().unwrap();
             for m in manifests {
@@ -379,6 +413,18 @@ pub fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<Stri
     } else {
         None
     }
+}
+
+/// Read WorkingDir from the saved OCI image config.
+pub fn read_oci_workdir(rootfs: &std::path::Path) -> Option<String> {
+    let config_path = rootfs.join(".oci-config.json");
+    let data = std::fs::read_to_string(&config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+    json.get("config")?
+        .get("WorkingDir")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 /// Read environment variables from the saved OCI image config.
