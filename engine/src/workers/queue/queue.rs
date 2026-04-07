@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     pin::Pin,
     sync::{Arc, RwLock},
 };
@@ -434,16 +434,29 @@ impl QueueWorker {
         match self.adapter.list_topics().await {
             Ok(topics) => {
                 let mut dlq_topics = Vec::new();
+                let mut seen = HashSet::new();
                 for topic in &topics {
+                    let (display_name, broker_type) =
+                        if let Some(stripped) = topic.name.strip_prefix("__fn_queue::") {
+                            (stripped.to_string(), "function_queue".to_string())
+                        } else {
+                            (topic.name.clone(), topic.broker_type.clone())
+                        };
+                    if !seen.insert(display_name.clone()) {
+                        continue;
+                    }
                     let dlq_count = self.adapter.dlq_count(&topic.name).await.unwrap_or(0);
                     dlq_topics.push(json!({
-                        "topic": topic.name,
-                        "broker_type": topic.broker_type,
+                        "topic": display_name,
+                        "broker_type": broker_type,
                         "message_count": dlq_count,
                     }));
                 }
                 // Also include function queue DLQs
                 for name in self._config.queue_configs.keys() {
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
                     let namespaced = format!("__fn_queue::{}", name);
                     let dlq_count = self.adapter.dlq_count(&namespaced).await.unwrap_or(0);
                     dlq_topics.push(json!({
@@ -2305,6 +2318,26 @@ mod tests {
                 // Should include event topics + function queue topics
                 let has_events = topics.iter().any(|t| t["topic"] == "events.user");
                 assert!(has_events, "Should include events.user topic");
+            }
+            _ => panic!("Expected Success with DLQ topics"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_dlq_topics_deduplicates_function_queues_reported_by_adapter() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        *adapter.list_topics_result.lock().await = vec![TopicInfo {
+            name: "__fn_queue::default".to_string(),
+            broker_type: "builtin".to_string(),
+            subscriber_count: 0,
+        }];
+
+        let result = module.console_dlq_topics(json!({})).await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                let topics: Vec<Value> = serde_json::from_value(val).unwrap();
+                let default_count = topics.iter().filter(|t| t["topic"] == "default").count();
+                assert_eq!(default_count, 1, "function queue topics should not be duplicated");
             }
             _ => panic!("Expected Success with DLQ topics"),
         }
