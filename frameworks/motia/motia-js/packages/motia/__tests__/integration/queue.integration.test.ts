@@ -24,7 +24,7 @@ describe('queue integration', () => {
       received = data
     })
     sdk.registerTrigger({
-      type: 'queue',
+      type: 'durable:subscriber',
       function_id: functionId,
       config: { topic },
     })
@@ -47,7 +47,7 @@ describe('queue integration', () => {
       received = data
     })
     sdk.registerTrigger({
-      type: 'queue',
+      type: 'durable:subscriber',
       function_id: functionId,
       config: { topic },
     })
@@ -69,7 +69,7 @@ describe('queue integration', () => {
       received = data
     })
     sdk.registerTrigger({
-      type: 'queue',
+      type: 'durable:subscriber',
       function_id: functionId,
       config: {
         topic,
@@ -103,12 +103,12 @@ describe('queue integration', () => {
       received2.push(data)
     })
     sdk.registerTrigger({
-      type: 'queue',
+      type: 'durable:subscriber',
       function_id: functionId1,
       config: { topic },
     })
     sdk.registerTrigger({
-      type: 'queue',
+      type: 'durable:subscriber',
       function_id: functionId2,
       config: { topic },
     })
@@ -141,7 +141,7 @@ describe('queue integration', () => {
       return input?.accept === true
     })
     sdk.registerTrigger({
-      type: 'queue',
+      type: 'durable:subscriber',
       function_id: functionId,
       config: {
         topic,
