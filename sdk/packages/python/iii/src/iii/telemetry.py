@@ -209,13 +209,13 @@ def _enable_fetch_instrumentation() -> None:
     """
     global _fetch_patched, _original_opener_open
 
-    from opentelemetry import context as otel_ctx
-    from opentelemetry.propagate import inject as otel_inject
-    from opentelemetry.trace import SpanKind, StatusCode
-
     import socket
     import urllib.request
     from urllib.parse import urlparse
+
+    from opentelemetry import context as otel_ctx
+    from opentelemetry.propagate import inject as otel_inject
+    from opentelemetry.trace import SpanKind, StatusCode
 
     _original_opener_open = urllib.request.OpenerDirector.open
     original = _original_opener_open
