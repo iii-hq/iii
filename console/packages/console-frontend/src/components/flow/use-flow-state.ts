@@ -95,8 +95,6 @@ export function useFlowState(flow: FlowResponse, flowConfig: FlowConfigResponse)
     if (syncKey === lastSyncKeyRef.current) return
     lastSyncKeyRef.current = syncKey
 
-
-
     setNodes(buildNodes(flow, flowConfig))
     setEdges(buildEdges(flow))
   }, [flow, flowConfig, configStr, setNodes, setEdges])
