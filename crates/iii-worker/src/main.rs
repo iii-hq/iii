@@ -25,7 +25,11 @@ async fn main() -> anyhow::Result<()> {
                 let mut fail_count = 0;
                 for name in &args.worker_names {
                     let result = iii_worker::cli::managed::handle_managed_add(
-                        name, false, None, force, args.reset_config,
+                        name,
+                        false,
+                        None,
+                        force,
+                        args.reset_config,
                     )
                     .await;
                     if result != 0 {
@@ -44,7 +48,11 @@ async fn main() -> anyhow::Result<()> {
             let mut fail_count = 0;
             for name in &args.worker_names {
                 let result = iii_worker::cli::managed::handle_managed_add(
-                    name, false, None, true, args.reset_config,
+                    name,
+                    false,
+                    None,
+                    true,
+                    args.reset_config,
                 )
                 .await;
                 if result != 0 {

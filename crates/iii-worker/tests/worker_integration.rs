@@ -57,7 +57,10 @@ fn add_subcommand_fields() {
     let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
     match cli.command {
         Commands::Add { args, force } => {
-            assert_eq!(args.worker_names, vec!["ghcr.io/iii-hq/node:latest".to_string()]);
+            assert_eq!(
+                args.worker_names,
+                vec!["ghcr.io/iii-hq/node:latest".to_string()]
+            );
             assert!(!force);
         }
         _ => panic!("expected Add"),
@@ -248,7 +251,7 @@ fn add_force_flag() {
     let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force"]);
     match cli.command {
         Commands::Add { args, force } => {
-            assert_eq!(args.worker_name, "pdfkit");
+            assert_eq!(args.worker_names, vec!["pdfkit"]);
             assert!(force);
             assert!(!args.reset_config);
         }
@@ -285,8 +288,7 @@ fn reinstall_subcommand() {
     let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit@1.2.0"]);
     match cli.command {
         Commands::Reinstall { args } => {
-            assert_eq!(args.worker_name, "pdfkit@1.2.0");
-            assert_eq!(args.runtime, "libkrun");
+            assert_eq!(args.worker_names, vec!["pdfkit@1.2.0"]);
             assert!(!args.reset_config);
         }
         _ => panic!("expected Reinstall"),

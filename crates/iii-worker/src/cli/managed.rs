@@ -236,11 +236,7 @@ pub async fn handle_managed_add(
         if reset_config {
             match super::config_file::remove_worker(&plain_name) {
                 Ok(()) => {
-                    eprintln!(
-                        "  {} Config for {} reset",
-                        "✓".green(),
-                        plain_name.bold(),
-                    );
+                    eprintln!("  {} Config for {} reset", "✓".green(), plain_name.bold(),);
                 }
                 Err(e) => {
                     eprintln!(
