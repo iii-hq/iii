@@ -3,7 +3,7 @@ title: "Changelog"
 description: "Product updates and announcements for iii."
 ---
 
-<Update label="0.11.0" description="April 2026">
+<Update label="0.11.0 (next)" description="April 2026">
   ## Worker RBAC
 
   The **iii-worker-manager** now supports role-based access control. Configure auth functions that validate WebSocket upgrade requests, attach per-session allow/deny lists for functions, control trigger registration, and auto-prefix function IDs for namespace isolation. An optional middleware function lets you intercept every invocation for audit logging, rate limiting, or payload enrichment.
@@ -21,6 +21,30 @@ description: "Product updates and announcements for iii."
   Your browser is now a first-class iii worker. The new `iii-browser-sdk` package connects to the engine over a single WebSocket and exposes the same `ISdk` interface as the Node SDK — `registerFunction`, `trigger`, `registerTrigger`, and `onFunctionsAvailable` all work identically. Build real-time dashboards, collaborative apps, and bi-directional frontends without REST endpoints or polling.
 
   [Use iii in the browser &rarr;](/how-to/use-iii-in-the-browser)
+
+  ## Sandbox and Container Workers
+
+  Workers can now run as **container workers** or **sandbox workers**. Container workers are OCI images managed through the `iii worker` CLI — add an image, configure it in `config.yaml`, and the engine pulls, extracts, and runs it in an isolated sandbox. For local development, `iii worker dev` boots your project inside a lightweight microVM with auto-detected runtimes, dependency caching, and fast restarts — no Dockerfiles needed. Requires macOS Apple Silicon or Linux with KVM.
+
+  [Managing Container Workers &rarr;](/how-to/managing-container-workers) &middot; [Developing Sandbox Workers &rarr;](/how-to/developing-sandbox-workers)
+
+  ## Topic-based fan-out queues
+
+  **Breaking.** The topic-based queue API has been renamed. The trigger type changes from `queue` to `durable:subscriber`, and the publish function changes from `enqueue` to `iii::durable::publish`:
+
+  ```typescript
+  // Before
+  registerTrigger({ type: 'queue', function_id: 'my::handler', config: { topic: 'order.created' } })
+  trigger({ function_id: 'enqueue', payload: { topic: 'order.created', data } })
+
+  // After
+  registerTrigger({ type: 'durable:subscriber', function_id: 'my::handler', config: { topic: 'order.created' } })
+  trigger({ function_id: 'iii::durable::publish', payload: { topic: 'order.created', data } })
+  ```
+
+  Messages now fan out to every subscriber, with each function processing its copy independently and retrying on its own schedule. If a function has multiple replicas, they compete on a shared per-function queue. An optional `condition_function_id` lets you filter messages server-side before they reach the handler.
+
+  [Use topic-based queues &rarr;](/how-to/use-topic-queues)
 
   ## Node SDK: `registerFunction` signature change
 
