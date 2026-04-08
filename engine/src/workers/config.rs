@@ -229,8 +229,8 @@ impl WorkerRegistry {
         }
 
         // 3. Legacy: external worker (iii.toml + iii_workers/)
-        if image.is_none() {
-            if let Some(info) = super::external::resolve_external_module(name) {
+        if image.is_none()
+            && let Some(info) = super::external::resolve_external_module(name) {
                 tracing::info!(
                     "Resolved '{}' as external worker '{}' ({})",
                     name,
@@ -240,7 +240,6 @@ impl WorkerRegistry {
                 let module = super::external::ExternalWorker::new(info, config);
                 return Ok(Box::new(module));
             }
-        }
 
         // 4. Delegate to iii-worker start (handles registry lookup, binary
         //    download, OCI pull, and spawning autonomously)

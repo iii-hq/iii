@@ -70,7 +70,7 @@ pub async fn handle_binary_add(input: &str, _runtime: &str, _address: &str, _por
     eprintln!(
         "  {} Resolved to {} (binary v{})",
         "✓".green(),
-        format!("{}", repo).dimmed(),
+        repo.to_string().dimmed(),
         version
     );
 
@@ -166,8 +166,8 @@ pub async fn handle_managed_add(
     // registry, use the already-fetched entry to avoid a second HTTP roundtrip.
     if !image_or_name.contains('/') && !image_or_name.contains(':') {
         let (name, _) = parse_worker_input(image_or_name);
-        if let Ok(registry) = fetch_registry().await {
-            if let Some(entry) = registry.workers.get(&name) {
+        if let Ok(registry) = fetch_registry().await
+            && let Some(entry) = registry.workers.get(&name) {
                 if matches!(entry.worker_type, Some(WorkerType::Binary)) {
                     return handle_binary_add(image_or_name, _runtime, _address, _port).await;
                 }
@@ -178,7 +178,6 @@ pub async fn handle_managed_add(
                     return handle_oci_pull_and_add(&name, &image_ref).await;
                 }
             }
-        }
     }
 
     eprintln!("  Resolving {}...", image_or_name.bold());
@@ -660,11 +659,10 @@ fn pick_best_logs_dir(candidates: &[std::path::PathBuf]) -> Option<std::path::Pa
             .filter_map(|(_, m)| m.modified().ok())
             .max();
 
-        if let Some(modified) = latest {
-            if best.as_ref().map_or(true, |(_, t)| modified > *t) {
+        if let Some(modified) = latest
+            && best.as_ref().is_none_or(|(_, t)| modified > *t) {
                 best = Some((dir.clone(), modified));
             }
-        }
     }
 
     best.map(|(dir, _)| dir)
@@ -799,8 +797,8 @@ pub async fn handle_managed_logs(
     if has_new_logs {
         let mut found_content = false;
 
-        if let Ok(contents) = std::fs::read_to_string(&stdout_path) {
-            if !contents.is_empty() {
+        if let Ok(contents) = std::fs::read_to_string(&stdout_path)
+            && !contents.is_empty() {
                 found_content = true;
                 let lines: Vec<&str> = contents.lines().collect();
                 let start = if lines.len() > 100 {
@@ -812,10 +810,9 @@ pub async fn handle_managed_logs(
                     println!("{}", line);
                 }
             }
-        }
 
-        if let Ok(contents) = std::fs::read_to_string(&stderr_path) {
-            if !contents.is_empty() {
+        if let Ok(contents) = std::fs::read_to_string(&stderr_path)
+            && !contents.is_empty() {
                 found_content = true;
                 let lines: Vec<&str> = contents.lines().collect();
                 let start = if lines.len() > 100 {
@@ -827,7 +824,6 @@ pub async fn handle_managed_logs(
                     eprintln!("{}", line);
                 }
             }
-        }
 
         if !found_content {
             eprintln!("  No logs available for {}", worker_name.bold());

@@ -695,8 +695,8 @@ impl Engine {
                         return Ok(());
                     }
 
-                    if let Some(middleware_id) = &session.config.middleware_function_id {
-                        if !function_id.starts_with("engine::") {
+                    if let Some(middleware_id) = &session.config.middleware_function_id
+                        && !function_id.starts_with("engine::") {
                             let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
                             let middleware_input = serde_json::json!({
                                 "function_id": function_id,
@@ -735,7 +735,6 @@ impl Engine {
                             });
                             return Ok(());
                         }
-                    }
                 }
 
                 match action {

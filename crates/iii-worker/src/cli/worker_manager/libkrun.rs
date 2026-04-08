@@ -84,7 +84,7 @@ pub async fn run_dev(
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
-            nix::unistd::setsid().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            nix::unistd::setsid().map_err(|e| std::io::Error::other(e))?;
             Ok(())
         });
     }
@@ -131,6 +131,12 @@ pub async fn run_dev(
 use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
 
 pub struct LibkrunAdapter;
+
+impl Default for LibkrunAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LibkrunAdapter {
     pub fn new() -> Self {
@@ -344,7 +350,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         cmd.arg("--ram").arg(
             spec.memory_limit
                 .as_deref()
-                .and_then(|m| k8s_mem_to_mib(m))
+                .and_then(k8s_mem_to_mib)
                 .unwrap_or_else(|| "2048".to_string()),
         );
 
@@ -389,8 +395,8 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 
     async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<()> {
-        if let Ok(pid) = container_id.parse::<u32>() {
-            if Self::pid_alive(pid) {
+        if let Ok(pid) = container_id.parse::<u32>()
+            && Self::pid_alive(pid) {
                 tracing::info!(pid = pid, "sending SIGTERM to libkrun VM");
                 unsafe {
                     nix::libc::kill(pid as i32, nix::libc::SIGTERM);
@@ -419,7 +425,6 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
                     }
                 }
             }
-        }
         Ok(())
     }
 
@@ -446,13 +451,12 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         if let Ok(entries) = std::fs::read_dir(&managed_dir) {
             for entry in entries.flatten() {
                 let pid_file = entry.path().join("vm.pid");
-                if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-                    if pid_str.trim() == container_id {
+                if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+                    && pid_str.trim() == container_id {
                         let _ = std::fs::remove_dir_all(entry.path());
                         tracing::info!(container_id = %container_id, "removed libkrun worker directory");
                         return Ok(());
                     }
-                }
             }
         }
         Ok(())
