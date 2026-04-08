@@ -4,13 +4,14 @@
 //! the crate library, ensuring any CLI changes are caught at compile time.
 
 use clap::Parser;
-use iii_worker::{Cli, Commands, DEFAULT_PORT};
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 use iii_worker::VmBootArgs;
+use iii_worker::{Cli, Commands, DEFAULT_PORT};
 
 /// All 10 subcommands parse without error.
 #[test]
 fn cli_parses_all_subcommands() {
+    #[allow(unused_mut)]
     let mut cases: Vec<(&[&str], fn(Commands))> = vec![
         (&["iii-worker", "add", "pdfkit@1.0.0"], |c| {
             assert!(matches!(c, Commands::Add { .. }))

@@ -188,10 +188,15 @@ async fn run_dev_worker(
 ) -> i32 {
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     if runtime == "libkrun" {
-        return run_dev_worker_libkrun(_sb_name, _project_str, _project, _engine_url, _rebuild).await;
+        return run_dev_worker_libkrun(_sb_name, _project_str, _project, _engine_url, _rebuild)
+            .await;
     }
 
-    eprintln!("{} Unknown or unsupported runtime: {}", "error:".red(), runtime);
+    eprintln!(
+        "{} Unknown or unsupported runtime: {}",
+        "error:".red(),
+        runtime
+    );
     1
 }
 
@@ -260,8 +265,7 @@ async fn run_dev_worker_libkrun(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ =
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
     }
 
     let workspace = dev_dir.join("workspace");
