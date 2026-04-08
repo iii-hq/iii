@@ -15,6 +15,5 @@ pub mod managed;
 pub mod project;
 pub mod registry;
 pub mod rootfs;
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub mod vm_boot;
 pub mod worker_manager;

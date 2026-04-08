@@ -10,7 +10,6 @@ use colored::Colorize;
 use std::collections::HashMap;
 
 use super::project::{ProjectInfo, WORKER_MANIFEST, load_project_info};
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 use super::rootfs::clone_rootfs;
 
 async fn detect_lan_ip() -> Option<String> {
@@ -84,7 +83,6 @@ pub async fn handle_worker_dev(
         }
     };
 
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
     }
@@ -94,8 +92,7 @@ pub async fn handle_worker_dev(
         None => {
             eprintln!(
                 "{} No dev runtime available.\n  \
-                 On Linux: rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/\n  \
-                 On macOS/musl: VM sandbox is not yet supported on this platform.",
+                 Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/",
                 "error:".red()
             );
             return 1;
@@ -171,8 +168,10 @@ async fn detect_dev_runtime(explicit: Option<&str>) -> Option<String> {
         return Some(rt.to_string());
     }
 
-    if super::worker_manager::sandbox_available() {
-        return Some("libkrun".to_string());
+    {
+        if super::worker_manager::libkrun::libkrun_available() {
+            return Some("libkrun".to_string());
+        }
     }
 
     None
@@ -180,145 +179,132 @@ async fn detect_dev_runtime(explicit: Option<&str>) -> Option<String> {
 
 async fn run_dev_worker(
     runtime: &str,
-    _sb_name: &str,
-    _project_str: &str,
-    _project: &ProjectInfo,
-    _engine_url: &str,
-    _rebuild: bool,
-) -> i32 {
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    if runtime == "libkrun" {
-        return run_dev_worker_libkrun(_sb_name, _project_str, _project, _engine_url, _rebuild)
-            .await;
-    }
-
-    eprintln!(
-        "{} Unknown or unsupported runtime: {}",
-        "error:".red(),
-        runtime
-    );
-    1
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-async fn run_dev_worker_libkrun(
     sb_name: &str,
     project_str: &str,
     project: &ProjectInfo,
     engine_url: &str,
     rebuild: bool,
 ) -> i32 {
-    let language = project.language.as_deref().unwrap_or("typescript");
-    let mut env = build_dev_env(engine_url, &project.env);
+    match runtime {
+        "libkrun" => {
+            let language = project.language.as_deref().unwrap_or("typescript");
+            let mut env = build_dev_env(engine_url, &project.env);
 
-    let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
+            let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} {}", "error:".red(), e);
+                    return 1;
+                }
+            };
+
+            let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
+            for (key, value) in oci_env {
+                env.entry(key).or_insert(value);
+            }
+
+            let dev_dir = match dirs::home_dir() {
+                Some(h) => h.join(".iii").join("dev").join(sb_name),
+                None => {
+                    eprintln!("{} Cannot determine home directory", "error:".red());
+                    return 1;
+                }
+            };
+            let prepared_marker = dev_dir.join("var").join(".iii-prepared");
+
+            if rebuild && dev_dir.exists() {
+                eprintln!("  Rebuilding: clearing cached sandbox...");
+                let _ = std::fs::remove_dir_all(&dev_dir);
+            }
+
+            if !dev_dir.exists() {
+                eprintln!("  Preparing sandbox...");
+                if let Err(e) = clone_rootfs(&base_rootfs, &dev_dir) {
+                    eprintln!("{} Failed to create project rootfs: {}", "error:".red(), e);
+                    return 1;
+                }
+            }
+
+            let is_prepared = prepared_marker.exists();
+            if is_prepared {
+                eprintln!(
+                    "  {} Using cached deps {}",
+                    "✓".green(),
+                    "(use --rebuild to reinstall)".dimmed()
+                );
+            }
+
+            let script = build_libkrun_dev_script(project, is_prepared);
+
+            let script_path = dev_dir.join("tmp").join("iii-dev-run.sh");
+            if let Err(e) = std::fs::write(&script_path, &script) {
+                eprintln!("{} Failed to write dev script: {}", "error:".red(), e);
+                return 1;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+            }
+
+            let workspace = dev_dir.join("workspace");
+            std::fs::create_dir_all(&workspace).ok();
+            if let Err(e) = copy_dir_contents(std::path::Path::new(project_str), &workspace) {
+                eprintln!("{} Failed to copy project to rootfs: {}", "error:".red(), e);
+                return 1;
+            }
+
+            let init_path = match super::firmware::download::ensure_init_binary().await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} Failed to provision iii-init: {}", "error:".red(), e);
+                    return 1;
+                }
+            };
+
+            if !iii_filesystem::init::has_init() {
+                let dest = dev_dir.join("init.krun");
+                if let Err(e) = std::fs::copy(&init_path, &dest) {
+                    eprintln!(
+                        "{} Failed to copy iii-init to rootfs: {}",
+                        "error:".red(),
+                        e
+                    );
+                    return 1;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+
+            let exec_path = "/bin/sh";
+            let args = vec![
+                "-c".to_string(),
+                "cd /workspace && exec bash /tmp/iii-dev-run.sh".to_string(),
+            ];
+            let manifest_path = std::path::Path::new(project_str).join(WORKER_MANIFEST);
+            let (vcpus, ram) = parse_manifest_resources(&manifest_path);
+
+            super::worker_manager::libkrun::run_dev(
+                language,
+                project_str,
+                exec_path,
+                &args,
+                env,
+                vcpus,
+                ram,
+                dev_dir,
+            )
+            .await
         }
-    };
-
-    let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
-    for (key, value) in oci_env {
-        env.entry(key).or_insert(value);
-    }
-
-    let dev_dir = match dirs::home_dir() {
-        Some(h) => h.join(".iii").join("dev").join(sb_name),
-        None => {
-            eprintln!("{} Cannot determine home directory", "error:".red());
-            return 1;
-        }
-    };
-    let prepared_marker = dev_dir.join("var").join(".iii-prepared");
-
-    if rebuild && dev_dir.exists() {
-        eprintln!("  Rebuilding: clearing cached sandbox...");
-        let _ = std::fs::remove_dir_all(&dev_dir);
-    }
-
-    if !dev_dir.exists() {
-        eprintln!("  Preparing sandbox...");
-        if let Err(e) = clone_rootfs(&base_rootfs, &dev_dir) {
-            eprintln!("{} Failed to create project rootfs: {}", "error:".red(), e);
-            return 1;
+        _ => {
+            eprintln!("{} Unknown runtime: {}", "error:".red(), runtime);
+            1
         }
     }
-
-    let is_prepared = prepared_marker.exists();
-    if is_prepared {
-        eprintln!(
-            "  {} Using cached deps {}",
-            "✓".green(),
-            "(use --rebuild to reinstall)".dimmed()
-        );
-    }
-
-    let script = build_libkrun_dev_script(project, is_prepared);
-
-    let script_path = dev_dir.join("tmp").join("iii-dev-run.sh");
-    if let Err(e) = std::fs::write(&script_path, &script) {
-        eprintln!("{} Failed to write dev script: {}", "error:".red(), e);
-        return 1;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-    }
-
-    let workspace = dev_dir.join("workspace");
-    std::fs::create_dir_all(&workspace).ok();
-    if let Err(e) = copy_dir_contents(std::path::Path::new(project_str), &workspace) {
-        eprintln!("{} Failed to copy project to rootfs: {}", "error:".red(), e);
-        return 1;
-    }
-
-    let init_path = match super::firmware::download::ensure_init_binary().await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{} Failed to provision iii-init: {}", "error:".red(), e);
-            return 1;
-        }
-    };
-
-    if !iii_filesystem::init::has_init() {
-        let dest = dev_dir.join("init.krun");
-        if let Err(e) = std::fs::copy(&init_path, &dest) {
-            eprintln!(
-                "{} Failed to copy iii-init to rootfs: {}",
-                "error:".red(),
-                e
-            );
-            return 1;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
-        }
-    }
-
-    let exec_path = "/bin/sh";
-    let args = vec![
-        "-c".to_string(),
-        "cd /workspace && exec bash /tmp/iii-dev-run.sh".to_string(),
-    ];
-    let manifest_path = std::path::Path::new(project_str).join(WORKER_MANIFEST);
-    let (vcpus, ram) = parse_manifest_resources(&manifest_path);
-
-    super::worker_manager::libkrun::run_dev(
-        language,
-        project_str,
-        exec_path,
-        &args,
-        env,
-        vcpus,
-        ram,
-        dev_dir,
-    )
-    .await
 }
 
 pub fn parse_manifest_resources(manifest_path: &std::path::Path) -> (u32, u32) {
@@ -374,7 +360,6 @@ pub fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub fn build_libkrun_dev_script(project: &ProjectInfo, prepared: bool) -> String {
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
@@ -481,7 +466,6 @@ mod tests {
         assert_eq!(url, "ws://localhost:49134");
     }
 
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     #[test]
     fn build_libkrun_dev_script_first_run() {
         let project = ProjectInfo {
@@ -499,7 +483,6 @@ mod tests {
         assert!(script.contains(".iii-prepared"));
     }
 
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     #[test]
     fn build_libkrun_dev_script_prepared() {
         let project = ProjectInfo {
