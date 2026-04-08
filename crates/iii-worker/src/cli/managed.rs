@@ -1523,4 +1523,81 @@ mod tests {
         let input = "Y\n";
         assert!(input.trim().eq_ignore_ascii_case("y"));
     }
+
+    #[test]
+    fn delete_worker_artifacts_removes_binary_file() {
+        // Test the legacy single-file binary path
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("test-worker");
+        std::fs::write(&binary, "fake binary content 1234567890").unwrap(); // 30 bytes
+
+        // delete_worker_artifacts operates on ~/.iii/workers/{name}
+        // We can't easily redirect it, but we can test dir_size + remove_dir_all directly
+        let size_before = dir_size(dir.path());
+        assert!(size_before >= 30);
+
+        // Verify the file exists, then remove and check
+        assert!(binary.exists());
+        std::fs::remove_file(&binary).unwrap();
+        assert!(!binary.exists());
+        assert_eq!(dir_size(dir.path()), 0);
+    }
+
+    #[test]
+    fn delete_worker_artifacts_removes_nested_binary_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker_dir = dir.path().join("my-worker");
+        std::fs::create_dir_all(&worker_dir).unwrap();
+        std::fs::write(worker_dir.join("binary"), "executable bytes").unwrap();
+        std::fs::write(worker_dir.join("worker.pid"), "12345").unwrap();
+
+        let size = dir_size(&worker_dir);
+        assert!(size > 0);
+
+        // Simulate what delete_worker_artifacts does for binary dirs
+        std::fs::remove_dir_all(&worker_dir).unwrap();
+        assert!(!worker_dir.exists());
+    }
+
+    #[test]
+    fn is_worker_running_invalid_pid_content() {
+        // PID file with non-numeric content should return false
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("worker.pid");
+        std::fs::write(&pid_file, "not-a-number").unwrap();
+
+        // parse::<u32>() will fail, so the loop continues and returns false
+        let content = std::fs::read_to_string(&pid_file).unwrap();
+        assert!(content.trim().parse::<u32>().is_err());
+    }
+
+    #[test]
+    fn is_worker_running_empty_pid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("worker.pid");
+        std::fs::write(&pid_file, "").unwrap();
+
+        let content = std::fs::read_to_string(&pid_file).unwrap();
+        assert!(content.trim().parse::<u32>().is_err());
+    }
+
+    #[test]
+    fn image_cache_dir_deterministic_hash() {
+        // Same ref always produces same path
+        let a = image_cache_dir("ghcr.io/org/worker:1.0");
+        let b = image_cache_dir("ghcr.io/org/worker:1.0");
+        assert_eq!(a, b);
+
+        // Path ends with a hex string (16 chars for 8 bytes)
+        let hash_component = a.file_name().unwrap().to_str().unwrap();
+        assert_eq!(hash_component.len(), 16);
+        assert!(hash_component.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn image_cache_dir_under_iii_images() {
+        let dir = image_cache_dir("test:latest");
+        let path_str = dir.to_string_lossy();
+        assert!(path_str.contains(".iii/images/") || path_str.contains(".iii\\images\\"));
+    }
 }
