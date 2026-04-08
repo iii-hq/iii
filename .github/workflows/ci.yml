@@ -146,6 +146,61 @@ jobs:
         run: cargo build -p iii --release --target ${{ matrix.target }}
 
   # ──────────────────────────────────────────────────────────────
+  # Worker Build Matrix (matches release targets)
+  # ──────────────────────────────────────────────────────────────
+
+  worker-build-matrix:
+    name: Worker Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_PKG_CONFIG_ALLOW_CROSS: '1'
+      PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: /usr/aarch64-linux-gnu
+      PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-L/usr/lib/aarch64-linux-gnu'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-${{ matrix.target }}
+
+      - name: Install system dependencies (x86_64 Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Install cross-compilation tools (aarch64 Linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libcap-ng-dev:arm64
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build iii-worker for target
+        run: cargo build -p iii-worker --target ${{ matrix.target }}
+
+  # ──────────────────────────────────────────────────────────────
   # SDK Node
   # ──────────────────────────────────────────────────────────────
 
