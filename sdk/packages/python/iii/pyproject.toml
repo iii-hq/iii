@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iii-sdk"
-version = "0.11.0.dev1"
+version = "0.12.0.dev1"
 description = "III SDK for Python"
 authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }
