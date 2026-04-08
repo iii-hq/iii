@@ -1784,6 +1784,10 @@ mod tests {
                         .any(|t| t["topic"] == "default" && t["broker_type"] == "function_queue"),
                     "builtin function queue should be normalized to function_queue"
                 );
+                assert!(
+                    topics.iter().all(|t| t["topic"] != "__fn_queue::default"),
+                    "raw builtin function queue topic should not leak into console output"
+                );
             }
             _ => panic!("Expected Success with DLQ topics"),
         }
@@ -2421,6 +2425,10 @@ mod tests {
                         .iter()
                         .any(|t| t["broker_type"] == "function_queue"),
                     "configured function queue should still be included"
+                );
+                assert!(
+                    topics.iter().all(|t| t["topic"] != "__fn_queue::default"),
+                    "raw builtin function queue topic should not be included alongside normalized output"
                 );
             }
             _ => panic!("Expected Success with DLQ topics"),
