@@ -34,18 +34,6 @@ fn cli_parses_all_subcommands() {
         (
             &[
                 "iii-worker",
-                "start-all",
-                "--engine-url",
-                "ws://localhost:49134",
-            ],
-            |c| assert!(matches!(c, Commands::StartAll { .. })),
-        ),
-        (&["iii-worker", "stop-all"], |c| {
-            assert!(matches!(c, Commands::StopAll))
-        }),
-        (
-            &[
-                "iii-worker",
                 "__vm-boot",
                 "--rootfs",
                 "/tmp/rootfs",
@@ -135,16 +123,6 @@ fn logs_subcommand_with_follow() {
         }
         _ => panic!("expected Logs"),
     }
-}
-
-/// `start-all` requires --engine-url.
-#[test]
-fn start_all_requires_engine_url() {
-    let result = Cli::try_parse_from(["iii-worker", "start-all"]);
-    assert!(
-        result.is_err(),
-        "start-all without --engine-url should fail"
-    );
 }
 
 /// `VmBootArgs` roundtrip with all fields including `mount`, `pid_file`,

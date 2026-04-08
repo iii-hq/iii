@@ -1,0 +1,139 @@
+---
+title: 'Schedule a Cron Task'
+description: 'How to run a Function on a recurring schedule.'
+---
+
+## Goal
+
+Run a Function at regular intervals (cleanup jobs, report generation, health checks) using the Cron module.
+
+## Steps
+
+### 1. Enable the Cron module
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::KvCronAdapter
+```
+
+### 2. Register the Function
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="cron-task.ts"
+import { registerWorker, Logger } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+iii.registerFunction({ id: 'cleanup::expired-sessions' }, async () => {
+  const logger = new Logger()
+  // ...cleanup logic here...
+  logger.info('Cleanup ran', { timestamp: new Date().toISOString() })
+  return { deleted: 0 }
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="cron_task.py"
+import os
+
+from iii import Logger, register_worker
+
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+def cleanup_sessions(_):
+    logger = Logger()
+    # ...cleanup logic here...
+    logger.info("Cleanup ran")
+    return {"deleted": 0}
+
+
+iii.register_function({"id": "cleanup::expired-sessions"}, cleanup_sessions)
+```
+</Tab>
+<Tab title="Rust">
+```rust title="cron_task.rs"
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+use tokio::signal;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
+    let iii = register_worker(&url, InitOptions::default());
+
+    iii.register_function(
+        RegisterFunctionMessage::with_id("cleanup::expired-sessions".into()),
+        |_| async move {
+            let logger = Logger::new();
+            // ...cleanup logic here...
+            logger.info("Cleanup ran", None);
+            Ok(json!({ "deleted": 0 }))
+        },
+    );
+
+    signal::ctrl_c().await?;
+    Ok(())
+}
+```
+</Tab>
+</Tabs>
+
+### 3. Register the Cron trigger
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="cron-trigger.ts"
+iii.registerTrigger({
+  type: 'cron',
+  function_id: 'cleanup::expired-sessions',
+  config: { expression: '* * * * * * *' }, // runs every second
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="cron_trigger.py"
+iii.register_trigger({
+    "type": "cron",
+    "function_id": "cleanup::expired-sessions",
+    "config": {"expression": "* * * * * * *"},  # runs every second
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust title="cron_trigger.rs"
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "cron".into(),
+    function_id: "cleanup::expired-sessions".into(),
+    config: json!({ "expression": "* * * * * * *" }), // runs every second
+})?;
+```
+</Tab>
+</Tabs>
+
+This runs the Function every second. The `expression` field uses a 7-field cron format with seconds support (`second minute hour day month weekday year`).
+
+### Common schedules
+
+| Expression | Frequency |
+|------------|-----------|
+| `* * * * * * *` | Every second |
+| `0 * * * * * *` | Every minute |
+| `0 */5 * * * * *` | Every 5 minutes |
+| `0 0 * * * * *` | Every hour |
+| `0 0 */6 * * * *` | Every 6 hours |
+| `0 0 0 * * * *` | Daily at midnight |
+| `0 0 9 * * 1 *` | Every Monday at 9 AM |
+
+## Result
+
+The Function executes automatically on the defined schedule. The Engine handles scheduling, no external cron daemon needed.
+
+{/* TODO: Uncomment once the Cron module reference page exists */}
+{/* <Info title="See also">
+  For advanced scheduling options, see the [Cron module reference](../modules/module-cron).
+</Info> */}

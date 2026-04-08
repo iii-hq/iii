@@ -157,7 +157,7 @@ impl QueueWorker {
         self.adapter.dlq_messages(&namespaced, count).await
     }
 
-    #[function(id = "enqueue", description = "Enqueue a message")]
+    #[function(id = "iii::durable::publish", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let event_data = input.data;
@@ -770,8 +770,12 @@ impl Worker for QueueWorker {
             );
         }
 
-        let trigger_type =
-            TriggerType::new("queue", "Queue core module", Box::new(self.clone()), None);
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue core module",
+            Box::new(self.clone()),
+            None,
+        );
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 
@@ -1285,7 +1289,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-1".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({"topic": "my-topic"}),
             worker_id: None,
@@ -1301,7 +1305,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-2".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({"topic": ""}),
             worker_id: None,
@@ -1317,7 +1321,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-3".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({}),
             worker_id: None,
@@ -1334,7 +1338,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-cond".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({
                 "topic": "conditioned-topic",
@@ -1353,7 +1357,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-infra".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({
                 "topic": "infra-topic",
@@ -1379,7 +1383,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-unsub".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({"topic": "unsub-topic"}),
             worker_id: None,
@@ -1395,7 +1399,7 @@ mod tests {
         let (_engine, module, adapter) = setup_queue_module();
         let trigger = crate::trigger::Trigger {
             id: "trig-no-topic".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::handler".to_string(),
             config: json!({}),
             worker_id: None,
@@ -1474,7 +1478,12 @@ mod tests {
         let (engine, module, _adapter) = setup_queue_module();
         let result = module.initialize().await;
         assert!(result.is_ok());
-        assert!(engine.trigger_registry.trigger_types.contains_key("queue"));
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key("durable:subscriber")
+        );
     }
 
     // =========================================================================

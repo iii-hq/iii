@@ -97,7 +97,7 @@ class TestMultiTriggerStep:
             trace_id="test",
             state=None,
             logger=None,
-            trigger=TriggerInfo(type="queue"),
+            trigger=TriggerInfo(type="durable:subscriber"),
         )
         await definition.handler({"key": "value"}, mock_ctx)
         assert results == [("queue", {"key": "value"})]

@@ -858,6 +858,7 @@ mod tests {
         let cfg = EngineConfig {
             modules: vec![WorkerEntry {
                 name: "iii-observability".to_string(),
+                image: None,
                 config: Some(serde_json::json!({
                     "enabled": true,
                     "service_name": "test-service",

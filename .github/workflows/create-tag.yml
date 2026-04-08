@@ -28,6 +28,7 @@ on:
           - alpha
           - beta
           - rc
+          - next
         default: none
       dry_run:
         description: 'Dry run (creates -dry-run.N tag, builds without publishing)'
@@ -160,6 +161,7 @@ jobs:
                 rc)    echo "${base}rc${num}" ;;
                 alpha) echo "${base}a${num}" ;;
                 beta)  echo "${base}b${num}" ;;
+                next)  echo "${base}.dev${num}" ;;
               esac
             else
               echo "$version"

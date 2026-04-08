@@ -50,7 +50,7 @@ iii.registerFunction('orders::fulfill', async (data) => {
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'orders::fulfill',
   config: { queue: 'fulfillment' },
 })

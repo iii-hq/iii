@@ -1,0 +1,231 @@
+---
+title: 'Managing Container Workers'
+description: 'Add, configure, start, stop, and remove container workers with the iii CLI.'
+---
+
+## Goal
+
+Use the `iii worker` commands to manage container workers throughout their lifecycle — from adding an image to monitoring logs and removing workers you no longer need.
+
+## Context
+
+Container workers are OCI images that the engine pulls, extracts, and runs in isolated sandboxes. The `iii worker` CLI manages these workers declaratively through `config.yaml`, so you rarely need to edit configuration files by hand.
+
+## Steps
+
+### 1. Add a Worker
+
+Pull an image from a registry and register it in `config.yaml`:
+
+```bash
+# From the iii registry (shorthand)
+iii worker add image-resize
+
+# From any OCI registry
+iii worker add ghcr.io/my-org/my-worker:latest
+```
+
+The command resolves the image, pulls it, and appends an entry to `config.yaml`:
+
+```yaml title="config.yaml"
+workers:
+  - name: image-resize
+    image: ghcr.io/iii-hq/image-resize:1.0.0
+```
+
+If the image contains a `/iii/worker.yaml` manifest with `resources` hints, they are included automatically.
+
+Once defined in `config.yaml`, all workers start automatically when you run `iii`. If you make changes to the workers list, simply restart `iii` to pick them up — no extra commands needed.
+
+### 2. Configure Environment and Resources
+
+Edit `config.yaml` to pass environment variables or set resource limits:
+
+```yaml title="config.yaml"
+workers:
+  - name: image-resize
+    image: ghcr.io/iii-hq/image-resize:1.0.0
+    config:
+      MY_API_KEY: sk-abc123
+      LOG_LEVEL: debug
+```
+
+Values under `config:` are flattened and injected as environment variables when the worker starts. Changes take effect the next time the worker starts (restart `iii` to apply).
+
+### 3. Remove a Worker
+
+Remove a worker and its entry from `config.yaml`:
+
+```bash
+iii worker remove image-resize
+```
+
+The cached image layers remain on disk.
+
+### 4. Manage Individual Workers (Optional)
+
+If you need fine-grained control over workers while `iii` is already running, the CLI provides commands to manage them individually. These are optional — restarting `iii` always starts every worker defined in `config.yaml`.
+
+```bash
+# List all registered workers and their status
+iii worker list
+
+# Start a previously stopped worker
+iii worker start image-resize
+
+# Stop a running worker without removing it
+iii worker stop image-resize
+
+# Stream logs from a running worker
+iii worker logs image-resize
+
+# Follow log output in real time
+iii worker logs image-resize --follow
+```
+
+### 5. Build and Publish Your Own Image
+
+To distribute a custom worker as an OCI image, create a project that uses an iii SDK, package it with a Dockerfile, and push it to a registry.
+
+#### Write the Worker
+
+<Tabs>
+<Tab title="Node.js / TypeScript">
+```typescript title="src/index.ts"
+import { registerWorker, Logger } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+iii.registerFunction('my-worker::hello', async (data) => {
+  const logger = new Logger()
+  logger.info('Hello from my OCI worker!', { input: data })
+  return { message: 'Hello!' }
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="worker.py"
+import os
+from iii import register_worker, Logger
+
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+def hello(data):
+    logger = Logger()
+    logger.info("Hello from my OCI worker!", {"input": data})
+    return {"message": "Hello!"}
+
+iii.register_function("my-worker::hello", hello)
+```
+</Tab>
+<Tab title="Rust">
+```rust title="src/main.rs"
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
+    let iii = register_worker(&url, InitOptions::default());
+
+    iii.register_function(RegisterFunction::new_async("my-worker::hello", |data| async move {
+        let logger = Logger::new();
+        logger.info("Hello from my OCI worker!", None);
+        Ok(json!({ "message": "Hello!" }))
+    }));
+
+    tokio::signal::ctrl_c().await?;
+    iii.shutdown_async().await;
+    Ok(())
+}
+```
+</Tab>
+</Tabs>
+
+#### Create a Dockerfile
+
+The image must define an `ENTRYPOINT` that starts the worker process. It should also declare `ENV` variables to configure how the worker connects to the engine.
+
+When you run `iii worker add`, the CLI extracts all `ENV` declarations from the OCI image and writes them as the `config:` block in `config.yaml`. This is how the image communicates its default configuration to the engine.
+
+For binary workers (e.g. Rust), also set `CMD` with `--url` so the runtime can patch the engine address at startup.
+
+<Tabs>
+<Tab title="Node.js / TypeScript">
+```dockerfile title="Dockerfile"
+FROM node:22-slim
+WORKDIR /app
+COPY package.json .
+RUN npm install
+COPY src/ src/
+
+# Extracted by `iii worker add` and saved to config.yaml.
+ENV FOO=bar
+
+ENTRYPOINT ["npx", "tsx", "src/index.ts"]
+```
+</Tab>
+<Tab title="Python">
+```dockerfile title="Dockerfile"
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+
+# Extracted by `iii worker add` and saved to config.yaml.
+ENV FOO=bar
+
+ENTRYPOINT ["python", "worker.py"]
+```
+</Tab>
+<Tab title="Rust">
+```dockerfile title="Dockerfile"
+FROM rust:1.88-slim AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+RUN cargo build --release && cp target/release/my-worker /worker
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /worker /worker
+
+# Extracted by `iii worker add` and saved to config.yaml.
+ENV FOO=bar
+
+ENTRYPOINT ["/worker"]
+# The runtime patches --url with the actual engine address at startup.
+CMD ["--url", "ws://localhost:49134"]
+```
+</Tab>
+</Tabs>
+
+<Info title="How ENV flows into config.yaml">
+  Running `iii worker add` extracts all `ENV` declarations from the image (excluding system variables like `PATH` and `HOME`) and writes them under `config:` in `config.yaml`. You can then edit `config.yaml` to override any value. At startup, the runtime reads `III_ENGINE_URL` (or `III_URL`) from `config:` and uses it to connect the worker to the engine.
+</Info>
+
+#### Build and Push
+
+```bash
+docker build -t my-worker:latest .
+
+# Local registry (for development)
+docker run -d -p 5050:5000 --name registry registry:2
+docker tag my-worker:latest localhost:5050/my-worker:latest
+docker push localhost:5050/my-worker:latest
+
+# Remote registry (Docker Hub, GHCR, etc.)
+docker tag my-worker:latest ghcr.io/my-org/my-worker:1.0.0
+docker push ghcr.io/my-org/my-worker:1.0.0
+```
+
+Then add it to the engine:
+
+```bash
+iii worker add localhost:5050/my-worker:latest
+```
+
+## Result
+
+You can manage the full lifecycle of container workers — add, configure, start, stop, inspect logs, and remove — using the `iii worker` CLI. All state is tracked in `config.yaml`, and workers run in isolated sandboxes managed by the engine.

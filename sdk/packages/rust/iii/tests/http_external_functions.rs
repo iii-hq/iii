@@ -151,7 +151,7 @@ async fn delivers_queue_events_to_external_http_function() {
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
             metadata: None,
@@ -160,7 +160,7 @@ async fn delivers_queue_events_to_external_http_function() {
     common::settle().await;
 
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload}),
         action: None,
         timeout_ms: None,
@@ -244,7 +244,7 @@ async fn delivers_events_with_custom_headers() {
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
             metadata: None,
@@ -253,7 +253,7 @@ async fn delivers_events_with_custom_headers() {
     common::settle().await;
 
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload}),
         action: None,
         timeout_ms: None,
@@ -317,7 +317,7 @@ async fn delivers_events_to_multiple_external_functions() {
 
     let _trigger_a = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: function_id_a.clone(),
             config: json!({"topic": topic_a}),
             metadata: None,
@@ -325,7 +325,7 @@ async fn delivers_events_to_multiple_external_functions() {
         .expect("register trigger a");
     let _trigger_b = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: function_id_b.clone(),
             config: json!({"topic": topic_b}),
             metadata: None,
@@ -334,7 +334,7 @@ async fn delivers_events_to_multiple_external_functions() {
     common::settle().await;
 
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic_a, "data": payload_a}),
         action: None,
         timeout_ms: None,
@@ -342,7 +342,7 @@ async fn delivers_events_to_multiple_external_functions() {
     .await
     .expect("enqueue a failed");
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic_b, "data": payload_b}),
         action: None,
         timeout_ms: None,
@@ -392,7 +392,7 @@ async fn stops_delivering_events_after_unregister() {
 
     let trigger = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
             metadata: None,
@@ -401,7 +401,7 @@ async fn stops_delivering_events_after_unregister() {
     common::settle().await;
 
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload_before}),
         action: None,
         timeout_ms: None,
@@ -423,7 +423,7 @@ async fn stops_delivering_events_after_unregister() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload_after}),
         action: None,
         timeout_ms: None,
@@ -464,7 +464,7 @@ async fn delivers_events_using_put_method() {
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: function_id.clone(),
             config: json!({"topic": topic}),
             metadata: None,
@@ -473,7 +473,7 @@ async fn delivers_events_using_put_method() {
     common::settle().await;
 
     iii.trigger(TriggerRequest {
-        function_id: "enqueue".to_string(),
+        function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload}),
         action: None,
         timeout_ms: None,

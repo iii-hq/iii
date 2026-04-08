@@ -198,7 +198,7 @@ class TestMixedTriggers:
         )
 
         assert len(config.triggers) == 4
-        assert config.triggers[0].type == "queue"
+        assert config.triggers[0].type == "durable:subscriber"
         assert config.triggers[1].type == "http"
         assert config.triggers[2].type == "state"
         assert config.triggers[3].type == "stream"

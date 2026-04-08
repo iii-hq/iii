@@ -65,7 +65,7 @@ pub(crate) fn do_open(
         file: RwLock::new(file),
     });
 
-    fs.handles.write().unwrap().insert(handle, data);
+    fs.handles.insert(handle, data);
     Ok((Some(handle), fs.cache_open_options()))
 }
 
@@ -90,8 +90,7 @@ pub(crate) fn do_read(
         return init_binary::read_init(w, &fs.init_file, size, offset);
     }
 
-    let handles = fs.handles.read().unwrap();
-    let data = handles.get(&handle).ok_or_else(platform::ebadf)?;
+    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?.clone();
     let f = data.file.read().unwrap();
     w.write_from(&f, size as usize, offset)
 }
@@ -121,8 +120,9 @@ pub(crate) fn do_write(
         return Err(platform::eperm());
     }
 
-    let handles = fs.handles.read().unwrap();
-    let data = handles.get(&handle).ok_or_else(platform::ebadf)?;
+    // Clone the Arc<HandleData> to release the DashMap shard lock before
+    // blocking syscalls in the kill_priv path (fstat/fchmod).
+    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?.clone();
     let f = data.file.read().unwrap();
     let written = r.read_to(&f, size as usize, offset)?;
 
@@ -157,8 +157,9 @@ pub(crate) fn do_flush(fs: &PassthroughFs, _ctx: Context, ino: u64, handle: u64)
         return Ok(());
     }
 
-    let handles = fs.handles.read().unwrap();
-    let data = handles.get(&handle).ok_or_else(platform::ebadf)?;
+    // Clone the Arc<HandleData> to release the DashMap shard lock before
+    // blocking syscalls (dup/close).
+    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?.clone();
     let f = data.file.read().unwrap();
 
     let newfd = unsafe { libc::dup(f.as_raw_fd()) };
@@ -188,6 +189,6 @@ pub(crate) fn do_release(
         return Ok(());
     }
 
-    fs.handles.write().unwrap().remove(&handle);
+    fs.handles.remove(&handle);
     Ok(())
 }

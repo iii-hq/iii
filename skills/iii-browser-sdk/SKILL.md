@@ -16,7 +16,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-browser>
 
 ## Install
 
-`npm install iii-sdk-browser`
+`npm install iii-browser-sdk`
 
 ## Key Exports
 
@@ -42,7 +42,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-browser>
 ## Quick Start
 
 ```typescript
-import { registerWorker, TriggerAction } from 'iii-sdk-browser'
+import { registerWorker, TriggerAction } from 'iii-browser-sdk'
 
 const iii = registerWorker('ws://localhost:49135')
 

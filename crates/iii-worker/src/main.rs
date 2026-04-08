@@ -71,14 +71,6 @@ async fn main() -> anyhow::Result<()> {
             iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
                 .await
         }
-        Commands::StartAll { engine_url } => {
-            iii_worker::cli::managed::start_managed_workers(&engine_url).await;
-            0
-        }
-        Commands::StopAll => {
-            iii_worker::cli::managed::stop_managed_workers().await;
-            0
-        }
         Commands::VmBoot(args) => {
             iii_worker::cli::vm_boot::run(&args);
         }

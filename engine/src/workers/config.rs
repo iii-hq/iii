@@ -9,7 +9,7 @@ use std::{
     env,
     future::Future,
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::{Arc, LazyLock, RwLock},
 };
 
 use regex::Regex;
@@ -43,7 +43,9 @@ impl EngineConfig {
     }
 
     pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
-        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
+        let re = &*RE;
 
         re.replace_all(yaml_content, |caps: &regex::Captures| {
             let var_name = &caps[1];
@@ -106,15 +108,17 @@ fn default_worker_entries() -> Vec<WorkerEntry> {
         .filter(|registration| registration.is_default)
         .map(|registration| WorkerEntry {
             name: registration.name.to_string(),
+            image: None,
             config: None,
         })
         .collect()
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WorkerEntry {
     pub name: String,
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default)]
     pub config: Option<Value>,
 }
@@ -184,38 +188,70 @@ impl WorkerRegistry {
             .insert(name.to_string(), info);
     }
 
-    /// Creates a module instance.
-    ///
-    /// First checks the built-in registry. If the name is not found, falls back
-    /// to external worker resolution: checks `iii.toml` for installed workers and
-    /// spawns the corresponding binary from `iii_workers/`.
+    /// Creates a module instance using the resolution chain:
+    /// 1. Validates that built-in workers cannot have an `image` field.
+    /// 2. Tries the built-in registry.
+    /// 3. Falls back to legacy external worker resolution via `iii.toml`.
+    /// 4. Delegates to `iii-worker start` (handles registry lookup, binary
+    ///    download, and OCI spawning autonomously).
     pub async fn create_worker(
         self: &Arc<Self>,
         name: &str,
+        image: Option<&str>,
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Worker>> {
-        let factory = {
-            let factories = self.worker_factories.read().expect("RwLock poisoned");
-            factories.get(name).map(|info| info.factory.clone())
-        };
-
-        if let Some(factory) = factory {
-            return factory(engine, config).await;
+        // 1. Validate: image + built-in = error
+        if image.is_some() {
+            let is_builtin = self
+                .worker_factories
+                .read()
+                .expect("RwLock poisoned")
+                .contains_key(name);
+            if is_builtin {
+                return Err(anyhow::anyhow!(
+                    "Worker '{}' is a built-in worker and cannot have an 'image' field. \
+                     Remove 'image' or use a different name.",
+                    name
+                ));
+            }
         }
 
-        if let Some(info) = super::external::resolve_external_module(name) {
-            tracing::info!(
-                "Resolved '{}' as external worker '{}' ({})",
-                name,
-                info.name,
-                info.binary_path.display()
-            );
-            let module = super::external::ExternalWorker::new(info, config);
-            return Ok(Box::new(module));
+        // 2. Try built-in registry (skip if image is set — that's always external)
+        if image.is_none() {
+            let factory = {
+                let factories = self.worker_factories.read().expect("RwLock poisoned");
+                factories.get(name).map(|info| info.factory.clone())
+            };
+            if let Some(factory) = factory {
+                return factory(engine, config).await;
+            }
         }
 
-        Err(anyhow::anyhow!("Unknown worker: {}", name))
+        // 3. Legacy: external worker (iii.toml + iii_workers/)
+        if image.is_none() {
+            if let Some(info) = super::external::resolve_external_module(name) {
+                tracing::info!(
+                    "Resolved '{}' as external worker '{}' ({})",
+                    name,
+                    info.name,
+                    info.binary_path.display()
+                );
+                let module = super::external::ExternalWorker::new(info, config);
+                return Ok(Box::new(module));
+            }
+        }
+
+        // 4. Delegate to iii-worker start (handles registry lookup, binary
+        //    download, OCI pull, and spawning autonomously)
+        tracing::info!(worker = %name, "Starting external worker via iii-worker");
+        let port = crate::workers::worker::DEFAULT_PORT;
+        let process = super::registry_worker::ExternalWorkerProcess::spawn(name, port)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
+        Ok(Box::new(
+            super::registry_worker::ExternalWorkerWrapper::new(process),
+        ))
     }
 
     // =========================================================================
@@ -243,7 +279,12 @@ impl WorkerEntry {
         registry: &Arc<WorkerRegistry>,
     ) -> anyhow::Result<Box<dyn Worker>> {
         registry
-            .create_worker(&self.name, engine, self.config.clone())
+            .create_worker(
+                &self.name,
+                self.image.as_deref(),
+                engine,
+                self.config.clone(),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", self.name, e))
     }
@@ -326,6 +367,7 @@ impl EngineBuilder {
         if let Some(ref mut cfg) = self.config {
             cfg.workers.push(WorkerEntry {
                 name: name.to_string(),
+                image: None,
                 config,
             });
         }
@@ -351,6 +393,7 @@ impl EngineBuilder {
             if registration.mandatory && !worker_names.contains(registration.name) {
                 workers.push(WorkerEntry {
                     name: registration.name.to_string(),
+                    image: None,
                     config: None,
                 });
             }
@@ -999,15 +1042,24 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_create_worker_unknown_worker_fails() {
+    async fn test_create_worker_unknown_worker_delegates() {
+        // Unknown workers are now delegated to `iii-worker start` rather than
+        // returning an immediate error, so the result is Ok (an external worker
+        // process wrapper) or an Err from the spawn itself — not an "Unknown
+        // worker" error.
         let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = registry
-            .create_worker("nonexistent::Module", engine, None)
+            .create_worker("nonexistent::Module", None, engine, None)
             .await;
-        assert!(result.is_err());
-        let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Unknown worker"));
+        // If spawn succeeds we get Ok; if iii-worker binary is absent we may
+        // get an Err, but it must NOT contain "Unknown worker".
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("Unknown worker"),
+                "should not report 'Unknown worker'; got: {e}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1036,7 +1088,9 @@ config:
         registry.register::<TestMod>("test::TestMod");
 
         let engine = Arc::new(Engine::new());
-        let result = registry.create_worker("test::TestMod", engine, None).await;
+        let result = registry
+            .create_worker("test::TestMod", None, engine, None)
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name(), "test_mod");
     }
@@ -1046,17 +1100,25 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_module_entry_create_unknown_fails() {
+    async fn test_module_entry_create_unknown_delegates() {
+        // Unknown workers are now delegated to `iii-worker start`.  If spawn
+        // fails (e.g. binary absent in CI) the error is wrapped with the
+        // worker name, but it is no longer an immediate "Unknown worker" error.
         let entry = WorkerEntry {
             name: "unknown::Module".to_string(),
+            image: None,
             config: None,
         };
         let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = entry.create_worker(engine, &registry).await;
-        assert!(result.is_err());
-        let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Failed to create unknown::Module"));
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("unknown::Module") || msg.contains("Failed to start"),
+                "unexpected error message: {msg}"
+            );
+        }
     }
 
     // =========================================================================
@@ -1261,6 +1323,133 @@ modules:
         assert!(
             message.contains("already in use"),
             "unexpected error message: {message}"
+        );
+    }
+
+    #[test]
+    fn test_worker_entry_with_image_field() {
+        let yaml = r#"
+workers:
+  - name: my-worker
+    image: docker.io/org/worker:latest
+    config:
+      port: 8080
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name, "my-worker");
+        assert_eq!(
+            config.workers[0].image.as_deref(),
+            Some("docker.io/org/worker:latest")
+        );
+    }
+
+    #[test]
+    fn test_worker_entry_without_image_field() {
+        let yaml = r#"
+workers:
+  - name: iii-stream
+    config:
+      port: 3112
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers[0].image, None);
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_workers_with_image() {
+        let yaml = r#"
+workers:
+  - name: pdfkit
+    image: ghcr.io/iii-hq/pdfkit:1.0
+    config:
+      timeout: 30
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name, "pdfkit");
+        assert_eq!(
+            config.workers[0].image.as_deref(),
+            Some("ghcr.io/iii-hq/pdfkit:1.0")
+        );
+        assert!(config.workers[0].config.is_some());
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_legacy_modules_key() {
+        let yaml = r#"
+modules:
+  - name: legacy-worker
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].name, "legacy-worker");
+        assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_both_modules_and_workers() {
+        let yaml = r#"
+modules:
+  - name: builtin
+workers:
+  - name: external
+    image: ghcr.io/org/ext:latest
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.workers.len(), 1);
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_empty() {
+        let yaml = "modules: []\nworkers: []\n";
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.modules.is_empty());
+        assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn test_worker_entry_allows_unknown_fields() {
+        // WorkerEntry intentionally omits deny_unknown_fields so that future
+        // CLI-written fields (e.g. `type: binary`) do not break older engine
+        // versions.  EngineConfig itself remains strict.
+        let yaml = r#"
+workers:
+  - name: test
+    unknown_field: ignored
+"#;
+        let result: Result<EngineConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "WorkerEntry should accept unknown fields for forward compatibility"
+        );
+        assert_eq!(result.unwrap().workers[0].name, "test");
+    }
+
+    #[test]
+    fn test_engine_config_worker_without_image() {
+        let yaml = r#"
+workers:
+  - name: binary-worker
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 1);
+        assert!(config.workers[0].image.is_none());
+        assert!(config.workers[0].config.is_none());
+    }
+
+    #[test]
+    fn test_engine_config_with_env_var_expansion() {
+        unsafe {
+            env::set_var("TEST_IMAGE_TAG", "2.0.0");
+        }
+        let yaml = "workers:\n  - name: w\n    image: ghcr.io/org/w:${TEST_IMAGE_TAG}\n";
+        let expanded = EngineConfig::expand_env_vars(yaml);
+        let config: EngineConfig = serde_yaml::from_str(&expanded).unwrap();
+        assert_eq!(
+            config.workers[0].image.as_deref(),
+            Some("ghcr.io/org/w:2.0.0")
         );
     }
 }

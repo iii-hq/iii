@@ -1,0 +1,489 @@
+---
+title: 'Observability'
+description: 'OpenTelemetry-based traces, metrics, logs, alerts, and sampling.'
+---
+
+Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance metrics, alert rules, and trace sampling — all queryable via built-in functions.
+
+```
+modules::observability::OtelModule
+```
+
+## Sample Configuration
+
+```yaml
+- class: modules::observability::OtelModule
+  config:
+    enabled: true
+    service_name: my-service
+    service_version: 1.0.0
+    exporter: memory
+    metrics_enabled: true
+    logs_enabled: true
+    memory_max_spans: 1000
+    sampling_ratio: 1.0
+    alerts:
+      - name: high-error-rate
+        metric: iii.invocations.error
+        threshold: 10
+        operator: ">"
+        window_seconds: 60
+        action:
+          type: log
+```
+
+## Configuration
+
+<ResponseField name="enabled" type="boolean">
+  Whether OpenTelemetry tracing export is enabled. Defaults to `false`. Can also be set via `OTEL_ENABLED` environment variable.
+</ResponseField>
+
+<ResponseField name="service_name" type="string">
+  Service name reported in traces and metrics. Defaults to `"iii"`. Can also be set via `OTEL_SERVICE_NAME`.
+</ResponseField>
+
+<ResponseField name="service_version" type="string">
+  Service version reported in traces (`service.version` OTEL attribute). Can also be set via `SERVICE_VERSION`.
+</ResponseField>
+
+<ResponseField name="service_namespace" type="string">
+  Service namespace (`service.namespace` OTEL attribute). Can also be set via `SERVICE_NAMESPACE`.
+</ResponseField>
+
+<ResponseField name="exporter" type="string">
+  Trace exporter type. Options:
+  - `memory` — store traces in memory, queryable via `engine::traces::list`
+  - `otlp` — export to an OTLP collector via gRPC
+  - `both` — export via OTLP and keep in memory (enables log triggers alongside OTLP export)
+
+  Defaults to `otlp`. Can also be set via `OTEL_EXPORTER_TYPE`.
+</ResponseField>
+
+<ResponseField name="endpoint" type="string">
+  OTLP collector endpoint. Used when `exporter` is `otlp` or `both`. Defaults to `"http://localhost:4317"`. Can also be set via `OTEL_EXPORTER_OTLP_ENDPOINT`.
+</ResponseField>
+
+<ResponseField name="sampling_ratio" type="number">
+  Global trace sampling ratio from `0.0` (sample nothing) to `1.0` (sample everything). Defaults to `1.0`. Can also be set via `OTEL_TRACES_SAMPLER_ARG`.
+</ResponseField>
+
+<ResponseField name="sampling" type="SamplingConfig">
+  Advanced per-operation and per-service sampling rules.
+
+  <Expandable title="SamplingConfig">
+    <ResponseField name="default" type="number">
+      Default sampling rate for operations not matching any rule.
+    </ResponseField>
+    <ResponseField name="rules" type="SamplingRule[]">
+      Ordered list of sampling rules evaluated per span.
+
+      <Expandable title="SamplingRule">
+        <ResponseField name="operation" type="string">
+          Operation name pattern (supports wildcards like `"api.*"`).
+        </ResponseField>
+        <ResponseField name="service" type="string">
+          Service name pattern to match.
+        </ResponseField>
+        <ResponseField name="rate" type="number" required>
+          Sampling rate for this rule (`0.0` to `1.0`).
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="parent_based" type="boolean">
+      If `true`, inherit the sampling decision from the parent span.
+    </ResponseField>
+    <ResponseField name="rate_limit" type="RateLimitConfig">
+      <Expandable title="RateLimitConfig">
+        <ResponseField name="max_traces_per_second" type="number">
+          Maximum number of traces to sample per second.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="memory_max_spans" type="number">
+  Maximum number of spans to keep in memory when using `memory` or `both` exporter. Defaults to `1000`. Can also be set via `OTEL_MEMORY_MAX_SPANS`.
+</ResponseField>
+
+<ResponseField name="metrics_enabled" type="boolean">
+  Whether metrics collection is enabled. Defaults to `false`. Can also be set via `OTEL_METRICS_ENABLED`.
+</ResponseField>
+
+<ResponseField name="metrics_exporter" type="string">
+  Metrics exporter type: `memory` (queryable via API) or `otlp`. Defaults to `memory`. Can also be set via `OTEL_METRICS_EXPORTER`.
+</ResponseField>
+
+<ResponseField name="metrics_retention_seconds" type="number">
+  How long to retain metrics in memory in seconds. Defaults to `3600` (1 hour). Can also be set via `OTEL_METRICS_RETENTION_SECONDS`.
+</ResponseField>
+
+<ResponseField name="metrics_max_count" type="number">
+  Maximum number of metric data points to keep in memory. Defaults to `10000`. Can also be set via `OTEL_METRICS_MAX_COUNT`.
+</ResponseField>
+
+<ResponseField name="logs_enabled" type="boolean">
+  Whether structured log storage is enabled. When not set, log storage is always initialized by the module.
+</ResponseField>
+
+<ResponseField name="logs_exporter" type="string">
+  Logs exporter type: `memory`, `otlp`, or `both`. Defaults to `memory`. Can also be set via `OTEL_LOGS_EXPORTER`.
+</ResponseField>
+
+<ResponseField name="logs_max_count" type="number">
+  Maximum number of log entries to keep in memory. Defaults to `1000`.
+</ResponseField>
+
+<ResponseField name="logs_retention_seconds" type="number">
+  How long to retain logs in memory in seconds. Defaults to `3600` (1 hour).
+</ResponseField>
+
+<ResponseField name="logs_sampling_ratio" type="number">
+  Fraction of logs to retain (`0.0` to `1.0`). Defaults to `1.0` (keep all).
+</ResponseField>
+
+<ResponseField name="logs_console_output" type="boolean">
+  Whether to print ingested logs to the console via tracing. Defaults to `true`.
+</ResponseField>
+
+<ResponseField name="level" type="string">
+  Minimum log level for the engine itself. Options: `trace`, `debug`, `info`, `warn`, `error`. Defaults to `info`.
+</ResponseField>
+
+<ResponseField name="format" type="string">
+  Log output format: `default` (human-readable) or `json` (structured JSON). Defaults to `default`.
+</ResponseField>
+
+<ResponseField name="alerts" type="AlertRule[]">
+  List of alert rules evaluated against metrics.
+
+  <Expandable title="AlertRule">
+    <ResponseField name="name" type="string" required>
+      Unique name for the alert rule.
+    </ResponseField>
+    <ResponseField name="metric" type="string" required>
+      Metric name to monitor (e.g., `iii.invocations.error`).
+    </ResponseField>
+    <ResponseField name="threshold" type="number" required>
+      Threshold value to compare against.
+    </ResponseField>
+    <ResponseField name="operator" type="string">
+      Comparison operator: `>`, `>=`, `<`, `<=`, `==`, `!=`. Defaults to `>`.
+    </ResponseField>
+    <ResponseField name="window_seconds" type="number">
+      Time window in seconds over which to evaluate the metric. Defaults to `60`.
+    </ResponseField>
+    <ResponseField name="cooldown_seconds" type="number">
+      Minimum interval between alert fires in seconds. Defaults to `60`.
+    </ResponseField>
+    <ResponseField name="enabled" type="boolean">
+      Whether the alert rule is active. Defaults to `true`.
+    </ResponseField>
+    <ResponseField name="action" type="AlertAction">
+      Action to take when the alert fires.
+
+      <Expandable title="AlertAction">
+        `{ "type": "log" }` — Log the alert (default)
+
+        `{ "type": "webhook", "url": "https://..." }` — Send a webhook notification
+
+        `{ "type": "function", "path": "my::alert::handler" }` — Invoke a registered function
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Functions
+
+### Logging
+
+<ResponseField name="engine::log::info" type="function">
+  Log an informational message.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="message" type="string" required>The message to log.</ResponseField>
+      <ResponseField name="data" type="object">Optional structured fields to attach to the log entry.</ResponseField>
+      <ResponseField name="trace_id" type="string">Optional trace ID for correlation.</ResponseField>
+      <ResponseField name="span_id" type="string">Optional span ID for correlation.</ResponseField>
+      <ResponseField name="service_name" type="string">Service name. Defaults to the function name if not provided.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::log::warn" type="function">
+  Log a warning message. Same parameters as `engine::log::info`.
+</ResponseField>
+
+<ResponseField name="engine::log::error" type="function">
+  Log an error message. Same parameters as `engine::log::info`.
+</ResponseField>
+
+<ResponseField name="engine::log::debug" type="function">
+  Log a debug message. Same parameters as `engine::log::info`.
+</ResponseField>
+
+<ResponseField name="engine::log::trace" type="function">
+  Log a trace-level message. Same parameters as `engine::log::info`.
+</ResponseField>
+
+### Logs API
+
+<ResponseField name="engine::logs::list" type="function">
+  Query stored log entries.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="start_time" type="number">Start time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="end_time" type="number">End time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="trace_id" type="string">Filter by trace ID.</ResponseField>
+      <ResponseField name="span_id" type="string">Filter by span ID.</ResponseField>
+      <ResponseField name="severity_min" type="number">Minimum severity number (1–24, higher = more severe).</ResponseField>
+      <ResponseField name="severity_text" type="string">Filter by severity text (e.g., `"ERROR"`, `"WARN"`, `"INFO"`).</ResponseField>
+      <ResponseField name="offset" type="number">Pagination offset. Defaults to `0`.</ResponseField>
+      <ResponseField name="limit" type="number">Maximum number of entries to return.</ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="logs" type="object[]">Array of log entries.</ResponseField>
+      <ResponseField name="total" type="number">Total number of matching log entries before pagination.</ResponseField>
+      <ResponseField name="query" type="object">Echo of all input query parameters used for the request. Omitted when log storage has not yet been initialized.</ResponseField>
+      <ResponseField name="timestamp" type="number">Response timestamp in Unix milliseconds.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::logs::clear" type="function">
+  Clear all stored log entries from memory.
+</ResponseField>
+
+### Traces API
+
+<ResponseField name="engine::traces::list" type="function">
+  List stored trace spans.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="trace_id" type="string">Filter by specific trace ID.</ResponseField>
+      <ResponseField name="service_name" type="string">Filter by service name (case-insensitive substring match).</ResponseField>
+      <ResponseField name="name" type="string">Filter by span name (case-insensitive substring match).</ResponseField>
+      <ResponseField name="status" type="string">Filter by status (case-insensitive substring match).</ResponseField>
+      <ResponseField name="min_duration_ms" type="number">Minimum span duration in milliseconds.</ResponseField>
+      <ResponseField name="max_duration_ms" type="number">Maximum span duration in milliseconds.</ResponseField>
+      <ResponseField name="start_time" type="number">Start time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="end_time" type="number">End time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="sort_by" type="string">Sort field: `"duration"`, `"start_time"`, or `"name"`. Defaults to `"start_time"`.</ResponseField>
+      <ResponseField name="sort_order" type="string">Sort order: `"asc"` or `"desc"`. Defaults to `"asc"`.</ResponseField>
+      <ResponseField name="attributes" type="array">Filter by span attributes. Array of `[key, value]` pairs (AND logic, exact match).</ResponseField>
+      <ResponseField name="include_internal" type="boolean">Include internal engine traces (`engine.*` functions). Defaults to `false`.</ResponseField>
+      <ResponseField name="offset" type="number">Pagination offset. Defaults to `0`.</ResponseField>
+      <ResponseField name="limit" type="number">Pagination limit. Defaults to `100`.</ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="spans" type="object[]">Array of span objects.</ResponseField>
+      <ResponseField name="total" type="number">Total number of matching spans before pagination.</ResponseField>
+      <ResponseField name="offset" type="number">Applied pagination offset.</ResponseField>
+      <ResponseField name="limit" type="number">Applied pagination limit.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::traces::tree" type="function">
+  Retrieve a trace as a hierarchical span tree.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="trace_id" type="string" required>The trace ID to retrieve.</ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="roots" type="object[]">Array of root spans, each with nested child spans in a `children` field.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::traces::clear" type="function">
+  Clear all stored trace spans from memory.
+</ResponseField>
+
+### Metrics API
+
+<ResponseField name="engine::metrics::list" type="function">
+  List collected metrics with aggregated statistics.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="start_time" type="number">Start time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="end_time" type="number">End time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="metric_name" type="string">Filter by metric name.</ResponseField>
+      <ResponseField name="aggregate_interval" type="number">Aggregate interval in seconds.</ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="engine_metrics" type="object">Built-in engine counters: `invocations` (total, success, error, deferred, by_function), `workers` (spawns, deaths, active), and `performance` (avg_duration_ms, p50_duration_ms, p95_duration_ms, p99_duration_ms, min_duration_ms, max_duration_ms).</ResponseField>
+      <ResponseField name="sdk_metrics" type="object[]">Raw SDK metric data points collected from storage.</ResponseField>
+      <ResponseField name="aggregated_metrics" type="object[]">Time-bucketed aggregations, present only when `aggregate_interval` is provided alongside a time range.</ResponseField>
+      <ResponseField name="timestamp" type="number">Response timestamp in Unix milliseconds.</ResponseField>
+      <ResponseField name="query" type="object">Echo of the input query parameters, present when any time filter or interval was provided.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::rollups::list" type="function">
+  List metric rollup aggregations (1-minute, 5-minute, 1-hour windows).
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="start_time" type="number">Start time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="end_time" type="number">End time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="level" type="number">Rollup level index: `0` = 1 minute, `1` = 5 minutes, `2` = 1 hour.</ResponseField>
+      <ResponseField name="metric_name" type="string">Filter by metric name.</ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="rollups" type="object[]">Array of rollup objects with time-bucketed aggregations.</ResponseField>
+      <ResponseField name="histogram_rollups" type="object[]">Array of histogram rollup objects for distribution metrics.</ResponseField>
+      <ResponseField name="level" type="number">The rollup level applied: `0` = 1 minute, `1` = 5 minutes, `2` = 1 hour.</ResponseField>
+      <ResponseField name="query" type="object">Echo of the input query parameters (`start_time`, `end_time`, `metric_name`).</ResponseField>
+      <ResponseField name="timestamp" type="number">Response timestamp in Unix milliseconds.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+### Baggage API
+
+<ResponseField name="engine::baggage::get" type="function">
+  Get a baggage value from the current trace context.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="key" type="string" required>Baggage key to retrieve.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::baggage::set" type="function">
+  Set a baggage value in the current trace context.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="key" type="string" required>Baggage key.</ResponseField>
+      <ResponseField name="value" type="string" required>Baggage value.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="engine::baggage::get_all" type="function">
+  Get all baggage key-value pairs from the current trace context.
+</ResponseField>
+
+### Sampling API
+
+<ResponseField name="engine::sampling::rules" type="function">
+  List all active sampling rules and their current configuration.
+</ResponseField>
+
+### Health API
+
+<ResponseField name="engine::health::check" type="function">
+  Check engine health status.
+
+  <AccordionGroup>
+    <Accordion title="Returns">
+      <ResponseField name="status" type="string">Health status (e.g., `"healthy"`).</ResponseField>
+      <ResponseField name="components" type="object">Per-component health with `otel`, `metrics`, `logs`, and `spans` sub-statuses.</ResponseField>
+      <ResponseField name="timestamp" type="number">Current time in Unix timestamp milliseconds.</ResponseField>
+      <ResponseField name="version" type="string">Engine version.</ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+### Alerts API
+
+<ResponseField name="engine::alerts::list" type="function">
+  List all configured alert rules and their current state.
+</ResponseField>
+
+<ResponseField name="engine::alerts::evaluate" type="function">
+  Manually trigger evaluation of all alert rules against current metrics.
+</ResponseField>
+
+## Trigger Type
+
+This module adds a new Trigger Type: `log`.
+
+Register a function to react to log entries as they are produced.
+
+<Expandable title="Trigger Config">
+  <ResponseField name="level" type="string">
+    The log level to subscribe to: `info`, `warn`, `error`, `debug`, or `trace`. When omitted, the trigger fires for all levels.
+  </ResponseField>
+</Expandable>
+
+### Log Entry Payload
+
+<ResponseField name="timestamp_unix_nano" type="number">
+  Timestamp of the log entry in Unix nanoseconds.
+</ResponseField>
+
+<ResponseField name="observed_timestamp_unix_nano" type="number">
+  Observed timestamp in Unix nanoseconds.
+</ResponseField>
+
+<ResponseField name="severity_number" type="number">
+  Numeric severity level (1–24).
+</ResponseField>
+
+<ResponseField name="severity_text" type="string">
+  Severity text (e.g., `"INFO"`, `"WARN"`, `"ERROR"`).
+</ResponseField>
+
+<ResponseField name="body" type="string">
+  The log message content.
+</ResponseField>
+
+<ResponseField name="attributes" type="object">
+  Structured attributes attached to the log entry.
+</ResponseField>
+
+<ResponseField name="trace_id" type="string">
+  Distributed tracing ID for correlating this log entry across services.
+</ResponseField>
+
+<ResponseField name="span_id" type="string">
+  Span ID for correlation within a trace.
+</ResponseField>
+
+<ResponseField name="resource" type="object">
+  Resource attributes associated with the log entry.
+</ResponseField>
+
+<ResponseField name="service_name" type="string">
+  Name of the service that produced the log entry.
+</ResponseField>
+
+<ResponseField name="instrumentation_scope_name" type="string">
+  Name of the instrumentation scope.
+</ResponseField>
+
+<ResponseField name="instrumentation_scope_version" type="string">
+  Version of the instrumentation scope.
+</ResponseField>
+
+### Sample Code
+
+```typescript
+const fn = iii.registerFunction(
+  { id: 'monitoring::onError' },
+  async (logEntry) => {
+    await sendAlert({
+      message: logEntry.body,
+      severity: logEntry.severity_text,
+      traceId: logEntry.trace_id,
+    })
+    return {}
+  },
+)
+
+iii.registerTrigger({
+  type: 'log',
+  function_id: fn.id,
+  config: { level: 'error' },
+})
+```

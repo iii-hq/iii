@@ -306,9 +306,9 @@ A single step can have multiple triggers of different kinds (HTTP, queue, cron, 
 | `ApiRouteConfig` | `StepConfig` |
 | `EventConfig` | `StepConfig` |
 | `CronConfig` | `StepConfig` |
-| `type: 'api' | 'event' | 'cron'` | `triggers: [{ type: 'http' | 'queue' | 'cron' | 'state' | 'stream' }]` |
+| `type: 'api' | 'event' | 'cron'` | `triggers: [{ type: 'http' | 'durable:subscriber' | 'cron' | 'state' | 'stream' }]` |
 | `emits: ['topic']` | `enqueues: ['topic']` |
-| `subscribes: ['topic']` | Moved into trigger: `{ type: 'queue', topic: '...' }` |
+| `subscribes: ['topic']` | Moved into trigger: `{ type: 'durable:subscriber', topic: '...' }` |
 | `virtualEmits` | `virtualEnqueues` |
 | `virtualSubscribes` | `virtualSubscribes` (unchanged) |
 
@@ -519,7 +519,7 @@ export const config = {
   flows: ['deployment'],
   triggers: [
     {
-      type: 'queue',
+      type: 'durable:subscriber',
       topic: 'deploy-environment-v2',
       input: z.object({
         deploymentId: z.string(),
@@ -546,11 +546,11 @@ export const handler: Handlers<typeof config> = async (input, { logger, enqueue,
 
 | Old | New |
 |---|---|
-| `type: 'event'` | `triggers: [{ type: 'queue', topic, input }]` |
+| `type: 'event'` | `triggers: [{ type: 'durable:subscriber', topic, input }]` |
 | `subscribes: ['topic']` | `topic` field inside trigger |
 | `emits: ['topic']` | `enqueues: ['topic']` |
 | `input: schema` | `input: schema` inside trigger (or wrap with `jsonSchema()`) |
-| `infrastructure: {...}` at config root | `config: {...}` inside the queue trigger |
+| `infrastructure: {...}` at config root | `config: {...}` inside the durable:subscriber trigger |
 | `emit({ topic, data })` | `enqueue({ topic, data })` |
 | `emit({ type: 'topic' })` (some old projects) | `enqueue({ topic: 'topic' })` (field key standardized to `topic`) |
 | Handler receives `data` directly | Handler receives `input` directly |
@@ -564,7 +564,7 @@ import { jsonSchema } from 'motia'
 
 triggers: [
   {
-    type: 'queue',
+    type: 'durable:subscriber',
     topic: 'notification',
     input: jsonSchema(
       z.object({
@@ -961,7 +961,7 @@ export const config = {
   name: 'ProcessOrder',
   flows: ['orders'],
   triggers: [
-    { type: 'queue', topic: 'order.created', input: orderSchema },
+    { type: 'durable:subscriber', topic: 'order.created', input: orderSchema },
     { type: 'http', method: 'POST', path: '/orders/manual', bodySchema: orderSchema },
     { type: 'cron', expression: '* * * * *' },
   ],
@@ -1009,7 +1009,7 @@ Triggers can include a `condition` function that determines whether the step sho
 ```typescript
 triggers: [
   {
-    type: 'queue',
+    type: 'durable:subscriber',
     topic: 'order.created',
     input: orderSchema,
     condition: (input, ctx) => {
@@ -1399,7 +1399,7 @@ config = {
     "name": "HeavyComputation",
     "triggers": [
         {
-            "type": "queue",
+            "type": "durable:subscriber",
             "topic": "heavy-job",
             "config": {"type": "fifo", "maxRetries": 5},
         }
@@ -1725,7 +1725,7 @@ async def handler(input_data: Any, ctx: FlowContext[Any]) -> Any:
 The `ctx.trigger` attribute (`TriggerInfo`) provides metadata about which trigger fired:
 
 ```python
-ctx.trigger.type        # "http", "queue", "cron", "state", "stream"
+ctx.trigger.type        # "http", "durable:subscriber", "cron", "state", "stream"
 ctx.trigger.topic       # queue topic (queue triggers only)
 ctx.trigger.path        # request path (API triggers only)
 ctx.trigger.method      # HTTP method (API triggers only)

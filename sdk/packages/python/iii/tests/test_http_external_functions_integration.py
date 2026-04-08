@@ -299,10 +299,10 @@ async def test_delivers_queue_events_to_external_http_function() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
         time.sleep(0.5)
 
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
 
         webhook = await probe.wait_for_webhook(7.0)
 
@@ -394,10 +394,10 @@ async def test_delivers_events_with_custom_headers() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
         time.sleep(0.5)
 
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
 
         webhook = await probe.wait_for_webhook(7.0)
 
@@ -452,12 +452,12 @@ async def test_delivers_events_to_multiple_external_functions() -> None:
         )
         time.sleep(0.5)
 
-        trigger_a = client.register_trigger({"type": "queue", "function_id": fn_id_a, "config": {"topic": topic_a}})
-        trigger_b = client.register_trigger({"type": "queue", "function_id": fn_id_b, "config": {"topic": topic_b}})
+        trigger_a = client.register_trigger({"type": "durable:subscriber", "function_id": fn_id_a, "config": {"topic": topic_a}})
+        trigger_b = client.register_trigger({"type": "durable:subscriber", "function_id": fn_id_b, "config": {"topic": topic_b}})
         time.sleep(0.5)
 
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic_a, "data": payload_a}})
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic_b, "data": payload_b}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic_a, "data": payload_a}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic_b, "data": payload_b}})
 
         webhook_a = await probe_a.wait_for_webhook(7.0)
         webhook_b = await probe_b.wait_for_webhook(7.0)
@@ -503,11 +503,11 @@ async def test_stops_delivering_after_unregister() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
         time.sleep(0.5)
 
         # First enqueue -- should be delivered.
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload_before}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload_before}})
         webhook = await probe.wait_for_webhook(7.0)
         assert webhook["body"] == payload_before
 
@@ -519,7 +519,7 @@ async def test_stops_delivering_after_unregister() -> None:
         time.sleep(0.5)
 
         # Second enqueue -- should NOT be delivered (function is gone).
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload_after}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload_after}})
         no_delivery = await probe.wait_for_webhook_or_none(timeout=2.0)
         assert no_delivery is None, f"Expected no delivery after unregister, but got: {no_delivery}"
     finally:
@@ -551,10 +551,10 @@ async def test_delivers_with_put_method() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
         time.sleep(0.5)
 
-        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
+        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
 
         webhook = await probe.wait_for_webhook(7.0)
 

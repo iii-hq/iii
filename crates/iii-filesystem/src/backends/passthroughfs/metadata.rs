@@ -58,26 +58,17 @@ pub(crate) fn do_setattr(
         libc::O_RDONLY
     };
 
-    // Use handle fd if available, otherwise open from inode.
-    let fd = if let Some(h) = handle {
-        let handles = fs.handles.read().unwrap();
-        if let Some(hdata) = handles.get(&h) {
-            hdata.file.read().unwrap().as_raw_fd()
-        } else {
-            inode::open_inode_fd(fs, ino, open_flags)?
-        }
+    // Keep the DashMap Ref and RwLockReadGuard alive so the raw fd stays valid
+    // for the lifetime of all syscalls below. A concurrent do_release cannot
+    // close the underlying File while these guards exist.
+    let hdata_guard = handle.and_then(|h| fs.handles.get(&h));
+    let file_guard = hdata_guard.as_ref().map(|hd| hd.file.read().unwrap());
+    let (fd, owns_fd) = if let Some(ref fg) = file_guard {
+        (fg.as_raw_fd(), false)
     } else {
-        inode::open_inode_fd(fs, ino, open_flags)?
+        // No valid handle -- open a new fd (caller owns it).
+        (inode::open_inode_fd(fs, ino, open_flags)?, true)
     };
-
-    // Track whether we own the fd (and need to close it).
-    let owns_fd = handle.is_none()
-        || fs
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle.unwrap_or(u64::MAX))
-            .is_none();
 
     // Handle size changes via ftruncate.
     if valid.contains(SetattrValid::SIZE) {

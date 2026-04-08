@@ -21,7 +21,7 @@ describe('multiTriggerStep', () => {
   it('onQueue(handler).handlers() routes queue triggers to queue handler', async () => {
     const queueHandler = jest.fn().mockResolvedValue(undefined)
     const { handler } = multiTriggerStep(config).onQueue(queueHandler).handlers()
-    const ctx = { trigger: { type: 'queue' }, logger: { warn: jest.fn() } }
+    const ctx = { trigger: { type: 'durable:subscriber' }, logger: { warn: jest.fn() } }
     await handler({ data: 'test' }, ctx)
     expect(queueHandler).toHaveBeenCalledWith({ data: 'test' }, ctx)
   })
@@ -98,7 +98,7 @@ describe('multiTriggerStep', () => {
     const httpHandler = jest.fn().mockResolvedValue({ status: 200, body: null })
     const { handler } = multiTriggerStep(config).handlers({ queue: queueHandler, http: httpHandler })
 
-    await handler({ data: 'q' }, { trigger: { type: 'queue' }, logger: { warn: jest.fn() } })
+    await handler({ data: 'q' }, { trigger: { type: 'durable:subscriber' }, logger: { warn: jest.fn() } })
     expect(queueHandler).toHaveBeenCalled()
 
     await handler({ body: {} } as any, { trigger: { type: 'http' }, logger: { warn: jest.fn() } })

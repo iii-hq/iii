@@ -77,6 +77,7 @@ iii_detect_from_version() {
 
 # --- Argument parsing ---
 engine_version="${VERSION:-}"
+use_next=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -89,6 +90,10 @@ while [ $# -gt 0 ]; do
     --cli-dir)
       if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
+    --next)
+      use_next=true
+      shift
+      ;;
     -h|--help)
       cat <<'USAGE'
 Usage: install.sh [OPTIONS] [VERSION]
@@ -97,6 +102,7 @@ Install the iii engine (includes CLI commands).
 
 Options:
   -h, --help            Show this help message
+  --next                Install the latest "next" pre-release
 
 Environment variables:
   VERSION               Engine version to install
@@ -211,8 +217,30 @@ if [ -n "$VERSION" ]; then
       *'"prerelease":true'*|*'"prerelease": true'*) _is_prerelease="true" ;;
     esac
   fi
-  if [ "$_is_prerelease" = "true" ]; then
-    err "download" "version $VERSION is a prerelease — use a stable release"
+  if [ "$_is_prerelease" = "true" ] && [ "$use_next" != "true" ]; then
+    err "download" "version $VERSION is a prerelease — use a stable release or pass --next"
+  fi
+elif [ "$use_next" = "true" ]; then
+  echo "installing latest next release"
+  api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+  json_list=$(github_api "$api_url")
+  if command -v jq >/dev/null 2>&1; then
+    json=$(printf '%s' "$json_list" \
+      | jq -c 'first(.[] | select(.tag_name | test("-next\\.")))')
+    if [ "$json" = "null" ] || [ -z "$json" ]; then
+      err "download" "no next release found"
+    fi
+  else
+    _tag=$(printf '%s' "$json_list" \
+      | tr '{' '\n' \
+      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"iii/v[^"]*-next\.[^"]*"' \
+      | head -n 1 \
+      | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -z "$_tag" ]; then
+      err "download" "no next release found"
+    fi
+    api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
+    json=$(github_api "$api_url")
   fi
 else
   echo "installing latest version"
@@ -278,6 +306,10 @@ if [ -z "$release_version" ]; then
       | sed -E 's/.*"([^"]+)".*/\1/' \
       | sed -E 's#^(iii/)?v##')
   fi
+fi
+
+if [ "$use_next" = "true" ] && [ -n "$release_version" ]; then
+  echo "installing $BIN_NAME v$release_version"
 fi
 
 if command -v jq >/dev/null 2>&1; then
