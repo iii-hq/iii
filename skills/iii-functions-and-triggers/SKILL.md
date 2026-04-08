@@ -15,7 +15,7 @@ Comparable to: Serverless function runtimes, Lambda, Cloud Functions
 Use the concepts below when they fit the task. Not every worker needs all of them.
 
 - A **Function** is an async handler registered with a unique ID
-- A **Trigger** binds an event source to a function — types include http, queue, cron, state, stream, and subscribe
+- A **Trigger** binds an event source to a function — types include http, durable:subscriber, cron, state, stream, and subscribe
 - Functions invoke other functions via `trigger()` regardless of language or worker location
 - The engine handles serialization, routing, and delivery automatically
 - HTTP-invoked functions wrap external endpoints as callable function IDs
