@@ -261,8 +261,8 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
           </div>
         </div>
 
-        {/* FAQ — hidden for now */}
-        {/* <div className="mb-6 md:mb-8">
+        {/* FAQ */}
+        <div className="mb-6 md:mb-8">
           <div>
             <h4
               className={`text-xs font-semibold uppercase tracking-wider mb-4 ${accentColor}`}
@@ -321,21 +321,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               ))}
             </div>
           </div>
-        </div> */}
-
-        {/* iii Particle Branding — hidden for now */}
-        {/* <div className={`border-t ${borderColor} pt-8 md:pt-12`}>
-          <div className="h-52 sm:h-72 md:h-96 lg:h-[28rem] w-full overflow-hidden mb-8">
-            <TextParticle
-              renderSource={drawIiiLogo}
-              particleColor={isDarkMode ? '#f4f4f4' : '#000000'}
-              hoverColor={isDarkMode ? '#f3f724' : '#2f7fff'}
-              hoverRadius={150}
-              particleSize={2.5}
-              particleDensity={4}
-            />
-          </div>
-        </div> */}
+        </div>
 
         <div className="pt-8 md:pt-12">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">

@@ -821,7 +821,7 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
           accentColor={accentColor}
         />
 
-        {/* Capability Map Diagram — commented out
+        {/* Capability Map Diagram */}
         <div
           className={`relative p-4 sm:p-6 md:p-8 lg:p-10 rounded-lg ${bgCard} overflow-hidden`}
         >
@@ -1021,7 +1021,6 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
             </div>
           </div>
         </div>
-        */}
       </div>
     </section>
   );
