@@ -4,7 +4,7 @@
 //! the crate library, ensuring any CLI changes are caught at compile time.
 
 use clap::Parser;
-use iii_worker::{Cli, Commands, DEFAULT_PORT, VmBootArgs};
+use iii_worker::{Cli, Commands, VmBootArgs};
 
 /// All 10 subcommands parse without error.
 #[test]
@@ -56,18 +56,22 @@ fn cli_parses_all_subcommands() {
 fn add_subcommand_fields() {
     let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
     match cli.command {
-        Commands::Add {
-            worker_name,
-            runtime,
-            address,
-            port,
-        } => {
-            assert_eq!(worker_name, "ghcr.io/iii-hq/node:latest");
-            assert_eq!(runtime, "libkrun");
-            assert_eq!(address, "localhost");
-            assert_eq!(port, DEFAULT_PORT);
+        Commands::Add { worker_names } => {
+            assert_eq!(worker_names, vec!["ghcr.io/iii-hq/node:latest".to_string()]);
         }
         _ => panic!("expected Add"),
+    }
+}
+
+/// `add` subcommand accepts multiple worker names as positional args.
+#[test]
+fn add_subcommand_multiple_workers() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "iii-http", "iii-state"]);
+    match cli.command {
+        Commands::Add { worker_names } => {
+            assert_eq!(worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
+        }
+        _ => panic!("Expected Add command"),
     }
 }
 

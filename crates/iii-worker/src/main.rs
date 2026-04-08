@@ -19,20 +19,12 @@ async fn main() -> anyhow::Result<()> {
     let cli_args = Cli::parse();
 
     let exit_code = match cli_args.command {
-        Commands::Add {
-            worker_name,
-            runtime,
-            address,
-            port,
-        } => {
-            iii_worker::cli::managed::handle_managed_add(&worker_name, &runtime, &address, port)
-                .await
+        Commands::Add { worker_names } => {
+            iii_worker::cli::managed::handle_managed_add_many(&worker_names).await
         }
-        Commands::Remove {
-            worker_name,
-            address,
-            port,
-        } => iii_worker::cli::managed::handle_managed_remove(&worker_name, &address, port).await,
+        Commands::Remove { worker_names } => {
+            iii_worker::cli::managed::handle_managed_remove_many(&worker_names).await
+        }
         Commands::Start {
             worker_name,
             address,

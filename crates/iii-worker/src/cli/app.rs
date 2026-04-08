@@ -18,38 +18,18 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Add a worker from the registry or by OCI image reference
+    /// Add one or more workers from the registry or by OCI image reference
     Add {
-        /// Worker name or OCI image reference (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
-        #[arg(value_name = "WORKER[@VERSION]")]
-        worker_name: String,
-
-        /// Container runtime
-        #[arg(long, default_value = "libkrun")]
-        runtime: String,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
+        #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
+        worker_names: Vec<String>,
     },
 
-    /// Remove a worker (stops and removes the container)
+    /// Remove one or more workers (stops and removes containers)
     Remove {
-        /// Worker name to remove (e.g., "pdfkit")
-        #[arg(value_name = "WORKER")]
-        worker_name: String,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Worker names to remove (e.g., "pdfkit")
+        #[arg(value_name = "WORKER", required = true, num_args = 1..)]
+        worker_names: Vec<String>,
     },
 
     /// Start a previously stopped managed worker container
