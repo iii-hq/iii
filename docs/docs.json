@@ -206,27 +206,27 @@
                 "pages": [
                   "architecture/index",
                   "architecture/engine",
+                  "architecture/external-workers",
                   "architecture/workers",
-                  "architecture/modules",
                   "architecture/trigger-types",
                   "architecture/channels",
                   "architecture/queues"
                 ]
               },
               {
-                "group": "Modules",
+                "group": "Workers",
                 "pages": [
-                  "modules/index",
-                  "modules/module-http",
-                  "modules/module-queue",
-                  "modules/module-cron",
-                  "modules/module-observability",
-                  "modules/module-stream",
-                  "modules/module-state",
-                  "modules/module-pubsub",
-                  "modules/module-exec",
-                  "modules/module-bridge",
-                  "modules/module-worker"
+                  "workers/index",
+                  "workers/iii-http",
+                  "workers/iii-queue",
+                  "workers/iii-cron",
+                  "workers/iii-observability",
+                  "workers/iii-stream",
+                  "workers/iii-state",
+                  "workers/iii-pubsub",
+                  "workers/iii-exec",
+                  "workers/iii-bridge",
+                  "workers/iii-worker-manager"
                 ]
               },
               {

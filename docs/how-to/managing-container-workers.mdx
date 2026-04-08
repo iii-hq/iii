@@ -46,7 +46,8 @@ workers:
   - name: image-resize
     image: ghcr.io/iii-hq/image-resize:1.0.0
     config:
-      MY_API_KEY: sk-abc123
+      # Remapping environment variables
+      MY_API_KEY: ${MY_API_KEY}
       LOG_LEVEL: debug
 ```
 
