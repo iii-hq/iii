@@ -208,9 +208,25 @@ jobs:
 
       - name: Install additional system dependencies
         if: runner.os == 'Linux' && inputs.system_deps != ''
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ inputs.system_deps }}
+          case "$BUILD_TARGET" in
+            aarch64-unknown-linux-gnu)
+              sudo dpkg --add-architecture arm64
+              sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+              sudo apt-get update
+              for pkg in ${{ inputs.system_deps }}; do
+                sudo apt-get install -y "${pkg}:arm64"
+              done
+              ;;
+            *)
+              sudo apt-get install -y ${{ inputs.system_deps }}
+              ;;
+          esac
 
       - name: Install cross-compilation tools
         if: runner.os == 'Linux'
