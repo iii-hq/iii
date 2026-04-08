@@ -242,6 +242,110 @@ resources:
     assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
 }
 
+/// `add --force` parses the force flag correctly.
+#[test]
+fn add_force_flag() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_name, "pdfkit");
+            assert!(force);
+            assert!(!args.reset_config);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add --force --reset-config` parses both flags.
+#[test]
+fn add_force_reset_config() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force", "--reset-config"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert!(force);
+            assert!(args.reset_config);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add -f` short flag works.
+#[test]
+fn add_force_short_flag() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "-f"]);
+    match cli.command {
+        Commands::Add { force, .. } => assert!(force),
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `reinstall` parses as expected and shares AddArgs with Add.
+#[test]
+fn reinstall_subcommand() {
+    let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit@1.2.0"]);
+    match cli.command {
+        Commands::Reinstall { args } => {
+            assert_eq!(args.worker_name, "pdfkit@1.2.0");
+            assert_eq!(args.runtime, "libkrun");
+            assert!(!args.reset_config);
+        }
+        _ => panic!("expected Reinstall"),
+    }
+}
+
+/// `reinstall --reset-config` parses the flag.
+#[test]
+fn reinstall_reset_config() {
+    let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit", "--reset-config"]);
+    match cli.command {
+        Commands::Reinstall { args } => {
+            assert!(args.reset_config);
+        }
+        _ => panic!("expected Reinstall"),
+    }
+}
+
+/// `clear` without args parses as clear-all.
+#[test]
+fn clear_subcommand_no_args() {
+    let cli = Cli::parse_from(["iii-worker", "clear"]);
+    match cli.command {
+        Commands::Clear { worker_name, yes } => {
+            assert!(worker_name.is_none());
+            assert!(!yes);
+        }
+        _ => panic!("expected Clear"),
+    }
+}
+
+/// `clear <name>` parses the worker name.
+#[test]
+fn clear_subcommand_with_name() {
+    let cli = Cli::parse_from(["iii-worker", "clear", "pdfkit"]);
+    match cli.command {
+        Commands::Clear { worker_name, yes } => {
+            assert_eq!(worker_name.as_deref(), Some("pdfkit"));
+            assert!(!yes);
+        }
+        _ => panic!("expected Clear"),
+    }
+}
+
+/// `clear --yes` / `clear -y` skips confirmation.
+#[test]
+fn clear_yes_flag() {
+    let cli = Cli::parse_from(["iii-worker", "clear", "--yes"]);
+    match cli.command {
+        Commands::Clear { yes, .. } => assert!(yes),
+        _ => panic!("expected Clear"),
+    }
+    let cli = Cli::parse_from(["iii-worker", "clear", "-y"]);
+    match cli.command {
+        Commands::Clear { yes, .. } => assert!(yes),
+        _ => panic!("expected Clear"),
+    }
+}
+
 /// OCI config JSON parsing (serde pattern test, kept as-is).
 #[test]
 fn oci_config_json_parsing() {
