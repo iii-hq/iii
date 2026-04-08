@@ -134,10 +134,6 @@ export function useFlowState(flow: FlowResponse, flowConfig: FlowConfigResponse)
     }
   }, [savePositions])
 
-  useEffect(() => {
-    console.log(nodes)
-  }, [nodes])
-
   return useMemo(
     () => ({
       nodes,
