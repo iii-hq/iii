@@ -150,6 +150,8 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         for key in all_keys {
             if let Some((stream_name, group_id)) = parse_stream_storage_key(&key) {
                 stream_map.entry(stream_name).or_default().insert(group_id);
+            } else if key.starts_with("stream:") {
+                tracing::warn!(key = %key, "Skipping unparseable stream storage key");
             }
         }
 

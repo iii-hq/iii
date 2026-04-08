@@ -443,6 +443,8 @@ impl StreamAdapter for RedisAdapter {
             for key in keys {
                 if let Some((stream_name, group_id)) = parse_stream_storage_key(&key) {
                     stream_map.entry(stream_name).or_default().insert(group_id);
+                } else if key.starts_with("stream:") {
+                    tracing::warn!(key = %key, "Skipping unparseable stream storage key");
                 }
             }
 
@@ -674,3 +676,49 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> name: "redis", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::*;
+
+    async fn setup_test_adapter() -> RedisAdapter {
+        let redis_url = "redis://localhost:6379".to_string();
+        RedisAdapter::new(redis_url).await.unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis running"]
+    async fn list_all_stream_preserves_stream_names_with_colons_redis() {
+        let adapter = setup_test_adapter().await;
+        let stream_name = format!("orders:{}:v2", Uuid::new_v4());
+
+        let _ = adapter.delete(&stream_name, "region:us", "item-1").await;
+        let _ = adapter.delete(&stream_name, "region:eu", "item-2").await;
+
+        adapter
+            .set(&stream_name, "region:us", "item-1", json!({ "value": 1 }))
+            .await
+            .unwrap();
+        adapter
+            .set(&stream_name, "region:eu", "item-2", json!({ "value": 2 }))
+            .await
+            .unwrap();
+
+        let metadata = adapter.list_all_stream().await.unwrap();
+        let entry = metadata
+            .into_iter()
+            .find(|stream| stream.id == stream_name)
+            .expect("stream with ':' in the name should be listed");
+
+        assert_eq!(
+            entry.groups,
+            vec!["region:eu".to_string(), "region:us".to_string()]
+        );
+
+        let _ = adapter.delete(&stream_name, "region:us", "item-1").await;
+        let _ = adapter.delete(&stream_name, "region:eu", "item-2").await;
+    }
+}
