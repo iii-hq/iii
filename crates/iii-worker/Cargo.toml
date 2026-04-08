@@ -21,7 +21,6 @@ embed-init = ["iii-filesystem/embed-init"]
 [dependencies]
 iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
-msb_krun = { version = "0.1.9", features = ["net"] }
 oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
@@ -44,6 +43,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
 indicatif = "0.17"
+
+[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
+msb_krun = { version = "0.1.9", features = ["net"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

@@ -136,6 +136,7 @@ pub enum Commands {
     },
 
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
 }

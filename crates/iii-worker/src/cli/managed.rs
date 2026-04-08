@@ -499,14 +499,16 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
 }
 
 async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) -> i32 {
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw availability");
     }
 
-    if !super::worker_manager::libkrun::libkrun_available() {
+    if !super::worker_manager::sandbox_available() {
         eprintln!(
-            "{} libkrunfw is not available.\n  \
-             Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/",
+            "{} VM sandbox is not available.\n  \
+             On Linux: rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/\n  \
+             On macOS/musl: VM sandbox is not yet supported on this platform.",
             "error:".red()
         );
         return 1;

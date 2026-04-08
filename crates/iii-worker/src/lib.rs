@@ -12,4 +12,5 @@
 pub mod cli;
 
 pub use cli::app::{Cli, Commands, DEFAULT_PORT};
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub use cli::vm_boot::VmBootArgs;

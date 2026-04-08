@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
                 .await
         }
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
         Commands::VmBoot(args) => {
             iii_worker::cli::vm_boot::run(&args);
         }

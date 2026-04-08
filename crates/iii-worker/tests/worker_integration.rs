@@ -4,12 +4,14 @@
 //! the crate library, ensuring any CLI changes are caught at compile time.
 
 use clap::Parser;
-use iii_worker::{Cli, Commands, DEFAULT_PORT, VmBootArgs};
+use iii_worker::{Cli, Commands, DEFAULT_PORT};
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+use iii_worker::VmBootArgs;
 
 /// All 10 subcommands parse without error.
 #[test]
 fn cli_parses_all_subcommands() {
-    let cases: Vec<(&[&str], fn(Commands))> = vec![
+    let mut cases: Vec<(&[&str], fn(Commands))> = vec![
         (&["iii-worker", "add", "pdfkit@1.0.0"], |c| {
             assert!(matches!(c, Commands::Add { .. }))
         }),
@@ -31,18 +33,20 @@ fn cli_parses_all_subcommands() {
         (&["iii-worker", "logs", "my-worker"], |c| {
             assert!(matches!(c, Commands::Logs { .. }))
         }),
-        (
-            &[
-                "iii-worker",
-                "__vm-boot",
-                "--rootfs",
-                "/tmp/rootfs",
-                "--exec",
-                "/usr/bin/node",
-            ],
-            |c| assert!(matches!(c, Commands::VmBoot(_))),
-        ),
     ];
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    cases.push((
+        &[
+            "iii-worker",
+            "__vm-boot",
+            "--rootfs",
+            "/tmp/rootfs",
+            "--exec",
+            "/usr/bin/node",
+        ],
+        |c| assert!(matches!(c, Commands::VmBoot(_))),
+    ));
 
     for (args, check) in cases {
         let cli = Cli::try_parse_from(args)
@@ -127,6 +131,7 @@ fn logs_subcommand_with_follow() {
 
 /// `VmBootArgs` roundtrip with all fields including `mount`, `pid_file`,
 /// `console_output`, and `slot`.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 #[test]
 fn vm_boot_args_full_roundtrip() {
     #[derive(Parser)]
@@ -186,6 +191,7 @@ fn vm_boot_args_full_roundtrip() {
 }
 
 /// `VmBootArgs` applies correct defaults for optional fields.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 #[test]
 fn vm_boot_args_defaults() {
     #[derive(Parser)]
