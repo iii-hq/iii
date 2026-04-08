@@ -36,7 +36,11 @@ pub(super) fn stream_storage_key(stream_name: &str, group_id: &str) -> String {
 }
 
 pub(super) fn stream_storage_prefix(stream_name: &str) -> String {
-    format!("{}{}:", STREAM_KEY_PREFIX, encode_stream_name_segment(stream_name))
+    format!(
+        "{}{}:",
+        STREAM_KEY_PREFIX,
+        encode_stream_name_segment(stream_name)
+    )
 }
 
 pub(super) fn parse_stream_storage_key(key: &str) -> Option<(String, String)> {
@@ -147,7 +151,10 @@ mod tests {
         let parsed = parse_stream_storage_key(&key).unwrap();
         assert_eq!(parsed.0, "orders:v2");
         assert_eq!(parsed.1, "region:us");
-        assert_eq!(stream_storage_prefix("orders:v2"), "stream:b64~b3JkZXJzOnYy:");
+        assert_eq!(
+            stream_storage_prefix("orders:v2"),
+            "stream:b64~b3JkZXJzOnYy:"
+        );
     }
 
     #[test]

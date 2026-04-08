@@ -280,7 +280,10 @@ mod tests {
 
         let mut groups = adapter.list_groups("orders:v2").await.unwrap();
         groups.sort();
-        assert_eq!(groups, vec!["region:eu".to_string(), "region:us".to_string()]);
+        assert_eq!(
+            groups,
+            vec!["region:eu".to_string(), "region:us".to_string()]
+        );
 
         let metadata = adapter.list_all_stream().await.unwrap();
         assert_eq!(metadata.len(), 1);
