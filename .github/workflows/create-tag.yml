@@ -112,13 +112,32 @@ jobs:
             local base="${current%%-*}"
             IFS='.' read -r major minor patch <<< "$base"
 
-            case "$bump_type" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-            esac
+            # Check if current version already has the requested pre-release label
+            local current_pre=""
+            if [[ "$current" =~ -([a-z]+)\.[0-9]+$ ]]; then
+              current_pre="${BASH_REMATCH[1]}"
+            fi
 
-            local new_base="${major}.${minor}.${patch}"
+            local new_base
+            if [[ "$PRERELEASE" != "none" && "$current_pre" == "$PRERELEASE" ]]; then
+              # Same pre-release channel: keep base, increment counter
+              # e.g. 0.12.0-next.1 → 0.12.0-next.2
+              new_base="$base"
+            elif [[ "$PRERELEASE" == "none" && -n "$current_pre" ]]; then
+              # Promoting pre-release to stable: use base as-is
+              # e.g. 0.12.0-next.3 → 0.12.0
+              new_base="$base"
+            else
+              # Stable → stable bump, or stable → new pre-release
+              # e.g. 0.11.0 + minor → 0.12.0
+              # e.g. 0.11.0 + minor + next → 0.12.0-next.1
+              case "$bump_type" in
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                patch) patch=$((patch + 1)) ;;
+              esac
+              new_base="${major}.${minor}.${patch}"
+            fi
 
             if [[ "$PRERELEASE" != "none" ]]; then
               local existing
