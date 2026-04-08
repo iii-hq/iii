@@ -48,7 +48,7 @@ iii.registerFunction('payments::charge', async (data) => {
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'payments::charge',
   config: { queue: 'payment' },
 })

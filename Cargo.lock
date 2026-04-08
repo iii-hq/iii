@@ -2503,6 +2503,7 @@ dependencies = [
 name = "iii-filesystem"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "libc",
  "msb_krun",
  "scopeguard",

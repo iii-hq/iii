@@ -111,7 +111,8 @@ function createStep(func: FunctionInfo): FlowStep {
     if (t.type === 'http')
       return { type: 'http' as const, path: t.path, method: t.method, bodySchema: t.bodySchema }
     if (t.type === 'cron') return { type: 'cron' as const, cronExpression: t.expression }
-    if (t.type === 'queue') return { type: 'queue' as const, topic: t.topic }
+    if (t.type === 'durable:subscriber')
+      return { type: 'durable:subscriber' as const, topic: t.topic }
     if (t.type === 'state') return { type: 'state' as const }
     return { type: t.type as FlowStep['type'] }
   })
@@ -119,9 +120,15 @@ function createStep(func: FunctionInfo): FlowStep {
   const eventTriggers = (meta.triggers || []).filter((t) => t.type === 'event')
   const httpTriggers = (meta.triggers || []).filter((t) => t.type === 'http')
   const cronTriggers = (meta.triggers || []).filter((t) => t.type === 'cron')
-  const queueTriggers = (meta.triggers || []).filter((t) => t.type === 'queue')
+  const queueTriggers = (meta.triggers || []).filter((t) => t.type === 'durable:subscriber')
 
-  const knownTypes: Set<FlowStep['type']> = new Set(['event', 'http', 'cron', 'queue', 'state'])
+  const knownTypes: Set<FlowStep['type']> = new Set([
+    'event',
+    'http',
+    'cron',
+    'durable:subscriber',
+    'state',
+  ])
   const rawType = triggers.length > 0 ? triggers[0].type : undefined
   const stepType: FlowStep['type'] =
     rawType && knownTypes.has(rawType as FlowStep['type']) ? (rawType as FlowStep['type']) : 'noop'

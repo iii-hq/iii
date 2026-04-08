@@ -349,7 +349,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("→ http://127.0.0.1:3111/echo", "info");
         addLog("", "info");
         addLog("Queue Trigger (background jobs):", "warning");
-        addLog('  type: "queue"', "info");
+        addLog('  type: "durable:subscriber"', "info");
         addLog('  config: { topic: "user.created" }', "info");
         addLog("", "info");
         addLog("Subscribe Trigger (pub/sub events):", "warning");

@@ -9,7 +9,6 @@ pub mod download;
 pub mod error;
 pub mod exec;
 pub mod github;
-pub mod managed_shim;
 pub mod platform;
 pub mod registry;
 pub mod state;

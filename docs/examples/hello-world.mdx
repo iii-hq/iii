@@ -8,7 +8,7 @@ This example shows the two-step pattern at the heart of most iii workflows: an *
 ```mermaid
 graph LR
     Client -->|"GET /hello"| HelloHandler
-    HelloHandler -->|"enqueue: greet::process"| ProcessHandler
+    HelloHandler -->|"iii::durable::publish: greet::process"| ProcessHandler
     ProcessHandler -->|"state::set"| State[(State)]
 ```
 
@@ -125,7 +125,7 @@ def hello_api(data) -> ApiResponse:
     logger.info("Hello API called", {"appName": app_name, "requestId": request_id})
 
     iii.trigger({
-        "function_id": "enqueue",
+        "function_id": "iii::durable::publish",
         "payload": {
             "topic": "greet::process",
             "data": {
@@ -277,7 +277,7 @@ def greet_process(data: dict) -> None:
 
 iii.register_function("greet::process", greet_process)
 iii.register_trigger({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "greet::process",
     "config": {"topic": "greet::process"},
 })
@@ -321,7 +321,7 @@ iii.register_function((RegisterFunctionMessage::with_id("greet::process".into())
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "greet::process".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "greet::process".into(), config: json!({
     "topic": "greet::process",
 }), metadata: None })?;
 ```

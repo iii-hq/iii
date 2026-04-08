@@ -9,7 +9,7 @@ export function TriggerIcon({ type }: { type: string }) {
       return <Globe className={cls} />
     case 'cron':
       return <Clock className={cls} />
-    case 'queue':
+    case 'durable:subscriber':
       return <ListOrdered className={cls} />
     case 'state':
       return <Database className={cls} />

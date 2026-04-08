@@ -135,18 +135,6 @@ pub enum Commands {
         port: u16,
     },
 
-    /// Start all workers declared in iii.workers.yaml (used by engine lifecycle shim)
-    #[command(name = "start-all")]
-    StartAll {
-        /// Engine WebSocket URL
-        #[arg(long)]
-        engine_url: String,
-    },
-
-    /// Stop all running managed workers (used by engine lifecycle shim)
-    #[command(name = "stop-all")]
-    StopAll,
-
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),

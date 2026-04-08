@@ -289,12 +289,12 @@ iii.trigger(TriggerRequest {
 
 ## PubSub vs Queue
 
-| Feature | PubSub | Queue |
+| Feature | PubSub | Queue (topic-based) |
 |---|---|---|
-| Delivery | Broadcast to all subscribers | Single consumer per message |
+| Delivery | Broadcast to all subscribers | Fan-out to each subscribed function; replicas of the same function compete |
 | Persistence | No (fire-and-forget) | Yes (with retries and DLQ) |
 | Ordering | Not guaranteed | FIFO within topic |
-| Best for | Real-time notifications, fanout | Reliable background processing |
+| Best for | Real-time notifications, fire-and-forget fanout | Reliable fanout with retries and dead-letter support |
 
 ## PubSub Flow
 

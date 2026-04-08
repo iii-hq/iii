@@ -1079,7 +1079,7 @@ async fn handle_queue_publish(bridge: &III, input: Value) -> Value {
 
     match bridge
         .trigger(TriggerRequest {
-            function_id: "enqueue".to_string(),
+            function_id: "iii::durable::publish".to_string(),
             payload: json!({ "topic": topic, "data": data }),
             action: None,
             timeout_ms: Some(5000),

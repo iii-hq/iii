@@ -55,7 +55,7 @@ async def fulfill_order(data):
 iii.register_function("orders::fulfill", fulfill_order)
 
 iii.register_trigger({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "orders::fulfill",
     "config": {"queue": "fulfillment"},
 })
