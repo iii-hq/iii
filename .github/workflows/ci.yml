@@ -62,6 +62,9 @@ jobs:
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
 
+      - name: Check benchmarks compile
+        run: cargo bench --benches --no-run
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
