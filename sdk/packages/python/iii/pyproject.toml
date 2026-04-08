@@ -22,6 +22,8 @@ classifiers = [
 dependencies = [
     "websockets>=12.0",
     "pydantic>=2.0",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
 ]
 
 [project.urls]
@@ -29,10 +31,6 @@ Homepage = "https://github.com/iii-hq/sdk"
 Repository = "https://github.com/iii-hq/sdk"
 
 [project.optional-dependencies]
-otel = [
-    "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.25",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -41,8 +39,6 @@ dev = [
     "aiohttp>=3.9",
     "mypy>=1.8",
     "ruff>=0.2",
-    "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.25",
     "griffe>=1.0",
 ]
 

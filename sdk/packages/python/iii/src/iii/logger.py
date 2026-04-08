@@ -18,12 +18,9 @@ _SEVERITY_MAP = {
 
 def is_initialized() -> bool:
     """Return True if OTel has been initialized (importable without circular dep)."""
-    try:
-        from .telemetry import is_initialized as _is_init
+    from .telemetry import is_initialized as _is_init
 
-        return _is_init()
-    except ImportError:
-        return False
+    return _is_init()
 
 
 class Logger:
