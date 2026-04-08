@@ -23,7 +23,7 @@ const NODE_TYPES = {
   api: ApiFlowNode, // fallback
   noop: NoopFlowNode,
   cron: CronFlowNode,
-  'queue': QueueFlowNode, // fallback
+  queue: QueueFlowNode, // fallback
   'durable:subscriber': QueueFlowNode,
   state: StateFlowNode,
 }

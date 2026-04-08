@@ -316,11 +316,7 @@ export async function fetchFlows(): Promise<FlowResponse[]> {
 
     if (trigger.trigger_type === 'http') {
       const rawPath = config.api_path as string | undefined
-      normalized.path = rawPath
-        ? rawPath.startsWith('/')
-          ? rawPath
-          : `/${rawPath}`
-        : config.path
+      normalized.path = rawPath ? (rawPath.startsWith('/') ? rawPath : `/${rawPath}`) : config.path
       normalized.method = config.http_method ?? config.method
     } else if (trigger.trigger_type === 'cron') {
       normalized.expression = config.expression
