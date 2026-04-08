@@ -56,8 +56,9 @@ fn cli_parses_all_subcommands() {
 fn add_subcommand_fields() {
     let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
     match cli.command {
-        Commands::Add { worker_names } => {
-            assert_eq!(worker_names, vec!["ghcr.io/iii-hq/node:latest".to_string()]);
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["ghcr.io/iii-hq/node:latest".to_string()]);
+            assert!(!force);
         }
         _ => panic!("expected Add"),
     }
@@ -68,8 +69,9 @@ fn add_subcommand_fields() {
 fn add_subcommand_multiple_workers() {
     let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "iii-http", "iii-state"]);
     match cli.command {
-        Commands::Add { worker_names } => {
-            assert_eq!(worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
+            assert!(!force);
         }
         _ => panic!("Expected Add command"),
     }

@@ -361,7 +361,7 @@ async fn add_many_with_invalid_worker_returns_nonzero() {
 #[tokio::test]
 async fn handle_managed_add_builtin_creates_config() {
     in_temp_dir_async(|| async {
-        let exit_code = iii_worker::cli::managed::handle_managed_add("iii-http", false, None).await;
+        let exit_code = iii_worker::cli::managed::handle_managed_add("iii-http", false, None, false, false).await;
         assert_eq!(
             exit_code, 0,
             "expected success exit code for builtin worker"
@@ -390,7 +390,7 @@ async fn handle_managed_add_builtin_merges_existing() {
         .unwrap();
 
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, None)
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, None, false, false)
                 .await;
         assert_eq!(exit_code, 0, "expected success exit code for merge");
 
@@ -411,7 +411,7 @@ async fn handle_managed_add_all_builtins_succeed() {
         for name in iii_worker::cli::builtin_defaults::BUILTIN_NAMES {
             let _ = std::fs::remove_file("config.yaml");
 
-            let exit_code = iii_worker::cli::managed::handle_managed_add(name, false, None).await;
+            let exit_code = iii_worker::cli::managed::handle_managed_add(name, false, None, false, false).await;
             assert_eq!(exit_code, 0, "expected success for builtin '{}'", name);
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
