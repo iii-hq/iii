@@ -100,10 +100,12 @@ async fn fetch_latest_release_by_prefix(
 
     if let Ok(response) = client.get(&latest_url).send().await
         && response.status().is_success()
-            && let Ok(release) = response.json::<Release>().await
-                && tag_matches_prefix(&release.tag_name, prefix) && !release.prerelease {
-                    return Ok(release);
-                }
+        && let Ok(release) = response.json::<Release>().await
+        && tag_matches_prefix(&release.tag_name, prefix)
+        && !release.prerelease
+    {
+        return Ok(release);
+    }
 
     // Fallback: list releases and filter by prefix (monorepo edge case)
     let list_url = format!(

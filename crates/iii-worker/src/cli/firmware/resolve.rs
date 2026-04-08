@@ -153,15 +153,17 @@ fn resolve_dir_with_paths(
 
     // 2. ~/.iii/lib/
     if let Some(dir) = lib_dir
-        && dir.join(filename).exists() {
-            return Some(dir.to_path_buf());
-        }
+        && dir.join(filename).exists()
+    {
+        return Some(dir.to_path_buf());
+    }
 
     // 3. Adjacent to current binary
     if let Some(dir) = exe_dir
-        && dir.join(filename).exists() {
-            return Some(dir.to_path_buf());
-        }
+        && dir.join(filename).exists()
+    {
+        return Some(dir.to_path_buf());
+    }
 
     // 4. System paths
     for path in system_paths {

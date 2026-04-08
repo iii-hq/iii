@@ -105,9 +105,11 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     if let Some(env_map) = doc.get("env").and_then(|e| e.as_mapping()) {
         for (k, v) in env_map {
             if let (Some(key), Some(val)) = (k.as_str(), v.as_str())
-                && key != "III_URL" && key != "III_ENGINE_URL" {
-                    env.insert(key.to_string(), val.to_string());
-                }
+                && key != "III_URL"
+                && key != "III_ENGINE_URL"
+            {
+                env.insert(key.to_string(), val.to_string());
+            }
         }
     }
 

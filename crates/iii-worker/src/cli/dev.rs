@@ -150,8 +150,6 @@ pub async fn handle_worker_dev(
     eprintln!("  {}    {}", "Engine".cyan().bold(), engine_url.bold());
     eprintln!();
 
-    
-
     run_dev_worker(
         &selected_runtime,
         &sb_name,

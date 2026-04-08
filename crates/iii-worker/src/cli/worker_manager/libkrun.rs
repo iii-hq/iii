@@ -396,35 +396,36 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
 
     async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<()> {
         if let Ok(pid) = container_id.parse::<u32>()
-            && Self::pid_alive(pid) {
-                tracing::info!(pid = pid, "sending SIGTERM to libkrun VM");
+            && Self::pid_alive(pid)
+        {
+            tracing::info!(pid = pid, "sending SIGTERM to libkrun VM");
+            unsafe {
+                nix::libc::kill(pid as i32, nix::libc::SIGTERM);
+            }
+
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
+            while std::time::Instant::now() < deadline {
                 unsafe {
-                    nix::libc::kill(pid as i32, nix::libc::SIGTERM);
+                    nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
                 }
-
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
-                while std::time::Instant::now() < deadline {
-                    unsafe {
-                        nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
-                    }
-                    if !Self::pid_alive(pid) {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if !Self::pid_alive(pid) {
+                    break;
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
 
-                if Self::pid_alive(pid) {
-                    tracing::warn!(pid = pid, "VM did not exit after SIGTERM, sending SIGKILL");
-                    unsafe {
-                        nix::libc::kill(pid as i32, nix::libc::SIGKILL);
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    unsafe {
-                        nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
-                    }
+            if Self::pid_alive(pid) {
+                tracing::warn!(pid = pid, "VM did not exit after SIGTERM, sending SIGKILL");
+                unsafe {
+                    nix::libc::kill(pid as i32, nix::libc::SIGKILL);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                unsafe {
+                    nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
                 }
             }
+        }
         Ok(())
     }
 
@@ -452,11 +453,12 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             for entry in entries.flatten() {
                 let pid_file = entry.path().join("vm.pid");
                 if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-                    && pid_str.trim() == container_id {
-                        let _ = std::fs::remove_dir_all(entry.path());
-                        tracing::info!(container_id = %container_id, "removed libkrun worker directory");
-                        return Ok(());
-                    }
+                    && pid_str.trim() == container_id
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                    tracing::info!(container_id = %container_id, "removed libkrun worker directory");
+                    return Ok(());
+                }
             }
         }
         Ok(())
