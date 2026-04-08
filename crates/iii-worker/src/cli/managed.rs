@@ -12,24 +12,34 @@ use super::binary_download;
 use super::builtin_defaults::get_builtin_default;
 use super::lifecycle::build_container_spec;
 use super::registry::{
-    MANIFEST_PATH, WorkerType, fetch_registry, parse_worker_input, resolve_image,
+    MANIFEST_PATH, RegistryV2, WorkerType, fetch_registry, parse_worker_input, resolve_image,
 };
 use super::worker_manager::state::WorkerDef;
 
 pub use super::dev::handle_worker_dev;
 
-pub async fn handle_binary_add(input: &str, brief: bool) -> i32 {
+pub async fn handle_binary_add(
+    input: &str,
+    brief: bool,
+    cached_registry: Option<&RegistryV2>,
+) -> i32 {
     let (worker_name, version_override) = parse_worker_input(input);
 
     if !brief {
         eprintln!("  Resolving {}...", worker_name.bold());
     }
-    let registry = match fetch_registry().await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
+    let fetched;
+    let registry = if let Some(r) = cached_registry {
+        r
+    } else {
+        fetched = match fetch_registry().await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
+        &fetched
     };
 
     let entry = match registry.workers.get(&worker_name) {
@@ -144,16 +154,14 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
     let brief = total > 1;
     let mut fail_count = 0;
 
+    // Pre-fetch registry once for all workers (avoids N HTTP roundtrips).
+    let registry = fetch_registry().await.ok();
+
     for (i, name) in worker_names.iter().enumerate() {
         if brief {
-            eprintln!(
-                "  [{}/{}] Adding {}...",
-                i + 1,
-                total,
-                name.bold()
-            );
+            eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
         }
-        let result = handle_managed_add(name, brief).await;
+        let result = handle_managed_add(name, brief, registry.as_ref()).await;
         if result != 0 {
             fail_count += 1;
         }
@@ -174,7 +182,11 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
     if fail_count == 0 { 0 } else { 1 }
 }
 
-pub async fn handle_managed_add(image_or_name: &str, brief: bool) -> i32 {
+pub async fn handle_managed_add(
+    image_or_name: &str,
+    brief: bool,
+    cached_registry: Option<&RegistryV2>,
+) -> i32 {
     // Check for engine-builtin workers first (no network needed).
     if let Some(default_yaml) = get_builtin_default(image_or_name) {
         let already_exists = super::config_file::worker_exists(image_or_name);
@@ -210,25 +222,36 @@ pub async fn handle_managed_add(image_or_name: &str, brief: bool) -> i32 {
     }
 
     // Route binary workers to handle_binary_add; for OCI workers found in the
-    // registry, use the already-fetched entry to avoid a second HTTP roundtrip.
+    // registry, use the cached registry or fetch once if not provided.
     if !image_or_name.contains('/') && !image_or_name.contains(':') {
         let (name, _) = parse_worker_input(image_or_name);
-        if let Ok(registry) = fetch_registry().await
+        let fetched;
+        let registry = if let Some(r) = cached_registry {
+            Some(r)
+        } else {
+            fetched = fetch_registry().await.ok();
+            fetched.as_ref()
+        };
+        if let Some(registry) = registry
             && let Some(entry) = registry.workers.get(&name)
         {
             if matches!(entry.worker_type, Some(WorkerType::Binary)) {
-                return handle_binary_add(image_or_name, brief).await;
+                return handle_binary_add(image_or_name, brief, Some(registry)).await;
             }
             // OCI worker found in registry — use already-fetched entry
             if let (Some(img), Some(ver)) = (&entry.image, &entry.latest) {
                 let image_ref = format!("{}:{}", img, ver);
-                eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
+                if !brief {
+                    eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
+                }
                 return handle_oci_pull_and_add(&name, &image_ref, brief).await;
             }
         }
     }
 
-    eprintln!("  Resolving {}...", image_or_name.bold());
+    if !brief {
+        eprintln!("  Resolving {}...", image_or_name.bold());
+    }
     let (image_ref, name) = match resolve_image(image_or_name).await {
         Ok(v) => v,
         Err(e) => {
@@ -236,14 +259,18 @@ pub async fn handle_managed_add(image_or_name: &str, brief: bool) -> i32 {
             return 1;
         }
     };
-    eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
+    if !brief {
+        eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
+    }
     handle_oci_pull_and_add(&name, &image_ref, brief).await
 }
 
 async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i32 {
     let adapter = super::worker_manager::create_adapter("libkrun");
 
-    eprintln!("  Pulling {}...", image_ref.bold());
+    if !brief {
+        eprintln!("  Pulling {}...", image_ref.bold());
+    }
     let pull_info = match adapter.pull(image_ref).await {
         Ok(info) => info,
         Err(e) => {
@@ -261,24 +288,26 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
             Err(_) => None,
         };
 
-    if let Some(ref m) = manifest {
-        eprintln!("  {} Image pulled successfully", "✓".green());
-        if let Some(v) = m.get("name").and_then(|v| v.as_str()) {
-            eprintln!("  {}: {}", "Name".bold(), v);
-        }
-        if let Some(v) = m.get("version").and_then(|v| v.as_str()) {
-            eprintln!("  {}: {}", "Version".bold(), v);
-        }
-        if let Some(v) = m.get("description").and_then(|v| v.as_str()) {
-            eprintln!("  {}: {}", "Description".bold(), v);
-        }
-        if let Some(size) = pull_info.size_bytes {
-            eprintln!("  {}: {:.1} MB", "Size".bold(), size as f64 / 1_048_576.0);
-        }
-    } else {
-        eprintln!("  {} Image pulled (no manifest found)", "✓".green());
-        if let Some(size) = pull_info.size_bytes {
-            eprintln!("  {}: {:.1} MB", "Size".bold(), size as f64 / 1_048_576.0);
+    if !brief {
+        if let Some(ref m) = manifest {
+            eprintln!("  {} Image pulled successfully", "✓".green());
+            if let Some(v) = m.get("name").and_then(|v| v.as_str()) {
+                eprintln!("  {}: {}", "Name".bold(), v);
+            }
+            if let Some(v) = m.get("version").and_then(|v| v.as_str()) {
+                eprintln!("  {}: {}", "Version".bold(), v);
+            }
+            if let Some(v) = m.get("description").and_then(|v| v.as_str()) {
+                eprintln!("  {}: {}", "Description".bold(), v);
+            }
+            if let Some(size) = pull_info.size_bytes {
+                eprintln!("  {}: {:.1} MB", "Size".bold(), size as f64 / 1_048_576.0);
+            }
+        } else {
+            eprintln!("  {} Image pulled (no manifest found)", "✓".green());
+            if let Some(size) = pull_info.size_bytes {
+                eprintln!("  {}: {:.1} MB", "Size".bold(), size as f64 / 1_048_576.0);
+            }
         }
     }
 
@@ -352,12 +381,7 @@ pub async fn handle_managed_remove_many(worker_names: &[String]) -> i32 {
 
     for (i, name) in worker_names.iter().enumerate() {
         if brief {
-            eprintln!(
-                "  [{}/{}] Removing {}...",
-                i + 1,
-                total,
-                name.bold()
-            );
+            eprintln!("  [{}/{}] Removing {}...", i + 1, total, name.bold());
         }
         let result = handle_managed_remove(name, brief).await;
         if result != 0 {
