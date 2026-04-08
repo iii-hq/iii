@@ -20,9 +20,11 @@ const DEFAULT_CONFIG: NodeConfig = { x: 0, y: 0 }
 const NODE_TYPES = {
   event: EventFlowNode,
   http: ApiFlowNode,
+  api: ApiFlowNode, // fallback
   noop: NoopFlowNode,
   cron: CronFlowNode,
-  queue: QueueFlowNode,
+  'queue': QueueFlowNode, // fallback
+  'durable:subscriber': QueueFlowNode,
   state: StateFlowNode,
 }
 
@@ -93,6 +95,8 @@ export function useFlowState(flow: FlowResponse, flowConfig: FlowConfigResponse)
     if (syncKey === lastSyncKeyRef.current) return
     lastSyncKeyRef.current = syncKey
 
+
+
     setNodes(buildNodes(flow, flowConfig))
     setEdges(buildEdges(flow))
   }, [flow, flowConfig, configStr, setNodes, setEdges])
@@ -129,6 +133,10 @@ export function useFlowState(flow: FlowResponse, flowConfig: FlowConfigResponse)
       }
     }
   }, [savePositions])
+
+  useEffect(() => {
+    console.log(nodes)
+  }, [nodes])
 
   return useMemo(
     () => ({
