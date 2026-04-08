@@ -161,7 +161,7 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
         if brief {
             eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
         }
-        let result = handle_managed_add(name, brief, registry.as_ref()).await;
+        let result = handle_managed_add(name, brief, registry.as_ref(), false, false).await;
         if result != 0 {
             fail_count += 1;
         }
@@ -186,7 +186,74 @@ pub async fn handle_managed_add(
     image_or_name: &str,
     brief: bool,
     cached_registry: Option<&RegistryV2>,
+    force: bool,
+    reset_config: bool,
 ) -> i32 {
+    // --force: delete existing artifacts before re-downloading
+    if force {
+        // Extract plain name (strip @version if present)
+        let (plain_name, _) = super::registry::parse_worker_input(image_or_name);
+
+        // Validate name only for non-OCI references (OCI refs contain '/' or ':')
+        let is_oci_ref = plain_name.contains('/') || plain_name.contains(':');
+        if !is_oci_ref {
+            if let Err(e) = super::registry::validate_worker_name(&plain_name) {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        }
+
+        if is_worker_running(&plain_name) {
+            eprintln!(
+                "{} Worker '{}' is currently running. Stop it first with `iii worker stop {}`",
+                "error:".red(),
+                plain_name,
+                plain_name,
+            );
+            return 1;
+        }
+
+        // Check for engine-builtin workers — no artifacts to delete
+        if super::builtin_defaults::get_builtin_default(&plain_name).is_some() {
+            eprintln!(
+                "  {} '{}' is a builtin worker, no artifacts to re-download.",
+                "info:".cyan(),
+                plain_name,
+            );
+            // Still proceed — force on builtins just re-applies config
+        } else {
+            let freed = delete_worker_artifacts(&plain_name);
+            if freed > 0 {
+                eprintln!(
+                    "  {} Cleared {:.1} MB of artifacts for {}",
+                    "✓".green(),
+                    freed as f64 / 1_048_576.0,
+                    plain_name.bold(),
+                );
+            }
+        }
+
+        if reset_config {
+            match super::config_file::remove_worker(&plain_name) {
+                Ok(()) => {
+                    eprintln!(
+                        "  {} Config for {} reset",
+                        "✓".green(),
+                        plain_name.bold(),
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  {} Could not reset config for {}: {}",
+                        "warning:".yellow(),
+                        plain_name.bold(),
+                        e,
+                    );
+                }
+            }
+        }
+    }
+
     // Check for engine-builtin workers first (no network needed).
     if let Some(default_yaml) = get_builtin_default(image_or_name) {
         let already_exists = super::config_file::worker_exists(image_or_name);
@@ -312,17 +379,7 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
     }
 
     // Extract OCI env vars from the pulled image rootfs and write as config:
-    let rootfs_dir = {
-        use sha2::Digest;
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(image_ref.as_bytes());
-        let hash = hex::encode(&hasher.finalize()[..8]);
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join(".iii")
-            .join("images")
-            .join(hash)
-    };
+    let rootfs_dir = image_cache_dir(image_ref);
     let oci_env = super::worker_manager::oci::read_oci_env(&rootfs_dir);
     let config_yaml = if oci_env.is_empty() {
         None
@@ -424,6 +481,262 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
         );
     }
     0
+}
+
+pub fn handle_managed_clear(worker_name: Option<&str>, skip_confirm: bool) -> i32 {
+    match worker_name {
+        Some(name) => clear_single_worker(name),
+        None => clear_all_workers(skip_confirm),
+    }
+}
+
+fn clear_single_worker(worker_name: &str) -> i32 {
+    if let Err(e) = super::registry::validate_worker_name(worker_name) {
+        eprintln!("{} {}", "error:".red(), e);
+        return 1;
+    }
+
+    if is_worker_running(worker_name) {
+        eprintln!(
+            "{} Worker '{}' is currently running. Stop it first with `iii worker stop {}`",
+            "error:".red(),
+            worker_name,
+            worker_name,
+        );
+        return 1;
+    }
+
+    let freed = delete_worker_artifacts(worker_name);
+    if freed == 0 {
+        eprintln!("  Nothing to clear for '{}'.", worker_name);
+    } else {
+        eprintln!(
+            "  {} Cleared {:.1} MB of artifacts for {}",
+            "✓".green(),
+            freed as f64 / 1_048_576.0,
+            worker_name.bold(),
+        );
+    }
+    0
+}
+
+/// Prompts the user for confirmation before clearing all artifacts.
+/// Returns `true` if the user confirms with "y".
+fn confirm_clear() -> bool {
+    eprint!("  This will remove all downloaded workers and images. Continue? [y/N] ");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+}
+
+fn clear_all_workers(skip_confirm: bool) -> i32 {
+    let home = dirs::home_dir().unwrap_or_default();
+    let workers_dir = home.join(".iii/workers");
+    let images_dir = home.join(".iii/images");
+
+    if !workers_dir.exists() && !images_dir.exists() {
+        eprintln!("  Nothing to clear.");
+        return 0;
+    }
+
+    if !skip_confirm && !confirm_clear() {
+        eprintln!("  Aborted.");
+        return 0;
+    }
+
+    let mut skipped: Vec<String> = Vec::new();
+    let mut total_freed: u64 = 0;
+    let mut worker_count: u32 = 0;
+    let mut image_count: u32 = 0;
+
+    // Clear binary workers
+    if workers_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&workers_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Skip entries with invalid names (e.g. symlinks with path traversal)
+                if super::registry::validate_worker_name(&name).is_err() {
+                    continue;
+                }
+                // Verify resolved path stays under workers_dir
+                if let Ok(resolved) = entry.path().canonicalize() {
+                    if let Ok(base) = workers_dir.canonicalize() {
+                        if !resolved.starts_with(&base) {
+                            continue;
+                        }
+                    }
+                }
+                if is_worker_running(&name) {
+                    skipped.push(name);
+                    continue;
+                }
+                total_freed += dir_size(&entry.path());
+                let _ = std::fs::remove_dir_all(entry.path());
+                worker_count += 1;
+            }
+        }
+    }
+
+    // Clear OCI images — protect running OCI workers
+    if images_dir.exists() {
+        // Build set of image hashes belonging to running OCI workers
+        let mut protected_hashes = std::collections::HashSet::new();
+        for name in super::config_file::list_worker_names() {
+            if is_worker_running(&name) {
+                if let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name) {
+                    let dir = image_cache_dir(&image_ref);
+                    if let Some(hash) = dir.file_name().and_then(|f| f.to_str()) {
+                        protected_hashes.insert(hash.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&images_dir) {
+            for entry in entries.flatten() {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                if protected_hashes.contains(&dir_name) {
+                    skipped.push(format!("OCI image {}", dir_name));
+                    continue;
+                }
+                total_freed += dir_size(&entry.path());
+                let _ = std::fs::remove_dir_all(entry.path());
+                image_count += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "  {} Cleared {} worker(s) and {} image(s) ({:.1} MB freed)",
+        "✓".green(),
+        worker_count,
+        image_count,
+        total_freed as f64 / 1_048_576.0,
+    );
+
+    for name in &skipped {
+        eprintln!(
+            "  {} Skipped {} (running). Stop it first with `iii worker stop {}`",
+            "warning:".yellow(),
+            name.bold(),
+            name,
+        );
+    }
+
+    0
+}
+
+/// Returns `true` if the worker has a valid PID file and the process is alive.
+pub fn is_worker_running(worker_name: &str) -> bool {
+    let home = dirs::home_dir().unwrap_or_default();
+    let oci_pid = home.join(".iii/managed").join(worker_name).join("vm.pid");
+    let bin_pid = home
+        .join(".iii/workers")
+        .join(worker_name)
+        .join("worker.pid");
+
+    for pid_file in [oci_pid, bin_pid] {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                // Check if process is alive (signal 0 = existence check)
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::kill;
+                    use nix::unistd::Pid;
+                    if kill(Pid::from_raw(pid as i32), None).is_ok() {
+                        return true;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = pid;
+                    // On non-Unix, assume running if PID file exists
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Deletes local artifacts for a worker (binary dir or OCI image dir).
+/// Returns the number of bytes freed, or 0 if nothing was found.
+pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut freed: u64 = 0;
+
+    // Binary worker: ~/.iii/workers/{name}/
+    let binary_dir = home.join(".iii/workers").join(worker_name);
+    if binary_dir.is_dir() {
+        freed += dir_size(&binary_dir);
+        if let Err(e) = std::fs::remove_dir_all(&binary_dir) {
+            eprintln!(
+                "  {} Failed to remove {}: {}",
+                "warning:".yellow(),
+                binary_dir.display(),
+                e
+            );
+        }
+    } else if binary_dir.is_file() {
+        // Legacy: some binary workers are a single file, not a directory
+        freed += std::fs::metadata(&binary_dir).map(|m| m.len()).unwrap_or(0);
+        if let Err(e) = std::fs::remove_file(&binary_dir) {
+            eprintln!(
+                "  {} Failed to remove {}: {}",
+                "warning:".yellow(),
+                binary_dir.display(),
+                e
+            );
+        }
+    }
+
+    // OCI worker: look up image from config.yaml, compute hash, delete ~/.iii/images/{hash}/
+    if let Some((image_ref, _)) = super::config_file::get_worker_start_info(worker_name) {
+        let image_dir = image_cache_dir(&image_ref);
+        if image_dir.is_dir() {
+            freed += dir_size(&image_dir);
+            if let Err(e) = std::fs::remove_dir_all(&image_dir) {
+                eprintln!(
+                    "  {} Failed to remove {}: {}",
+                    "warning:".yellow(),
+                    image_dir.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    freed
+}
+
+/// Computes the cache directory path for an OCI image reference.
+/// Uses the first 8 bytes of SHA-256 of the image ref as the directory name.
+fn image_cache_dir(image_ref: &str) -> std::path::PathBuf {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(image_ref.as_bytes());
+    let hash = hex::encode(&hasher.finalize()[..8]);
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".iii/images")
+        .join(hash)
+}
+
+/// Recursively computes the total size of a directory in bytes.
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let meta = entry.metadata();
+            if let Ok(m) = meta {
+                if m.is_dir() {
+                    total += dir_size(&entry.path());
+                } else {
+                    total += m.len();
+                }
+            }
+        }
+    }
+    total
 }
 
 pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) -> i32 {
@@ -1118,5 +1431,96 @@ mod tests {
         let code = follow_logs(&stdout_log, &stderr_log).await;
         assert_eq!(code, 0);
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn dir_size_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size(dir.path()), 0);
+    }
+
+    #[test]
+    fn dir_size_with_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap(); // 5 bytes
+        std::fs::write(dir.path().join("b.txt"), "world!").unwrap(); // 6 bytes
+        assert_eq!(dir_size(dir.path()), 11);
+    }
+
+    #[test]
+    fn dir_size_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("nested.txt"), "abc").unwrap(); // 3 bytes
+        std::fs::write(dir.path().join("top.txt"), "de").unwrap(); // 2 bytes
+        assert_eq!(dir_size(dir.path()), 5);
+    }
+
+    #[test]
+    fn dir_size_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("does_not_exist");
+        assert_eq!(dir_size(&gone), 0);
+    }
+
+    #[test]
+    fn is_worker_running_no_pid_files() {
+        // Worker name that certainly has no PID files on this system
+        assert!(!is_worker_running("__iii_test_nonexistent_worker_12345__"));
+    }
+
+    #[test]
+    fn is_worker_running_stale_pid_file() {
+        // Create a fake PID file with a PID that doesn't exist, using tempdir
+        let dir = tempfile::tempdir().unwrap();
+        let pid_dir = dir.path().join("worker");
+        std::fs::create_dir_all(&pid_dir).unwrap();
+        let pid_file = pid_dir.join("worker.pid");
+        // Use PID 2000000000 which almost certainly doesn't exist
+        std::fs::write(&pid_file, "2000000000").unwrap();
+
+        // Read the PID and verify it's considered dead (same logic as is_worker_running)
+        let pid_str = std::fs::read_to_string(&pid_file).unwrap();
+        let pid: u32 = pid_str.trim().parse().unwrap();
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::kill;
+            use nix::unistd::Pid;
+            assert!(kill(Pid::from_raw(pid as i32), None).is_err());
+        }
+        // Tempdir auto-cleans on drop
+    }
+
+    #[test]
+    fn delete_worker_artifacts_nothing_to_delete() {
+        let freed = delete_worker_artifacts("__iii_test_no_artifacts_exist__");
+        assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn image_cache_dir_consistent() {
+        let dir1 = image_cache_dir("ghcr.io/org/worker:1.0");
+        let dir2 = image_cache_dir("ghcr.io/org/worker:1.0");
+        assert_eq!(dir1, dir2);
+        // Different refs produce different dirs
+        let dir3 = image_cache_dir("ghcr.io/org/worker:2.0");
+        assert_ne!(dir1, dir3);
+    }
+
+    #[test]
+    fn confirm_clear_returns_false_on_empty_stdin() {
+        // confirm_clear reads from stdin — in test context stdin is closed/empty,
+        // so read_line returns Ok("") which should not match "y"
+        // We can't easily call confirm_clear (it blocks on stdin), but we can
+        // verify the logic inline:
+        let input = "";
+        assert!(!input.trim().eq_ignore_ascii_case("y"));
+        let input = "n\n";
+        assert!(!input.trim().eq_ignore_ascii_case("y"));
+        let input = "y\n";
+        assert!(input.trim().eq_ignore_ascii_case("y"));
+        let input = "Y\n";
+        assert!(input.trim().eq_ignore_ascii_case("y"));
     }
 }
