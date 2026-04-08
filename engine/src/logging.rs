@@ -904,7 +904,10 @@ mod tests {
         };
 
         let otel = extract_otel_config(&cfg);
-        assert!(otel.enabled, "should find observability config under workers key");
+        assert!(
+            otel.enabled,
+            "should find observability config under workers key"
+        );
         assert_eq!(otel.service_name, "workers-key-test");
         assert!(matches!(otel.exporter, ExporterType::Memory));
     }
