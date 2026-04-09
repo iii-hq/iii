@@ -94,37 +94,6 @@ pub enum Commands {
         port: u16,
     },
 
-    /// Run a worker project in an isolated environment for development.
-    ///
-    /// Auto-detects the project type (package.json, Cargo.toml, pyproject.toml)
-    /// and runs it inside a VM (libkrun) connected
-    /// to the engine.
-    Dev {
-        /// Path to the worker project directory
-        #[arg(value_name = "PATH")]
-        path: String,
-
-        /// Sandbox name (defaults to directory name)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Runtime to use (auto-detected if not set)
-        #[arg(long, value_parser = ["libkrun"])]
-        runtime: Option<String>,
-
-        /// Force rebuild: re-run setup and install scripts (libkrun only)
-        #[arg(long)]
-        rebuild: bool,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
-    },
-
     /// List all workers and their status
     List,
 

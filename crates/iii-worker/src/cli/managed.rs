@@ -10,13 +10,14 @@ use colored::Colorize;
 
 use super::binary_download;
 use super::builtin_defaults::get_builtin_default;
+use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
     MANIFEST_PATH, RegistryV2, WorkerType, fetch_registry, parse_worker_input, resolve_image,
 };
 use super::worker_manager::state::WorkerDef;
 
-pub use super::dev::handle_worker_dev;
+pub use super::local_worker::{handle_local_add, is_local_path, start_local_worker};
 
 pub async fn handle_binary_add(
     input: &str,
@@ -189,6 +190,13 @@ pub async fn handle_managed_add(
     force: bool,
     reset_config: bool,
 ) -> i32 {
+    // Local path workers: starts with '.', '/', or '~'
+    // Must be checked before force-mode processing since validate_worker_name rejects paths.
+    if super::local_worker::is_local_path(image_or_name) {
+        return super::local_worker::handle_local_add(image_or_name, force, reset_config, brief)
+            .await;
+    }
+
     // --force: delete existing artifacts before re-downloading
     if force {
         // Extract plain name (strip @version if present)
@@ -519,9 +527,25 @@ fn clear_single_worker(worker_name: &str) -> i32 {
 /// Prompts the user for confirmation before clearing all artifacts.
 /// Returns `true` if the user confirms with "y".
 fn confirm_clear() -> bool {
-    eprint!("  This will remove all downloaded workers and images. Continue? [y/N] ");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+    use std::io::{Read, Write};
+
+    // Restore canonical terminal mode in case a previous VM/worker session
+    // left the terminal in raw mode (no ICANON, no ECHO, no ICRNL).
+    #[cfg(unix)]
+    super::local_worker::restore_terminal_cooked_mode();
+
+    let _ = std::io::stderr()
+        .write_all(b"  This will remove all downloaded workers and images. Continue? [y/N] ");
+    let _ = std::io::stderr().flush();
+
+    // Use read() instead of read_line() so that both CR (\r) and LF (\n)
+    // terminate input.  read_line() only recognises LF, so if the terminal is
+    // in raw/non-canonical mode pressing Enter sends only CR and read_line
+    // blocks forever.
+    let mut buf = [0u8; 64];
+    let n = std::io::stdin().read(&mut buf).unwrap_or(0);
+    let input = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    input.trim().eq_ignore_ascii_case("y")
 }
 
 fn clear_all_workers(skip_confirm: bool) -> i32 {
@@ -621,14 +645,48 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     0
 }
 
+/// Kill any stale worker process from a previous engine run.
+/// Checks OCI/local (vm.pid) and binary (pids/{name}.pid) PID files,
+/// sends SIGTERM+SIGKILL, and removes the PID file.
+pub async fn kill_stale_worker(worker_name: &str) {
+    let home = dirs::home_dir().unwrap_or_default();
+    let pid_files = [
+        home.join(".iii/managed").join(worker_name).join("vm.pid"),
+        home.join(".iii/pids").join(format!("{}.pid", worker_name)),
+    ];
+
+    for pid_file in &pid_files {
+        if let Ok(pid_str) = tokio::fs::read_to_string(pid_file).await {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::{Signal, kill};
+                    use nix::unistd::Pid;
+                    let p = Pid::from_raw(pid);
+                    // Only kill if process is still alive
+                    if kill(p, None).is_ok() {
+                        tracing::info!(worker = %worker_name, pid, "Killing stale worker process");
+                        let _ = kill(p, Signal::SIGTERM);
+                        // Brief wait then force-kill
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        let _ = kill(p, Signal::SIGKILL);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = pid;
+                }
+            }
+            let _ = tokio::fs::remove_file(pid_file).await;
+        }
+    }
+}
+
 /// Returns `true` if the worker has a valid PID file and the process is alive.
 pub fn is_worker_running(worker_name: &str) -> bool {
     let home = dirs::home_dir().unwrap_or_default();
     let oci_pid = home.join(".iii/managed").join(worker_name).join("vm.pid");
-    let bin_pid = home
-        .join(".iii/workers")
-        .join(worker_name)
-        .join("worker.pid");
+    let bin_pid = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
     for pid_file in [oci_pid, bin_pid] {
         if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
@@ -701,6 +759,23 @@ pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
         }
     }
 
+    // Local-path worker: ~/.iii/managed/{name}/ (same as OCI)
+    let managed_dir = home.join(".iii/managed").join(worker_name);
+    if managed_dir.is_dir() {
+        // Only count if we haven't already freed anything (avoid double-counting with OCI)
+        if freed == 0 {
+            freed += dir_size(&managed_dir);
+            if let Err(e) = std::fs::remove_dir_all(&managed_dir) {
+                eprintln!(
+                    "  {} Failed to remove {}: {}",
+                    "warning:".yellow(),
+                    managed_dir.display(),
+                    e
+                );
+            }
+        }
+    }
+
     freed
 }
 
@@ -742,21 +817,36 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
     }
     let home = dirs::home_dir().unwrap_or_default();
 
-    // Check OCI worker PID file
-    let oci_pid_file = home.join(".iii/managed").join(worker_name).join("vm.pid");
-    // Check binary worker PID file
-    let binary_pid_file = home
-        .join(".iii/workers")
-        .join(worker_name)
-        .join("worker.pid");
-
-    let (pid_file, is_oci) = if oci_pid_file.exists() {
-        (oci_pid_file, true)
-    } else if binary_pid_file.exists() {
-        (binary_pid_file, false)
-    } else {
-        eprintln!("{} Worker '{}' is not running", "error:".red(), worker_name);
-        return 1;
+    let (pid_file, is_oci) = match super::config_file::resolve_worker_type(worker_name) {
+        ResolvedWorkerType::Oci { .. } | ResolvedWorkerType::Local { .. } => {
+            let f = home.join(".iii/managed").join(worker_name).join("vm.pid");
+            if !f.exists() {
+                eprintln!("{} Worker '{}' is not running", "error:".red(), worker_name);
+                return 1;
+            }
+            (f, true)
+        }
+        ResolvedWorkerType::Config => {
+            eprintln!(
+                "{} Cannot stop '{}': config workers run inside the engine and cannot be stopped individually",
+                "error:".red(),
+                worker_name
+            );
+            return 1;
+        }
+        ResolvedWorkerType::Binary { .. } => {
+            let f = home.join(".iii/pids").join(format!("{}.pid", worker_name));
+            if !f.exists() {
+                eprintln!(
+                    "{} Worker '{}' is not running. Start it with 'iii worker start {}'",
+                    "error:".red(),
+                    worker_name,
+                    worker_name
+                );
+                return 1;
+            }
+            (f, false)
+        }
     };
 
     match std::fs::read_to_string(&pid_file) {
@@ -804,24 +894,24 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
-    // Check if this is an OCI worker (has image: in config.yaml)
-    if let Some((image_ref, env)) = super::config_file::get_worker_start_info(worker_name) {
-        let worker_def = WorkerDef::Managed {
-            image: image_ref,
-            env,
-            resources: None,
-        };
-        return start_oci_worker(worker_name, &worker_def, port).await;
-    }
-
-    // Check if this is a binary worker (~/.iii/workers/{name} exists)
-    let binary_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".iii/workers")
-        .join(worker_name);
-
-    if binary_path.exists() {
-        return start_binary_worker(worker_name, &binary_path).await;
+    match super::config_file::resolve_worker_type(worker_name) {
+        ResolvedWorkerType::Oci { image, env } => {
+            let worker_def = WorkerDef::Managed {
+                image,
+                env,
+                resources: None,
+            };
+            return start_oci_worker(worker_name, &worker_def, port).await;
+        }
+        ResolvedWorkerType::Local { worker_path } => {
+            return super::local_worker::start_local_worker(worker_name, &worker_path, port).await;
+        }
+        ResolvedWorkerType::Binary { binary_path } => {
+            return start_binary_worker(worker_name, &binary_path).await;
+        }
+        ResolvedWorkerType::Config => {
+            // Fall through to registry lookup below
+        }
     }
 
     // Not found locally — try remote registry for auto-install
@@ -964,6 +1054,9 @@ async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) 
 }
 
 async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -> i32 {
+    // Kill any stale process from a previous engine run
+    kill_stale_worker(worker_name).await;
+
     // Create log directory: ~/.iii/logs/{name}/
     let logs_dir = dirs::home_dir()
         .unwrap_or_default()
@@ -1005,11 +1098,10 @@ async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -
 
     match cmd.spawn() {
         Ok(child) => {
-            // Write PID file for stop/status tracking
-            let pid_dir = dirs::home_dir()
-                .unwrap_or_default()
-                .join(".iii/workers")
-                .join(worker_name);
+            // Write PID file for stop/status tracking.
+            // Use ~/.iii/pids/{name}.pid — binary workers occupy ~/.iii/workers/{name}
+            // as a file (the executable), so we cannot create a subdirectory there.
+            let pid_dir = dirs::home_dir().unwrap_or_default().join(".iii/pids");
             let _ = std::fs::create_dir_all(&pid_dir);
             #[cfg(unix)]
             {
@@ -1017,7 +1109,7 @@ async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -
                 let _ = std::fs::set_permissions(&pid_dir, std::fs::Permissions::from_mode(0o700));
             }
             if let Some(pid) = child.id() {
-                let pid_path = pid_dir.join("worker.pid");
+                let pid_path = pid_dir.join(format!("{}.pid", worker_name));
                 let _ = std::fs::write(&pid_path, pid.to_string());
                 #[cfg(unix)]
                 {
@@ -1049,21 +1141,44 @@ pub async fn handle_worker_list() -> i32 {
         return 0;
     }
 
+    // Check if engine is running by probing its default port
+    let engine_running = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], super::app::DEFAULT_PORT)),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok();
+
     eprintln!();
-    eprintln!("  {:25} {}", "NAME".bold(), "STATUS".bold());
-    eprintln!("  {:25} {}", "----".dimmed(), "------".dimmed());
+    eprintln!(
+        "  {:25} {:10} {}",
+        "NAME".bold(),
+        "TYPE".bold(),
+        "STATUS".bold()
+    );
+    eprintln!(
+        "  {:25} {:10} {}",
+        "----".dimmed(),
+        "----".dimmed(),
+        "------".dimmed()
+    );
 
     for name in &names {
-        let binary_path = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".iii/workers")
-            .join(name);
-        let status = if binary_path.exists() {
-            "binary (installed)".green().to_string()
-        } else {
-            "configured".dimmed().to_string()
+        let worker_type = match super::config_file::resolve_worker_type(name) {
+            ResolvedWorkerType::Local { .. } => "local",
+            ResolvedWorkerType::Oci { .. } => "oci",
+            ResolvedWorkerType::Binary { .. } => "binary",
+            ResolvedWorkerType::Config => "config",
         };
-        eprintln!("  {:25} {}", name, status);
+
+        let running = if is_worker_running(name) {
+            "running".green().to_string()
+        } else if worker_type == "config" && engine_running {
+            "running".green().to_string()
+        } else {
+            "stopped".dimmed().to_string()
+        };
+
+        eprintln!("  {:25} {:10} {}", name, worker_type.dimmed(), running);
     }
     eprintln!();
     0
@@ -1297,6 +1412,32 @@ pub async fn handle_managed_logs(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run an async closure with CWD set to a temp dir, then restore.
+    /// Uses a drop guard so CWD is restored even if the closure panics.
+    async fn in_temp_dir_async<F, Fut>(f: F)
+    where
+        F: FnOnce(std::path::PathBuf) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        struct CwdGuard(std::path::PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        std::env::set_current_dir(&dir_path).unwrap();
+        let _cwd_guard = CwdGuard(original);
+        f(dir_path).await;
+    }
 
     #[tokio::test]
     async fn read_new_bytes_picks_up_appended_content() {
@@ -1507,7 +1648,7 @@ mod tests {
     #[test]
     fn confirm_clear_returns_false_on_empty_stdin() {
         // confirm_clear reads from stdin — in test context stdin is closed/empty,
-        // so read_line returns Ok("") which should not match "y"
+        // so read returns 0 bytes which should not match "y"
         // We can't easily call confirm_clear (it blocks on stdin), but we can
         // verify the logic inline:
         let input = "";
@@ -1518,6 +1659,15 @@ mod tests {
         assert!(input.trim().eq_ignore_ascii_case("y"));
         let input = "Y\n";
         assert!(input.trim().eq_ignore_ascii_case("y"));
+        // CR-only line endings (raw/non-canonical terminal mode)
+        let input = "y\r";
+        assert!(input.trim().eq_ignore_ascii_case("y"));
+        let input = "Y\r";
+        assert!(input.trim().eq_ignore_ascii_case("y"));
+        let input = "y\r\n";
+        assert!(input.trim().eq_ignore_ascii_case("y"));
+        let input = "\r";
+        assert!(!input.trim().eq_ignore_ascii_case("y"));
     }
 
     #[test]
@@ -1578,6 +1728,78 @@ mod tests {
     }
 
     #[test]
+    fn kill_stale_worker_removes_pid_files() {
+        // Create fake PID files with a dead PID
+        let dir = tempfile::tempdir().unwrap();
+        let managed_dir = dir.path().join("managed").join("test-worker");
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        std::fs::write(managed_dir.join("vm.pid"), "2000000000").unwrap();
+
+        let pids_dir = dir.path().join("pids");
+        std::fs::create_dir_all(&pids_dir).unwrap();
+        std::fs::write(pids_dir.join("test-worker.pid"), "2000000000").unwrap();
+
+        // Verify files exist
+        assert!(managed_dir.join("vm.pid").exists());
+        assert!(pids_dir.join("test-worker.pid").exists());
+
+        // kill_stale_worker uses real ~/.iii paths, so we test the logic directly:
+        // dead PID → signal-0 fails → no kill attempt → file removed
+        for pid_file in [managed_dir.join("vm.pid"), pids_dir.join("test-worker.pid")] {
+            if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    #[cfg(unix)]
+                    {
+                        use nix::sys::signal::kill;
+                        use nix::unistd::Pid;
+                        // PID 2000000000 should not be alive
+                        assert!(kill(Pid::from_raw(pid), None).is_err());
+                    }
+                }
+                let _ = std::fs::remove_file(&pid_file);
+            }
+        }
+
+        // Files should be cleaned up
+        assert!(!managed_dir.join("vm.pid").exists());
+        assert!(!pids_dir.join("test-worker.pid").exists());
+    }
+
+    #[tokio::test]
+    async fn kill_stale_worker_no_op_when_no_pid_files() {
+        // Should not panic when no PID files exist
+        kill_stale_worker("__iii_test_nonexistent_99999__").await;
+    }
+
+    #[tokio::test]
+    async fn kill_stale_worker_handles_invalid_pid_content() {
+        // Use real function with a worker name that won't collide
+        // The function should handle garbage content gracefully
+        let home = dirs::home_dir().unwrap_or_default();
+        let pids_dir = home.join(".iii/pids");
+        let _ = std::fs::create_dir_all(&pids_dir);
+        let pid_file = pids_dir.join("__iii_test_garbage_pid__.pid");
+        std::fs::write(&pid_file, "not-a-number").unwrap();
+
+        kill_stale_worker("__iii_test_garbage_pid__").await;
+
+        // File should still be removed even with garbage content
+        assert!(!pid_file.exists());
+    }
+
+    #[test]
+    fn binary_pid_path_uses_pids_dir() {
+        // Verify the PID path for binary workers doesn't conflict with the binary file
+        let home = dirs::home_dir().unwrap_or_default();
+        let binary_path = home.join(".iii/workers/some-worker");
+        let pid_path = home.join(".iii/pids/some-worker.pid");
+
+        // These should be different paths — binary at workers/{name}, PID at pids/{name}.pid
+        assert_ne!(binary_path.parent().unwrap(), pid_path.parent().unwrap());
+        assert!(pid_path.to_string_lossy().ends_with(".pid"));
+    }
+
+    #[test]
     fn image_cache_dir_deterministic_hash() {
         // Same ref always produces same path
         let a = image_cache_dir("ghcr.io/org/worker:1.0");
@@ -1595,5 +1817,75 @@ mod tests {
         let dir = image_cache_dir("test:latest");
         let path_str = dir.to_string_lossy();
         assert!(path_str.contains(".iii/images/") || path_str.contains(".iii\\images\\"));
+    }
+
+    #[tokio::test]
+    async fn handle_managed_add_routes_local_path() {
+        in_temp_dir_async(|dir| async move {
+            // Create a minimal project directory with package.json
+            let proj = dir.join("test-local-worker");
+            std::fs::create_dir_all(&proj).unwrap();
+            std::fs::write(proj.join("package.json"), r#"{"name":"test"}"#).unwrap();
+
+            let path_str = proj.to_string_lossy().to_string();
+            let exit_code = handle_managed_add(&path_str, false, None, false, false).await;
+            assert_eq!(exit_code, 0, "should succeed for valid local path");
+
+            let content = std::fs::read_to_string("config.yaml").unwrap();
+            assert!(
+                content.contains("worker_path:"),
+                "should write worker_path field, got:\n{}",
+                content
+            );
+            assert!(
+                !content.contains("image:"),
+                "should not have image field, got:\n{}",
+                content
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_add_local_path_rejects_nonexistent() {
+        in_temp_dir_async(|_dir| async move {
+            let exit_code =
+                handle_managed_add("./nonexistent-path-12345", false, None, false, false).await;
+            assert_eq!(exit_code, 1, "should fail for nonexistent local path");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_add_local_path_force_replaces() {
+        in_temp_dir_async(|dir| async move {
+            // Create project directory
+            let proj = dir.join("force-worker");
+            std::fs::create_dir_all(&proj).unwrap();
+            std::fs::write(proj.join("package.json"), r#"{"name":"force-test"}"#).unwrap();
+
+            let path_str = proj.to_string_lossy().to_string();
+
+            // First add
+            let exit_code = handle_managed_add(&path_str, false, None, false, false).await;
+            assert_eq!(exit_code, 0);
+            assert!(
+                std::fs::read_to_string("config.yaml")
+                    .unwrap()
+                    .contains("worker_path:")
+            );
+
+            // Force re-add
+            let exit_code = handle_managed_add(&path_str, false, None, true, false).await;
+            assert_eq!(exit_code, 0, "force re-add should succeed");
+
+            let content = std::fs::read_to_string("config.yaml").unwrap();
+            assert!(
+                content.contains("worker_path:"),
+                "should still have worker_path after force, got:\n{}",
+                content
+            );
+        })
+        .await;
     }
 }

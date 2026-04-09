@@ -74,24 +74,6 @@ async fn main() -> anyhow::Result<()> {
             address,
             port,
         } => iii_worker::cli::managed::handle_managed_stop(&worker_name, &address, port).await,
-        Commands::Dev {
-            path,
-            name,
-            runtime,
-            rebuild,
-            address,
-            port,
-        } => {
-            iii_worker::cli::managed::handle_worker_dev(
-                &path,
-                name.as_deref(),
-                runtime.as_deref(),
-                rebuild,
-                &address,
-                port,
-            )
-            .await
-        }
         Commands::List => iii_worker::cli::managed::handle_worker_list().await,
         Commands::Logs {
             worker_name,

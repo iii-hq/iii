@@ -93,6 +93,12 @@ pub async fn run_dev(
 
     match cmd.spawn() {
         Ok(mut child) => {
+            // Write PID file so is_worker_running / stop / kill_stale_worker can find us
+            let pid_file = rootfs.join("vm.pid");
+            if let Some(pid) = child.id() {
+                let _ = std::fs::write(&pid_file, pid.to_string());
+            }
+
             let exit_code = tokio::select! {
                 result = child.wait() => {
                     match result {
@@ -112,8 +118,11 @@ pub async fn run_dev(
                 }
             };
 
+            // Clean up PID file on exit
+            let _ = std::fs::remove_file(&pid_file);
+
             #[cfg(unix)]
-            super::super::dev::restore_terminal_cooked_mode();
+            super::super::local_worker::restore_terminal_cooked_mode();
 
             exit_code
         }

@@ -22,9 +22,6 @@ fn cli_parses_all_subcommands() {
         (&["iii-worker", "stop", "pdfkit"], |c| {
             assert!(matches!(c, Commands::Stop { .. }))
         }),
-        (&["iii-worker", "dev", "."], |c| {
-            assert!(matches!(c, Commands::Dev { .. }))
-        }),
         (&["iii-worker", "list"], |c| {
             assert!(matches!(c, Commands::List))
         }),
@@ -78,43 +75,6 @@ fn add_subcommand_multiple_workers() {
         }
         _ => panic!("Expected Add command"),
     }
-}
-
-/// `dev` subcommand requires a path and supports all optional flags.
-#[test]
-fn dev_subcommand_all_flags() {
-    let cli = Cli::parse_from([
-        "iii-worker",
-        "dev",
-        "/tmp/project",
-        "--rebuild",
-        "--name",
-        "my-worker",
-        "--port",
-        "5000",
-    ]);
-    match cli.command {
-        Commands::Dev {
-            path,
-            name,
-            rebuild,
-            port,
-            ..
-        } => {
-            assert_eq!(path, "/tmp/project");
-            assert_eq!(name, Some("my-worker".to_string()));
-            assert!(rebuild);
-            assert_eq!(port, 5000);
-        }
-        _ => panic!("expected Dev"),
-    }
-}
-
-/// `dev` without a path argument fails (path is required).
-#[test]
-fn dev_requires_path() {
-    let result = Cli::try_parse_from(["iii-worker", "dev"]);
-    assert!(result.is_err(), "dev without PATH should fail");
 }
 
 /// `logs` subcommand parses worker name and --follow flag.
@@ -278,6 +238,45 @@ fn add_force_short_flag() {
     let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "-f"]);
     match cli.command {
         Commands::Add { force, .. } => assert!(force),
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add ./path` accepts relative local paths as worker names.
+#[test]
+fn add_subcommand_accepts_local_path() {
+    let cli = Cli::parse_from(["iii-worker", "add", "./my-worker"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["./my-worker"]);
+            assert!(!force);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add /absolute/path` accepts absolute local paths.
+#[test]
+fn add_subcommand_accepts_absolute_path() {
+    let cli = Cli::parse_from(["iii-worker", "add", "/tmp/my-worker"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["/tmp/my-worker"]);
+            assert!(!force);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add ./path --force` parses both path and force flag.
+#[test]
+fn add_subcommand_local_path_with_force() {
+    let cli = Cli::parse_from(["iii-worker", "add", "./my-worker", "--force"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["./my-worker"]);
+            assert!(force);
+        }
         _ => panic!("expected Add"),
     }
 }

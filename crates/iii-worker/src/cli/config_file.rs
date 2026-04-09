@@ -11,6 +11,22 @@ use std::path::Path;
 
 const CONFIG_FILE: &str = "config.yaml";
 
+/// Canonical worker type resolved from config.yaml + filesystem.
+#[derive(Debug)]
+pub enum ResolvedWorkerType {
+    /// OCI worker — has `image:` in config.yaml
+    Oci {
+        image: String,
+        env: std::collections::HashMap<String, String>,
+    },
+    /// Local-path worker — has `worker_path:` in config.yaml
+    Local { worker_path: String },
+    /// Binary worker — executable at ~/.iii/workers/{name}
+    Binary { binary_path: std::path::PathBuf },
+    /// Config-only / builtin worker — no image, path, or binary
+    Config,
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Private helpers (operate on string content, making them easily testable)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -199,6 +215,66 @@ fn extract_worker_config(content: &str, name: &str) -> Option<String> {
     Some(stripped.join("\n"))
 }
 
+/// Extract the `worker_path:` value for a named worker from file content.
+fn extract_worker_path(content: &str, name: &str) -> Option<String> {
+    let target = format!("- name: {}", name);
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+
+    // Find the entry
+    while i < lines.len() {
+        if lines[i].trim() == target {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+
+    // Look for `worker_path:` in the entry's indented lines
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("- name:") || (!lines[i].starts_with(' ') && !lines[i].is_empty()) {
+            break; // hit next entry or top-level key
+        }
+        if let Some(rest) = trimmed.strip_prefix("worker_path:") {
+            return Some(rest.trim().to_string());
+        }
+        i += 1;
+    }
+
+    None
+}
+
+/// Extract the `image:` value for a named worker from file content.
+fn extract_image(content: &str, name: &str) -> Option<String> {
+    let target = format!("- name: {}", name);
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+
+    // Find the entry
+    while i < lines.len() {
+        if lines[i].trim() == target {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+
+    // Look for `image:` in the entry's indented lines
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("- name:") || (!lines[i].starts_with(' ') && !lines[i].is_empty()) {
+            break; // hit next entry or top-level key
+        }
+        if let Some(rest) = trimmed.strip_prefix("image:") {
+            return Some(rest.trim().to_string());
+        }
+        i += 1;
+    }
+
+    None
+}
+
 /// Deep-merge two YAML config strings. `base` provides defaults, `overrides`
 /// takes precedence. Both are parsed as serde_json::Value and merged.
 fn merge_yaml_configs(base: &str, overrides: &str) -> String {
@@ -263,6 +339,67 @@ pub fn append_worker_with_image(
     append_worker_impl(name, Some(image), config_yaml)
 }
 
+/// Same as [`append_worker`] but writes a `worker_path: {worker_path}` field
+/// instead of `image:`. Used for local directory-based workers.
+pub fn append_worker_with_path(
+    name: &str,
+    worker_path: &str,
+    config_yaml: Option<&str>,
+) -> Result<(), String> {
+    super::registry::validate_worker_name(name)?;
+    let path = Path::new(CONFIG_FILE);
+
+    let mut content = if path.exists() {
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("failed to read {}: {}", CONFIG_FILE, e))?
+    } else {
+        String::new()
+    };
+
+    if worker_exists_in(&content, name) {
+        let existing_config = extract_worker_config(&content, name);
+        content = remove_worker_from(&content, name);
+
+        if let Some(existing) = existing_config {
+            if let Some(incoming) = config_yaml {
+                let merged = merge_yaml_configs(incoming, &existing);
+                return append_to_content_with_fields(
+                    &mut content,
+                    path,
+                    name,
+                    None,
+                    Some(worker_path),
+                    Some(&merged),
+                );
+            }
+            return append_to_content_with_fields(
+                &mut content,
+                path,
+                name,
+                None,
+                Some(worker_path),
+                Some(&existing),
+            );
+        }
+    }
+
+    append_to_content_with_fields(
+        &mut content,
+        path,
+        name,
+        None,
+        Some(worker_path),
+        config_yaml,
+    )
+}
+
+/// Returns the `worker_path:` value for a named worker in `config.yaml`, if present.
+pub fn get_worker_path(name: &str) -> Option<String> {
+    let path = Path::new(CONFIG_FILE);
+    let content = std::fs::read_to_string(path).ok()?;
+    extract_worker_path(&content, name)
+}
+
 fn append_worker_impl(
     name: &str,
     image: Option<&str>,
@@ -309,6 +446,19 @@ fn append_to_content(
     image: Option<&str>,
     config_yaml: Option<&str>,
 ) -> Result<(), String> {
+    append_to_content_with_fields(content, path, name, image, None, config_yaml)
+}
+
+/// Low-level: appends a worker entry with optional `image` and `worker_path`
+/// fields to `content` and writes to `path`.
+fn append_to_content_with_fields(
+    content: &mut String,
+    path: &Path,
+    name: &str,
+    image: Option<&str>,
+    worker_path: Option<&str>,
+    config_yaml: Option<&str>,
+) -> Result<(), String> {
     // Ensure there is a `workers:` key.
     if !content.contains("workers:") {
         if !content.is_empty() && !content.ends_with('\n') {
@@ -321,6 +471,9 @@ fn append_to_content(
     let mut entry = format!("  - name: {}\n", name);
     if let Some(img) = image {
         entry.push_str(&format!("    image: {}\n", img));
+    }
+    if let Some(wp) = worker_path {
+        entry.push_str(&format!("    worker_path: {}\n", wp));
     }
     if let Some(cfg) = config_yaml {
         let cfg = cfg.trim_end_matches('\n');
@@ -348,6 +501,8 @@ fn append_to_content(
     std::fs::write(path, &new_content)
         .map_err(|e| format!("failed to write {}: {}", CONFIG_FILE, e))?;
 
+    *content = new_content;
+
     Ok(())
 }
 
@@ -355,33 +510,58 @@ fn append_to_content(
 pub fn get_worker_image(name: &str) -> Option<String> {
     let path = Path::new(CONFIG_FILE);
     let content = std::fs::read_to_string(path).ok()?;
+    extract_image(&content, name)
+}
 
-    let target = format!("- name: {}", name);
-    let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
-
-    // Find the entry
-    while i < lines.len() {
-        if lines[i].trim() == target {
-            i += 1;
-            break;
-        }
-        i += 1;
+/// Resolve the worker type from config.yaml content (no filesystem access for binary check).
+/// Used by tests and by `resolve_worker_type`.
+fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorkerType {
+    // Check worker_path first (local), then image (OCI).
+    // Consistent ordering: local > OCI > binary > config.
+    if let Some(worker_path) = extract_worker_path(content, name) {
+        return ResolvedWorkerType::Local { worker_path };
     }
 
-    // Look for `image:` in the entry's indented lines
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with("- name:") || (!lines[i].starts_with(' ') && !lines[i].is_empty()) {
-            break; // hit next entry or top-level key
+    if let Some(image) = extract_image(content, name) {
+        let config_str = extract_worker_config(content, name);
+        let mut env = std::collections::HashMap::new();
+        if let Some(cfg) = config_str {
+            if let Ok(val) = serde_yaml::from_str::<serde_json::Value>(&cfg) {
+                flatten_value_to_env(&val, "", &mut env);
+            }
         }
-        if let Some(rest) = trimmed.strip_prefix("image:") {
-            return Some(rest.trim().to_string());
-        }
-        i += 1;
+        return ResolvedWorkerType::Oci { image, env };
     }
 
-    None
+    ResolvedWorkerType::Config
+}
+
+/// Resolve the canonical worker type for a named worker.
+/// Reads config.yaml once and checks the filesystem for binary workers.
+/// Priority: local (worker_path) > OCI (image) > binary (~/.iii/workers/{name}) > config.
+pub fn resolve_worker_type(name: &str) -> ResolvedWorkerType {
+    let path = std::path::Path::new(CONFIG_FILE);
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return check_binary_fallback(name),
+    };
+
+    match resolve_worker_type_from_content(&content, name) {
+        ResolvedWorkerType::Config => check_binary_fallback(name),
+        other => other,
+    }
+}
+
+fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
+    let binary_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".iii/workers")
+        .join(name);
+    if binary_path.exists() {
+        ResolvedWorkerType::Binary { binary_path }
+    } else {
+        ResolvedWorkerType::Config
+    }
 }
 
 /// Returns the `config:` block for a named worker as a flat `HashMap<String, String>`.
@@ -777,6 +957,57 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_image_found() {
+        let content = "workers:\n  - name: pdfkit\n    image: ghcr.io/iii-hq/pdfkit:1.0\n";
+        let image = extract_image(content, "pdfkit");
+        assert_eq!(image, Some("ghcr.io/iii-hq/pdfkit:1.0".to_string()));
+    }
+
+    #[test]
+    fn test_extract_image_not_found() {
+        let content = "workers:\n  - name: local-w\n    worker_path: /tmp/w\n";
+        let image = extract_image(content, "local-w");
+        assert!(image.is_none());
+    }
+
+    #[test]
+    fn test_resolve_worker_type_local() {
+        let content = "workers:\n  - name: my-local\n    worker_path: /home/user/proj\n";
+        let resolved = resolve_worker_type_from_content(content, "my-local");
+        assert!(
+            matches!(resolved, ResolvedWorkerType::Local { worker_path } if worker_path == "/home/user/proj")
+        );
+    }
+
+    #[test]
+    fn test_resolve_worker_type_oci() {
+        let content = "workers:\n  - name: pdfkit\n    image: ghcr.io/iii-hq/pdfkit:1.0\n    config:\n      timeout: 30\n";
+        let resolved = resolve_worker_type_from_content(content, "pdfkit");
+        match resolved {
+            ResolvedWorkerType::Oci { image, env } => {
+                assert_eq!(image, "ghcr.io/iii-hq/pdfkit:1.0");
+                assert_eq!(env.get("TIMEOUT"), Some(&"30".to_string()));
+            }
+            other => panic!("expected Oci, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_worker_type_config_fallback() {
+        let content = "workers:\n  - name: builtin\n";
+        let resolved = resolve_worker_type_from_content(content, "builtin");
+        assert!(matches!(resolved, ResolvedWorkerType::Config));
+    }
+
+    #[test]
+    fn test_resolve_worker_type_local_takes_precedence_over_image() {
+        let content =
+            "workers:\n  - name: weird\n    worker_path: /tmp/proj\n    image: ghcr.io/org/w:1\n";
+        let resolved = resolve_worker_type_from_content(content, "weird");
+        assert!(matches!(resolved, ResolvedWorkerType::Local { .. }));
+    }
+
+    #[test]
     fn test_remove_worker_from_first_entry() {
         let content = "workers:\n  - name: first\n    config:\n      x: 1\n  - name: second\n";
         let result = remove_worker_from(content, "first");
@@ -790,6 +1021,39 @@ mod tests {
         let result = remove_worker_from(content, "solo");
         assert!(!result.contains("- name: solo"));
         assert!(result.contains("workers:"));
+    }
+
+    #[test]
+    fn test_append_worker_with_path_field() {
+        let mut content = "workers:\n".to_string();
+        let path = std::path::Path::new("/tmp/test-config.yaml");
+        let _ = std::fs::write(path, &content);
+        append_to_content_with_fields(
+            &mut content,
+            path,
+            "local-worker",
+            None,
+            Some("/absolute/path/to/worker"),
+            Some("timeout: 30"),
+        )
+        .unwrap();
+        assert!(content.contains("- name: local-worker"));
+        assert!(content.contains("worker_path: /absolute/path/to/worker"));
+        assert!(content.contains("timeout: 30"));
+    }
+
+    #[test]
+    fn test_get_worker_path_found() {
+        let content = "workers:\n  - name: my-worker\n    worker_path: /home/user/my-worker\n    config:\n      timeout: 30\n";
+        let path = extract_worker_path(content, "my-worker");
+        assert_eq!(path, Some("/home/user/my-worker".to_string()));
+    }
+
+    #[test]
+    fn test_get_worker_path_not_found() {
+        let content = "workers:\n  - name: oci-worker\n    image: ghcr.io/org/worker:tag\n";
+        let path = extract_worker_path(content, "oci-worker");
+        assert!(path.is_none());
     }
 
     #[test]
