@@ -130,10 +130,10 @@ pub async fn run_dev(
 
             if background {
                 eprintln!(
-                    "  {} {} started (pid: {:?})",
+                    "  {} {} started (pid: {})",
                     "✓".green(),
                     worker_name.bold(),
-                    child.id()
+                    child.id().unwrap_or(0)
                 );
                 return 0;
             }
