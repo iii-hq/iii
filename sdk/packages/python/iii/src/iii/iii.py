@@ -895,7 +895,19 @@ class III:
             else:
 
                 async def wrapped(input_data: Any) -> Any:
-                    return await self._loop.run_in_executor(None, handler, input_data)
+                    loop = asyncio.get_running_loop()
+                    future: asyncio.Future[Any] = loop.create_future()
+
+                    def _run() -> None:
+                        try:
+                            result = handler(input_data)
+                            loop.call_soon_threadsafe(future.set_result, result)
+                        except BaseException as exc:
+                            loop.call_soon_threadsafe(future.set_exception, exc)
+
+                    t = threading.Thread(target=_run, daemon=True)
+                    t.start()
+                    return await future
 
             self._functions[func.id] = RemoteFunctionData(message=msg, handler=wrapped)
 
