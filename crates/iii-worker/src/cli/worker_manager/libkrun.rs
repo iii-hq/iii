@@ -96,7 +96,7 @@ pub async fn run_dev(
 
     if background {
         let logs_dir = dirs::home_dir()
-            .unwrap_or_default()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".iii/logs")
             .join(worker_name);
         if let Err(e) = std::fs::create_dir_all(&logs_dir) {
@@ -124,7 +124,8 @@ pub async fn run_dev(
         Ok(mut child) => {
             // Write PID file so is_worker_running / stop / kill_stale_worker can find us
             let pid_file = rootfs.join("vm.pid");
-            if let Some(pid) = child.id() {
+            let pid = child.id().unwrap_or(0);
+            if pid > 0 {
                 let _ = std::fs::write(&pid_file, pid.to_string());
             }
 
@@ -133,7 +134,7 @@ pub async fn run_dev(
                     "  {} {} started (pid: {})",
                     "✓".green(),
                     worker_name.bold(),
-                    child.id().unwrap_or(0)
+                    pid
                 );
                 return 0;
             }
