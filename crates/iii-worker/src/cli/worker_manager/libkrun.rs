@@ -126,7 +126,17 @@ pub async fn run_dev(
             let pid_file = rootfs.join("vm.pid");
             let pid = child.id().unwrap_or(0);
             if pid > 0 {
-                let _ = std::fs::write(&pid_file, pid.to_string());
+                if let Err(e) = std::fs::write(&pid_file, pid.to_string()) {
+                    eprintln!(
+                        "{} Failed to write PID file {}: {}",
+                        "error:".red(),
+                        pid_file.display(),
+                        e
+                    );
+                    // Kill the child so we don't leave an untracked VM running
+                    let _ = child.kill().await;
+                    return 1;
+                }
             }
 
             if background {

@@ -148,7 +148,12 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
         }
         let src_path = entry.path();
         let dst_path = dst.join(&name);
-        if src_path.is_dir() {
+        let meta = std::fs::symlink_metadata(&src_path)
+            .map_err(|e| format!("Failed to read metadata {}: {}", src_path.display(), e))?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.file_type().is_dir() {
             std::fs::create_dir_all(&dst_path).map_err(|e| e.to_string())?;
             copy_dir_contents(&src_path, &dst_path)?;
         } else {
