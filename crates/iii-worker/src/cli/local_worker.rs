@@ -359,7 +359,23 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
             "config.yaml".dimmed(),
         );
         eprintln!("  {}  {}", "Path".cyan().bold(), abs_path_str.bold());
-        eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+
+        // Auto-start if engine is running
+        if super::managed::is_engine_running() {
+            let port = super::app::DEFAULT_PORT;
+            let result = start_local_worker(&worker_name, &abs_path_str, port).await;
+            if result == 0 {
+                eprintln!("  {} Worker auto-started", "\u{2713}".green());
+            } else {
+                eprintln!(
+                    "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
+                    "\u{26a0}".yellow(),
+                    worker_name
+                );
+            }
+        } else {
+            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+        }
     }
 
     0
