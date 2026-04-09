@@ -712,6 +712,16 @@ pub fn is_worker_running(worker_name: &str) -> bool {
     false
 }
 
+/// Probes `127.0.0.1:DEFAULT_PORT` to check whether the engine is listening.
+/// Uses a 200ms timeout to avoid blocking the CLI.
+pub fn is_engine_running() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], super::app::DEFAULT_PORT)),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok()
+}
+
 /// Deletes local artifacts for a worker (binary dir or OCI image dir).
 /// Returns the number of bytes freed, or 0 if nothing was found.
 pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
@@ -1141,12 +1151,7 @@ pub async fn handle_worker_list() -> i32 {
         return 0;
     }
 
-    // Check if engine is running by probing its default port
-    let engine_running = std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], super::app::DEFAULT_PORT)),
-        std::time::Duration::from_millis(200),
-    )
-    .is_ok();
+    let engine_running = is_engine_running();
 
     eprintln!();
     eprintln!(
