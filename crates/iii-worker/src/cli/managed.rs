@@ -145,7 +145,22 @@ pub async fn handle_binary_add(
             worker_name.bold(),
             "config.yaml".dimmed(),
         );
-        eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+
+        // Auto-start if engine is running
+        if is_engine_running() {
+            let result = start_binary_worker(&worker_name, &install_path).await;
+            if result == 0 {
+                eprintln!("  {} Worker auto-started", "✓".green());
+            } else {
+                eprintln!(
+                    "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
+                    "⚠".yellow(),
+                    worker_name
+                );
+            }
+        } else {
+            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+        }
     }
     0
 }
@@ -287,7 +302,23 @@ pub async fn handle_managed_add(
                     "config.yaml".dimmed(),
                 );
             }
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+
+            // Auto-start if engine is running
+            if is_engine_running() {
+                let port = super::app::DEFAULT_PORT;
+                let result = handle_managed_start(image_or_name, "0.0.0.0", port).await;
+                if result == 0 {
+                    eprintln!("  {} Worker auto-started", "✓".green());
+                } else {
+                    eprintln!(
+                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
+                        "⚠".yellow(),
+                        image_or_name
+                    );
+                }
+            } else {
+                eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+            }
         }
         return 0;
     }
@@ -430,7 +461,28 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
             name.bold(),
             "config.yaml".dimmed(),
         );
-        eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+
+        // Auto-start if engine is running
+        if is_engine_running() {
+            let port = super::app::DEFAULT_PORT;
+            let worker_def = WorkerDef::Managed {
+                image: image_ref.to_string(),
+                env: oci_env.into_iter().collect(),
+                resources: None,
+            };
+            let result = start_oci_worker(name, &worker_def, port).await;
+            if result == 0 {
+                eprintln!("  {} Worker auto-started", "✓".green());
+            } else {
+                eprintln!(
+                    "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
+                    "⚠".yellow(),
+                    name
+                );
+            }
+        } else {
+            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+        }
     }
     0
 }
