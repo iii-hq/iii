@@ -561,6 +561,8 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         vcpus,
         ram,
         managed_dir,
+        true,
+        worker_name,
     )
     .await
 }
