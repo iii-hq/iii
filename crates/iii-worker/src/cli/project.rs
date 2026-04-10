@@ -6,9 +6,13 @@
 
 //! Project auto-detection and manifest loading for worker dev sessions.
 
+use colored::Colorize;
 use std::collections::HashMap;
 
 pub const WORKER_MANIFEST: &str = "iii.worker.yaml";
+
+// Keep in sync with infer_scripts() match arms
+const SUPPORTED_LANGUAGES: &[&str] = &["typescript", "python", "rust"];
 
 pub struct ProjectInfo {
     pub name: String,
@@ -17,6 +21,28 @@ pub struct ProjectInfo {
     pub install_cmd: String,
     pub run_cmd: String,
     pub env: HashMap<String, String>,
+}
+
+impl ProjectInfo {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(ref lang) = self.language {
+            if !lang.is_empty() && !SUPPORTED_LANGUAGES.contains(&lang.as_str()) {
+                return Err(format!(
+                    "unrecognized language '{}' in {} — supported: {}",
+                    lang,
+                    WORKER_MANIFEST,
+                    SUPPORTED_LANGUAGES.join(", ")
+                ));
+            }
+        }
+        if self.run_cmd.is_empty() {
+            return Err(format!(
+                "no run command could be determined — check {} for missing `scripts.start` or `runtime` section",
+                WORKER_MANIFEST
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub fn infer_scripts(
@@ -30,11 +56,30 @@ pub fn infer_scripts(
             "export PATH=$HOME/.bun/bin:$PATH && bun install".to_string(),
             format!("export PATH=$HOME/.bun/bin:$PATH && bun {}", entry),
         ),
-        ("typescript", "npm") | ("typescript", "yarn") | ("typescript", "pnpm") => (
+        ("typescript", "npm") => (
             "command -v node >/dev/null || (curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs)".to_string(),
             "npm install".to_string(),
             format!("npx tsx {}", entry),
         ),
+        // Note: pnpm exec and yarn exec require tsx in devDependencies (unlike npx which auto-installs)
+        ("typescript", "pnpm") => (
+            "command -v node >/dev/null || (curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs)".to_string(),
+            "pnpm install".to_string(),
+            format!("pnpm exec tsx {}", entry),
+        ),
+        ("typescript", "yarn") => (
+            "command -v node >/dev/null || (curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs)".to_string(),
+            "yarn install".to_string(),
+            format!("yarn exec tsx {}", entry),
+        ),
+        ("typescript", other) => {
+            eprintln!(
+                "{} unrecognized package_manager '{}' for typescript — supported: npm, yarn, pnpm, bun",
+                "error:".red(),
+                other
+            );
+            (String::new(), String::new(), String::new())
+        },
         ("python", _) => (
             "command -v python3 >/dev/null || (apt-get update && apt-get install -y python3-venv python3-pip)".to_string(),
             "python3 -m venv .venv && .venv/bin/pip install -e .".to_string(),
@@ -98,6 +143,16 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
             .to_string();
         (setup, install, start)
     } else {
+        if !language.is_empty() && package_manager.is_empty() {
+            eprintln!(
+                "{} missing `package_manager` in {}\n\n  runtime:\n    language: {}\n    package_manager: npm    <-- add this line\n    entry: {}\n\nhint: valid options are: npm, yarn, pnpm, bun",
+                "error:".red(),
+                manifest_path.display(),
+                language,
+                entry
+            );
+            return None;
+        }
         infer_scripts(language, package_manager, entry)
     };
 
@@ -325,5 +380,71 @@ runtime:
         std::fs::write(dir.path().join("iii.worker.yaml"), yaml).unwrap();
         let info = load_project_info(dir.path()).unwrap();
         assert_eq!(info.name, "manifest-worker");
+    }
+
+    #[test]
+    fn infer_scripts_pnpm() {
+        let (setup, install, run) = infer_scripts("typescript", "pnpm", "src/index.ts");
+        assert!(setup.contains("nodejs") || setup.contains("nodesource"));
+        assert!(install.contains("pnpm install"));
+        assert!(run.contains("pnpm exec tsx src/index.ts"));
+    }
+
+    #[test]
+    fn infer_scripts_yarn() {
+        let (setup, install, run) = infer_scripts("typescript", "yarn", "src/index.ts");
+        assert!(setup.contains("nodejs") || setup.contains("nodesource"));
+        assert!(install.contains("yarn install"));
+        assert!(run.contains("yarn exec tsx src/index.ts"));
+    }
+
+    #[test]
+    fn infer_scripts_typescript_unknown_pm() {
+        let (setup, install, run) = infer_scripts("typescript", "deno", "src/index.ts");
+        assert!(setup.is_empty());
+        assert!(install.is_empty());
+        assert!(run.is_empty());
+    }
+
+    #[test]
+    fn load_manifest_missing_package_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: broken-worker
+runtime:
+  language: typescript
+  entry: src/index.ts
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        assert!(load_from_manifest(&manifest_path).is_none());
+    }
+
+    #[test]
+    fn validate_empty_run_cmd() {
+        let project = ProjectInfo {
+            name: "test".into(),
+            language: Some("typescript".into()),
+            setup_cmd: String::new(),
+            install_cmd: String::new(),
+            run_cmd: String::new(),
+            env: HashMap::new(),
+        };
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn validate_unrecognized_language() {
+        let project = ProjectInfo {
+            name: "test".into(),
+            language: Some("typescirpt".into()),
+            setup_cmd: String::new(),
+            install_cmd: String::new(),
+            run_cmd: "node index.js".into(),
+            env: HashMap::new(),
+        };
+        let err = project.validate().unwrap_err();
+        assert!(err.contains("unrecognized language"));
+        assert!(err.contains("typescirpt"));
     }
 }
