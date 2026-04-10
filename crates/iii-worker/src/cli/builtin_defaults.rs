@@ -51,7 +51,7 @@ adapter:
 
 const QUEUE_DEFAULT: &str = "\
 adapter:
-  name: kv
+  name: builtin
 ";
 
 const PUBSUB_DEFAULT: &str = "\

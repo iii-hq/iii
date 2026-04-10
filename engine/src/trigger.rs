@@ -13,6 +13,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
+    ("http", "iii-http"),
+    ("cron", "iii-cron"),
+    ("subscribe", "iii-pubsub"),
+    ("state", "iii-state"),
+    ("durable:subscriber", "iii-queue"),
+    ("stream", "iii-stream"),
+    ("stream:join", "iii-stream"),
+    ("stream:leave", "iii-stream"),
+    ("log", "iii-observability"),
+];
+
+fn worker_name_for_trigger_type(trigger_type_id: &str) -> Option<&'static str> {
+    BUILTIN_TRIGGER_TYPES
+        .iter()
+        .find(|(id, _)| *id == trigger_type_id)
+        .map(|(_, worker)| *worker)
+}
+
 pub struct TriggerType {
     pub id: String,
     pub _description: String,
@@ -215,10 +234,22 @@ impl TriggerRegistry {
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
         let trigger_type_id = trigger.trigger_type.clone();
         let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
-            tracing::error!(
-                trigger_type_id = %trigger_type_id.purple(),
-                "Trigger type not found"
-            );
+            if let Some(worker_name) = worker_name_for_trigger_type(&trigger_type_id) {
+                tracing::error!(
+                    "Trigger type {} requires the {} worker, which is not active in your project.\n\n  To fix this, run:\n\n    {}\n",
+                    trigger_type_id.purple().bold(),
+                    worker_name.cyan().bold(),
+                    format!("iii worker add {}", worker_name).green().bold()
+                );
+                return Err(anyhow::anyhow!(
+                    "Trigger type \"{}\" not found — worker {} is missing. Run: iii worker add {}",
+                    trigger_type_id,
+                    worker_name,
+                    worker_name
+                ));
+            }
+
+            tracing::error!("Trigger type {} not found", trigger_type_id.purple());
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
@@ -445,6 +476,20 @@ mod tests {
         let result = registry.register_trigger(trigger).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Trigger type not found");
+        assert!(registry.triggers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_trigger_registry_register_trigger_missing_builtin_worker() {
+        let registry = TriggerRegistry::new();
+        let trigger = make_trigger("t1", "http");
+        let result = registry.register_trigger(trigger).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("iii worker add iii-http"),
+            "Expected hint with 'iii worker add iii-http', got: {err_msg}"
+        );
         assert!(registry.triggers.is_empty());
     }
 

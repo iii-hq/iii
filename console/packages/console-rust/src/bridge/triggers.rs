@@ -1,6 +1,6 @@
 use iii_sdk::{IIIError, RegisterTriggerInput, III};
 use serde_json::json;
-use tracing::{debug, info};
+use tracing::info;
 
 /// Most triggers use HTTP GET method. The invoke endpoint uses POST.
 pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
@@ -141,7 +141,7 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
             "http_method": method
         });
 
-        debug!("Registering API trigger: {} -> {}", api_path, function_path);
+        info!("Registering API trigger: {} -> {}", api_path, function_path);
 
         bridge.register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
@@ -149,11 +149,6 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
             config,
             metadata: None,
         })?;
-
-        info!(
-            "Successfully registered API trigger: {} -> {}",
-            api_path, function_path
-        );
     }
 
     Ok(())
