@@ -109,7 +109,7 @@ pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
 
 /// Remove workspace contents except installed dependency directories.
 /// This lets us re-copy source files without losing `npm install` artifacts.
-fn clean_workspace_preserving_deps(workspace: &Path) {
+pub fn clean_workspace_preserving_deps(workspace: &Path) {
     let preserve = ["node_modules", "target", ".venv", "__pycache__"];
     if let Ok(entries) = std::fs::read_dir(workspace) {
         for entry in entries.flatten() {

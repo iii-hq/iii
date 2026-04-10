@@ -3,7 +3,10 @@
 //! These tests import the real `Cli`, `Commands`, and `VmBootArgs` types from
 //! the crate library, ensuring any CLI changes are caught at compile time.
 
+mod common;
+
 use clap::Parser;
+use common::isolation::in_temp_dir;
 use iii_worker::{Cli, Commands, VmBootArgs};
 
 /// All 10 subcommands parse without error.
@@ -178,8 +181,9 @@ fn vm_boot_args_defaults() {
 /// Manifest YAML roundtrip (serde pattern test, kept as-is).
 #[test]
 fn manifest_yaml_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
-    let yaml = r#"
+    in_temp_dir(|| {
+        let dir = std::env::current_dir().unwrap();
+        let yaml = r#"
 name: integration-test-worker
 runtime:
   language: typescript
@@ -192,17 +196,18 @@ resources:
   cpus: 4
   memory: 4096
 "#;
-    std::fs::write(dir.path().join("iii.worker.yaml"), yaml).unwrap();
+        std::fs::write(dir.join("iii.worker.yaml"), yaml).unwrap();
 
-    let content = std::fs::read_to_string(dir.path().join("iii.worker.yaml")).unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        let content = std::fs::read_to_string(dir.join("iii.worker.yaml")).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
 
-    assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
-    assert_eq!(parsed["runtime"]["language"].as_str(), Some("typescript"));
-    assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
-    assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
-    assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
-    assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
+        assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
+        assert_eq!(parsed["runtime"]["language"].as_str(), Some("typescript"));
+        assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
+        assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
+        assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
+        assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
+    });
 }
 
 /// `add --force` parses the force flag correctly.
@@ -350,33 +355,35 @@ fn clear_yes_flag() {
 /// OCI config JSON parsing (serde pattern test, kept as-is).
 #[test]
 fn oci_config_json_parsing() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = serde_json::json!({
-        "config": {
-            "Entrypoint": ["/usr/bin/node"],
-            "Cmd": ["server.js", "--port", "8080"],
-            "Env": [
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "NODE_VERSION=20.11.0",
-                "HOME=/root"
-            ]
-        }
+    in_temp_dir(|| {
+        let dir = std::env::current_dir().unwrap();
+        let config = serde_json::json!({
+            "config": {
+                "Entrypoint": ["/usr/bin/node"],
+                "Cmd": ["server.js", "--port", "8080"],
+                "Env": [
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "NODE_VERSION=20.11.0",
+                    "HOME=/root"
+                ]
+            }
+        });
+        std::fs::write(
+            dir.join(".oci-config.json"),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.join(".oci-config.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let entrypoint = parsed["config"]["Entrypoint"].as_array().unwrap();
+        assert_eq!(entrypoint[0].as_str(), Some("/usr/bin/node"));
+
+        let cmd = parsed["config"]["Cmd"].as_array().unwrap();
+        assert_eq!(cmd.len(), 3);
+
+        let env = parsed["config"]["Env"].as_array().unwrap();
+        assert_eq!(env.len(), 3);
     });
-    std::fs::write(
-        dir.path().join(".oci-config.json"),
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .unwrap();
-
-    let content = std::fs::read_to_string(dir.path().join(".oci-config.json")).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-    let entrypoint = parsed["config"]["Entrypoint"].as_array().unwrap();
-    assert_eq!(entrypoint[0].as_str(), Some("/usr/bin/node"));
-
-    let cmd = parsed["config"]["Cmd"].as_array().unwrap();
-    assert_eq!(cmd.len(), 3);
-
-    let env = parsed["config"]["Env"].as_array().unwrap();
-    assert_eq!(env.len(), 3);
 }

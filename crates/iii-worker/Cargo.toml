@@ -17,6 +17,9 @@ path = "src/main.rs"
 default = []
 embed-libkrunfw = []
 embed-init = ["iii-filesystem/embed-init"]
+# Test-only features — gate heavy integration tests (never in default)
+integration-vm = []
+integration-oci = []
 
 [dependencies]
 iii-filesystem = { path = "../iii-filesystem" }
