@@ -80,7 +80,9 @@ pub fn configure_network() -> Result<(), InitError> {
     // Write /etc/hosts mapping localhost to the gateway IP so DNS resolution
     // of "localhost" returns the gateway (reachable via the virtual network)
     // instead of 127.0.0.1 (unreachable guest loopback).
-    let _ = std::fs::write("/etc/hosts", format!("{gw}\tlocalhost\n"));
+    if let Err(e) = std::fs::write("/etc/hosts", format!("{gw}\tlocalhost\n")) {
+        eprintln!("iii-init: warning: failed to write /etc/hosts: {e}");
+    }
 
     result
 }
