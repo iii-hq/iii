@@ -25,7 +25,7 @@ Use the concepts below when they fit the task. Not every state reaction needs al
 ## Architecture
 
     state::set, state::update, or state::delete
-      → StateModule emits change event
+      → iii-state emits change event
         → registerTrigger type:'state' (scope match)
           → condition_function_id check (if configured)
             → registerFunction handler ({ new_value, old_value, key, event_type })
@@ -70,7 +70,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-StateModule must be enabled in iii-config.yaml for state triggers to fire. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+iii-state must be enabled in iii-config.yaml for state triggers to fire. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

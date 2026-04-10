@@ -1,7 +1,7 @@
 ---
 name: iii-engine-config
 description: >-
-  Configures the iii engine via iii-config.yaml — modules, adapters, queue
+  Configures the iii engine via iii-config.yaml — workers, adapters, queue
   configs, ports, and environment variables. Use when deploying, tuning, or
   customizing the engine.
 ---
@@ -12,46 +12,47 @@ Comparable to: Infrastructure as code, Docker Compose configs
 
 ## Key Concepts
 
-Use the concepts below when they fit the task. Not every deployment needs all modules or adapters.
+Use the concepts below when they fit the task. Not every deployment needs all workers or adapters.
 
-- **iii-config.yaml** defines the engine port, modules, workers, adapters, and queue configs
+- **iii-config.yaml** defines the engine workers, adapters, and queue configs
 - **Environment variables** use `${VAR:default}` syntax (default is optional)
-- **Modules** are the building blocks — each enables a capability (API, state, queue, cron, etc.)
-- **Workers** are external binary modules managed via `iii.toml` and the `iii worker` CLI commands
-- **Adapters** swap storage backends per module: in_memory, file_based, Redis, RabbitMQ
+- **Workers** are the building blocks — each enables a capability (API, state, queue, cron, etc.)
+- **External workers** are binary modules managed via `iii.toml` and the `iii worker` CLI commands
+- **Adapters** swap storage backends per worker: in_memory, file_based, Redis, RabbitMQ
 - **Queue configs** control retry count, concurrency, ordering, and backoff per named queue
 - The engine listens on port **49134** (WebSocket) for SDK/worker connections
 
 ## Architecture
 
-The iii-config.yaml file is loaded by the iii engine binary at startup. Modules are initialized in order, adapters connect to their backends, and the engine begins accepting worker connections over WebSocket on port 49134. External workers defined in the `workers` section are spawned as child processes automatically.
+The iii-config.yaml file is loaded by the iii engine binary at startup. Workers are initialized in order, adapters connect to their backends, and the engine begins accepting worker connections over WebSocket on port 49134. External workers defined in the config are spawned as child processes automatically.
 
 ## iii Primitives Used
 
-| Primitive                                      | Purpose                                |
-| ---------------------------------------------- | -------------------------------------- |
-| `modules::api::RestApiModule`                  | HTTP API server (port 3111)            |
-| `modules::stream::StreamModule`                | WebSocket streams (port 3112)          |
-| `modules::state::StateModule`                  | Persistent key-value state storage     |
-| `modules::queue::QueueModule`                  | Background job processing with retries |
-| `modules::pubsub::PubSubModule`                | In-process event fanout                |
-| `modules::cron::CronModule`                    | Time-based scheduling                  |
-| `modules::observability::OtelModule`           | OpenTelemetry traces, metrics, logs    |
-| `modules::http_functions::HttpFunctionsModule` | Outbound HTTP call security            |
-| `modules::shell::ExecModule`                   | Spawn external processes               |
-| `modules::bridge_client::BridgeClientModule`   | Distributed cross-engine invocation    |
-| `modules::telemetry::TelemetryModule`          | Anonymous product analytics            |
-| `workers` section in iii-config.yaml               | External binary workers (worker modules)|
-| `iii.toml`                                     | Worker manifest (name → version)       |
-| `iii worker add NAME[@VERSION]`                | Install a worker from the registry     |
-| `iii worker remove NAME`                       | Uninstall a worker                     |
-| `iii worker list`                              | List installed workers                 |
-| `iii worker info NAME`                         | Show registry info for a worker        |
+| Primitive                        | Purpose                                |
+| -------------------------------- | -------------------------------------- |
+| `iii-http`                       | HTTP API server (port 3111)            |
+| `iii-stream`                     | WebSocket streams (port 3112)          |
+| `iii-state`                      | Persistent key-value state storage     |
+| `iii-queue`                      | Background job processing with retries |
+| `iii-pubsub`                     | In-process event fanout                |
+| `iii-cron`                       | Time-based scheduling                  |
+| `iii-observability`              | OpenTelemetry traces, metrics, logs    |
+| `iii-http-functions`             | Outbound HTTP call security            |
+| `iii-exec`                       | Spawn external processes               |
+| `iii-bridge`                     | Distributed cross-engine invocation    |
+| `iii-telemetry`                  | Anonymous product analytics            |
+| `iii-worker-manager`             | Worker connection lifecycle            |
+| `iii-engine-functions`           | Built-in engine functions              |
+| `iii.toml`                       | Worker manifest (name → version)       |
+| `iii worker add NAME[@VERSION]`  | Install a worker from the registry     |
+| `iii worker remove NAME`         | Uninstall a worker                     |
+| `iii worker list`                | List installed workers                 |
+| `iii worker info NAME`           | Show registry info for a worker        |
 
 ## Reference Implementation
 
 See [../references/iii-config.yaml](../references/iii-config.yaml) for the full working example — a complete
-engine configuration with all modules, adapters, queue configs, and environment variable patterns.
+engine configuration with all workers, adapters, queue configs, and environment variable patterns.
 
 ## Common Patterns
 
@@ -64,10 +65,67 @@ Code using this pattern commonly includes, when relevant:
 - Prod queues: RabbitMQ adapter with `amqp_url: ${AMQP_URL}` and `queue_mode: quorum`
 - Queue config: `queue_configs` with `max_retries`, `concurrency`, `type`, `backoff_ms` per queue name
 - Env var with fallback: `port: ${III_PORT:49134}`
-- Health check: `curl http://localhost:3111/health`
+- Health check: `curl http://127.0.0.1:3111/health`
 - Ports: 3111 (API), 3112 (streams), 49134 (engine WS), 9464 (Prometheus)
 
-### Worker Module System
+### Worker Config Format (v0.11+)
+
+Workers in `iii-config.yaml` use `name:` and optional `config:`:
+
+```yaml
+workers:
+  - name: iii-http
+    config:
+      port: 3111
+      host: 127.0.0.1
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store.db
+
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
+
+  - name: iii-stream
+    config:
+      port: 3112
+      host: 127.0.0.1
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/stream_store
+
+  - name: iii-cron
+    config:
+      adapter:
+        name: kv
+
+  - name: iii-pubsub
+    config:
+      adapter:
+        name: local
+
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: my-service
+      exporter: memory
+      sampling_ratio: 1.0
+      metrics_enabled: true
+      logs_enabled: true
+```
+
+### External Worker System
 
 External workers are installed via the CLI and configured in `iii-config.yaml`:
 
@@ -87,13 +145,13 @@ Worker config blocks in `iii-config.yaml` use marker comments for automatic mana
 ```yaml
 workers:
   # === iii:pdfkit BEGIN ===
-  - class: workers::pdfkit::PdfKitWorker
+  - name: pdfkit
     config:
       output_dir: ./output
   # === iii:pdfkit END ===
 ```
 
-At startup, the engine resolves each worker class, finds the binary in `iii_workers/`, and spawns it as a child process. Worker binaries are stored in the `iii_workers/` directory.
+At startup, the engine resolves each worker name, finds the binary in `iii_workers/`, and spawns it as a child process.
 
 ## Adapting This Pattern
 
@@ -102,10 +160,11 @@ Use the adaptations below when they apply to the task.
 - Start with file_based adapters for development, switch to Redis/RabbitMQ for production
 - Define queue configs per workload: high-concurrency for parallel jobs, FIFO for ordered processing
 - Use environment variables with defaults for all deployment-sensitive values (URLs, ports, credentials)
-- Enable only the modules you need — unused modules can be omitted from the config
+- Enable only the workers you need — unused workers can be omitted from the config
 - Use `iii worker add` to install external workers and auto-generate their config blocks
 - Set `max_retries` and `backoff_ms` based on your failure tolerance and SLA requirements
-- Configure `OtelModule` with your collector endpoint and sampling ratio for observability
+- Configure `iii-observability` with your collector endpoint and sampling ratio
+- Use `host: 127.0.0.1` instead of `host: localhost` to avoid IPv4/IPv6 mismatches on macOS
 
 ## Pattern Boundaries
 

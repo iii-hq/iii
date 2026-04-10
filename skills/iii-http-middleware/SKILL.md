@@ -24,7 +24,7 @@ Use the concepts below when they fit the task. Not every middleware setup needs 
 ## Architecture
 
     HTTP request
-      → RestApiModule (port 3111)
+      → iii-http (port 3111)
         → Middleware 1 (continue / respond)
           → Middleware 2 (continue / respond)
             → registerFunction handler
