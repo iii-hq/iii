@@ -224,7 +224,7 @@ fn is_option_arc_session(ty: &syn::Type) -> bool {
         .path
         .segments
         .last()
-        .map_or(false, |seg| seg.ident == "Session")
+        .is_some_and(|seg| seg.ident == "Session")
 }
 
 #[proc_macro_attribute]

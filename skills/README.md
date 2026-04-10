@@ -68,6 +68,7 @@ Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teache
 | --- | --- |
 | [iii-functions-and-triggers](./iii-functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
 | [iii-http-endpoints](./iii-http-endpoints) | Expose functions as REST API endpoints |
+| [iii-http-middleware](./iii-http-middleware) | Engine-level middleware for HTTP triggers |
 | [iii-cron-scheduling](./iii-cron-scheduling) | Schedule recurring tasks with cron expressions |
 | [iii-queue-processing](./iii-queue-processing) | Async job processing with retries, concurrency, and ordering |
 | [iii-state-management](./iii-state-management) | Distributed key-value state across functions |
@@ -100,6 +101,7 @@ Compose multiple iii primitives into common backend architectures. Each includes
 | Skill | What it does |
 | --- | --- |
 | [iii-node-sdk](./iii-node-sdk) | Node.js/TypeScript SDK reference |
+| [iii-browser-sdk](./iii-browser-sdk) | Browser SDK reference |
 | [iii-python-sdk](./iii-python-sdk) | Python SDK reference |
 | [iii-rust-sdk](./iii-rust-sdk) | Rust SDK reference |
 

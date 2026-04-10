@@ -18,7 +18,7 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 - The handler receives a **TriggerConfig** containing `id`, `function_id`, and `config`
 - When the external event fires, call `iii.trigger({ function_id, payload: event })` to invoke the registered function
 - **unregisterTriggerType** cleans up when the trigger type is no longer needed
-- Do not reuse built-in trigger type names: `http`, `cron`, `queue`, `state`, `stream`, `subscribe`
+- Do not reuse built-in trigger type names: `http`, `cron`, `durable:subscriber`, `state`, `stream`, `subscribe`
 
 ## Architecture
 

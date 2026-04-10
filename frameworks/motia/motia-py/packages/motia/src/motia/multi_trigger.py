@@ -38,7 +38,7 @@ class MultiTriggerStepBuilder:
 
         async def unified_handler(input_data: Any, ctx: Any) -> Any:
             trigger_type = ctx.trigger.type
-            if trigger_type == "queue" and "queue" in handlers:
+            if trigger_type == "durable:subscriber" and "queue" in handlers:
                 return await handlers["queue"](input_data, ctx)
             if trigger_type == "http" and "http" in handlers:
                 return await handlers["http"](input_data, ctx)

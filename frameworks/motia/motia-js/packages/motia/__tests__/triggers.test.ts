@@ -46,7 +46,7 @@ describe('triggers', () => {
   describe('queue', () => {
     it('returns queue trigger with topic', () => {
       const t = queue('orders')
-      expect(t.type).toBe('queue')
+      expect(t.type).toBe('durable:subscriber')
       expect(t.topic).toBe('orders')
     })
 

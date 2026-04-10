@@ -55,7 +55,7 @@ async def payments_charge(data):
 iii.register_function("payments::charge", payments_charge)
 
 iii.register_trigger({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "payments::charge",
     "config": {"queue": "payment"},
 })

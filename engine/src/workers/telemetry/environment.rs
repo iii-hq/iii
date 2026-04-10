@@ -369,7 +369,7 @@ impl EnvironmentInfo {
             host_user_id: std::env::var("III_HOST_USER_ID")
                 .ok()
                 .filter(|s| !s.is_empty())
-                .or_else(|| find_project_ini_device_id()),
+                .or_else(find_project_ini_device_id),
         }
     }
 

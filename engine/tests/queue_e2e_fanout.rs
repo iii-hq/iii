@@ -77,7 +77,7 @@ async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) ->
             .trigger_registry
             .register_trigger(Trigger {
                 id: format!("trig-{}", uuid::Uuid::new_v4()),
-                trigger_type: "queue".to_string(),
+                trigger_type: "durable:subscriber".to_string(),
                 function_id: fid.to_string(),
                 config: json!({ "topic": topic }),
                 worker_id: None,
@@ -141,7 +141,7 @@ async fn fanout_replicas_compete_within_function() {
             .trigger_registry
             .register_trigger(Trigger {
                 id: format!("trig-{}", uuid::Uuid::new_v4()),
-                trigger_type: "queue".to_string(),
+                trigger_type: "durable:subscriber".to_string(),
                 function_id: "test::replica_fn".to_string(),
                 config: json!({ "topic": &topic }),
                 worker_id: None,
@@ -183,7 +183,7 @@ async fn fanout_mixed_functions_and_replicas() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", uuid::Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::mix_a".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -197,7 +197,7 @@ async fn fanout_mixed_functions_and_replicas() {
             .trigger_registry
             .register_trigger(Trigger {
                 id: format!("trig-{}", uuid::Uuid::new_v4()),
-                trigger_type: "queue".to_string(),
+                trigger_type: "durable:subscriber".to_string(),
                 function_id: "test::mix_b".to_string(),
                 config: json!({ "topic": &topic }),
                 worker_id: None,
@@ -272,7 +272,7 @@ async fn fanout_unsubscribe_stops_delivery() {
         .trigger_registry
         .register_trigger(Trigger {
             id: trigger_a_id.clone(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::unsub_a".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -285,7 +285,7 @@ async fn fanout_unsubscribe_stops_delivery() {
         .trigger_registry
         .register_trigger(Trigger {
             id: trigger_b_id.clone(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::unsub_b".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -305,7 +305,7 @@ async fn fanout_unsubscribe_stops_delivery() {
 
     engine
         .trigger_registry
-        .unregister_trigger(trigger_b_id, Some("queue".to_string()))
+        .unregister_trigger(trigger_b_id, Some("durable:subscriber".to_string()))
         .await
         .expect("unregister trigger B should succeed");
 
@@ -385,7 +385,7 @@ async fn fanout_with_condition_function() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", uuid::Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::cond_always".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -398,7 +398,7 @@ async fn fanout_with_condition_function() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", uuid::Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::cond_filtered".to_string(),
             config: json!({
                 "topic": &topic,

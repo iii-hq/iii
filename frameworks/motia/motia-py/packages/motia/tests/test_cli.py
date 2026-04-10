@@ -28,7 +28,7 @@ def test_load_module_from_path_returns_none_without_loader(monkeypatch: pytest.M
 def test_load_and_register_step_registers_valid_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step_path = tmp_path / "valid_step.py"
     step_path.write_text(
-        "config = {'name': 'demo', 'triggers': [{'type': 'queue', 'topic': 'demo.created'}]}\n"
+        "config = {'name': 'demo', 'triggers': [{'type': 'durable:subscriber', 'topic': 'demo.created'}]}\n"
         "async def handler(data, ctx):\n"
         "    return data\n"
     )

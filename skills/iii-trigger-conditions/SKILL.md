@@ -20,7 +20,7 @@ Use the concepts below when they fit the task. Not every trigger needs a conditi
 - The engine calls the condition function before the handler; the handler runs only if `true`
 - Attach a condition to any trigger type via `condition_function_id` in the trigger config
 - The condition function receives the same event data as the handler would
-- Works with all trigger types: http, queue, cron, state, stream, subscribe
+- Works with all trigger types: http, durable:subscriber, cron, state, stream, subscribe
 
 ## Architecture
 
@@ -58,7 +58,7 @@ Code using this pattern commonly includes, when relevant:
 Use the adaptations below when they apply to the task.
 
 - Replace the condition logic with your business rules (threshold checks, role validation, feature flags)
-- Conditions work on all trigger types — use them on HTTP triggers for auth guards, on queue triggers for message filtering
+- Conditions work on all trigger types — use them on HTTP triggers for auth guards, on durable:subscriber triggers for message filtering
 - Keep condition functions lightweight and fast since they run on every trigger fire
 - Combine multiple business rules in a single condition function rather than chaining conditions
 - Condition functions can call `trigger()` internally to check state or other functions

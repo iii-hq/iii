@@ -1,14 +1,14 @@
 import { clsx } from 'clsx'
 import { CalendarClock, CircleOff, Database, Link2, ListOrdered, Waypoints } from 'lucide-react'
 
-type Variant = 'event' | 'http' | 'noop' | 'cron' | 'queue' | 'state'
+type Variant = 'event' | 'http' | 'noop' | 'cron' | 'durable:subscriber' | 'state'
 
 const iconStyles: Record<Variant, string> = {
   event: 'bg-blue-500/20 text-blue-400',
   http: 'bg-[#F3F724]/20 text-[#F3F724]',
   noop: 'bg-purple-500/20 text-purple-400',
   cron: 'bg-orange-500/20 text-orange-400',
-  queue: 'bg-teal-500/20 text-teal-400',
+  'durable:subscriber': 'bg-teal-500/20 text-teal-400',
   state: 'bg-emerald-500/20 text-emerald-400',
 }
 
@@ -19,7 +19,7 @@ function toVariant(value?: string): Variant {
     case 'http':
     case 'noop':
     case 'cron':
-    case 'queue':
+    case 'durable:subscriber':
     case 'state':
       return normalized
     case 'webhook':
@@ -42,7 +42,7 @@ function NodeIcon({ variant }: { variant: Variant }) {
       return <CircleOff className={cls} />
     case 'event':
       return <Waypoints className={cls} />
-    case 'queue':
+    case 'durable:subscriber':
       return <ListOrdered className={cls} />
     case 'state':
       return <Database className={cls} />
@@ -61,7 +61,7 @@ type Props = {
 const triggerOrder: Record<string, number> = {
   api: 1,
   event: 2,
-  queue: 3,
+  'durable:subscriber': 3,
   state: 4,
   cron: 5,
   noop: 6,

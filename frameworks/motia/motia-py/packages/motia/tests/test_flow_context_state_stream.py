@@ -44,7 +44,7 @@ def queue_context():
         state=None,
         logger=None,
         streams={},
-        trigger=TriggerInfo(type="queue", topic="test.topic"),
+        trigger=TriggerInfo(type="durable:subscriber", topic="test.topic"),
         input_value={"topic": "test.topic", "data": {}},
     )
 
