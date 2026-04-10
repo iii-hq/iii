@@ -3,10 +3,10 @@ title: 'Quickstart'
 description: 'Scaffold a cross-language project and call functions across Python and TypeScript through the iii engine.'
 ---
 
-In this tutorial you will scaffold a cross-language project with the iii, start a Python worker and a TypeScript worker, and call functions across languages through the iii engine.
+In this tutorial you will setup a simple iii project that ...
 
 <Info title="Install iii before proceeding">
-  Make sure you have installed iii before proceeding. If you haven't then visit the [Getting Started](/index#getting-started) guide first.
+  Make sure you have installed iii before proceeding. If you haven't then visit the [Install](/install) guide first.
 </Info>
 
 ## 1. Scaffold the project
@@ -40,16 +40,20 @@ The engine is now listening on `ws://localhost:49134`. Keep this terminal open.
 
 ## 3. Start the Python worker
 
+<Info title="Workers can run anywhere">
+  Workers only need a WebSocket connection to the iii engine. They can run locally, in the cloud, replicated in kubernetes, or anywhere else.
+</Info>
+
 Open a second terminal in the `quickstart` directory and start the first worker:
 
 ```bash
-iii worker dev ./workers/math-worker
+iii worker add ./workers/math-worker
 ```
 
 You should see:
 
 ```
-Math worker started - listening for calls
+math-worker started — registered math::add
 ```
 
 This worker registered the function `math::add` with the engine. You could call this function right now using the command below.
@@ -66,13 +70,13 @@ any functionality into a worker and then seamlessly compose that worker with oth
 Open a third terminal in the `quickstart` directory and start the second worker:
 
 ```bash
-iii worker dev ./workers/caller-worker
+iii worker add ./workers/caller-worker
 ```
 
 You should see:
 
 ```
-Caller worker started - listening for calls
+caller-worker started — registered math::add_two_numbers
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.
@@ -151,7 +155,7 @@ is running, its language, or anything else.
 ### Worker manifest
 
 Each worker has an `iii.worker.yaml` that describes how to run the worker. Here is the Python worker's manifest.
-While these workers are started with the `iii worker dev` command they do not need to be running alongside the iii
+While these workers are started with the `iii worker add` command they do not need to be running alongside the iii
 instance. These workers can run anywhere and even be replicated. Every worker simply connects to iii over WebSocket.
 iii then handles all routing.
 
@@ -198,6 +202,10 @@ iii console
 Open your browser to [http://localhost:3113/](http://localhost:3113/) to see logs, traces, and runtime state for the running system.
 
 <img src="/images/console/dashboard.png" alt="iii Console dashboard" />
+
+<Tip>
+  See the full [Console documentation](/console) for details on invoking functions, inspecting traces, viewing state, and more.
+</Tip>
 
 ## Next Steps
 
