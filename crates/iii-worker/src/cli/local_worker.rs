@@ -530,8 +530,8 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     // 7. Build script
     let script = build_libkrun_local_script(&project, is_prepared);
 
-    let script_path = managed_dir.join("tmp").join("iii-dev-run.sh");
-    std::fs::create_dir_all(managed_dir.join("tmp")).ok();
+    let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
+    std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
     if let Err(e) = std::fs::write(&script_path, &script) {
         eprintln!("{} Failed to write run script: {}", "error:".red(), e);
         return 1;
@@ -575,7 +575,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     let exec_path = "/bin/sh";
     let args = vec![
         "-c".to_string(),
-        "cd /workspace && exec bash /tmp/iii-dev-run.sh".to_string(),
+        "cd /workspace && exec bash /opt/iii/dev-run.sh".to_string(),
     ];
 
     super::worker_manager::libkrun::run_dev(

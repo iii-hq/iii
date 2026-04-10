@@ -16,9 +16,7 @@ fn configure_network_source_omits_loopback_setup() {
         .expect("configure_network function exists");
     let block = &source[fn_start..];
     let closure_start = block.find("let result = (||").expect("closure exists");
-    let closure_end = block[closure_start..]
-        .find("})();")
-        .expect("closure end");
+    let closure_end = block[closure_start..].find("})();").expect("closure end");
     let closure_body = &block[closure_start..closure_start + closure_end];
 
     // The closure must NOT bring up lo -- that's the whole point of the change.

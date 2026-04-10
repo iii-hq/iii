@@ -117,8 +117,7 @@ pub async fn run_dev(
                 return 1;
             }
         };
-        cmd.arg("--console-output")
-            .arg(logs_dir.join("stdout.log"));
+        cmd.arg("--console-output").arg(logs_dir.join("stdout.log"));
         cmd.stdout(stdout_file).stderr(stderr_file);
     }
 
