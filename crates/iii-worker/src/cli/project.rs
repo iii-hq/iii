@@ -42,8 +42,8 @@ pub fn infer_scripts(
         ),
         ("rust", _) => (
             "command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)".to_string(),
-            ". $HOME/.cargo/env && cargo build".to_string(),
-            ". $HOME/.cargo/env && cargo run".to_string(),
+            "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build".to_string(),
+            "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo run".to_string(),
         ),
         _ => (String::new(), String::new(), entry.to_string()),
     }
@@ -148,9 +148,9 @@ pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
         ProjectInfo {
             name: "rust".into(),
             language: Some("rust".into()),
-            setup_cmd: "command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && . $HOME/.cargo/env)".into(),
-            install_cmd: ". $HOME/.cargo/env && cargo build --release".into(),
-            run_cmd: ". $HOME/.cargo/env && cargo run --release".into(),
+            setup_cmd: "command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)".into(),
+            install_cmd: "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build --release".into(),
+            run_cmd: "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo run --release".into(),
             env: HashMap::new(),
         }
     } else if path.join("pyproject.toml").exists() || path.join("requirements.txt").exists() {

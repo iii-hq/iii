@@ -167,6 +167,7 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
+    parts.push("export HOME=${HOME:-/root}".to_string());
     parts.push("export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string());
     parts.push("export LANG=${LANG:-C.UTF-8}".to_string());
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());

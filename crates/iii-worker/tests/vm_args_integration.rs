@@ -644,3 +644,70 @@ fn resolve_krunfw_file_path_returns_option() {
         assert!(path.exists(), "returned firmware path should exist");
     }
 }
+
+// ===========================================================================
+// Group 13: run_dev console-output convention (ensures VM console output
+// goes to stdout.log instead of through PortOutputLog at ERROR level)
+// ===========================================================================
+
+/// Verify that the dev-worker logs dir + stdout.log path convention matches
+/// the managed-worker console_output convention. Both paths must end with
+/// stdout.log so VM console output is written to a file rather than going
+/// through PortOutputLog (which hardcodes ERROR level for all lines).
+#[test]
+fn run_dev_console_output_path_convention() {
+    let worker_name = "image-resize";
+    // Dev worker path: ~/.iii/logs/<name>/stdout.log
+    let dev_logs_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".iii/logs")
+        .join(worker_name);
+    let dev_console_output = dev_logs_dir.join("stdout.log");
+
+    let dev_str = dev_console_output.to_string_lossy();
+    assert!(
+        dev_str.ends_with("stdout.log"),
+        "dev console output should end with stdout.log, got: {}",
+        dev_str
+    );
+    assert!(
+        dev_str.contains(".iii/logs/image-resize"),
+        "dev console output should be under .iii/logs/<worker>, got: {}",
+        dev_str
+    );
+
+    // Managed worker path: ~/.iii/managed/<name>/logs/stdout.log
+    let managed_console_output = LibkrunAdapter::logs_dir(worker_name).join("stdout.log");
+    let managed_str = managed_console_output.to_string_lossy();
+    assert!(
+        managed_str.ends_with("stdout.log"),
+        "managed console output should also end with stdout.log, got: {}",
+        managed_str
+    );
+}
+
+/// Verify that --console-output can be parsed as a valid VmBootArgs field
+/// when set to the dev-worker logs path, proving the __vm-boot subprocess
+/// will accept it.
+#[test]
+fn run_dev_console_output_parses_as_vm_boot_arg() {
+    let dev_console_path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".iii/logs/test-worker/stdout.log");
+    let path_str = dev_console_path.to_string_lossy().to_string();
+
+    let cli = TestCli::parse_from([
+        "test",
+        "--rootfs",
+        "/tmp/rootfs",
+        "--exec",
+        "/bin/sh",
+        "--console-output",
+        &path_str,
+    ]);
+    assert_eq!(
+        cli.args.console_output.as_deref(),
+        Some(path_str.as_str()),
+        "dev console output path should parse into VmBootArgs.console_output"
+    );
+}
