@@ -139,6 +139,37 @@ fn remove_worker_from(content: &str, name: &str) -> String {
     out
 }
 
+/// Rewrites a standalone `workers: []` line to `workers:` so subsequent list
+/// items can be appended without producing invalid YAML.
+///
+/// Only touches lines where the `workers:` key is followed by an inline empty
+/// list marker (`[]`, with tolerated surrounding whitespace). Populated inline
+/// lists (e.g. `workers: [foo]`) and normal block lists are left untouched.
+fn normalize_empty_workers_list(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+
+    for line in &lines {
+        if let Some(rest) = line.strip_prefix("workers:") {
+            let trimmed = rest.trim();
+            let is_empty_inline_list = trimmed.starts_with('[')
+                && trimmed.ends_with(']')
+                && trimmed[1..trimmed.len() - 1].trim().is_empty();
+            if is_empty_inline_list {
+                out.push("workers:".to_string());
+                continue;
+            }
+        }
+        out.push((*line).to_string());
+    }
+
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
 /// Extract the raw YAML config block for a named worker from file content.
 ///
 /// Returns the config lines (without the `config:` key itself) as a string
@@ -459,6 +490,10 @@ fn append_to_content_with_fields(
     worker_path: Option<&str>,
     config_yaml: Option<&str>,
 ) -> Result<(), String> {
+    // Normalize `workers: []` → `workers:` so appending list items below
+    // produces valid YAML.
+    *content = normalize_empty_workers_list(content);
+
     // Ensure there is a `workers:` key.
     if !content.contains("workers:") {
         if !content.is_empty() && !content.ends_with('\n') {
@@ -1127,5 +1162,40 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_strips_inline_marker() {
+        assert_eq!(normalize_empty_workers_list("workers: []\n"), "workers:\n");
+        assert_eq!(normalize_empty_workers_list("workers: []"), "workers:");
+        assert_eq!(normalize_empty_workers_list("workers:  []\n"), "workers:\n");
+        assert_eq!(normalize_empty_workers_list("workers: [ ]\n"), "workers:\n");
+        assert_eq!(normalize_empty_workers_list("workers: []  \n"), "workers:\n");
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_leaves_populated_list_alone() {
+        let content = "workers:\n  - name: foo\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_leaves_inline_populated_list_alone() {
+        // Pin current behavior: inline populated lists are left untouched.
+        let content = "workers: [foo]\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_no_workers_key() {
+        let content = "other: value\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_preserves_other_content() {
+        let content = "before: 1\nworkers: []\nafter: 2\n";
+        let expected = "before: 1\nworkers:\nafter: 2\n";
+        assert_eq!(normalize_empty_workers_list(content), expected);
     }
 }
