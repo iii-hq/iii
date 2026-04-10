@@ -22,7 +22,12 @@ pub struct AddArgs {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-worker", version, about = "iii managed worker runtime")]
+#[command(
+    name = "iii worker",
+    bin_name = "iii worker",
+    version,
+    about = "iii managed worker runtime"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

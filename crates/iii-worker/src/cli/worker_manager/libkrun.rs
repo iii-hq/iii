@@ -117,6 +117,7 @@ pub async fn run_dev(
                 return 1;
             }
         };
+        cmd.arg("--console-output").arg(logs_dir.join("stdout.log"));
         cmd.stdout(stdout_file).stderr(stderr_file);
     }
 
@@ -202,7 +203,7 @@ impl LibkrunAdapter {
         Self
     }
 
-    fn worker_dir(name: &str) -> PathBuf {
+    pub fn worker_dir(name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".iii")
@@ -210,7 +211,7 @@ impl LibkrunAdapter {
             .join(name)
     }
 
-    fn image_rootfs(image: &str) -> PathBuf {
+    pub fn image_rootfs(image: &str) -> PathBuf {
         let hash = {
             use sha2::Digest;
             let mut hasher = sha2::Sha256::new();
@@ -224,11 +225,11 @@ impl LibkrunAdapter {
             .join(hash)
     }
 
-    fn pid_file(name: &str) -> PathBuf {
+    pub fn pid_file(name: &str) -> PathBuf {
         Self::worker_dir(name).join("vm.pid")
     }
 
-    fn logs_dir(name: &str) -> PathBuf {
+    pub fn logs_dir(name: &str) -> PathBuf {
         Self::worker_dir(name).join("logs")
     }
 
@@ -524,7 +525,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 }
 
-fn k8s_mem_to_mib(value: &str) -> Option<String> {
+pub fn k8s_mem_to_mib(value: &str) -> Option<String> {
     if let Some(n) = value.strip_suffix("Mi") {
         Some(n.to_string())
     } else if let Some(n) = value.strip_suffix("Gi") {

@@ -30,10 +30,14 @@ pub fn write_resolv_conf() -> Result<(), InitError> {
 /// If `III_INIT_IP` is not set, network configuration is skipped (backward compat).
 ///
 /// Sequence:
-/// 1. Bring up loopback (lo)
-/// 2. Assign IP and netmask to eth0
-/// 3. Bring up eth0
-/// 4. Add default route via gateway
+/// 1. Assign IP and netmask to eth0
+/// 2. Bring up eth0
+/// 3. Add default route via gateway
+/// 4. Write /etc/hosts mapping localhost to the gateway IP
+///
+/// The loopback interface is intentionally left down so that traffic to
+/// `127.0.0.1` falls through to the default route, reaching the host via
+/// the smoltcp TCP proxy.
 pub fn configure_network() -> Result<(), InitError> {
     let ip_str = match std::env::var("III_INIT_IP") {
         Ok(v) => v,
@@ -62,7 +66,8 @@ pub fn configure_network() -> Result<(), InitError> {
     }
 
     let result = (|| {
-        set_interface_up(sock, b"lo\0")?;
+        // Skip bringing up lo so that 127.0.0.1 traffic goes through eth0
+        // via the default route, reaching the host through the smoltcp proxy.
         set_ip_address(sock, b"eth0\0", ip)?;
         set_netmask(sock, b"eth0\0", mask)?;
         set_interface_up(sock, b"eth0\0")?;
@@ -71,6 +76,14 @@ pub fn configure_network() -> Result<(), InitError> {
     })();
 
     unsafe { libc::close(sock) };
+
+    // Write /etc/hosts mapping localhost to the gateway IP so DNS resolution
+    // of "localhost" returns the gateway (reachable via the virtual network)
+    // instead of 127.0.0.1 (unreachable guest loopback).
+    if let Err(e) = std::fs::write("/etc/hosts", format!("{gw}\tlocalhost\n")) {
+        eprintln!("iii-init: warning: failed to write /etc/hosts: {e}");
+    }
+
     result
 }
 

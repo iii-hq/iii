@@ -60,7 +60,7 @@ pub struct VmBootArgs {
 }
 
 /// Compose the full libkrunfw file path from the resolved directory and platform filename.
-fn resolve_krunfw_file_path() -> Option<std::path::PathBuf> {
+pub fn resolve_krunfw_file_path() -> Option<std::path::PathBuf> {
     let dir = crate::cli::firmware::resolve::resolve_libkrunfw_dir()?;
     let filename = crate::cli::firmware::constants::libkrunfw_filename();
     let file_path = dir.join(&filename);
@@ -108,7 +108,7 @@ fn raise_fd_limit() {
     }
 }
 
-fn shell_quote(s: &str) -> String {
+pub fn shell_quote(s: &str) -> String {
     if s.chars().all(|c| {
         c.is_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.' || c == ':' || c == '='
     }) {
@@ -118,7 +118,7 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
-fn build_worker_cmd(exec: &str, args: &[String]) -> String {
+pub fn build_worker_cmd(exec: &str, args: &[String]) -> String {
     if args.is_empty() {
         shell_quote(exec)
     } else {
@@ -128,6 +128,13 @@ fn build_worker_cmd(exec: &str, args: &[String]) -> String {
         }
         parts.join(" ")
     }
+}
+
+/// Rewrite localhost/loopback URLs to use the given gateway IP.
+/// Used by the VM boot process to redirect traffic into the guest network.
+pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
+    s.replace("://localhost:", &format!("://{}:", gateway_ip))
+        .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
 }
 
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
@@ -229,10 +236,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     let guest_ip = network.guest_ipv4().to_string();
     let gateway_ip = network.gateway_ipv4().to_string();
 
-    let rewrite_localhost = |s: &str| -> String {
-        s.replace("://localhost:", &format!("://{}:", gateway_ip))
-            .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
-    };
+    let rewrite_localhost = |s: &str| -> String { rewrite_localhost(s, &gateway_ip) };
     let worker_cmd = rewrite_localhost(&worker_cmd);
 
     let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);

@@ -59,7 +59,7 @@ pub fn current_target() -> &'static str {
 }
 
 /// Returns the platform-appropriate archive extension.
-fn archive_extension(target: &str) -> &'static str {
+pub fn archive_extension(target: &str) -> &'static str {
     if target.contains("windows") {
         "zip"
     } else {
@@ -107,7 +107,10 @@ pub fn checksum_download_url(
 /// Extracts a named binary from a tar.gz archive.
 ///
 /// Looks for an entry whose filename matches `binary_name` (ignoring directory prefixes).
-fn extract_binary_from_targz(binary_name: &str, archive_bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub fn extract_binary_from_targz(
+    binary_name: &str,
+    archive_bytes: &[u8],
+) -> Result<Vec<u8>, String> {
     let decoder = flate2::read::GzDecoder::new(archive_bytes);
     let mut archive = tar::Archive::new(decoder);
 
