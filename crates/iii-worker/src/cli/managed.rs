@@ -13,84 +13,25 @@ use super::builtin_defaults::get_builtin_default;
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
-    MANIFEST_PATH, RegistryV2, WorkerType, fetch_registry, parse_worker_input, resolve_image,
+    BinaryWorkerResponse, MANIFEST_PATH, WorkerInfoResponse, fetch_worker_info, parse_worker_input,
 };
 use super::worker_manager::state::WorkerDef;
 
 pub use super::local_worker::{handle_local_add, is_local_path, start_local_worker};
 
 pub async fn handle_binary_add(
-    input: &str,
+    worker_name: &str,
+    response: &BinaryWorkerResponse,
     brief: bool,
-    cached_registry: Option<&RegistryV2>,
 ) -> i32 {
-    let (worker_name, version_override) = parse_worker_input(input);
-
-    if !brief {
-        eprintln!("  Resolving {}...", worker_name.bold());
-    }
-    let fetched;
-    let registry = if let Some(r) = cached_registry {
-        r
-    } else {
-        fetched = match fetch_registry().await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
-        };
-        &fetched
-    };
-
-    let entry = match registry.workers.get(&worker_name) {
-        Some(e) => e,
-        None => {
-            eprintln!(
-                "{} Worker '{}' not found in registry",
-                "error:".red(),
-                worker_name
-            );
-            return 1;
-        }
-    };
-
-    let repo = match &entry.repo {
-        Some(r) => r.clone(),
-        None => {
-            eprintln!(
-                "{} Registry entry for '{}' is missing 'repo' field",
-                "error:".red(),
-                worker_name
-            );
-            return 1;
-        }
-    };
-
-    let tag_prefix = match &entry.tag_prefix {
-        Some(t) => t.clone(),
-        None => worker_name.clone(),
-    };
-
-    let version = version_override
-        .or_else(|| entry.version.clone())
-        .unwrap_or_else(|| "latest".to_string());
-
-    let supported_targets = entry.supported_targets.clone().unwrap_or_default();
-    let has_checksum = entry.has_checksum.unwrap_or(false);
-
     let target = binary_download::current_target();
+
     if !brief {
-        eprintln!(
-            "  {} Resolved to {} (binary v{})",
-            "✓".green(),
-            repo.to_string().dimmed(),
-            version
-        );
+        eprintln!("  {} Resolved to binary v{}", "✓".green(), response.version);
     }
 
     // If the worker is already running, skip download entirely
-    if is_worker_running(&worker_name) {
+    if is_worker_running(worker_name) {
         if !brief {
             eprintln!(
                 "\n  {} Worker {} already running, skipping download",
@@ -101,35 +42,41 @@ pub async fn handle_binary_add(
         return 0;
     }
 
-    if !brief {
-        eprintln!("  Downloading {}...", worker_name.bold());
-    }
-    let install_path = match binary_download::download_and_install_binary(
-        &worker_name,
-        &repo,
-        &tag_prefix,
-        &version,
-        &supported_targets,
-        has_checksum,
-    )
-    .await
-    {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
+    let binary_info = match response.binaries.get(target) {
+        Some(info) => info,
+        None => {
+            eprintln!(
+                "{} Platform '{}' is not supported for worker '{}'. Available: {}",
+                "error:".red(),
+                target,
+                worker_name,
+                response
+                    .binaries
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             return 1;
         }
     };
 
     if !brief {
-        eprintln!("  {} Downloaded successfully", "✓".green());
+        eprintln!("  Downloading {}...", worker_name.bold());
+    }
+    let install_path =
+        match binary_download::download_and_install_binary(worker_name, binary_info).await {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
 
-        // Show metadata matching OCI worker style
+    if !brief {
+        eprintln!("  {} Downloaded successfully", "✓".green());
         eprintln!("  {}: {}", "Name".bold(), worker_name);
-        eprintln!("  {}: {}", "Version".bold(), version);
-        if !entry.description.is_empty() {
-            eprintln!("  {}: {}", "Description".bold(), entry.description);
-        }
+        eprintln!("  {}: {}", "Version".bold(), response.version);
         eprintln!("  {}: {}", "Platform".bold(), target);
         if let Ok(metadata) = std::fs::metadata(&install_path) {
             eprintln!(
@@ -140,13 +87,13 @@ pub async fn handle_binary_add(
         }
     }
 
-    let config_yaml = entry
-        .default_config
-        .as_ref()
-        .and_then(|dc| dc.get("config"))
-        .map(|v| serde_yaml::to_string(v).unwrap_or_default());
+    let config_yaml = response
+        .config
+        .config
+        .as_object()
+        .map(|_| serde_yaml::to_string(&response.config.config).unwrap_or_default());
 
-    if let Err(e) = super::config_file::append_worker(&worker_name, config_yaml.as_deref()) {
+    if let Err(e) = super::config_file::append_worker(worker_name, config_yaml.as_deref()) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
@@ -161,12 +108,11 @@ pub async fn handle_binary_add(
             "config.yaml".dimmed(),
         );
 
-        // Auto-start if engine is running (skip if already running)
         if is_engine_running() {
-            if is_worker_running(&worker_name) {
+            if is_worker_running(worker_name) {
                 eprintln!("  {} Worker already running", "✓".green());
             } else {
-                let result = start_binary_worker(&worker_name, &install_path).await;
+                let result = start_binary_worker(worker_name, &install_path).await;
                 if result == 0 {
                     eprintln!("  {} Worker auto-started", "✓".green());
                 } else {
@@ -189,14 +135,11 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
     let brief = total > 1;
     let mut fail_count = 0;
 
-    // Pre-fetch registry once for all workers (avoids N HTTP roundtrips).
-    let registry = fetch_registry().await.ok();
-
     for (i, name) in worker_names.iter().enumerate() {
         if brief {
             eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
         }
-        let result = handle_managed_add(name, brief, registry.as_ref(), false, false).await;
+        let result = handle_managed_add(name, brief, false, false).await;
         if result != 0 {
             fail_count += 1;
         }
@@ -220,12 +163,10 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
 pub async fn handle_managed_add(
     image_or_name: &str,
     brief: bool,
-    cached_registry: Option<&RegistryV2>,
     force: bool,
     reset_config: bool,
 ) -> i32 {
     // Local path workers: starts with '.', '/', or '~'
-    // Must be checked before force-mode processing since validate_worker_name rejects paths.
     if super::local_worker::is_local_path(image_or_name) {
         return super::local_worker::handle_local_add(image_or_name, force, reset_config, brief)
             .await;
@@ -233,10 +174,8 @@ pub async fn handle_managed_add(
 
     // --force: delete existing artifacts before re-downloading
     if force {
-        // Extract plain name (strip @version if present)
-        let (plain_name, _) = super::registry::parse_worker_input(image_or_name);
+        let (plain_name, _) = parse_worker_input(image_or_name);
 
-        // Validate name only for non-OCI references (OCI refs contain '/' or ':')
         let is_oci_ref = plain_name.contains('/') || plain_name.contains(':');
         if !is_oci_ref {
             if let Err(e) = super::registry::validate_worker_name(&plain_name) {
@@ -255,14 +194,12 @@ pub async fn handle_managed_add(
             return 1;
         }
 
-        // Check for engine-builtin workers — no artifacts to delete
         if super::builtin_defaults::get_builtin_default(&plain_name).is_some() {
             eprintln!(
                 "  {} '{}' is a builtin worker, no artifacts to re-download.",
                 "info:".cyan(),
                 plain_name,
             );
-            // Still proceed — force on builtins just re-applies config
         } else {
             let freed = delete_worker_artifacts(&plain_name);
             if freed > 0 {
@@ -277,65 +214,79 @@ pub async fn handle_managed_add(
 
         if reset_config {
             match super::config_file::remove_worker(&plain_name) {
-                Ok(()) => {
-                    eprintln!("  {} Config for {} reset", "✓".green(), plain_name.bold(),);
-                }
+                Ok(()) => {}
                 Err(e) => {
-                    eprintln!(
-                        "  {} Could not reset config for {}: {}",
-                        "warning:".yellow(),
-                        plain_name.bold(),
-                        e,
-                    );
+                    tracing::debug!("remove_worker during force: {}", e);
                 }
             }
         }
     }
 
+    // Direct OCI reference (contains '/' or ':') — passthrough, skip API
+    if image_or_name.contains('/') || image_or_name.contains(':') {
+        if !brief {
+            eprintln!("  Resolving {}...", image_or_name.bold());
+        }
+        let name = image_or_name
+            .rsplit('/')
+            .next()
+            .unwrap_or(image_or_name)
+            .split(':')
+            .next()
+            .unwrap_or(image_or_name);
+        if !brief {
+            eprintln!("  {} Resolved to {}", "✓".green(), image_or_name.dimmed());
+        }
+        return handle_oci_pull_and_add(name, image_or_name, brief).await;
+    }
+
+    // Shorthand name — resolve via API
+    let (name, version) = parse_worker_input(image_or_name);
+
     // Check for engine-builtin workers first (no network needed).
-    if let Some(default_yaml) = get_builtin_default(image_or_name) {
-        let already_exists = super::config_file::worker_exists(image_or_name);
-        if let Err(e) = super::config_file::append_worker(image_or_name, Some(default_yaml)) {
+    if let Some(default_yaml) = get_builtin_default(&name) {
+        let already_exists = super::config_file::worker_exists(&name);
+        if let Err(e) = super::config_file::append_worker(&name, Some(default_yaml)) {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
         if brief {
             if already_exists {
-                eprintln!("        {} {} (updated)", "✓".green(), image_or_name.bold());
+                eprintln!("        {} {} (updated)", "✓".green(), name.bold());
             } else {
-                eprintln!("        {} {}", "✓".green(), image_or_name.bold());
+                eprintln!("        {} {}", "✓".green(), name.bold());
             }
         } else {
             if already_exists {
                 eprintln!(
                     "\n  {} Worker {} updated in {} (merged with builtin defaults)",
                     "✓".green(),
-                    image_or_name.bold(),
+                    name.bold(),
                     "config.yaml".dimmed(),
                 );
             } else {
                 eprintln!(
                     "\n  {} Worker {} added to {}",
                     "✓".green(),
-                    image_or_name.bold(),
+                    name.bold(),
                     "config.yaml".dimmed(),
                 );
             }
 
             // Auto-start if engine is running (skip if already running)
             if is_engine_running() {
-                if is_worker_running(image_or_name) {
+                if is_worker_running(&name) {
                     eprintln!("  {} Worker already running", "✓".green());
                 } else {
                     let port = super::app::DEFAULT_PORT;
-                    let result = handle_managed_start(image_or_name, "0.0.0.0", port).await;
+                    let result = handle_managed_start(&name, "0.0.0.0", port).await;
                     if result == 0 {
                         eprintln!("  {} Worker auto-started", "✓".green());
                     } else {
                         eprintln!(
                             "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
                             "⚠".yellow(),
-                            image_or_name
+                            name
                         );
                     }
                 }
@@ -346,48 +297,27 @@ pub async fn handle_managed_add(
         return 0;
     }
 
-    // Route binary workers to handle_binary_add; for OCI workers found in the
-    // registry, use the cached registry or fetch once if not provided.
-    if !image_or_name.contains('/') && !image_or_name.contains(':') {
-        let (name, _) = parse_worker_input(image_or_name);
-        let fetched;
-        let registry = if let Some(r) = cached_registry {
-            Some(r)
-        } else {
-            fetched = fetch_registry().await.ok();
-            fetched.as_ref()
-        };
-        if let Some(registry) = registry
-            && let Some(entry) = registry.workers.get(&name)
-        {
-            if matches!(entry.worker_type, Some(WorkerType::Binary)) {
-                return handle_binary_add(image_or_name, brief, Some(registry)).await;
-            }
-            // OCI worker found in registry — use already-fetched entry
-            if let (Some(img), Some(ver)) = (&entry.image, &entry.latest) {
-                let image_ref = format!("{}:{}", img, ver);
-                if !brief {
-                    eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
-                }
-                return handle_oci_pull_and_add(&name, &image_ref, brief).await;
-            }
-        }
+    if !brief {
+        eprintln!("  Resolving {}...", name.bold());
     }
 
-    if !brief {
-        eprintln!("  Resolving {}...", image_or_name.bold());
-    }
-    let (image_ref, name) = match resolve_image(image_or_name).await {
-        Ok(v) => v,
+    let response = match fetch_worker_info(&name, version.as_deref()).await {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
     };
-    if !brief {
-        eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
+
+    match response {
+        WorkerInfoResponse::Binary(r) => handle_binary_add(&name, &r, brief).await,
+        WorkerInfoResponse::Oci(r) => {
+            if !brief {
+                eprintln!("  {} Resolved to {}", "✓".green(), r.image_url.dimmed());
+            }
+            handle_oci_pull_and_add(&r.name, &r.image_url, brief).await
+        }
     }
-    handle_oci_pull_and_add(&name, &image_ref, brief).await
 }
 
 async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i32 {
@@ -1008,86 +938,58 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
         "  Worker '{}' not found locally, checking registry...",
         worker_name
     );
-    match fetch_registry().await {
-        Ok(registry) => {
-            if let Some(entry) = registry.workers.get(worker_name) {
-                if matches!(entry.worker_type, Some(WorkerType::Binary)) {
-                    // Auto-download binary worker
-                    let repo = match &entry.repo {
-                        Some(r) => r.clone(),
-                        None => {
-                            eprintln!(
-                                "{} Registry entry for '{}' missing 'repo' field",
-                                "error:".red(),
-                                worker_name
-                            );
-                            return 1;
-                        }
-                    };
-                    let tag_prefix = entry
-                        .tag_prefix
-                        .clone()
-                        .unwrap_or_else(|| worker_name.to_string());
-                    let version = entry
-                        .version
-                        .clone()
-                        .or_else(|| entry.latest.clone())
-                        .unwrap_or_else(|| "latest".to_string());
-                    let supported_targets = entry.supported_targets.clone().unwrap_or_default();
-                    let has_checksum = entry.has_checksum.unwrap_or(false);
-
-                    eprintln!("  Installing {} (binary v{})...", worker_name, version);
-                    match binary_download::download_and_install_binary(
+    match fetch_worker_info(worker_name, None).await {
+        Ok(WorkerInfoResponse::Binary(response)) => {
+            let target = binary_download::current_target();
+            let binary_info = match response.binaries.get(target) {
+                Some(info) => info,
+                None => {
+                    eprintln!(
+                        "{} Platform '{}' not supported for '{}'. Available: {}",
+                        "error:".red(),
+                        target,
                         worker_name,
-                        &repo,
-                        &tag_prefix,
-                        &version,
-                        &supported_targets,
-                        has_checksum,
-                    )
-                    .await
-                    {
-                        Ok(installed_path) => {
-                            eprintln!("  {} Installed successfully", "✓".green());
-                            return start_binary_worker(worker_name, &installed_path).await;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "{} Failed to install '{}': {}",
-                                "error:".red(),
-                                worker_name,
-                                e
-                            );
-                            return 1;
-                        }
-                    }
-                } else {
-                    // OCI/managed worker from registry — resolve image and start
-                    let image_ref = match &entry.image {
-                        Some(img) => {
-                            let version = entry.latest.as_deref().unwrap_or("latest");
-                            format!("{}:{}", img, version)
-                        }
-                        None => {
-                            eprintln!(
-                                "{} Registry entry for '{}' missing 'image' field",
-                                "error:".red(),
-                                worker_name
-                            );
-                            return 1;
-                        }
-                    };
-                    let worker_def = WorkerDef::Managed {
-                        image: image_ref,
-                        env: std::collections::HashMap::new(),
-                        resources: None,
-                    };
-                    return start_oci_worker(worker_name, &worker_def, port).await;
+                        response
+                            .binaries
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    return 1;
+                }
+            };
+
+            eprintln!(
+                "  Installing {} (binary v{})...",
+                worker_name, response.version
+            );
+            match binary_download::download_and_install_binary(worker_name, binary_info).await {
+                Ok(installed_path) => {
+                    eprintln!("  {} Installed successfully", "✓".green());
+                    return start_binary_worker(worker_name, &installed_path).await;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to install '{}': {}",
+                        "error:".red(),
+                        worker_name,
+                        e
+                    );
+                    return 1;
                 }
             }
         }
+        Ok(WorkerInfoResponse::Oci(response)) => {
+            let worker_def = WorkerDef::Managed {
+                image: response.image_url,
+                env: std::collections::HashMap::new(),
+                resources: None,
+            };
+            return start_oci_worker(worker_name, &worker_def, port).await;
+        }
         Err(e) => {
-            tracing::warn!("Failed to fetch registry: {}", e);
+            tracing::warn!("Failed to fetch worker info: {}", e);
         }
     }
 
@@ -1912,7 +1814,7 @@ mod tests {
             std::fs::write(proj.join("package.json"), r#"{"name":"test"}"#).unwrap();
 
             let path_str = proj.to_string_lossy().to_string();
-            let exit_code = handle_managed_add(&path_str, false, None, false, false).await;
+            let exit_code = handle_managed_add(&path_str, false, false, false).await;
             assert_eq!(exit_code, 0, "should succeed for valid local path");
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -1934,7 +1836,7 @@ mod tests {
     async fn handle_managed_add_local_path_rejects_nonexistent() {
         in_temp_dir_async(|_dir| async move {
             let exit_code =
-                handle_managed_add("./nonexistent-path-12345", false, None, false, false).await;
+                handle_managed_add("./nonexistent-path-12345", false, false, false).await;
             assert_eq!(exit_code, 1, "should fail for nonexistent local path");
         })
         .await;
@@ -1951,7 +1853,7 @@ mod tests {
             let path_str = proj.to_string_lossy().to_string();
 
             // First add
-            let exit_code = handle_managed_add(&path_str, false, None, false, false).await;
+            let exit_code = handle_managed_add(&path_str, false, false, false).await;
             assert_eq!(exit_code, 0);
             assert!(
                 std::fs::read_to_string("config.yaml")
@@ -1960,7 +1862,7 @@ mod tests {
             );
 
             // Force re-add
-            let exit_code = handle_managed_add(&path_str, false, None, true, false).await;
+            let exit_code = handle_managed_add(&path_str, false, true, false).await;
             assert_eq!(exit_code, 0, "force re-add should succeed");
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
