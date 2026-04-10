@@ -1,0 +1,120 @@
+---
+title: 'Bridge'
+description: 'Connect to another iii instance'
+---
+
+Connects this III Engine instance to another III instance over WebSocket so you can expose local functions and forward calls to remote functions.
+
+```
+modules::bridge_client::BridgeClientModule
+```
+
+## Sample Configuration
+
+```yaml
+- class: modules::bridge_client::BridgeClientModule
+  config:
+    url: ${REMOTE_III_URL:ws://0.0.0.0:49134}
+    service_id: bridge-client
+    service_name: bridge-client
+    expose:
+      - local_function: engine::log::info
+        remote_function: engine::log::info
+
+    forward:
+      - local_function: remote::state::get
+        remote_function: state::get
+        timeout_ms: 5000
+
+      - local_function: remote::state::set
+        remote_function: state::set
+        timeout_ms: 5000
+
+      - local_function: remote::state::delete
+        remote_function: state::delete
+        timeout_ms: 5000
+```
+
+## Configuration
+
+<ResponseField name="url" type="string">
+  WebSocket URL of the remote III instance. Defaults to `III_URL` if set, otherwise `ws://0.0.0.0:49134`.
+</ResponseField>
+
+<ResponseField name="service_id" type="string">
+  Service identifier to register with the remote instance. When set, the module registers the service on connect.
+</ResponseField>
+
+<ResponseField name="service_name" type="string">
+  Human-readable service name. Defaults to `service_id` when omitted.
+</ResponseField>
+
+<ResponseField name="expose" type="ExposeFunctionConfig[]">
+  Functions from this instance to expose to the remote instance.
+
+  <Expandable title="ExposeFunctionConfig">
+    <ResponseField name="local_function" type="string" required>
+      Local function the remote instance will call when `remote_function` is invoked.
+    </ResponseField>
+    <ResponseField name="remote_function" type="string">
+      Function path to register on the remote instance. Defaults to `local_function`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="forward" type="ForwardFunctionConfig[]">
+  Local function aliases that forward invocations to remote functions.
+
+  <Expandable title="ForwardFunctionConfig">
+    <ResponseField name="local_function" type="string" required>
+      Function path to register locally.
+    </ResponseField>
+    <ResponseField name="remote_function" type="string" required>
+      Remote function path to call when the local alias is invoked.
+    </ResponseField>
+    <ResponseField name="timeout_ms" type="number">
+      Override the invocation timeout in milliseconds. Defaults to 30000.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Functions
+
+<ResponseField name="bridge.invoke" type="function">
+  Invoke a function on the remote III instance.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="function_id" type="string" required>
+        Remote function ID to invoke.
+      </ResponseField>
+      <ResponseField name="data" type="any">
+        Payload to send to the remote function.
+      </ResponseField>
+      <ResponseField name="timeout_ms" type="number">
+        Override the invocation timeout in milliseconds. Defaults to 30000.
+      </ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      The remote function's response value directly (not wrapped in an object).
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="bridge.invoke_async" type="function">
+  Fire-and-forget invoke on the remote III instance.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="function_id" type="string" required>
+        Remote function ID to invoke.
+      </ResponseField>
+      <ResponseField name="data" type="any">
+        Payload to send to the remote function.
+      </ResponseField>
+      <ResponseField name="timeout_ms" type="number">
+        Timeout is accepted but ignored for async invocations.
+      </ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>

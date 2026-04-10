@@ -42,7 +42,7 @@ iii trigger \
     Examples of function IDs:
     - `iii::queue::redrive` — builtin DLQ redrive
     - `orders::process-payment` — a user-defined function
-    - `enqueue` — the builtin topic-based enqueue function
+    - `iii::durable::publish` — the builtin topic-based publish function
   </Step>
   <Step title="Build the payload">
     The `--payload` flag accepts a JSON string. This JSON becomes the function's input — the same data it would receive if invoked via an SDK `trigger()` call.
@@ -150,11 +150,11 @@ iii trigger \
 
 ### Publish to a topic-based queue
 
-Use the builtin `enqueue` function to publish a message to a topic:
+Use the builtin `iii::durable::publish` function to publish a message to a topic:
 
 ```bash
 iii trigger \
-  --function-id='enqueue' \
+  --function-id='iii::durable::publish' \
   --payload='{"topic": "order.created", "data": {"orderId": "ord_789"}}'
 ```
 
@@ -192,7 +192,7 @@ done
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Inspect and redrive failed queue messages
   </Card>
-  <Card title="Queue Worker Reference" href="/modules/module-queue" icon="gear">
+  <Card title="Queue Worker Reference" href="/workers/iii-queue" icon="gear">
     Full reference for builtin queue functions including `iii::queue::redrive`
   </Card>
   <Card title="Protocol Reference" href="/advanced/protocol" icon="code">

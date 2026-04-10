@@ -53,7 +53,7 @@ export function queue<TOptions extends QueueOptions<any> | undefined = undefined
   condition?: TriggerCondition,
 ): QueueTrigger<TOptions extends QueueOptions<infer S> ? S : undefined> {
   // biome-ignore lint/suspicious/noExplicitAny: runtime return is correct, cast needed for flexible type
-  return { type: 'queue', topic, ...options, condition } as any
+  return { type: 'durable:subscriber', topic, ...options, condition } as any
 }
 
 export function cron(expression: string, condition?: TriggerCondition): CronTrigger {

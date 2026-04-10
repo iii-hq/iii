@@ -35,7 +35,7 @@ fn main() {
     } else {
         std::fs::write(&libkrunfw_dest, [0u8]).expect("failed to write libkrunfw placeholder");
     }
-    if std::fs::metadata(&libkrunfw_dest).map_or(false, |m| m.len() > 1) {
+    if std::fs::metadata(&libkrunfw_dest).is_ok_and(|m| m.len() > 1) {
         println!("cargo:rustc-cfg=has_libkrunfw");
     }
 }

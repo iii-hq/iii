@@ -66,11 +66,12 @@ pub fn check_libkrunfw_platform_support() -> Result<(), String> {
     // Available firmware: darwin-aarch64, linux-x86_64, linux-aarch64
     // Missing: darwin-x86_64 (Intel Mac)
     if os == "macos" && arch == "x86_64" {
-        return Err(format!(
+        return Err(
             "libkrunfw firmware is not available for Intel Macs (darwin-x86_64).\n\
              Managed workers require an Apple Silicon Mac (aarch64) or a Linux host.\n\
              Set III_LIBKRUNFW_PATH to a manually-built firmware file to override."
-        ));
+                .to_string(),
+        );
     }
     Ok(())
 }

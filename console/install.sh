@@ -83,6 +83,7 @@ USAGE:
 
 OPTIONS:
     -h, --help                  Print this help message
+    --next                      Install the latest "next" pre-release
     -v, --version <version>     Install a specific version (e.g. 0.1.3)
     -b, --binary <path>         Install from a local binary instead of downloading
     --no-modify-path            Skip adding the install directory to PATH
@@ -115,6 +116,7 @@ EOF
 requested_version="${VERSION:-}"
 no_modify_path=false
 binary_path=""
+use_next=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -134,6 +136,10 @@ while [[ $# -gt 0 ]]; do
       fi
       binary_path="$2"
       shift 2
+      ;;
+    --next)
+      use_next=true
+      shift
       ;;
     --no-modify-path)
       no_modify_path=true
@@ -383,6 +389,23 @@ if [[ -z "$binary_path" ]]; then
     _tag="v${_bare}"
     api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
     json=$(github_api "$api_url") || err "release tag not found: $requested_version (tried tag: $_tag)"
+  elif [[ "$use_next" == "true" ]]; then
+    printf "${MUTED}Installing ${NC}%s ${MUTED}latest next version${NC}\n" "$BIN_NAME"
+    api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+    json_list=$(github_api "$api_url") || err "failed to fetch releases from $REPO"
+    if command -v jq >/dev/null 2>&1; then
+      json=$(printf '%s' "$json_list" \
+        | jq -c 'first(.[] | select(.tag_name | test("-next\\.")))')
+      [[ "$json" == "null" || -z "$json" ]] && err "no next release found"
+    else
+      _tag=$(printf '%s' "$json_list" \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*-next\.[^"]*"' \
+        | head -n 1 \
+        | sed -E 's/.*"(v[^"]+)".*/\1/')
+      [[ -z "$_tag" ]] && err "no next release found"
+      api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
+      json=$(github_api "$api_url") || err "failed to fetch release $_tag"
+    fi
   else
     printf "${MUTED}Installing ${NC}%s ${MUTED}latest version${NC}\n" "$BIN_NAME"
     api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
@@ -416,6 +439,10 @@ if [[ -z "$binary_path" ]]; then
 
   if [[ -z "$specific_version" ]]; then
     err "could not determine version from release response"
+  fi
+
+  if [[ "$use_next" == "true" ]]; then
+    printf "${MUTED}Installing ${NC}%s ${MUTED}v${NC}%s\n" "$BIN_NAME" "$specific_version"
   fi
 
   if [[ -z "$requested_version" ]]; then

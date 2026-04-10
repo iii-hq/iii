@@ -30,6 +30,7 @@ pub mod workers {
     pub mod queue;
     pub mod redis;
     pub mod registry;
+    pub mod registry_worker;
     pub mod rest_api;
     pub mod shell;
     pub mod state;

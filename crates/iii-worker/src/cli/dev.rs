@@ -150,7 +150,7 @@ pub async fn handle_worker_dev(
     eprintln!("  {}    {}", "Engine".cyan().bold(), engine_url.bold());
     eprintln!();
 
-    let exit_code = run_dev_worker(
+    run_dev_worker(
         &selected_runtime,
         &sb_name,
         &project_str,
@@ -158,9 +158,7 @@ pub async fn handle_worker_dev(
         &engine_url,
         rebuild,
     )
-    .await;
-
-    exit_code
+    .await
 }
 
 async fn detect_dev_runtime(explicit: Option<&str>) -> Option<String> {

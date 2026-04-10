@@ -29,7 +29,7 @@ export const generateEnqueuesInterface = (steps: Step[]): string => {
     }
 
     for (const trigger of step.config.triggers) {
-      if (trigger.type === 'queue') {
+      if (trigger.type === 'durable:subscriber') {
         const topic = trigger.topic
         if (!enqueueTypes[topic] && trigger.input) {
           const jsonSchema = schemaToJsonSchema(trigger.input)

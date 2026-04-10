@@ -5,6 +5,9 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod app;
+pub mod binary_download;
+pub mod builtin_defaults;
+pub mod config_file;
 pub mod dev;
 pub mod firmware;
 pub mod lifecycle;

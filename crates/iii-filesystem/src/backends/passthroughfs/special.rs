@@ -34,8 +34,7 @@ pub(crate) fn do_fsync(
         return Ok(());
     }
 
-    let handles = fs.handles.read().unwrap();
-    let data = handles.get(&handle).ok_or_else(platform::ebadf)?;
+    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?;
     // Write lock: fsync/fdatasync modify fd state.
     #[allow(clippy::readonly_write_lock)]
     let f = data.file.write().unwrap();

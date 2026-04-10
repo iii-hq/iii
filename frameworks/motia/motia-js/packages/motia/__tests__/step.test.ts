@@ -61,6 +61,6 @@ describe('step', () => {
     const result = step(mixedConfig).handle(jest.fn())
 
     expect(result.config.triggers).toHaveLength(4)
-    expect(result.config.triggers.map((t: any) => t.type)).toEqual(['queue', 'state', 'stream', 'cron'])
+    expect(result.config.triggers.map((t: any) => t.type)).toEqual(['durable:subscriber', 'state', 'stream', 'cron'])
   })
 })

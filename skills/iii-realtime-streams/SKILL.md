@@ -61,7 +61,7 @@ Code using this pattern commonly includes, when relevant:
 
 ### Browser Clients
 
-For browser-side WebSocket connections, use `iii-sdk-browser` instead of the Node SDK. See `iii-browser-sdk` skill for setup details. Stream authentication via literals is supported.
+For browser-side WebSocket connections, use `iii-browser-sdk` instead of the Node SDK. See `iii-browser-sdk` skill for setup details. Stream authentication via literals is supported.
 
 ## Adapting This Pattern
 

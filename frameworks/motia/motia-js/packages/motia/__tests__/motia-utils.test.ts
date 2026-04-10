@@ -81,7 +81,7 @@ describe('Motia', () => {
 
       expect(mockRegisterTrigger).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: 'queue',
+          type: 'durable:subscriber',
           config: expect.objectContaining({ topic: 'tasks' }),
         }),
       )
@@ -355,7 +355,7 @@ describe('Motia', () => {
       const result = await registeredHandler({ data: 'test' })
 
       expect(capturedContext.traceId).toBe('test-trace-id')
-      expect(capturedContext.trigger.type).toBe('queue')
+      expect(capturedContext.trigger.type).toBe('durable:subscriber')
     })
 
     it('getData returns body for http trigger', async () => {
@@ -393,7 +393,7 @@ describe('Motia', () => {
 
       const registeredHandler = mockRegisterFunction.mock.calls[0][1]
 
-      await expect(registeredHandler({ data: 'test' })).rejects.toThrow('No handler matched for trigger type: queue')
+      await expect(registeredHandler({ data: 'test' })).rejects.toThrow('No handler matched for trigger type: durable:subscriber')
     })
 
     it('is.state returns true for state trigger', async () => {

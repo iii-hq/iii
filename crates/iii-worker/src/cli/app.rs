@@ -4,10 +4,22 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// Default engine WebSocket port (must match engine's DEFAULT_PORT).
 pub const DEFAULT_PORT: u16 = 49134;
+
+/// Shared arguments for `add` and `reinstall` commands.
+#[derive(Args, Debug)]
+pub struct AddArgs {
+    /// Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
+    #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
+    pub worker_names: Vec<String>,
+
+    /// Reset config: also remove config.yaml entry before re-adding (requires --force on add)
+    #[arg(long)]
+    pub reset_config: bool,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "iii-worker", version, about = "iii managed worker runtime")]
@@ -18,38 +30,38 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Add a worker from the registry or by OCI image reference
+    /// Add one or more workers from the registry or by OCI image reference
     Add {
-        /// Worker name or OCI image reference (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
-        #[arg(value_name = "WORKER[@VERSION]")]
-        worker_name: String,
+        #[command(flatten)]
+        args: AddArgs,
 
-        /// Container runtime
-        #[arg(long, default_value = "libkrun")]
-        runtime: String,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Force re-download: delete existing artifacts before adding
+        #[arg(long, short = 'f')]
+        force: bool,
     },
 
-    /// Remove a worker (stops and removes the container)
+    /// Remove one or more workers (stops and removes containers)
     Remove {
-        /// Worker name to remove (e.g., "pdfkit")
+        /// Worker names to remove (e.g., "pdfkit")
+        #[arg(value_name = "WORKER", required = true, num_args = 1..)]
+        worker_names: Vec<String>,
+    },
+
+    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
+    Reinstall {
+        #[command(flatten)]
+        args: AddArgs,
+    },
+
+    /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
+    Clear {
+        /// Worker name to clear (omit to clear all)
         #[arg(value_name = "WORKER")]
-        worker_name: String,
+        worker_name: Option<String>,
 
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Start a previously stopped managed worker container
@@ -134,18 +146,6 @@ pub enum Commands {
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
-
-    /// Start all workers declared in iii.workers.yaml (used by engine lifecycle shim)
-    #[command(name = "start-all")]
-    StartAll {
-        /// Engine WebSocket URL
-        #[arg(long)]
-        engine_url: String,
-    },
-
-    /// Stop all running managed workers (used by engine lifecycle shim)
-    #[command(name = "stop-all")]
-    StopAll,
 
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]

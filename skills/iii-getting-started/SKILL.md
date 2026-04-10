@@ -160,7 +160,7 @@ Skills teach your agent how to use every iii primitive — HTTP endpoints, cron 
 - Add more functions to the same worker — each gets its own `registerFunction` + `registerTrigger` calls
 - Use `::` separator for function IDs to namespace them: `orders::create`, `orders::validate`
 - Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field, includes seconds)
-- Add queue triggers with `{ type: 'queue', config: { topic: 'my-queue' } }`
+- Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
 - Use `state::get` / `state::set` to persist data across function calls
 
