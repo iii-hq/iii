@@ -180,7 +180,7 @@ iii.register_function("admin::auto-redrive", auto_redrive)
 iii.register_trigger({
     "type": "cron",
     "function_id": "admin::auto-redrive",
-    "config": {"expression": "0 0 * * * *"},
+    "config": {"expression": "0 0 * * * * *"},
 })
 
 

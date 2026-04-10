@@ -42,7 +42,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron.periodic_job',
-  config: { expression: '0 * * * * *' }, // every minute
+  config: { expression: '0 * * * * * *' }, // every minute
 })
 ```
 
@@ -76,7 +76,7 @@ iii.register_function("cron.periodic_job", periodic_job)
 iii.register_trigger({
     "type": "cron",
     "function_id": "cron.periodic_job",
-    "config": {"expression": "0 * * * * *"},  # every minute
+    "config": {"expression": "0 * * * * * *"},  # every minute
 })
 ```
 
@@ -106,7 +106,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into
 });
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
-    "expression": "0 * * * * *",
+    "expression": "0 * * * * * *",
 }), metadata: None })?;
 ```
 
@@ -224,7 +224,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron.orders_sweep',
-  config: { expression: '0 */5 * * * *' },
+  config: { expression: '0 */5 * * * * *' },
 })
 ```
 
@@ -269,7 +269,7 @@ def orders_sweep(_data) -> None:
     logger.info("Sweep complete", {"checked": len(orders), "swept": swept})
 
 iii.register_function("cron.orders_sweep", orders_sweep)
-iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "0 */5 * * * *"}})
+iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "0 */5 * * * * *"}})
 ```
 
   </Tab>
@@ -315,7 +315,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "0 */5 * * * *" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "0 */5 * * * * *" }), metadata: None })?;
 ```
 
   </Tab>
@@ -323,9 +323,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), functio
 
 ## Cron expression format
 
-iii uses a six-field cron format: `second minute hour day month weekday`.
-
-<Note>5-field expressions (without seconds) and 7-field expressions (with a trailing year) are also accepted, but 6-field is the recommended standard.</Note>
+iii uses a seven-field cron format: `second minute hour day month weekday year`.
 
 ```
 ┌──────────── second (0-59)
@@ -334,17 +332,18 @@ iii uses a six-field cron format: `second minute hour day month weekday`.
 │ │ │ ┌────── day of month (1-31)
 │ │ │ │ ┌──── month (1-12)
 │ │ │ │ │ ┌── day of week (0-7)
-│ │ │ │ │ │
-* * * * * *
+│ │ │ │ │ │ ┌ year (* for any)
+│ │ │ │ │ │ │
+* * * * * * *
 ```
 
 | Expression | Meaning |
 |---|---|
-| `0 * * * * *` | Every minute |
-| `0 0 * * * *` | Every hour |
-| `0 0 9 * * 1-5` | 09:00 on weekdays |
-| `0 */5 * * * *` | Every 5 minutes |
-| `*/5 * * * * *` | Every 5 seconds |
+| `0 * * * * * *` | Every minute |
+| `0 0 * * * * *` | Every hour |
+| `0 0 9 * * 1-5 *` | 09:00 on weekdays |
+| `0 */5 * * * * *` | Every 5 minutes |
+| `*/5 * * * * * *` | Every 5 seconds |
 
 ## Key concepts
 

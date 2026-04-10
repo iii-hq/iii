@@ -2,8 +2,8 @@
 Pattern: Cron Scheduling
 Comparable to: node-cron, APScheduler, crontab
 
-Schedules recurring tasks using 6-field cron expressions:
-  second  minute  hour  day  month  weekday
+Schedules recurring tasks using 7-field cron expressions:
+  second  minute  hour  day  month  weekday  year
 
 Cron handlers should be fast — enqueue heavy work to a queue.
 
@@ -25,7 +25,7 @@ iii = register_worker(
 
 # ---
 # Hourly cleanup — runs at the top of every hour
-# Cron: 0 0 * * * *  (second=0, minute=0, every hour)
+# Cron: 0 0 * * * * *  (second=0, minute=0, every hour)
 # ---
 
 
@@ -61,12 +61,12 @@ iii.register_function("cron::hourly-cleanup", hourly_cleanup)
 iii.register_trigger({
     "type": "cron",
     "function_id": "cron::hourly-cleanup",
-    "config": {"expression": "0 0 * * * *"},
+    "config": {"expression": "0 0 * * * * *"},
 })
 
 # ---
 # Daily report — runs at midnight every day
-# Cron: 0 0 0 * * *  (second=0, minute=0, hour=0, every day)
+# Cron: 0 0 0 * * * *  (second=0, minute=0, hour=0, every day)
 # ---
 
 
@@ -108,12 +108,12 @@ iii.register_function("cron::daily-report", daily_report)
 iii.register_trigger({
     "type": "cron",
     "function_id": "cron::daily-report",
-    "config": {"expression": "0 0 0 * * *"},
+    "config": {"expression": "0 0 0 * * * *"},
 })
 
 # ---
 # Health check — runs every 5 minutes
-# Cron: 0 */5 * * * *  (second=0, every 5th minute)
+# Cron: 0 */5 * * * * *  (second=0, every 5th minute)
 # ---
 
 
@@ -154,7 +154,7 @@ iii.register_function("cron::health-check", health_check)
 iii.register_trigger({
     "type": "cron",
     "function_id": "cron::health-check",
-    "config": {"expression": "0 */5 * * * *"},
+    "config": {"expression": "0 */5 * * * * *"},
 })
 
 # ---

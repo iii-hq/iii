@@ -1,7 +1,7 @@
 ---
 name: iii-cron-scheduling
 description: >-
-  Registers cron triggers with 6-field expressions to run functions on
+  Registers cron triggers with 7-field expressions to run functions on
   recurring schedules. Use when scheduling periodic jobs, timed automation,
   crontab replacements, cleanup routines, report generation, health checks,
   batch processing, or any task that should run every N seconds, minutes, hours,
@@ -16,8 +16,8 @@ Comparable to: node-cron, APScheduler, crontab
 
 Use the concepts below when they fit the task. Not every scheduled job needs all of them.
 
-- Cron expressions use a **6-field format**: `second minute hour day month weekday`
-- The cron parser also accepts 5-field (no seconds) and 7-field (with year) expressions, but 6-field is the recommended format.
+- Cron expressions use a **7-field format**: `second minute hour day month weekday year`
+- The cron parser also accepts 5-field (no seconds) and 6-field (no year) expressions, but 7-field is the standard.
 - **iii-cron** evaluates expressions and fires triggers on schedule
 - Handlers should be **fast** — enqueue heavy work to a queue instead of blocking the cron handler
 - Each cron trigger binds one expression to one function
@@ -36,7 +36,7 @@ Use the concepts below when they fit the task. Not every scheduled job needs all
 | ----------------------------------------- | ---------------------------------------- |
 | `registerFunction`                        | Define the handler for the scheduled job |
 | `registerTrigger({ type: 'cron' })`       | Bind a cron expression to a function     |
-| `config: { expression: '0 0 9 * * *' }`   | Cron schedule in 6-field format          |
+| `config: { expression: '0 0 9 * * * *' }`   | Cron schedule in 7-field format          |
 
 ## Reference Implementation
 
@@ -60,7 +60,7 @@ Code using this pattern commonly includes, when relevant:
 
 Use the adaptations below when they apply to the task.
 
-- Adjust the 6-field expression to match your schedule (e.g. `0 0 */6 * * *` for every 6 hours)
+- Adjust the 7-field expression to match your schedule (e.g. `0 0 */6 * * * *` for every 6 hours)
 - Keep the cron handler lightweight — use it to validate and enqueue, not to do the heavy lifting
 - For jobs that need state (e.g. last-run timestamp), combine with `iii-state-management`
 - Multiple cron triggers can feed the same queue for fan-in processing

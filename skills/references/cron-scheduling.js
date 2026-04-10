@@ -2,8 +2,8 @@
  * Pattern: Cron Scheduling
  * Comparable to: node-cron, APScheduler, crontab
  *
- * Schedules recurring tasks using 6-field cron expressions:
- *   second  minute  hour  day  month  weekday
+ * Schedules recurring tasks using 7-field cron expressions:
+ *   second  minute  hour  day  month  weekday  year
  *
  * Cron handlers should be fast — enqueue heavy work to a queue.
  *
@@ -19,7 +19,7 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 
 // ---------------------------------------------------------------------------
 // Hourly cleanup — runs at the top of every hour
-// Cron: 0 0 * * * *  (second=0, minute=0, every hour)
+// Cron: 0 0 * * * * *  (second=0, minute=0, every hour)
 // ---------------------------------------------------------------------------
 iii.registerFunction('cron::hourly-cleanup', async () => {
   const logger = new Logger()
@@ -53,12 +53,12 @@ iii.registerFunction('cron::hourly-cleanup', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron::hourly-cleanup',
-  config: { expression: '0 0 * * * *' },
+  config: { expression: '0 0 * * * * *' },
 })
 
 // ---------------------------------------------------------------------------
 // Daily report — runs at midnight every day
-// Cron: 0 0 0 * * *  (second=0, minute=0, hour=0, every day)
+// Cron: 0 0 0 * * * *  (second=0, minute=0, hour=0, every day)
 // ---------------------------------------------------------------------------
 iii.registerFunction('cron::daily-report', async () => {
   const logger = new Logger()
@@ -98,12 +98,12 @@ iii.registerFunction('cron::daily-report', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron::daily-report',
-  config: { expression: '0 0 0 * * *' },
+  config: { expression: '0 0 0 * * * *' },
 })
 
 // ---------------------------------------------------------------------------
 // Health check — runs every 5 minutes
-// Cron: 0 */5 * * * *  (second=0, every 5th minute)
+// Cron: 0 */5 * * * * *  (second=0, every 5th minute)
 // ---------------------------------------------------------------------------
 iii.registerFunction('cron::health-check', async () => {
   const logger = new Logger()
@@ -144,7 +144,7 @@ iii.registerFunction('cron::health-check', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron::health-check',
-  config: { expression: '0 */5 * * * *' },
+  config: { expression: '0 */5 * * * * *' },
 })
 
 // ---------------------------------------------------------------------------

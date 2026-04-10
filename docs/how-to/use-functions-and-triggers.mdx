@@ -481,7 +481,7 @@ iii.registerFunction('math::aggregation', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'math::aggregation',
-  config: { expression: '0 */30 * * * *' }, // every 30 minutes
+  config: { expression: '0 */30 * * * * *' }, // every 30 minutes
 });
 ```
 </Tab>
@@ -502,7 +502,7 @@ iii.register_function("math::aggregation", aggregation)
 iii.register_trigger({
     "type": "cron",
     "function_id": "math::aggregation",
-    "config": {"expression": "0 */30 * * * *"},  # every 30 minutes
+    "config": {"expression": "0 */30 * * * * *"},  # every 30 minutes
 })
 ```
 </Tab>
@@ -532,7 +532,7 @@ iii.register_function(reg);
 iii.register_trigger(RegisterTriggerInput {
   trigger_type: "cron".into(),
   function_id: "math::aggregation".into(),
-  config: json!({ "expression": "0 */30 * * * *" }), // every 30 minutes
+  config: json!({ "expression": "0 */30 * * * * *" }), // every 30 minutes
   metadata: None,
 })?;
 ```

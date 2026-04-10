@@ -1,8 +1,8 @@
 /// Pattern: Cron Scheduling
 /// Comparable to: node-cron, APScheduler, crontab
 ///
-/// Schedules recurring tasks using 6-field cron expressions:
-///   second  minute  hour  day  month  weekday
+/// Schedules recurring tasks using 7-field cron expressions:
+///   second  minute  hour  day  month  weekday  year
 ///
 /// Cron handlers should be fast - enqueue heavy work to a queue.
 
@@ -28,7 +28,7 @@ fn main() {
 
     // ---
     // Hourly cleanup - runs at the top of every hour
-    // Cron: 0 0 * * * *  (second=0, minute=0, every hour)
+    // Cron: 0 0 * * * * *  (second=0, minute=0, every hour)
     // ---
     let iii_clone = iii.clone();
     iii.register_function(
@@ -83,14 +83,14 @@ fn main() {
     );
 
     iii.register_trigger(
-        IIITrigger::Cron(CronTriggerConfig::new("0 0 * * * *"))
+        IIITrigger::Cron(CronTriggerConfig::new("0 0 * * * * *"))
             .for_function("cron::hourly-cleanup"),
     )
     .expect("failed");
 
     // ---
     // Daily report - runs at midnight every day
-    // Cron: 0 0 0 * * *  (second=0, minute=0, hour=0, every day)
+    // Cron: 0 0 0 * * * *  (second=0, minute=0, hour=0, every day)
     // ---
     let iii_clone = iii.clone();
     iii.register_function(
@@ -159,14 +159,14 @@ fn main() {
     );
 
     iii.register_trigger(
-        IIITrigger::Cron(CronTriggerConfig::new("0 0 0 * * *"))
+        IIITrigger::Cron(CronTriggerConfig::new("0 0 0 * * * *"))
             .for_function("cron::daily-report"),
     )
     .expect("failed");
 
     // ---
     // Health check - runs every 5 minutes
-    // Cron: 0 */5 * * * *  (second=0, every 5th minute)
+    // Cron: 0 */5 * * * * *  (second=0, every 5th minute)
     // ---
     let iii_clone = iii.clone();
     iii.register_function(
@@ -221,7 +221,7 @@ fn main() {
     );
 
     iii.register_trigger(
-        IIITrigger::Cron(CronTriggerConfig::new("0 */5 * * * *"))
+        IIITrigger::Cron(CronTriggerConfig::new("0 */5 * * * * *"))
             .for_function("cron::health-check"),
     )
     .expect("failed");
