@@ -314,5 +314,4 @@ mod tests {
         assert_eq!(iface_name(b"eth0\0"), "eth0");
         assert_eq!(iface_name(b"lo\0"), "lo");
     }
-
 }
