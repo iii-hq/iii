@@ -7,6 +7,7 @@
  * 3. Listing all available trigger types with their schemas
  */
 
+import { EngineFunctions } from 'iii-sdk'
 import type { TriggerConfig, TriggerHandler, TriggerTypeInfo, TriggerTypeRef } from 'iii-sdk'
 import { iii } from './iii'
 
@@ -138,7 +139,7 @@ export async function listTriggerTypesExample() {
     { include_internal: boolean },
     { trigger_types: TriggerTypeInfo[] }
   >({
-    function_id: 'engine::trigger-types::list',
+    function_id: EngineFunctions.LIST_TRIGGER_TYPES,
     payload: { include_internal: false },
   })
 

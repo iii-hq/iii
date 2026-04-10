@@ -100,7 +100,6 @@ export type RegisterServiceInput = Omit<RegisterServiceMessage, 'message_type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
-export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 
 export interface ISdk {
   /**
@@ -198,39 +197,6 @@ export interface ISdk {
    * ```
    */
   trigger<TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput>
-
-  /**
-   * Lists all registered functions.
-   *
-   * @example
-   * ```typescript
-   * const functions = await iii.listFunctions()
-   * for (const fn of functions) {
-   *   console.log(`${fn.function_id}: ${fn.description}`)
-   * }
-   * ```
-   */
-  listFunctions(): Promise<FunctionInfo[]>
-
-  /**
-   * Lists all registered triggers.
-   * @param includeInternal - Whether to include internal triggers (default: false)
-   */
-  listTriggers(includeInternal?: boolean): Promise<TriggerInfo[]>
-
-  /**
-   * Lists all trigger types registered with the engine.
-   * @param includeInternal - Whether to include internal trigger types (default: false)
-   *
-   * @example
-   * ```typescript
-   * const triggerTypes = await iii.listTriggerTypes()
-   * for (const tt of triggerTypes) {
-   *   console.log(`${tt.id}: ${tt.description}`)
-   * }
-   * ```
-   */
-  listTriggerTypes(includeInternal?: boolean): Promise<TriggerTypeInfo[]>
 
   /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
@@ -332,25 +298,6 @@ export interface ISdk {
    * ```
    */
   createStream<TData>(streamName: string, stream: IStream<TData>): void
-
-  /**
-   * Registers a callback to receive the current functions list
-   * when the engine announces changes.
-   *
-   * @example
-   * ```typescript
-   * const unsubscribe = iii.onFunctionsAvailable((functions) => {
-   *   console.log(`${functions.length} functions available:`)
-   *   for (const fn of functions) {
-   *     console.log(`  - ${fn.function_id}`)
-   *   }
-   * })
-   *
-   * // Later, stop listening
-   * unsubscribe()
-   * ```
-   */
-  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void
 
   /**
    * Gracefully shutdown the iii, cleaning up all resources.
