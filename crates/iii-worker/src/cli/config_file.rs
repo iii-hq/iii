@@ -1093,4 +1093,39 @@ mod tests {
         assert!(config.is_some());
         assert!(config.unwrap().contains("timeout: 30"));
     }
+
+    #[test]
+    fn test_append_to_content_with_inline_empty_list_marker() {
+        // Reproduces the bug where `workers: []` (valid YAML) is populated
+        // in-place, producing `workers: []\n  - name: foo` (invalid YAML).
+        let mut content = "workers: []\n".to_string();
+        let path = std::path::Path::new("/tmp/test-empty-list-marker.yaml");
+        std::fs::write(path, &content).unwrap();
+
+        append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
+
+        assert!(
+            content.contains("- name: iii-state"),
+            "expected worker entry, got:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("workers: []"),
+            "inline `[]` marker should be stripped, got:\n{}",
+            content
+        );
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("output should be valid YAML");
+        let workers = parsed
+            .get("workers")
+            .and_then(|w| w.as_sequence())
+            .expect("`workers` should be a sequence");
+        assert_eq!(workers.len(), 1);
+        assert_eq!(
+            workers[0].get("name").and_then(|n| n.as_str()),
+            Some("iii-state")
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
 }
