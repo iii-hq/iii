@@ -141,16 +141,10 @@ Expected response:
 
 ## Install Agent Skills
 
-Get all 24 iii skills for your AI coding agent:
+Get all iii skills for your AI coding agent:
 
 ```bash
-npx skills add iii-hq/iii
-```
-
-Or with SkillKit:
-
-```bash
-npx skillkit install iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 ```
 
 Skills teach your agent how to use every iii primitive — HTTP endpoints, cron scheduling, queues, state management, streams, channels, and more. Available for Claude Code, Cursor, Codex, Gemini CLI, and 30+ other agents.
