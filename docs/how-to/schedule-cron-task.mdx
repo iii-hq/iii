@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cleanup::expired-sessions',
-  config: { expression: '* * * * * * *' }, // runs every second
+  config: { expression: '* * * * * *' }, // runs every second
 })
 ```
 </Tab>
@@ -98,7 +98,7 @@ iii.registerTrigger({
 iii.register_trigger({
     "type": "cron",
     "function_id": "cleanup::expired-sessions",
-    "config": {"expression": "* * * * * * *"},  # runs every second
+    "config": {"expression": "* * * * * *"},  # runs every second
 })
 ```
 </Tab>
@@ -107,26 +107,28 @@ iii.register_trigger({
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "cleanup::expired-sessions".into(),
-    config: json!({ "expression": "* * * * * * *" }), // runs every second
+    config: json!({ "expression": "* * * * * *" }), // runs every second
     metadata: None,
 })?;
 ```
 </Tab>
 </Tabs>
 
-This runs the Function every second. The `expression` field uses a 7-field cron format with seconds support (`second minute hour day month weekday year`).
+This runs the Function every second. The `expression` field uses a 6-field cron format (`second minute hour day month weekday`).
+
+<Note>5-field expressions (without seconds) and 7-field expressions (with a trailing year) are also accepted, but 6-field is the recommended standard.</Note>
 
 ### Common schedules
 
 | Expression | Frequency |
 |------------|-----------|
-| `* * * * * * *` | Every second |
-| `0 * * * * * *` | Every minute |
-| `0 */5 * * * * *` | Every 5 minutes |
-| `0 0 * * * * *` | Every hour |
-| `0 0 */6 * * * *` | Every 6 hours |
-| `0 0 0 * * * *` | Daily at midnight |
-| `0 0 9 * * 1 *` | Every Monday at 9 AM |
+| `* * * * * *` | Every second |
+| `0 * * * * *` | Every minute |
+| `0 */5 * * * *` | Every 5 minutes |
+| `0 0 * * * *` | Every hour |
+| `0 0 */6 * * *` | Every 6 hours |
+| `0 0 0 * * *` | Daily at midnight |
+| `0 0 9 * * 1` | Every Monday at 9 AM |
 
 ## Result
 
