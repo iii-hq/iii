@@ -80,7 +80,7 @@ This Worker adds a new Trigger Type: `cron`.
     * * * * * * [*]
     │ │ │ │ │ │  │
     │ │ │ │ │ │  └── Year (optional, * for any)
-    │ │ │ │ │ └──── Day of week (0–6, Sun=0)
+    │ │ │ │ │ └──── Day of week (0–7, Sun=0 or 7)
     │ │ │ │ └────── Month (1–12)
     │ │ │ └──────── Day of month (1–31)
     │ │ └────────── Hour (0–23)
@@ -140,7 +140,7 @@ def cleanup_old_data(event):
     return {}
 
 iii.register_function("jobs::cleanupOldData", cleanup_old_data)
-iii.register_trigger({'type': 'cron', 'function_id': 'jobs::cleanupOldData', 'config': {'expression': '0 0 2 * * * *'}})
+iii.register_trigger({'type': 'cron', 'function_id': 'jobs::cleanupOldData', 'config': {'expression': '0 0 2 * * *'}})
 ```
 </Tab>
 <Tab title="Rust">
@@ -167,11 +167,13 @@ iii.register_trigger(RegisterTriggerInput {
 
 | Expression           | Description                                    |
 | -------------------- | ---------------------------------------------- |
-| `0 * * * * * *`        | Every minute                                   |
-| `0 0 * * * * *`        | Every hour                                     |
+| `0 * * * * *`          | Every minute (6-field)                         |
+| `0 0 * * * *`          | Every hour (6-field)                           |
+| `0 0 2 * * *`          | Every day at 2 AM (6-field)                    |
+| `0 * * * * * *`        | Every minute (7-field)                         |
+| `0 0 * * * * *`        | Every hour (7-field)                            |
 | `0 0 0 * * * *`        | Every day at midnight                          |
 | `0 0 0 * * 0 *`        | Every Sunday at midnight                       |
-| `0 0 2 * * * *`        | Every day at 2 AM                              |
 | `0 */5 * * * * *`      | Every 5 minutes                                |
 | `0 0 9-17 * * 1-5 *`   | Every hour from 9 AM to 5 PM, Monday to Friday |
 
