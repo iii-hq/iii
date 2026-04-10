@@ -139,6 +139,50 @@ fn remove_worker_from(content: &str, name: &str) -> String {
     out
 }
 
+/// Rewrites a standalone `workers: []` line to `workers:` so subsequent list
+/// items can be appended without producing invalid YAML.
+///
+/// Only touches lines where the `workers:` key is followed by an inline empty
+/// list marker (`[]`, with tolerated surrounding whitespace). Populated inline
+/// lists (e.g. `workers: [foo]`) and normal block lists are left untouched.
+/// Trailing `# comment` text is preserved.
+fn normalize_empty_workers_list(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+
+    for line in &lines {
+        let trimmed_start = line.trim_start();
+        let indent = &line[..line.len() - trimmed_start.len()];
+        if let Some(rest) = trimmed_start.strip_prefix("workers:") {
+            // Split off a trailing comment before checking the marker shape,
+            // so `workers: [] # comment` still matches.
+            let (value, comment) = match rest.find('#') {
+                Some(idx) => (&rest[..idx], Some(&rest[idx..])),
+                None => (rest, None),
+            };
+            let trimmed = value.trim();
+            let is_empty_inline_list = trimmed.starts_with('[')
+                && trimmed.ends_with(']')
+                && trimmed.len() >= 2
+                && trimmed[1..trimmed.len() - 1].trim().is_empty();
+            if is_empty_inline_list {
+                match comment {
+                    Some(c) => out.push(format!("{}workers: {}", indent, c.trim_start())),
+                    None => out.push(format!("{}workers:", indent)),
+                }
+                continue;
+            }
+        }
+        out.push((*line).to_string());
+    }
+
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
 /// Extract the raw YAML config block for a named worker from file content.
 ///
 /// Returns the config lines (without the `config:` key itself) as a string
@@ -459,6 +503,10 @@ fn append_to_content_with_fields(
     worker_path: Option<&str>,
     config_yaml: Option<&str>,
 ) -> Result<(), String> {
+    // Normalize `workers: []` → `workers:` so appending list items below
+    // produces valid YAML.
+    *content = normalize_empty_workers_list(content);
+
     // Ensure there is a `workers:` key.
     if !content.contains("workers:") {
         if !content.is_empty() && !content.ends_with('\n') {
@@ -1092,5 +1140,132 @@ mod tests {
         let config = extract_worker_config(content, "pdfkit");
         assert!(config.is_some());
         assert!(config.unwrap().contains("timeout: 30"));
+    }
+
+    #[test]
+    fn test_append_to_content_with_inline_empty_list_marker() {
+        // Reproduces the bug where `workers: []` (valid YAML) is populated
+        // in-place, producing `workers: []\n  - name: foo` (invalid YAML).
+        let mut content = "workers: []\n".to_string();
+        let path = std::path::Path::new("/tmp/test-empty-list-marker.yaml");
+
+        append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
+
+        assert!(
+            content.contains("- name: iii-state"),
+            "expected worker entry, got:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("workers: []"),
+            "inline `[]` marker should be stripped, got:\n{}",
+            content
+        );
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("output should be valid YAML");
+        let workers = parsed
+            .get("workers")
+            .and_then(|w| w.as_sequence())
+            .expect("`workers` should be a sequence");
+        assert_eq!(workers.len(), 1);
+        assert_eq!(
+            workers[0].get("name").and_then(|n| n.as_str()),
+            Some("iii-state")
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_strips_inline_marker() {
+        assert_eq!(normalize_empty_workers_list("workers: []\n"), "workers:\n");
+        assert_eq!(normalize_empty_workers_list("workers: []"), "workers:");
+        assert_eq!(normalize_empty_workers_list("workers:  []\n"), "workers:\n");
+        assert_eq!(normalize_empty_workers_list("workers: [ ]\n"), "workers:\n");
+        assert_eq!(
+            normalize_empty_workers_list("workers: []  \n"),
+            "workers:\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_leaves_populated_list_alone() {
+        let content = "workers:\n  - name: foo\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_leaves_inline_populated_list_alone() {
+        // Pin current behavior: inline populated lists are left untouched.
+        let content = "workers: [foo]\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_no_workers_key() {
+        let content = "other: value\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_preserves_other_content() {
+        let content = "before: 1\nworkers: []\nafter: 2\n";
+        let expected = "before: 1\nworkers:\nafter: 2\n";
+        assert_eq!(normalize_empty_workers_list(content), expected);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_strips_marker_with_trailing_comment() {
+        assert_eq!(
+            normalize_empty_workers_list("workers: [] # no workers yet\n"),
+            "workers: # no workers yet\n"
+        );
+        assert_eq!(
+            normalize_empty_workers_list("workers: []# tight\n"),
+            "workers: # tight\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_preserves_indentation() {
+        assert_eq!(
+            normalize_empty_workers_list("  workers: [] # nested\n"),
+            "  workers: # nested\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_preserves_comment_on_populated_inline_list() {
+        // Populated inline list stays untouched, comment and all.
+        let content = "workers: [foo] # has one\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_append_to_content_with_inline_empty_list_marker_and_comment() {
+        let mut content = "workers: [] # add workers here\n".to_string();
+        let path = std::path::Path::new("/tmp/test-empty-list-marker-comment.yaml");
+
+        append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
+
+        assert!(
+            content.contains("- name: iii-state"),
+            "expected worker entry, got:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("workers: []"),
+            "inline `[]` marker should be stripped, got:\n{}",
+            content
+        );
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("output should be valid YAML");
+        let workers = parsed
+            .get("workers")
+            .and_then(|w| w.as_sequence())
+            .expect("`workers` should be a sequence");
+        assert_eq!(workers.len(), 1);
+
+        let _ = std::fs::remove_file(path);
     }
 }
