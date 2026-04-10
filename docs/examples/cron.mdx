@@ -323,7 +323,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), functio
 
 ## Cron expression format
 
-iii uses a seven-field cron format: `second minute hour day month weekday year`.
+iii supports six- or seven-field cron expressions: `second minute hour day month weekday [year]` (year is optional).
 
 ```
 ┌──────────── second (0-59)
@@ -332,15 +332,17 @@ iii uses a seven-field cron format: `second minute hour day month weekday year`.
 │ │ │ ┌────── day of month (1-31)
 │ │ │ │ ┌──── month (1-12)
 │ │ │ │ │ ┌── day of week (0-7)
-│ │ │ │ │ │ ┌ year (* for any)
+│ │ │ │ │ │ ┌ year (optional)
 │ │ │ │ │ │ │
 * * * * * * *
 ```
 
 | Expression | Meaning |
 |---|---|
-| `0 * * * * * *` | Every minute |
-| `0 0 * * * * *` | Every hour |
+| `0 * * * * *` | Every minute (6-field) |
+| `0 0 * * * *` | Every hour (6-field) |
+| `0 * * * * * *` | Every minute (7-field) |
+| `0 0 * * * * *` | Every hour (7-field) |
 | `0 0 9 * * 1-5 *` | 09:00 on weekdays |
 | `0 */5 * * * * *` | Every 5 minutes |
 | `*/5 * * * * * *` | Every 5 seconds |

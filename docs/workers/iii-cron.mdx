@@ -74,12 +74,12 @@ This Worker adds a new Trigger Type: `cron`.
 
 <Expandable title="Trigger Config">
   <ResponseField name="expression" type="string" required>
-    Standard cron expression defining the schedule. Supports the following format:
+    Cron expression defining the schedule. Accepts 6-field (`second minute hour day month weekday`) or 7-field (`second minute hour day month weekday year`) format — the year field is optional.
 
     ```
-    * * * * * * *
-    │ │ │ │ │ │ │
-    │ │ │ │ │ │ └── Year (* for any)
+    * * * * * * [*]
+    │ │ │ │ │ │  │
+    │ │ │ │ │ │  └── Year (optional, * for any)
     │ │ │ │ │ └──── Day of week (0–6, Sun=0)
     │ │ │ │ └────── Month (1–12)
     │ │ │ └──────── Day of month (1–31)
@@ -87,6 +87,8 @@ This Worker adds a new Trigger Type: `cron`.
     │ └──────────── Minute (0–59)
     └──────────── Second (0–59)
     ```
+
+    Both `"0 0 * * * *"` (6-field) and `"0 0 * * * * *"` (7-field) are valid and equivalent.
 
   </ResponseField>
   <ResponseField name="condition_function_id" type="string">
