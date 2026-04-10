@@ -7,7 +7,7 @@
  * 3. Listing all available trigger types with their schemas
  */
 
-import type { TriggerConfig, TriggerHandler, TriggerTypeRef } from 'iii-sdk'
+import type { TriggerConfig, TriggerHandler, TriggerTypeInfo, TriggerTypeRef } from 'iii-sdk'
 import { iii } from './iii'
 
 // ── Webhook trigger type ─────────────────────────────────────────────────
@@ -134,7 +134,13 @@ iii.registerTrigger({
 export async function listTriggerTypesExample() {
   console.log('\n--- Listing all trigger types ---')
 
-  const triggerTypes = await iii.listTriggerTypes()
+  const { trigger_types: triggerTypes } = await iii.trigger<
+    { include_internal: boolean },
+    { trigger_types: TriggerTypeInfo[] }
+  >({
+    function_id: 'engine::trigger-types::list',
+    payload: { include_internal: false },
+  })
 
   console.log(`Found ${triggerTypes.length} trigger types:\n`)
   for (const tt of triggerTypes) {
