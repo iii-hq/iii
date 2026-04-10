@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.11.0-next.6"
+version = "0.11.0-next.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2467,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "iii-console"
-version = "0.11.0-next.6"
+version = "0.11.0-next.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.11.0-next.6"
+version = "0.11.0-next.7"
 dependencies = [
  "async-trait",
  "ctor",
