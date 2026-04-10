@@ -9,7 +9,7 @@ Use `iii worker add ./path` to register a local worker project as a managed sand
 
 ## Context
 
-Local-path workers are first-class managed workers with the same lifecycle as container workers (`add`, `start`, `stop`, `remove`, `list`). Each worker runs inside a lightweight microVM with its own filesystem, network, and dependencies. The CLI detects local paths automatically — any argument starting with `./`, `/`, or `~` is treated as a local directory.
+Local-path workers are first-class managed workers with the same lifecycle as container workers (`add`, `start`, `stop`, `remove`, `list`). Each worker runs inside a lightweight microVM with its own filesystem, network, and dependencies. The CLI detects local paths automatically — any argument starting with `.`, `/`, or `~` is treated as a local directory.
 
 Requires **macOS Apple Silicon** or **Linux with KVM**.
 
