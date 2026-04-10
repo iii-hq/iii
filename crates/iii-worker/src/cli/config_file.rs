@@ -145,18 +145,29 @@ fn remove_worker_from(content: &str, name: &str) -> String {
 /// Only touches lines where the `workers:` key is followed by an inline empty
 /// list marker (`[]`, with tolerated surrounding whitespace). Populated inline
 /// lists (e.g. `workers: [foo]`) and normal block lists are left untouched.
+/// Trailing `# comment` text is preserved.
 fn normalize_empty_workers_list(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
 
     for line in &lines {
         if let Some(rest) = line.strip_prefix("workers:") {
-            let trimmed = rest.trim();
+            // Split off a trailing comment before checking the marker shape,
+            // so `workers: [] # comment` still matches.
+            let (value, comment) = match rest.find('#') {
+                Some(idx) => (&rest[..idx], Some(&rest[idx..])),
+                None => (rest, None),
+            };
+            let trimmed = value.trim();
             let is_empty_inline_list = trimmed.starts_with('[')
                 && trimmed.ends_with(']')
+                && trimmed.len() >= 2
                 && trimmed[1..trimmed.len() - 1].trim().is_empty();
             if is_empty_inline_list {
-                out.push("workers:".to_string());
+                match comment {
+                    Some(c) => out.push(format!("workers: {}", c.trim_start())),
+                    None => out.push("workers:".to_string()),
+                }
                 continue;
             }
         }
@@ -1135,7 +1146,6 @@ mod tests {
         // in-place, producing `workers: []\n  - name: foo` (invalid YAML).
         let mut content = "workers: []\n".to_string();
         let path = std::path::Path::new("/tmp/test-empty-list-marker.yaml");
-        std::fs::write(path, &content).unwrap();
 
         append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
 
@@ -1197,5 +1207,52 @@ mod tests {
         let content = "before: 1\nworkers: []\nafter: 2\n";
         let expected = "before: 1\nworkers:\nafter: 2\n";
         assert_eq!(normalize_empty_workers_list(content), expected);
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_strips_marker_with_trailing_comment() {
+        assert_eq!(
+            normalize_empty_workers_list("workers: [] # no workers yet\n"),
+            "workers: # no workers yet\n"
+        );
+        assert_eq!(
+            normalize_empty_workers_list("workers: []# tight\n"),
+            "workers: # tight\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_preserves_comment_on_populated_inline_list() {
+        // Populated inline list stays untouched, comment and all.
+        let content = "workers: [foo] # has one\n";
+        assert_eq!(normalize_empty_workers_list(content), content);
+    }
+
+    #[test]
+    fn test_append_to_content_with_inline_empty_list_marker_and_comment() {
+        let mut content = "workers: [] # add workers here\n".to_string();
+        let path = std::path::Path::new("/tmp/test-empty-list-marker-comment.yaml");
+
+        append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
+
+        assert!(
+            content.contains("- name: iii-state"),
+            "expected worker entry, got:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("workers: []"),
+            "inline `[]` marker should be stripped, got:\n{}",
+            content
+        );
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("output should be valid YAML");
+        let workers = parsed
+            .get("workers")
+            .and_then(|w| w.as_sequence())
+            .expect("`workers` should be a sequence");
+        assert_eq!(workers.len(), 1);
+
+        let _ = std::fs::remove_file(path);
     }
 }
