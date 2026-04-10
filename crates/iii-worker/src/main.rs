@@ -27,7 +27,6 @@ async fn main() -> anyhow::Result<()> {
                     let result = iii_worker::cli::managed::handle_managed_add(
                         name,
                         false,
-                        None,
                         force,
                         args.reset_config,
                     )
@@ -50,7 +49,6 @@ async fn main() -> anyhow::Result<()> {
                 let result = iii_worker::cli::managed::handle_managed_add(
                     name,
                     false,
-                    None,
                     true,
                     args.reset_config,
                 )
