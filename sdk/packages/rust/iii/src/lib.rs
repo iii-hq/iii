@@ -80,11 +80,9 @@ pub struct InitOptions {
 /// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// fn main() {
-///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
-///     // register functions, handle events, etc.
-///     iii.shutdown(); // cleanly stops the connection thread
-/// }
+/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// // register functions, handle events, etc.
+/// iii.shutdown(); // cleanly stops the connection thread
 /// ```
 pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {
