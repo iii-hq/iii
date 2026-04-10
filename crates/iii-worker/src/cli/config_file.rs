@@ -151,7 +151,9 @@ fn normalize_empty_workers_list(content: &str) -> String {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
 
     for line in &lines {
-        if let Some(rest) = line.strip_prefix("workers:") {
+        let trimmed_start = line.trim_start();
+        let indent = &line[..line.len() - trimmed_start.len()];
+        if let Some(rest) = trimmed_start.strip_prefix("workers:") {
             // Split off a trailing comment before checking the marker shape,
             // so `workers: [] # comment` still matches.
             let (value, comment) = match rest.find('#') {
@@ -165,8 +167,8 @@ fn normalize_empty_workers_list(content: &str) -> String {
                 && trimmed[1..trimmed.len() - 1].trim().is_empty();
             if is_empty_inline_list {
                 match comment {
-                    Some(c) => out.push(format!("workers: {}", c.trim_start())),
-                    None => out.push("workers:".to_string()),
+                    Some(c) => out.push(format!("{}workers: {}", indent, c.trim_start())),
+                    None => out.push(format!("{}workers:", indent)),
                 }
                 continue;
             }
@@ -1180,7 +1182,10 @@ mod tests {
         assert_eq!(normalize_empty_workers_list("workers: []"), "workers:");
         assert_eq!(normalize_empty_workers_list("workers:  []\n"), "workers:\n");
         assert_eq!(normalize_empty_workers_list("workers: [ ]\n"), "workers:\n");
-        assert_eq!(normalize_empty_workers_list("workers: []  \n"), "workers:\n");
+        assert_eq!(
+            normalize_empty_workers_list("workers: []  \n"),
+            "workers:\n"
+        );
     }
 
     #[test]
@@ -1218,6 +1223,14 @@ mod tests {
         assert_eq!(
             normalize_empty_workers_list("workers: []# tight\n"),
             "workers: # tight\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_workers_list_preserves_indentation() {
+        assert_eq!(
+            normalize_empty_workers_list("  workers: [] # nested\n"),
+            "  workers: # nested\n"
         );
     }
 
