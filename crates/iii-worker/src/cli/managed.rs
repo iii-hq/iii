@@ -13,7 +13,7 @@ use super::builtin_defaults::get_builtin_default;
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
-    MANIFEST_PATH, BinaryWorkerResponse, WorkerInfoResponse, fetch_worker_info, parse_worker_input,
+    BinaryWorkerResponse, MANIFEST_PATH, WorkerInfoResponse, fetch_worker_info, parse_worker_input,
 };
 use super::worker_manager::state::WorkerDef;
 
@@ -27,11 +27,7 @@ pub async fn handle_binary_add(
     let target = binary_download::current_target();
 
     if !brief {
-        eprintln!(
-            "  {} Resolved to binary v{}",
-            "✓".green(),
-            response.version
-        );
+        eprintln!("  {} Resolved to binary v{}", "✓".green(), response.version);
     }
 
     // If the worker is already running, skip download entirely
@@ -54,7 +50,12 @@ pub async fn handle_binary_add(
                 "error:".red(),
                 target,
                 worker_name,
-                response.binaries.keys().cloned().collect::<Vec<_>>().join(", ")
+                response
+                    .binaries
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             return 1;
         }
@@ -63,18 +64,14 @@ pub async fn handle_binary_add(
     if !brief {
         eprintln!("  Downloading {}...", worker_name.bold());
     }
-    let install_path = match binary_download::download_and_install_binary(
-        worker_name,
-        binary_info,
-    )
-    .await
-    {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
+    let install_path =
+        match binary_download::download_and_install_binary(worker_name, binary_info).await {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
 
     if !brief {
         eprintln!("  {} Downloaded successfully", "✓".green());
@@ -952,13 +949,21 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
                         "error:".red(),
                         target,
                         worker_name,
-                        response.binaries.keys().cloned().collect::<Vec<_>>().join(", ")
+                        response
+                            .binaries
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                     return 1;
                 }
             };
 
-            eprintln!("  Installing {} (binary v{})...", worker_name, response.version);
+            eprintln!(
+                "  Installing {} (binary v{})...",
+                worker_name, response.version
+            );
             match binary_download::download_and_install_binary(worker_name, binary_info).await {
                 Ok(installed_path) => {
                     eprintln!("  {} Installed successfully", "✓".green());

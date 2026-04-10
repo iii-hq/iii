@@ -18,16 +18,14 @@ async fn handle_managed_add_force_builtin_re_adds() {
     in_temp_dir_async(|| async {
         // First add creates config
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false)
-                .await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
         assert_eq!(exit_code, 0);
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
 
         // Force re-add succeeds (builtins have no artifacts to delete)
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false)
-                .await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false).await;
         assert_eq!(exit_code, 0);
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));

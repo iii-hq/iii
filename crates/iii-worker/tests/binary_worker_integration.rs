@@ -10,9 +10,8 @@
 mod common;
 
 use iii_worker::cli::binary_download::{
-    archive_extension, binary_worker_path, binary_workers_dir,
-    current_target, download_and_install_binary, extract_binary_from_targz,
-    verify_sha256,
+    archive_extension, binary_worker_path, binary_workers_dir, current_target,
+    download_and_install_binary, extract_binary_from_targz, verify_sha256,
 };
 use iii_worker::cli::registry::BinaryInfo;
 use sha2::{Digest, Sha256};

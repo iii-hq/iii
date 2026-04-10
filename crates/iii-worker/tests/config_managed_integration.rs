@@ -54,8 +54,7 @@ async fn add_many_with_invalid_worker_returns_nonzero() {
 async fn handle_managed_add_builtin_creates_config() {
     in_temp_dir_async(|| async {
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false)
-                .await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
         assert_eq!(
             exit_code, 0,
             "expected success exit code for builtin worker"
@@ -219,13 +218,9 @@ async fn handle_managed_add_plain_name_calls_api() {
     in_temp_dir_async(|| async {
         // Set III_API_URL to something that will fail quickly
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
-        let result = iii_worker::cli::managed::handle_managed_add(
-            "nonexistent-worker",
-            true,
-            false,
-            false,
-        )
-        .await;
+        let result =
+            iii_worker::cli::managed::handle_managed_add("nonexistent-worker", true, false, false)
+                .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Should fail because API is unreachable
         assert_ne!(result, 0);
@@ -239,13 +234,8 @@ async fn handle_managed_add_builtin_skips_api() {
     in_temp_dir_async(|| async {
         // Set III_API_URL to something that will fail — if it tries the API, we'll know
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
-        let result = iii_worker::cli::managed::handle_managed_add(
-            "iii-http",
-            true,
-            false,
-            false,
-        )
-        .await;
+        let result =
+            iii_worker::cli::managed::handle_managed_add("iii-http", true, false, false).await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Should succeed because iii-http is a builtin — no API call needed
         assert_eq!(result, 0);
@@ -258,13 +248,9 @@ async fn handle_managed_add_builtin_skips_api() {
 async fn handle_managed_add_local_path_skips_api() {
     in_temp_dir_async(|| async {
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
-        let result = iii_worker::cli::managed::handle_managed_add(
-            "./my-local-worker",
-            true,
-            false,
-            false,
-        )
-        .await;
+        let result =
+            iii_worker::cli::managed::handle_managed_add("./my-local-worker", true, false, false)
+                .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Will fail (path doesn't exist), but should NOT have called the API
         assert_ne!(result, 0);
@@ -289,13 +275,9 @@ async fn handle_managed_add_binary_via_file_fixture() {
 
         let url = format!("file://{}", path.display());
         unsafe { std::env::set_var("III_API_URL", &url) };
-        let result = iii_worker::cli::managed::handle_managed_add(
-            "test-binary-worker",
-            true,
-            false,
-            false,
-        )
-        .await;
+        let result =
+            iii_worker::cli::managed::handle_managed_add("test-binary-worker", true, false, false)
+                .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Will fail because binaries map is empty (no platform match),
         // but it proves the API resolution path was taken and parsed correctly

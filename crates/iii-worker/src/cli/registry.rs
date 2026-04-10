@@ -95,17 +95,14 @@ pub async fn fetch_worker_info(
 ) -> Result<WorkerInfoResponse, String> {
     validate_worker_name(name)?;
 
-    let base_or_file =
-        std::env::var("III_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+    let base_or_file = std::env::var("III_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
 
     let body = if base_or_file.starts_with("file://") {
         #[cfg(not(debug_assertions))]
         {
-            return Err(
-                "file:// API URLs are only supported in debug/test builds. \
+            return Err("file:// API URLs are only supported in debug/test builds. \
                  Set III_API_URL to an HTTPS URL."
-                    .to_string(),
-            );
+                .to_string());
         }
         #[cfg(debug_assertions)]
         {
@@ -130,10 +127,7 @@ pub async fn fetch_worker_info(
             return Err(format!("Worker '{}' not found", name));
         }
         if !resp.status().is_success() {
-            return Err(format!(
-                "Failed to resolve worker: HTTP {}",
-                resp.status()
-            ));
+            return Err(format!("Failed to resolve worker: HTTP {}", resp.status()));
         }
 
         resp.text()
@@ -324,7 +318,10 @@ mod tests {
                 assert_eq!(b.version, "0.1.2");
                 assert_eq!(b.binaries.len(), 2);
                 let darwin = b.binaries.get("aarch64-apple-darwin").unwrap();
-                assert_eq!(darwin.sha256, "5fdbce8e5db431ea6dddb527d3be0adf5bfac92fafac4a0c78d21e438d583f17");
+                assert_eq!(
+                    darwin.sha256,
+                    "5fdbce8e5db431ea6dddb527d3be0adf5bfac92fafac4a0c78d21e438d583f17"
+                );
                 assert!(darwin.url.ends_with("aarch64-apple-darwin.tar.gz"));
                 assert_eq!(b.config.name, "image-resize");
             }
@@ -520,7 +517,11 @@ mod tests {
             r
         };
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Failed to read local API fixture"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Failed to read local API fixture")
+        );
     }
 
     #[tokio::test]
