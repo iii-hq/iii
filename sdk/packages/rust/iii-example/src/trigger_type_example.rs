@@ -83,7 +83,7 @@ fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, String
 
 // ── List trigger types example ──────────────────────────────────────────
 
-pub async fn list_trigger_types_example(iii: &III) {
+pub async fn print_trigger_type_catalog(iii: &III) {
     println!("\n--- Listing all trigger types ---");
 
     let result = iii

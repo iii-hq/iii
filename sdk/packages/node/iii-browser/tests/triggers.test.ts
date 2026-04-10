@@ -89,7 +89,7 @@ describe('Trigger Registration', () => {
   })
 
   it('should register a function-availability trigger manually', () => {
-    const handlerFunctionId = 'test.on_functions_available.handler'
+    const handlerFunctionId = 'test.functions_available.handler'
     sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionInfo[] }) => null)
     sdk.registerTrigger({
       type: 'engine::functions-available',
@@ -108,7 +108,7 @@ describe('Trigger Registration', () => {
   })
 
   it('should clean up a manually-registered function-availability trigger', () => {
-    const handlerFunctionId = 'test.on_functions_available.cleanup'
+    const handlerFunctionId = 'test.functions_available.cleanup'
     const fn = sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionInfo[] }) => null)
     const trigger = sdk.registerTrigger({
       type: 'engine::functions-available',

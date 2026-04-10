@@ -36,7 +36,7 @@ def use_api(
 
 
 def use_functions_available(iii: IIIClient, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
-    handler_fn_id = f"iii_example.on_functions_available.{uuid.uuid4()}"
+    handler_fn_id = f"iii_example.functions_available_listener.{uuid.uuid4()}"
 
     async def handler(data: dict[str, Any]) -> None:
         functions = [FunctionInfo(**f) for f in data.get("functions", [])]

@@ -3,7 +3,7 @@ import { TriggerAction } from '../../src/iii'
 import type { FunctionInfo } from '../../src/iii-types'
 import { execute, iii, sleep } from './utils'
 
-const listFunctions = async (): Promise<FunctionInfo[]> => {
+const fetchRegisteredFunctions = async (): Promise<FunctionInfo[]> => {
   const { functions } = await iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
     function_id: 'engine::functions::list',
     payload: {},
@@ -14,7 +14,7 @@ const listFunctions = async (): Promise<FunctionInfo[]> => {
 describe('Bridge Operations', () => {
   it('should connect successfully', async () => {
     expect(iii).toBeDefined()
-    const functions = await execute(async () => listFunctions())
+    const functions = await execute(async () => fetchRegisteredFunctions())
     expect(Array.isArray(functions)).toBe(true)
   })
 
@@ -79,7 +79,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const functions = await listFunctions()
+    const functions = await fetchRegisteredFunctions()
     const functionIds = functions.map((f) => f.function_id)
 
     expect(functionIds).toContain('browser.test.list.func1')

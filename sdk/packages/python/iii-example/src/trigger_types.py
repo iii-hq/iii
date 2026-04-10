@@ -172,7 +172,7 @@ def setup(iii: IIIClient) -> None:
 # ── List trigger types ───────────────────────────────────────────────────
 
 
-def list_trigger_types_example(iii: IIIClient) -> None:
+def print_trigger_type_catalog(iii: IIIClient) -> None:
     """List all trigger types and print their schemas."""
     print("\n--- Listing all trigger types ---")
 

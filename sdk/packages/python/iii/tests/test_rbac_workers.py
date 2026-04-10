@@ -278,7 +278,7 @@ class TestRbacWorkers:
         finally:
             iii_client.shutdown()
 
-    def test_list_functions_only_returns_allowed_for_valid_token(self, iii_server):
+    def test_function_discovery_only_returns_allowed_for_valid_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
             InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
@@ -302,7 +302,7 @@ class TestRbacWorkers:
         finally:
             iii_client.shutdown()
 
-    def test_list_functions_only_returns_exposed_for_restricted_token(self, iii_server):
+    def test_function_discovery_only_returns_exposed_for_restricted_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
             InitOptions(otel={"enabled": False}, headers={"x-test-token": "restricted-token"}),

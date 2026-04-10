@@ -570,7 +570,7 @@ async fn should_only_list_allowed_functions_for_valid_token() {
             timeout_ms: None,
         })
         .await
-        .expect("list_functions should succeed");
+        .expect("function discovery request should succeed");
     let functions: Vec<FunctionInfo> = serde_json::from_value(
         list_result
             .get("functions")
@@ -633,7 +633,7 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
             timeout_ms: None,
         })
         .await
-        .expect("list_functions should succeed");
+        .expect("function discovery request should succeed");
     let functions: Vec<FunctionInfo> = serde_json::from_value(
         list_result
             .get("functions")

@@ -132,7 +132,7 @@ iii.registerTrigger({
 
 // ── List trigger types ───────────────────────────────────────────────────
 
-export async function listTriggerTypesExample() {
+export async function printTriggerTypeCatalog() {
   console.log('\n--- Listing all trigger types ---')
 
   const { trigger_types: triggerTypes } = await iii.trigger<

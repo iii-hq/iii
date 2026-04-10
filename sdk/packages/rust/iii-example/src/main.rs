@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     custom_trigger_example::setup(&iii);
 
     // List all registered trigger types with their schemas
-    trigger_type_example::list_trigger_types_example(&iii).await;
+    trigger_type_example::print_trigger_type_catalog(&iii).await;
 
     iii.register_function(
         RegisterFunction::new("example::echo", echo_message)

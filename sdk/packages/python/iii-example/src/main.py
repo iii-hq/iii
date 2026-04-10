@@ -204,7 +204,7 @@ async def _post_example(req: ApiRequest, logger) -> ApiResponse:
 
 
 def main() -> None:
-    from .trigger_types import list_trigger_types_example
+    from .trigger_types import print_trigger_type_catalog
 
     engine_ws_url = os.environ.get("III_URL", "ws://localhost:49134")
     iii = register_worker(
@@ -217,7 +217,7 @@ def main() -> None:
     _setup(iii)
 
     # List all available trigger types with their schemas
-    list_trigger_types_example(iii)
+    print_trigger_type_catalog(iii)
 
 if __name__ == "__main__":
     main()

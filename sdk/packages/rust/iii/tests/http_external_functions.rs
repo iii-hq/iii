@@ -211,7 +211,7 @@ async fn registers_and_unregisters_external_http_function() {
                 timeout_ms: None,
             })
             .await
-            .expect("list_functions failed");
+            .expect("function discovery request failed");
         let functions: Vec<FunctionInfo> = serde_json::from_value(
             list_result
                 .get("functions")
@@ -235,7 +235,7 @@ async fn registers_and_unregisters_external_http_function() {
                 timeout_ms: None,
             })
             .await
-            .expect("list_functions failed");
+            .expect("function discovery request failed");
         let functions: Vec<FunctionInfo> = serde_json::from_value(
             list_result
                 .get("functions")

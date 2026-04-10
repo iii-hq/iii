@@ -24,7 +24,7 @@ async fn connect_successfully() {
             timeout_ms: None,
         })
         .await
-        .expect("list_functions");
+        .expect("function discovery request should succeed");
     let functions: Vec<FunctionInfo> = serde_json::from_value(
         result
             .get("functions")
@@ -143,7 +143,7 @@ async fn list_registered_functions() {
             timeout_ms: None,
         })
         .await
-        .expect("list_functions");
+        .expect("function discovery request should succeed");
     let functions: Vec<FunctionInfo> = serde_json::from_value(
         result
             .get("functions")

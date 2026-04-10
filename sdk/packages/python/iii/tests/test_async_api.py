@@ -29,9 +29,6 @@ def test_async_methods_have_docstrings():
     """All public async methods must have docstrings."""
     async_methods = [
         "trigger_async",
-        "list_functions_async",
-        "list_workers_async",
-        "list_triggers_async",
         "create_channel_async",
         "connect_async",
         "shutdown_async",

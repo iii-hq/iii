@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { TriggerInfo } from '../../src/iii-types'
 import { iii, sleep } from './utils'
 
-const listTriggers = async (includeInternal = false): Promise<TriggerInfo[]> => {
+const fetchRegisteredTriggers = async (includeInternal = false): Promise<TriggerInfo[]> => {
   const { triggers } = await iii.trigger<
     { include_internal: boolean },
     { triggers: TriggerInfo[] }
@@ -25,7 +25,7 @@ describe('Trigger Registration', () => {
 
     await sleep(500)
 
-    const triggers = await listTriggers()
+    const triggers = await fetchRegisteredTriggers()
     expect(Array.isArray(triggers)).toBe(true)
 
     const found = triggers.find((t) => t.function_id === 'browser.test.triggers.fn')
@@ -50,7 +50,7 @@ describe('Trigger Registration', () => {
     trigger.unregister()
     await sleep(300)
 
-    const triggers = await listTriggers()
+    const triggers = await fetchRegisteredTriggers()
     const found = triggers.find((t) => t.function_id === 'browser.test.triggers.unreg')
     expect(found).toBeUndefined()
 
@@ -58,12 +58,12 @@ describe('Trigger Registration', () => {
   })
 
   it('should return triggers as an array even when empty', async () => {
-    const triggers = await listTriggers()
+    const triggers = await fetchRegisteredTriggers()
     expect(Array.isArray(triggers)).toBe(true)
   })
 
   it('should support include_internal parameter', async () => {
-    const triggers = await listTriggers(false)
+    const triggers = await fetchRegisteredTriggers(false)
     expect(Array.isArray(triggers)).toBe(true)
   })
 
@@ -84,7 +84,7 @@ describe('Trigger Registration', () => {
 
     await sleep(500)
 
-    const triggers = await listTriggers()
+    const triggers = await fetchRegisteredTriggers()
     const found = triggers.filter((t) => t.function_id === 'browser.test.triggers.multi')
     expect(found.length).toBeGreaterThanOrEqual(2)
 
