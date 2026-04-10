@@ -354,6 +354,10 @@ pub struct MetricsAccumulator {
     pub invocations_by_function: dashmap::DashMap<String, u64>,
     pub workers_spawns: std::sync::atomic::AtomicU64,
     pub workers_deaths: std::sync::atomic::AtomicU64,
+    /// Set once on the first successful invocation of a user-defined function.
+    pub first_user_success_fn: std::sync::OnceLock<String>,
+    /// Set once on the first failed invocation of a user-defined function.
+    pub first_user_failure_fn: std::sync::OnceLock<String>,
 }
 
 impl Default for MetricsAccumulator {
@@ -366,6 +370,8 @@ impl Default for MetricsAccumulator {
             invocations_by_function: dashmap::DashMap::new(),
             workers_spawns: std::sync::atomic::AtomicU64::new(0),
             workers_deaths: std::sync::atomic::AtomicU64::new(0),
+            first_user_success_fn: std::sync::OnceLock::new(),
+            first_user_failure_fn: std::sync::OnceLock::new(),
         }
     }
 }
@@ -3447,6 +3453,48 @@ mod tests {
 
         assert_eq!(counts.get("func_x"), Some(&2));
         assert_eq!(counts.get("func_y"), Some(&1));
+    }
+
+    #[test]
+    fn test_first_user_success_fn_set_once() {
+        let acc = MetricsAccumulator::default();
+        assert!(acc.first_user_success_fn.get().is_none());
+
+        let _ = acc.first_user_success_fn.set("math::add".to_string());
+        assert_eq!(acc.first_user_success_fn.get(), Some(&"math::add".to_string()));
+
+        let _ = acc.first_user_success_fn.set("math::multiply".to_string());
+        assert_eq!(
+            acc.first_user_success_fn.get(),
+            Some(&"math::add".to_string()),
+            "OnceLock should retain the first value"
+        );
+    }
+
+    #[test]
+    fn test_first_user_failure_fn_set_once() {
+        let acc = MetricsAccumulator::default();
+        assert!(acc.first_user_failure_fn.get().is_none());
+
+        let _ = acc.first_user_failure_fn.set("math::add".to_string());
+        assert_eq!(acc.first_user_failure_fn.get(), Some(&"math::add".to_string()));
+
+        let _ = acc.first_user_failure_fn.set("other::fn".to_string());
+        assert_eq!(
+            acc.first_user_failure_fn.get(),
+            Some(&"math::add".to_string()),
+            "OnceLock should retain the first value"
+        );
+    }
+
+    #[test]
+    fn test_first_user_fns_independent() {
+        let acc = MetricsAccumulator::default();
+        let _ = acc.first_user_success_fn.set("math::add".to_string());
+        let _ = acc.first_user_failure_fn.set("math::divide".to_string());
+
+        assert_eq!(acc.first_user_success_fn.get(), Some(&"math::add".to_string()));
+        assert_eq!(acc.first_user_failure_fn.get(), Some(&"math::divide".to_string()));
     }
 
     // =========================================================================
