@@ -1,138 +1,224 @@
 ---
 title: 'Quickstart'
-description: 'Learn everything you need to start building with iii and the iii SDK'
+description: 'Scaffold a cross-language project, start two workers, and call functions across Python and TypeScript through the iii engine.'
 ---
 
-This Quickstart will show how any project can leverage iii and the iii SDK to unify their backend stack.
+In this tutorial you will scaffold a cross-language project with the iii, start a Python worker and a TypeScript worker, and call functions across languages through the iii engine.
 
-### 1. Create a new quickstart project
+<Info title="Install iii before proceeding">
+  Make sure you have installed iii before proceeding. If you haven't then visit the [Getting Started](/index#getting-started) guide first.
+</Info>
 
-<Warning title="install iii">
-  Make sure to install iii before proceeding:
-```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-```
-</Warning>
-
-The project setup will indicate that this project includes TypeScript, Python, and Rust languages. The README contains instructions for using Docker Compose in case not all of these runtimes are available on the system.
+## 1. Scaffold the project
 
 ```bash
 iii create --template quickstart --directory quickstart
 cd quickstart
 ```
 
-### 2. Run the Engine
+This creates the two workers that you'll run: a Python worker that adds two numbers, and a TypeScript worker that calls the Python worker through the iii engine.
 
-```bash
-iii --config iii-config.yaml
+```
+quickstart/
+├── workers/
+│   ├── math-worker/          # Python
+│   │   ├── iii.worker.yaml
+│   │   ├── math_worker.py
+│   └── caller-worker/        # TypeScript
+│       ├── iii.worker.yaml
+│       └── src/
+│           └── worker.ts
 ```
 
-### 3. Open the project
-
-Open the project and README in your IDE. You can use this shorthand from a second terminal window in the project directory:
-
-<Tabs>
-  <Tab title="VS Code">
+## 2. Start the engine
 
 ```bash
-code . README.md
+iii --config config.yaml
 ```
 
-  </Tab>
-  <Tab title="Cursor">
+The engine is now listening on `ws://localhost:49134`. Keep this terminal open.
+
+## 3. Start the Python worker
+
+Open a second terminal in the `quickstart` directory and run the following command:
 
 ```bash
-cursor . README.md
+iii worker dev ./workers/math-worker
 ```
 
-  </Tab>
-  <Tab title="JetBrains">
+You should see:
+
+```
+Math worker started - listening for calls
+```
+
+This worker registered the function `math::add` with the engine. You could call this function right now using the command below.
 
 ```bash
-idea . README.md
+iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
 ```
 
-  </Tab>
-  <Tab title="Sublime">
+However this is not much different than running an equivalent script on its own. The utility of iii comes from being able to place
+any functionality into a worker and then seamlessly compose that worker with other workers.
+
+## 4. Start the TypeScript worker
+
+Open a third terminal in the `quickstart` directory:
 
 ```bash
-subl . README.md
+iii worker dev ./workers/caller-worker
 ```
 
-  </Tab>
-  <Tab title="Neovim">
+You should see:
+
+```
+Caller worker started - listening for calls
+```
+
+This worker registered the function `math::add_two_numbers` with the engine.
+
+## 5. Call the Python function
+
+Open a fourth terminal in the `quickstart` directory and call the Python worker directly:
 
 ```bash
-nvim README.md
+iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
 ```
 
-  </Tab>
-</Tabs>
+```json
+{ 
+  "c": 5,
+  // ...
+}
+```
 
-### 4. Continue with the README
+The CLI sent a trigger to the engine, the engine routed it to the Python worker, and the result came back.
 
-The README will explain what the project is doing and how to start
-the services that will connect to the iii engine and use it for their communication.
+## 6. Call across languages
 
-After completing the project, explore the `worker.ts` file from the project
-directory and then navigate back here to learn more about how iii works and can be
-used to streamline backend orchestration.
+Now open a fourth terminal in the `quickstart` directory and call the TypeScript worker.
+The TypeScript worker will then call the Python worker and return the result:
 
-### 5. Try the iii Console
+```bash
+iii trigger --function-id='math::add_two_numbers' --payload='{"a": 10, "b": 20}'
+```
 
-iii also comes with a web console that shows logs, traces, and runtime state for the iii-powered application.
-Start it in a new terminal window with:
+```json
+{ "c": 30 }
+```
+
+## 7. How it works
+
+### Python worker
+
+`workers/math-worker/math_worker.py`:
+
+```python
+import os
+from iii import register_worker, InitOptions, Logger
+
+iii = register_worker(
+    os.environ.get("III_URL", "ws://localhost:49134"),
+    InitOptions(worker_name="math-worker"),
+)
+logger = Logger()
+
+
+def add_handler(payload: dict) -> dict:
+    a = payload.get("a", 0)
+    b = payload.get("b", 0)
+    logger.info(f"math::add called in Python with a={a}, b={b}")
+    return {"c": a + b}
+
+
+iii.register_function("math::add", add_handler)
+```
+
+`register_worker` connects to the engine over WebSocket. `register_function` makes `math::add` available to the entire system.
+
+### TypeScript worker
+
+`workers/caller-worker/src/worker.ts`:
+
+```typescript
+import { registerWorker, Logger } from 'iii-sdk';
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134');
+const logger = new Logger();
+
+iii.registerFunction(
+  'math::add_two_numbers',
+  async (payload: { a: number; b: number }) => {
+    logger.info('math::add_two_numbers called in TypeScript', payload);
+
+    const result = await iii.trigger({
+      function_id: 'math::add',
+      payload,
+    });
+
+    return result;
+  },
+);
+```
+
+`registerWorker` connects to the engine the same way the Python worker does. The `iii.trigger()` call inside the handler invokes
+`math::add` on the Python worker through the engine the TypeScript worker doesn't need to know where the `math::add` function
+is running, its language, or anything else.
+
+### Worker manifest
+
+Each worker has an `iii.worker.yaml` that describes how to run the worker. Here is the Python worker's manifest.
+While these workers are started with the `iii worker dev` command they do not need to be running alongside the iii
+instance. These workers can run anywhere and even be replicated. Every worker simply connects to iii over WebSocket.
+iii then handles all routing.
+
+```yaml
+name: math-worker
+runtime:
+  language: python
+  package_manager: pip
+  entry: math_worker.py
+scripts:
+  install: "pip install -r requirements.txt"
+  start: "python math_worker.py"
+```
+
+`name` identifies the worker. `runtime` tells the engine the language and entrypoint. `scripts` define how to install dependencies and start the worker.
+
+### Architecture
+
+```
+┌──────────────┐          ┌──────────────────┐
+│  iii trigger  │◀────────▶│    iii engine     │
+│  (CLI)        │   WS     │   :49134          │
+└──────────────┘          └──────┬───────┬────┘
+                                 │       │
+                          WS     │       │  WS
+                                 ▼       ▼
+                        ┌────────────┐  ┌──────────────┐
+                        │math-worker │  │caller-worker │
+                        │(Python)    │  │(TypeScript)  │
+                        │math::add   │  │math::add_two │
+                        │            │  │  _numbers    │
+                        └────────────┘  └──────────────┘
+```
+
+
+## 8. Explore with the iii Console
+
+Start the console in a new terminal:
 
 ```bash
 iii console
 ```
 
-Then open your web browser to: http://localhost:3113/
+Open your browser to [http://localhost:3113/](http://localhost:3113/) to see logs, traces, and runtime state for the running system.
 
 <img src="/images/console/dashboard.png" alt="iii Console dashboard" />
 
-### 6. Add Agent Skills
-
-Give your AI coding agent full context on every iii primitive:
-
-```bash
-npx skills add iii-hq/iii
-```
-
-This installs skills covering HTTP endpoints, cron scheduling, queues, state management, streams, custom triggers, and more. Works with Claude Code, Cursor, Gemini CLI, Codex, and [30+ other agents](https://agentskills.io).
-
-<Tabs>
-  <Tab title="Claude Code">
-
-```bash
-npx skills add iii-hq/iii
-```
-
-  </Tab>
-  <Tab title="Cursor">
-
-```bash
-npx skillkit install iii-hq/iii --agent cursor
-```
-
-  </Tab>
-  <Tab title="Gemini CLI">
-
-```bash
-npx skillkit install iii-hq/iii --agent gemini-cli
-```
-
-  </Tab>
-  <Tab title="Codex">
-
-```bash
-npx skillkit install iii-hq/iii --agent codex
-```
-
-  </Tab>
-</Tabs>
-
 ## Next Steps
+
+You scaffolded a project, started two workers in different languages, and called functions across them through the iii engine.
 
 <CardGroup cols={2}>
   <Card title="How to use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="book-open">
