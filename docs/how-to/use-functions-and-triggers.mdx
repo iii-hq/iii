@@ -620,7 +620,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   Node `trigger({ function_id: 'iii::durable::publish', payload: { topic: 'user.created', data: {...} } })`,
   Python `trigger({'function_id': 'iii::durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
   Rust `trigger(TriggerRequest::new("iii::durable::publish", json!({"topic": "user.created", "data": {...}})))`.
-  See the [Queue module](/workers/iii-queue) for details.
+  See the [Queue worker](/workers/iii-queue) for details.
 </Info>
 
 ## Trigger Types
