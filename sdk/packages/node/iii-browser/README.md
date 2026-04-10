@@ -57,7 +57,7 @@ const users = await iii.trigger({
 | Create channel           | `iii.createChannel()`                                                 | Create a streaming channel pair (writer + reader)            |
 | Shutdown                 | `iii.shutdown()`                                                      | Gracefully disconnect from the engine                        |
 
-For listing workers, functions, triggers, or subscribing to function availability events, see the [discovery how-to guide](../../../docs/how-to/discover-workers-functions-triggers.mdx).
+For listing workers, functions, triggers, or subscribing to function availability events, see the [discovery how-to guide](https://iii.dev/docs/how-to/discover-workers-functions-triggers).
 
 ### Registering Functions
 

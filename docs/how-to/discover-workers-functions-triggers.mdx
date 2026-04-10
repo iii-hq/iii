@@ -1,0 +1,430 @@
+---
+title: 'Discover workers, functions, and triggers'
+description: 'Inspect the engine registry and subscribe to function availability changes directly with iii primitives.'
+---
+
+# Discover workers, functions, and triggers
+
+Use this guide when you need to inspect which workers are connected, which functions are registered, which triggers are active, or react to functions coming online at runtime — without relying on SDK convenience wrappers.
+
+<Callout type="info">
+For the architectural background on why discovery is built into the engine, see [Concepts: Discovery](/primitives-and-concepts/discovery).
+</Callout>
+
+<Callout type="tip">
+The Node and browser SDKs export `EngineFunctions` and `EngineTriggers` constants for the built-in discovery function IDs and trigger types. The examples below use those constants in Node, but the underlying identifiers are the same across all SDKs.
+</Callout>
+
+## Goal 1: List registered functions
+
+`engine::functions::list` returns the current function registry. By default it filters out internal `engine::*` functions. Set `include_internal: true` when you want the engine's own functions in the result.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import {
+  EngineFunctions,
+  registerWorker,
+  type FunctionInfo,
+} from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const { functions } = await iii.trigger<
+  { include_internal?: boolean },
+  { functions: FunctionInfo[] }
+>({
+  function_id: EngineFunctions.LIST_FUNCTIONS,
+  payload: {},
+})
+
+const { functions: allFunctions } = await iii.trigger<
+  { include_internal: boolean },
+  { functions: FunctionInfo[] }
+>({
+  function_id: EngineFunctions.LIST_FUNCTIONS,
+  payload: { include_internal: true },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{FunctionInfo, TriggerRequest, III};
+use serde_json::{json, Value};
+
+pub async fn fetch_functions(iii: &III) -> Result<Vec<FunctionInfo>, Box<dyn std::error::Error>> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+
+    let functions = serde_json::from_value::<Vec<FunctionInfo>>(
+        result
+            .get("functions")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )?;
+
+    Ok(functions)
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker
+from iii.types import FunctionInfo
+
+iii = register_worker("ws://localhost:49134")
+
+result = iii.trigger({
+    "function_id": "engine::functions::list",
+    "payload": {},
+})
+functions = [FunctionInfo(**fn) for fn in result.get("functions", [])]
+
+all_result = iii.trigger({
+    "function_id": "engine::functions::list",
+    "payload": {"include_internal": True},
+})
+all_functions = [FunctionInfo(**fn) for fn in all_result.get("functions", [])]
+```
+</Tab>
+</Tabs>
+
+## Goal 2: List connected workers
+
+`engine::workers::list` returns the workers currently connected to the engine. Pass `worker_id` when you want to inspect a single worker entry.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import {
+  EngineFunctions,
+  registerWorker,
+  type WorkerInfo,
+} from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const { workers } = await iii.trigger<
+  { worker_id?: string },
+  { workers: WorkerInfo[]; timestamp: number }
+>({
+  function_id: EngineFunctions.LIST_WORKERS,
+  payload: {},
+})
+
+const { workers: onlyOneWorker } = await iii.trigger<
+  { worker_id: string },
+  { workers: WorkerInfo[]; timestamp: number }
+>({
+  function_id: EngineFunctions.LIST_WORKERS,
+  payload: { worker_id: 'worker-123' },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{TriggerRequest, WorkerInfo, III};
+use serde_json::{json, Value};
+
+pub async fn fetch_workers(
+    iii: &III,
+    worker_id: Option<&str>,
+) -> Result<Vec<WorkerInfo>, Box<dyn std::error::Error>> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({ "worker_id": worker_id }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+
+    let workers = serde_json::from_value::<Vec<WorkerInfo>>(
+        result
+            .get("workers")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )?;
+
+    Ok(workers)
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker
+from iii.types import WorkerInfo
+
+iii = register_worker("ws://localhost:49134")
+
+result = iii.trigger({
+    "function_id": "engine::workers::list",
+    "payload": {},
+})
+workers = [WorkerInfo(**worker) for worker in result.get("workers", [])]
+
+filtered = iii.trigger({
+    "function_id": "engine::workers::list",
+    "payload": {"worker_id": "worker-123"},
+})
+single_worker = [WorkerInfo(**worker) for worker in filtered.get("workers", [])]
+```
+</Tab>
+</Tabs>
+
+## Goal 3: List registered triggers
+
+`engine::triggers::list` returns all active triggers. Like functions, internal engine triggers are filtered unless you opt in with `include_internal: true`.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import {
+  EngineFunctions,
+  registerWorker,
+  type TriggerInfo,
+} from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const { triggers } = await iii.trigger<
+  { include_internal?: boolean },
+  { triggers: TriggerInfo[] }
+>({
+  function_id: EngineFunctions.LIST_TRIGGERS,
+  payload: { include_internal: false },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{TriggerInfo, TriggerRequest, III};
+use serde_json::{json, Value};
+
+pub async fn fetch_triggers(
+    iii: &III,
+    include_internal: bool,
+) -> Result<Vec<TriggerInfo>, Box<dyn std::error::Error>> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::triggers::list".to_string(),
+            payload: json!({ "include_internal": include_internal }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+
+    let triggers = serde_json::from_value::<Vec<TriggerInfo>>(
+        result
+            .get("triggers")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )?;
+
+    Ok(triggers)
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker
+from iii.types import TriggerInfo
+
+iii = register_worker("ws://localhost:49134")
+
+result = iii.trigger({
+    "function_id": "engine::triggers::list",
+    "payload": {"include_internal": False},
+})
+triggers = [TriggerInfo(**trigger) for trigger in result.get("triggers", [])]
+```
+</Tab>
+</Tabs>
+
+## Goal 4: List available trigger types
+
+`engine::trigger-types::list` returns the trigger types registered with the engine. Each item includes `trigger_request_format` and `call_request_format` JSON schemas, which you can use to validate configs and call payloads before registration.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import {
+  EngineFunctions,
+  registerWorker,
+  type TriggerTypeInfo,
+} from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const { trigger_types } = await iii.trigger<
+  { include_internal?: boolean },
+  { trigger_types: TriggerTypeInfo[] }
+>({
+  function_id: EngineFunctions.LIST_TRIGGER_TYPES,
+  payload: { include_internal: false },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{TriggerRequest, TriggerTypeInfo, III};
+use serde_json::{json, Value};
+
+pub async fn fetch_trigger_types(
+    iii: &III,
+    include_internal: bool,
+) -> Result<Vec<TriggerTypeInfo>, Box<dyn std::error::Error>> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::trigger-types::list".to_string(),
+            payload: json!({ "include_internal": include_internal }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+
+    let trigger_types = serde_json::from_value::<Vec<TriggerTypeInfo>>(
+        result
+            .get("trigger_types")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )?;
+
+    Ok(trigger_types)
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker
+from iii.types import TriggerTypeInfo
+
+iii = register_worker("ws://localhost:49134")
+
+result = iii.trigger({
+    "function_id": "engine::trigger-types::list",
+    "payload": {"include_internal": False},
+})
+trigger_types = [TriggerTypeInfo(**tt) for tt in result.get("trigger_types", [])]
+```
+</Tab>
+</Tabs>
+
+## Goal 5: Subscribe to function availability changes
+
+Use a normal function plus a normal trigger registration on `engine::functions-available`. This is the same primitive the old wrapper methods hid.
+
+The engine polls its function registry about every five seconds. Give the handler function ID a UUID suffix so it does not collide with another worker instance. Cleanup means unregistering the trigger and, if you no longer need the handler, unregistering that function too.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import {
+  EngineTriggers,
+  registerWorker,
+  type FunctionInfo,
+} from 'iii-sdk'
+import crypto from 'node:crypto'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const topologyHandlerId = `my_app::topology::function-availability::${crypto.randomUUID()}`
+
+const functionRef = iii.registerFunction(
+  topologyHandlerId,
+  async ({ functions }: { functions: FunctionInfo[] }) => {
+    console.log('available functions', functions.length)
+    return null
+  },
+  {},
+)
+
+const triggerRef = await iii.registerTrigger({
+  type: EngineTriggers.FUNCTIONS_AVAILABLE,
+  function_id: topologyHandlerId,
+  config: {},
+})
+
+// later
+await triggerRef.unregister()
+functionRef.unregister()
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{FunctionInfo, RegisterFunction, RegisterTriggerInput, III};
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+pub fn subscribe_to_function_availability(iii: &III) {
+    let topology_handler_id = format!("my_app::topology::function-availability::{}", Uuid::new_v4());
+
+    let function_ref = iii.register_function(RegisterFunction::new(
+        topology_handler_id.clone(),
+        move |input: Value| {
+            let functions = serde_json::from_value::<Vec<FunctionInfo>>(
+                input
+                    .get("functions")
+                    .cloned()
+                    .unwrap_or(Value::Array(vec![])),
+            )
+            .unwrap_or_default();
+
+            println!("available functions: {}", functions.len());
+            Ok(json!(null))
+        },
+    ));
+
+    let trigger_ref = iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "engine::functions-available".to_string(),
+        function_id: topology_handler_id,
+        config: json!({}),
+        ..Default::default()
+    });
+
+    // later
+    trigger_ref.unregister();
+    function_ref.unregister();
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+import uuid
+
+from iii import register_worker
+from iii.types import FunctionInfo
+
+iii = register_worker("ws://localhost:49134")
+
+topology_handler_id = f"my_app::topology::function-availability::{uuid.uuid4()}"
+
+
+async def handle_topology_change(data: dict) -> None:
+    functions = [FunctionInfo(**fn) for fn in data.get("functions", [])]
+    print(f"available functions: {len(functions)}")
+
+
+function_ref = iii.register_function({"id": topology_handler_id}, handle_topology_change)
+trigger_ref = iii.register_trigger({
+    "type": "engine::functions-available",
+    "function_id": topology_handler_id,
+    "config": {},
+})
+
+# later
+trigger_ref.unregister()
+function_ref.unregister()
+```
+</Tab>
+</Tabs>
+
+## Result
+
+You get the same discovery data the SDK wrappers used to expose, but directly through the stable engine primitives: `trigger()` for registry reads and `register_function` plus `register_trigger` for live topology updates. For the exact response types, see the [Node SDK reference](/api-reference/sdk-node), [Rust SDK reference](/api-reference/sdk-rust), and [Python SDK reference](/api-reference/sdk-python).

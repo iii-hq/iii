@@ -61,6 +61,14 @@ function renderMethod(method: FunctionDoc, lang: string, knownTypes?: Set<string
   return lines.join('\n')
 }
 
+function renderDiscoveryMigrationCallout(): string {
+  return [
+    '<Callout type="info">',
+    'For listing workers, functions, triggers, or subscribing to function availability events, see [Discover workers, functions, and triggers](/how-to/discover-workers-functions-triggers).',
+    '</Callout>',
+  ].join('\n')
+}
+
 export function renderSdkMdx(doc: SdkDoc): string {
   const lang = doc.metadata.language
   const codeLang = LANG_MAP[lang] ?? lang
@@ -73,6 +81,8 @@ export function renderSdkMdx(doc: SdkDoc): string {
   lines.push('---')
   lines.push('')
   lines.push('{/* AUTO-GENERATED FILE. Do not edit manually. Run the generate-api-docs pipeline. */}')
+  lines.push('')
+  lines.push(renderDiscoveryMigrationCallout())
   lines.push('')
 
   lines.push('## Installation')
