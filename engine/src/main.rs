@@ -201,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
         Some(Commands::Worker { args }) => {
-            let exit_code = cli::handle_dispatch("worker", &args, cli_args.no_update_check).await;
+            let exit_code = cli::handle_dispatch("worker", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Update { target }) => {

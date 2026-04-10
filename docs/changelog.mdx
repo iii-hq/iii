@@ -1,0 +1,72 @@
+---
+title: "Changelog"
+description: "Product updates and announcements for iii."
+---
+
+<Update label="0.11.0 (next)" description="April 2026">
+  ## Worker RBAC
+
+  The **iii-worker-manager** now supports role-based access control. Configure auth functions that validate WebSocket upgrade requests, attach per-session allow/deny lists for functions, control trigger registration, and auto-prefix function IDs for namespace isolation. An optional middleware function lets you intercept every invocation for audit logging, rate limiting, or payload enrichment.
+
+  [Read the Worker RBAC guide &rarr;](/how-to/worker-rbac)
+
+  ## Trigger format, validation, and metadata
+
+  Trigger types now accept **`trigger_request_format`** and **`call_request_format`** fields (JSON Schema) so the engine can validate trigger configs and call payloads at registration time. Triggers also support an arbitrary **`metadata`** field for tagging and filtering.
+
+  [Define request/response formats &rarr;](/how-to/define-request-response-formats) &middot; [Trigger architecture &rarr;](/architecture/trigger-types)
+
+  ## Browser SDK
+
+  Your browser is now a first-class iii worker. The new `iii-browser-sdk` package connects to the engine over a single WebSocket and exposes the same `ISdk` interface as the Node SDK — `registerFunction`, `trigger`, `registerTrigger`, and `onFunctionsAvailable` all work identically. Build real-time dashboards, collaborative apps, and bi-directional frontends without REST endpoints or polling.
+
+  [Use iii in the browser &rarr;](/how-to/use-iii-in-the-browser)
+
+  ## Sandbox and Container Workers
+
+  Workers can now run as **container workers** or **sandbox workers**. Container workers are OCI images managed through the `iii worker` CLI — add an image, configure it in `config.yaml`, and the engine pulls, extracts, and runs it in an isolated sandbox. For local development, `iii worker dev` boots your project inside a lightweight microVM with auto-detected runtimes, dependency caching, and fast restarts — no Dockerfiles needed. Requires macOS Apple Silicon or Linux with KVM.
+
+  [Managing Container Workers &rarr;](/how-to/managing-container-workers) &middot; [Developing Sandbox Workers &rarr;](/how-to/developing-sandbox-workers)
+
+  ## Topic-based fan-out queues
+
+  **Breaking.** The topic-based queue API has been renamed. The trigger type changes from `queue` to `durable:subscriber`, and the publish function changes from `enqueue` to `iii::durable::publish`:
+
+  ```typescript
+  // Before
+  registerTrigger({ type: 'queue', function_id: 'my::handler', config: { topic: 'order.created' } })
+  trigger({ function_id: 'enqueue', payload: { topic: 'order.created', data } })
+
+  // After
+  registerTrigger({ type: 'durable:subscriber', function_id: 'my::handler', config: { topic: 'order.created' } })
+  trigger({ function_id: 'iii::durable::publish', payload: { topic: 'order.created', data } })
+  ```
+
+  Messages now fan out to every subscriber, with each function processing its copy independently and retrying on its own schedule. If a function has multiple replicas, they compete on a shared per-function queue. An optional `condition_function_id` lets you filter messages server-side before they reach the handler.
+
+  [Use topic-based queues &rarr;](/how-to/use-topic-queues)
+
+  ## Node SDK: `registerFunction` signature change
+
+  **Breaking.** The `registerFunction` API now takes the function ID as a plain string instead of an options object:
+
+  ```typescript
+  // Before
+  registerFunction({ id: 'function-id' }, handler)
+
+  // After
+  registerFunction('function-id', handler, {})
+  ```
+
+  The options object (metadata, request/response formats) moves to an optional third argument.
+
+  ## Everything is a worker
+
+  **Breaking.** We simplified iii down to three primitives: **Workers**, **Functions**, and **Triggers**. Modules were always workers in disguise -- they connect to the engine, register functions, and react to triggers just like SDK workers do. Now the naming reflects that.
+
+  - **Config YAML** — `modules:` top-level key renamed to `workers:`, `class:` field renamed to `name:` with short identifiers.
+  - **Rust API** — `Module` trait &rarr; `Worker`, `register_module!` &rarr; `register_worker!`, `EngineBuilder::add_module()` &rarr; `add_worker()`.
+  - **Adapter IDs** — changed from long Rust-style paths to short names: `kv`, `redis`, `builtin`, `rabbitmq`, `local`, `bridge`.
+
+  [Read the full story and migration guide &rarr;](/changelog/0-11-0/everything-is-a-worker)
+</Update>

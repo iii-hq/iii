@@ -302,15 +302,33 @@ export async function fetchFlows(): Promise<FlowResponse[]> {
 
   const functions = functionsData.functions || []
 
-  // Build a map of function_id -> triggers
+  // Build a map of function_id -> triggers, normalizing engine config field names
+  // to the metadata format that createStep expects (e.g. api_path -> path)
   const triggersByFunction = new Map<string, Array<Record<string, unknown>>>()
   for (const trigger of triggersData.triggers || []) {
     const funcId = trigger.function_id
     const existing = triggersByFunction.get(funcId) ?? []
-    existing.push({
+    const config = trigger.config as Record<string, unknown>
+    const normalized: Record<string, unknown> = {
+      ...config,
       type: trigger.trigger_type,
-      ...trigger.config,
-    })
+    }
+
+    if (trigger.trigger_type === 'http') {
+      const rawPath = config.api_path as string | undefined
+      normalized.path = rawPath ? (rawPath.startsWith('/') ? rawPath : `/${rawPath}`) : config.path
+      normalized.method = config.http_method ?? config.method
+    } else if (trigger.trigger_type === 'cron') {
+      normalized.expression = config.expression
+    } else if (
+      trigger.trigger_type === 'event' ||
+      trigger.trigger_type === 'queue' ||
+      trigger.trigger_type === 'durable:subscriber'
+    ) {
+      normalized.topic = config.topic
+    }
+
+    existing.push(normalized)
     triggersByFunction.set(funcId, existing)
   }
 

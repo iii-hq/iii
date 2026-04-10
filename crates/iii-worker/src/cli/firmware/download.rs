@@ -208,7 +208,7 @@ pub async fn ensure_init_binary() -> anyhow::Result<PathBuf> {
     // 2. Check local resolution chain
     if let Some(path) = resolve_init_binary() {
         tracing::debug!(path = %path.display(), "iii-init found via resolution chain");
-        eprintln!("  {} Found iii-init at {}", "\u{2713}", path.display());
+        eprintln!("  \u{2713} Found iii-init at {}", path.display());
         return Ok(path);
     }
 
@@ -326,8 +326,7 @@ async fn download_init_binary() -> anyhow::Result<PathBuf> {
     tokio::fs::rename(&temp, &dest).await?;
 
     eprintln!(
-        "  {} iii-init v{} downloaded to {}",
-        "\u{2713}",
+        "  \u{2713} iii-init v{} downloaded to {}",
         version,
         dest.display()
     );

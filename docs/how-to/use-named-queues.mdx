@@ -5,7 +5,7 @@ description: 'Enqueue jobs to specific functions with configurable retries, conc
 
 ## Goal
 
-Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support. All named queues are defined centrally in `iii-config.yaml`. For help deciding between named and topic-based queues, see [When to use which](/modules/module-queue#when-to-use-which).
+Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support. All named queues are defined centrally in `iii-config.yaml`. For help deciding between named and topic-based queues, see [When to use which](/workers/iii-queue#when-to-use-which).
 
 <Info title="Trigger actions primer">
   Named queues use the `Enqueue` trigger action. Refer to [Trigger Actions](./trigger-actions) to learn more.
@@ -30,7 +30,7 @@ workers:
 ```
 
 <Info title="Full configuration reference">
-  For complete configuration options please refer to [Queue module reference](/modules/module-queue#configuration).
+  For complete configuration options please refer to [Queue module reference](/workers/iii-queue#configuration).
 </Info>
 
 ## Steps
@@ -68,7 +68,7 @@ workers:
 <Info title="Full configuration reference">
   FIFO queues enforce ordering in a queue and they require a `message_group_field` to order on. Queues can also set `backoff_ms` for exponential retry delays. See more on this in the steps below.
   
-  For full configuration options refer to the [Queue module reference](/modules/module-queue#queue-configuration).
+  For full configuration options refer to the [Queue module reference](/workers/iii-queue#queue-configuration).
 </Info>
 
 ### 2. Enqueue work via trigger action
@@ -294,7 +294,7 @@ Use low concurrency to protect rate-limited APIs. Use high concurrency for embar
 Jobs are enqueued and acknowledged immediately — the caller receives a `messageReceiptId` without waiting for processing. The engine delivers each job to the target function, retries failures with exponential backoff, and routes exhausted jobs to the dead-letter queue. Standard queues process jobs concurrently; FIFO queues guarantee per-group ordering.
 
 <Info title="Standard vs FIFO queues">
-  For a detailed comparison of standard and FIFO queue behavior — including processing model, ordering guarantees, and flow diagrams — see the [Queue module reference](/modules/module-queue#standard-vs-fifo-queues). For retry and dead-letter flow, see [Retry and dead-letter flow](/modules/module-queue#retry-and-dead-letter-flow).
+  For a detailed comparison of standard and FIFO queue behavior — including processing model, ordering guarantees, and flow diagrams — see the [Queue module reference](/workers/iii-queue#standard-vs-fifo-queues). For retry and dead-letter flow, see [Retry and dead-letter flow](/workers/iii-queue#retry-and-dead-letter-flow).
 </Info>
 
 ---
@@ -828,7 +828,7 @@ iii.register_function(reg);
 With `concurrency: 3`, at most three emails are in-flight at any time. Failed sends retry with exponential backoff (5s, 10s, 20s, 40s, 80s), protecting the SMTP provider from overload.
 
 <Info title="Adapters and configuration">
-  For adapter options (builtin, RabbitMQ, Redis), scenario-based recommendations, and the full queue configuration reference, see the [Queue module reference](/modules/module-queue#adapter-comparison).
+  For adapter options (builtin, RabbitMQ, Redis), scenario-based recommendations, and the full queue configuration reference, see the [Queue module reference](/workers/iii-queue#adapter-comparison).
 </Info>
 
 ## Remember
@@ -847,7 +847,7 @@ Jobs are enqueued and acknowledged immediately — the caller receives a `messag
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Handle and redrive failed queue messages
   </Card>
-  <Card title="Queue Module Reference" href="/modules/module-queue" icon="gear">
+  <Card title="Queue Module Reference" href="/workers/iii-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
 </CardGroup>

@@ -6,8 +6,10 @@ use std::process::Command;
 fn main() {
     // Only rebuild frontend if REBUILD_FRONTEND is set or in release mode
     let skip_frontend = env::var("SKIP_FRONTEND_BUILD").is_ok();
-    let rebuild_frontend = env::var("REBUILD_FRONTEND").is_ok()
-        || env::var("PROFILE").map(|p| p == "release").unwrap_or(false);
+    // Explicit rebuild is opt-in; only hard-fail when explicitly requested
+    let explicit_rebuild = env::var("REBUILD_FRONTEND").is_ok();
+    let rebuild_frontend =
+        explicit_rebuild || env::var("PROFILE").map(|p| p == "release").unwrap_or(false);
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let assets_dir = Path::new(&manifest_dir).join("assets");
@@ -40,13 +42,23 @@ fn main() {
                     status
                 );
                 if !assets_exist {
-                    panic!("Frontend build failed and no existing assets found");
+                    if explicit_rebuild {
+                        panic!("Frontend build failed and no existing assets found");
+                    } else {
+                        println!("cargo:warning=Creating placeholder assets (set REBUILD_FRONTEND=1 to require a successful build)");
+                        create_placeholder_assets(&assets_dir);
+                    }
                 }
             }
             Err(e) => {
                 println!("cargo:warning=Could not run frontend build: {}", e);
                 if !assets_exist {
-                    panic!("Could not run frontend build and no existing assets found");
+                    if explicit_rebuild {
+                        panic!("Could not run frontend build and no existing assets found");
+                    } else {
+                        println!("cargo:warning=Creating placeholder assets (set REBUILD_FRONTEND=1 to require a successful build)");
+                        create_placeholder_assets(&assets_dir);
+                    }
                 }
             }
         }
@@ -65,6 +77,10 @@ fn main() {
 
             println!("cargo:warning=Assets copied to {:?}", assets_dir);
         }
+    } else if !assets_exist {
+        // skip_frontend is set but assets don't exist — create placeholder so rust-embed can compile
+        println!("cargo:warning=Creating placeholder assets (frontend build skipped)");
+        create_placeholder_assets(&assets_dir);
     } else {
         println!("cargo:warning=Using existing frontend assets");
     }
@@ -75,6 +91,15 @@ fn main() {
     println!("cargo:rerun-if-changed=../console-frontend/vite.config.ts");
     println!("cargo:rerun-if-env-changed=REBUILD_FRONTEND");
     println!("cargo:rerun-if-env-changed=SKIP_FRONTEND_BUILD");
+}
+
+fn create_placeholder_assets(assets_dir: &Path) {
+    fs::create_dir_all(assets_dir).expect("Failed to create assets directory");
+    fs::write(
+        assets_dir.join("index.html"),
+        "<!DOCTYPE html><html><body>Console not built</body></html>",
+    )
+    .expect("Failed to write placeholder index.html");
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {

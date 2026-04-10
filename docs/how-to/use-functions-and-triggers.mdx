@@ -615,15 +615,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-{/* TODO: Update this, enqueue is its entirely own thing */}
-
-{/* <Info title="Queue uses iii::durable::publish">
+<Info title="Queue uses iii::durable::publish">
   Queue messaging uses `iii::durable::publish` — a built-in function, no trigger registration needed:
   Node `trigger({ function_id: 'iii::durable::publish', payload: { topic: 'user.created', data: {...} } })`,
   Python `trigger({'function_id': 'iii::durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
   Rust `trigger(TriggerRequest::new("iii::durable::publish", json!({"topic": "user.created", "data": {...}})))`.
-  See the [Queue module](/modules/module-queue) for details.
-</Info> */}
+  See the [Queue module](/workers/iii-queue) for details.
+</Info>
 
 ## Trigger Types
 

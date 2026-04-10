@@ -210,14 +210,14 @@ pub async fn download_and_install_binary(
         ));
     }
 
-    if let Some(content_length) = resp.content_length() {
-        if content_length > MAX_DOWNLOAD_BYTES {
-            return Err(format!(
-                "Binary download too large ({:.1} MB, max {:.1} MB)",
-                content_length as f64 / 1_048_576.0,
-                MAX_DOWNLOAD_BYTES as f64 / 1_048_576.0,
-            ));
-        }
+    if let Some(content_length) = resp.content_length()
+        && content_length > MAX_DOWNLOAD_BYTES
+    {
+        return Err(format!(
+            "Binary download too large ({:.1} MB, max {:.1} MB)",
+            content_length as f64 / 1_048_576.0,
+            MAX_DOWNLOAD_BYTES as f64 / 1_048_576.0,
+        ));
     }
 
     let binary_data = resp

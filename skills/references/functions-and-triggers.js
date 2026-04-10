@@ -3,7 +3,7 @@
  * Comparable to: Core primitives of iii
  *
  * Demonstrates every fundamental building block: registering functions,
- * binding triggers of each built-in type (http, queue, cron, state, subscribe),
+ * binding triggers of each built-in type (http, durable:subscriber, cron, state, subscribe),
  * cross-function invocation, fire-and-forget calls, and external HTTP-invoked
  * functions via HttpInvocationConfig.
  *

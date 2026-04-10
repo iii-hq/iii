@@ -473,6 +473,60 @@ if [ -n "$init_target" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Install iii-worker (VM-based isolated worker runtime)
+# The worker needs glibc on Linux (for KVM/msb_krun) and is not available
+# for x86_64-apple-darwin (no firmware).
+# ---------------------------------------------------------------------------
+worker_target=""
+case "$uname_s" in
+  Linux)
+    case "$arch" in
+      x86_64)  worker_target="x86_64-unknown-linux-gnu" ;;
+      aarch64) worker_target="aarch64-unknown-linux-gnu" ;;
+    esac
+    ;;
+  Darwin)
+    case "$arch" in
+      aarch64) worker_target="aarch64-apple-darwin" ;;
+    esac
+    ;;
+esac
+
+if [ -n "$worker_target" ]; then
+  worker_asset_name="iii-worker-${worker_target}.tar.gz"
+
+  if command -v jq >/dev/null 2>&1; then
+    worker_asset_url=$(printf '%s' "$json" \
+      | jq -r --arg name "$worker_asset_name" \
+        '.assets[] | select(.name == $name) | .browser_download_url' \
+      | head -n 1)
+  else
+    worker_asset_url=$(printf '%s' "$json" \
+      | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
+      | sed -E 's/.*"([^"]+)".*/\1/' \
+      | grep -F "$worker_asset_name" \
+      | head -n 1)
+  fi
+
+  if [ -n "$worker_asset_url" ]; then
+    curl -fsSL -L "$worker_asset_url" -o "$tmpdir/$worker_asset_name" 2>/dev/null
+    if [ $? -eq 0 ]; then
+      tar -xzf "$tmpdir/$worker_asset_name" -C "$tmpdir" 2>/dev/null
+      worker_bin_file=$(find "$tmpdir" -type f -name "iii-worker" | head -n 1)
+      if [ -n "$worker_bin_file" ] && [ -f "$worker_bin_file" ]; then
+        if command -v install >/dev/null 2>&1; then
+          install -m 755 "$worker_bin_file" "$bin_dir/iii-worker"
+        else
+          cp "$worker_bin_file" "$bin_dir/iii-worker"
+          chmod 755 "$bin_dir/iii-worker"
+        fi
+        printf 'installed %s to %s\n' "iii-worker" "$bin_dir/iii-worker"
+      fi
+    fi
+  fi
+fi
+
 if [ "$install_event_prefix" = "upgrade" ]; then
   payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
     "$(json_str "$from_version")" "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")

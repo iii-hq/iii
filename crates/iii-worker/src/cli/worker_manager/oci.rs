@@ -169,14 +169,14 @@ pub fn extract_layer_with_limits(
             );
         }
 
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with(".wh.") {
-                let target = path.parent().unwrap_or(&path).join(&name[4..]);
-                let full_target = dest.join(&target);
-                let _ = std::fs::remove_file(&full_target);
-                let _ = std::fs::remove_dir_all(&full_target);
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with(".wh.")
+        {
+            let target = path.parent().unwrap_or(&path).join(&name[4..]);
+            let full_target = dest.join(&target);
+            let _ = std::fs::remove_file(&full_target);
+            let _ = std::fs::remove_dir_all(&full_target);
+            continue;
         }
 
         entry
@@ -195,10 +195,10 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 
     let host = reference.registry();
     if let Some(hostname) = host.split(':').next() {
-        if hostname == "localhost" || hostname == "127.0.0.1" {
-            if !registries.contains(&host.to_string()) {
-                registries.push(host.to_string());
-            }
+        if (hostname == "localhost" || hostname == "127.0.0.1")
+            && !registries.contains(&host.to_string())
+        {
+            registries.push(host.to_string());
         }
     }
 
@@ -260,12 +260,11 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
             };
 
             for m in manifests {
-                if let Some(ref platform) = m.platform {
-                    if platform.os == oci_spec::image::Os::Linux
-                        && platform.architecture == target_arch
-                    {
-                        return Some(m.digest.clone());
-                    }
+                if let Some(ref platform) = m.platform
+                    && platform.os == oci_spec::image::Os::Linux
+                    && platform.architecture == target_arch
+                {
+                    return Some(m.digest.clone());
                 }
             }
             None
@@ -371,10 +370,10 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
 
 pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("rootfs").join(name));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        paths.push(dir.join("rootfs").join(name));
     }
     if let Some(home) = dirs::home_dir() {
         paths.push(home.join(".iii").join("rootfs").join(name));

@@ -1,5 +1,6 @@
 import { Position } from '@xyflow/react'
 import { clsx } from 'clsx'
+import { Children } from 'react'
 import type { NodeData } from '../../../api/flows/types'
 import { BaseHandle } from './base-handle'
 import { NodeHeader } from './node-header'
@@ -26,6 +27,7 @@ export function BaseNode({
   const sourcePos =
     data.nodeConfig?.sourceHandlePosition === 'right' ? Position.Right : Position.Bottom
   const targetPos = data.nodeConfig?.targetHandlePosition === 'left' ? Position.Left : Position.Top
+  const hasChildren = Children.toArray(children).length > 0
 
   return (
     <div className="rounded-lg max-w-[350px]">
@@ -34,7 +36,7 @@ export function BaseNode({
           <NodeHeader text={title} variant={variant} triggers={data.triggers} />
 
           {subtitle && <div className="py-3 px-3 text-[11px] text-[#9CA3AF]">{subtitle}</div>}
-          {children && (
+          {hasChildren && (
             <div className="p-2">
               <div
                 className={clsx(

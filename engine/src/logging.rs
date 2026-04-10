@@ -281,7 +281,11 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
     use crate::workers::observability::config::ObservabilityWorkerConfig;
 
     let otel_module_name = "iii-observability";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.name == otel_module_name);
+    let otel_module_cfg = cfg
+        .modules
+        .iter()
+        .chain(cfg.workers.iter())
+        .find(|m| m.name == otel_module_name);
 
     let module_config: ObservabilityWorkerConfig = match otel_module_cfg {
         Some(entry) => match &entry.config {
@@ -322,7 +326,11 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
 pub fn init_log_from_engine_config(cfg: &EngineConfig) {
     let otel_cfg = extract_otel_config(cfg);
     let otel_module_name = "iii-observability";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.name == otel_module_name);
+    let otel_module_cfg = cfg
+        .modules
+        .iter()
+        .chain(cfg.workers.iter())
+        .find(|m| m.name == otel_module_name);
 
     let log_level = otel_module_cfg
         .and_then(|m| m.config.as_ref())
@@ -878,6 +886,30 @@ mod tests {
         assert_eq!(otel.endpoint, "http://collector:4317");
         assert_eq!(otel.sampling_ratio, 0.25);
         assert_eq!(otel.memory_max_spans, 321);
+    }
+
+    #[test]
+    fn test_extract_otel_config_reads_observability_from_workers_key() {
+        let cfg = EngineConfig {
+            modules: vec![],
+            workers: vec![WorkerEntry {
+                name: "iii-observability".to_string(),
+                image: None,
+                config: Some(serde_json::json!({
+                    "enabled": true,
+                    "service_name": "workers-key-test",
+                    "exporter": "memory",
+                })),
+            }],
+        };
+
+        let otel = extract_otel_config(&cfg);
+        assert!(
+            otel.enabled,
+            "should find observability config under workers key"
+        );
+        assert_eq!(otel.service_name, "workers-key-test");
+        assert!(matches!(otel.exporter, ExporterType::Memory));
     }
 
     #[test]

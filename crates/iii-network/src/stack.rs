@@ -115,7 +115,7 @@ pub fn create_interface(device: &mut SmoltcpDevice, config: &PollLoopConfig) -> 
 
     iface
         .routes_mut()
-        .add_default_ipv4_route(config.gateway_ipv4.into())
+        .add_default_ipv4_route(config.gateway_ipv4)
         .expect("failed to add default IPv4 route");
 
     iface.set_any_ip(true);
@@ -315,8 +315,8 @@ fn classify_ipv4(payload: &[u8]) -> FrameAction {
     let Ok(ipv4) = Ipv4Packet::new_checked(payload) else {
         return FrameAction::Passthrough;
     };
-    let src_ip = std::net::IpAddr::V4(ipv4.src_addr().into());
-    let dst_ip = std::net::IpAddr::V4(ipv4.dst_addr().into());
+    let src_ip = std::net::IpAddr::V4(ipv4.src_addr());
+    let dst_ip = std::net::IpAddr::V4(ipv4.dst_addr());
     classify_transport(ipv4.next_header(), src_ip, dst_ip, ipv4.payload())
 }
 

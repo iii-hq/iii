@@ -68,7 +68,7 @@ pub fn resolve_libkrunfw_dir() -> Option<PathBuf> {
 /// Returns `None` if the init binary is not found in any location.
 pub fn resolve_init_binary() -> Option<PathBuf> {
     // 1. III_INIT_PATH env var
-    if let Some(env_val) = std::env::var("III_INIT_PATH").ok() {
+    if let Ok(env_val) = std::env::var("III_INIT_PATH") {
         let p = PathBuf::from(env_val);
         if p.is_file() {
             return Some(p);
@@ -152,17 +152,17 @@ fn resolve_dir_with_paths(
     }
 
     // 2. ~/.iii/lib/
-    if let Some(dir) = lib_dir {
-        if dir.join(filename).exists() {
-            return Some(dir.to_path_buf());
-        }
+    if let Some(dir) = lib_dir
+        && dir.join(filename).exists()
+    {
+        return Some(dir.to_path_buf());
     }
 
     // 3. Adjacent to current binary
-    if let Some(dir) = exe_dir {
-        if dir.join(filename).exists() {
-            return Some(dir.to_path_buf());
-        }
+    if let Some(dir) = exe_dir
+        && dir.join(filename).exists()
+    {
+        return Some(dir.to_path_buf());
     }
 
     // 4. System paths

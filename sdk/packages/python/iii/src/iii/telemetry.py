@@ -55,15 +55,10 @@ def init_otel(
     if not enabled:
         return
 
-    try:
-        from opentelemetry import trace
-        from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except ImportError as exc:
-        raise ImportError(
-            "opentelemetry-api and opentelemetry-sdk are required. Install with: pip install 'iii-sdk[otel]'"
-        ) from exc
+    from opentelemetry import trace
+    from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     service_name = cfg.service_name or os.environ.get("OTEL_SERVICE_NAME") or _DEFAULT_SERVICE_NAME
     service_version = cfg.service_version or os.environ.get("SERVICE_VERSION") or "unknown"
@@ -119,15 +114,11 @@ def _configure_meter_provider(
 ) -> None:
     """Set up a global MeterProvider with EngineMetricsExporter."""
     global _meter, _meter_provider
-    try:
-        from opentelemetry import metrics
-        from opentelemetry.sdk.metrics import MeterProvider
-        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry import metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
-        from .telemetry_exporters import EngineMetricsExporter
-    except ImportError:
-        logging.getLogger("iii.telemetry").warning("opentelemetry-sdk metrics not available; metrics export skipped.")
-        return
+    from .telemetry_exporters import EngineMetricsExporter
 
     metrics_exporter = EngineMetricsExporter(connection)
     metric_reader = PeriodicExportingMetricReader(
@@ -168,15 +159,11 @@ def _resolve_int(
 def _configure_log_provider(resource: Any, connection: Any, cfg: OtelConfig) -> None:
     """Set up a global SdkLoggerProvider with EngineLogExporter."""
     global _log_provider
-    try:
-        from opentelemetry import _logs
-        from opentelemetry.sdk._logs import LoggerProvider as SdkLoggerProvider
-        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry import _logs
+    from opentelemetry.sdk._logs import LoggerProvider as SdkLoggerProvider
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
-        from .telemetry_exporters import EngineLogExporter
-    except ImportError:
-        logging.getLogger("iii.telemetry").warning("opentelemetry-sdk logs not available; log export skipped.")
-        return
+    from .telemetry_exporters import EngineLogExporter
 
     log_exporter = EngineLogExporter(connection)
 
@@ -222,19 +209,13 @@ def _enable_fetch_instrumentation() -> None:
     """
     global _fetch_patched, _original_opener_open
 
-    try:
-        from opentelemetry import context as otel_ctx
-        from opentelemetry.propagate import inject as otel_inject
-        from opentelemetry.trace import SpanKind, StatusCode
-    except ImportError:
-        logging.getLogger("iii.telemetry").warning(
-            "opentelemetry-api not installed; urllib auto-instrumentation skipped."
-        )
-        return
-
     import socket
     import urllib.request
     from urllib.parse import urlparse
+
+    from opentelemetry import context as otel_ctx
+    from opentelemetry.propagate import inject as otel_inject
+    from opentelemetry.trace import SpanKind, StatusCode
 
     _original_opener_open = urllib.request.OpenerDirector.open
     original = _original_opener_open
@@ -396,27 +377,21 @@ def get_meter() -> Any:
 
 def current_trace_id() -> str | None:
     """Return current active trace_id as 32-char hex, or None when unavailable."""
-    try:
-        from opentelemetry import trace
+    from opentelemetry import trace
 
-        span_ctx = trace.get_current_span().get_span_context()
-        if span_ctx.is_valid:
-            return format(span_ctx.trace_id, "032x")
-    except ImportError:
-        return None
+    span_ctx = trace.get_current_span().get_span_context()
+    if span_ctx.is_valid:
+        return format(span_ctx.trace_id, "032x")
     return None
 
 
 def current_span_id() -> str | None:
     """Return current active span_id as 16-char hex, or None when unavailable."""
-    try:
-        from opentelemetry import trace
+    from opentelemetry import trace
 
-        span_ctx = trace.get_current_span().get_span_context()
-        if span_ctx.is_valid:
-            return format(span_ctx.span_id, "016x")
-    except ImportError:
-        return None
+    span_ctx = trace.get_current_span().get_span_context()
+    if span_ctx.is_valid:
+        return format(span_ctx.span_id, "016x")
     return None
 
 
@@ -429,12 +404,9 @@ def get_logger() -> Any:
     """Return the active OTel logger, or None if OTel has not been initialized."""
     if not _initialized:
         return None
-    try:
-        from opentelemetry import _logs
+    from opentelemetry import _logs
 
-        return _logs.get_logger("iii-python-sdk")
-    except ImportError:
-        return None
+    return _logs.get_logger("iii-python-sdk")
 
 
 async def with_span(
@@ -476,14 +448,10 @@ async def with_span(
 
         return await fn(_NoopSpan())
 
-    try:
-        from opentelemetry import context as otel_ctx
-        from opentelemetry.propagate import extract as otel_extract
-        from opentelemetry.trace import SpanKind as _SpanKind
-        from opentelemetry.trace import StatusCode
-
-    except ImportError:
-        return await fn(None)
+    from opentelemetry import context as otel_ctx
+    from opentelemetry.propagate import extract as otel_extract
+    from opentelemetry.trace import SpanKind as _SpanKind
+    from opentelemetry.trace import StatusCode
 
     span_kind = kind if kind is not None else _SpanKind.INTERNAL
     parent_context = otel_ctx.get_current()
@@ -503,103 +471,75 @@ async def with_span(
 
 def inject_traceparent() -> str | None:
     """Inject the current trace context into a W3C traceparent header string."""
-    try:
-        from opentelemetry import context as otel_ctx
-        from opentelemetry.propagate import inject as otel_inject
+    from opentelemetry import context as otel_ctx
+    from opentelemetry.propagate import inject as otel_inject
 
-        carrier: dict[str, str] = {}
-        otel_inject(carrier, context=otel_ctx.get_current())
-        return carrier.get("traceparent")
-    except ImportError:
-        return None
+    carrier: dict[str, str] = {}
+    otel_inject(carrier, context=otel_ctx.get_current())
+    return carrier.get("traceparent")
 
 
 def extract_traceparent(traceparent: str) -> Any:
     """Extract a trace context from a W3C traceparent header string."""
-    try:
-        from opentelemetry.propagate import extract as otel_extract
+    from opentelemetry.propagate import extract as otel_extract
 
-        return otel_extract({"traceparent": traceparent})
-    except ImportError:
-        return None
+    return otel_extract({"traceparent": traceparent})
 
 
 def inject_baggage() -> str | None:
     """Inject the current baggage into a W3C baggage header string."""
-    try:
-        from opentelemetry import context as otel_ctx
-        from opentelemetry.propagate import inject as otel_inject
+    from opentelemetry import context as otel_ctx
+    from opentelemetry.propagate import inject as otel_inject
 
-        carrier: dict[str, str] = {}
-        otel_inject(carrier, context=otel_ctx.get_current())
-        return carrier.get("baggage")
-    except ImportError:
-        return None
+    carrier: dict[str, str] = {}
+    otel_inject(carrier, context=otel_ctx.get_current())
+    return carrier.get("baggage")
 
 
 def extract_baggage(baggage: str) -> Any:
     """Extract baggage from a W3C baggage header string."""
-    try:
-        from opentelemetry.propagate import extract as otel_extract
+    from opentelemetry.propagate import extract as otel_extract
 
-        return otel_extract({"baggage": baggage})
-    except ImportError:
-        return None
+    return otel_extract({"baggage": baggage})
 
 
 def extract_context(traceparent: str | None = None, baggage: str | None = None) -> Any:
     """Extract both trace context and baggage from their respective headers."""
-    try:
-        from opentelemetry.propagate import extract as otel_extract
+    from opentelemetry.propagate import extract as otel_extract
 
-        carrier: dict[str, str] = {}
-        if traceparent:
-            carrier["traceparent"] = traceparent
-        if baggage:
-            carrier["baggage"] = baggage
-        return otel_extract(carrier)
-    except ImportError:
-        return None
+    carrier: dict[str, str] = {}
+    if traceparent:
+        carrier["traceparent"] = traceparent
+    if baggage:
+        carrier["baggage"] = baggage
+    return otel_extract(carrier)
 
 
 def get_baggage_entry(key: str) -> str | None:
     """Get a baggage entry value from the current context."""
-    try:
-        from opentelemetry import baggage as otel_baggage
+    from opentelemetry import baggage as otel_baggage
 
-        val = otel_baggage.get_baggage(key)
-        return str(val) if val is not None else None
-    except ImportError:
-        return None
+    val = otel_baggage.get_baggage(key)
+    return str(val) if val is not None else None
 
 
 def set_baggage_entry(key: str, value: str) -> Any:
     """Set a baggage entry in the current context. Returns the new context."""
-    try:
-        from opentelemetry import baggage as otel_baggage
+    from opentelemetry import baggage as otel_baggage
 
-        ctx = otel_baggage.set_baggage(key, value)
-        return ctx
-    except ImportError:
-        return None
+    return otel_baggage.set_baggage(key, value)
 
 
 def remove_baggage_entry(key: str) -> Any:
     """Remove a baggage entry from the current context. Returns the new context."""
-    try:
-        from opentelemetry import baggage as otel_baggage
+    from opentelemetry import baggage as otel_baggage
 
-        return otel_baggage.remove_baggage(key)
-    except ImportError:
-        return None
+    return otel_baggage.remove_baggage(key)
 
 
 def get_all_baggage() -> dict[str, str]:
     """Get all baggage entries from the current context."""
-    try:
-        from opentelemetry import baggage as otel_baggage
+    from opentelemetry import baggage as otel_baggage
 
-        entries = otel_baggage.get_all()
-        return {k: str(v) for k, v in entries.items()} if entries else {}
-    except ImportError:
-        return {}
+    entries = otel_baggage.get_all()
+    return {k: str(v) for k, v in entries.items()} if entries else {}
