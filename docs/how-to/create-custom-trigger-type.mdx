@@ -279,5 +279,5 @@ iii.unregister_trigger_type("webhook");
 Your custom `webhook` trigger type is registered with the engine. Any function in any worker can bind to it with `registerTrigger({ type: 'webhook', ... })`, and the engine routes registration and teardown calls to your handler. The same pattern works for any event source — file watchers, message brokers, hardware signals, or anything else you can subscribe to in code.
 
 <Info title="Built-in trigger types">
-Before creating a custom type, check the [built-in trigger types](/how-to/use-functions-and-triggers#trigger-types) — `http`, `cron`, `queue`, `subscribe`, `state`, and `stream` cover the most common event sources.
+Before creating a custom type, check the [built-in trigger types](/how-to/use-functions-and-triggers#trigger-types) — `http`, `cron`, `durable:subscriber`, `subscribe`, `state`, and `stream` cover the most common event sources.
 </Info>

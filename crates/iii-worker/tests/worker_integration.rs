@@ -4,7 +4,7 @@
 //! the crate library, ensuring any CLI changes are caught at compile time.
 
 use clap::Parser;
-use iii_worker::{Cli, Commands, DEFAULT_PORT, VmBootArgs};
+use iii_worker::{Cli, Commands, VmBootArgs};
 
 /// All 10 subcommands parse without error.
 #[test]
@@ -34,18 +34,6 @@ fn cli_parses_all_subcommands() {
         (
             &[
                 "iii-worker",
-                "start-all",
-                "--engine-url",
-                "ws://localhost:49134",
-            ],
-            |c| assert!(matches!(c, Commands::StartAll { .. })),
-        ),
-        (&["iii-worker", "stop-all"], |c| {
-            assert!(matches!(c, Commands::StopAll))
-        }),
-        (
-            &[
-                "iii-worker",
                 "__vm-boot",
                 "--rootfs",
                 "/tmp/rootfs",
@@ -68,18 +56,27 @@ fn cli_parses_all_subcommands() {
 fn add_subcommand_fields() {
     let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
     match cli.command {
-        Commands::Add {
-            worker_name,
-            runtime,
-            address,
-            port,
-        } => {
-            assert_eq!(worker_name, "ghcr.io/iii-hq/node:latest");
-            assert_eq!(runtime, "libkrun");
-            assert_eq!(address, "localhost");
-            assert_eq!(port, DEFAULT_PORT);
+        Commands::Add { args, force } => {
+            assert_eq!(
+                args.worker_names,
+                vec!["ghcr.io/iii-hq/node:latest".to_string()]
+            );
+            assert!(!force);
         }
         _ => panic!("expected Add"),
+    }
+}
+
+/// `add` subcommand accepts multiple worker names as positional args.
+#[test]
+fn add_subcommand_multiple_workers() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "iii-http", "iii-state"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
+            assert!(!force);
+        }
+        _ => panic!("Expected Add command"),
     }
 }
 
@@ -135,16 +132,6 @@ fn logs_subcommand_with_follow() {
         }
         _ => panic!("expected Logs"),
     }
-}
-
-/// `start-all` requires --engine-url.
-#[test]
-fn start_all_requires_engine_url() {
-    let result = Cli::try_parse_from(["iii-worker", "start-all"]);
-    assert!(
-        result.is_err(),
-        "start-all without --engine-url should fail"
-    );
 }
 
 /// `VmBootArgs` roundtrip with all fields including `mount`, `pid_file`,
@@ -256,6 +243,109 @@ resources:
     assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
     assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
     assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
+}
+
+/// `add --force` parses the force flag correctly.
+#[test]
+fn add_force_flag() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert_eq!(args.worker_names, vec!["pdfkit"]);
+            assert!(force);
+            assert!(!args.reset_config);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add --force --reset-config` parses both flags.
+#[test]
+fn add_force_reset_config() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force", "--reset-config"]);
+    match cli.command {
+        Commands::Add { args, force } => {
+            assert!(force);
+            assert!(args.reset_config);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add -f` short flag works.
+#[test]
+fn add_force_short_flag() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "-f"]);
+    match cli.command {
+        Commands::Add { force, .. } => assert!(force),
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `reinstall` parses as expected and shares AddArgs with Add.
+#[test]
+fn reinstall_subcommand() {
+    let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit@1.2.0"]);
+    match cli.command {
+        Commands::Reinstall { args } => {
+            assert_eq!(args.worker_names, vec!["pdfkit@1.2.0"]);
+            assert!(!args.reset_config);
+        }
+        _ => panic!("expected Reinstall"),
+    }
+}
+
+/// `reinstall --reset-config` parses the flag.
+#[test]
+fn reinstall_reset_config() {
+    let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit", "--reset-config"]);
+    match cli.command {
+        Commands::Reinstall { args } => {
+            assert!(args.reset_config);
+        }
+        _ => panic!("expected Reinstall"),
+    }
+}
+
+/// `clear` without args parses as clear-all.
+#[test]
+fn clear_subcommand_no_args() {
+    let cli = Cli::parse_from(["iii-worker", "clear"]);
+    match cli.command {
+        Commands::Clear { worker_name, yes } => {
+            assert!(worker_name.is_none());
+            assert!(!yes);
+        }
+        _ => panic!("expected Clear"),
+    }
+}
+
+/// `clear <name>` parses the worker name.
+#[test]
+fn clear_subcommand_with_name() {
+    let cli = Cli::parse_from(["iii-worker", "clear", "pdfkit"]);
+    match cli.command {
+        Commands::Clear { worker_name, yes } => {
+            assert_eq!(worker_name.as_deref(), Some("pdfkit"));
+            assert!(!yes);
+        }
+        _ => panic!("expected Clear"),
+    }
+}
+
+/// `clear --yes` / `clear -y` skips confirmation.
+#[test]
+fn clear_yes_flag() {
+    let cli = Cli::parse_from(["iii-worker", "clear", "--yes"]);
+    match cli.command {
+        Commands::Clear { yes, .. } => assert!(yes),
+        _ => panic!("expected Clear"),
+    }
+    let cli = Cli::parse_from(["iii-worker", "clear", "-y"]);
+    match cli.command {
+        Commands::Clear { yes, .. } => assert!(yes),
+        _ => panic!("expected Clear"),
+    }
 }
 
 /// OCI config JSON parsing (serde pattern test, kept as-is).

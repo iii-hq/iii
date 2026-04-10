@@ -1,140 +1,69 @@
 ---
 title: 'Workers'
-description: 'Any process that connects to the iii Engine using an SDK and registers Functions.'
+description: 'Workers are the interface between the Engine and the rest of the application.'
 ---
 
-A Worker is any process that connects to the iii Engine over WebSocket using an SDK and registers Functions. The Engine routes incoming triggers to the correct Worker, which executes the handler and optionally returns a result.
+Workers are the interface between the Engine and the rest of the application. They are responsible for establishing connections to services, implementing trigger types, and supplying application Context.
 
-Workers are independent processes — they can be written in any language, run anywhere, and crash without affecting other Workers.
-
-## Diagrams 
-
-### Architecture
+Every capability in iii (HTTP endpoints, cron scheduling, state management, queues, streams, observability) is implemented as a Worker. This modular architecture means the Engine itself stays small and focused on orchestration, while Workers handle all external concerns.
 
 ```mermaid
-graph LR
-    E[Engine]
-
-    subgraph W1[Worker A]
-        F1([Function A])
-        F2([Function B])
+graph TB
+    subgraph Engine[Engine]
+        subgraph Worker[Worker]
+            Context[Context]
+            Triggers[Triggers]
+        end
     end
-
-    subgraph W2[Worker B]
-        F3([Function C])
-    end
-
-    W1 -- registerFunction --> E
-    W2 -- registerFunction --> E
-    E -- trigger --> W1
-    E -- trigger --> W2
+    Worker <--> Postgres[(Postgres)]
+    Worker <--> Redis[(Redis)]
+    Worker <--> ExtAPI[External API]
 ```
 
-### Lifecycle Overview
+## Built-in Workers
 
-```mermaid
-flowchart TD
-    Start(("registerWorker()")) --> Connecting
-    Connecting -->|WebSocket open| Connected
-    Connected -->|"Register<br/>functions & triggers"| Registering
-    Registering -->|All registered| Ready
-    Ready -->|Invocation received| Executing
-    Executing -.-> RS[Result sent]
-    Ready -->|shutdown| ShuttingDown
-    ShuttingDown --> End((Exit))
-    Ready -->|Connection lost| Disconnected
-    Disconnected -->|Auto-reconnect| Reconnecting
-    Reconnecting -->|Reconnected| Connected
-    Reconnecting -->|Max retries| Failed
-```
-## Creating a Worker
+| Worker | Provides | Config key |
+|--------|----------|------------|
+| [HTTP](/workers/iii-http) | HTTP trigger type, request/response handling | `rest_api` |
+| [Queue](/workers/iii-queue) | Async message processing with retries | `queue` |
+| [Cron](/workers/iii-cron) | Scheduled task execution | `cron` |
+| [State](/workers/iii-state) | Key-value state storage with atomic updates | `state` |
+| [Stream](/workers/iii-stream) | Real-time data streams with WebSocket push | `stream` |
+| [PubSub](/workers/iii-pubsub) | Publish/subscribe messaging | `pubsub` |
+| [Observability](/workers/iii-observability) | Structured logging, tracing, and metrics | `observability` |
+| [Exec](/workers/iii-exec) | Shell command execution | `exec` |
+| [Bridge](/workers/iii-bridge) | WebSocket bridge for SDK connections | `bridge` |
 
-A Worker is simply any collection of registered Functions and Triggers that has registered itself with the iii engine.
-See [How to use Functions and Triggers](/how-to/use-functions-and-triggers) for details on registering
-functions within workers. Read below for Worker responsibilities and configuration.
+## How Workers Work
 
-## What Workers Do
+A Worker has two responsibilities:
 
-| Responsibility | Description |
-|----------------|-------------|
-| **Function hosting** | Register Functions with the Engine and execute them when triggered |
-| **SDK connection** | Connect to the Engine via WebSocket, auto-reconnect on disconnect |
-| **Language runtime** | Run in their own process in any iii-sdk supported language |
-| **Isolation** | Workers are independent processes. A crash in one Worker doesn't propagate to others |
+1. **Register trigger types**: A Worker can introduce new ways to invoke Functions. For example, the HTTP worker registers the `http` trigger type, and the Cron worker registers the `cron` trigger type.
 
-## Init Options
+2. **Supply Context**: A Worker can add capabilities to the Context object that gets passed to every Function. For example, the State worker adds `state::get`, `state::set`, and other state operations.
 
-The second argument to `registerWorker()` configures the Worker's behavior:
+Workers are configured in `config.yaml` (the engine default). Use `-c iii-config.yaml` to specify a custom path:
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `workerName` | `string` | `${hostname}:${pid}` | Name shown in the iii Console and `listWorkers()` |
-| `invocationTimeoutMs` | `number` | `30000` | Default timeout for `trigger()` calls in milliseconds |
-| `enableMetricsReporting` | `boolean` | `true` | Report CPU, memory, and event loop metrics to the Engine |
-| `reconnectionConfig` | `object` | see below | WebSocket reconnection behavior |
-| `otel` | `object` | auto | OpenTelemetry configuration. Set `{ enabled: false }` to disable |
-
-### Reconnection Config
-
-Workers reconnect automatically on disconnect using exponential backoff:
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `initialDelayMs` | `1000` | First retry delay |
-| `maxDelayMs` | `30000` | Maximum retry delay cap |
-| `backoffMultiplier` | `2` | Multiplier applied to delay each attempt |
-| `jitterFactor` | `0.3` | Random jitter 0–1 to prevent thundering herd |
-| `maxRetries` | `-1` | Maximum attempts. `-1` = infinite |
-
-> **Python naming:** Python uses snake_case for these fields: `initial_delay_ms`, `max_delay_ms`, `backoff_multiplier`, `jitter_factor`, `max_retries`.
-
-```typescript
-import { registerWorker } from 'iii-sdk'
-
-const iii = registerWorker('ws://localhost:49134', {
-  workerName: 'user-service',
-  invocationTimeoutMs: 10000,
-  reconnectionConfig: {
-    initialDelayMs: 500,
-    maxDelayMs: 10000,
-    maxRetries: 10,
-  },
-})
+```yaml
+workers:
+  - name: iii-http
+    config:
+      port: 3111
+      host: 0.0.0.0
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: in_memory
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+        config:
+          store_method: in_memory
 ```
 
-## Worker Lifecycle
-
-When a Worker connects, the SDK sends its metadata to the Engine via `engine::workers::register`:
-
-```
-runtime: 'node' | 'python' | 'rust'
-version: SDK version
-name: workerName
-os: platform + arch
-```
-
-The Engine assigns a `worker_id` and the Worker's status transitions through:
-
-```
-connecting → connected → available / busy → disconnected
-```
-
-On disconnect — clean or crash — the Engine automatically removes all the Worker's registered Functions and Triggers. On reconnect, the SDK re-registers everything automatically.
-
-## Worker Metadata
-
-You can inspect all connected Workers at runtime:
-
-```typescript
-const workers = await iii.listWorkers()
-// returns WorkerInfo[] with: id, name, runtime, version, os,
-// status, connected_at_ms, function_count, functions[], active_invocations
-```
-
-```python
-workers = iii.list_workers()
-```
-
-<Info title="See also">
-  For details on building and deploying Workers in production, see the [Quickstart tutorial](/quickstart) or the [SDK Reference](/api-reference/iii-sdk).
+<Info title="Custom Workers">
+  You can build your own Workers to integrate any service or infrastructure. See [Custom Workers](/advanced/custom-modules) for a detailed guide.
 </Info>

@@ -168,7 +168,7 @@ iii.trigger(TriggerRequest {
 
 ### 3. Enqueue (named queue)
 
-`TriggerAction.Enqueue({ queue: 'name' })` routes the invocation through a **named queue** configured in `iii-config.yaml`, check how to [create queues in more detail](/how-to/use-queues). The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job but does not wait for it to be processed. The queue provides retries, concurrency control, backoff, and optional FIFO ordering. If all retries are exhausted, the job moves to a dead letter queue.
+`TriggerAction.Enqueue({ queue: 'name' })` routes the invocation through a **named queue** configured in `iii-config.yaml`, check how to [create queues in more detail](/how-to/use-named-queues). The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job but does not wait for it to be processed. The queue provides retries, concurrency control, backoff, and optional FIFO ordering. If all retries are exhausted, the job moves to a dead letter queue.
 
 ```mermaid
 sequenceDiagram
@@ -1088,7 +1088,7 @@ let receipt = iii.trigger(TriggerRequest {
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Use Queues" href="/how-to/use-queues" icon="bolt">
+  <Card title="Use Named Queues" href="/how-to/use-named-queues" icon="bolt">
     Configure named queues with retries, concurrency, and FIFO ordering
   </Card>
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">

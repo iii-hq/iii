@@ -4,22 +4,31 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-//! Worker lifecycle: start/stop all managed workers, container spec building.
-
-use futures::future::join_all;
+//! Worker lifecycle: container spec building.
 
 use super::worker_manager::adapter::ContainerSpec;
-use super::worker_manager::state::{WorkerDef, WorkersFile};
+use super::worker_manager::state::WorkerDef;
 
 pub fn build_container_spec(name: &str, def: &WorkerDef, _engine_url: &str) -> ContainerSpec {
-    let env = def.env.clone();
-
-    ContainerSpec {
-        name: name.to_string(),
-        image: def.image.clone(),
-        env,
-        memory_limit: def.resources.as_ref().and_then(|r| r.memory.clone()),
-        cpu_limit: def.resources.as_ref().and_then(|r| r.cpus.clone()),
+    match def {
+        WorkerDef::Managed {
+            image,
+            env,
+            resources,
+        } => ContainerSpec {
+            name: name.to_string(),
+            image: image.clone(),
+            env: env.clone(),
+            memory_limit: resources.as_ref().and_then(|r| r.memory.clone()),
+            cpu_limit: resources.as_ref().and_then(|r| r.cpus.clone()),
+        },
+        WorkerDef::Binary { .. } => ContainerSpec {
+            name: name.to_string(),
+            image: String::new(),
+            env: std::collections::HashMap::new(),
+            memory_limit: None,
+            cpu_limit: None,
+        },
     }
 }
 
@@ -38,92 +47,6 @@ pub async fn worker_status_label(
     }
 }
 
-/// Stop all managed worker VMs.
-pub async fn stop_managed_workers() {
-    let workers_file = match WorkersFile::load() {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-
-    if workers_file.workers.is_empty() {
-        return;
-    }
-
-    tracing::info!(
-        count = workers_file.workers.len(),
-        "Stopping managed workers..."
-    );
-
-    let stop_futures: Vec<_> = workers_file
-        .workers
-        .keys()
-        .filter_map(|name| {
-            let pid_file = dirs::home_dir()
-                .unwrap_or_default()
-                .join(".iii/managed")
-                .join(name)
-                .join("vm.pid");
-            let pid_str = std::fs::read_to_string(&pid_file).ok()?;
-            let pid = pid_str.trim().to_string();
-            let worker_name = name.clone();
-            Some(async move {
-                let adapter = super::worker_manager::create_adapter("libkrun");
-                if let Err(e) = adapter.stop(&pid, 5).await {
-                    tracing::warn!(worker = %worker_name, error = %e, "Failed to stop worker");
-                }
-            })
-        })
-        .collect();
-
-    join_all(stop_futures).await;
-
-    tracing::info!("Managed workers stopped");
-}
-
-/// Start all workers declared in iii.workers.yaml.
-pub async fn start_managed_workers(engine_url: &str) {
-    let workers_file = match WorkersFile::load() {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-
-    if workers_file.workers.is_empty() {
-        return;
-    }
-
-    let adapter = super::worker_manager::create_adapter("libkrun");
-
-    tracing::info!("Starting workers from iii.workers.yaml...");
-
-    for (name, def) in &workers_file.workers {
-        if let Err(e) = adapter.pull(&def.image).await {
-            tracing::warn!(worker = %name, error = %e, "Failed to pull image, skipping");
-            continue;
-        }
-
-        let spec = build_container_spec(name, def, engine_url);
-
-        let pid_file = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".iii/managed")
-            .join(name)
-            .join("vm.pid");
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            let _ = adapter.stop(pid_str.trim(), 5).await;
-            let _ = adapter.remove(pid_str.trim()).await;
-        }
-
-        match adapter.start(&spec).await {
-            Ok(_) => {
-                tracing::debug!(worker = %name, "managed worker process exited successfully");
-            }
-            Err(e) => {
-                tracing::warn!(worker = %name, error = %e, "Failed to start managed worker");
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::worker_manager::state::WorkerResources;
@@ -132,7 +55,7 @@ mod tests {
 
     #[test]
     fn build_container_spec_maps_fields() {
-        let def = WorkerDef {
+        let def = WorkerDef::Managed {
             image: "ghcr.io/iii-hq/image-resize:0.1.2".to_string(),
             env: {
                 let mut m = HashMap::new();
@@ -165,5 +88,24 @@ mod tests {
 
         assert_eq!(label, "stopped");
         assert_eq!(color, "dimmed");
+    }
+
+    #[test]
+    fn build_container_spec_binary_variant() {
+        let def = WorkerDef::Binary {
+            version: "0.1.2".to_string(),
+            config: None,
+        };
+
+        let spec = build_container_spec("bin-worker", &def, "ws://localhost:49134");
+
+        assert_eq!(spec.name, "bin-worker");
+        assert!(
+            spec.image.is_empty(),
+            "Binary variant should have empty image"
+        );
+        assert!(spec.env.is_empty(), "Binary variant should have empty env");
+        assert!(spec.memory_limit.is_none());
+        assert!(spec.cpu_limit.is_none());
     }
 }

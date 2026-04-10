@@ -105,7 +105,7 @@ sequenceDiagram
     participant R as Redis
     participant W2 as Worker2
 
-    W1->>E: Invoke enqueue
+    W1->>E: Invoke iii::durable::publish
     E->>R: Enqueue to Queue
     R-->>E: Enqueued
 

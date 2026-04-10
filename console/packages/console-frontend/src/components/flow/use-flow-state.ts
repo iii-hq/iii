@@ -20,9 +20,11 @@ const DEFAULT_CONFIG: NodeConfig = { x: 0, y: 0 }
 const NODE_TYPES = {
   event: EventFlowNode,
   http: ApiFlowNode,
+  api: ApiFlowNode, // fallback
   noop: NoopFlowNode,
   cron: CronFlowNode,
-  queue: QueueFlowNode,
+  queue: QueueFlowNode, // fallback
+  'durable:subscriber': QueueFlowNode,
   state: StateFlowNode,
 }
 

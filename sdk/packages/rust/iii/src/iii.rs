@@ -1092,7 +1092,7 @@ impl III {
     ///
     /// // Enqueue
     /// let receipt = iii.trigger(TriggerRequest {
-    ///     function_id: "enqueue".to_string(),
+    ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
     ///     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
     ///     timeout_ms: None,
