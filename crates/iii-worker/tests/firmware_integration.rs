@@ -16,10 +16,12 @@ mod common;
 
 use common::assertions::assert_paths_eq;
 use iii_worker::cli::firmware::constants::{
-    check_libkrunfw_platform_support, iii_init_archive_name, libkrunfw_archive_name,
-    libkrunfw_filename, III_INIT_FILENAME,
+    III_INIT_FILENAME, check_libkrunfw_platform_support, iii_init_archive_name,
+    libkrunfw_archive_name, libkrunfw_filename,
 };
-use iii_worker::cli::firmware::resolve::{lib_path_env_var, resolve_init_binary, resolve_libkrunfw_dir};
+use iii_worker::cli::firmware::resolve::{
+    lib_path_env_var, resolve_init_binary, resolve_libkrunfw_dir,
+};
 use std::sync::Mutex;
 
 /// Serializes tests that mutate environment variables (HOME, III_LIBKRUNFW_PATH, III_INIT_PATH).
@@ -60,7 +62,10 @@ fn resolve_libkrunfw_dir_finds_local_firmware() {
         }
     }
 
-    assert!(result.is_some(), "expected Some when firmware exists in ~/.iii/lib/");
+    assert!(
+        result.is_some(),
+        "expected Some when firmware exists in ~/.iii/lib/"
+    );
     assert_paths_eq(&result.unwrap(), &lib_dir);
 }
 
@@ -89,7 +94,10 @@ fn resolve_init_binary_finds_local_init() {
         }
     }
 
-    assert!(result.is_some(), "expected Some when iii-init exists in ~/.iii/lib/");
+    assert!(
+        result.is_some(),
+        "expected Some when iii-init exists in ~/.iii/lib/"
+    );
     assert_paths_eq(&result.unwrap(), &init_path);
 }
 
@@ -116,7 +124,10 @@ fn resolve_libkrunfw_dir_env_var_override() {
         }
     }
 
-    assert!(result.is_some(), "expected Some with III_LIBKRUNFW_PATH override");
+    assert!(
+        result.is_some(),
+        "expected Some with III_LIBKRUNFW_PATH override"
+    );
     assert_paths_eq(&result.unwrap(), tmp.path());
 }
 
@@ -222,13 +233,22 @@ fn check_libkrunfw_platform_support_succeeds_on_supported() {
     // Available firmware: darwin-aarch64, linux-x86_64, linux-aarch64
     // Missing: darwin-x86_64 (Intel Mac)
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    assert!(result.is_ok(), "darwin-aarch64 should be supported: {result:?}");
+    assert!(
+        result.is_ok(),
+        "darwin-aarch64 should be supported: {result:?}"
+    );
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    assert!(result.is_ok(), "linux-x86_64 should be supported: {result:?}");
+    assert!(
+        result.is_ok(),
+        "linux-x86_64 should be supported: {result:?}"
+    );
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    assert!(result.is_ok(), "linux-aarch64 should be supported: {result:?}");
+    assert!(
+        result.is_ok(),
+        "linux-aarch64 should be supported: {result:?}"
+    );
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
@@ -350,9 +370,6 @@ fn libkrunfw_filename_is_platform_correct() {
         );
     } else {
         // Linux: libkrunfw.so.5.2.1 -- ends with a version number
-        assert!(
-            name.contains(".so."),
-            "Linux should contain '.so.': {name}"
-        );
+        assert!(name.contains(".so."), "Linux should contain '.so.': {name}");
     }
 }

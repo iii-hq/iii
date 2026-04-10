@@ -11,8 +11,8 @@ mod common;
 
 use iii_worker::cli::binary_download::{
     archive_extension, binary_download_url, binary_worker_path, binary_workers_dir,
-    checksum_download_url, current_target, download_and_install_binary,
-    extract_binary_from_targz, verify_sha256,
+    checksum_download_url, current_target, download_and_install_binary, extract_binary_from_targz,
+    verify_sha256,
 };
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
@@ -26,8 +26,8 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 // ---------------------------------------------------------------------------
 
 fn make_targz(file_name: &str, content: &[u8]) -> Vec<u8> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     {
@@ -249,8 +249,8 @@ fn extract_binary_from_targz_finds_by_name() {
 /// BIN-01: extract_binary_from_targz finds binary in nested path (ignores directory prefix).
 #[test]
 fn extract_binary_from_targz_nested_path() {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     {
@@ -392,10 +392,7 @@ fn executable_permissions_roundtrip() {
 #[tokio::test]
 async fn download_rejects_invalid_worker_name() {
     let result = download_and_install_binary("", "owner/repo", "tag", "1.0", &[], false).await;
-    assert!(
-        result.is_err(),
-        "empty worker name should be rejected"
-    );
+    assert!(result.is_err(), "empty worker name should be rejected");
 }
 
 /// BIN-04 (T-04-03): download_and_install_binary rejects path traversal in worker name.

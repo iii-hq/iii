@@ -15,10 +15,10 @@ mod common;
 use clap::Parser;
 use iii_worker::cli::lifecycle::build_container_spec;
 use iii_worker::cli::vm_boot::{
-    build_worker_cmd, resolve_krunfw_file_path, rewrite_localhost, shell_quote, VmBootArgs,
+    VmBootArgs, build_worker_cmd, resolve_krunfw_file_path, rewrite_localhost, shell_quote,
 };
 use iii_worker::cli::worker_manager::adapter::RuntimeAdapter;
-use iii_worker::cli::worker_manager::libkrun::{k8s_mem_to_mib, LibkrunAdapter};
+use iii_worker::cli::worker_manager::libkrun::{LibkrunAdapter, k8s_mem_to_mib};
 use iii_worker::cli::worker_manager::state::{WorkerDef, WorkerResources};
 use std::collections::HashMap;
 
@@ -70,10 +70,7 @@ fn vm_boot_args_all_fields() {
     assert_eq!(cli.args.arg, vec!["script.js"]);
     assert_eq!(cli.args.slot, 42);
     assert_eq!(cli.args.pid_file.as_deref(), Some("/tmp/vm.pid"));
-    assert_eq!(
-        cli.args.console_output.as_deref(),
-        Some("/tmp/console.log")
-    );
+    assert_eq!(cli.args.console_output.as_deref(), Some("/tmp/console.log"));
 }
 
 #[test]
@@ -95,8 +92,7 @@ fn vm_boot_args_defaults() {
 #[test]
 fn vm_boot_args_hyphen_prefixed_args() {
     let cli = TestCli::parse_from([
-        "test", "--rootfs", "/r", "--exec", "/e", "--arg", "--port", "--arg", "3000", "--arg",
-        "-v",
+        "test", "--rootfs", "/r", "--exec", "/e", "--arg", "--port", "--arg", "3000", "--arg", "-v",
     ]);
     assert_eq!(cli.args.arg, vec!["--port", "3000", "-v"]);
 }
@@ -263,7 +259,13 @@ fn k8s_mem_to_mib_zero() {
 #[test]
 fn vm_boot_args_mount_valid_format() {
     let cli = TestCli::parse_from([
-        "test", "--rootfs", "/r", "--exec", "/e", "--mount", "/host:/guest",
+        "test",
+        "--rootfs",
+        "/r",
+        "--exec",
+        "/e",
+        "--mount",
+        "/host:/guest",
     ]);
     assert_eq!(cli.args.mount[0], "/host:/guest");
 }
@@ -416,7 +418,10 @@ async fn stop_terminates_sleeping_process() {
     // stop() should return well under 3 seconds. If it had to wait for
     // SIGKILL escalation, it would take ~5 seconds.
     let start = std::time::Instant::now();
-    adapter.stop(&pid_str, 5).await.expect("stop should succeed");
+    adapter
+        .stop(&pid_str, 5)
+        .await
+        .expect("stop should succeed");
     let elapsed = start.elapsed();
 
     assert!(
@@ -445,7 +450,10 @@ async fn stop_escalates_to_sigkill_when_sigterm_ignored() {
     let pid_str = pid.to_string();
 
     // Use a 1-second timeout to force SIGKILL escalation quickly.
-    adapter.stop(&pid_str, 1).await.expect("stop should succeed");
+    adapter
+        .stop(&pid_str, 1)
+        .await
+        .expect("stop should succeed");
 
     // Give a moment for the kernel to reap the killed process.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

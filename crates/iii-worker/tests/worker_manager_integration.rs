@@ -263,7 +263,10 @@ fn workerdef_unknown_type_errors() {
     });
 
     let result: Result<WorkerDef, _> = serde_json::from_value(json);
-    assert!(result.is_err(), "unknown type 'docker' should produce deserialization error");
+    assert!(
+        result.is_err(),
+        "unknown type 'docker' should produce deserialization error"
+    );
 }
 
 /// WorkerDef::Managed with empty env and no resources roundtrips correctly.

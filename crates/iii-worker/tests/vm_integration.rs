@@ -16,7 +16,7 @@
 mod common;
 
 use clap::Parser;
-use iii_worker::cli::vm_boot::{rewrite_localhost, VmBootArgs};
+use iii_worker::cli::vm_boot::{VmBootArgs, rewrite_localhost};
 use iii_worker::cli::worker_manager::adapter::RuntimeAdapter;
 use iii_worker::cli::worker_manager::libkrun::LibkrunAdapter;
 use std::collections::HashMap;
@@ -78,10 +78,7 @@ fn vm_boot_args_realistic_managed_worker() {
         "--slot",
         "1",
     ]);
-    assert_eq!(
-        cli.args.rootfs,
-        "/home/user/.iii/managed/my-worker/rootfs"
-    );
+    assert_eq!(cli.args.rootfs, "/home/user/.iii/managed/my-worker/rootfs");
     assert_eq!(cli.args.exec, "/usr/bin/node");
     assert_eq!(cli.args.workdir, "/workspace");
     assert_eq!(cli.args.vcpus, 4);
@@ -175,21 +172,15 @@ fn vm_boot_args_start_uses_correct_console_output_path() {
 #[test]
 fn vm_boot_args_max_vcpus_at_u8_boundary() {
     // u8::MAX (255) should parse fine
-    let cli = TestCli::parse_from([
-        "test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "255",
-    ]);
+    let cli = TestCli::parse_from(["test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "255"]);
     assert_eq!(cli.args.vcpus, 255);
 
     // 256 should also parse (VmBootArgs field is u32)
-    let cli = TestCli::parse_from([
-        "test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "256",
-    ]);
+    let cli = TestCli::parse_from(["test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "256"]);
     assert_eq!(cli.args.vcpus, 256);
 
     // Large value within u32 range
-    let cli = TestCli::parse_from([
-        "test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "65535",
-    ]);
+    let cli = TestCli::parse_from(["test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "65535"]);
     assert_eq!(cli.args.vcpus, 65535);
 }
 

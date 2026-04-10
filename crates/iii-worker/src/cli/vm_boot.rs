@@ -236,9 +236,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     let guest_ip = network.guest_ipv4().to_string();
     let gateway_ip = network.gateway_ipv4().to_string();
 
-    let rewrite_localhost = |s: &str| -> String {
-        rewrite_localhost(s, &gateway_ip)
-    };
+    let rewrite_localhost = |s: &str| -> String { rewrite_localhost(s, &gateway_ip) };
     let worker_cmd = rewrite_localhost(&worker_cmd);
 
     let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);

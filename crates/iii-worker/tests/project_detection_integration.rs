@@ -16,7 +16,7 @@
 mod common;
 
 use iii_worker::cli::project::{
-    auto_detect_project, infer_scripts, load_from_manifest, load_project_info, WORKER_MANIFEST,
+    WORKER_MANIFEST, auto_detect_project, infer_scripts, load_from_manifest, load_project_info,
 };
 
 // ---------------------------------------------------------------------------
@@ -119,7 +119,10 @@ fn auto_detect_python_from_requirements_txt() {
     std::fs::write(dir.path().join("requirements.txt"), "flask").unwrap();
 
     let result = auto_detect_project(dir.path());
-    assert!(result.is_some(), "expected Some for requirements.txt project");
+    assert!(
+        result.is_some(),
+        "expected Some for requirements.txt project"
+    );
     let info = result.unwrap();
     assert_eq!(info.name, "python");
     assert_eq!(info.language.as_deref(), Some("python"));

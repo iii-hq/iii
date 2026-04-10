@@ -302,8 +302,7 @@ jobs:
 
   worker-test-oci-linux:
     name: Worker Tests (OCI) - linux
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, oci]
+    runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

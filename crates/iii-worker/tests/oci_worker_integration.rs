@@ -19,8 +19,8 @@ use iii_worker::cli::worker_manager::oci::{
 
 /// Build a tar.gz archive from a list of (path, content, mode) entries.
 fn make_layer_targz(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     {
         let mut archive = tar::Builder::new(&mut encoder);
@@ -369,9 +369,10 @@ fn rootfs_search_paths_includes_standard_locations() {
         .any(|p| p.to_string_lossy().contains(".iii/rootfs/node"));
     assert!(has_home_path, "should include ~/.iii/rootfs/node path");
 
-    let has_system_path = paths
-        .iter()
-        .any(|p| p.to_string_lossy().contains("/usr/local/share/iii/rootfs/node"));
+    let has_system_path = paths.iter().any(|p| {
+        p.to_string_lossy()
+            .contains("/usr/local/share/iii/rootfs/node")
+    });
     assert!(
         has_system_path,
         "should include /usr/local/share/iii/rootfs/node path"

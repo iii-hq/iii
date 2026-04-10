@@ -18,9 +18,9 @@ use common::fixtures::TestConfigBuilder;
 use common::isolation::in_temp_dir_async;
 use iii_worker::cli::config_file::{get_worker_path, worker_exists};
 use iii_worker::cli::local_worker::{
-    build_env_exports, build_libkrun_local_script, build_local_env, clean_workspace_preserving_deps,
-    copy_dir_contents, detect_lan_ip, handle_local_add, is_local_path, parse_manifest_resources,
-    resolve_worker_name, shell_escape,
+    build_env_exports, build_libkrun_local_script, build_local_env,
+    clean_workspace_preserving_deps, copy_dir_contents, detect_lan_ip, handle_local_add,
+    is_local_path, parse_manifest_resources, resolve_worker_name, shell_escape,
 };
 use iii_worker::cli::project::{ProjectInfo, WORKER_MANIFEST};
 use std::collections::HashMap;
@@ -64,14 +64,23 @@ fn shell_escape_no_special_chars() {
 #[test]
 fn build_env_exports_excludes_engine_urls() {
     let mut env = HashMap::new();
-    env.insert("III_ENGINE_URL".to_string(), "ws://localhost:49134".to_string());
+    env.insert(
+        "III_ENGINE_URL".to_string(),
+        "ws://localhost:49134".to_string(),
+    );
     env.insert("III_URL".to_string(), "ws://localhost:49134".to_string());
     env.insert("VALID_KEY".to_string(), "value".to_string());
 
     let result = build_env_exports(&env);
-    assert!(!result.contains("III_ENGINE_URL"), "should exclude III_ENGINE_URL");
+    assert!(
+        !result.contains("III_ENGINE_URL"),
+        "should exclude III_ENGINE_URL"
+    );
     assert!(!result.contains("III_URL"), "should exclude III_URL");
-    assert!(result.contains("export VALID_KEY='value'"), "should include VALID_KEY");
+    assert!(
+        result.contains("export VALID_KEY='value'"),
+        "should include VALID_KEY"
+    );
 }
 
 /// build_env_exports skips keys with invalid characters (spaces, empty).
@@ -82,8 +91,14 @@ fn build_env_exports_skips_invalid_keys() {
     env.insert("".to_string(), "empty-key".to_string());
 
     let result = build_env_exports(&env);
-    assert!(!result.contains("invalid key"), "should skip keys with spaces");
-    assert_eq!(result, "true", "should return 'true' when no valid keys remain");
+    assert!(
+        !result.contains("invalid key"),
+        "should skip keys with spaces"
+    );
+    assert_eq!(
+        result, "true",
+        "should return 'true' when no valid keys remain"
+    );
 }
 
 #[test]
@@ -103,7 +118,10 @@ fn build_local_env_merges_and_excludes() {
     project_env.insert("III_URL".to_string(), "skip-this-too".to_string());
 
     let result = build_local_env("ws://localhost:49134", &project_env);
-    assert_eq!(result.get("III_ENGINE_URL").unwrap(), "ws://localhost:49134");
+    assert_eq!(
+        result.get("III_ENGINE_URL").unwrap(),
+        "ws://localhost:49134"
+    );
     assert_eq!(result.get("III_URL").unwrap(), "ws://localhost:49134");
     assert_eq!(result.get("CUSTOM").unwrap(), "val");
     // Engine URL values come from the function argument, not project_env
@@ -123,9 +141,15 @@ fn build_libkrun_local_script_not_prepared() {
         env: HashMap::new(),
     };
     let script = build_libkrun_local_script(&project, false);
-    assert!(script.contains("apt-get update"), "should include setup_cmd");
+    assert!(
+        script.contains("apt-get update"),
+        "should include setup_cmd"
+    );
     assert!(script.contains("npm install"), "should include install_cmd");
-    assert!(script.contains(".iii-prepared"), "should include prepared marker");
+    assert!(
+        script.contains(".iii-prepared"),
+        "should include prepared marker"
+    );
     assert!(script.contains("npm start"), "should include run_cmd");
 }
 
@@ -141,8 +165,14 @@ fn build_libkrun_local_script_prepared() {
         env: HashMap::new(),
     };
     let script = build_libkrun_local_script(&project, true);
-    assert!(!script.contains("apt-get update"), "should omit setup_cmd when prepared");
-    assert!(!script.contains("npm install"), "should omit install_cmd when prepared");
+    assert!(
+        !script.contains("apt-get update"),
+        "should omit setup_cmd when prepared"
+    );
+    assert!(
+        !script.contains("npm install"),
+        "should omit install_cmd when prepared"
+    );
     assert!(script.contains("npm start"), "should still include run_cmd");
 }
 
@@ -219,15 +249,33 @@ fn copy_dir_contents_copies_files_skips_ignored() {
     copy_dir_contents(src.path(), dst.path()).unwrap();
 
     // Verify copied files
-    assert!(dst.path().join("src/main.rs").exists(), "src/main.rs should be copied");
-    assert!(dst.path().join("README.md").exists(), "README.md should be copied");
+    assert!(
+        dst.path().join("src/main.rs").exists(),
+        "src/main.rs should be copied"
+    );
+    assert!(
+        dst.path().join("README.md").exists(),
+        "README.md should be copied"
+    );
 
     // Verify skipped directories
-    assert!(!dst.path().join("node_modules").exists(), "node_modules should be skipped");
+    assert!(
+        !dst.path().join("node_modules").exists(),
+        "node_modules should be skipped"
+    );
     assert!(!dst.path().join(".git").exists(), ".git should be skipped");
-    assert!(!dst.path().join("target").exists(), "target should be skipped");
-    assert!(!dst.path().join("__pycache__").exists(), "__pycache__ should be skipped");
-    assert!(!dst.path().join(".venv").exists(), ".venv should be skipped");
+    assert!(
+        !dst.path().join("target").exists(),
+        "target should be skipped"
+    );
+    assert!(
+        !dst.path().join("__pycache__").exists(),
+        "__pycache__ should be skipped"
+    );
+    assert!(
+        !dst.path().join(".venv").exists(),
+        ".venv should be skipped"
+    );
     assert!(!dst.path().join("dist").exists(), "dist should be skipped");
 }
 
@@ -282,8 +330,7 @@ async fn handle_local_add_valid_path() {
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
 
-        let result =
-            handle_local_add(project_dir.to_str().unwrap(), false, false, true).await;
+        let result = handle_local_add(project_dir.to_str().unwrap(), false, false, true).await;
         assert_eq!(result, 0, "handle_local_add should return 0 for valid path");
 
         // Without manifest, resolve_worker_name falls back to directory name
@@ -414,8 +461,7 @@ async fn handle_local_add_canonicalizes_relative_path() {
 #[tokio::test]
 async fn handle_local_add_invalid_path_returns_error() {
     in_temp_dir_async(|| async {
-        let result =
-            handle_local_add("/nonexistent/path/to/worker", false, false, true).await;
+        let result = handle_local_add("/nonexistent/path/to/worker", false, false, true).await;
         assert_eq!(result, 1, "should return 1 for nonexistent path");
     })
     .await;
