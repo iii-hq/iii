@@ -1,5 +1,5 @@
 use iii::workers::config::WorkerEntry;
-use iii::workers::reload::{ReloadDiff, diff_entries};
+use iii::workers::reload::diff_entries;
 use serde_json::json;
 
 fn entry(name: &str, cfg: Option<serde_json::Value>) -> WorkerEntry {
