@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use super::config::WorkerEntry;
+use super::config::{EngineConfig, WorkerEntry};
+use super::registry::WorkerRegistration;
 use super::traits::Worker;
 
 /// Everything a single worker registered into engine-global state while its
@@ -108,4 +109,51 @@ pub fn diff_entries(old: &[WorkerEntry], new: &[WorkerEntry]) -> ReloadDiff {
     }
 
     diff
+}
+
+/// Orchestrates SIGHUP-triggered config reload. Task 6 adds only the
+/// read-only phases (parse + normalize); dry-run validation, commit, and the
+/// full `reload()` entry point come in later tasks.
+pub struct ReloadManager;
+
+impl ReloadManager {
+    /// Phases 1 + 2: parse the YAML from `path`, expand env vars, flatten the
+    /// `workers` + `modules` lists, auto-inject any missing mandatory workers,
+    /// and reject duplicate names. Read-only -- does not touch running state.
+    ///
+    /// Returns the normalized `Vec<WorkerEntry>` ready for diffing.
+    pub async fn parse_and_normalize(path: &str) -> anyhow::Result<Vec<WorkerEntry>> {
+        let cfg = EngineConfig::config_file(path)
+            .map_err(|e| anyhow::anyhow!("reload: parse failed: {}", e))?;
+
+        let mut entries: Vec<WorkerEntry> = Vec::new();
+        entries.extend(cfg.workers);
+        entries.extend(cfg.modules);
+
+        let names: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.name.clone()).collect();
+
+        for registration in inventory::iter::<WorkerRegistration> {
+            if registration.mandatory && !names.contains(registration.name) {
+                entries.push(WorkerEntry {
+                    name: registration.name.to_string(),
+                    image: None,
+                    config: None,
+                });
+            }
+        }
+
+        // Reject duplicate worker names.
+        let mut seen = std::collections::HashSet::new();
+        for e in &entries {
+            if !seen.insert(e.name.clone()) {
+                return Err(anyhow::anyhow!(
+                    "reload: duplicate worker name '{}' in new config",
+                    e.name
+                ));
+            }
+        }
+
+        Ok(entries)
+    }
 }
