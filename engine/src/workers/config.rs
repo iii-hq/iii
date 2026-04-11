@@ -347,6 +347,18 @@ impl EngineBuilder {
         &self.running
     }
 
+    /// Returns an `Arc` handle to the shared `Engine`. Used by reload plumbing
+    /// that must create workers against the live engine without consuming the
+    /// builder.
+    pub fn engine_handle(&self) -> Arc<Engine> {
+        self.engine.clone()
+    }
+
+    /// Returns an `Arc` handle to the shared worker factory registry.
+    pub fn registry_handle(&self) -> Arc<WorkerRegistry> {
+        self.registry.clone()
+    }
+
     /// Loads config strictly from file. Fails if file is missing or unparseable.
     pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = Some(config);

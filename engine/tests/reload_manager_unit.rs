@@ -1,6 +1,8 @@
 use std::io::Write;
 
-use iii::workers::reload::ReloadManager;
+use iii::EngineBuilder;
+use iii::workers::config::{EngineConfig, WorkerEntry};
+use iii::workers::reload::{ReloadDiff, ReloadManager};
 
 fn write_config(contents: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::new().expect("tempfile");
@@ -48,6 +50,79 @@ async fn duplicate_worker_name_rejected() {
     assert!(
         err.contains("duplicate worker name"),
         "error should mention duplicate worker name, was: {}",
+        err
+    );
+}
+
+// Reuse the same minimal-config pattern that the other test files use to
+// avoid port collisions with parallel tests.
+fn minimal_config() -> EngineConfig {
+    // No user workers; mandatory ones will auto-inject and none of them bind
+    // fixed ports.
+    serde_yaml::from_str("workers: []\nmodules: []\n").unwrap()
+}
+
+#[tokio::test]
+async fn validation_succeeds_with_empty_diff() {
+    let builder = EngineBuilder::new()
+        .with_config(minimal_config())
+        .build()
+        .await
+        .unwrap();
+
+    let diff = ReloadDiff::default(); // nothing to add or change
+    let staged = ReloadManager::validate_staging(
+        &diff,
+        builder.engine_handle(),
+        builder.registry_handle(),
+    )
+    .await
+    .expect("empty diff should validate");
+
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
+async fn validation_fails_on_unknown_worker_name() {
+    let builder = EngineBuilder::new()
+        .with_config(minimal_config())
+        .build()
+        .await
+        .unwrap();
+
+    // A built-in worker name with an `image` field is rejected by
+    // `WorkerRegistry::create_worker` — this gives us a deterministic
+    // creation failure without touching the network or spawning processes.
+    let diff = ReloadDiff {
+        added: vec![WorkerEntry {
+            name: "iii-telemetry".to_string(),
+            image: Some("not/a-real-image:latest".to_string()),
+            config: None,
+        }],
+        removed: Vec::new(),
+        changed: Vec::new(),
+        unchanged: Vec::new(),
+    };
+
+    let result = ReloadManager::validate_staging(
+        &diff,
+        builder.engine_handle(),
+        builder.registry_handle(),
+    )
+    .await;
+
+    let err = match result {
+        Ok(_) => panic!("expected validation failure for bad worker entry"),
+        Err(e) => format!("{}", e),
+    };
+    assert!(
+        err.contains("reload: validation failed"),
+        "error should mention 'reload: validation failed', was: {}",
+        err
+    );
+    assert!(
+        err.contains("iii-telemetry"),
+        "error should mention the failing worker name, was: {}",
         err
     );
 }

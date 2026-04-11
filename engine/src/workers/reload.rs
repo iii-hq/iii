@@ -17,9 +17,10 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use super::config::{EngineConfig, WorkerEntry};
+use super::config::{EngineConfig, WorkerEntry, WorkerRegistry};
 use super::registry::WorkerRegistration;
 use super::traits::Worker;
+use crate::engine::Engine;
 
 /// Everything a single worker registered into engine-global state while its
 /// scope was active. On destroy, these IDs are removed from the registries.
@@ -156,4 +157,94 @@ impl ReloadManager {
 
         Ok(entries)
     }
+
+    /// Phase 4: dry-run validation. Creates and initializes each worker in
+    /// `diff.added` and `diff.changed`, in that order. On any failure,
+    /// destroys every worker that was successfully staged before the failure
+    /// and returns a `reload: validation failed` error. The running engine is
+    /// never touched by this method.
+    ///
+    /// The caller owns the returned `Vec<StagedWorker>` and is responsible for
+    /// either promoting them via the commit phase or destroying them if the
+    /// pipeline aborts for another reason.
+    pub async fn validate_staging(
+        diff: &ReloadDiff,
+        engine: Arc<Engine>,
+        registry: Arc<WorkerRegistry>,
+    ) -> anyhow::Result<Vec<StagedWorker>> {
+        let mut staged: Vec<StagedWorker> = Vec::new();
+
+        let to_prepare = diff.added.iter().chain(diff.changed.iter());
+
+        for entry in to_prepare {
+            let created = entry.create_worker(engine.clone(), &registry).await;
+
+            let worker = match created {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::error!(
+                        "reload: validation failed for '{}': {}",
+                        entry.name,
+                        e
+                    );
+                    Self::rollback_staging(staged).await;
+                    return Err(anyhow::anyhow!(
+                        "reload: validation failed for '{}': {}",
+                        entry.name,
+                        e
+                    ));
+                }
+            };
+
+            if let Err(e) = worker.initialize().await {
+                tracing::error!(
+                    "reload: validation failed for '{}': initialize: {}",
+                    entry.name,
+                    e
+                );
+                // `worker` isn't yet pushed into `staged`; destroy it directly.
+                if let Err(e2) = worker.destroy().await {
+                    tracing::warn!(
+                        "reload: rollback destroy failed for '{}': {}",
+                        entry.name,
+                        e2
+                    );
+                }
+                Self::rollback_staging(staged).await;
+                return Err(anyhow::anyhow!(
+                    "reload: validation failed for '{}': {}",
+                    entry.name,
+                    e
+                ));
+            }
+
+            staged.push(StagedWorker {
+                entry: entry.clone(),
+                worker,
+            });
+        }
+
+        Ok(staged)
+    }
+
+    async fn rollback_staging(staged: Vec<StagedWorker>) {
+        for s in staged {
+            if let Err(e) = s.worker.destroy().await {
+                tracing::warn!(
+                    "reload: rollback destroy failed for '{}': {}",
+                    s.entry.name,
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// A worker that has been successfully created and initialized during Phase 4
+/// but has NOT yet had `register_functions` or `start_background_tasks`
+/// called. Held briefly between validation and commit, and destroyed on
+/// rollback.
+pub struct StagedWorker {
+    pub entry: WorkerEntry,
+    pub worker: Box<dyn Worker>,
 }
