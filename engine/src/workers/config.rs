@@ -324,6 +324,7 @@ impl WorkerEntry {
 /// ```
 pub struct EngineBuilder {
     config: Option<EngineConfig>,
+    config_path: Option<String>,
     engine: Arc<Engine>,
     registry: Arc<WorkerRegistry>,
     running: Vec<super::reload::RunningWorker>,
@@ -334,6 +335,7 @@ impl EngineBuilder {
     pub fn new() -> Self {
         Self {
             config: None,
+            config_path: None,
             engine: Arc::new(Engine::new()),
             registry: Arc::new(WorkerRegistry::with_inventory()),
             running: Vec::new(),
@@ -349,6 +351,20 @@ impl EngineBuilder {
     pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = Some(config);
         self
+    }
+
+    /// Records the path of the config file this engine was built from so that
+    /// reload-time code can re-read and re-apply it. When unset (e.g. running
+    /// with `--use-default-config`), SIGHUP reload is a no-op.
+    pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
+        self.config_path = Some(path.into());
+        self
+    }
+
+    /// Returns the config file path set via [`Self::with_config_path`], or
+    /// `None` if the engine is running without a file-backed config.
+    pub fn config_path(&self) -> Option<&str> {
+        self.config_path.as_deref()
     }
 
     /// Registers a custom module type in the registry

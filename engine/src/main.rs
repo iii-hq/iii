@@ -151,7 +151,11 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         logging::init_log_from_config(Some(&cli.config));
     }
 
-    let engine = EngineBuilder::new().with_config(config).build().await?;
+    let mut builder = EngineBuilder::new().with_config(config);
+    if !cli.use_default_config {
+        builder = builder.with_config_path(&cli.config);
+    }
+    let engine = builder.build().await?;
     engine.serve().await?;
     Ok(())
 }

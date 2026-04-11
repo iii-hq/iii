@@ -128,6 +128,53 @@ async fn builder_produces_running_workers_with_matching_entries() {
     }
 }
 
+// Helper: minimal config whose only explicit worker is iii-worker-manager
+// bound to an ephemeral port. Mandatory workers (telemetry, observability,
+// engine-functions) will be injected by build() but don't bind fixed ports.
+// This lets builder-plumbing tests coexist with the other integration tests
+// in this binary that also exercise build(), without fighting over the real
+// default_config()'s fixed ports (iii-http, iii-stream, iii-worker-manager).
+fn minimal_config_for_builder_tests() -> iii::workers::config::EngineConfig {
+    iii::workers::config::EngineConfig {
+        modules: Vec::new(),
+        workers: vec![iii::workers::config::WorkerEntry {
+            name: "iii-worker-manager".to_string(),
+            image: None,
+            config: Some(serde_json::json!({
+                "host": "127.0.0.1",
+                "port": 0,
+            })),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn config_path_is_stored_when_set() {
+    use iii::EngineBuilder;
+
+    let builder = EngineBuilder::new()
+        .with_config(minimal_config_for_builder_tests())
+        .with_config_path("/tmp/fake-config.yaml")
+        .build()
+        .await
+        .unwrap();
+
+    assert_eq!(builder.config_path(), Some("/tmp/fake-config.yaml"));
+}
+
+#[tokio::test]
+async fn config_path_is_none_when_not_set() {
+    use iii::EngineBuilder;
+
+    let builder = EngineBuilder::new()
+        .with_config(minimal_config_for_builder_tests())
+        .build()
+        .await
+        .unwrap();
+
+    assert!(builder.config_path().is_none());
+}
+
 /// Regression test for a shutdown regression introduced when each worker
 /// was given its own per-worker shutdown channel: serve() was subscribed
 /// to a private channel with no publisher, so SIGTERM/Ctrl+C no longer
