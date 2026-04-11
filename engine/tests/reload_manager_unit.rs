@@ -183,3 +183,44 @@ async fn user_defined_workers_are_preserved() {
     assert!(names.contains(&"my::CustomUserWorker"));
     assert!(names.contains(&"iii-engine-functions")); // mandatory still injected
 }
+
+#[test]
+fn enforce_guards_refuses_to_remove_mandatory_workers() {
+    let diff = ReloadDiff {
+        added: Vec::new(),
+        removed: vec!["iii-engine-functions".to_string()],
+        changed: Vec::new(),
+        unchanged: Vec::new(),
+    };
+
+    let result = ReloadManager::enforce_guards(&diff);
+    assert!(result.is_err(), "expected refusal to remove mandatory worker");
+    let err = format!("{}", result.unwrap_err());
+    assert!(
+        err.contains("refused to remove mandatory worker"),
+        "error should mention mandatory refusal, was: {}",
+        err
+    );
+    assert!(
+        err.contains("iii-engine-functions"),
+        "error should mention worker name, was: {}",
+        err
+    );
+}
+
+#[test]
+fn enforce_guards_allows_removing_non_mandatory_workers() {
+    let diff = ReloadDiff {
+        added: Vec::new(),
+        removed: vec!["some::CustomUserWorker".to_string()],
+        changed: Vec::new(),
+        unchanged: Vec::new(),
+    };
+
+    assert!(ReloadManager::enforce_guards(&diff).is_ok());
+}
+
+#[test]
+fn enforce_guards_allows_empty_diff() {
+    assert!(ReloadManager::enforce_guards(&ReloadDiff::default()).is_ok());
+}

@@ -238,6 +238,33 @@ impl ReloadManager {
             }
         }
     }
+
+    /// Phase 3 post-diff guards. Today: refuse removal of mandatory workers.
+    ///
+    /// Normal reload flow prevents mandatory workers from appearing in
+    /// `diff.removed` because `parse_and_normalize` auto-injects them. This
+    /// guard is belt-and-suspenders for any caller that composes the pipeline
+    /// differently (e.g. test code constructing a diff directly).
+    pub fn enforce_guards(diff: &ReloadDiff) -> anyhow::Result<()> {
+        let mandatory_names: std::collections::HashSet<&'static str> =
+            inventory::iter::<WorkerRegistration>
+                .into_iter()
+                .filter(|r| r.mandatory)
+                .map(|r| r.name)
+                .collect();
+
+        for name in &diff.removed {
+            if mandatory_names.contains(name.as_str()) {
+                let msg = format!(
+                    "reload: refused to remove mandatory worker '{}'",
+                    name
+                );
+                tracing::error!("{}", msg);
+                return Err(anyhow::anyhow!(msg));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A worker that has been successfully created and initialized during Phase 4
