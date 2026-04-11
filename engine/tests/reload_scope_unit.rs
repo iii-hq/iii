@@ -43,3 +43,37 @@ fn remove_worker_registrations_clears_functions() {
 
     assert!(engine.functions.get(&function_id).is_none());
 }
+
+#[test]
+fn register_function_records_into_active_scope() {
+    let engine = Arc::new(Engine::new());
+
+    engine.begin_worker_scope("test::Worker");
+    engine.functions.register_function(
+        "test::Worker::handler".to_string(),
+        make_dummy_function("test::Worker::handler"),
+    );
+    let regs = engine.end_worker_scope();
+
+    assert_eq!(
+        regs.function_ids,
+        vec!["test::Worker::handler".to_string()]
+    );
+}
+
+#[test]
+fn register_function_outside_scope_does_not_track() {
+    let engine = Arc::new(Engine::new());
+    // No scope active: registry still stores the function, but nothing is captured.
+    engine.functions.register_function(
+        "test::Worker::handler".to_string(),
+        make_dummy_function("test::Worker::handler"),
+    );
+    assert!(engine.functions.get("test::Worker::handler").is_some());
+
+    // Open a fresh scope afterwards — it should be empty because the registration
+    // happened before begin_worker_scope.
+    engine.begin_worker_scope("test::Worker");
+    let regs = engine.end_worker_scope();
+    assert!(regs.function_ids.is_empty());
+}

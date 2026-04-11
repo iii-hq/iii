@@ -58,12 +58,21 @@ pub trait FunctionHandler {
 #[derive(Default)]
 pub struct FunctionsRegistry {
     pub functions: Arc<DashMap<String, Function>>,
+    pub(crate) active_scope:
+        Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
 }
 
 impl FunctionsRegistry {
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn with_scope(
+        scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
+    ) -> Self {
         Self {
             functions: Arc::new(DashMap::new()),
+            active_scope: scope,
         }
     }
 
@@ -91,7 +100,13 @@ impl FunctionsRegistry {
                 function_id.purple()
             );
         }
-        self.functions.insert(function_id, function);
+        self.functions.insert(function_id.clone(), function);
+
+        if let Ok(mut scope) = self.active_scope.lock()
+            && let Some(builder) = scope.as_mut()
+        {
+            builder.function_ids.push(function_id);
+        }
     }
 
     pub fn remove(&self, function_id: &str) {

@@ -244,15 +244,16 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Self {
+        let active_scope = Arc::new(std::sync::Mutex::new(None));
         Self {
             worker_registry: Arc::new(WorkerConnectionRegistry::new()),
-            functions: Arc::new(FunctionsRegistry::new()),
+            functions: Arc::new(FunctionsRegistry::with_scope(active_scope.clone())),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             queue_module: Arc::new(tokio::sync::RwLock::new(None)),
-            active_scope: Arc::new(std::sync::Mutex::new(None)),
+            active_scope,
         }
     }
 
