@@ -12,6 +12,13 @@
 //! data types and the scope API on `Engine`. Later tasks wire this into
 //! `FunctionsRegistry::register_function` and add the full reload pipeline.
 
+use std::sync::Arc;
+
+use tokio::sync::watch;
+
+use super::config::WorkerEntry;
+use super::traits::Worker;
+
 /// Everything a single worker registered into engine-global state while its
 /// scope was active. On destroy, these IDs are removed from the registries.
 #[derive(Debug, Default, Clone)]
@@ -42,4 +49,17 @@ impl ScopeBuilder {
             function_ids: self.function_ids,
         }
     }
+}
+
+/// A worker currently being managed by the engine. The `entry` is the
+/// `WorkerEntry` that produced it -- used for diffing during reload. The
+/// `shutdown_tx` is unique to this worker, allowing individual reload-time
+/// stop/start without affecting other workers. `registrations` are the
+/// engine-global registrations made during `register_functions`, tracked so
+/// they can be removed if the worker is destroyed during reload.
+pub struct RunningWorker {
+    pub entry: WorkerEntry,
+    pub worker: Arc<dyn Worker>,
+    pub shutdown_tx: watch::Sender<bool>,
+    pub registrations: WorkerRegistrations,
 }

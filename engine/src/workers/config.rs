@@ -114,7 +114,7 @@ fn default_worker_entries() -> Vec<WorkerEntry> {
         .collect()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct WorkerEntry {
     pub name: String,
     #[serde(default)]
@@ -326,7 +326,7 @@ pub struct EngineBuilder {
     config: Option<EngineConfig>,
     engine: Arc<Engine>,
     registry: Arc<WorkerRegistry>,
-    modules: Vec<Arc<dyn Worker>>,
+    running: Vec<super::reload::RunningWorker>,
 }
 
 impl EngineBuilder {
@@ -336,8 +336,13 @@ impl EngineBuilder {
             config: None,
             engine: Arc::new(Engine::new()),
             registry: Arc::new(WorkerRegistry::with_inventory()),
-            modules: Vec::new(),
+            running: Vec::new(),
         }
+    }
+
+    /// Returns the currently-tracked running workers.
+    pub fn running(&self) -> &[super::reload::RunningWorker] {
+        &self.running
     }
 
     /// Loads config strictly from file. Fails if file is missing or unparseable.
@@ -399,7 +404,7 @@ impl EngineBuilder {
             }
         }
 
-        for entry in &workers {
+        for entry in workers {
             tracing::debug!("Creating worker: {}", entry.name);
             let worker = entry
                 .create_worker(self.engine.clone(), &self.registry)
@@ -411,8 +416,20 @@ impl EngineBuilder {
             worker.initialize().await.map_err(|err| {
                 anyhow::anyhow!("failed to initialize worker '{}': {}", entry.name, err)
             })?;
+
+            self.engine.begin_worker_scope(&entry.name);
             worker.register_functions(self.engine.clone());
-            self.modules.push(Arc::from(worker));
+            let registrations = self.engine.end_worker_scope();
+
+            let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+            let worker_arc: Arc<dyn Worker> = Arc::from(worker);
+
+            self.running.push(super::reload::RunningWorker {
+                entry,
+                worker: worker_arc,
+                shutdown_tx,
+                registrations,
+            });
         }
 
         Ok(self)
@@ -420,9 +437,11 @@ impl EngineBuilder {
 
     pub async fn destroy(self) -> anyhow::Result<()> {
         tracing::warn!("Shutting down engine and destroying workers");
-        for w in self.modules.iter() {
-            tracing::debug!("Destroying worker: {}", w.name());
-            w.destroy().await?;
+        for rw in self.running.iter() {
+            tracing::debug!("Destroying worker: {}", rw.worker.name());
+            let _ = rw.shutdown_tx.send(true);
+            rw.worker.destroy().await?;
+            self.engine.remove_worker_registrations(&rw.registrations);
         }
         tracing::warn!("Engine shutdown complete");
         Ok(())
@@ -431,25 +450,49 @@ impl EngineBuilder {
     /// Starts the engine server
     pub async fn serve(self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let (_global_shutdown_tx, mut global_shutdown_rx) =
+            tokio::sync::watch::channel(false);
 
-        // Start background tasks for all modules
-        for w in self.modules.iter() {
-            let shutdown_rx = shutdown_rx.clone();
-            let shutdown_tx = shutdown_tx.clone();
-            if let Err(e) = w.start_background_tasks(shutdown_rx, shutdown_tx).await {
+        // Start background tasks for each worker using its OWN shutdown channel.
+        for rw in self.running.iter() {
+            let shutdown_rx = rw.shutdown_tx.subscribe();
+            let shutdown_tx = rw.shutdown_tx.clone();
+            if let Err(e) = rw
+                .worker
+                .start_background_tasks(shutdown_rx, shutdown_tx)
+                .await
+            {
                 tracing::warn!(
-                    worker = w.name(),
+                    worker = rw.worker.name(),
                     error = %e,
                     "Failed to start background tasks for worker"
                 );
             }
         }
 
-        // Start channel TTL sweep task
-        engine.channel_manager.start_sweep_task(shutdown_rx.clone());
+        // Relay global shutdown into each per-worker shutdown channel.
+        let worker_shutdowns: Vec<_> = self
+            .running
+            .iter()
+            .map(|rw| rw.shutdown_tx.clone())
+            .collect();
+        let mut global_rx_for_relay = global_shutdown_rx.clone();
+        tokio::spawn(async move {
+            if global_rx_for_relay.changed().await.is_ok()
+                && *global_rx_for_relay.borrow()
+            {
+                for tx in worker_shutdowns {
+                    let _ = tx.send(true);
+                }
+            }
+        });
 
-        shutdown_rx.changed().await?;
+        // Start channel TTL sweep task
+        engine
+            .channel_manager
+            .start_sweep_task(global_shutdown_rx.clone());
+
+        global_shutdown_rx.changed().await?;
 
         self.destroy().await?;
         Ok(())
@@ -1005,7 +1048,7 @@ config:
     fn test_engine_builder_default() {
         let builder = EngineBuilder::default();
         assert!(builder.config.is_none());
-        assert!(builder.modules.is_empty());
+        assert!(builder.running().is_empty());
     }
 
     #[test]
@@ -1284,7 +1327,7 @@ modules:
 
         assert_eq!(INITIALIZED.load(Ordering::SeqCst), 1);
         assert_eq!(REGISTERED.load(Ordering::SeqCst), 1);
-        assert!(!builder.modules.is_empty());
+        assert!(!builder.running().is_empty());
 
         builder.destroy().await.expect("destroy engine");
         assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
