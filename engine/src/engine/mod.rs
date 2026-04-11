@@ -233,6 +233,7 @@ pub struct Engine {
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
     pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
+    pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
 }
 
 impl Default for Engine {
@@ -251,11 +252,47 @@ impl Engine {
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             queue_module: Arc::new(tokio::sync::RwLock::new(None)),
+            active_scope: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
     pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
         *self.queue_module.write().await = Some(module);
+    }
+
+    /// Opens a scope so that registrations made between here and
+    /// [`Self::end_worker_scope`] are attributed to `worker_name`. Panics if a
+    /// scope is already active -- scopes do not nest.
+    pub fn begin_worker_scope(&self, worker_name: &str) {
+        let mut scope = self.active_scope.lock().expect("scope mutex poisoned");
+        assert!(
+            scope.is_none(),
+            "begin_worker_scope called while a scope was already active"
+        );
+        *scope = Some(crate::workers::reload::ScopeBuilder::new(
+            worker_name.to_string(),
+        ));
+    }
+
+    /// Closes the current scope and returns the registrations captured inside
+    /// it. Panics if no scope is active.
+    pub fn end_worker_scope(&self) -> crate::workers::reload::WorkerRegistrations {
+        let mut scope = self.active_scope.lock().expect("scope mutex poisoned");
+        scope
+            .take()
+            .expect("end_worker_scope called without active scope")
+            .into_registrations()
+    }
+
+    /// Removes every registration recorded in `regs` from the engine's global
+    /// registries. Used during worker destroy and reload.
+    pub fn remove_worker_registrations(
+        &self,
+        regs: &crate::workers::reload::WorkerRegistrations,
+    ) {
+        for id in &regs.function_ids {
+            self.remove_function_from_engine(id);
+        }
     }
 
     async fn send_msg(&self, worker: &WorkerConnection, msg: Message) -> bool {

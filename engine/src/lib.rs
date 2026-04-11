@@ -31,6 +31,7 @@ pub mod workers {
     pub mod redis;
     pub mod registry;
     pub mod registry_worker;
+    pub mod reload;
     pub mod rest_api;
     pub mod shell;
     pub mod state;
