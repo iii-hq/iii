@@ -128,6 +128,47 @@ async fn validation_fails_on_unknown_worker_name() {
 }
 
 #[tokio::test]
+async fn commit_noop_when_diff_is_empty() {
+    let mut builder = EngineBuilder::new()
+        .with_config(minimal_config())
+        .build()
+        .await
+        .unwrap();
+
+    let diff = ReloadDiff::default();
+    let staged = ReloadManager::validate_staging(
+        &diff,
+        builder.engine_handle(),
+        builder.registry_handle(),
+    )
+    .await
+    .unwrap();
+
+    let before: Vec<String> = builder
+        .running()
+        .iter()
+        .map(|rw| rw.entry.name.clone())
+        .collect();
+
+    ReloadManager::commit(
+        &diff,
+        staged,
+        builder.engine_handle(),
+        builder.running_mut(),
+    )
+    .await
+    .expect("empty-diff commit should succeed");
+
+    let after: Vec<String> = builder
+        .running()
+        .iter()
+        .map(|rw| rw.entry.name.clone())
+        .collect();
+
+    assert_eq!(before, after, "empty commit must leave the running set unchanged");
+}
+
+#[tokio::test]
 async fn user_defined_workers_are_preserved() {
     // The config uses a name that is NOT a builtin so we don't trigger strict
     // validation; the goal is just to verify the name passes through normalize

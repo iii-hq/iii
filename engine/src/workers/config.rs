@@ -347,6 +347,12 @@ impl EngineBuilder {
         &self.running
     }
 
+    /// Mutable access to the running worker set. Intended for reload machinery
+    /// that needs to swap entries in place; avoid calling from other code paths.
+    pub fn running_mut(&mut self) -> &mut Vec<super::reload::RunningWorker> {
+        &mut self.running
+    }
+
     /// Returns an `Arc` handle to the shared `Engine`. Used by reload plumbing
     /// that must create workers against the live engine without consuming the
     /// builder.
