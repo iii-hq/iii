@@ -484,7 +484,9 @@ impl EngineBuilder {
     /// Starts the engine server
     pub async fn serve(mut self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
+        #[cfg(unix)]
         let registry = self.registry.clone();
+        #[cfg(unix)]
         let config_path = self.config_path.clone();
 
         // Lift the running workers out of `self` so we can mutably borrow them

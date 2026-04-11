@@ -475,8 +475,11 @@ impl ReloadManager {
         };
 
         // Phase 5
+        // Note: commit() returns errors whose text already carries the
+        // `reload: ...` prefix (see its `ok_or_else` paths), so we log the
+        // error directly rather than prefixing it again.
         if let Err(e) = Self::commit(&diff, staged, engine.clone(), running).await {
-            tracing::error!("reload: COMMIT FAILURE: {}", e);
+            tracing::error!("{}", e);
             return;
         }
 
