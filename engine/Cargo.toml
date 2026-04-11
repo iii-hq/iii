@@ -163,3 +163,4 @@ tempfile = "3"
 wiremock = "0.6"
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }
+libc = "0.2"

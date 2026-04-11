@@ -450,13 +450,16 @@ impl EngineBuilder {
     /// Starts the engine server
     pub async fn serve(self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
-        let (_global_shutdown_tx, mut global_shutdown_rx) =
+        let (global_shutdown_tx, mut global_shutdown_rx) =
             tokio::sync::watch::channel(false);
 
-        // Start background tasks for each worker using its OWN shutdown channel.
+        // Start background tasks for each worker. The per-worker `shutdown_rx`
+        // lets the engine stop ONE worker (used by reload). The `shutdown_tx`
+        // passed in is the GLOBAL tx, so when a worker like `WorkerManager`
+        // catches SIGTERM/SIGINT/Ctrl+C and fires it, serve() itself unwinds.
         for rw in self.running.iter() {
             let shutdown_rx = rw.shutdown_tx.subscribe();
-            let shutdown_tx = rw.shutdown_tx.clone();
+            let shutdown_tx = global_shutdown_tx.clone();
             if let Err(e) = rw
                 .worker
                 .start_background_tasks(shutdown_rx, shutdown_tx)

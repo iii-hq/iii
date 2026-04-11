@@ -127,3 +127,76 @@ async fn builder_produces_running_workers_with_matching_entries() {
         );
     }
 }
+
+/// Regression test for a shutdown regression introduced when each worker
+/// was given its own per-worker shutdown channel: serve() was subscribed
+/// to a private channel with no publisher, so SIGTERM/Ctrl+C no longer
+/// unwound the server. serve() must return within a short deadline after
+/// SIGTERM is delivered to the current process.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_returns_on_sigterm() {
+    use iii::EngineBuilder;
+    use iii::workers::config::EngineConfig;
+    use std::time::Duration;
+    use tokio::signal::unix::{SignalKind, signal};
+
+    // Register a SIGTERM handler in the test process BEFORE anything else so
+    // the default disposition (process termination) is replaced. The worker's
+    // own shutdown_signal() will also see the signal because tokio signal
+    // handlers are process-global.
+    let mut sigterm_guard =
+        signal(SignalKind::terminate()).expect("install SIGTERM handler");
+
+    // Use a minimal config: only declare iii-worker-manager (bound to an
+    // ephemeral port to avoid collisions with parallel tests and any local
+    // iii dev server). Other mandatory workers (telemetry, observability,
+    // engine-functions) will be injected by build() automatically and do
+    // not bind ports. We intentionally avoid EngineConfig::default_config()
+    // here because its enabled-by-default workers (iii-stream, iii-http,
+    // etc.) bind fixed ports and would conflict with other integration tests
+    // running in parallel.
+    let config = EngineConfig {
+        modules: Vec::new(),
+        workers: vec![iii::workers::config::WorkerEntry {
+            name: "iii-worker-manager".to_string(),
+            image: None,
+            config: Some(serde_json::json!({
+                "host": "127.0.0.1",
+                "port": 0,
+            })),
+        }],
+    };
+
+    let builder = EngineBuilder::new()
+        .with_config(config)
+        .build()
+        .await
+        .expect("build should succeed for default config");
+
+    let handle = tokio::spawn(async move { builder.serve().await });
+
+    // Give serve() time to spawn its workers and hit the graceful-shutdown
+    // future (which installs its own tokio signal handler).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // SAFETY: kill(2) with SIGTERM to our own pid is well-defined.
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGTERM);
+    }
+
+    // Drain the test's own SIGTERM receiver so the signal is acknowledged.
+    // (Not strictly required, but keeps things tidy.)
+    let _ = tokio::time::timeout(Duration::from_millis(100), sigterm_guard.recv()).await;
+
+    // serve() must return within 2 seconds.
+    let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    assert!(
+        result.is_ok(),
+        "serve() did not return within 2s of SIGTERM -- shutdown regression"
+    );
+    result
+        .expect("timeout")
+        .expect("join")
+        .expect("serve error");
+}
