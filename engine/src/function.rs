@@ -63,6 +63,15 @@ pub struct FunctionsRegistry {
 }
 
 impl FunctionsRegistry {
+    /// Constructs a registry with a detached scope cell.
+    ///
+    /// The resulting registry's `active_scope` is a fresh `Arc<Mutex<None>>`
+    /// that is NOT shared with any `Engine`, so `begin_worker_scope` calls on
+    /// an Engine will NOT be observed by functions registered here. This is
+    /// only appropriate for isolated unit tests that do not exercise the
+    /// scope API. Production code must go through [`Engine::new`], which
+    /// constructs the registry via [`FunctionsRegistry::with_scope`] so the
+    /// scope cell is shared.
     pub fn new() -> Self {
         Self::default()
     }
