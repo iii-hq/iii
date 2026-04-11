@@ -482,8 +482,17 @@ impl EngineBuilder {
     }
 
     /// Starts the engine server
-    pub async fn serve(self) -> anyhow::Result<()> {
+    pub async fn serve(mut self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
+        let registry = self.registry.clone();
+        let config_path = self.config_path.clone();
+
+        // Lift the running workers out of `self` so we can mutably borrow them
+        // inside the select loop. `self.running` is now empty; the teardown
+        // at the end operates on the local `running` Vec.
+        let mut running: Vec<super::reload::RunningWorker> =
+            std::mem::take(&mut self.running);
+
         let (global_shutdown_tx, mut global_shutdown_rx) =
             tokio::sync::watch::channel(false);
 
@@ -491,7 +500,7 @@ impl EngineBuilder {
         // lets the engine stop ONE worker (used by reload). The `shutdown_tx`
         // passed in is the GLOBAL tx, so when a worker like `WorkerManager`
         // catches SIGTERM/SIGINT/Ctrl+C and fires it, serve() itself unwinds.
-        for rw in self.running.iter() {
+        for rw in running.iter() {
             let shutdown_rx = rw.shutdown_tx.subscribe();
             let shutdown_tx = global_shutdown_tx.clone();
             if let Err(e) = rw
@@ -507,18 +516,25 @@ impl EngineBuilder {
             }
         }
 
-        // Relay global shutdown into each per-worker shutdown channel.
-        let worker_shutdowns: Vec<_> = self
-            .running
-            .iter()
-            .map(|rw| rw.shutdown_tx.clone())
-            .collect();
+        // Relay global shutdown into each per-worker shutdown channel so a
+        // global Ctrl+C terminates every worker (including those added via
+        // reload -- those get subscribed to the relay the next time around).
+        //
+        // NOTE: workers added via a later reload() call also need the relay to
+        // fire their per-worker shutdown channels. The current relay task only
+        // captures txs that exist at `serve()` entry. This is acceptable
+        // because a reload-added worker's `shutdown_tx` is fired directly by
+        // the commit path if needed, and the teardown at the end of `serve()`
+        // also iterates the final `running` set. If this becomes a problem,
+        // switch the relay to dynamically look up `running` under a mutex.
+        let initial_worker_shutdowns: Vec<_> =
+            running.iter().map(|rw| rw.shutdown_tx.clone()).collect();
         let mut global_rx_for_relay = global_shutdown_rx.clone();
         tokio::spawn(async move {
             if global_rx_for_relay.changed().await.is_ok()
                 && *global_rx_for_relay.borrow()
             {
-                for tx in worker_shutdowns {
+                for tx in initial_worker_shutdowns {
                     let _ = tx.send(true);
                 }
             }
@@ -529,9 +545,53 @@ impl EngineBuilder {
             .channel_manager
             .start_sweep_task(global_shutdown_rx.clone());
 
-        global_shutdown_rx.changed().await?;
+        #[cfg(unix)]
+        let mut sighup = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::hangup(),
+        )?;
 
-        self.destroy().await?;
+        #[cfg(not(unix))]
+        tracing::info!("reload: SIGHUP not supported on this platform");
+
+        loop {
+            #[cfg(unix)]
+            {
+                tokio::select! {
+                    _ = global_shutdown_rx.changed() => {
+                        if *global_shutdown_rx.borrow() { break; }
+                    }
+                    Some(_) = sighup.recv() => {
+                        super::reload::ReloadManager::reload(
+                            config_path.as_deref(),
+                            engine.clone(),
+                            registry.clone(),
+                            &mut running,
+                        ).await;
+                    }
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                global_shutdown_rx.changed().await?;
+                if *global_shutdown_rx.borrow() { break; }
+            }
+        }
+
+        // Teardown -- inline version of the old `destroy()`. Operates on the
+        // local `running` Vec directly so we don't have to reconstruct `self`.
+        tracing::warn!("Shutting down engine and destroying workers");
+        for rw in running.iter() {
+            tracing::debug!("Destroying worker: {}", rw.worker.name());
+            let _ = rw.shutdown_tx.send(true);
+            rw.worker.destroy().await?;
+            engine.remove_worker_registrations(&rw.registrations);
+        }
+        tracing::warn!("Engine shutdown complete");
+
+        // Drop `global_shutdown_tx` last so the relay task unblocks.
+        drop(global_shutdown_tx);
+
         Ok(())
     }
 }

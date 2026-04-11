@@ -406,4 +406,80 @@ impl ReloadManager {
             registrations,
         }
     }
+
+    /// Full SIGHUP reload pipeline. Runs phases in order:
+    ///
+    /// 1. **Parse & normalize**: `parse_and_normalize(path)`. On failure logs
+    ///    `reload: parse failed: ...` and returns early.
+    /// 2. **Diff** against the current `running` set. Logs the summary.
+    /// 3. **Enforce guards** (refuse mandatory removal). On failure logs and
+    ///    returns early.
+    /// 4. **Validate staging**: dry-run create + initialize added/changed
+    ///    workers. On failure, rollback already happened inside
+    ///    `validate_staging` -- just log and return.
+    /// 5. **Commit**: apply the diff. Failures here leave inconsistent state;
+    ///    they are logged loudly as `reload: COMMIT FAILURE`.
+    ///
+    /// Default-config mode (`config_path == None`) logs
+    /// `reload: ignored, running with --use-default-config` and returns.
+    ///
+    /// This method is called from the serve loop on every SIGHUP. Callers are
+    /// responsible for serializing concurrent reload attempts (typically via a
+    /// mutex wrapping the shared `running` state).
+    pub async fn reload(
+        config_path: Option<&str>,
+        engine: Arc<Engine>,
+        registry: Arc<WorkerRegistry>,
+        running: &mut Vec<RunningWorker>,
+    ) {
+        let path = match config_path {
+            Some(p) => p,
+            None => {
+                tracing::info!("reload: ignored, running with --use-default-config");
+                return;
+            }
+        };
+
+        tracing::info!("reload: SIGHUP received, reloading from {}", path);
+
+        // Phases 1 + 2
+        let new_entries = match Self::parse_and_normalize(path).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::error!("{}", e);
+                return;
+            }
+        };
+
+        // Phase 3
+        let old_entries: Vec<WorkerEntry> =
+            running.iter().map(|rw| rw.entry.clone()).collect();
+        let diff = diff_entries(&old_entries, &new_entries);
+        tracing::info!(
+            "reload: diff +{} added, -{} removed, ~{} changed, ={} unchanged",
+            diff.added.len(),
+            diff.removed.len(),
+            diff.changed.len(),
+            diff.unchanged.len(),
+        );
+
+        if let Err(e) = Self::enforce_guards(&diff) {
+            tracing::error!("{}", e);
+            return;
+        }
+
+        // Phase 4
+        let staged = match Self::validate_staging(&diff, engine.clone(), registry.clone()).await {
+            Ok(s) => s,
+            Err(_) => return, // already logged
+        };
+
+        // Phase 5
+        if let Err(e) = Self::commit(&diff, staged, engine.clone(), running).await {
+            tracing::error!("reload: COMMIT FAILURE: {}", e);
+            return;
+        }
+
+        tracing::info!("reload: success");
+    }
 }
