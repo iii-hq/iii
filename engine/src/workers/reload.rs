@@ -12,6 +12,7 @@
 //! data types and the scope API on `Engine`. Later tasks wire this into
 //! `FunctionsRegistry::register_function` and add the full reload pipeline.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -62,4 +63,49 @@ pub struct RunningWorker {
     pub worker: Arc<dyn Worker>,
     pub shutdown_tx: watch::Sender<bool>,
     pub registrations: WorkerRegistrations,
+}
+
+/// The result of diffing a new config entry set against the currently-running
+/// set. Each entry goes into exactly one of the four buckets. `added` and
+/// `changed` carry full `WorkerEntry` values (needed by dry-run validation and
+/// the commit phase). `removed` and `unchanged` carry only the names.
+#[derive(Debug, Default)]
+pub struct ReloadDiff {
+    pub added: Vec<WorkerEntry>,
+    pub removed: Vec<String>,
+    pub changed: Vec<WorkerEntry>,
+    pub unchanged: Vec<String>,
+}
+
+/// Partitions `new` against `old` into added/removed/changed/unchanged. Pure
+/// function. Equality uses `WorkerEntry::PartialEq` which compares `name`,
+/// `image`, and `config` structurally.
+pub fn diff_entries(old: &[WorkerEntry], new: &[WorkerEntry]) -> ReloadDiff {
+    let old_map: HashMap<&str, &WorkerEntry> =
+        old.iter().map(|e| (e.name.as_str(), e)).collect();
+    let new_map: HashMap<&str, &WorkerEntry> =
+        new.iter().map(|e| (e.name.as_str(), e)).collect();
+
+    let mut diff = ReloadDiff::default();
+
+    for new_entry in new {
+        match old_map.get(new_entry.name.as_str()) {
+            None => diff.added.push(new_entry.clone()),
+            Some(old_entry) => {
+                if **old_entry == *new_entry {
+                    diff.unchanged.push(new_entry.name.clone());
+                } else {
+                    diff.changed.push(new_entry.clone());
+                }
+            }
+        }
+    }
+
+    for old_entry in old {
+        if !new_map.contains_key(old_entry.name.as_str()) {
+            diff.removed.push(old_entry.name.clone());
+        }
+    }
+
+    diff
 }
