@@ -301,6 +301,8 @@ impl ReloadManager {
             .map(|s| (s.entry.name.clone(), s))
             .collect();
 
+        let mut destroy_errors: Vec<String> = Vec::new();
+
         // 1. CHANGED: promote first, then stop old
         for entry in &diff.changed {
             let staged = staged_by_name.remove(&entry.name).ok_or_else(|| {
@@ -317,11 +319,12 @@ impl ReloadManager {
                 let old = running.swap_remove(idx);
                 let _ = old.shutdown_tx.send(true);
                 if let Err(e) = old.worker.destroy().await {
-                    tracing::error!(
-                        "reload: COMMIT FAILURE destroying changed worker '{}': {}",
-                        entry.name,
-                        e
+                    let msg = format!(
+                        "reload: destroy failed for changed worker '{}': {}",
+                        entry.name, e
                     );
+                    tracing::error!("{}", msg);
+                    destroy_errors.push(msg);
                 }
                 engine.remove_worker_registrations(&old.registrations);
             }
@@ -335,11 +338,12 @@ impl ReloadManager {
                 let removed = running.swap_remove(idx);
                 let _ = removed.shutdown_tx.send(true);
                 if let Err(e) = removed.worker.destroy().await {
-                    tracing::error!(
-                        "reload: COMMIT FAILURE destroying removed worker '{}': {}",
-                        name,
-                        e
+                    let msg = format!(
+                        "reload: destroy failed for removed worker '{}': {}",
+                        name, e
                     );
+                    tracing::error!("{}", msg);
+                    destroy_errors.push(msg);
                 }
                 engine.remove_worker_registrations(&removed.registrations);
             }
@@ -357,12 +361,26 @@ impl ReloadManager {
             running.push(rw);
         }
 
+        if !destroy_errors.is_empty() {
+            return Err(anyhow::anyhow!(
+                "reload: completed with {} destroy error(s): {}",
+                destroy_errors.len(),
+                destroy_errors.join("; ")
+            ));
+        }
+
         Ok(())
     }
 
-    /// Promote a staged worker into a running worker: open a scope, register
-    /// its functions, close the scope, allocate a per-worker shutdown channel,
-    /// and start its background tasks.
+    /// Promote a staged worker into a running worker: start its background
+    /// tasks first (the only fallible step), then register its functions into
+    /// the engine scope.
+    ///
+    /// Ordering rationale: `start_background_tasks` is called BEFORE
+    /// `register_functions` so that a startup failure never mutates the
+    /// engine's live function registry. If we registered first and background
+    /// startup failed, the old worker's handlers would already be overwritten
+    /// in the global `DashMap`, leaving the engine in an inconsistent state.
     ///
     /// `global_shutdown_tx` is passed as the second argument to
     /// `start_background_tasks` — the same sender that `serve()` uses during
@@ -376,13 +394,11 @@ impl ReloadManager {
         staged: StagedWorker,
         global_shutdown_tx: watch::Sender<bool>,
     ) -> anyhow::Result<RunningWorker> {
-        engine.begin_worker_scope(&staged.entry.name);
-        staged.worker.register_functions(engine.clone());
-        let registrations = engine.end_worker_scope();
-
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let worker_arc: Arc<dyn Worker> = Arc::from(staged.worker);
 
+        // Start background tasks FIRST — this is the only fallible step.
+        // If it fails we return Err without touching global registries.
         worker_arc
             .start_background_tasks(shutdown_rx, global_shutdown_tx)
             .await
@@ -398,6 +414,11 @@ impl ReloadManager {
                     e
                 )
             })?;
+
+        // Background tasks are running — safe to register into global state.
+        engine.begin_worker_scope(&staged.entry.name);
+        worker_arc.register_functions(engine.clone());
+        let registrations = engine.end_worker_scope();
 
         Ok(RunningWorker {
             entry: staged.entry,

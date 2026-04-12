@@ -124,7 +124,7 @@ The reload is atomic: if the new config is invalid, the running engine is left u
 | **Parse & normalize** | Re-reads the config file, expands env vars, auto-injects mandatory workers, rejects duplicate names |
 | **Diff** | Compares each `WorkerEntry` (name, image, config) against the running set. Unchanged workers are skipped entirely |
 | **Validate** | Dry-runs `create` + `initialize` on every added and changed worker without starting background tasks. Any failure rolls back the staged workers and aborts the reload |
-| **Commit** | Stops changed workers (fire shutdown, destroy, remove registrations), drops removed workers, promotes validated replacements and additions |
+| **Commit** | Promotes validated replacements for changed workers, then shuts down and removes the old instances; drops removed workers; promotes validated additions |
 
 Unchanged workers keep running through the reload — no blip, no dropped invocations. Only workers whose config entries genuinely changed are destroyed and recreated.
 
