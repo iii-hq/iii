@@ -481,7 +481,7 @@ iii.registerFunction('math::aggregation', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'math::aggregation',
-  config: { expression: '0 */30 * * * *' }, // every 30 minutes
+  config: { expression: '0 */30 * * * * *' }, // every 30 minutes
 });
 ```
 </Tab>
@@ -502,7 +502,7 @@ iii.register_function("math::aggregation", aggregation)
 iii.register_trigger({
     "type": "cron",
     "function_id": "math::aggregation",
-    "config": {"expression": "0 */30 * * * *"},  # every 30 minutes
+    "config": {"expression": "0 */30 * * * * *"},  # every 30 minutes
 })
 ```
 </Tab>
@@ -532,7 +532,7 @@ iii.register_function(reg);
 iii.register_trigger(RegisterTriggerInput {
   trigger_type: "cron".into(),
   function_id: "math::aggregation".into(),
-  config: json!({ "expression": "0 */30 * * * *" }), // every 30 minutes
+  config: json!({ "expression": "0 */30 * * * * *" }), // every 30 minutes
   metadata: None,
 })?;
 ```
@@ -620,7 +620,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   Node `trigger({ function_id: 'iii::durable::publish', payload: { topic: 'user.created', data: {...} } })`,
   Python `trigger({'function_id': 'iii::durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
   Rust `trigger(TriggerRequest::new("iii::durable::publish", json!({"topic": "user.created", "data": {...}})))`.
-  See the [Queue module](/workers/iii-queue) for details.
+  See the [Queue worker](/workers/iii-queue) for details.
 </Info>
 
 ## Trigger Types

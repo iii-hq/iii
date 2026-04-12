@@ -31,7 +31,7 @@ Use the concepts below when they fit the task. Not every state operation needs a
       → trigger('state::update', { scope, key, ops })
       → trigger('state::delete', { scope, key })
       → trigger('state::list', { scope })
-        → StateModule → KvStore / Redis adapter
+        → iii-state → KvStore / Redis adapter
 
 ## iii Primitives Used
 
@@ -74,7 +74,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-StateModule must be enabled in iii-config.yaml with a KvStore adapter (file-based or Redis). See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+iii-state must be enabled in iii-config.yaml with either the `kv` adapter (file-based or in-memory) or the separate `redis` adapter. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

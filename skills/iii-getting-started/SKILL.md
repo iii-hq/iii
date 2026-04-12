@@ -38,7 +38,7 @@ The quickstart includes TypeScript, Python, and Rust workers. If you don't have 
 iii --config iii-config.yaml
 ```
 
-The engine starts and listens for worker connections on `ws://localhost:49134`. The console is available at `http://localhost:3000`.
+The engine starts and listens for worker connections on `ws://localhost:49134`. The REST API is available at `http://localhost:3111`. The console is available at `http://localhost:3113`.
 
 ## Step 4: Install the SDK
 
@@ -128,7 +128,7 @@ iii.register_trigger(RegisterTriggerInput {
 ## Step 6: Test It
 
 ```bash
-curl -X POST http://localhost:3000/hello \
+curl -X POST http://localhost:3111/hello \
   -H "Content-Type: application/json" \
   -d '{"name": "iii"}'
 ```
@@ -141,16 +141,10 @@ Expected response:
 
 ## Install Agent Skills
 
-Get all 24 iii skills for your AI coding agent:
+Get all iii skills for your AI coding agent:
 
 ```bash
-npx skills add iii-hq/iii
-```
-
-Or with SkillKit:
-
-```bash
-npx skillkit install iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 ```
 
 Skills teach your agent how to use every iii primitive — HTTP endpoints, cron scheduling, queues, state management, streams, channels, and more. Available for Claude Code, Cursor, Codex, Gemini CLI, and 30+ other agents.
@@ -159,7 +153,7 @@ Skills teach your agent how to use every iii primitive — HTTP endpoints, cron 
 
 - Add more functions to the same worker — each gets its own `registerFunction` + `registerTrigger` calls
 - Use `::` separator for function IDs to namespace them: `orders::create`, `orders::validate`
-- Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field, includes seconds)
+- Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field: sec min hour day month weekday year)
 - Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
 - Use `state::get` / `state::set` to persist data across function calls

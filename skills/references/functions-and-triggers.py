@@ -73,7 +73,7 @@ iii.register_function("reports::daily-summary", daily_summary)
 iii.register_trigger({
     "type": "cron",
     "function_id": "reports::daily-summary",
-    "config": {"expression": "0 9 * * *"},
+    "config": {"expression": "0 0 9 * * * *"},
 })
 
 # ---------------------------------------------------------------------------

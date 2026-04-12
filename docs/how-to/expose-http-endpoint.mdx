@@ -17,7 +17,7 @@ Make sure `iii-config.yaml` has the REST API worker enabled:
   - name: iii-http
     config:
       port: 3111
-      host: localhost
+      host: 127.0.0.1
       default_timeout: 30000
       concurrency_request_limit: 1024
       cors:
@@ -142,7 +142,7 @@ iii.register_trigger(RegisterTriggerInput {
 ### 4. Try it
 
 ```bash
-curl -X POST http://localhost:3111/users \
+curl -X POST http://127.0.0.1:3111/users \
   -H "Content-Type: application/json" \
   -d '{"name": "Alice", "email": "alice@example.com"}'
 ```
