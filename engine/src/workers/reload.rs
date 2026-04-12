@@ -279,31 +279,40 @@ pub struct StagedWorker {
 impl ReloadManager {
     /// Phase 5: apply the validated diff to `running`. Order:
     ///
-    /// 1. For each CHANGED entry: stop the old running worker (per-worker
-    ///    `shutdown_tx` + `destroy` + `remove_worker_registrations`), then
-    ///    promote the staged replacement.
+    /// 1. For each CHANGED entry: promote the staged replacement first; if
+    ///    promotion succeeds, stop the old running worker (per-worker
+    ///    `shutdown_tx` + `destroy` + `remove_worker_registrations`) and push
+    ///    the replacement. If promotion fails, keep the old worker and abort.
     /// 2. For each REMOVED name: stop and drop the running worker.
     /// 3. For each ADDED entry: promote the staged new worker.
     ///
-    /// Failures inside this method are logged loudly but do not roll back --
-    /// Phase 4 is the safety net. A commit failure leaves the engine in a
-    /// state that does not match either the old or the new config, so the
-    /// caller must log clearly and, ideally, surface the inconsistency to
-    /// operators. In practice, a correctly-implemented Phase 4 makes this
-    /// path unreachable under normal operation.
+    /// `global_shutdown_tx` is the shutdown sender from `serve()`. It is
+    /// threaded into `promote()` so that workers like `WorkerManager` that
+    /// catch SIGTERM/Ctrl+C can still unwind the engine after a reload.
     pub async fn commit(
         diff: &ReloadDiff,
         staged: Vec<StagedWorker>,
         engine: Arc<Engine>,
         running: &mut Vec<RunningWorker>,
+        global_shutdown_tx: watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         let mut staged_by_name: HashMap<String, StagedWorker> = staged
             .into_iter()
             .map(|s| (s.entry.name.clone(), s))
             .collect();
 
-        // 1. CHANGED: stop old, promote staged replacement
+        // 1. CHANGED: promote first, then stop old
         for entry in &diff.changed {
+            let staged = staged_by_name.remove(&entry.name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "reload: internal error -- changed entry '{}' missing from staged set",
+                    entry.name
+                )
+            })?;
+
+            let rw = Self::promote(engine.clone(), staged, global_shutdown_tx.clone()).await?;
+
+            // Promotion succeeded — now safe to tear down the old worker.
             if let Some(idx) = running.iter().position(|rw| rw.entry.name == entry.name) {
                 let old = running.swap_remove(idx);
                 let _ = old.shutdown_tx.send(true);
@@ -317,13 +326,6 @@ impl ReloadManager {
                 engine.remove_worker_registrations(&old.registrations);
             }
 
-            let staged = staged_by_name.remove(&entry.name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "reload: internal error -- changed entry '{}' missing from staged set",
-                    entry.name
-                )
-            })?;
-            let rw = Self::promote(engine.clone(), staged).await;
             running.push(rw);
         }
 
@@ -351,7 +353,7 @@ impl ReloadManager {
                     entry.name
                 )
             })?;
-            let rw = Self::promote(engine.clone(), staged).await;
+            let rw = Self::promote(engine.clone(), staged, global_shutdown_tx.clone()).await?;
             running.push(rw);
         }
 
@@ -362,25 +364,18 @@ impl ReloadManager {
     /// its functions, close the scope, allocate a per-worker shutdown channel,
     /// and start its background tasks.
     ///
-    /// Note on `shutdown_tx`: `promote` uses the per-worker `shutdown_tx` for
-    /// BOTH the `shutdown_rx` argument and the `shutdown_tx` argument to
-    /// `start_background_tasks`. In `EngineBuilder::serve()`, the second
-    /// argument is the GLOBAL shutdown tx so that workers like `WorkerManager`
-    /// which catch SIGTERM/Ctrl+C can unwind the whole process. The global tx
-    /// is a local inside `serve()` and is not reachable from here.
+    /// `global_shutdown_tx` is passed as the second argument to
+    /// `start_background_tasks` — the same sender that `serve()` uses during
+    /// initial startup. Workers like `WorkerManager` that catch SIGTERM/Ctrl+C
+    /// need this global sender to unwind the engine even after a reload.
     ///
-    /// This is acceptable because:
-    ///
-    /// - `WorkerManager` is mandatory and is created exactly once during
-    ///   initial build; it never travels through the reload ADDED/CHANGED
-    ///   paths, so its signal-handling task is unaffected.
-    /// - User workers added via reload do not typically own global shutdown
-    ///   handlers; they react to their own `shutdown_rx`.
-    ///
-    /// Task 10 can revisit this by threading the global tx into the reload
-    /// pipeline if a future worker needs to fire global shutdown after being
-    /// introduced via reload.
-    async fn promote(engine: Arc<Engine>, staged: StagedWorker) -> RunningWorker {
+    /// Returns `Err` if `start_background_tasks` fails, so the caller can
+    /// abort the commit rather than pushing a half-initialized worker.
+    async fn promote(
+        engine: Arc<Engine>,
+        staged: StagedWorker,
+        global_shutdown_tx: watch::Sender<bool>,
+    ) -> anyhow::Result<RunningWorker> {
         engine.begin_worker_scope(&staged.entry.name);
         staged.worker.register_functions(engine.clone());
         let registrations = engine.end_worker_scope();
@@ -388,23 +383,28 @@ impl ReloadManager {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let worker_arc: Arc<dyn Worker> = Arc::from(staged.worker);
 
-        if let Err(e) = worker_arc
-            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+        worker_arc
+            .start_background_tasks(shutdown_rx, global_shutdown_tx)
             .await
-        {
-            tracing::error!(
-                "reload: COMMIT FAILURE starting background tasks for '{}': {}",
-                staged.entry.name,
-                e
-            );
-        }
+            .map_err(|e| {
+                tracing::error!(
+                    "reload: COMMIT FAILURE starting background tasks for '{}': {}",
+                    staged.entry.name,
+                    e
+                );
+                anyhow::anyhow!(
+                    "reload: failed to start background tasks for '{}': {}",
+                    staged.entry.name,
+                    e
+                )
+            })?;
 
-        RunningWorker {
+        Ok(RunningWorker {
             entry: staged.entry,
             worker: worker_arc,
             shutdown_tx,
             registrations,
-        }
+        })
     }
 
     /// Full SIGHUP reload pipeline. Runs phases in order:
@@ -431,6 +431,7 @@ impl ReloadManager {
         engine: Arc<Engine>,
         registry: Arc<WorkerRegistry>,
         running: &mut Vec<RunningWorker>,
+        global_shutdown_tx: watch::Sender<bool>,
     ) {
         let path = match config_path {
             Some(p) => p,
@@ -478,7 +479,7 @@ impl ReloadManager {
         // Note: commit() returns errors whose text already carries the
         // `reload: ...` prefix (see its `ok_or_else` paths), so we log the
         // error directly rather than prefixing it again.
-        if let Err(e) = Self::commit(&diff, staged, engine.clone(), running).await {
+        if let Err(e) = Self::commit(&diff, staged, engine.clone(), running, global_shutdown_tx).await {
             tracing::error!("{}", e);
             return;
         }

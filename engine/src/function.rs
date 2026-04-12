@@ -120,6 +120,11 @@ impl FunctionsRegistry {
 
     pub fn remove(&self, function_id: &str) {
         self.functions.remove(function_id);
+        if let Ok(mut scope) = self.active_scope.lock()
+            && let Some(builder) = scope.as_mut()
+        {
+            builder.function_ids.retain(|id| id != function_id);
+        }
         tracing::info!(
             "{} Function {}",
             "[UNREGISTERED]".red(),

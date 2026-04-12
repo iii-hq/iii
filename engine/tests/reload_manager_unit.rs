@@ -150,11 +150,13 @@ async fn commit_noop_when_diff_is_empty() {
         .map(|rw| rw.entry.name.clone())
         .collect();
 
+    let (global_shutdown_tx, _global_shutdown_rx) = tokio::sync::watch::channel(false);
     ReloadManager::commit(
         &diff,
         staged,
         builder.engine_handle(),
         builder.running_mut(),
+        global_shutdown_tx,
     )
     .await
     .expect("empty-diff commit should succeed");

@@ -264,6 +264,16 @@ impl Engine {
     /// Opens a scope so that registrations made between here and
     /// [`Self::end_worker_scope`] are attributed to `worker_name`. Panics if a
     /// scope is already active -- scopes do not nest.
+    ///
+    /// FIXME: `active_scope` is process-wide. During the window between
+    /// `begin_worker_scope` and `end_worker_scope`, a concurrent
+    /// `RegisterFunction` call from an unrelated WebSocket-connected worker
+    /// could be captured into this scope, causing `remove_worker_registrations`
+    /// to later delete a function that doesn't belong to the scoped worker.
+    /// The practical risk is low because `register_functions` is synchronous
+    /// and the window is very short, but for correctness a per-worker
+    /// registrar token (or equivalent isolation) should replace the global
+    /// `Arc<Mutex<Option<ScopeBuilder>>>`.
     pub fn begin_worker_scope(&self, worker_name: &str) {
         let mut scope = self.active_scope.lock().expect("scope mutex poisoned");
         assert!(

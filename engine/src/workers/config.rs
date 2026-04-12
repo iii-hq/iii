@@ -568,6 +568,7 @@ impl EngineBuilder {
                             engine.clone(),
                             registry.clone(),
                             &mut running,
+                            global_shutdown_tx.clone(),
                         ).await;
                     }
                 }

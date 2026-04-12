@@ -3,6 +3,7 @@ use std::sync::Arc;
 use iii::engine::Engine;
 use iii::function::{Function, FunctionResult};
 use iii::workers::reload::WorkerRegistrations;
+use serial_test::serial;
 
 fn make_dummy_function(id: &str) -> Function {
     Function {
@@ -182,6 +183,7 @@ async fn config_path_is_none_when_not_set() {
 /// SIGTERM is delivered to the current process.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn serve_returns_on_sigterm() {
     use iii::EngineBuilder;
     use iii::workers::config::EngineConfig;

@@ -30,6 +30,7 @@ use iii::function::{Function, FunctionResult};
 use iii::workers::config::EngineConfig;
 use iii::workers::traits::Worker;
 use serde_json::Value;
+use serial_test::serial;
 use tokio::signal::unix::{SignalKind, signal};
 
 // ---------------------------------------------------------------------------
@@ -123,6 +124,7 @@ impl Worker for TestEphemeralWorker {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn sighup_reload_does_not_crash_engine() {
     let _sighup_guard = install_sighup_guard();
 
@@ -171,6 +173,7 @@ async fn sighup_reload_does_not_crash_engine() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn sighup_with_broken_yaml_does_not_crash_engine() {
     let _sighup_guard = install_sighup_guard();
 
@@ -216,6 +219,7 @@ async fn sighup_with_broken_yaml_does_not_crash_engine() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn sighup_reload_removes_worker_function_registrations() {
     let _sighup_guard = install_sighup_guard();
 
