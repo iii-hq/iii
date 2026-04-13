@@ -1437,6 +1437,15 @@ impl Worker for ObservabilityWorker {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        let enabled = self._config.enabled.unwrap_or(false);
+        if !enabled {
+            tracing::info!(
+                "{} Observability disabled by configuration",
+                "[OTEL]".yellow()
+            );
+            return Ok(());
+        }
+
         // Initialize metrics if enabled
         let metrics_config = metrics::MetricsConfig::default();
         if metrics_config.enabled && metrics::init_metrics(&metrics_config) {
@@ -4158,5 +4167,32 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         module.destroy().await.expect("destroy");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_initialize_returns_ok_when_disabled() {
+        let engine = Arc::new(Engine::new());
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+        let worker = ObservabilityWorker {
+            _config: config::ObservabilityWorkerConfig {
+                enabled: Some(false),
+                ..config::ObservabilityWorkerConfig::default()
+            },
+            triggers: Arc::new(OtelLogTriggers::new()),
+            engine: engine.clone(),
+            shutdown_tx: Arc::new(shutdown_tx),
+        };
+
+        let result = worker.initialize().await;
+        assert!(result.is_ok());
+
+        // Verify the trigger type was NOT registered (early return skipped it)
+        assert!(
+            !engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(LOG_TRIGGER_TYPE)
+        );
     }
 }
