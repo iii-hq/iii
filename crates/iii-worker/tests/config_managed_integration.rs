@@ -98,6 +98,33 @@ async fn handle_managed_add_builtin_merges_existing() {
     .await;
 }
 
+/// Regression: `handle_managed_start` on a builtin must short-circuit without
+/// consulting the remote registry. Builtins are served in-process by the iii
+/// engine; they have no external process to spawn and are not published to the
+/// registry. Previously this path fell through to `fetch_worker_info`, which
+/// emitted "not found locally, checking registry..." and failed.
+#[tokio::test]
+async fn handle_managed_start_builtin_short_circuits() {
+    in_temp_dir_async(|| async {
+        // Add a builtin to config.yaml first.
+        let add_rc =
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
+        assert_eq!(add_rc, 0, "expected add to succeed for builtin");
+
+        // handle_managed_start must return 0 for a builtin without network I/O.
+        // We exercise this by forcing the engine port to a closed port via the
+        // default (engine-not-running case), which would normally fail for a
+        // non-builtin. For builtins it must succeed regardless.
+        let start_rc =
+            iii_worker::cli::managed::handle_managed_start("iii-http", "127.0.0.1", 0).await;
+        assert_eq!(
+            start_rc, 0,
+            "handle_managed_start must succeed (short-circuit) for builtin 'iii-http'"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn handle_managed_add_all_builtins_succeed() {
     in_temp_dir_async(|| async {

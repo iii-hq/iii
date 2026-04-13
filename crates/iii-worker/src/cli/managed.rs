@@ -853,6 +853,20 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
+    // Builtin workers are served in-process by the iii engine (see
+    // engine/src/workers/config.rs factory registry). They have no external
+    // process to spawn and must not be resolved via the remote registry.
+    if get_builtin_default(worker_name).is_some() {
+        eprintln!(
+            "  {} '{}' is a builtin worker — served by the iii engine process.",
+            "info:".cyan(),
+            worker_name,
+        );
+        if !is_engine_running() {
+            eprintln!("  Start the engine to run it.");
+        }
+        return 0;
+    }
     match super::config_file::resolve_worker_type(worker_name) {
         ResolvedWorkerType::Oci { image, env } => {
             let worker_def = WorkerDef::Managed {
