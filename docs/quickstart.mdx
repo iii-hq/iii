@@ -20,14 +20,11 @@ This creates the two workers that you'll run: a Python worker that adds two numb
 
 ```
 quickstart/
-├── workers/
-│   ├── math-worker/          # Python
-│   │   ├── iii.worker.yaml
-│   │   ├── math_worker.py
-│   └── caller-worker/        # TypeScript
-│       ├── iii.worker.yaml
-│       └── src/
-│           └── worker.ts
+  workers/
+    math-worker/          # Python
+      math_worker.py
+    caller-worker/        # TypeScript
+      src/worker.ts
 ```
 
 ## 2. Start the engine
@@ -53,7 +50,11 @@ iii worker add ./workers/math-worker
 You should see:
 
 ```
-math-worker started — registered math::add
+✓ Worker math-worker added to config.yaml
+Path  /Users/tony/iii/projects/testing/quickstart/workers/math-worker
+✓ Using cached deps (use --force to reinstall)
+✓ math-worker started (pid: 12345)
+✓ Worker auto-started
 ```
 
 This worker registered the function `math::add` with the engine. You could call this function right now using the command below.
@@ -76,7 +77,11 @@ iii worker add ./workers/caller-worker
 You should see:
 
 ```
-caller-worker started — registered math::add_two_numbers
+✓ Worker caller-worker added to config.yaml
+Path  /Users/tony/iii/projects/testing/quickstart/workers/caller-worker
+✓ Using cached deps (use --force to reinstall)
+✓ caller-worker started (pid: 23456)
+✓ Worker auto-started
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.
@@ -127,7 +132,12 @@ def add_handler(payload: dict) -> dict:
     return result
 ```
 
-Restart the Python worker (stop it with `Ctrl+C` and re-run `iii worker add ./workers/math-worker`), then call it a few times:
+Restart the Python worker and call it a few times:
+
+```bash
+iii worker stop math-worker
+iii worker add ./workers/math-worker
+```
 
 ```bash
 iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
@@ -172,7 +182,12 @@ iii.registerTrigger({
 });
 ```
 
-Restart the TypeScript worker (stop it with `Ctrl+C` and re-run `iii worker add ./workers/caller-worker`), then call both endpoints with curl:
+Restart the TypeScript worker, then call both endpoints with curl:
+
+```bash
+iii worker stop caller-worker
+iii worker add ./workers/caller-worker
+```
 
 ```bash
 curl -X POST http://localhost:3111/math/add \
@@ -251,7 +266,7 @@ iii.registerFunction(
 ```
 
 `registerWorker` connects to the engine the same way the Python worker does. The `iii.trigger()` call inside the handler invokes
-`math::add` on the Python worker through the engine the TypeScript worker doesn't need to know where the `math::add` function
+`math::add` on the Python worker through the engine. The TypeScript worker doesn't need to know where the `math::add` function
 is running, its language, or anything else.
 
 ### Worker manifest
