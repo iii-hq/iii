@@ -340,6 +340,10 @@ impl EngineBuilder {
         }
     }
 
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.engine
+    }
+
     /// Loads config strictly from file. Fails if file is missing or unparseable.
     pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = Some(config);

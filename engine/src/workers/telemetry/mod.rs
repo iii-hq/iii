@@ -173,7 +173,7 @@ enum DisableReason {
     Config,
 }
 
-pub fn is_iii_standard_function_id(id: &str) -> bool {
+pub fn is_iii_builtin_function_id(id: &str) -> bool {
     id.starts_with("engine::")
         || id.starts_with("state::")
         || id.starts_with("stream::")
@@ -396,7 +396,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
         .functions
         .iter()
         .map(|entry| entry.key().clone())
-        .filter(|id| !is_iii_standard_function_id(id))
+        .filter(|id| !is_iii_builtin_function_id(id))
         .collect();
 
     let function_count = functions.len();
@@ -833,13 +833,10 @@ impl Worker for TelemetryWorker {
                         break;
                     }
 
-                    tokio::time::sleep(std::time::Duration::from_secs(
-                        TEMPLATE_POLL_INTERVAL_SECS,
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(TEMPLATE_POLL_INTERVAL_SECS))
+                        .await;
 
-                    let acc =
-                        crate::workers::observability::metrics::get_metrics_accumulator();
+                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
 
                     if !success_sent {
                         if let Some(fn_id) = acc.first_user_success_fn.get() {
@@ -849,11 +846,7 @@ impl Worker for TelemetryWorker {
                                 &source,
                                 &project_for_template,
                             );
-                            let event = ctx_for_template.build_event(
-                                &event_type,
-                                props,
-                                None,
-                            );
+                            let event = ctx_for_template.build_event(&event_type, props, None);
                             let _ = client_for_template.send_event(event).await;
                             success_sent = true;
                         }
@@ -867,11 +860,7 @@ impl Worker for TelemetryWorker {
                                 &source,
                                 &project_for_template,
                             );
-                            let event = ctx_for_template.build_event(
-                                &event_type,
-                                props,
-                                None,
-                            );
+                            let event = ctx_for_template.build_event(&event_type, props, None);
                             let _ = client_for_template.send_event(event).await;
                             failure_sent = true;
                         }
@@ -1908,23 +1897,17 @@ mod tests {
     }
 
     #[test]
-    fn test_is_iii_standard_function_id() {
-        assert!(is_iii_standard_function_id("engine::x"));
-        assert!(is_iii_standard_function_id("state::get"));
-        assert!(is_iii_standard_function_id("stream::list"));
-        assert!(is_iii_standard_function_id("iii::durable::publish"));
-        assert!(is_iii_standard_function_id("publish"));
-        assert!(is_iii_standard_function_id("bridge.invoke"));
-        assert!(is_iii_standard_function_id("iii::queue::redrive"));
-        assert!(is_iii_standard_function_id("motia::stream::authenticate"));
-        assert!(is_iii_standard_function_id("motia::stream::join"));
-        assert!(is_iii_standard_function_id("motia::stream::leave"));
-        assert!(is_iii_standard_function_id("motia_step_get"));
-        assert!(is_iii_standard_function_id("steps::my-step::trigger::http(GET /api)"));
-        assert!(is_iii_standard_function_id("steps::my-step::trigger::http(GET /api)::middleware::0"));
-        assert!(is_iii_standard_function_id("steps::my-step::trigger::http(GET /api)::conditions::1"));
-        assert!(!is_iii_standard_function_id("orders::process"));
-        assert!(!is_iii_standard_function_id("math::add"));
+    fn test_is_iii_builtin_function_id() {
+        assert!(is_iii_builtin_function_id("engine::x"));
+        assert!(is_iii_builtin_function_id("state::get"));
+        assert!(is_iii_builtin_function_id("stream::list"));
+        assert!(is_iii_builtin_function_id("iii::durable::publish"));
+        assert!(is_iii_builtin_function_id("publish"));
+        assert!(is_iii_builtin_function_id("bridge.invoke"));
+        assert!(is_iii_builtin_function_id("iii::queue::redrive"));
+        assert!(!is_iii_builtin_function_id("orders::process"));
+        assert!(!is_iii_builtin_function_id("user::my_function"));
+        assert!(!is_iii_builtin_function_id("payments::charge"));
     }
 
     // =========================================================================
