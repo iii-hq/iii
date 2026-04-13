@@ -1505,6 +1505,12 @@ impl Worker for ObservabilityWorker {
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
+        // Skip all background tasks when observability is disabled
+        if !self._config.enabled.unwrap_or(true) {
+            tracing::debug!("[ObservabilityWorker] Skipping background tasks (disabled)");
+            return Ok(());
+        }
+
         // Start log subscriber to invoke triggers for all logs
         {
             let triggers = self.triggers.clone();
@@ -4223,5 +4229,27 @@ mod tests {
                 .trigger_types
                 .contains_key(LOG_TRIGGER_TYPE)
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_start_background_tasks_returns_ok_when_disabled() {
+        reset_observability_test_state();
+        let engine = Arc::new(Engine::new());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let worker = ObservabilityWorker {
+            _config: config::ObservabilityWorkerConfig {
+                enabled: Some(false),
+                ..config::ObservabilityWorkerConfig::default()
+            },
+            triggers: Arc::new(OtelLogTriggers::new()),
+            engine: engine.clone(),
+            shutdown_tx: Arc::new(shutdown_tx.clone()),
+        };
+
+        let result = worker
+            .start_background_tasks(shutdown_rx, shutdown_tx)
+            .await;
+        assert!(result.is_ok());
     }
 }
