@@ -16,14 +16,14 @@ Use the concepts below when they fit the task. Not every HTTP endpoint needs all
 - Each route is a **registered function** bound to a path and method via an HTTP trigger
 - The handler receives an **ApiRequest** object containing `body`, `path_params`, `headers`, and `method`
 - Handlers return `{ status_code, body, headers }` to shape the HTTP response
-- **RestApiModule** serves all registered routes on port 3111
+- **iii-http** serves all registered routes on port 3111
 - Path parameters use colon syntax (e.g. `/users/:id`) and arrive in `path_params`
 - **Middleware** can run before handlers via `middleware_function_ids` in the trigger config — see `iii-http-middleware` for details
 
 ## Architecture
 
     HTTP request
-      → RestApiModule (port 3111)
+      → iii-http (port 3111)
         → registerTrigger route match (method + path)
           → registerFunction handler (receives ApiRequest)
             → { status_code, body, headers } response

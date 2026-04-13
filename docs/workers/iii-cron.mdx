@@ -74,18 +74,21 @@ This Worker adds a new Trigger Type: `cron`.
 
 <Expandable title="Trigger Config">
   <ResponseField name="expression" type="string" required>
-    Standard cron expression defining the schedule. Supports the following format:
+    Cron expression defining the schedule. Accepts 6-field (`second minute hour day month weekday`) or 7-field (`second minute hour day month weekday year`) format — the year field is optional.
 
     ```
-    * * * * * *
-    │ │ │ │ │ │
-    │ │ │ │ │ └─── Day of week (0–6, Sun=0)
-    │ │ │ │ └───── Month (1–12)
-    │ │ │ └─────── Day of month (1–31)
-    │ │ └───────── Hour (0–23)
-    │ └─────────── Minute (0–59)
-    └─────────── Second (0–59)
+    * * * * * * [*]
+    │ │ │ │ │ │  │
+    │ │ │ │ │ │  └── Year (optional, * for any)
+    │ │ │ │ │ └──── Day of week (0–7, Sun=0 or 7)
+    │ │ │ │ └────── Month (1–12)
+    │ │ │ └──────── Day of month (1–31)
+    │ │ └────────── Hour (0–23)
+    │ └──────────── Minute (0–59)
+    └──────────── Second (0–59)
     ```
+
+    Both `"0 0 * * * *"` (6-field) and `"0 0 * * * * *"` (7-field) are valid and equivalent.
 
   </ResponseField>
   <ResponseField name="condition_function_id" type="string">
@@ -126,7 +129,7 @@ const fn = iii.registerFunction(
 iii.registerTrigger({
   type: 'cron',
   function_id: fn.id,
-  config: { expression: '0 0 2 * * *' },
+  config: { expression: '0 0 2 * * * *' },
 })
 ```
 </Tab>
@@ -153,7 +156,7 @@ iii.register_function(
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "jobs::cleanupOldData".into(),
-    config: json!({ "expression": "0 0 2 * * *" }),
+    config: json!({ "expression": "0 0 2 * * * *" }),
     metadata: None,
 })?;
 ```
@@ -164,13 +167,15 @@ iii.register_trigger(RegisterTriggerInput {
 
 | Expression           | Description                                    |
 | -------------------- | ---------------------------------------------- |
-| `0 * * * * *`        | Every minute                                   |
-| `0 0 * * * *`        | Every hour                                     |
-| `0 0 0 * * *`        | Every day at midnight                          |
-| `0 0 0 * * 0`        | Every Sunday at midnight                       |
-| `0 0 2 * * *`        | Every day at 2 AM                              |
-| `0 */5 * * * *`      | Every 5 minutes                                |
-| `0 0 9-17 * * 1-5`   | Every hour from 9 AM to 5 PM, Monday to Friday |
+| `0 * * * * *`          | Every minute (6-field)                         |
+| `0 0 * * * *`          | Every hour (6-field)                           |
+| `0 0 2 * * *`          | Every day at 2 AM (6-field)                    |
+| `0 * * * * * *`        | Every minute (7-field)                         |
+| `0 0 * * * * *`        | Every hour (7-field)                            |
+| `0 0 0 * * * *`        | Every day at midnight                          |
+| `0 0 0 * * 0 *`        | Every Sunday at midnight                       |
+| `0 */5 * * * * *`      | Every 5 minutes                                |
+| `0 0 9-17 * * 1-5 *`   | Every hour from 9 AM to 5 PM, Monday to Friday |
 
 ## Distributed Execution
 

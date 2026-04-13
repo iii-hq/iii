@@ -16,7 +16,7 @@ workers:
   - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}
-      host: localhost
+      host: 127.0.0.1
       adapter:
         name: kv
         config:
@@ -253,7 +253,7 @@ println!("Messages: {:?}", messages);
 Clients connect to the stream WebSocket endpoint to receive live updates:
 
 ```javascript title="client.js"
-const ws = new WebSocket('ws://localhost:3112/stream/chat/room-123')
+const ws = new WebSocket('ws://127.0.0.1:3112/stream/chat/room-123')
 
 ws.onmessage = (event) => {
   const update = JSON.parse(event.data)

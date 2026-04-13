@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     iii.register_trigger(
-        IIITrigger::Cron(CronTriggerConfig::new("0 0 9 * * *"))
+        IIITrigger::Cron(CronTriggerConfig::new("0 0 9 * * * *"))
             .for_function("reports::daily-summary"),
     )
     .expect("failed to register cron trigger");

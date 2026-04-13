@@ -1,17 +1,21 @@
 ---
 title: 'Developing Sandbox Workers'
-description: 'Develop and test workers locally in an isolated microVM using iii worker dev.'
+description: 'Develop and test workers locally in an isolated microVM using iii worker add.'
 ---
 
 ## Goal
 
-Use `iii worker dev` to run a worker project inside an isolated sandbox connected to the engine — no containers or Dockerfiles needed.
+Use `iii worker add ./path` to register a local worker project as a managed sandbox worker connected to the engine — no containers or Dockerfiles needed.
 
 ## Context
 
-Sandbox workers give you a full development loop with process isolation (own filesystem, network, dependencies) powered by a lightweight microVM. The engine must already be running so the sandbox can connect to it.
+Local-path workers are first-class managed workers with the same lifecycle as container workers (`add`, `start`, `stop`, `remove`, `list`). Each worker runs inside a lightweight microVM with its own filesystem, network, and dependencies. The CLI detects local paths automatically — any argument starting with `.`, `/`, or `~` is treated as a local directory.
 
 Requires **macOS Apple Silicon** or **Linux with KVM**.
+
+### What is a sandbox?
+
+A sandbox is a hardware-isolated microVM powered by [libkrun](https://github.com/containers/libkrun). Each sandbox has its own root filesystem, network stack, and process tree — completely separate from the host and from other workers. The engine manages the VM lifecycle, so you interact with sandboxed workers through the same `iii worker` commands you use for container workers.
 
 ## Steps
 
@@ -25,16 +29,18 @@ The CLI auto-detects your project type from well-known files and infers setup, i
 | Python | `pyproject.toml` or `requirements.txt` | pip |
 | Rust | `Cargo.toml` | cargo |
 
-With auto-detection, you can start a sandbox immediately:
+With auto-detection, you can add a worker immediately:
 
 ```bash
-iii worker dev ./my-project
+iii worker add ./my-project
 ```
 
 ### 2. Add a Manifest
 
-Create an `iii.worker.yaml` at the root of your project to configure the sandbox:
+Create an `iii.worker.yaml` at the root of your worker folder to configure the sandbox:
 
+<Tabs>
+<Tab title="Node.js / TypeScript">
 ```yaml title="iii.worker.yaml"
 name: my-worker
 runtime:
@@ -47,76 +53,136 @@ resources:
 scripts:
   setup: "apt-get update && apt-get install -y build-essential"
   install: "npm install"
-  start: "npm run dev"
+  start: "npx tsx src/index.ts"
 env:
   MY_API_KEY: sk-abc123
   LOG_LEVEL: debug
 ```
+</Tab>
+<Tab title="Python">
+```yaml title="iii.worker.yaml"
+name: my-worker
+runtime:
+  language: python
+  entry: worker.py
+resources:
+  memory: 2048
+  cpus: 2
+scripts:
+  setup: "apt-get update && apt-get install -y build-essential"
+  install: "pip install -r requirements.txt"
+  start: "python worker.py"
+env:
+  MY_API_KEY: sk-abc123
+  LOG_LEVEL: debug
+```
+</Tab>
+<Tab title="Rust">
+```yaml title="iii.worker.yaml"
+name: my-worker
+runtime:
+  language: rust
+resources:
+  memory: 2048
+  cpus: 2
+scripts:
+  setup: "apt-get update && apt-get install -y build-essential"
+  install: "cargo build --release"
+  start: "./target/release/my-worker"
+env:
+  MY_API_KEY: sk-abc123
+  LOG_LEVEL: debug
+```
+</Tab>
+</Tabs>
 
 #### Manifest Fields
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `name` | Yes | — | Worker name |
+| `name` | Yes | — | Worker name (used as the identifier in `config.yaml`) |
 | `runtime.language` | No | `typescript` | `typescript`, `javascript`, `python`, or `rust` |
 | `runtime.package_manager` | No | — | `npm`, `yarn`, `pnpm`, or `bun` (Node.js only) |
 | `runtime.entry` | No | — | Entrypoint file |
 | `resources.memory` | No | `2048` | Memory in MiB allocated to the sandbox VM |
 | `resources.cpus` | No | `2` | Number of vCPUs allocated to the sandbox VM |
-| `scripts.setup` | No | inferred | One-time system setup (runs only on first boot or after `--rebuild`) |
+| `scripts.setup` | No | inferred | One-time system setup (runs only on first start) |
 | `scripts.install` | No | inferred | Dependency installation command |
 | `scripts.start` | No | inferred | Worker start command |
 | `env.*` | No | — | Custom environment variables injected into the sandbox |
 
 <Info title="Reserved environment variables">
-  `III_URL` and `III_ENGINE_URL` are set automatically by the dev flow and cannot be overridden through the manifest.
+  `III_URL` and `III_ENGINE_URL` are set automatically and cannot be overridden through the manifest.
 </Info>
 
 If the `scripts` block is omitted entirely, commands are inferred from `runtime.language`, `runtime.package_manager`, and `runtime.entry`. For example, a TypeScript project using npm with entry `src/index.ts` infers `npm install` for install and `npx tsx src/index.ts` for start.
 
-### 3. Start the Dev Sandbox
+### 3. Add the Worker
 
 ```bash
-iii worker dev ./my-project
+iii worker add ./my-project
 ```
 
-The CLI loads the project configuration (manifest or auto-detected), prepares an isolated rootfs from a base OCI image matching the language, copies your project files into the sandbox, and boots the microVM.
+The CLI validates the directory, loads the manifest (or auto-detects the project type), prepares an isolated rootfs, copies your project files into the sandbox, runs setup and install scripts, and registers the worker in `config.yaml` with a `worker_path:` field:
+
+```yaml title="config.yaml"
+workers:
+  - name: my-worker
+    worker_path: /absolute/path/to/my-project
+```
+
+If the engine is already running, the worker auto-starts immediately after being added.
 
 #### CLI Flags
 
-| Flag | Default | Description |
-|---|---|---|
-| `--rebuild` | `false` | Clear the cached sandbox and reinstall everything from scratch |
-| `--name <NAME>` | `iii-dev-<dir>` | Custom name for the sandbox |
-| `--port <PORT>` | `49134` | Override the engine WebSocket port |
-| `--address <HOST>` | `localhost` | Engine host address |
-| `--runtime <RT>` | auto (`libkrun`) | Runtime to use (only `libkrun` is currently available) |
+| Flag | Description |
+|---|---|
+| `--force`, `-f` | Delete existing artifacts and re-add the worker from scratch |
+| `--reset-config` | Also remove the existing `config.yaml` entry before re-adding (requires `--force`) |
 
 Examples:
 
 ```bash
-# Start with a custom name and port
-iii worker dev ./my-project --name my-sandbox --port 50000
+# Force a clean re-add (re-runs setup and install)
+iii worker add ./my-project --force
 
-# Force a clean rebuild
-iii worker dev ./my-project --rebuild
+# Re-add and also reset the config.yaml entry
+iii worker add ./my-project --force --reset-config
 ```
 
-### 4. Understand Dependency Caching
+### 4. Manage the Worker
 
-Each sandbox is cached at `~/.iii/dev/<sandbox-name>/`. The caching lifecycle works as follows:
+Local-path workers support the same lifecycle commands as container workers:
 
-**First run** — the CLI clones a base rootfs, copies your project into the sandbox, runs the `setup` and `install` scripts, then starts the worker. A marker file is written to signal that dependencies are installed.
+```bash
+# List all workers (includes a TYPE column: Local, OCI, Binary, Config)
+iii worker list
 
-**Subsequent runs** — setup and install are skipped entirely. Only the project files are re-copied and the `start` script runs, making restarts fast.
+# Stop a running worker
+iii worker stop my-worker
 
-**`--rebuild`** — deletes the entire `~/.iii/dev/<sandbox-name>/` directory and re-runs the full setup from scratch. Use this when you change dependencies, update the base image, or modify install scripts.
+# Start a stopped worker
+iii worker start my-worker
+
+# Remove a worker (deletes config.yaml entry and cached artifacts)
+iii worker remove my-worker
+```
+
+### 5. Understand Dependency Caching
+
+Each sandbox is cached at `~/.iii/managed/<worker-name>/`. The caching lifecycle works as follows:
+
+**First start** — the CLI clones a base rootfs, copies your project into the sandbox, runs the `setup` and `install` scripts, then starts the worker. A marker file is written to signal that dependencies are installed.
+
+**Subsequent starts** — setup and install are skipped entirely. Only the project files are re-copied and the `start` script runs, making restarts fast.
+
+**`--force` re-add** — running `iii worker add ./my-project --force` deletes the cached sandbox at `~/.iii/managed/<worker-name>/` and re-runs the full setup from scratch. Use this when you change dependencies, update the base image, or modify install scripts.
 
 <Info title="Skipped directories">
   When copying your project into the sandbox, the following directories are excluded automatically: `node_modules`, `.git`, `target`, `__pycache__`, `.venv`, `dist`.
 </Info>
 
-### 5. Check Platform Requirements
+### 6. Check Platform Requirements
 
 <Warning title="Platform support">
   Intel Macs are **not supported**. The microVM requires hardware virtualization only available on Apple Silicon or Linux with KVM.
@@ -132,4 +198,4 @@ ls -l /dev/kvm
 
 ## Result
 
-Your worker runs inside an isolated microVM connected to the engine at `ws://localhost:<port>`. The sandbox has its own filesystem, network stack, and process tree. Changes to `iii.worker.yaml` (resources, scripts, env) take effect on the next `--rebuild` or when starting from a fresh sandbox.
+Your worker runs inside an isolated microVM connected to the engine. The sandbox has its own filesystem, network stack, and process tree. The worker is registered in `config.yaml` and managed through the standard `iii worker` lifecycle commands — `start`, `stop`, `list`, and `remove`. To rebuild the sandbox after changing dependencies, re-add the worker with `iii worker add ./my-project --force`.

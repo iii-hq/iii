@@ -3,8 +3,20 @@ name: License Header Check
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
 
 jobs:
   check-license-headers:

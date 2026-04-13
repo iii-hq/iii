@@ -6,7 +6,7 @@
 
 //! Binary worker download, checksum verification, and installation.
 
-use super::registry::{validate_repo, validate_worker_name};
+use super::registry::validate_worker_name;
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -65,43 +65,6 @@ pub fn archive_extension(target: &str) -> &'static str {
     } else {
         "tar.gz"
     }
-}
-
-/// Constructs the GitHub Releases download URL for a binary worker archive.
-///
-/// Format: `https://github.com/{repo}/releases/download/{tag_prefix}/v{version}/{worker_name}-{target}.{ext}`
-pub fn binary_download_url(
-    repo: &str,
-    tag_prefix: &str,
-    version: &str,
-    worker_name: &str,
-    target: &str,
-) -> String {
-    format!(
-        "https://github.com/{}/releases/download/{}/v{}/{}-{}.{}",
-        repo,
-        tag_prefix,
-        version,
-        worker_name,
-        target,
-        archive_extension(target)
-    )
-}
-
-/// Constructs the GitHub Releases download URL for the SHA256 checksum file.
-///
-/// Format: `https://github.com/{repo}/releases/download/{tag_prefix}/v{version}/{worker_name}-{target}.sha256`
-pub fn checksum_download_url(
-    repo: &str,
-    tag_prefix: &str,
-    version: &str,
-    worker_name: &str,
-    target: &str,
-) -> String {
-    format!(
-        "https://github.com/{}/releases/download/{}/v{}/{}-{}.sha256",
-        repo, tag_prefix, version, worker_name, target
-    )
 }
 
 /// Extracts a named binary from a tar.gz archive.
@@ -167,41 +130,23 @@ pub fn verify_sha256(data: &[u8], checksum_content: &str) -> Result<(), String> 
     }
 }
 
-/// Downloads a binary worker from GitHub Releases, optionally verifies its checksum,
-/// and installs it to `~/.iii/workers/{worker_name}`.
+/// Downloads a binary worker from the URL provided by the API, verifies its
+/// SHA256 checksum, and installs it to `~/.iii/workers/{worker_name}`.
 ///
 /// Returns the path to the installed binary on success.
 pub async fn download_and_install_binary(
     worker_name: &str,
-    repo: &str,
-    tag_prefix: &str,
-    version: &str,
-    supported_targets: &[String],
-    has_checksum: bool,
+    binary_info: &super::registry::BinaryInfo,
 ) -> Result<PathBuf, String> {
     validate_worker_name(worker_name)?;
-    validate_repo(repo)?;
-    let target = current_target();
 
-    // Check platform support when a whitelist is provided.
-    if !supported_targets.is_empty() && !supported_targets.iter().any(|t| t == target) {
-        return Err(format!(
-            "Platform '{}' is not supported for worker '{}'. Supported targets: {}",
-            target,
-            worker_name,
-            supported_targets.join(", ")
-        ));
-    }
-
-    let url = binary_download_url(repo, tag_prefix, version, worker_name, target);
-
-    tracing::debug!("Downloading from {}", url);
+    tracing::debug!("Downloading from {}", binary_info.url);
 
     let client = &super::registry::HTTP_CLIENT;
 
     // Download binary.
     let resp = client
-        .get(&url)
+        .get(&binary_info.url)
         .send()
         .await
         .map_err(|e| format!("Failed to download binary: {}", e))?;
@@ -235,32 +180,8 @@ pub async fn download_and_install_binary(
         ));
     }
 
-    // Optionally verify checksum.
-    if has_checksum {
-        let checksum_url = checksum_download_url(repo, tag_prefix, version, worker_name, target);
-        tracing::debug!("Verifying checksum from {}", checksum_url);
-
-        let checksum_resp = client
-            .get(&checksum_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to download checksum: {}", e))?;
-
-        if !checksum_resp.status().is_success() {
-            return Err(format!(
-                "Checksum verification required but checksum file unavailable (HTTP {}). \
-                 Refusing to install without verification.",
-                checksum_resp.status()
-            ));
-        }
-
-        let checksum_content = checksum_resp
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read checksum: {}", e))?;
-
-        verify_sha256(&binary_data, &checksum_content)?;
-    }
+    // Verify checksum (always — the API provides sha256 for every binary).
+    verify_sha256(&binary_data, &binary_info.sha256)?;
 
     // Extract binary from archive.
     let extracted = extract_binary_from_targz(worker_name, &binary_data)?;
@@ -329,51 +250,6 @@ mod tests {
     fn test_current_target_not_empty() {
         let target = current_target();
         assert!(!target.is_empty(), "current_target() should not be empty");
-    }
-
-    #[test]
-    fn test_binary_download_url_format() {
-        let url = binary_download_url(
-            "iii-hq/workers",
-            "image-resize",
-            "0.1.2",
-            "image-resize",
-            "aarch64-apple-darwin",
-        );
-        assert_eq!(
-            url,
-            "https://github.com/iii-hq/workers/releases/download/image-resize/v0.1.2/image-resize-aarch64-apple-darwin.tar.gz"
-        );
-    }
-
-    #[test]
-    fn test_binary_download_url_windows() {
-        let url = binary_download_url(
-            "iii-hq/workers",
-            "image-resize",
-            "0.1.2",
-            "image-resize",
-            "x86_64-pc-windows-msvc",
-        );
-        assert_eq!(
-            url,
-            "https://github.com/iii-hq/workers/releases/download/image-resize/v0.1.2/image-resize-x86_64-pc-windows-msvc.zip"
-        );
-    }
-
-    #[test]
-    fn test_checksum_download_url_format() {
-        let url = checksum_download_url(
-            "iii-hq/workers",
-            "image-resize",
-            "0.1.2",
-            "image-resize",
-            "aarch64-apple-darwin",
-        );
-        assert_eq!(
-            url,
-            "https://github.com/iii-hq/workers/releases/download/image-resize/v0.1.2/image-resize-aarch64-apple-darwin.sha256"
-        );
     }
 
     #[test]

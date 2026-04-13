@@ -24,7 +24,7 @@ description: "Product updates and announcements for iii."
 
   ## Sandbox and Container Workers
 
-  Workers can now run as **container workers** or **sandbox workers**. Container workers are OCI images managed through the `iii worker` CLI — add an image, configure it in `config.yaml`, and the engine pulls, extracts, and runs it in an isolated sandbox. For local development, `iii worker dev` boots your project inside a lightweight microVM with auto-detected runtimes, dependency caching, and fast restarts — no Dockerfiles needed. Requires macOS Apple Silicon or Linux with KVM.
+  Workers can now run as **container workers** or **sandbox workers**. Container workers are OCI images managed through the `iii worker` CLI — add an image, configure it in `config.yaml`, and the engine pulls, extracts, and runs it in an isolated sandbox. For local development, `iii worker add ./my-project` registers a local directory as a first-class managed worker that runs inside a lightweight microVM with auto-detected runtimes, dependency caching, and full lifecycle support (`start`, `stop`, `list`, `remove`) — no Dockerfiles needed. Requires macOS Apple Silicon or Linux with KVM.
 
   [Managing Container Workers &rarr;](/how-to/managing-container-workers) &middot; [Developing Sandbox Workers &rarr;](/how-to/developing-sandbox-workers)
 

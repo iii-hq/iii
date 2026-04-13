@@ -10,10 +10,10 @@
 mod common;
 
 use iii_worker::cli::binary_download::{
-    archive_extension, binary_download_url, binary_worker_path, binary_workers_dir,
-    checksum_download_url, current_target, download_and_install_binary, extract_binary_from_targz,
-    verify_sha256,
+    archive_extension, binary_worker_path, binary_workers_dir, current_target,
+    download_and_install_binary, extract_binary_from_targz, verify_sha256,
 };
+use iii_worker::cli::registry::BinaryInfo;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
@@ -90,77 +90,6 @@ fn current_target_contains_os_and_arch() {
 // ===========================================================================
 // Group 2: URL construction (BIN-01)
 // ===========================================================================
-
-/// BIN-01: binary_download_url produces correct URL for Linux target.
-#[test]
-fn binary_download_url_linux_format() {
-    let url = binary_download_url(
-        "iii-hq/workers",
-        "my-worker",
-        "1.0.0",
-        "my-worker",
-        "x86_64-unknown-linux-gnu",
-    );
-    assert_eq!(
-        url,
-        "https://github.com/iii-hq/workers/releases/download/my-worker/v1.0.0/my-worker-x86_64-unknown-linux-gnu.tar.gz"
-    );
-}
-
-/// BIN-01: binary_download_url produces correct URL for macOS target.
-#[test]
-fn binary_download_url_macos_format() {
-    let url = binary_download_url(
-        "iii-hq/workers",
-        "my-worker",
-        "1.0.0",
-        "my-worker",
-        "aarch64-apple-darwin",
-    );
-    assert!(
-        url.ends_with("aarch64-apple-darwin.tar.gz"),
-        "macOS URL should end with aarch64-apple-darwin.tar.gz, got: {}",
-        url
-    );
-}
-
-/// BIN-01: binary_download_url uses .zip extension for Windows targets.
-#[test]
-fn binary_download_url_windows_uses_zip() {
-    let url = binary_download_url(
-        "iii-hq/workers",
-        "my-worker",
-        "1.0.0",
-        "my-worker",
-        "x86_64-pc-windows-msvc",
-    );
-    assert!(
-        url.ends_with(".zip"),
-        "Windows URL should end with .zip, got: {}",
-        url
-    );
-}
-
-/// BIN-01: checksum_download_url produces correct .sha256 URL.
-#[test]
-fn checksum_download_url_format() {
-    let url = checksum_download_url(
-        "iii-hq/workers",
-        "my-worker",
-        "1.0.0",
-        "my-worker",
-        "x86_64-unknown-linux-gnu",
-    );
-    assert!(
-        url.ends_with(".sha256"),
-        "checksum URL should end with .sha256, got: {}",
-        url
-    );
-    assert_eq!(
-        url,
-        "https://github.com/iii-hq/workers/releases/download/my-worker/v1.0.0/my-worker-x86_64-unknown-linux-gnu.sha256"
-    );
-}
 
 /// BIN-01: archive_extension returns "tar.gz" for non-Windows targets.
 #[test]
@@ -391,32 +320,118 @@ fn executable_permissions_roundtrip() {
 /// BIN-04 (T-04-03): download_and_install_binary rejects empty worker name.
 #[tokio::test]
 async fn download_rejects_invalid_worker_name() {
-    let result = download_and_install_binary("", "owner/repo", "tag", "1.0", &[], false).await;
+    let info = BinaryInfo {
+        url: "https://example.com/fake.tar.gz".to_string(),
+        sha256: "abc".to_string(),
+    };
+    let result = download_and_install_binary("", &info).await;
     assert!(result.is_err(), "empty worker name should be rejected");
 }
 
 /// BIN-04 (T-04-03): download_and_install_binary rejects path traversal in worker name.
 #[tokio::test]
 async fn download_rejects_path_traversal_name() {
-    let result =
-        download_and_install_binary("../evil", "owner/repo", "tag", "1.0", &[], false).await;
+    let info = BinaryInfo {
+        url: "https://example.com/fake.tar.gz".to_string(),
+        sha256: "abc".to_string(),
+    };
+    let result = download_and_install_binary("../evil", &info).await;
     assert!(
         result.is_err(),
         "path traversal in worker name should be rejected"
     );
 }
 
-/// BIN-04: download_and_install_binary rejects unsupported target platform.
-#[tokio::test]
-async fn download_rejects_unsupported_target() {
-    // Use a supported_targets list that definitely excludes the current platform.
-    let unsupported = vec!["riscv64-unknown-linux-gnu".to_string()];
-    let result =
-        download_and_install_binary("my-worker", "owner/repo", "tag", "1.0", &unsupported, false)
-            .await;
-    assert!(result.is_err(), "unsupported target should be rejected");
-    assert!(
-        result.unwrap_err().contains("not supported"),
-        "error should mention 'not supported'"
+// ===========================================================================
+// Group 8: Platform selection from BinaryWorkerResponse (API migration)
+// ===========================================================================
+
+/// Verify that looking up a platform key in a BinaryWorkerResponse binaries map
+/// works correctly when the platform exists.
+#[test]
+fn binary_response_platform_lookup_found() {
+    use std::collections::HashMap;
+
+    let mut binaries = HashMap::new();
+    binaries.insert(
+        "aarch64-apple-darwin".to_string(),
+        BinaryInfo {
+            url: "https://example.com/worker-aarch64-apple-darwin.tar.gz".to_string(),
+            sha256: "abc123".to_string(),
+        },
     );
+    binaries.insert(
+        "x86_64-unknown-linux-gnu".to_string(),
+        BinaryInfo {
+            url: "https://example.com/worker-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+            sha256: "def456".to_string(),
+        },
+    );
+
+    let target = current_target();
+    // On macOS aarch64 or Linux x86_64 this should find a match
+    if target == "aarch64-apple-darwin" || target == "x86_64-unknown-linux-gnu" {
+        let info = binaries.get(target).unwrap();
+        assert!(!info.url.is_empty());
+        assert!(!info.sha256.is_empty());
+    }
+}
+
+/// Verify that looking up a non-existent platform key returns None.
+#[test]
+fn binary_response_platform_lookup_not_found() {
+    use std::collections::HashMap;
+
+    let mut binaries = HashMap::new();
+    binaries.insert(
+        "riscv64-unknown-linux-gnu".to_string(),
+        BinaryInfo {
+            url: "https://example.com/worker-riscv64.tar.gz".to_string(),
+            sha256: "abc".to_string(),
+        },
+    );
+
+    let target = current_target();
+    assert!(
+        binaries.get(target).is_none(),
+        "current target '{}' should not be riscv64",
+        target
+    );
+}
+
+/// Verify that empty binaries map returns None for any platform.
+#[test]
+fn binary_response_empty_binaries_map() {
+    use std::collections::HashMap;
+    let binaries: HashMap<String, BinaryInfo> = HashMap::new();
+    let target = current_target();
+    assert!(binaries.get(target).is_none());
+}
+
+// ===========================================================================
+// Group 9: Checksum verification with inline sha256 (API migration)
+// ===========================================================================
+
+/// Verify that verify_sha256 works with the inline sha256 string format
+/// that the new API provides (just a hex string, no filename suffix).
+#[test]
+fn verify_sha256_inline_api_format() {
+    use sha2::{Digest, Sha256};
+    let data = b"binary content from API download";
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let hex = format!("{:x}", hasher.finalize());
+
+    // The API provides just the hex string — verify this works
+    assert!(verify_sha256(data, &hex).is_ok());
+}
+
+/// Verify that checksum mismatch is detected with inline format.
+#[test]
+fn verify_sha256_inline_api_format_mismatch() {
+    let data = b"binary content";
+    let wrong_hex = "0000000000000000000000000000000000000000000000000000000000000000";
+    let result = verify_sha256(data, wrong_hex);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("SHA256 mismatch"));
 }

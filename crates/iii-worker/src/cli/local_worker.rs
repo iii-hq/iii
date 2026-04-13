@@ -167,6 +167,7 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
+    parts.push("export HOME=${HOME:-/root}".to_string());
     parts.push("export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string());
     parts.push("export LANG=${LANG:-C.UTF-8}".to_string());
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
@@ -236,16 +237,13 @@ pub fn is_local_path(input: &str) -> bool {
 /// Falls back to the directory name if no manifest or no `name` field is found.
 pub fn resolve_worker_name(project_path: &Path) -> String {
     let manifest_path = project_path.join(WORKER_MANIFEST);
-    if manifest_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-            if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(name) = doc.get("name").and_then(|n| n.as_str()) {
-                    if !name.is_empty() {
-                        return name.to_string();
-                    }
-                }
-            }
-        }
+    if manifest_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&manifest_path)
+        && let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content)
+        && let Some(name) = doc.get("name").and_then(|n| n.as_str())
+        && !name.is_empty()
+    {
+        return name.to_string();
     }
     project_path
         .file_name()
@@ -283,7 +281,7 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
     }
 
     // 3. Detect language / project type
-    let _project = match load_project_info(&project_path) {
+    let project = match load_project_info(&project_path) {
         Some(p) => p,
         None => {
             eprintln!(
@@ -295,6 +293,11 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
             return 1;
         }
     };
+
+    if let Err(msg) = project.validate() {
+        eprintln!("{} {}", "error:".red(), msg);
+        return 1;
+    }
 
     // 4. Resolve worker name
     let worker_name = resolve_worker_name(&project_path);
@@ -365,26 +368,8 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         );
         eprintln!("  {}  {}", "Path".cyan().bold(), abs_path_str.bold());
 
-        // Auto-start if engine is running (skip if already running)
-        if super::managed::is_engine_running() {
-            if super::managed::is_worker_running(&worker_name) {
-                eprintln!("  {} Worker already running", "\u{2713}".green());
-            } else {
-                let port = super::app::DEFAULT_PORT;
-                let result = start_local_worker(&worker_name, &abs_path_str, port).await;
-                if result == 0 {
-                    eprintln!("  {} Worker auto-started", "\u{2713}".green());
-                } else {
-                    eprintln!(
-                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                        "\u{26a0}".yellow(),
-                        worker_name
-                    );
-                }
-            }
-        } else {
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-        }
+        // The engine's file watcher will detect the config change and
+        // reload automatically — no need to start the worker here.
     }
 
     0
@@ -423,6 +408,11 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
             return 1;
         }
     };
+
+    if let Err(msg) = project.validate() {
+        eprintln!("{} {}", "error:".red(), msg);
+        return 1;
+    }
 
     let language = project.language.as_deref().unwrap_or("typescript");
 
@@ -529,8 +519,8 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     // 7. Build script
     let script = build_libkrun_local_script(&project, is_prepared);
 
-    let script_path = managed_dir.join("tmp").join("iii-dev-run.sh");
-    std::fs::create_dir_all(managed_dir.join("tmp")).ok();
+    let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
+    std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
     if let Err(e) = std::fs::write(&script_path, &script) {
         eprintln!("{} Failed to write run script: {}", "error:".red(), e);
         return 1;
@@ -574,7 +564,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     let exec_path = "/bin/sh";
     let args = vec![
         "-c".to_string(),
-        "cd /workspace && exec bash /tmp/iii-dev-run.sh".to_string(),
+        "cd /workspace && exec bash /opt/iii/dev-run.sh".to_string(),
     ];
 
     super::worker_manager::libkrun::run_dev(

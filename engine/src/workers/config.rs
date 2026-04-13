@@ -16,6 +16,8 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 
+use notify::Watcher;
+
 use super::{registry::WorkerRegistration, traits::Worker};
 use crate::engine::Engine;
 
@@ -114,7 +116,7 @@ fn default_worker_entries() -> Vec<WorkerEntry> {
         .collect()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct WorkerEntry {
     pub name: String,
     #[serde(default)]
@@ -272,6 +274,13 @@ impl Default for WorkerRegistry {
 }
 
 impl WorkerEntry {
+    /// Returns the worker type name used for factory lookup. For entries with
+    /// instance suffixes like `iii-http#1`, this strips the `#N` and returns
+    /// the base name `iii-http`.
+    pub fn worker_type(&self) -> &str {
+        self.name.split('#').next().unwrap_or(&self.name)
+    }
+
     /// Creates a module instance from this entry
     pub async fn create_worker(
         &self,
@@ -280,13 +289,29 @@ impl WorkerEntry {
     ) -> anyhow::Result<Box<dyn Worker>> {
         registry
             .create_worker(
-                &self.name,
+                self.worker_type(),
                 self.image.as_deref(),
                 engine,
                 self.config.clone(),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", self.name, e))
+    }
+}
+
+/// Assigns unique instance IDs to entries with duplicate names. The first
+/// occurrence keeps its original name; subsequent occurrences get `#1`,
+/// `#2`, etc. appended. This lets the diff and running-worker tracking
+/// treat each entry independently.
+pub fn assign_instance_ids(entries: &mut Vec<WorkerEntry>) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for entry in entries.iter_mut() {
+        let base = entry.name.clone();
+        let count = counts.entry(base.clone()).or_insert(0);
+        if *count > 0 {
+            entry.name = format!("{}#{}", base, count);
+        }
+        *count += 1;
     }
 }
 
@@ -324,9 +349,10 @@ impl WorkerEntry {
 /// ```
 pub struct EngineBuilder {
     config: Option<EngineConfig>,
+    config_path: Option<String>,
     engine: Arc<Engine>,
     registry: Arc<WorkerRegistry>,
-    modules: Vec<Arc<dyn Worker>>,
+    running: Vec<super::reload::RunningWorker>,
 }
 
 impl EngineBuilder {
@@ -334,16 +360,55 @@ impl EngineBuilder {
     pub fn new() -> Self {
         Self {
             config: None,
+            config_path: None,
             engine: Arc::new(Engine::new()),
             registry: Arc::new(WorkerRegistry::with_inventory()),
-            modules: Vec::new(),
+            running: Vec::new(),
         }
+    }
+
+    /// Returns the currently-tracked running workers.
+    pub fn running(&self) -> &[super::reload::RunningWorker] {
+        &self.running
+    }
+
+    /// Mutable access to the running worker set. Intended for reload machinery
+    /// that needs to swap entries in place; avoid calling from other code paths.
+    pub fn running_mut(&mut self) -> &mut Vec<super::reload::RunningWorker> {
+        &mut self.running
+    }
+
+    /// Returns an `Arc` handle to the shared `Engine`. Used by reload plumbing
+    /// that must create workers against the live engine without consuming the
+    /// builder.
+    pub fn engine_handle(&self) -> Arc<Engine> {
+        self.engine.clone()
+    }
+
+    /// Returns an `Arc` handle to the shared worker factory registry.
+    pub fn registry_handle(&self) -> Arc<WorkerRegistry> {
+        self.registry.clone()
     }
 
     /// Loads config strictly from file. Fails if file is missing or unparseable.
     pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = Some(config);
         self
+    }
+
+    /// Records the path of the config file this engine was built from so that
+    /// reload-time code can re-read and re-apply it. When set, `serve()` watches
+    /// this file for changes and reloads automatically. When unset (e.g. running
+    /// with `--use-default-config`), file watching is disabled.
+    pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
+        self.config_path = Some(path.into());
+        self
+    }
+
+    /// Returns the config file path set via [`Self::with_config_path`], or
+    /// `None` if the engine is running without a file-backed config.
+    pub fn config_path(&self) -> Option<&str> {
+        self.config_path.as_deref()
     }
 
     /// Registers a custom module type in the registry
@@ -399,7 +464,9 @@ impl EngineBuilder {
             }
         }
 
-        for entry in &workers {
+        assign_instance_ids(&mut workers);
+
+        for entry in workers {
             tracing::debug!("Creating worker: {}", entry.name);
             let worker = entry
                 .create_worker(self.engine.clone(), &self.registry)
@@ -411,8 +478,20 @@ impl EngineBuilder {
             worker.initialize().await.map_err(|err| {
                 anyhow::anyhow!("failed to initialize worker '{}': {}", entry.name, err)
             })?;
+
+            self.engine.begin_worker_scope(&entry.name);
             worker.register_functions(self.engine.clone());
-            self.modules.push(Arc::from(worker));
+            let registrations = self.engine.end_worker_scope();
+
+            let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+            let worker_arc: Arc<dyn Worker> = Arc::from(worker);
+
+            self.running.push(super::reload::RunningWorker {
+                entry,
+                worker: worker_arc,
+                shutdown_tx,
+                registrations,
+            });
         }
 
         Ok(self)
@@ -420,38 +499,168 @@ impl EngineBuilder {
 
     pub async fn destroy(self) -> anyhow::Result<()> {
         tracing::warn!("Shutting down engine and destroying workers");
-        for w in self.modules.iter() {
-            tracing::debug!("Destroying worker: {}", w.name());
-            w.destroy().await?;
+        for rw in self.running.iter() {
+            tracing::debug!("Destroying worker: {}", rw.worker.name());
+            let _ = rw.shutdown_tx.send(true);
+            rw.worker.destroy().await?;
+            self.engine.remove_worker_registrations(&rw.registrations);
         }
         tracing::warn!("Engine shutdown complete");
         Ok(())
     }
 
     /// Starts the engine server
-    pub async fn serve(self) -> anyhow::Result<()> {
+    pub async fn serve(mut self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let registry = self.registry.clone();
+        let config_path = self.config_path.clone();
 
-        // Start background tasks for all modules
-        for w in self.modules.iter() {
-            let shutdown_rx = shutdown_rx.clone();
-            let shutdown_tx = shutdown_tx.clone();
-            if let Err(e) = w.start_background_tasks(shutdown_rx, shutdown_tx).await {
+        // Lift the running workers out of `self` so we can mutably borrow them
+        // inside the select loop. `self.running` is now empty; the teardown
+        // at the end operates on the local `running` Vec.
+        let mut running: Vec<super::reload::RunningWorker> = std::mem::take(&mut self.running);
+
+        let (global_shutdown_tx, mut global_shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // Start background tasks for each worker. The per-worker `shutdown_rx`
+        // lets the engine stop ONE worker (used by reload). The `shutdown_tx`
+        // passed in is the GLOBAL tx, so when a worker like `WorkerManager`
+        // catches SIGTERM/SIGINT/Ctrl+C and fires it, serve() itself unwinds.
+        for rw in running.iter() {
+            let shutdown_rx = rw.shutdown_tx.subscribe();
+            let shutdown_tx = global_shutdown_tx.clone();
+            if let Err(e) = rw
+                .worker
+                .start_background_tasks(shutdown_rx, shutdown_tx)
+                .await
+            {
                 tracing::warn!(
-                    worker = w.name(),
+                    worker = rw.worker.name(),
                     error = %e,
                     "Failed to start background tasks for worker"
                 );
             }
         }
 
+        // Relay global shutdown into each per-worker shutdown channel so a
+        // global Ctrl+C terminates every worker (including those added via
+        // reload -- those get subscribed to the relay the next time around).
+        let initial_worker_shutdowns: Vec<_> =
+            running.iter().map(|rw| rw.shutdown_tx.clone()).collect();
+        let mut global_rx_for_relay = global_shutdown_rx.clone();
+        tokio::spawn(async move {
+            if global_rx_for_relay.changed().await.is_ok() && *global_rx_for_relay.borrow() {
+                for tx in initial_worker_shutdowns {
+                    let _ = tx.send(true);
+                }
+            }
+        });
+
         // Start channel TTL sweep task
-        engine.channel_manager.start_sweep_task(shutdown_rx.clone());
+        engine
+            .channel_manager
+            .start_sweep_task(global_shutdown_rx.clone());
 
-        shutdown_rx.changed().await?;
+        // Set up config file watcher. When a config path is set, we watch it
+        // for modifications and trigger a reload automatically. Editors often
+        // write a temp file then rename, so we debounce events by 500ms to
+        // coalesce rapid writes into a single reload.
+        let (config_change_tx, mut config_change_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        self.destroy().await?;
+        // Keep the watcher alive for the duration of serve().
+        let _watcher = if let Some(ref path) = config_path {
+            let tx = config_change_tx.clone();
+            let watched_path = std::path::PathBuf::from(path);
+
+            let mut watcher = notify::RecommendedWatcher::new(
+                move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res {
+                        use notify::EventKind;
+                        match event.kind {
+                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                                let _ = tx.try_send(());
+                            }
+                            _ => {}
+                        }
+                    }
+                },
+                notify::Config::default(),
+            )?;
+
+            // Watch the parent directory so we catch rename-based writes
+            // (editors like vim write a temp file then rename it).
+            // For bare filenames like "config.yaml", parent() returns ""
+            // which is not a valid path — fall back to ".".
+            let watch_target = watched_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."));
+            watcher.watch(watch_target, notify::RecursiveMode::NonRecursive)?;
+
+            tracing::info!("reload: watching {} for changes", path);
+            Some(watcher)
+        } else {
+            tracing::info!("reload: no config file to watch (--use-default-config)");
+            None
+        };
+
+        // Drop the sender clone so config_change_rx completes when the
+        // watcher's sender is the only one left (and it's dropped on exit).
+        drop(config_change_tx);
+
+        // Track fatal reload errors so we can exit with non-zero after teardown.
+        let mut reload_error: Option<anyhow::Error> = None;
+
+        loop {
+            tokio::select! {
+                _ = global_shutdown_rx.changed() => {
+                    if *global_shutdown_rx.borrow() { break; }
+                }
+                Some(()) = config_change_rx.recv() => {
+                    // Debounce: drain any queued events and wait 500ms for
+                    // writes to settle before reloading.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    while config_change_rx.try_recv().is_ok() {}
+
+                    if let Err(e) = super::reload::ReloadManager::reload(
+                        config_path.as_deref(),
+                        engine.clone(),
+                        registry.clone(),
+                        &mut running,
+                        global_shutdown_tx.clone(),
+                    ).await {
+                        reload_error = Some(e);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fire global shutdown so the relay task stops all worker background
+        // tasks (needed when the loop broke due to a reload error rather than
+        // a signal-triggered shutdown).
+        let _ = global_shutdown_tx.send(true);
+
+        // Teardown -- inline version of the old `destroy()`. Operates on the
+        // local `running` Vec directly so we don't have to reconstruct `self`.
+        tracing::warn!("Shutting down engine and destroying workers");
+        for rw in running.iter() {
+            tracing::debug!("Destroying worker: {}", rw.worker.name());
+            let _ = rw.shutdown_tx.send(true);
+            rw.worker.destroy().await?;
+            engine.remove_worker_registrations(&rw.registrations);
+        }
+        tracing::warn!("Engine shutdown complete");
+
+        // Drop `global_shutdown_tx` last so the relay task unblocks.
+        drop(global_shutdown_tx);
+
+        // If the shutdown was caused by a reload failure, propagate the error
+        // so the process exits with a non-zero status code.
+        if let Some(e) = reload_error {
+            return Err(e);
+        }
+
         Ok(())
     }
 }
@@ -1005,7 +1214,7 @@ config:
     fn test_engine_builder_default() {
         let builder = EngineBuilder::default();
         assert!(builder.config.is_none());
-        assert!(builder.modules.is_empty());
+        assert!(builder.running().is_empty());
     }
 
     #[test]
@@ -1284,7 +1493,7 @@ modules:
 
         assert_eq!(INITIALIZED.load(Ordering::SeqCst), 1);
         assert_eq!(REGISTERED.load(Ordering::SeqCst), 1);
-        assert!(!builder.modules.is_empty());
+        assert!(!builder.running().is_empty());
 
         builder.destroy().await.expect("destroy engine");
         assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);

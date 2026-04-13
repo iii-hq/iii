@@ -42,7 +42,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron.periodic_job',
-  config: { expression: '* * * * *' }, // every minute
+  config: { expression: '0 * * * * * *' }, // every minute
 })
 ```
 
@@ -76,7 +76,7 @@ iii.register_function("cron.periodic_job", periodic_job)
 iii.register_trigger({
     "type": "cron",
     "function_id": "cron.periodic_job",
-    "config": {"expression": "* * * * *"},  # every minute
+    "config": {"expression": "0 * * * * * *"},  # every minute
 })
 ```
 
@@ -90,7 +90,7 @@ use serde_json::json;
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into()), |_input| async move {
-    let logger = Logger());
+    let logger = Logger::new();
 
     logger.info("Periodic job fired", None);
 
@@ -106,7 +106,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into
 });
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
-    "expression": "* * * * *",
+    "expression": "0 * * * * * *",
 }), metadata: None })?;
 ```
 
@@ -161,7 +161,7 @@ use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 iii.register_function((RegisterFunctionMessage::with_id("job.handle_tick".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger::new();
 
     logger.info("Periodic job processed", Some(input));
     Ok(json!(null))
@@ -224,7 +224,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron.orders_sweep',
-  config: { expression: '*/5 * * * *' },
+  config: { expression: '0 */5 * * * * *' },
 })
 ```
 
@@ -269,7 +269,7 @@ def orders_sweep(_data) -> None:
     logger.info("Sweep complete", {"checked": len(orders), "swept": swept})
 
 iii.register_function("cron.orders_sweep", orders_sweep)
-iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "*/5 * * * *"}})
+iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "0 */5 * * * * *"}})
 ```
 
   </Tab>
@@ -280,7 +280,7 @@ use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, Re
 use serde_json::json;
 
 iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into()), |_input| async move {
-    let logger = Logger());
+    let logger = Logger::new();
 
     let orders_val = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "orders" }))).await?;
     let orders = orders_val.as_array().cloned().unwrap_or_default();
@@ -315,7 +315,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "0 */5 * * * * *" }), metadata: None })?;
 ```
 
   </Tab>
@@ -323,26 +323,29 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), functio
 
 ## Cron expression format
 
-iii uses a six-field extended cron format. The optional leading field is seconds.
+iii supports six- or seven-field cron expressions: `second minute hour day month weekday [year]` (year is optional).
 
 ```
-┌──────────── second (0-59, optional)
+┌──────────── second (0-59)
 │ ┌────────── minute (0-59)
 │ │ ┌──────── hour (0-23)
 │ │ │ ┌────── day of month (1-31)
 │ │ │ │ ┌──── month (1-12)
-│ │ │ │ │ ┌── day of week (0-7)
-│ │ │ │ │ │
-* * * * * *
+│ │ │ │ │ ┌── day of week (0-7, Sun=0 or 7)
+│ │ │ │ │ │ ┌ year (optional)
+│ │ │ │ │ │ │
+* * * * * * *
 ```
 
 | Expression | Meaning |
 |---|---|
-| `* * * * *` | Every minute |
-| `0 * * * *` | Every hour |
-| `0 9 * * 1-5` | 09:00 on weekdays |
-| `*/5 * * * *` | Every 5 minutes |
-| `0/5 * * * * *` | Every 5 seconds (with seconds field) |
+| `0 * * * * *` | Every minute (6-field) |
+| `0 0 * * * *` | Every hour (6-field) |
+| `0 * * * * * *` | Every minute (7-field) |
+| `0 0 * * * * *` | Every hour (7-field) |
+| `0 0 9 * * 1-5 *` | 09:00 on weekdays |
+| `0 */5 * * * * *` | Every 5 minutes |
+| `*/5 * * * * * *` | Every 5 seconds |
 
 ## Key concepts
 

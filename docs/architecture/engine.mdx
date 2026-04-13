@@ -109,6 +109,35 @@ When a Worker disconnects — whether cleanly or due to a crash — the Engine a
 
 Workers reconnect automatically via the SDK's built-in reconnection logic. On reconnect, all `registerFunction` and `registerTrigger` calls are re-sent automatically.
 
+## Config Hot-Reload
+
+The Engine watches its config file for changes and automatically reloads when the file is modified. Only workers whose `WorkerEntry` actually changed are touched — unchanged workers keep running without interruption.
+
+If the new config is valid, the reload applies atomically. If the new config is invalid, **the engine exits with an error** showing exactly what is wrong — the operator must fix the config and restart. This prevents running with a stale config unknowingly.
+
+| Phase | Behavior |
+|-------|----------|
+| **Parse & normalize** | Re-reads the config file, expands env vars, auto-injects mandatory workers, rejects duplicate names |
+| **Diff** | Compares each `WorkerEntry` (name, image, config) against the running set. Unchanged workers are skipped entirely |
+| **Validate** | Dry-runs `create` + `initialize` on every added and changed worker without starting background tasks. Any failure rolls back the staged workers and exits |
+| **Commit** | Promotes validated replacements for changed workers, then shuts down and removes the old instances; drops removed workers; promotes validated additions |
+
+Unchanged workers keep running through the reload — no blip, no dropped invocations. Only workers whose config entries genuinely changed are destroyed and recreated.
+
+Every reload cycle emits a `reload:` log line sequence that operators can grep for:
+
+```
+reload: config changed, reloading from iii-config.yaml
+reload: diff +1 added, -0 removed, ~2 changed, =8 unchanged
+reload: success
+```
+
+Failure paths log `reload: FATAL: ...` with the specific error (including file path, line/column for parse errors, and worker name for validation errors) and then exit the engine process.
+
+<Info title="Limitations">
+  When the engine is started with `--use-default-config` there is no file to watch, so hot-reload is disabled. In-flight invocations on changed or removed workers are not drained — they are dropped when the old worker is destroyed. A bad config causes the engine to exit — configure your process supervisor to NOT auto-restart on this exit code.
+</Info>
+
 ## Architecture Agnostic
 
 iii makes no distinction between cloud providers, colocated servers, serverless functions, or different languages. A Function registered on Worker A can `trigger()` a Function on Worker B without knowing where Worker B is running.

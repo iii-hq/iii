@@ -13,84 +13,25 @@ use super::builtin_defaults::get_builtin_default;
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
-    MANIFEST_PATH, RegistryV2, WorkerType, fetch_registry, parse_worker_input, resolve_image,
+    BinaryWorkerResponse, MANIFEST_PATH, WorkerInfoResponse, fetch_worker_info, parse_worker_input,
 };
 use super::worker_manager::state::WorkerDef;
 
 pub use super::local_worker::{handle_local_add, is_local_path, start_local_worker};
 
 pub async fn handle_binary_add(
-    input: &str,
+    worker_name: &str,
+    response: &BinaryWorkerResponse,
     brief: bool,
-    cached_registry: Option<&RegistryV2>,
 ) -> i32 {
-    let (worker_name, version_override) = parse_worker_input(input);
-
-    if !brief {
-        eprintln!("  Resolving {}...", worker_name.bold());
-    }
-    let fetched;
-    let registry = if let Some(r) = cached_registry {
-        r
-    } else {
-        fetched = match fetch_registry().await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
-        };
-        &fetched
-    };
-
-    let entry = match registry.workers.get(&worker_name) {
-        Some(e) => e,
-        None => {
-            eprintln!(
-                "{} Worker '{}' not found in registry",
-                "error:".red(),
-                worker_name
-            );
-            return 1;
-        }
-    };
-
-    let repo = match &entry.repo {
-        Some(r) => r.clone(),
-        None => {
-            eprintln!(
-                "{} Registry entry for '{}' is missing 'repo' field",
-                "error:".red(),
-                worker_name
-            );
-            return 1;
-        }
-    };
-
-    let tag_prefix = match &entry.tag_prefix {
-        Some(t) => t.clone(),
-        None => worker_name.clone(),
-    };
-
-    let version = version_override
-        .or_else(|| entry.version.clone())
-        .unwrap_or_else(|| "latest".to_string());
-
-    let supported_targets = entry.supported_targets.clone().unwrap_or_default();
-    let has_checksum = entry.has_checksum.unwrap_or(false);
-
     let target = binary_download::current_target();
+
     if !brief {
-        eprintln!(
-            "  {} Resolved to {} (binary v{})",
-            "✓".green(),
-            repo.to_string().dimmed(),
-            version
-        );
+        eprintln!("  {} Resolved to binary v{}", "✓".green(), response.version);
     }
 
     // If the worker is already running, skip download entirely
-    if is_worker_running(&worker_name) {
+    if is_worker_running(worker_name) {
         if !brief {
             eprintln!(
                 "\n  {} Worker {} already running, skipping download",
@@ -101,35 +42,41 @@ pub async fn handle_binary_add(
         return 0;
     }
 
-    if !brief {
-        eprintln!("  Downloading {}...", worker_name.bold());
-    }
-    let install_path = match binary_download::download_and_install_binary(
-        &worker_name,
-        &repo,
-        &tag_prefix,
-        &version,
-        &supported_targets,
-        has_checksum,
-    )
-    .await
-    {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
+    let binary_info = match response.binaries.get(target) {
+        Some(info) => info,
+        None => {
+            eprintln!(
+                "{} Platform '{}' is not supported for worker '{}'. Available: {}",
+                "error:".red(),
+                target,
+                worker_name,
+                response
+                    .binaries
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             return 1;
         }
     };
 
     if !brief {
-        eprintln!("  {} Downloaded successfully", "✓".green());
+        eprintln!("  Downloading {}...", worker_name.bold());
+    }
+    let install_path =
+        match binary_download::download_and_install_binary(worker_name, binary_info).await {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
 
-        // Show metadata matching OCI worker style
+    if !brief {
+        eprintln!("  {} Downloaded successfully", "✓".green());
         eprintln!("  {}: {}", "Name".bold(), worker_name);
-        eprintln!("  {}: {}", "Version".bold(), version);
-        if !entry.description.is_empty() {
-            eprintln!("  {}: {}", "Description".bold(), entry.description);
-        }
+        eprintln!("  {}: {}", "Version".bold(), response.version);
         eprintln!("  {}: {}", "Platform".bold(), target);
         if let Ok(metadata) = std::fs::metadata(&install_path) {
             eprintln!(
@@ -140,13 +87,13 @@ pub async fn handle_binary_add(
         }
     }
 
-    let config_yaml = entry
-        .default_config
-        .as_ref()
-        .and_then(|dc| dc.get("config"))
-        .map(|v| serde_yaml::to_string(v).unwrap_or_default());
+    let config_yaml = response
+        .config
+        .config
+        .as_object()
+        .map(|_| serde_yaml::to_string(&response.config.config).unwrap_or_default());
 
-    if let Err(e) = super::config_file::append_worker(&worker_name, config_yaml.as_deref()) {
+    if let Err(e) = super::config_file::append_worker(worker_name, config_yaml.as_deref()) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
@@ -161,25 +108,8 @@ pub async fn handle_binary_add(
             "config.yaml".dimmed(),
         );
 
-        // Auto-start if engine is running (skip if already running)
-        if is_engine_running() {
-            if is_worker_running(&worker_name) {
-                eprintln!("  {} Worker already running", "✓".green());
-            } else {
-                let result = start_binary_worker(&worker_name, &install_path).await;
-                if result == 0 {
-                    eprintln!("  {} Worker auto-started", "✓".green());
-                } else {
-                    eprintln!(
-                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                        "⚠".yellow(),
-                        worker_name
-                    );
-                }
-            }
-        } else {
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-        }
+        // The engine's file watcher will detect the config change and
+        // reload automatically — no need to start the worker here.
     }
     0
 }
@@ -189,14 +119,11 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
     let brief = total > 1;
     let mut fail_count = 0;
 
-    // Pre-fetch registry once for all workers (avoids N HTTP roundtrips).
-    let registry = fetch_registry().await.ok();
-
     for (i, name) in worker_names.iter().enumerate() {
         if brief {
             eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
         }
-        let result = handle_managed_add(name, brief, registry.as_ref(), false, false).await;
+        let result = handle_managed_add(name, brief, false, false).await;
         if result != 0 {
             fail_count += 1;
         }
@@ -220,12 +147,10 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
 pub async fn handle_managed_add(
     image_or_name: &str,
     brief: bool,
-    cached_registry: Option<&RegistryV2>,
     force: bool,
     reset_config: bool,
 ) -> i32 {
     // Local path workers: starts with '.', '/', or '~'
-    // Must be checked before force-mode processing since validate_worker_name rejects paths.
     if super::local_worker::is_local_path(image_or_name) {
         return super::local_worker::handle_local_add(image_or_name, force, reset_config, brief)
             .await;
@@ -233,16 +158,12 @@ pub async fn handle_managed_add(
 
     // --force: delete existing artifacts before re-downloading
     if force {
-        // Extract plain name (strip @version if present)
-        let (plain_name, _) = super::registry::parse_worker_input(image_or_name);
+        let (plain_name, _) = parse_worker_input(image_or_name);
 
-        // Validate name only for non-OCI references (OCI refs contain '/' or ':')
         let is_oci_ref = plain_name.contains('/') || plain_name.contains(':');
-        if !is_oci_ref {
-            if let Err(e) = super::registry::validate_worker_name(&plain_name) {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
+        if !is_oci_ref && let Err(e) = super::registry::validate_worker_name(&plain_name) {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
         }
 
         if is_worker_running(&plain_name) {
@@ -255,14 +176,12 @@ pub async fn handle_managed_add(
             return 1;
         }
 
-        // Check for engine-builtin workers — no artifacts to delete
         if super::builtin_defaults::get_builtin_default(&plain_name).is_some() {
             eprintln!(
                 "  {} '{}' is a builtin worker, no artifacts to re-download.",
                 "info:".cyan(),
                 plain_name,
             );
-            // Still proceed — force on builtins just re-applies config
         } else {
             let freed = delete_worker_artifacts(&plain_name);
             if freed > 0 {
@@ -277,117 +196,92 @@ pub async fn handle_managed_add(
 
         if reset_config {
             match super::config_file::remove_worker(&plain_name) {
-                Ok(()) => {
-                    eprintln!("  {} Config for {} reset", "✓".green(), plain_name.bold(),);
-                }
+                Ok(()) => {}
                 Err(e) => {
-                    eprintln!(
-                        "  {} Could not reset config for {}: {}",
-                        "warning:".yellow(),
-                        plain_name.bold(),
-                        e,
-                    );
+                    tracing::debug!("remove_worker during force: {}", e);
                 }
             }
         }
     }
 
+    // Direct OCI reference (contains '/' or ':') — passthrough, skip API
+    if image_or_name.contains('/') || image_or_name.contains(':') {
+        if !brief {
+            eprintln!("  Resolving {}...", image_or_name.bold());
+        }
+        let name = image_or_name
+            .rsplit('/')
+            .next()
+            .unwrap_or(image_or_name)
+            .split(':')
+            .next()
+            .unwrap_or(image_or_name);
+        if !brief {
+            eprintln!("  {} Resolved to {}", "✓".green(), image_or_name.dimmed());
+        }
+        return handle_oci_pull_and_add(name, image_or_name, brief).await;
+    }
+
+    // Shorthand name — resolve via API
+    let (name, version) = parse_worker_input(image_or_name);
+
     // Check for engine-builtin workers first (no network needed).
-    if let Some(default_yaml) = get_builtin_default(image_or_name) {
-        let already_exists = super::config_file::worker_exists(image_or_name);
-        if let Err(e) = super::config_file::append_worker(image_or_name, Some(default_yaml)) {
+    if let Some(default_yaml) = get_builtin_default(&name) {
+        let already_exists = super::config_file::worker_exists(&name);
+        if let Err(e) = super::config_file::append_worker(&name, Some(default_yaml)) {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
         if brief {
             if already_exists {
-                eprintln!("        {} {} (updated)", "✓".green(), image_or_name.bold());
+                eprintln!("        {} {} (updated)", "✓".green(), name.bold());
             } else {
-                eprintln!("        {} {}", "✓".green(), image_or_name.bold());
+                eprintln!("        {} {}", "✓".green(), name.bold());
             }
         } else {
             if already_exists {
                 eprintln!(
                     "\n  {} Worker {} updated in {} (merged with builtin defaults)",
                     "✓".green(),
-                    image_or_name.bold(),
+                    name.bold(),
                     "config.yaml".dimmed(),
                 );
             } else {
                 eprintln!(
                     "\n  {} Worker {} added to {}",
                     "✓".green(),
-                    image_or_name.bold(),
+                    name.bold(),
                     "config.yaml".dimmed(),
                 );
             }
 
-            // Auto-start if engine is running (skip if already running)
-            if is_engine_running() {
-                if is_worker_running(image_or_name) {
-                    eprintln!("  {} Worker already running", "✓".green());
-                } else {
-                    let port = super::app::DEFAULT_PORT;
-                    let result = handle_managed_start(image_or_name, "0.0.0.0", port).await;
-                    if result == 0 {
-                        eprintln!("  {} Worker auto-started", "✓".green());
-                    } else {
-                        eprintln!(
-                            "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                            "⚠".yellow(),
-                            image_or_name
-                        );
-                    }
-                }
-            } else {
-                eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-            }
+            // The engine's file watcher will detect the config change and
+            // reload automatically — no need to start the worker here.
         }
         return 0;
     }
 
-    // Route binary workers to handle_binary_add; for OCI workers found in the
-    // registry, use the cached registry or fetch once if not provided.
-    if !image_or_name.contains('/') && !image_or_name.contains(':') {
-        let (name, _) = parse_worker_input(image_or_name);
-        let fetched;
-        let registry = if let Some(r) = cached_registry {
-            Some(r)
-        } else {
-            fetched = fetch_registry().await.ok();
-            fetched.as_ref()
-        };
-        if let Some(registry) = registry
-            && let Some(entry) = registry.workers.get(&name)
-        {
-            if matches!(entry.worker_type, Some(WorkerType::Binary)) {
-                return handle_binary_add(image_or_name, brief, Some(registry)).await;
-            }
-            // OCI worker found in registry — use already-fetched entry
-            if let (Some(img), Some(ver)) = (&entry.image, &entry.latest) {
-                let image_ref = format!("{}:{}", img, ver);
-                if !brief {
-                    eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
-                }
-                return handle_oci_pull_and_add(&name, &image_ref, brief).await;
-            }
-        }
+    if !brief {
+        eprintln!("  Resolving {}...", name.bold());
     }
 
-    if !brief {
-        eprintln!("  Resolving {}...", image_or_name.bold());
-    }
-    let (image_ref, name) = match resolve_image(image_or_name).await {
-        Ok(v) => v,
+    let response = match fetch_worker_info(&name, version.as_deref()).await {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
     };
-    if !brief {
-        eprintln!("  {} Resolved to {}", "✓".green(), image_ref.dimmed());
+
+    match response {
+        WorkerInfoResponse::Binary(r) => handle_binary_add(&name, &r, brief).await,
+        WorkerInfoResponse::Oci(r) => {
+            if !brief {
+                eprintln!("  {} Resolved to {}", "✓".green(), r.image_url.dimmed());
+            }
+            handle_oci_pull_and_add(&r.name, &r.image_url, brief).await
+        }
     }
-    handle_oci_pull_and_add(&name, &image_ref, brief).await
 }
 
 async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i32 {
@@ -485,31 +379,8 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
             "config.yaml".dimmed(),
         );
 
-        // Auto-start if engine is running (skip if already running)
-        if is_engine_running() {
-            if is_worker_running(name) {
-                eprintln!("  {} Worker already running", "✓".green());
-            } else {
-                let port = super::app::DEFAULT_PORT;
-                let worker_def = WorkerDef::Managed {
-                    image: image_ref.to_string(),
-                    env: oci_env.into_iter().collect(),
-                    resources: None,
-                };
-                let result = start_oci_worker(name, &worker_def, port).await;
-                if result == 0 {
-                    eprintln!("  {} Worker auto-started", "✓".green());
-                } else {
-                    eprintln!(
-                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                        "⚠".yellow(),
-                        name
-                    );
-                }
-            }
-        } else {
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-        }
+        // The engine's file watcher will detect the config change and
+        // reload automatically — no need to start the worker here.
     }
     0
 }
@@ -648,30 +519,29 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     let mut image_count: u32 = 0;
 
     // Clear binary workers
-    if workers_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&workers_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Skip entries with invalid names (e.g. symlinks with path traversal)
-                if super::registry::validate_worker_name(&name).is_err() {
-                    continue;
-                }
-                // Verify resolved path stays under workers_dir
-                if let Ok(resolved) = entry.path().canonicalize() {
-                    if let Ok(base) = workers_dir.canonicalize() {
-                        if !resolved.starts_with(&base) {
-                            continue;
-                        }
-                    }
-                }
-                if is_worker_running(&name) {
-                    skipped.push(name);
-                    continue;
-                }
-                total_freed += dir_size(&entry.path());
-                let _ = std::fs::remove_dir_all(entry.path());
-                worker_count += 1;
+    if workers_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&workers_dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip entries with invalid names (e.g. symlinks with path traversal)
+            if super::registry::validate_worker_name(&name).is_err() {
+                continue;
             }
+            // Verify resolved path stays under workers_dir
+            if let Ok(resolved) = entry.path().canonicalize()
+                && let Ok(base) = workers_dir.canonicalize()
+                && !resolved.starts_with(&base)
+            {
+                continue;
+            }
+            if is_worker_running(&name) {
+                skipped.push(name);
+                continue;
+            }
+            total_freed += dir_size(&entry.path());
+            let _ = std::fs::remove_dir_all(entry.path());
+            worker_count += 1;
         }
     }
 
@@ -680,12 +550,12 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
         // Build set of image hashes belonging to running OCI workers
         let mut protected_hashes = std::collections::HashSet::new();
         for name in super::config_file::list_worker_names() {
-            if is_worker_running(&name) {
-                if let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name) {
-                    let dir = image_cache_dir(&image_ref);
-                    if let Some(hash) = dir.file_name().and_then(|f| f.to_str()) {
-                        protected_hashes.insert(hash.to_string());
-                    }
+            if is_worker_running(&name)
+                && let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name)
+            {
+                let dir = image_cache_dir(&image_ref);
+                if let Some(hash) = dir.file_name().and_then(|f| f.to_str()) {
+                    protected_hashes.insert(hash.to_string());
                 }
             }
         }
@@ -761,6 +631,240 @@ pub async fn kill_stale_worker(worker_name: &str) {
     }
 }
 
+/// Returns worker names discovered from on-disk runtime state under `~/.iii`.
+///
+/// Sources scanned:
+/// - `~/.iii/managed/{name}/`     -- OCI/VM and local-path workers
+/// - `~/.iii/pids/{name}.pid`     -- binary workers
+///
+/// Names are returned sorted and deduplicated. This is the union of every
+/// worker the local runtime has touched, regardless of which `config.yaml`
+/// declared them. Used by `iii worker list` to surface orphan workers whose
+/// project folder has moved or been deleted.
+pub fn discover_disk_worker_names() -> Vec<String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    discover_disk_worker_names_in(&home.join(".iii/managed"), &home.join(".iii/pids"))
+}
+
+/// Path-injectable variant of [`discover_disk_worker_names`] for testing.
+fn discover_disk_worker_names_in(
+    managed_dir: &std::path::Path,
+    pids_dir: &std::path::Path,
+) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut names = BTreeSet::new();
+
+    if let Ok(entries) = std::fs::read_dir(managed_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && let Some(name) = entry.file_name().to_str()
+            {
+                names.insert(name.to_string());
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(pids_dir) {
+        for entry in entries.flatten() {
+            if let Some(file_name) = entry.file_name().to_str()
+                && let Some(name) = file_name.strip_suffix(".pid")
+                && !name.is_empty()
+            {
+                names.insert(name.to_string());
+            }
+        }
+    }
+
+    names.into_iter().collect()
+}
+
+/// Discovers worker names by inspecting live process command lines for
+/// processes spawned by iii-worker. Catches the case where a worker is alive
+/// but its on-disk PID file has been removed (project folder moved/deleted,
+/// manual cleanup, or a crashed `iii worker stop`).
+///
+/// Two process patterns are recognised:
+/// 1. Binary workers — executable is `~/.iii/workers/{name}`.
+/// 2. OCI/VM workers — `iii-worker __vm-boot --pid-file ~/.iii/managed/{name}/vm.pid ...`.
+///
+/// Sources by platform:
+/// - Linux: walks `/proc/*/cmdline` (works on every kernel including
+///   Alpine/busybox where `ps -o args=` is unreliable).
+/// - macOS: shells out to `ps -axww -o pid=,args=`.
+/// - Other platforms: returns empty (best-effort supplement to disk discovery).
+pub fn discover_running_worker_names_from_ps() -> Vec<String> {
+    let processes = collect_processes();
+    if processes.is_empty() {
+        return Vec::new();
+    }
+    let home = dirs::home_dir().unwrap_or_default();
+    let workers_prefix = home.join(".iii/workers");
+    let managed_prefix = home.join(".iii/managed");
+    let cmdlines: Vec<String> = processes.into_iter().map(|(_, c)| c).collect();
+    discover_running_worker_names_from_ps_output(
+        &cmdlines.join("\n"),
+        &workers_prefix,
+        &managed_prefix,
+    )
+}
+
+/// Returns the live PID of the iii-worker process associated with `name`, by
+/// scanning live process command lines. Used by `iii worker stop` to terminate
+/// orphan workers whose pidfiles have been removed.
+///
+/// Returns `None` when no matching process exists, when the platform has no
+/// process enumeration support, or when `ps`/`/proc` access is denied.
+pub fn find_worker_pid_from_ps(name: &str) -> Option<u32> {
+    let processes = collect_processes();
+    if processes.is_empty() {
+        return None;
+    }
+    let home = dirs::home_dir().unwrap_or_default();
+    let workers_prefix = home.join(".iii/workers");
+    let managed_prefix = home.join(".iii/managed");
+    find_worker_pid_in_processes(&processes, name, &workers_prefix, &managed_prefix)
+}
+
+/// Linux: read every numeric `/proc/<pid>/cmdline`. Each is NUL-separated
+/// argv0\0argv1\0...\0; we replace NULs with spaces so the shared parser
+/// can tokenise it the same way as `ps` output.
+#[cfg(target_os = "linux")]
+fn collect_processes() -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let pid: u32 = match name_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let bytes = match std::fs::read(entry.path().join("cmdline")) {
+            Ok(b) if !b.is_empty() => b,
+            _ => continue,
+        };
+        let line = String::from_utf8_lossy(&bytes).replace('\0', " ");
+        let trimmed = line.trim_end();
+        if !trimmed.is_empty() {
+            out.push((pid, trimmed.to_string()));
+        }
+    }
+    out
+}
+
+/// macOS: BSD `ps` exposes full argv via `-o args=`; `-axww` selects all
+/// processes and disables column truncation. `pid=` keeps the pid column
+/// without a header so we can split the first whitespace-separated token off.
+#[cfg(target_os = "macos")]
+fn collect_processes() -> Vec<(u32, String)> {
+    let output = match std::process::Command::new("ps")
+        .args(["-axww", "-o", "pid=,args="])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&output)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let mut split = line.splitn(2, char::is_whitespace);
+            let pid: u32 = split.next()?.parse().ok()?;
+            let args = split.next()?.trim();
+            if args.is_empty() {
+                None
+            } else {
+                Some((pid, args.to_string()))
+            }
+        })
+        .collect()
+}
+
+/// Other platforms: no cross-platform process enumeration without a new dep.
+/// Disk discovery still runs; we just lose the alive-but-no-pidfile fallback.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn collect_processes() -> Vec<(u32, String)> {
+    Vec::new()
+}
+
+/// From a single process's `argv`-joined cmdline, return the worker name it
+/// represents (if any). Shared between name discovery and PID lookup so both
+/// match against the exact same recognition rules.
+fn extract_worker_name_from_cmdline(
+    cmdline: &str,
+    workers_prefix: &std::path::Path,
+    managed_prefix: &std::path::Path,
+) -> Option<String> {
+    let mut tokens = cmdline.split_whitespace();
+    let exe = tokens.next()?;
+    let exe_path = std::path::Path::new(exe);
+
+    // Pattern 1: binary worker -- executable lives under ~/.iii/workers/{name}
+    if let Ok(rel) = exe_path.strip_prefix(workers_prefix)
+        && let Some(name) = rel.iter().next().and_then(|c| c.to_str())
+        && !name.is_empty()
+    {
+        return Some(name.to_string());
+    }
+
+    // Pattern 2: iii-worker __vm-boot --pid-file <...>/managed/{name}/vm.pid
+    if exe_path.file_name().and_then(|s| s.to_str()) == Some("iii-worker")
+        && tokens.next() == Some("__vm-boot")
+    {
+        let rest: Vec<&str> = tokens.collect();
+        for i in 0..rest.len().saturating_sub(1) {
+            if rest[i] == "--pid-file"
+                && let Ok(rel) = std::path::Path::new(rest[i + 1]).strip_prefix(managed_prefix)
+                && let Some(name) = rel.iter().next().and_then(|c| c.to_str())
+                && !name.is_empty()
+            {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Pure parser used by [`discover_running_worker_names_from_ps`]. Exposed for
+/// testing with synthetic cmdline output and arbitrary path prefixes. Each
+/// input line is one process's argv joined by spaces.
+fn discover_running_worker_names_from_ps_output(
+    ps_output: &str,
+    workers_prefix: &std::path::Path,
+    managed_prefix: &std::path::Path,
+) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut names = BTreeSet::new();
+    for line in ps_output.lines() {
+        if let Some(name) = extract_worker_name_from_cmdline(line, workers_prefix, managed_prefix) {
+            names.insert(name);
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// Pure parser used by [`find_worker_pid_from_ps`]. Returns the first PID
+/// whose cmdline resolves to `name`. Exposed for testing.
+fn find_worker_pid_in_processes(
+    processes: &[(u32, String)],
+    name: &str,
+    workers_prefix: &std::path::Path,
+    managed_prefix: &std::path::Path,
+) -> Option<u32> {
+    processes.iter().find_map(|(pid, cmdline)| {
+        match extract_worker_name_from_cmdline(cmdline, workers_prefix, managed_prefix) {
+            Some(n) if n == name => Some(*pid),
+            _ => None,
+        }
+    })
+}
+
 /// Returns `true` if the worker has a valid PID file and the process is alive.
 pub fn is_worker_running(worker_name: &str) -> bool {
     let home = dirs::home_dir().unwrap_or_default();
@@ -768,23 +872,23 @@ pub fn is_worker_running(worker_name: &str) -> bool {
     let bin_pid = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
     for pid_file in [oci_pid, bin_pid] {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                // Check if process is alive (signal 0 = existence check)
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::kill;
-                    use nix::unistd::Pid;
-                    if kill(Pid::from_raw(pid as i32), None).is_ok() {
-                        return true;
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = pid;
-                    // On non-Unix, assume running if PID file exists
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+        {
+            // Check if process is alive (signal 0 = existence check)
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::kill;
+                use nix::unistd::Pid;
+                if kill(Pid::from_raw(pid as i32), None).is_ok() {
                     return true;
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = pid;
+                // On non-Unix, assume running if PID file exists
+                return true;
             }
         }
     }
@@ -905,76 +1009,172 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
         return 1;
     }
     let home = dirs::home_dir().unwrap_or_default();
+    let oci_pidfile = home.join(".iii/managed").join(worker_name).join("vm.pid");
+    let bin_pidfile = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
-    let (pid_file, is_oci) = match super::config_file::resolve_worker_type(worker_name) {
-        ResolvedWorkerType::Oci { .. } | ResolvedWorkerType::Local { .. } => {
-            let f = home.join(".iii/managed").join(worker_name).join("vm.pid");
-            if !f.exists() {
-                eprintln!("{} Worker '{}' is not running", "error:".red(), worker_name);
-                return 1;
+    // Reject the well-defined "config worker explicitly listed in config.yaml"
+    // case -- the engine owns those, the worker CLI cannot stop them. We only
+    // reject when the name is genuinely listed in config; the resolver also
+    // returns Config as the no-match fallthrough, which we want to treat as
+    // an orphan candidate instead.
+    let in_config_yaml = super::config_file::list_worker_names()
+        .iter()
+        .any(|n| n == worker_name);
+    if in_config_yaml
+        && matches!(
+            super::config_file::resolve_worker_type(worker_name),
+            ResolvedWorkerType::Config
+        )
+    {
+        eprintln!(
+            "{} Cannot stop '{}': config workers run inside the engine and cannot be stopped individually",
+            "error:".red(),
+            worker_name
+        );
+        return 1;
+    }
+
+    // Locate the worker's PID via three evidence tiers, in order:
+    // 1. ~/.iii/managed/{name}/vm.pid       (OCI/VM/local-path)
+    // 2. ~/.iii/pids/{name}.pid             (binary)
+    // 3. live `ps` scan                     (orphan, or stale pidfile)
+    //
+    // Pidfiles are only trusted when the recorded PID is actually alive. A
+    // stale pidfile (process crashed without cleanup, or PID got recycled)
+    // must fall through to the ps scan — otherwise we'd either signal an
+    // unrelated recycled PID or miss a restarted orphan worker.
+    let oci_live_pid = oci_pidfile
+        .exists()
+        .then(|| read_pid(&oci_pidfile).filter(|&p| is_pid_alive(p)))
+        .flatten();
+    let bin_live_pid = bin_pidfile
+        .exists()
+        .then(|| read_pid(&bin_pidfile).filter(|&p| is_pid_alive(p)))
+        .flatten();
+
+    let mode = if let Some(pid) = oci_live_pid {
+        StopMode::Managed {
+            pid,
+            pidfile: Some(oci_pidfile),
+        }
+    } else if let Some(pid) = bin_live_pid {
+        StopMode::Binary {
+            pid,
+            pidfile: Some(bin_pidfile),
+        }
+    } else if let Some(pid) = find_worker_pid_from_ps(worker_name) {
+        // Either no pidfile on disk, or the pidfile is stale (dead PID).
+        // Either way, ps found a live process for this worker — treat as
+        // orphan. Carry any stale pidfile along so it gets cleaned up.
+        let stale_pidfile = if oci_pidfile.exists() {
+            Some(oci_pidfile)
+        } else if bin_pidfile.exists() {
+            Some(bin_pidfile)
+        } else {
+            None
+        };
+        let is_managed = home.join(".iii/managed").join(worker_name).is_dir();
+        if is_managed {
+            StopMode::Managed {
+                pid,
+                pidfile: stale_pidfile,
             }
-            (f, true)
-        }
-        ResolvedWorkerType::Config => {
-            eprintln!(
-                "{} Cannot stop '{}': config workers run inside the engine and cannot be stopped individually",
-                "error:".red(),
-                worker_name
-            );
-            return 1;
-        }
-        ResolvedWorkerType::Binary { .. } => {
-            let f = home.join(".iii/pids").join(format!("{}.pid", worker_name));
-            if !f.exists() {
-                eprintln!(
-                    "{} Worker '{}' is not running. Start it with 'iii worker start {}'",
-                    "error:".red(),
-                    worker_name,
-                    worker_name
-                );
-                return 1;
+        } else {
+            StopMode::Binary {
+                pid,
+                pidfile: stale_pidfile,
             }
-            (f, false)
         }
+    } else {
+        eprintln!(
+            "{} Worker '{}' is not running. Start it with 'iii worker start {}'",
+            "error:".red(),
+            worker_name,
+            worker_name
+        );
+        return 1;
     };
 
-    match std::fs::read_to_string(&pid_file) {
-        Ok(pid_str) => {
-            let pid = pid_str.trim();
-            eprintln!("  Stopping {}...", worker_name.bold());
-            if is_oci {
-                let adapter = super::worker_manager::create_adapter("libkrun");
-                let _ = adapter.stop(pid, 10).await;
-            } else {
-                // Kill binary worker process directly
-                if let Ok(pid_num) = pid.parse::<i32>() {
-                    #[cfg(unix)]
-                    {
-                        use nix::sys::signal::{Signal, kill};
-                        use nix::unistd::Pid;
-                        let _ = kill(Pid::from_raw(pid_num), Signal::SIGTERM);
-                        // Wait briefly then SIGKILL if still alive
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                        let _ = kill(Pid::from_raw(pid_num), Signal::SIGKILL);
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        let _ = pid_num; // suppress unused warning
-                        eprintln!(
-                            "{} Binary worker stop not supported on this platform",
-                            "error:".red()
-                        );
-                    }
-                }
+    eprintln!("  Stopping {}...", worker_name.bold());
+
+    match mode {
+        StopMode::Managed { pid, pidfile } => {
+            let adapter = super::worker_manager::create_adapter("libkrun");
+            let _ = adapter.stop(&pid.to_string(), 10).await;
+            if let Some(f) = pidfile {
+                let _ = std::fs::remove_file(&f);
             }
-            let _ = std::fs::remove_file(&pid_file);
-            eprintln!("  {} {} stopped", "✓".green(), worker_name.bold());
-            0
         }
-        Err(_) => {
-            eprintln!("{} Worker '{}' is not running", "error:".red(), worker_name);
-            1
+        StopMode::Binary { pid, pidfile } => {
+            kill_pid_with_grace(pid).await;
+            if let Some(f) = pidfile {
+                let _ = std::fs::remove_file(&f);
+            }
         }
+    }
+
+    eprintln!("  {} {} stopped", "✓".green(), worker_name.bold());
+    0
+}
+
+/// Internal stop dispatch. The path the PID was discovered through dictates
+/// how we terminate it (libkrun adapter for VMs, raw signals for binaries) and
+/// whether we have an on-disk pidfile to clean up afterwards.
+enum StopMode {
+    Managed {
+        pid: u32,
+        pidfile: Option<std::path::PathBuf>,
+    },
+    Binary {
+        pid: u32,
+        pidfile: Option<std::path::PathBuf>,
+    },
+}
+
+/// Reads a PID file, returning `Some(pid)` when contents parse as `u32`.
+fn read_pid(path: &std::path::Path) -> Option<u32> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
+/// Returns `true` if `pid` refers to a live process. Uses signal 0 as a
+/// non-destructive existence probe on Unix; assumes alive on platforms
+/// without nix signals (the stop path will discover failure on real kill).
+///
+/// Used by the stop path to distinguish fresh pidfiles from stale ones so
+/// a dead/recycled PID cannot short-circuit the `ps` orphan scan.
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
+}
+
+/// SIGTERM, brief grace period, then SIGKILL. Mirrors the original
+/// binary-worker stop semantics. No-op on platforms without nix signals.
+async fn kill_pid_with_grace(pid: u32) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+        let target = Pid::from_raw(pid as i32);
+        let _ = kill(target, Signal::SIGTERM);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let _ = kill(target, Signal::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        eprintln!(
+            "{} Direct PID stop not supported on this platform",
+            "error:".red()
+        );
     }
 }
 
@@ -1008,86 +1208,58 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
         "  Worker '{}' not found locally, checking registry...",
         worker_name
     );
-    match fetch_registry().await {
-        Ok(registry) => {
-            if let Some(entry) = registry.workers.get(worker_name) {
-                if matches!(entry.worker_type, Some(WorkerType::Binary)) {
-                    // Auto-download binary worker
-                    let repo = match &entry.repo {
-                        Some(r) => r.clone(),
-                        None => {
-                            eprintln!(
-                                "{} Registry entry for '{}' missing 'repo' field",
-                                "error:".red(),
-                                worker_name
-                            );
-                            return 1;
-                        }
-                    };
-                    let tag_prefix = entry
-                        .tag_prefix
-                        .clone()
-                        .unwrap_or_else(|| worker_name.to_string());
-                    let version = entry
-                        .version
-                        .clone()
-                        .or_else(|| entry.latest.clone())
-                        .unwrap_or_else(|| "latest".to_string());
-                    let supported_targets = entry.supported_targets.clone().unwrap_or_default();
-                    let has_checksum = entry.has_checksum.unwrap_or(false);
-
-                    eprintln!("  Installing {} (binary v{})...", worker_name, version);
-                    match binary_download::download_and_install_binary(
+    match fetch_worker_info(worker_name, None).await {
+        Ok(WorkerInfoResponse::Binary(response)) => {
+            let target = binary_download::current_target();
+            let binary_info = match response.binaries.get(target) {
+                Some(info) => info,
+                None => {
+                    eprintln!(
+                        "{} Platform '{}' not supported for '{}'. Available: {}",
+                        "error:".red(),
+                        target,
                         worker_name,
-                        &repo,
-                        &tag_prefix,
-                        &version,
-                        &supported_targets,
-                        has_checksum,
-                    )
-                    .await
-                    {
-                        Ok(installed_path) => {
-                            eprintln!("  {} Installed successfully", "✓".green());
-                            return start_binary_worker(worker_name, &installed_path).await;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "{} Failed to install '{}': {}",
-                                "error:".red(),
-                                worker_name,
-                                e
-                            );
-                            return 1;
-                        }
-                    }
-                } else {
-                    // OCI/managed worker from registry — resolve image and start
-                    let image_ref = match &entry.image {
-                        Some(img) => {
-                            let version = entry.latest.as_deref().unwrap_or("latest");
-                            format!("{}:{}", img, version)
-                        }
-                        None => {
-                            eprintln!(
-                                "{} Registry entry for '{}' missing 'image' field",
-                                "error:".red(),
-                                worker_name
-                            );
-                            return 1;
-                        }
-                    };
-                    let worker_def = WorkerDef::Managed {
-                        image: image_ref,
-                        env: std::collections::HashMap::new(),
-                        resources: None,
-                    };
-                    return start_oci_worker(worker_name, &worker_def, port).await;
+                        response
+                            .binaries
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    return 1;
+                }
+            };
+
+            eprintln!(
+                "  Installing {} (binary v{})...",
+                worker_name, response.version
+            );
+            match binary_download::download_and_install_binary(worker_name, binary_info).await {
+                Ok(installed_path) => {
+                    eprintln!("  {} Installed successfully", "✓".green());
+                    return start_binary_worker(worker_name, &installed_path).await;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to install '{}': {}",
+                        "error:".red(),
+                        worker_name,
+                        e
+                    );
+                    return 1;
                 }
             }
         }
+        Ok(WorkerInfoResponse::Oci(response)) => {
+            let worker_def = WorkerDef::Managed {
+                image: response.image_url,
+                env: std::collections::HashMap::new(),
+                resources: None,
+            };
+            return start_oci_worker(worker_name, &worker_def, port).await;
+        }
         Err(e) => {
-            tracing::warn!("Failed to fetch registry: {}", e);
+            tracing::warn!("Failed to fetch worker info: {}", e);
         }
     }
 
@@ -1223,9 +1395,29 @@ async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -
 }
 
 pub async fn handle_worker_list() -> i32 {
-    let names = super::config_file::list_worker_names();
+    let config_names = super::config_file::list_worker_names();
 
-    if names.is_empty() {
+    // Discovery union: on-disk PID files + on-disk managed dirs + live process
+    // table (catches workers whose pidfiles were removed but the process kept
+    // running -- the actual repro from the user's bug report).
+    let disk_names = discover_disk_worker_names();
+    let ps_names = discover_running_worker_names_from_ps();
+    let ps_set: std::collections::HashSet<String> = ps_names.iter().cloned().collect();
+    let config_set: std::collections::HashSet<&str> =
+        config_names.iter().map(String::as_str).collect();
+
+    // Orphan = not in current ./config.yaml AND demonstrably alive (either via
+    // pidfile signal-0 check or because we just saw it in `ps`). Dead disk-only
+    // entries are stale runtime state, not what the user is asking about.
+    let candidate_names: std::collections::BTreeSet<String> =
+        disk_names.into_iter().chain(ps_names.into_iter()).collect();
+    let orphan_names: Vec<String> = candidate_names
+        .into_iter()
+        .filter(|n| !config_set.contains(n.as_str()))
+        .filter(|n| ps_set.contains(n) || is_worker_running(n))
+        .collect();
+
+    if config_names.is_empty() && orphan_names.is_empty() {
         eprintln!("  No workers. Use `iii worker add` to get started.");
         return 0;
     }
@@ -1246,7 +1438,7 @@ pub async fn handle_worker_list() -> i32 {
         "------".dimmed()
     );
 
-    for name in &names {
+    for name in &config_names {
         let worker_type = match super::config_file::resolve_worker_type(name) {
             ResolvedWorkerType::Local { .. } => "local",
             ResolvedWorkerType::Oci { .. } => "oci",
@@ -1264,8 +1456,54 @@ pub async fn handle_worker_list() -> i32 {
 
         eprintln!("  {:25} {:10} {}", name, worker_type.dimmed(), running);
     }
+
+    // Orphans: alive on this machine but absent from the current ./config.yaml.
+    // The TYPE column is inferred from the on-disk evidence we found the worker
+    // through (managed dir vs binary pidfile/exe). Falls back to "?" only when
+    // a worker was discovered solely via `ps` and no on-disk artifact remains.
+    for name in &orphan_names {
+        let home = dirs::home_dir().unwrap_or_default();
+        let worker_type = resolve_orphan_type(
+            name,
+            &home.join(".iii/managed"),
+            &home.join(".iii/pids"),
+            &home.join(".iii/workers"),
+        );
+        eprintln!(
+            "  {:25} {:10} {}",
+            name,
+            worker_type.dimmed(),
+            "orphan".yellow()
+        );
+    }
+
     eprintln!();
     0
+}
+
+/// Infers the TYPE label for an orphan worker from on-disk evidence alone.
+///
+/// We can't rebuild the `ResolvedWorkerType` enum without a config entry, but
+/// we can tell `managed` (OCI/VM/local-path -- shares a directory shape) from
+/// `binary` (single executable + sidecar pidfile) just from where the artifact
+/// lives. Returns "?" when only a `ps` match exists and every artifact has been
+/// cleaned up under it -- the honest answer.
+///
+/// Path arguments are injected to keep the function unit-testable against a
+/// tempdir without an env override.
+fn resolve_orphan_type(
+    name: &str,
+    managed_dir: &std::path::Path,
+    pids_dir: &std::path::Path,
+    workers_dir: &std::path::Path,
+) -> &'static str {
+    if managed_dir.join(name).is_dir() {
+        return "managed";
+    }
+    if pids_dir.join(format!("{}.pid", name)).is_file() || workers_dir.join(name).is_file() {
+        return "binary";
+    }
+    "?"
 }
 
 /// Pick the log directory with the most recently modified, non-empty log file.
@@ -1669,6 +1907,215 @@ mod tests {
     }
 
     #[test]
+    fn discover_disk_worker_names_unions_managed_and_pids() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed = dir.path().join("managed");
+        let pids = dir.path().join("pids");
+        std::fs::create_dir_all(managed.join("alpha")).unwrap();
+        std::fs::create_dir_all(managed.join("beta")).unwrap();
+        std::fs::create_dir_all(&pids).unwrap();
+        std::fs::write(pids.join("gamma.pid"), "1234").unwrap();
+        // Overlap: same name appears in both sources -> deduped.
+        std::fs::write(pids.join("alpha.pid"), "5678").unwrap();
+
+        let names = discover_disk_worker_names_in(&managed, &pids);
+        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn discover_disk_worker_names_handles_missing_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = discover_disk_worker_names_in(
+            &dir.path().join("nope-managed"),
+            &dir.path().join("nope-pids"),
+        );
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn discover_disk_worker_names_skips_non_pid_files_and_loose_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed = dir.path().join("managed");
+        let pids = dir.path().join("pids");
+        std::fs::create_dir_all(managed.join("alpha")).unwrap();
+        // Loose file under managed/ is not a worker dir, must be skipped.
+        std::fs::write(managed.join("README.md"), "").unwrap();
+        std::fs::create_dir_all(&pids).unwrap();
+        std::fs::write(pids.join("beta.pid"), "1").unwrap();
+        // Non-.pid files under pids/ must be skipped.
+        std::fs::write(pids.join("notes.txt"), "").unwrap();
+        // Empty-name guard: a bare ".pid" file must not yield "".
+        std::fs::write(pids.join(".pid"), "").unwrap();
+
+        let names = discover_disk_worker_names_in(&managed, &pids);
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn discover_running_from_ps_finds_binary_workers() {
+        let workers = std::path::PathBuf::from("/home/u/.iii/workers");
+        let managed = std::path::PathBuf::from("/home/u/.iii/managed");
+        let ps = "\
+/home/u/.iii/workers/image-resize\n\
+/usr/bin/zsh\n\
+/home/u/.iii/workers/another-binary --flag\n";
+        let names = discover_running_worker_names_from_ps_output(ps, &workers, &managed);
+        assert_eq!(names, vec!["another-binary", "image-resize"]);
+    }
+
+    #[test]
+    fn discover_running_from_ps_finds_vm_boot_workers() {
+        let workers = std::path::PathBuf::from("/home/u/.iii/workers");
+        let managed = std::path::PathBuf::from("/home/u/.iii/managed");
+        // Real-world cmdline shape from ~/.local/bin/iii-worker __vm-boot.
+        let ps = "\
+/home/u/.local/bin/iii-worker __vm-boot --rootfs /home/u/.iii/managed/todo-worker-python/rootfs --exec todo-worker --workdir /app --pid-file /home/u/.iii/managed/todo-worker-python/vm.pid --env FOO=bar\n\
+/home/u/.local/bin/iii-worker __vm-boot --pid-file /home/u/.iii/managed/postgres/vm.pid --rootfs /home/u/.iii/managed/postgres/rootfs\n";
+        let names = discover_running_worker_names_from_ps_output(ps, &workers, &managed);
+        assert_eq!(names, vec!["postgres", "todo-worker-python"]);
+    }
+
+    #[test]
+    fn discover_running_from_ps_dedups_across_patterns() {
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        // Same name via both binary and vm-boot patterns -> single entry.
+        let ps = "\
+/h/.iii/workers/dual\n\
+/h/.local/bin/iii-worker __vm-boot --pid-file /h/.iii/managed/dual/vm.pid\n";
+        let names = discover_running_worker_names_from_ps_output(ps, &workers, &managed);
+        assert_eq!(names, vec!["dual"]);
+    }
+
+    #[test]
+    fn discover_running_from_ps_ignores_unrelated_processes_and_malformed_input() {
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        let ps = "\
+\n\
+   \n\
+/usr/bin/python\n\
+/h/.local/bin/iii-worker __serve\n\
+/h/.local/bin/iii-worker __vm-boot --rootfs /h/.iii/managed/x/rootfs\n\
+/h/.local/bin/iii-worker __vm-boot --pid-file\n\
+/h/.local/bin/iii-worker __vm-boot --pid-file /elsewhere/vm.pid\n";
+        // No `--pid-file <path>` matching managed prefix → no orphans found.
+        let names = discover_running_worker_names_from_ps_output(ps, &workers, &managed);
+        assert!(names.is_empty(), "got unexpected names: {names:?}");
+    }
+
+    #[test]
+    fn discover_running_from_proc_style_cmdlines() {
+        // Simulates Linux /proc/<pid>/cmdline shape: NULs → spaces → joined
+        // with newlines exactly the way collect_cmdlines() produces. Verifies
+        // the parser is identical regardless of source platform.
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        let proc_like = [
+            "/h/.iii/workers/image-resize",
+            "/h/.local/bin/iii-worker __vm-boot --pid-file /h/.iii/managed/todo/vm.pid --rootfs /h/.iii/managed/todo/rootfs",
+            "/usr/bin/python3 server.py",
+        ]
+        .join("\n");
+        let names = discover_running_worker_names_from_ps_output(&proc_like, &workers, &managed);
+        assert_eq!(names, vec!["image-resize", "todo"]);
+    }
+
+    #[test]
+    fn find_worker_pid_returns_first_matching_process() {
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        let processes = vec![
+            (12, "/usr/bin/zsh".to_string()),
+            (
+                42,
+                "/h/.local/bin/iii-worker __vm-boot --pid-file /h/.iii/managed/todo/vm.pid"
+                    .to_string(),
+            ),
+            (77, "/h/.iii/workers/image-resize".to_string()),
+        ];
+        assert_eq!(
+            find_worker_pid_in_processes(&processes, "todo", &workers, &managed),
+            Some(42)
+        );
+        assert_eq!(
+            find_worker_pid_in_processes(&processes, "image-resize", &workers, &managed),
+            Some(77)
+        );
+        assert_eq!(
+            find_worker_pid_in_processes(&processes, "no-such-worker", &workers, &managed),
+            None
+        );
+    }
+
+    #[test]
+    fn find_worker_pid_returns_none_for_empty_input() {
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        assert_eq!(
+            find_worker_pid_in_processes(&[], "anything", &workers, &managed),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_orphan_type_managed_takes_priority() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("managed");
+        let pids = tmp.path().join("pids");
+        let workers = tmp.path().join("workers");
+        std::fs::create_dir_all(managed.join("dual")).unwrap();
+        std::fs::create_dir_all(&pids).unwrap();
+        std::fs::write(pids.join("dual.pid"), "1").unwrap();
+        // managed/ wins because the directory shape carries more information
+        // (rootfs, logs, etc.) than a bare pidfile.
+        assert_eq!(
+            resolve_orphan_type("dual", &managed, &pids, &workers),
+            "managed"
+        );
+    }
+
+    #[test]
+    fn resolve_orphan_type_binary_via_pidfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("managed");
+        let pids = tmp.path().join("pids");
+        let workers = tmp.path().join("workers");
+        std::fs::create_dir_all(&pids).unwrap();
+        std::fs::write(pids.join("img-resize.pid"), "1234").unwrap();
+        assert_eq!(
+            resolve_orphan_type("img-resize", &managed, &pids, &workers),
+            "binary"
+        );
+    }
+
+    #[test]
+    fn resolve_orphan_type_binary_via_workers_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("managed");
+        let pids = tmp.path().join("pids");
+        let workers = tmp.path().join("workers");
+        std::fs::create_dir_all(&workers).unwrap();
+        std::fs::write(workers.join("img-resize"), b"#!/bin/sh\n").unwrap();
+        // No pidfile, only the executable -- still recognisable as binary.
+        assert_eq!(
+            resolve_orphan_type("img-resize", &managed, &pids, &workers),
+            "binary"
+        );
+    }
+
+    #[test]
+    fn resolve_orphan_type_unknown_when_only_ps_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("managed");
+        let pids = tmp.path().join("pids");
+        let workers = tmp.path().join("workers");
+        // Nothing on disk under any of the three roots: a worker that is alive
+        // in ps but has had every artifact cleaned up. Honest answer is "?".
+        assert_eq!(resolve_orphan_type("ghost", &managed, &pids, &workers), "?");
+    }
+
+    #[test]
     fn dir_size_nested() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("sub");
@@ -1912,7 +2359,7 @@ mod tests {
             std::fs::write(proj.join("package.json"), r#"{"name":"test"}"#).unwrap();
 
             let path_str = proj.to_string_lossy().to_string();
-            let exit_code = handle_managed_add(&path_str, false, None, false, false).await;
+            let exit_code = handle_managed_add(&path_str, false, false, false).await;
             assert_eq!(exit_code, 0, "should succeed for valid local path");
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -1934,7 +2381,7 @@ mod tests {
     async fn handle_managed_add_local_path_rejects_nonexistent() {
         in_temp_dir_async(|_dir| async move {
             let exit_code =
-                handle_managed_add("./nonexistent-path-12345", false, None, false, false).await;
+                handle_managed_add("./nonexistent-path-12345", false, false, false).await;
             assert_eq!(exit_code, 1, "should fail for nonexistent local path");
         })
         .await;
@@ -1951,7 +2398,7 @@ mod tests {
             let path_str = proj.to_string_lossy().to_string();
 
             // First add
-            let exit_code = handle_managed_add(&path_str, false, None, false, false).await;
+            let exit_code = handle_managed_add(&path_str, false, false, false).await;
             assert_eq!(exit_code, 0);
             assert!(
                 std::fs::read_to_string("config.yaml")
@@ -1960,7 +2407,7 @@ mod tests {
             );
 
             // Force re-add
-            let exit_code = handle_managed_add(&path_str, false, None, true, false).await;
+            let exit_code = handle_managed_add(&path_str, false, true, false).await;
             assert_eq!(exit_code, 0, "force re-add should succeed");
 
             let content = std::fs::read_to_string("config.yaml").unwrap();

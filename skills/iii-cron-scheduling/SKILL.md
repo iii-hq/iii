@@ -17,14 +17,15 @@ Comparable to: node-cron, APScheduler, crontab
 Use the concepts below when they fit the task. Not every scheduled job needs all of them.
 
 - Cron expressions use a **7-field format**: `second minute hour day month weekday year`
-- **CronModule** evaluates expressions and fires triggers on schedule
+- The cron parser also accepts 5-field (no seconds) and 6-field (no year) expressions, but 7-field is the standard.
+- **iii-cron** evaluates expressions and fires triggers on schedule
 - Handlers should be **fast** — enqueue heavy work to a queue instead of blocking the cron handler
 - Each cron trigger binds one expression to one function
 - Overlapping schedules are fine; each trigger fires independently
 
 ## Architecture
 
-    CronModule timer tick
+    iii-cron timer tick
       → registerTrigger type:'cron' expression match
         → registerFunction handler
           → (optional) TriggerAction.Enqueue for heavy work
@@ -35,7 +36,7 @@ Use the concepts below when they fit the task. Not every scheduled job needs all
 | ----------------------------------------- | ---------------------------------------- |
 | `registerFunction`                        | Define the handler for the scheduled job |
 | `registerTrigger({ type: 'cron' })`       | Bind a cron expression to a function     |
-| `config: { expression: '0 0 9 * * * *' }` | Cron schedule in 7-field format          |
+| `config: { expression: '0 0 9 * * * *' }`   | Cron schedule in 7-field format          |
 
 ## Reference Implementation
 
@@ -66,7 +67,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-CronModule must be enabled in iii-config.yaml. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+iii-cron must be enabled in iii-config.yaml. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

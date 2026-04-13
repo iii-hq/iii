@@ -3,8 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
   workflow_dispatch:
 
 concurrency:

@@ -6,23 +6,14 @@ Works with Claude Code, Cursor, Gemini CLI, OpenCode, Amp, Goose, Roo Code, GitH
 
 ## Install
 
-### One command
-
 ```bash
-npx skills add iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 ```
 
-### SkillKit
+### Install a single skill
 
 ```bash
-# Install all iii skills
-npx skillkit install iii-hq/iii
-
-# Install a single skill
-npx skillkit install iii-hq/iii --skills=iii-http-endpoints
-
-# Sync skills across all your agents
-npx skillkit sync
+npx skillkit add iii-hq/iii/skills --skills=iii-http-endpoints
 ```
 
 ### Git clone
@@ -43,8 +34,7 @@ git clone https://github.com/iii-hq/iii.git /tmp/iii && cp -r /tmp/iii/skills/ii
 If you use multiple agents, SkillKit keeps skills in sync across all of them:
 
 ```bash
-# Install once, sync to Claude Code + Cursor + Gemini CLI
-npx skillkit install iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 npx skillkit sync --agent claude-code
 npx skillkit sync --agent cursor
 npx skillkit sync --agent gemini-cli

@@ -4,6 +4,51 @@
 //! reimplementing logic from scratch. All iii-init functionality is Linux-only,
 //! so every test is gated with `#[cfg(target_os = "linux")]`.
 
+// These tests inspect source code and formatting conventions, no Linux APIs needed.
+
+/// Verify that configure_network does NOT bring up the loopback interface.
+/// Without lo, 127.0.0.1 traffic routes through eth0 to the host via smoltcp.
+#[test]
+fn configure_network_source_omits_loopback_setup() {
+    let source = include_str!("../src/network.rs");
+    let fn_start = source
+        .find("fn configure_network")
+        .expect("configure_network function exists");
+    let block = &source[fn_start..];
+    let closure_start = block.find("let result = (||").expect("closure exists");
+    let closure_end = block[closure_start..].find("})();").expect("closure end");
+    let closure_body = &block[closure_start..closure_start + closure_end];
+
+    // The closure must NOT bring up lo -- that's the whole point of the change.
+    assert!(
+        !closure_body.contains(r#"set_interface_up(sock, b"lo\0")"#),
+        "configure_network must NOT bring up the loopback interface; \
+         127.0.0.1 traffic should route through eth0 to reach the host"
+    );
+
+    // It MUST still configure eth0.
+    assert!(
+        closure_body.contains("eth0"),
+        "configure_network must still configure eth0"
+    );
+}
+
+/// Verify the /etc/hosts content format maps localhost to a gateway IP,
+/// not to 127.0.0.1 (which would be the unreachable guest loopback).
+#[test]
+fn etc_hosts_format_maps_localhost_to_gateway() {
+    let source = include_str!("../src/network.rs");
+    // The write call should produce "<gateway>\tlocalhost\n", not "127.0.0.1\tlocalhost"
+    assert!(
+        source.contains(r#"format!("{gw}\tlocalhost\n")"#),
+        "should write /etc/hosts mapping localhost to the gateway IP"
+    );
+    assert!(
+        !source.contains(r#""127.0.0.1\tlocalhost"#),
+        "should NOT write 127.0.0.1 as localhost in /etc/hosts"
+    );
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use iii_init::error::InitError;

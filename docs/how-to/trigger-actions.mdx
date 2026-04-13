@@ -644,7 +644,7 @@ iii.registerFunction('etl::extract', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'etl::extract',
-  config: { expression: '0 * * * *' },
+  config: { expression: '0 0 * * * * *' },
 })
 ```
 </Tab>
@@ -681,7 +681,7 @@ fn = iii.register_function("etl::extract", extract)
 iii.register_trigger({
     "type": "cron",
     "function_id": fn.id,
-    "config": {"expression": "0 * * * *"},
+    "config": {"expression": "0 0 * * * * *"},
 })
 ```
 </Tab>
@@ -727,7 +727,7 @@ iii.register_function(reg);
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "etl::extract".into(),
-    config: json!({ "expression": "0 * * * *" }),
+    config: json!({ "expression": "0 0 * * * * *" }),
     metadata: None,
 })?;
 ```

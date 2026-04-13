@@ -77,7 +77,7 @@ Use the adaptations below when they apply to the task.
 - The `trackStep` helper pattern (state update + stream event) is reusable for any pipeline
 - Failed jobs exhaust retries and move to a DLQ — see the [dead-letter-queues HOWTO](https://iii.dev/docs/how-to/dead-letter-queues)
 - DLQ support for named queues is provided by the Builtin and RabbitMQ adapters (Redis is pub/sub only)
-- Cron expressions use 7-position numeric format: `0 0 * * * * *` (every hour)
+- Cron expressions use 7-field format: `0 0 * * * * *` (every hour)
 
 ## Engine Configuration
 
