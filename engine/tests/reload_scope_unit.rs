@@ -56,10 +56,7 @@ fn register_function_records_into_active_scope() {
     );
     let regs = engine.end_worker_scope();
 
-    assert_eq!(
-        regs.function_ids,
-        vec!["test::Worker::handler".to_string()]
-    );
+    assert_eq!(regs.function_ids, vec!["test::Worker::handler".to_string()]);
 }
 
 #[test]
@@ -194,8 +191,7 @@ async fn serve_returns_on_sigterm() {
     // the default disposition (process termination) is replaced. The worker's
     // own shutdown_signal() will also see the signal because tokio signal
     // handlers are process-global.
-    let mut sigterm_guard =
-        signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    let mut sigterm_guard = signal(SignalKind::terminate()).expect("install SIGTERM handler");
 
     // Use a minimal config: only declare iii-worker-manager (bound to an
     // ephemeral port to avoid collisions with parallel tests and any local

@@ -161,12 +161,11 @@ pub async fn handle_managed_add(
         let (plain_name, _) = parse_worker_input(image_or_name);
 
         let is_oci_ref = plain_name.contains('/') || plain_name.contains(':');
-        if !is_oci_ref {
-            if let Err(e) = super::registry::validate_worker_name(&plain_name) {
+        if !is_oci_ref
+            && let Err(e) = super::registry::validate_worker_name(&plain_name) {
                 eprintln!("{} {}", "error:".red(), e);
                 return 1;
             }
-        }
 
         if is_worker_running(&plain_name) {
             eprintln!(
@@ -521,8 +520,8 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     let mut image_count: u32 = 0;
 
     // Clear binary workers
-    if workers_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&workers_dir) {
+    if workers_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&workers_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 // Skip entries with invalid names (e.g. symlinks with path traversal)
@@ -530,13 +529,11 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
                     continue;
                 }
                 // Verify resolved path stays under workers_dir
-                if let Ok(resolved) = entry.path().canonicalize() {
-                    if let Ok(base) = workers_dir.canonicalize() {
-                        if !resolved.starts_with(&base) {
+                if let Ok(resolved) = entry.path().canonicalize()
+                    && let Ok(base) = workers_dir.canonicalize()
+                        && !resolved.starts_with(&base) {
                             continue;
                         }
-                    }
-                }
                 if is_worker_running(&name) {
                     skipped.push(name);
                     continue;
@@ -546,21 +543,19 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
                 worker_count += 1;
             }
         }
-    }
 
     // Clear OCI images — protect running OCI workers
     if images_dir.exists() {
         // Build set of image hashes belonging to running OCI workers
         let mut protected_hashes = std::collections::HashSet::new();
         for name in super::config_file::list_worker_names() {
-            if is_worker_running(&name) {
-                if let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name) {
+            if is_worker_running(&name)
+                && let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name) {
                     let dir = image_cache_dir(&image_ref);
                     if let Some(hash) = dir.file_name().and_then(|f| f.to_str()) {
                         protected_hashes.insert(hash.to_string());
                     }
                 }
-            }
         }
 
         if let Ok(entries) = std::fs::read_dir(&images_dir) {
@@ -641,8 +636,8 @@ pub fn is_worker_running(worker_name: &str) -> bool {
     let bin_pid = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
     for pid_file in [oci_pid, bin_pid] {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<u32>() {
                 // Check if process is alive (signal 0 = existence check)
                 #[cfg(unix)]
                 {
@@ -659,7 +654,6 @@ pub fn is_worker_running(worker_name: &str) -> bool {
                     return true;
                 }
             }
-        }
     }
     false
 }

@@ -297,10 +297,7 @@ impl Engine {
 
     /// Removes every registration recorded in `regs` from the engine's global
     /// registries. Used during worker destroy and reload.
-    pub fn remove_worker_registrations(
-        &self,
-        regs: &crate::workers::reload::WorkerRegistrations,
-    ) {
+    pub fn remove_worker_registrations(&self, regs: &crate::workers::reload::WorkerRegistrations) {
         for id in &regs.function_ids {
             self.remove_function_from_engine(id);
         }

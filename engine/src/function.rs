@@ -58,8 +58,7 @@ pub trait FunctionHandler {
 #[derive(Default)]
 pub struct FunctionsRegistry {
     pub functions: Arc<DashMap<String, Function>>,
-    pub(crate) active_scope:
-        Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
+    pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
 }
 
 impl FunctionsRegistry {

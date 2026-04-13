@@ -81,10 +81,8 @@ pub struct ReloadDiff {
 /// function. Equality uses `WorkerEntry::PartialEq` which compares `name`,
 /// `image`, and `config` structurally.
 pub fn diff_entries(old: &[WorkerEntry], new: &[WorkerEntry]) -> ReloadDiff {
-    let old_map: HashMap<&str, &WorkerEntry> =
-        old.iter().map(|e| (e.name.as_str(), e)).collect();
-    let new_map: HashMap<&str, &WorkerEntry> =
-        new.iter().map(|e| (e.name.as_str(), e)).collect();
+    let old_map: HashMap<&str, &WorkerEntry> = old.iter().map(|e| (e.name.as_str(), e)).collect();
+    let new_map: HashMap<&str, &WorkerEntry> = new.iter().map(|e| (e.name.as_str(), e)).collect();
 
     let mut diff = ReloadDiff::default();
 
@@ -156,10 +154,7 @@ impl ReloadManager {
 
         for name in &diff.removed {
             if mandatory_names.contains(name.as_str()) {
-                let msg = format!(
-                    "reload: refused to remove mandatory worker '{}'",
-                    name
-                );
+                let msg = format!("reload: refused to remove mandatory worker '{}'", name);
                 tracing::error!("{}", msg);
                 return Err(anyhow::anyhow!(msg));
             }
@@ -189,15 +184,16 @@ impl ReloadManager {
                 if let Err(e) = old.worker.destroy().await {
                     tracing::error!(
                         "reload: destroy failed for changed worker '{}': {}",
-                        entry.name, e
+                        entry.name,
+                        e
                     );
                 }
                 engine.remove_worker_registrations(&old.registrations);
             }
 
-            let rw = Self::start_worker(
-                entry, engine.clone(), &registry, global_shutdown_tx.clone(),
-            ).await?;
+            let rw =
+                Self::start_worker(entry, engine.clone(), &registry, global_shutdown_tx.clone())
+                    .await?;
             running.push(rw);
         }
 
@@ -209,7 +205,8 @@ impl ReloadManager {
                 if let Err(e) = removed.worker.destroy().await {
                     tracing::error!(
                         "reload: destroy failed for removed worker '{}': {}",
-                        name, e
+                        name,
+                        e
                     );
                 }
                 engine.remove_worker_registrations(&removed.registrations);
@@ -218,9 +215,9 @@ impl ReloadManager {
 
         // 3. ADDED: start new
         for entry in &diff.added {
-            let rw = Self::start_worker(
-                entry, engine.clone(), &registry, global_shutdown_tx.clone(),
-            ).await?;
+            let rw =
+                Self::start_worker(entry, engine.clone(), &registry, global_shutdown_tx.clone())
+                    .await?;
             running.push(rw);
         }
 
@@ -234,15 +231,20 @@ impl ReloadManager {
         registry: &Arc<WorkerRegistry>,
         global_shutdown_tx: watch::Sender<bool>,
     ) -> anyhow::Result<RunningWorker> {
-        let worker = entry.create_worker(engine.clone(), registry).await
+        let worker = entry
+            .create_worker(engine.clone(), registry)
+            .await
             .map_err(|e| {
                 anyhow::anyhow!("reload: failed to create worker '{}': {}", entry.name, e)
             })?;
 
-        worker.initialize().await
-            .map_err(|e| {
-                anyhow::anyhow!("reload: failed to initialize worker '{}': {}", entry.name, e)
-            })?;
+        worker.initialize().await.map_err(|e| {
+            anyhow::anyhow!(
+                "reload: failed to initialize worker '{}': {}",
+                entry.name,
+                e
+            )
+        })?;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let worker_arc: Arc<dyn Worker> = Arc::from(worker);
@@ -253,7 +255,8 @@ impl ReloadManager {
             .map_err(|e| {
                 anyhow::anyhow!(
                     "reload: failed to start background tasks for '{}': {}",
-                    entry.name, e
+                    entry.name,
+                    e
                 )
             })?;
 
@@ -299,8 +302,7 @@ impl ReloadManager {
             e
         })?;
 
-        let old_entries: Vec<WorkerEntry> =
-            running.iter().map(|rw| rw.entry.clone()).collect();
+        let old_entries: Vec<WorkerEntry> = running.iter().map(|rw| rw.entry.clone()).collect();
         let diff = diff_entries(&old_entries, &new_entries);
         tracing::info!(
             "reload: diff +{} added, -{} removed, ~{} changed, ={} unchanged",

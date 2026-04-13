@@ -194,13 +194,12 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
     let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 
     let host = reference.registry();
-    if let Some(hostname) = host.split(':').next() {
-        if (hostname == "localhost" || hostname == "127.0.0.1")
+    if let Some(hostname) = host.split(':').next()
+        && (hostname == "localhost" || hostname == "127.0.0.1")
             && !registries.contains(&host.to_string())
         {
             registries.push(host.to_string());
         }
-    }
 
     if let Ok(extra) = std::env::var("III_INSECURE_REGISTRIES") {
         for r in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {

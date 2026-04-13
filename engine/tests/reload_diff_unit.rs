@@ -55,7 +55,10 @@ fn changed_config_detected() {
 
     let d = diff_entries(&old, &new);
     assert_eq!(
-        d.changed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        d.changed
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["a"]
     );
     assert!(d.unchanged.is_empty());
@@ -80,7 +83,10 @@ fn changed_image_detected() {
 
     let d = diff_entries(&[a_old], &[a_new]);
     assert_eq!(
-        d.changed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        d.changed
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["a"]
     );
 }
@@ -133,7 +139,10 @@ fn changing_one_instance_only_marks_that_instance_changed() {
 
     let d = diff_entries(&old, &new);
     assert_eq!(
-        d.changed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        d.changed
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["iii-http"],
         "only the first instance should be marked as changed"
     );
@@ -163,7 +172,10 @@ fn changing_second_instance_only_marks_second_changed() {
 
     let d = diff_entries(&old, &new);
     assert_eq!(
-        d.changed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        d.changed
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["iii-http#1"],
         "only the second instance should be marked as changed"
     );
@@ -204,9 +216,7 @@ fn removing_second_instance_detected_as_removed() {
     assign_instance_ids(&mut old);
 
     // Only one iii-http in new config
-    let mut new = vec![
-        entry("iii-http", Some(json!({"port": 4112}))),
-    ];
+    let mut new = vec![entry("iii-http", Some(json!({"port": 4112})))];
     assign_instance_ids(&mut new);
 
     let d = diff_entries(&old, &new);

@@ -15,7 +15,11 @@ async fn parse_error_is_reported() {
     let f = write_config("workers: [not: valid: yaml");
     let path = f.path().to_str().unwrap();
     let result = ReloadManager::parse_and_normalize(path).await;
-    assert!(result.is_err(), "expected parse error, got {:?}", result.ok());
+    assert!(
+        result.is_err(),
+        "expected parse error, got {:?}",
+        result.ok()
+    );
     let err = format!("{}", result.unwrap_err());
     assert!(
         err.contains("reload: parse failed"),
@@ -32,10 +36,26 @@ async fn empty_config_injects_all_mandatory_workers() {
         .expect("normalize should succeed");
 
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert!(names.contains(&"iii-engine-functions"), "missing iii-engine-functions, got: {:?}", names);
-    assert!(names.contains(&"iii-worker-manager"), "missing iii-worker-manager, got: {:?}", names);
-    assert!(names.contains(&"iii-telemetry"), "missing iii-telemetry, got: {:?}", names);
-    assert!(names.contains(&"iii-observability"), "missing iii-observability, got: {:?}", names);
+    assert!(
+        names.contains(&"iii-engine-functions"),
+        "missing iii-engine-functions, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"iii-worker-manager"),
+        "missing iii-worker-manager, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"iii-telemetry"),
+        "missing iii-telemetry, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"iii-observability"),
+        "missing iii-observability, got: {:?}",
+        names
+    );
 }
 
 #[tokio::test]
@@ -47,7 +67,10 @@ async fn duplicate_worker_names_get_instance_ids() {
         .await
         .expect("duplicates should get instance IDs");
 
-    let foo_entries: Vec<_> = entries.iter().filter(|e| e.name.starts_with("foo")).collect();
+    let foo_entries: Vec<_> = entries
+        .iter()
+        .filter(|e| e.name.starts_with("foo"))
+        .collect();
     assert_eq!(foo_entries.len(), 2, "both foo entries should be preserved");
     assert_eq!(foo_entries[0].name, "foo");
     assert_eq!(foo_entries[1].name, "foo#1");
@@ -95,14 +118,15 @@ async fn commit_noop_when_diff_is_empty() {
         .map(|rw| rw.entry.name.clone())
         .collect();
 
-    assert_eq!(before, after, "empty commit must leave the running set unchanged");
+    assert_eq!(
+        before, after,
+        "empty commit must leave the running set unchanged"
+    );
 }
 
 #[tokio::test]
 async fn user_defined_workers_are_preserved() {
-    let f = write_config(
-        "workers:\n  - name: my::CustomUserWorker\nmodules: []\n",
-    );
+    let f = write_config("workers:\n  - name: my::CustomUserWorker\nmodules: []\n");
     let entries = ReloadManager::parse_and_normalize(f.path().to_str().unwrap())
         .await
         .expect("normalize should succeed");
@@ -121,7 +145,10 @@ fn enforce_guards_refuses_to_remove_mandatory_workers() {
     };
 
     let result = ReloadManager::enforce_guards(&diff);
-    assert!(result.is_err(), "expected refusal to remove mandatory worker");
+    assert!(
+        result.is_err(),
+        "expected refusal to remove mandatory worker"
+    );
     let err = format!("{}", result.unwrap_err());
     assert!(
         err.contains("refused to remove mandatory worker"),

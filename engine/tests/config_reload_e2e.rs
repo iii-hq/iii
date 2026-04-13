@@ -101,8 +101,7 @@ async fn config_change_reloads_without_crashing() {
     let path = tmp.path().to_path_buf();
     write_config(&path, minimal_config_yaml());
 
-    let cfg = EngineConfig::config_file(path.to_str().unwrap())
-        .expect("load initial config");
+    let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load initial config");
 
     let builder = EngineBuilder::new()
         .with_config(cfg)
@@ -145,8 +144,7 @@ async fn broken_yaml_config_exits_engine() {
     let path = tmp.path().to_path_buf();
     write_config(&path, minimal_config_yaml());
 
-    let cfg = EngineConfig::config_file(path.to_str().unwrap())
-        .expect("load initial config");
+    let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load initial config");
 
     let builder = EngineBuilder::new()
         .with_config(cfg)
@@ -203,8 +201,7 @@ async fn config_reload_removes_worker_function_registrations() {
     );
     write_config(&path, &initial_yaml);
 
-    let cfg = EngineConfig::config_file(path.to_str().unwrap())
-        .expect("load initial config");
+    let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load initial config");
 
     let builder = EngineBuilder::new()
         .register_worker::<TestEphemeralWorker>(TEST_EPHEMERAL_WORKER_NAME)

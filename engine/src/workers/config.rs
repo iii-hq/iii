@@ -518,11 +518,9 @@ impl EngineBuilder {
         // Lift the running workers out of `self` so we can mutably borrow them
         // inside the select loop. `self.running` is now empty; the teardown
         // at the end operates on the local `running` Vec.
-        let mut running: Vec<super::reload::RunningWorker> =
-            std::mem::take(&mut self.running);
+        let mut running: Vec<super::reload::RunningWorker> = std::mem::take(&mut self.running);
 
-        let (global_shutdown_tx, mut global_shutdown_rx) =
-            tokio::sync::watch::channel(false);
+        let (global_shutdown_tx, mut global_shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Start background tasks for each worker. The per-worker `shutdown_rx`
         // lets the engine stop ONE worker (used by reload). The `shutdown_tx`
@@ -551,9 +549,7 @@ impl EngineBuilder {
             running.iter().map(|rw| rw.shutdown_tx.clone()).collect();
         let mut global_rx_for_relay = global_shutdown_rx.clone();
         tokio::spawn(async move {
-            if global_rx_for_relay.changed().await.is_ok()
-                && *global_rx_for_relay.borrow()
-            {
+            if global_rx_for_relay.changed().await.is_ok() && *global_rx_for_relay.borrow() {
                 for tx in initial_worker_shutdowns {
                     let _ = tx.send(true);
                 }
@@ -569,8 +565,7 @@ impl EngineBuilder {
         // for modifications and trigger a reload automatically. Editors often
         // write a temp file then rename, so we debounce events by 500ms to
         // coalesce rapid writes into a single reload.
-        let (config_change_tx, mut config_change_rx) =
-            tokio::sync::mpsc::channel::<()>(1);
+        let (config_change_tx, mut config_change_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         // Keep the watcher alive for the duration of serve().
         let _watcher = if let Some(ref path) = config_path {
@@ -582,9 +577,7 @@ impl EngineBuilder {
                     if let Ok(event) = res {
                         use notify::EventKind;
                         match event.kind {
-                            EventKind::Modify(_)
-                            | EventKind::Create(_)
-                            | EventKind::Remove(_) => {
+                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
                                 let _ = tx.try_send(());
                             }
                             _ => {}
