@@ -239,11 +239,12 @@ pub fn resolve_worker_name(project_path: &Path) -> String {
     let manifest_path = project_path.join(WORKER_MANIFEST);
     if manifest_path.exists()
         && let Ok(content) = std::fs::read_to_string(&manifest_path)
-            && let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content)
-                && let Some(name) = doc.get("name").and_then(|n| n.as_str())
-                    && !name.is_empty() {
-                        return name.to_string();
-                    }
+        && let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content)
+        && let Some(name) = doc.get("name").and_then(|n| n.as_str())
+        && !name.is_empty()
+    {
+        return name.to_string();
+    }
     project_path
         .file_name()
         .and_then(|n| n.to_str())
