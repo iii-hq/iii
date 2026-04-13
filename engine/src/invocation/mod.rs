@@ -85,7 +85,7 @@ impl InvocationHandler {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
-        let function_kind = if function_id.starts_with("engine::") {
+        let function_kind = if crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
             "internal"
         } else {
             "user"
