@@ -33,15 +33,13 @@ quickstart/
 iii --config config.yaml
 ```
 
-The engine is now listening on `ws://localhost:49134`. Keep this terminal open.
+The engine is now listening on `ws://localhost:49134`. Keep this terminal open and open a second terminal in the `quickstart` directory for the remaining commands.
 
 ## 3. Start the Python worker
 
 <Info title="Workers can run anywhere">
   Workers only need a WebSocket connection to the iii engine. They can run locally, in the cloud, replicated in kubernetes, or anywhere else.
 </Info>
-
-Open a second terminal in the `quickstart` directory and start the first worker:
 
 ```bash
 iii worker add ./workers/math-worker
@@ -68,8 +66,6 @@ any functionality into a worker and then seamlessly compose that worker with oth
 
 ## 4. Start the TypeScript worker
 
-Open a third terminal in the `quickstart` directory and start the second worker:
-
 ```bash
 iii worker add ./workers/caller-worker
 ```
@@ -88,8 +84,7 @@ This worker registered the function `math::add_two_numbers` with the engine.
 
 ## 5. Call across languages
 
-Now open a fourth terminal in the `quickstart` directory and call the TypeScript worker.
-The TypeScript worker will then call the Python worker and return the result:
+Call the TypeScript worker. It will call the Python worker through the engine and return the result:
 
 ```bash
 iii trigger --function-id='math::add_two_numbers' --payload='{"a": 10, "b": 20}'
