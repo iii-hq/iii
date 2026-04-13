@@ -180,7 +180,11 @@ iii.registerFunction(
       function_id: 'math::add_two_numbers',
       payload: payload.body,
     });
-    return { status_code: 200, body: result, headers: { 'Content-Type': 'application/json' } };
+    return {
+      status_code: 200,
+      body: { c: result.c, running_total: result.running_total },
+      headers: { 'Content-Type': 'application/json' },
+    };
   },
 );
 
