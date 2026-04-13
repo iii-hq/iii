@@ -54,30 +54,33 @@ function locationOf(result) {
   return result.headers.location.value;
 }
 
-// ── /docs redirect cases ───────────────────────────────────────────────────
+// ── /docs redirect cases (preserves the /docs prefix) ──────────────────────
+// Why preserved: Mintlify docs project only serves content under /docs/..
+// docs.iii.dev/quickstart returns 404, docs.iii.dev/docs/quickstart works.
+// See redirects.js header comment for the full rationale.
 
-test('/docs exact → 301 https://docs.iii.dev/', () => {
+test('/docs exact → 301 https://docs.iii.dev/docs', () => {
   const result = handler(buildEvent('/docs', 'iii.dev'));
   assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/');
+  assert.equal(locationOf(result), 'https://docs.iii.dev/docs');
 });
 
-test('/docs/ trailing slash → 301 https://docs.iii.dev/', () => {
+test('/docs/ trailing slash → 301 https://docs.iii.dev/docs/', () => {
   const result = handler(buildEvent('/docs/', 'iii.dev'));
   assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/');
+  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/');
 });
 
-test('/docs/quickstart → 301 https://docs.iii.dev/quickstart', () => {
+test('/docs/quickstart → 301 https://docs.iii.dev/docs/quickstart', () => {
   const result = handler(buildEvent('/docs/quickstart', 'iii.dev'));
   assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/quickstart');
+  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/quickstart');
 });
 
 test('/docs/guide/deep/nested → preserves deep path on redirect', () => {
   const result = handler(buildEvent('/docs/guide/deep/nested', 'iii.dev'));
   assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/guide/deep/nested');
+  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/guide/deep/nested');
 });
 
 test('/docsfoo → NOT redirected (not under /docs/)', () => {
@@ -87,12 +90,15 @@ test('/docsfoo → NOT redirected (not under /docs/)', () => {
   assert.equal(result.uri, '/index.html');
 });
 
-// ── /llms.txt redirect ─────────────────────────────────────────────────────
+// ── /llms.txt: no special handling ─────────────────────────────────────────
+// Rationale: the current live site returns 404 for iii.dev/llms.txt, so
+// passing it through to S3 (also 404) preserves today's behavior. No point
+// redirecting to a URL that also 404s.
 
-test('/llms.txt → 301 https://docs.iii.dev/llms.txt', () => {
+test('/llms.txt → pass through unchanged (matches current 404 behavior)', () => {
   const result = handler(buildEvent('/llms.txt', 'iii.dev'));
-  assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/llms.txt');
+  assert.ok(!isRedirect(result));
+  assert.equal(result.uri, '/llms.txt');
 });
 
 // ── www → apex redirect ────────────────────────────────────────────────────
@@ -109,20 +115,14 @@ test('www.iii.dev/some/page → 301 https://iii.dev/some/page', () => {
   assert.equal(locationOf(result), 'https://iii.dev/some/page');
 });
 
-test('www.iii.dev/docs/foo → 301 https://docs.iii.dev/foo (ONE hop, not two)', () => {
+test('www.iii.dev/docs/foo → 301 https://docs.iii.dev/docs/foo (ONE hop, not two)', () => {
   const result = handler(buildEvent('/docs/foo', 'www.iii.dev'));
   assert.ok(isRedirect(result));
   assert.equal(
     locationOf(result),
-    'https://docs.iii.dev/foo',
+    'https://docs.iii.dev/docs/foo',
     'docs redirect must win over www→apex redirect to avoid a 2-hop chain',
   );
-});
-
-test('www.iii.dev/llms.txt → 301 https://docs.iii.dev/llms.txt (ONE hop)', () => {
-  const result = handler(buildEvent('/llms.txt', 'www.iii.dev'));
-  assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/llms.txt');
 });
 
 // ── SPA fallback ───────────────────────────────────────────────────────────
@@ -202,5 +202,5 @@ test('missing host header → still handles other rules correctly', () => {
   delete event.request.headers.host;
   const result = handler(event);
   assert.ok(isRedirect(result));
-  assert.equal(locationOf(result), 'https://docs.iii.dev/foo');
+  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/foo');
 });

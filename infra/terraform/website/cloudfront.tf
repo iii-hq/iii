@@ -61,10 +61,15 @@ resource "aws_cloudfront_response_headers_policy" "site" {
       override        = true
     }
 
+    # HSTS: match what iii.dev currently sends (1 year, includeSubDomains, no
+    # preload). Enabling preload is a ONE-WAY DOOR — it applies forever to
+    # cloud.iii.dev (a separate Vercel project) and any *.iii.dev wildcard
+    # subdomain. Audit every subdomain and confirm HTTPS-only before adding
+    # preload + submitting to hstspreload.org in a follow-up PR.
     strict_transport_security {
-      access_control_max_age_sec = 63072000
+      access_control_max_age_sec = 31536000
       include_subdomains         = true
-      preload                    = true
+      preload                    = false
       override                   = true
     }
 
