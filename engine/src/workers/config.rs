@@ -16,6 +16,8 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 
+use notify::Watcher;
+
 use super::{registry::WorkerRegistration, traits::Worker};
 use crate::engine::Engine;
 
@@ -372,8 +374,9 @@ impl EngineBuilder {
     }
 
     /// Records the path of the config file this engine was built from so that
-    /// reload-time code can re-read and re-apply it. When unset (e.g. running
-    /// with `--use-default-config`), SIGHUP reload is a no-op.
+    /// reload-time code can re-read and re-apply it. When set, `serve()` watches
+    /// this file for changes and reloads automatically. When unset (e.g. running
+    /// with `--use-default-config`), file watching is disabled.
     pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
         self.config_path = Some(path.into());
         self
@@ -484,9 +487,7 @@ impl EngineBuilder {
     /// Starts the engine server
     pub async fn serve(mut self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
-        #[cfg(unix)]
         let registry = self.registry.clone();
-        #[cfg(unix)]
         let config_path = self.config_path.clone();
 
         // Lift the running workers out of `self` so we can mutably borrow them
@@ -521,14 +522,6 @@ impl EngineBuilder {
         // Relay global shutdown into each per-worker shutdown channel so a
         // global Ctrl+C terminates every worker (including those added via
         // reload -- those get subscribed to the relay the next time around).
-        //
-        // NOTE: workers added via a later reload() call also need the relay to
-        // fire their per-worker shutdown channels. The current relay task only
-        // captures txs that exist at `serve()` entry. This is acceptable
-        // because a reload-added worker's `shutdown_tx` is fired directly by
-        // the commit path if needed, and the teardown at the end of `serve()`
-        // also iterates the final `running` set. If this becomes a problem,
-        // switch the relay to dynamically look up `running` under a mutex.
         let initial_worker_shutdowns: Vec<_> =
             running.iter().map(|rw| rw.shutdown_tx.clone()).collect();
         let mut global_rx_for_relay = global_shutdown_rx.clone();
@@ -547,43 +540,78 @@ impl EngineBuilder {
             .channel_manager
             .start_sweep_task(global_shutdown_rx.clone());
 
-        #[cfg(unix)]
-        let mut sighup = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::hangup(),
-        )?;
+        // Set up config file watcher. When a config path is set, we watch it
+        // for modifications and trigger a reload automatically. Editors often
+        // write a temp file then rename, so we debounce events by 500ms to
+        // coalesce rapid writes into a single reload.
+        let (config_change_tx, mut config_change_rx) =
+            tokio::sync::mpsc::channel::<()>(1);
 
-        #[cfg(not(unix))]
-        tracing::info!("reload: SIGHUP not supported on this platform");
+        // Keep the watcher alive for the duration of serve().
+        let _watcher = if let Some(ref path) = config_path {
+            let tx = config_change_tx.clone();
+            let watched_path = std::path::PathBuf::from(path);
+
+            let mut watcher = notify::RecommendedWatcher::new(
+                move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res {
+                        use notify::EventKind;
+                        match event.kind {
+                            EventKind::Modify(_)
+                            | EventKind::Create(_)
+                            | EventKind::Remove(_) => {
+                                let _ = tx.try_send(());
+                            }
+                            _ => {}
+                        }
+                    }
+                },
+                notify::Config::default(),
+            )?;
+
+            // Watch the parent directory so we catch rename-based writes
+            // (editors like vim write a temp file then rename it).
+            let watch_target = watched_path
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            watcher.watch(watch_target, notify::RecursiveMode::NonRecursive)?;
+
+            tracing::info!("reload: watching {} for changes", path);
+            Some(watcher)
+        } else {
+            tracing::info!("reload: no config file to watch (--use-default-config)");
+            None
+        };
+
+        // Drop the sender clone so config_change_rx completes when the
+        // watcher's sender is the only one left (and it's dropped on exit).
+        drop(config_change_tx);
 
         // Track fatal reload errors so we can exit with non-zero after teardown.
         let mut reload_error: Option<anyhow::Error> = None;
 
         loop {
-            #[cfg(unix)]
-            {
-                tokio::select! {
-                    _ = global_shutdown_rx.changed() => {
-                        if *global_shutdown_rx.borrow() { break; }
-                    }
-                    Some(_) = sighup.recv() => {
-                        if let Err(e) = super::reload::ReloadManager::reload(
-                            config_path.as_deref(),
-                            engine.clone(),
-                            registry.clone(),
-                            &mut running,
-                            global_shutdown_tx.clone(),
-                        ).await {
-                            reload_error = Some(e);
-                            break;
-                        }
+            tokio::select! {
+                _ = global_shutdown_rx.changed() => {
+                    if *global_shutdown_rx.borrow() { break; }
+                }
+                Some(()) = config_change_rx.recv() => {
+                    // Debounce: drain any queued events and wait 500ms for
+                    // writes to settle before reloading.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    while config_change_rx.try_recv().is_ok() {}
+
+                    if let Err(e) = super::reload::ReloadManager::reload(
+                        config_path.as_deref(),
+                        engine.clone(),
+                        registry.clone(),
+                        &mut running,
+                        global_shutdown_tx.clone(),
+                    ).await {
+                        reload_error = Some(e);
+                        break;
                     }
                 }
-            }
-
-            #[cfg(not(unix))]
-            {
-                global_shutdown_rx.changed().await?;
-                if *global_shutdown_rx.borrow() { break; }
             }
         }
 

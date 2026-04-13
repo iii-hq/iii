@@ -1,4 +1,4 @@
-# SIGHUP Reload for Engine Config — Design
+# Config Hot-Reload for Engine — Design
 
 **Status:** Draft (brainstormed 2026-04-10, pending eng review)
 **Branch:** `sighup-reload-iii-config`
@@ -8,21 +8,19 @@
 
 ## Goal
 
-Allow an operator to change `config.yaml` on a running iii engine and apply the changes without restarting the process. The reload is triggered by sending `SIGHUP` to the engine. A bad config **stops the engine process** with a clear error message showing exactly where the problem is, so the operator is forced to fix it before restarting — no silent running with stale config.
+Allow an operator to change `config.yaml` on a running iii engine and apply the changes without restarting the process. The engine watches the config file for changes and reloads automatically. A bad config **stops the engine process** with a clear error message showing exactly where the problem is, so the operator is forced to fix it before restarting — no silent running with stale config.
 
 ## Non-goals (explicit)
 
-- File watching (`notify`/`inotify`). Out of scope for v1.
-- A new HTTP/CLI endpoint for reload. SIGHUP only.
+- A new HTTP/CLI endpoint for reload.
 - Graceful drain of in-flight invocations on changed or removed workers.
 - Hot reload with zero blip for workers whose config actually changed.
 - Partial reload (only some workers).
 - Per-worker reload hooks on the `Worker` trait.
-- Windows support for SIGHUP. Feature-gated to Unix.
 
 ## Core decisions
 
-1. **Trigger:** SIGHUP only. Explicit operator action, matches the nginx/haproxy/postgres tradition.
+1. **Trigger:** File watcher via `notify` crate. The engine watches the config file for changes and reloads automatically. Works on all platforms (Linux, macOS, Windows).
 2. **Scope of reload:** Diff & patch. Only workers whose `WorkerEntry` changed get touched. Unchanged workers keep running untouched (the entire point of reload vs restart).
 3. **Changed-worker mechanism:** Destroy + recreate via existing `Worker` trait lifecycle. No new trait methods. Every worker supports reload on day one.
 4. **Failure policy: exit on bad config.** When the new config is invalid (parse error, validation failure, duplicate names, etc.), the engine **exits with a non-zero status code** and a detailed error message showing the config file path and the exact location/cause of the error. This prevents operators from unknowingly running with a stale config after a failed reload. The operator must fix the config and restart the engine.
@@ -85,9 +83,10 @@ EngineBuilder::new().with_config(cfg)   │
     ▼                                   │
 EngineBuilder::serve() ─────────────────┘
     │
+    │  file watcher on config_path (notify crate, 500ms debounce)
     │  tokio::select! {
     │    _ = global_shutdown.changed() => break,
-    │    Some(_) = sighup_stream.recv() => reload_manager.reload().await,
+    │    Some(()) = config_change_rx.recv() => reload_manager.reload().await,
     │  }
     │
     ▼
@@ -98,7 +97,7 @@ shutdown → destroy all remaining RunningWorkers
 
 ```
 ReloadManager {
-    config_path: Option<String>,      // None ⇒ --use-default-config, SIGHUP is noop
+    config_path: Option<String>,      // None ⇒ --use-default-config, watcher disabled
     engine: Arc<Engine>,
     registry: Arc<WorkerRegistry>,
     running: Mutex<Vec<RunningWorker>>, // serializes reloads
@@ -135,7 +134,7 @@ config and restart. This guarantees the running config always matches the file
 on disk — no silent stale-config drift.
 
 ```
-SIGHUP ──▶ ReloadManager::reload() acquires mutex
+file change ──▶ ReloadManager::reload() (debounced 500ms)
              │
              ▼
   ┌──────────────────────────────────────┐
@@ -268,36 +267,48 @@ one code path. No dual implementations to drift.
 
 ---
 
-## Signal handling
+## File watching
 
-**Where:** `EngineBuilder::serve()` at `engine/src/workers/config.rs:432` is
-where the current shutdown loop lives. We extend it:
+**Where:** `EngineBuilder::serve()` at `engine/src/workers/config.rs` sets up
+a `notify::RecommendedWatcher` on the config file's parent directory. We watch
+the parent (not the file itself) because editors like vim do write-temp-rename,
+which removes and recreates the file.
 
 ```rust
-#[cfg(unix)]
-let mut sighup = tokio::signal::unix::signal(
-    tokio::signal::unix::SignalKind::hangup(),
+let (config_change_tx, mut config_change_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+let _watcher = notify::RecommendedWatcher::new(
+    move |res| {
+        if let Ok(event) = res {
+            match event.kind {
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                    let _ = config_change_tx.try_send(());
+                }
+                _ => {}
+            }
+        }
+    },
+    notify::Config::default(),
 )?;
+watcher.watch(parent_dir, notify::RecursiveMode::NonRecursive)?;
 
 loop {
     tokio::select! {
         _ = shutdown_rx.changed() => break,
-        #[cfg(unix)]
-        Some(_) = sighup.recv() => {
-            tracing::info!("reload: SIGHUP received, reloading from {}", path);
+        Some(()) = config_change_rx.recv() => {
+            // debounce 500ms
             reload_manager.reload().await;
         }
     }
 }
 ```
 
-On Windows, the `#[cfg(unix)]` block disappears and the loop only handles
-shutdown. Startup logs `reload: SIGHUP not supported on this platform` so
-operators know.
+Events are debounced by 500ms to coalesce rapid writes (editors, CI tools).
+This works on all platforms — no `#[cfg(unix)]` gates needed.
 
 **Default-config mode:** When `cli.use_default_config` was passed, there is no
-file path to reload from. The reload manager's `config_path` is `None`, and
-SIGHUP logs `reload: ignored, running with --use-default-config` and returns.
+file path to watch. The watcher is not created and reload is disabled. Startup
+logs `reload: no config file to watch (--use-default-config)`.
 
 ---
 
@@ -319,7 +330,7 @@ Every reload cycle produces a predictable log sequence. Operators grep for
 **Success path:**
 
 ```
-reload: SIGHUP received, reloading from iii-config.yaml
+reload: config changed, reloading from iii-config.yaml
 reload: diff +2 added, -1 removed, ~1 changed, =7 unchanged
 reload: success
 ```
@@ -365,37 +376,38 @@ Success paths use `tracing::info!`.
 ### Integration
 
 - **Full reload cycle** — spin up a real engine with a tmpfile config, assert
-  a function is callable, rewrite the tmpfile, send SIGHUP via
-  `nix::sys::signal::kill(getpid(), Signal::SIGHUP)`, wait for `reload: success`,
-  assert new function is callable and old is not.
+  a function is callable, rewrite the tmpfile, wait for the file watcher to
+  trigger reload, assert new function is callable and old is not.
 - **Unchanged workers do not blip** — open a long-running call on an unchanged
-  worker, send SIGHUP that only mutates a different worker, assert the original
-  call completes normally.
-- **Bad YAML rollback** — rewrite tmpfile with a broken file, SIGHUP, assert
-  `reload: parse failed` is logged and the old state still handles calls.
-- **Validation failure rollback** — swap in a worker whose `initialize()`
-  always fails, SIGHUP, assert `reload: validation failed` and old state intact.
-- **Removed-worker cleanup** — remove a worker from config, SIGHUP, assert
-  its function IDs are gone from `FunctionsRegistry`.
-- **Mandatory injection** — remove a mandatory worker from config, SIGHUP,
-  assert it is auto-injected and no error fires.
+  worker, modify only a different worker's entry, assert the original call
+  completes normally.
+- **Bad YAML exits engine** — rewrite tmpfile with broken YAML, wait for the
+  watcher to trigger reload, assert `serve()` exits with an error containing
+  `parse failed`.
+- **Validation failure exits engine** — swap in a worker whose `initialize()`
+  always fails, assert `serve()` exits with `validation failed`.
+- **Removed-worker cleanup** — remove a worker from config, wait for reload,
+  assert its function IDs are gone from `FunctionsRegistry`.
+- **Mandatory injection** — remove a mandatory worker from config, wait for
+  reload, assert it is auto-injected and no error fires.
 
 ---
 
 ## Known risks
 
-- **Exit on bad config stops everything.** A typo in the config file after
-  SIGHUP kills all workers and drops all in-flight requests. This is by
-  design — the operator is forced to fix the error immediately rather than
-  running with stale config. Process supervisors (systemd, k8s) should be
-  configured to NOT auto-restart on this exit code, since restarting with
-  the same bad config would loop.
+- **Exit on bad config stops everything.** A typo in the config file kills
+  all workers and drops all in-flight requests. This is by design — the
+  operator is forced to fix the error immediately rather than running with
+  stale config. Process supervisors (systemd, k8s) should be configured to
+  NOT auto-restart on this exit code, since restarting with the same bad
+  config would loop.
 - **HTTP server port rebind blip** — if an operator changes a port, the TCP
   socket cycles. Documented behavior. Not fixed.
 - **In-flight invocations on changed/removed workers are dropped.** Destroy is
   not graceful-drain. A follow-up could add `Worker::drain()`.
-- **Rapid SIGHUPs** — the reload mutex serializes them. Second reload reads
-  the current file contents, so a burst converges to the latest state.
+- **Rapid file changes** — events are debounced by 500ms. Multiple rapid
+  writes coalesce into a single reload. The reload reads the file contents at
+  trigger time, so a burst converges to the latest state.
 - **File modified during parse** — `std::fs::read_to_string` is a single
   syscall. Partial reads are not a concern; malformed content triggers a parse
   error and the engine exits.
@@ -409,8 +421,6 @@ Success paths use `tracing::info!`.
 
 ## Open questions / follow-ups
 
-- Should there be a CLI/HTTP trigger for reload in addition to SIGHUP? **Out of
-  scope for v1.**
 - Should the engine expose a `/reload` introspection endpoint showing the last
   reload result? **Out of scope for v1.**
 - Should `Worker::drain()` exist for graceful in-flight handling? **Out of

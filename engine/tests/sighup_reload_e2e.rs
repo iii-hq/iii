@@ -4,20 +4,12 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-//! End-to-end integration tests for the SIGHUP-driven config reload pipeline.
+//! End-to-end integration tests for the file-watch-driven config reload
+//! pipeline.
 //!
-//! These tests spawn `EngineBuilder::serve()` in a background task, send a
-//! real SIGHUP to the current process after rewriting the config file on disk,
-//! and assert that the reload machinery behaves as expected without crashing
-//! the engine.
-//!
-//! SIGHUP's default disposition is to terminate the process. Each test installs
-//! a tokio-level SIGHUP handler BEFORE spawning `serve()` and holds it for the
-//! full duration of the test so the default disposition never fires (tokio
-//! signal handlers are process-global, so `serve()`'s own handler will also
-//! observe the signal).
-
-#![cfg(unix)]
+//! These tests spawn `EngineBuilder::serve()` in a background task, modify the
+//! config file on disk, and assert that the reload machinery detects the change
+//! and behaves as expected.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -31,7 +23,6 @@ use iii::workers::config::EngineConfig;
 use iii::workers::traits::Worker;
 use serde_json::Value;
 use serial_test::serial;
-use tokio::signal::unix::{SignalKind, signal};
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -44,28 +35,9 @@ fn minimal_config_yaml() -> &'static str {
     "workers: []\nmodules: []\n"
 }
 
-/// Write `contents` to `path` synchronously. The reload path reads the file
-/// synchronously, so an atomic overwrite here is sufficient.
+/// Write `contents` to `path` synchronously.
 fn write_config(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write config file");
-}
-
-/// Installs a process-global SIGHUP handler so the default terminate
-/// disposition is suppressed for the duration of the test. The returned
-/// receiver must be kept alive until the test finishes.
-fn install_sighup_guard() -> tokio::signal::unix::Signal {
-    signal(SignalKind::hangup()).expect("install SIGHUP handler")
-}
-
-/// Send SIGHUP to the current process.
-///
-/// SAFETY: `kill(2)` with SIGHUP against our own pid is well-defined. The
-/// signal is delivered asynchronously and caught by the SIGHUP handler we
-/// installed earlier in the test.
-fn raise_sighup() {
-    unsafe {
-        libc::kill(libc::getpid(), libc::SIGHUP);
-    }
 }
 
 fn make_dummy_function(id: &str) -> Function {
@@ -82,13 +54,12 @@ fn make_dummy_function(id: &str) -> Function {
 }
 
 // ---------------------------------------------------------------------------
-// Task 13 support: TestEphemeralWorker
+// TestEphemeralWorker
 // ---------------------------------------------------------------------------
 
 /// A minimal worker that registers a single known function ID when
 /// `register_functions` is called. Used to verify that removing a worker from
-/// the config via SIGHUP reload cleans up its registrations in
-/// `Engine.functions`.
+/// the config cleans up its registrations in `Engine.functions`.
 struct TestEphemeralWorker;
 
 const TEST_EPHEMERAL_WORKER_NAME: &str = "test::EphemeralReloadWorker";
@@ -120,14 +91,12 @@ impl Worker for TestEphemeralWorker {
 }
 
 // ---------------------------------------------------------------------------
-// Task 11: happy-path SIGHUP reload must not crash serve()
+// Valid config change: engine keeps running
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn sighup_reload_does_not_crash_engine() {
-    let _sighup_guard = install_sighup_guard();
-
+async fn config_change_reloads_without_crashing() {
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
     write_config(&path, minimal_config_yaml());
@@ -144,22 +113,19 @@ async fn sighup_reload_does_not_crash_engine() {
 
     let handle = tokio::spawn(async move { builder.serve().await });
 
-    // Let serve() spawn workers and enter its select loop.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Let serve() spawn workers and start the file watcher.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Rewrite the config with a trivially-different-but-equivalent body. The
-    // comment line forces a re-parse without adding workers that would bind
-    // real ports.
+    // Rewrite the config with a trivially-different-but-equivalent body.
+    // The file watcher detects the change, debounces 500ms, then reloads.
     write_config(&path, "workers: []\nmodules: []\n# reload trigger\n");
 
-    raise_sighup();
-
-    // Let the reload pipeline run (parse + diff + validate + commit).
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for watcher debounce (500ms) + reload pipeline.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     assert!(
         !handle.is_finished(),
-        "serve() should still be running after SIGHUP reload"
+        "serve() should still be running after a valid config reload"
     );
 
     handle.abort();
@@ -169,14 +135,12 @@ async fn sighup_reload_does_not_crash_engine() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 12: bad YAML must stop the engine with an error
+// Broken YAML: engine exits with error
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn sighup_with_broken_yaml_exits_engine() {
-    let _sighup_guard = install_sighup_guard();
-
+async fn broken_yaml_config_exits_engine() {
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
     write_config(&path, minimal_config_yaml());
@@ -193,19 +157,17 @@ async fn sighup_with_broken_yaml_exits_engine() {
 
     let handle = tokio::spawn(async move { builder.serve().await });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Corrupt the config. The engine must exit with an error describing
-    // the parse failure, not silently continue with the old config.
+    // the parse failure.
     write_config(&path, "this: is: not: [valid yaml");
 
-    raise_sighup();
-
-    // serve() must exit within 2 seconds with an error.
-    let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    // serve() must exit within 3 seconds (500ms debounce + reload + teardown).
+    let result = tokio::time::timeout(Duration::from_secs(3), handle).await;
     assert!(
         result.is_ok(),
-        "serve() did not exit within 2s of SIGHUP with broken YAML"
+        "serve() did not exit within 3s of broken config write"
     );
 
     let serve_result = result.unwrap().expect("join");
@@ -224,14 +186,12 @@ async fn sighup_with_broken_yaml_exits_engine() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 13: removing a worker from the config must clean up its registrations
+// Removing a worker from config cleans up its registrations
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn sighup_reload_removes_worker_function_registrations() {
-    let _sighup_guard = install_sighup_guard();
-
+async fn config_reload_removes_worker_function_registrations() {
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
 
@@ -267,20 +227,17 @@ async fn sighup_reload_removes_worker_function_registrations() {
 
     let handle = tokio::spawn(async move { builder.serve().await });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Rewrite the config with the worker removed.
     write_config(&path, minimal_config_yaml());
 
-    raise_sighup();
-
-    // Let the reload pipeline diff, destroy the removed worker, and clear its
-    // registrations from Engine.functions.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for watcher debounce (500ms) + reload pipeline.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     assert!(
         !handle.is_finished(),
-        "serve() should still be running after SIGHUP reload that removed a worker"
+        "serve() should still be running after reload that removed a worker"
     );
 
     assert!(

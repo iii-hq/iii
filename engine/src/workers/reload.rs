@@ -112,9 +112,8 @@ pub fn diff_entries(old: &[WorkerEntry], new: &[WorkerEntry]) -> ReloadDiff {
     diff
 }
 
-/// Orchestrates SIGHUP-triggered config reload. Task 6 adds only the
-/// read-only phases (parse + normalize); dry-run validation, commit, and the
-/// full `reload()` entry point come in later tasks.
+/// Orchestrates config file reload. Watches for file changes and runs the
+/// full reload pipeline: parse, normalize, diff, validate, commit.
 pub struct ReloadManager;
 
 impl ReloadManager {
@@ -428,7 +427,7 @@ impl ReloadManager {
         })
     }
 
-    /// Full SIGHUP reload pipeline. Runs phases in order:
+    /// Full config reload pipeline. Runs phases in order:
     ///
     /// 1. **Parse & normalize**: `parse_and_normalize(path)`.
     /// 2. **Diff** against the current `running` set. Logs the summary.
@@ -445,9 +444,9 @@ impl ReloadManager {
     /// `reload: ignored, running with --use-default-config` and returns
     /// (no error — there is simply nothing to reload).
     ///
-    /// This method is called from the serve loop on every SIGHUP. Callers are
-    /// responsible for serializing concurrent reload attempts (typically via a
-    /// mutex wrapping the shared `running` state).
+    /// This method is called from the serve loop when a config file change is
+    /// detected. Callers are responsible for serializing concurrent reload
+    /// attempts (typically via a mutex wrapping the shared `running` state).
     pub async fn reload(
         config_path: Option<&str>,
         engine: Arc<Engine>,
@@ -463,7 +462,7 @@ impl ReloadManager {
             }
         };
 
-        tracing::info!("reload: SIGHUP received, reloading from {}", path);
+        tracing::info!("reload: config changed, reloading from {}", path);
 
         // Phases 1 + 2
         let new_entries = Self::parse_and_normalize(path).await.map_err(|e| {

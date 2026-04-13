@@ -109,13 +109,9 @@ When a Worker disconnects — whether cleanly or due to a crash — the Engine a
 
 Workers reconnect automatically via the SDK's built-in reconnection logic. On reconnect, all `registerFunction` and `registerTrigger` calls are re-sent automatically.
 
-## Config Reload (SIGHUP)
+## Config Hot-Reload
 
-On Unix platforms, the Engine can re-read its config file at runtime without restarting the process. Send `SIGHUP` to the engine and it will diff the new config against the running worker set and apply only the workers whose entries actually changed.
-
-```bash
-kill -HUP $(pgrep iii)
-```
+The Engine watches its config file for changes and automatically reloads when the file is modified. Only workers whose `WorkerEntry` actually changed are touched — unchanged workers keep running without interruption.
 
 If the new config is valid, the reload applies atomically. If the new config is invalid, **the engine exits with an error** showing exactly what is wrong — the operator must fix the config and restart. This prevents running with a stale config unknowingly.
 
@@ -131,7 +127,7 @@ Unchanged workers keep running through the reload — no blip, no dropped invoca
 Every reload cycle emits a `reload:` log line sequence that operators can grep for:
 
 ```
-reload: SIGHUP received, reloading from iii-config.yaml
+reload: config changed, reloading from iii-config.yaml
 reload: diff +1 added, -0 removed, ~2 changed, =8 unchanged
 reload: success
 ```
@@ -139,7 +135,7 @@ reload: success
 Failure paths log `reload: FATAL: ...` with the specific error (including file path, line/column for parse errors, and worker name for validation errors) and then exit the engine process.
 
 <Info title="Limitations">
-  SIGHUP reload is Unix-only. Windows ignores SIGHUP. When the engine is started with `--use-default-config` there is no file to reload from, and SIGHUP logs `reload: ignored` and does nothing. In-flight invocations on changed or removed workers are not drained — they are dropped when the old worker is destroyed. A bad config causes the engine to exit — configure your process supervisor to NOT auto-restart on this exit code.
+  When the engine is started with `--use-default-config` there is no file to watch, so hot-reload is disabled. In-flight invocations on changed or removed workers are not drained — they are dropped when the old worker is destroyed. A bad config causes the engine to exit — configure your process supervisor to NOT auto-restart on this exit code.
 </Info>
 
 ## Architecture Agnostic
