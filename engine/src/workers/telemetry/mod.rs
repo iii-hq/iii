@@ -716,7 +716,11 @@ impl Worker for TelemetryWorker {
         let client_for_started = Arc::clone(self.active_client());
         let ctx_for_started = self.ctx.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            let user_invocation = collector::first_user_invocation_notify().notified();
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {},
+                _ = user_invocation => {},
+            }
 
             let snap = collect_engine_snapshot(&engine_for_started);
 

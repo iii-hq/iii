@@ -345,6 +345,10 @@ impl Engine {
         )
         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
+        if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
+            crate::workers::telemetry::collector::notify_user_function_invoked();
+        }
+
         let engine = self.clone();
         let worker = worker.clone();
         let function_id = function_id.to_string();
