@@ -82,6 +82,10 @@ Path  /Users/tony/iii/projects/testing/quickstart/workers/caller-worker
 
 This worker registered the function `math::add_two_numbers` with the engine.
 
+<Tip>
+  Workers need a moment to install their runtime dependencies after being added. If you see `"message": "Function math::add not found"`, wait a few seconds and try again.
+</Tip>
+
 ## 5. Call across languages
 
 Call the TypeScript worker. It will call the Python worker through the engine and return the result:
