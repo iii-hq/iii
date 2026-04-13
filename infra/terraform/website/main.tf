@@ -1,9 +1,9 @@
 terraform {
   backend "s3" {
-    bucket         = "motia-prod-terraform-state-us-east-1"
+    bucket         = "iii-terraform-state-prod-us-east-1"
     key            = "website/terraform.tfstate"
     region         = "us-east-1"
-    dynamodb_table = "motia-prod-terraform-locks"
+    dynamodb_table = "iii-terraform-locks-prod"
     encrypt        = true
   }
 }
@@ -16,9 +16,9 @@ provider "aws" {
     tags = {
       Project     = "iii"
       Environment = "prod"
+      Service     = "website"
       Module      = "infra/terraform/website"
       ManagedBy   = "terraform"
-      Service     = "iii-dev-website"
     }
   }
 }

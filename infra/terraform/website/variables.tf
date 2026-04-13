@@ -1,7 +1,7 @@
 variable "bucket_name" {
   description = "Name of the S3 bucket that stores the iii.dev website build output"
   type        = string
-  default     = "motia-prod-iii-website-us-east-1"
+  default     = "iii-website-prod-us-east-1"
 }
 
 variable "apex_domain" {

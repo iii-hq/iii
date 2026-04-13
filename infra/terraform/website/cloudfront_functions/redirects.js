@@ -27,10 +27,11 @@ function redirect(location) {
   };
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point (called by CloudFront runtime, not imported)
 function handler(event) {
-  var request = event.request;
-  var uri = request.uri;
-  var host = request.headers && request.headers.host && request.headers.host.value;
+  const request = event.request;
+  const uri = request.uri;
+  const host = request.headers?.host?.value;
 
   // 1. /docs exact or /docs/ exact → 301 docs.iii.dev/
   if (uri === '/docs' || uri === '/docs/') {
@@ -39,7 +40,7 @@ function handler(event) {
 
   // /docs/<anything> → 301 docs.iii.dev/<anything>
   if (uri.indexOf('/docs/') === 0) {
-    return redirect('https://docs.iii.dev' + uri.substring('/docs'.length));
+    return redirect(`https://docs.iii.dev${uri.substring('/docs'.length)}`);
   }
 
   // 2. /llms.txt → 301 docs.iii.dev/llms.txt
@@ -47,9 +48,9 @@ function handler(event) {
     return redirect('https://docs.iii.dev/llms.txt');
   }
 
-  // 3. www.iii.dev → 301 apex (preserves path including querystring handled by CF)
+  // 3. www.iii.dev → 301 apex (preserves path; querystring reattached by CF)
   if (host === 'www.iii.dev') {
-    return redirect('https://iii.dev' + uri);
+    return redirect(`https://iii.dev${uri}`);
   }
 
   // 4. /.well-known/* → pass through explicitly (S3 returns 404, no SPA fallback)
@@ -60,8 +61,8 @@ function handler(event) {
   // 5. SPA fallback: extensionless path, doesn't end with /, not the root.
   //    Rewrite URI to /index.html so S3 returns the SPA shell with 200.
   if (uri !== '/' && uri.charAt(uri.length - 1) !== '/') {
-    var lastSlash = uri.lastIndexOf('/');
-    var lastSegment = uri.substring(lastSlash + 1);
+    const lastSlash = uri.lastIndexOf('/');
+    const lastSegment = uri.substring(lastSlash + 1);
     if (lastSegment.indexOf('.') === -1) {
       request.uri = '/index.html';
       return request;

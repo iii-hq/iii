@@ -13,8 +13,8 @@ provider "aws" {
 }
 
 locals {
-  state_bucket_name = "motia-prod-terraform-state-us-east-1"
-  lock_table_name   = "motia-prod-terraform-locks"
+  state_bucket_name = "iii-terraform-state-prod-us-east-1"
+  lock_table_name   = "iii-terraform-locks-prod"
 }
 
 resource "aws_s3_bucket" "terraform_state" {

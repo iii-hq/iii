@@ -60,7 +60,7 @@ Confirm the SNS email subscription link in your inbox.
 Upload a placeholder file to test end-to-end:
 
 ```bash
-aws --profile motia-prod s3 cp /tmp/index.html s3://motia-prod-iii-website-us-east-1/index.html
+aws --profile motia-prod s3 cp /tmp/index.html s3://iii-website-prod-us-east-1/index.html
 curl -I https://iii-preview.iii.dev/
 ```
 
