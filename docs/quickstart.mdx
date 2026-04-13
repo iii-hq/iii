@@ -112,21 +112,25 @@ Now open `workers/math-worker/math_worker.py` and uncomment the state block so t
 
 ```python
 def add_handler(payload: dict) -> dict:
-    payload = payload.get("body", payload)
+    payload = payload.get("body", payload) # Handle http messages
     a = payload.get("a", 0)
     b = payload.get("b", 0)
     logger.info(f"math::add called in Python with a={a}, b={b}")
     result = {"c": a + b}
 
-    running_total = iii.trigger({
-        "function_id": "state::get",
-        "payload": {"scope": "math", "key": "running_total"},
-    })
+    running_total = iii.trigger(
+        {
+            "function_id": "state::get",
+            "payload": {"scope": "math", "key": "running_total"},
+        }
+    )
     new_total = (running_total or 0) + result["c"]
-    iii.trigger({
-        "function_id": "state::set",
-        "payload": {"scope": "math", "key": "running_total", "value": new_total},
-    })
+    iii.trigger(
+        {
+            "function_id": "state::set",
+            "payload": {"scope": "math", "key": "running_total", "value": new_total},
+        }
+    )
     result["running_total"] = new_total
 
     return result
@@ -167,14 +171,9 @@ From the folder containing iii's `config.yaml` run:
 iii worker add iii-http
 ```
 
-Open `workers/caller-worker/src/worker.ts` and uncomment the trigger registrations at the bottom of the file:
+Open `workers/caller-worker/src/worker.ts` and uncomment the trigger registration at the bottom of the file:
 
 ```typescript
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'math::add',
-  config: { api_path: '/math/add', http_method: 'POST' },
-});
 iii.registerTrigger({
   type: 'http',
   function_id: 'math::add_two_numbers',
@@ -182,21 +181,11 @@ iii.registerTrigger({
 });
 ```
 
-Restart the TypeScript worker, then call both endpoints with curl:
+Restart the TypeScript worker, then call the new endpoint with curl:
 
 ```bash
 iii worker stop caller-worker
 iii worker start caller-worker
-```
-
-```bash
-curl -X POST http://localhost:3111/math/add \
-  -H 'Content-Type: application/json' \
-  -d '{"a": 4, "b": 6}'
-```
-
-```json
-{ "c": 10, "running_total": 45 }
 ```
 
 ```bash
@@ -206,7 +195,7 @@ curl -X POST http://localhost:3111/math/add-two-numbers \
 ```
 
 ```json
-{ "c": 300, "running_total": 345 }
+{ "c": 300, "running_total": 335 }
 ```
 
 The same functions that respond to `iii trigger` now also respond to HTTP requests with no code changes to the handlers themselves.
@@ -229,6 +218,7 @@ logger = Logger()
 
 
 def add_handler(payload: dict) -> dict:
+    payload = payload.get("body", payload)  # Handle http messages
     a = payload.get("a", 0)
     b = payload.get("b", 0)
     logger.info(f"math::add called in Python with a={a}, b={b}")
