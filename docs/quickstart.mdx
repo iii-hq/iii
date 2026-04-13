@@ -290,28 +290,16 @@ scripts:
 
 ### Architecture
 
-```
-┌──────────────┐          ┌──────────────────┐
-│  iii trigger  │◀────────▶│    iii engine     │
-│  (CLI)        │   WS     │   :49134          │
-└──────────────┘          └──┬────┬────┬────┬─┘
-                             │    │    │    │
-┌──────────────┐     WS     │    │    │    │
-│  curl / HTTP  │◀──:3111──▶│    │    │    │
-└──────────────┘            │    │    │    │
-                            ▼    ▼    │    │
-               ┌────────────┐ ┌──────────────┐
-               │math-worker │ │caller-worker │
-               │(Python)    │ │(TypeScript)  │
-               │math::add   │ │math::add_two │
-               │            │ │  _numbers    │
-               └────────────┘ └──────────────┘
-                            ┌────┘    └────┐
-                            ▼              ▼
-                     ┌──────────┐   ┌──────────┐
-                     │iii-state │   │iii-http  │
-                     │(KV store)│   │(:3111)   │
-                     └──────────┘   └──────────┘
+```mermaid
+graph TD
+  CLI["iii trigger (CLI)"] <-->|WS| Engine["iii engine :49134"]
+  HTTP["curl / HTTP"] <-->|WS :3111| Engine
+
+  Engine --> Math["math-worker\n(Python)\nmath::add"]
+  Engine --> Caller["caller-worker\n(TypeScript)\nmath::add_two_numbers"]
+
+  Caller --> State["iii-state\n(KV store)"]
+  Caller --> HttpWorker["iii-http\n(:3111)"]
 ```
 
 
