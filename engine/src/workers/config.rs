@@ -571,8 +571,11 @@ impl EngineBuilder {
 
             // Watch the parent directory so we catch rename-based writes
             // (editors like vim write a temp file then rename it).
+            // For bare filenames like "config.yaml", parent() returns ""
+            // which is not a valid path — fall back to ".".
             let watch_target = watched_path
                 .parent()
+                .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(std::path::Path::new("."));
             watcher.watch(watch_target, notify::RecursiveMode::NonRecursive)?;
 
