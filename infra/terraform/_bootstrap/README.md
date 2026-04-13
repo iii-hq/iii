@@ -12,11 +12,11 @@ real AWS resources without losing history. **There are no secrets in this state 
 
 ## Resources
 
-- `aws_s3_bucket.terraform_state` → `motia-prod-terraform-state-us-east-1`
+- `aws_s3_bucket.terraform_state` → `iii-terraform-state-prod-us-east-1`
   - Versioning on (state file history)
   - SSE-S3 (server-side encryption)
   - All public access blocked
-- `aws_dynamodb_table.terraform_locks` → `motia-prod-terraform-locks`
+- `aws_dynamodb_table.terraform_locks` → `iii-terraform-locks-prod`
   - PAY_PER_REQUEST billing
   - Hash key `LockID` (required by the Terraform S3 backend)
 

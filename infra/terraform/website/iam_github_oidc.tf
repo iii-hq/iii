@@ -47,7 +47,7 @@ data "aws_iam_policy_document" "github_trust" {
 }
 
 resource "aws_iam_role" "github_deploy_website" {
-  name                 = "motia-prod-github-deploy-iii-website"
+  name                 = "iii-website-prod-github-deploy"
   description          = "Assumed by GitHub Actions from iii-hq/iii main branch + production env to deploy the iii.dev website"
   assume_role_policy   = data.aws_iam_policy_document.github_trust.json
   max_session_duration = 3600
@@ -88,7 +88,7 @@ data "aws_iam_policy_document" "github_deploy_website" {
 }
 
 resource "aws_iam_policy" "github_deploy_website" {
-  name   = "motia-prod-github-deploy-iii-website"
+  name   = "iii-website-prod-github-deploy"
   policy = data.aws_iam_policy_document.github_deploy_website.json
 }
 

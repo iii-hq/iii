@@ -27,7 +27,7 @@ locals {
 }
 
 resource "aws_cloudfront_origin_access_control" "site" {
-  name                              = "motia-prod-iii-website-oac"
+  name                              = "iii-website-prod-oac"
   description                       = "OAC for iii.dev website S3 origin"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
@@ -35,7 +35,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 }
 
 resource "aws_cloudfront_function" "redirects" {
-  name    = "motia-prod-iii-website-redirects"
+  name    = "iii-website-prod-redirects"
   runtime = "cloudfront-js-2.0"
   comment = "viewer-request: www->apex, /docs->docs.iii.dev, /llms.txt redirect, SPA fallback"
   publish = true
@@ -43,7 +43,7 @@ resource "aws_cloudfront_function" "redirects" {
 }
 
 resource "aws_cloudfront_response_headers_policy" "site" {
-  name    = "motia-prod-iii-website-security-headers"
+  name    = "iii-website-prod-security-headers"
   comment = "HSTS + CSP + security headers for iii.dev"
 
   security_headers_config {

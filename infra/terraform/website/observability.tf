@@ -1,5 +1,5 @@
 resource "aws_sns_topic" "alarms" {
-  name = "motia-prod-iii-website-alarms"
+  name = "iii-website-prod-alarms"
 }
 
 resource "aws_sns_topic_subscription" "email" {
@@ -13,7 +13,7 @@ resource "aws_sns_topic_subscription" "email" {
 
 # Catches bad deploys, CF Function JS errors, and origin (S3 or search API) 5xx bursts.
 resource "aws_cloudwatch_metric_alarm" "cf_5xx_rate" {
-  alarm_name          = "motia-prod-iii-website-cf-5xx-rate"
+  alarm_name          = "iii-website-prod-cf-5xx-rate"
   alarm_description   = "CloudFront 5xxErrorRate above 1% for the iii.dev distribution"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
@@ -39,7 +39,7 @@ resource "aws_cloudwatch_metric_alarm" "cf_5xx_rate" {
 # Catches the case where ACM auto-renewal fails and the cert is about to expire.
 # ACM publishes DaysToExpiry per certificate in us-east-1 for CloudFront certs.
 resource "aws_cloudwatch_metric_alarm" "acm_days_to_expiry" {
-  alarm_name          = "motia-prod-iii-website-acm-days-to-expiry"
+  alarm_name          = "iii-website-prod-acm-days-to-expiry"
   alarm_description   = "ACM certificate for iii.dev is within 30 days of expiring and has not renewed"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 1
