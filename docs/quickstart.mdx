@@ -1,9 +1,9 @@
 ---
 title: 'Quickstart'
-description: 'Scaffold a cross-language project and compose Python and TypeScript workers with the iii engine.'
+description: 'Scaffold a cross-language project, compose Python and TypeScript workers, and incrementally add functionality to a live system with zero downtime.'
 ---
 
-In this tutorial you will setup a simple iii project and run two services (which we call workers) that are inherently composable.
+In this tutorial you will learn how iii makes it unreasonably simple to build and extend backend software.
 
 <Info title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the [Install](/install) guide first.
@@ -94,7 +94,109 @@ iii trigger --function-id='math::add_two_numbers' --payload='{"a": 10, "b": 20}'
 { "c": 30 }
 ```
 
-## 6. How it works
+## 6. Add state
+
+The `iii worker add` command incrementally adds built-in workers to your running system. Start by adding the state worker, which gives every function access to a persistent key-value store.
+
+From the folder containing iii's `config.yaml` run:
+
+```bash
+iii worker add iii-state
+```
+
+Now open `workers/math-worker/math_worker.py` and uncomment the state block so the handler looks like this:
+
+```python
+def add_handler(payload: dict) -> dict:
+    a = payload.get("a", 0)
+    b = payload.get("b", 0)
+    logger.info(f"math::add called in Python with a={a}, b={b}")
+    result = {"c": a + b}
+
+    running_total = iii.trigger({
+        "function_id": "state::get",
+        "payload": {"scope": "math", "key": "running_total"},
+    })
+    new_total = (running_total or 0) + result["c"]
+    iii.trigger({
+        "function_id": "state::set",
+        "payload": {"scope": "math", "key": "running_total", "value": new_total},
+    })
+    result["running_total"] = new_total
+
+    return result
+```
+
+Restart the Python worker (stop it with `Ctrl+C` and re-run `iii worker add ./workers/math-worker`), then call it a few times:
+
+```bash
+iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
+```
+
+```json
+{ "c": 5, "running_total": 5 }
+```
+
+```bash
+iii trigger --function-id='math::add' --payload='{"a": 10, "b": 20}'
+```
+
+```json
+{ "c": 30, "running_total": 35 }
+```
+
+The running total persists across every call — including calls that arrive through `math::add_two_numbers`.
+
+## 7. Add HTTP endpoints
+
+Now let's add an HTTP worker to expose your functions as REST endpoints.
+
+From the folder containing iii's `config.yaml` run:
+
+```bash
+iii worker add iii-http
+```
+
+Open `workers/caller-worker/src/worker.ts` and uncomment the trigger registrations at the bottom of the file:
+
+```typescript
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'math::add',
+  config: { api_path: '/math/add', http_method: 'POST' },
+});
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'math::add_two_numbers',
+  config: { api_path: '/math/add-two-numbers', http_method: 'POST' },
+});
+```
+
+Restart the TypeScript worker (stop it with `Ctrl+C` and re-run `iii worker add ./workers/caller-worker`), then call both endpoints with curl:
+
+```bash
+curl -X POST http://localhost:3111/math/add \
+  -H 'Content-Type: application/json' \
+  -d '{"a": 4, "b": 6}'
+```
+
+```json
+{ "c": 10, "running_total": 45 }
+```
+
+```bash
+curl -X POST http://localhost:3111/math/add-two-numbers \
+  -H 'Content-Type: application/json' \
+  -d '{"a": 100, "b": 200}'
+```
+
+```json
+{ "c": 300, "running_total": 345 }
+```
+
+The same functions that respond to `iii trigger` now also respond to HTTP requests with no code changes to the handlers themselves.
+
+## 8. How it works
 
 ### Python worker
 
@@ -178,20 +280,28 @@ scripts:
 ┌──────────────┐          ┌──────────────────┐
 │  iii trigger  │◀────────▶│    iii engine     │
 │  (CLI)        │   WS     │   :49134          │
-└──────────────┘          └──────┬───────┬────┘
-                                 │       │
-                          WS     │       │  WS
-                                 ▼       ▼
-                        ┌────────────┐  ┌──────────────┐
-                        │math-worker │  │caller-worker │
-                        │(Python)    │  │(TypeScript)  │
-                        │math::add   │  │math::add_two │
-                        │            │  │  _numbers    │
-                        └────────────┘  └──────────────┘
+└──────────────┘          └──┬────┬────┬────┬─┘
+                             │    │    │    │
+┌──────────────┐     WS     │    │    │    │
+│  curl / HTTP  │◀──:3111──▶│    │    │    │
+└──────────────┘            │    │    │    │
+                            ▼    ▼    │    │
+               ┌────────────┐ ┌──────────────┐
+               │math-worker │ │caller-worker │
+               │(Python)    │ │(TypeScript)  │
+               │math::add   │ │math::add_two │
+               │            │ │  _numbers    │
+               └────────────┘ └──────────────┘
+                            ┌────┘    └────┐
+                            ▼              ▼
+                     ┌──────────┐   ┌──────────┐
+                     │iii-state │   │iii-http  │
+                     │(KV store)│   │(:3111)   │
+                     └──────────┘   └──────────┘
 ```
 
 
-## 7. Explore with the iii Console
+## 9. Explore with the iii Console
 
 Start the console in a new terminal:
 
@@ -209,7 +319,7 @@ Open your browser to [http://localhost:3113/](http://localhost:3113/) to see log
 
 ## Next Steps
 
-You scaffolded a project, started two workers in different languages, and called functions across them through the iii engine.
+You scaffolded a project, started two workers in different languages, called functions across them, added persistent state, and exposed everything over HTTP — all by incrementally adding workers to a running system.
 
 <CardGroup cols={2}>
   <Card title="How to use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="book-open">
