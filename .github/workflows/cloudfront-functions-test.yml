@@ -1,0 +1,27 @@
+name: CloudFront Functions Tests
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/website/cloudfront_functions/**'
+      - '.github/workflows/cloudfront-functions-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/terraform/website/cloudfront_functions/**'
+
+jobs:
+  test:
+    name: node --test
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run CloudFront Function unit tests
+        run: node --test infra/terraform/website/cloudfront_functions/redirects.test.js
