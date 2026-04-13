@@ -1311,6 +1311,12 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
+    /// Internal call path used by hooks, middleware, and fire_triggers — not direct
+    /// user invocations over WebSocket. We intentionally skip
+    /// `notify_user_function_invoked` here because this path serves engine
+    /// orchestration; the boot-heartbeat wakeup should only fire for actual
+    /// user-initiated invocations arriving via `spawn_invoke_function` and not
+    /// things the engine can fire itself without user involvement, such as cron.
     async fn call(
         &self,
         function_id: &str,
