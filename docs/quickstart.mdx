@@ -297,15 +297,14 @@ scripts:
 ```mermaid
 graph TD
   CLI["iii trigger (CLI)"] <-->|WS| Engine["iii engine :49134"]
-  HTTP["curl / HTTP"] <-->|WS :3111| Engine
+  HTTP["curl / HTTP"] <-->|HTTP :3111| Engine
 
-  Engine --> Math["math-worker\n(Python)\nmath::add"]
-  Engine --> Caller["caller-worker\n(TypeScript)\nmath::add_two_numbers"]
+  Engine --> Math["math-worker (Python) math::add"]
+  Engine --> Caller["caller-worker (TypeScript) math::add_two_numbers"]
 
-  Caller --> State["iii-state\n(KV store)"]
-  Caller --> HttpWorker["iii-http\n(:3111)"]
+  Math --> State["iii-state (KV store)"]
+  Caller --> HttpWorker["iii-http (:3111)"]
 ```
-
 
 ## 9. Explore with the iii Console (Optional)
 
