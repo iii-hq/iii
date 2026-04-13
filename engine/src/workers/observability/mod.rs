@@ -1437,7 +1437,7 @@ impl Worker for ObservabilityWorker {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        let enabled = self._config.enabled.unwrap_or(false);
+        let enabled = self._config.enabled.unwrap_or(true);
         if !enabled {
             tracing::info!(
                 "{} Observability disabled by configuration",
@@ -4172,6 +4172,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_initialize_returns_ok_when_disabled() {
+        reset_observability_test_state();
         let engine = Arc::new(Engine::new());
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
         let worker = ObservabilityWorker {
@@ -4190,6 +4191,34 @@ mod tests {
         // Verify the trigger type was NOT registered (early return skipped it)
         assert!(
             !engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(LOG_TRIGGER_TYPE)
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_initialize_defaults_to_enabled_when_none() {
+        reset_observability_test_state();
+        let engine = Arc::new(Engine::new());
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+        let worker = ObservabilityWorker {
+            _config: config::ObservabilityWorkerConfig {
+                enabled: None,
+                ..config::ObservabilityWorkerConfig::default()
+            },
+            triggers: Arc::new(OtelLogTriggers::new()),
+            engine: engine.clone(),
+            shutdown_tx: Arc::new(shutdown_tx),
+        };
+
+        let result = worker.initialize().await;
+        assert!(result.is_ok());
+
+        // Verify the trigger type WAS registered (enabled: None defaults to true)
+        assert!(
+            engine
                 .trigger_registry
                 .trigger_types
                 .contains_key(LOG_TRIGGER_TYPE)
