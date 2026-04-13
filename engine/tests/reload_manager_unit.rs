@@ -39,17 +39,20 @@ async fn empty_config_injects_all_mandatory_workers() {
 }
 
 #[tokio::test]
-async fn duplicate_worker_name_rejected() {
+async fn duplicate_worker_name_deduplicates_last_wins() {
     let f = write_config(
-        "workers:\n  - name: foo\n  - name: foo\nmodules: []\n",
+        "workers:\n  - name: foo\n    config:\n      port: 1\n  - name: foo\n    config:\n      port: 2\nmodules: []\n",
     );
-    let result = ReloadManager::parse_and_normalize(f.path().to_str().unwrap()).await;
-    assert!(result.is_err(), "expected duplicate-name rejection, got {:?}", result.ok());
-    let err = format!("{}", result.unwrap_err());
-    assert!(
-        err.contains("duplicate worker name"),
-        "error should mention duplicate worker name, was: {}",
-        err
+    let entries = ReloadManager::parse_and_normalize(f.path().to_str().unwrap())
+        .await
+        .expect("duplicates should be deduplicated, not rejected");
+
+    let foo_entries: Vec<_> = entries.iter().filter(|e| e.name == "foo").collect();
+    assert_eq!(foo_entries.len(), 1, "should have exactly one 'foo' entry");
+    assert_eq!(
+        foo_entries[0].config,
+        Some(serde_json::json!({"port": 2})),
+        "last entry should win"
     );
 }
 

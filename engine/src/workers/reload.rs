@@ -116,8 +116,9 @@ pub struct ReloadManager;
 
 impl ReloadManager {
     /// Parse the YAML from `path`, expand env vars, flatten the `workers` +
-    /// `modules` lists, auto-inject any missing mandatory workers, and reject
-    /// duplicate names. Read-only -- does not touch running state.
+    /// `modules` lists, auto-inject any missing mandatory workers, and
+    /// deduplicate by name (last entry wins). Read-only -- does not touch
+    /// running state.
     pub async fn parse_and_normalize(path: &str) -> anyhow::Result<Vec<WorkerEntry>> {
         let cfg = EngineConfig::config_file(path)
             .map_err(|e| anyhow::anyhow!("reload: parse failed: {}", e))?;
@@ -139,18 +140,18 @@ impl ReloadManager {
             }
         }
 
-        // Reject duplicate worker names.
+        // Deduplicate by name — last entry wins (matches build() behavior
+        // where workers + modules are merged and later entries override).
         let mut seen = std::collections::HashSet::new();
-        for e in &entries {
-            if !seen.insert(e.name.clone()) {
-                return Err(anyhow::anyhow!(
-                    "reload: duplicate worker name '{}' in new config",
-                    e.name
-                ));
+        let mut deduped: Vec<WorkerEntry> = Vec::new();
+        for e in entries.into_iter().rev() {
+            if seen.insert(e.name.clone()) {
+                deduped.push(e);
             }
         }
+        deduped.reverse();
 
-        Ok(entries)
+        Ok(deduped)
     }
 
     /// Refuse removal of mandatory workers.
