@@ -291,6 +291,10 @@ impl Engine {
         );
 
         if let Some(function) = self.functions.get(function_id) {
+            if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
+                crate::workers::telemetry::collector::notify_user_function_invoked();
+            }
+
             if let Some(invocation_id) = invocation_id {
                 worker.add_invocation(invocation_id).await;
             }
@@ -344,10 +348,6 @@ impl Engine {
             otel.status_code = tracing::field::Empty,
         )
         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
-
-        if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
-            crate::workers::telemetry::collector::notify_user_function_invoked();
-        }
 
         let engine = self.clone();
         let worker = worker.clone();
@@ -1315,7 +1315,7 @@ impl EngineTrait for Engine {
     /// user invocations over WebSocket. We intentionally skip
     /// `notify_user_function_invoked` here because this path serves engine
     /// orchestration; the boot-heartbeat wakeup should only fire for actual
-    /// user-initiated invocations arriving via `spawn_invoke_function` and not
+    /// user-initiated invocations arriving via `remember_invocation` and not
     /// things the engine can fire itself without user involvement, such as cron.
     async fn call(
         &self,
