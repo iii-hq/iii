@@ -1097,37 +1097,53 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
     // Locate the worker's PID via three evidence tiers, in order:
     // 1. ~/.iii/managed/{name}/vm.pid       (OCI/VM/local-path)
     // 2. ~/.iii/pids/{name}.pid             (binary)
-    // 3. live `ps` scan                     (orphan with cleaned-up pidfile)
-    let mode = if oci_pidfile.exists() {
-        match read_pid(&oci_pidfile) {
-            Some(pid) => StopMode::Managed {
-                pid,
-                pidfile: Some(oci_pidfile),
-            },
-            None => {
-                eprintln!("{} Worker '{}' is not running", "error:".red(), worker_name);
-                return 1;
-            }
+    // 3. live `ps` scan                     (orphan, or stale pidfile)
+    //
+    // Pidfiles are only trusted when the recorded PID is actually alive. A
+    // stale pidfile (process crashed without cleanup, or PID got recycled)
+    // must fall through to the ps scan — otherwise we'd either signal an
+    // unrelated recycled PID or miss a restarted orphan worker.
+    let oci_live_pid = oci_pidfile
+        .exists()
+        .then(|| read_pid(&oci_pidfile).filter(|&p| is_pid_alive(p)))
+        .flatten();
+    let bin_live_pid = bin_pidfile
+        .exists()
+        .then(|| read_pid(&bin_pidfile).filter(|&p| is_pid_alive(p)))
+        .flatten();
+
+    let mode = if let Some(pid) = oci_live_pid {
+        StopMode::Managed {
+            pid,
+            pidfile: Some(oci_pidfile),
         }
-    } else if bin_pidfile.exists() {
-        match read_pid(&bin_pidfile) {
-            Some(pid) => StopMode::Binary {
-                pid,
-                pidfile: Some(bin_pidfile),
-            },
-            None => {
-                eprintln!("{} Worker '{}' is not running", "error:".red(), worker_name);
-                return 1;
-            }
+    } else if let Some(pid) = bin_live_pid {
+        StopMode::Binary {
+            pid,
+            pidfile: Some(bin_pidfile),
         }
     } else if let Some(pid) = find_worker_pid_from_ps(worker_name) {
-        // No pidfile, but a live process matches this name — orphan worker.
-        // Treat as Managed if we still have the managed/ dir, else Binary.
+        // Either no pidfile on disk, or the pidfile is stale (dead PID).
+        // Either way, ps found a live process for this worker — treat as
+        // orphan. Carry any stale pidfile along so it gets cleaned up.
+        let stale_pidfile = if oci_pidfile.exists() {
+            Some(oci_pidfile)
+        } else if bin_pidfile.exists() {
+            Some(bin_pidfile)
+        } else {
+            None
+        };
         let is_managed = home.join(".iii/managed").join(worker_name).is_dir();
         if is_managed {
-            StopMode::Managed { pid, pidfile: None }
+            StopMode::Managed {
+                pid,
+                pidfile: stale_pidfile,
+            }
         } else {
-            StopMode::Binary { pid, pidfile: None }
+            StopMode::Binary {
+                pid,
+                pidfile: stale_pidfile,
+            }
         }
     } else {
         eprintln!(
@@ -1180,6 +1196,24 @@ fn read_pid(path: &std::path::Path) -> Option<u32> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
+/// Returns `true` if `pid` refers to a live process. Uses signal 0 as a
+/// non-destructive existence probe on Unix; assumes alive on platforms
+/// without nix signals (the stop path will discover failure on real kill).
+///
+/// Used by the stop path to distinguish fresh pidfiles from stale ones so
+/// a dead/recycled PID cannot short-circuit the `ps` orphan scan.
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
 }
 
 /// SIGTERM, brief grace period, then SIGKILL. Mirrors the original
