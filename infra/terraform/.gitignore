@@ -1,0 +1,23 @@
+# Terraform working directories
+.terraform/
+.terraform.tfstate.lock.info
+
+# State backups (live state is in S3 for modules with remote backend)
+*.tfstate.backup
+
+# Plan outputs
+*.tfplan
+*.tfplan.*
+
+# Variable files that may contain secrets
+terraform.tfvars
+*.auto.tfvars
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Kept on purpose (do NOT ignore):
+# - .terraform.lock.hcl  → provider version pinning, must be committed
+# - _bootstrap/terraform.tfstate → chicken-and-egg bootstrap state, see _bootstrap/README.md
+!_bootstrap/terraform.tfstate
