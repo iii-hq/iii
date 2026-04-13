@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use super::config::{EngineConfig, WorkerEntry, WorkerRegistry};
+use super::config::{EngineConfig, WorkerEntry, WorkerRegistry, assign_instance_ids};
 use super::registry::WorkerRegistration;
 use super::traits::Worker;
 use crate::engine::Engine;
@@ -116,8 +116,8 @@ pub struct ReloadManager;
 
 impl ReloadManager {
     /// Parse the YAML from `path`, expand env vars, flatten the `workers` +
-    /// `modules` lists, auto-inject any missing mandatory workers, and
-    /// deduplicate by name (last entry wins). Read-only -- does not touch
+    /// `modules` lists, auto-inject any missing mandatory workers, and assign
+    /// unique instance IDs to duplicate names. Read-only -- does not touch
     /// running state.
     pub async fn parse_and_normalize(path: &str) -> anyhow::Result<Vec<WorkerEntry>> {
         let cfg = EngineConfig::config_file(path)
@@ -140,18 +140,9 @@ impl ReloadManager {
             }
         }
 
-        // Deduplicate by name — last entry wins (matches build() behavior
-        // where workers + modules are merged and later entries override).
-        let mut seen = std::collections::HashSet::new();
-        let mut deduped: Vec<WorkerEntry> = Vec::new();
-        for e in entries.into_iter().rev() {
-            if seen.insert(e.name.clone()) {
-                deduped.push(e);
-            }
-        }
-        deduped.reverse();
+        assign_instance_ids(&mut entries);
 
-        Ok(deduped)
+        Ok(entries)
     }
 
     /// Refuse removal of mandatory workers.

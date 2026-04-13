@@ -39,21 +39,23 @@ async fn empty_config_injects_all_mandatory_workers() {
 }
 
 #[tokio::test]
-async fn duplicate_worker_name_deduplicates_last_wins() {
+async fn duplicate_worker_names_get_instance_ids() {
     let f = write_config(
         "workers:\n  - name: foo\n    config:\n      port: 1\n  - name: foo\n    config:\n      port: 2\nmodules: []\n",
     );
     let entries = ReloadManager::parse_and_normalize(f.path().to_str().unwrap())
         .await
-        .expect("duplicates should be deduplicated, not rejected");
+        .expect("duplicates should get instance IDs");
 
-    let foo_entries: Vec<_> = entries.iter().filter(|e| e.name == "foo").collect();
-    assert_eq!(foo_entries.len(), 1, "should have exactly one 'foo' entry");
-    assert_eq!(
-        foo_entries[0].config,
-        Some(serde_json::json!({"port": 2})),
-        "last entry should win"
-    );
+    let foo_entries: Vec<_> = entries.iter().filter(|e| e.name.starts_with("foo")).collect();
+    assert_eq!(foo_entries.len(), 2, "both foo entries should be preserved");
+    assert_eq!(foo_entries[0].name, "foo");
+    assert_eq!(foo_entries[1].name, "foo#1");
+    assert_eq!(foo_entries[0].config, Some(serde_json::json!({"port": 1})));
+    assert_eq!(foo_entries[1].config, Some(serde_json::json!({"port": 2})));
+    // worker_type strips the #N suffix for factory lookup
+    assert_eq!(foo_entries[0].worker_type(), "foo");
+    assert_eq!(foo_entries[1].worker_type(), "foo");
 }
 
 fn minimal_config() -> EngineConfig {

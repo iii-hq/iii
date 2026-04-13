@@ -274,6 +274,13 @@ impl Default for WorkerRegistry {
 }
 
 impl WorkerEntry {
+    /// Returns the worker type name used for factory lookup. For entries with
+    /// instance suffixes like `iii-http#1`, this strips the `#N` and returns
+    /// the base name `iii-http`.
+    pub fn worker_type(&self) -> &str {
+        self.name.split('#').next().unwrap_or(&self.name)
+    }
+
     /// Creates a module instance from this entry
     pub async fn create_worker(
         &self,
@@ -282,13 +289,29 @@ impl WorkerEntry {
     ) -> anyhow::Result<Box<dyn Worker>> {
         registry
             .create_worker(
-                &self.name,
+                self.worker_type(),
                 self.image.as_deref(),
                 engine,
                 self.config.clone(),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", self.name, e))
+    }
+}
+
+/// Assigns unique instance IDs to entries with duplicate names. The first
+/// occurrence keeps its original name; subsequent occurrences get `#1`,
+/// `#2`, etc. appended. This lets the diff and running-worker tracking
+/// treat each entry independently.
+pub fn assign_instance_ids(entries: &mut Vec<WorkerEntry>) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for entry in entries.iter_mut() {
+        let base = entry.name.clone();
+        let count = counts.entry(base.clone()).or_insert(0);
+        if *count > 0 {
+            entry.name = format!("{}#{}", base, count);
+        }
+        *count += 1;
     }
 }
 
@@ -440,6 +463,8 @@ impl EngineBuilder {
                 });
             }
         }
+
+        assign_instance_ids(&mut workers);
 
         for entry in workers {
             tracing::debug!("Creating worker: {}", entry.name);
