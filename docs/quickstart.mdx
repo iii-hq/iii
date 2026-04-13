@@ -302,8 +302,8 @@ graph TD
   Engine --> Math["math-worker (Python) math::add"]
   Engine --> Caller["caller-worker (TypeScript) math::add_two_numbers"]
 
-  Math --> State["iii-state (KV store)"]
-  Caller --> HttpWorker["iii-http (:3111)"]
+  Math --> State["iii-state"]
+  Caller --> HttpWorker["iii-http"]
 ```
 
 ## 9. Explore with the iii Console (Optional)
