@@ -430,19 +430,20 @@ impl ReloadManager {
 
     /// Full SIGHUP reload pipeline. Runs phases in order:
     ///
-    /// 1. **Parse & normalize**: `parse_and_normalize(path)`. On failure logs
-    ///    `reload: parse failed: ...` and returns early.
+    /// 1. **Parse & normalize**: `parse_and_normalize(path)`.
     /// 2. **Diff** against the current `running` set. Logs the summary.
-    /// 3. **Enforce guards** (refuse mandatory removal). On failure logs and
-    ///    returns early.
-    /// 4. **Validate staging**: dry-run create + initialize added/changed
-    ///    workers. On failure, rollback already happened inside
-    ///    `validate_staging` -- just log and return.
-    /// 5. **Commit**: apply the diff. Failures here leave inconsistent state;
-    ///    they are logged loudly as `reload: COMMIT FAILURE`.
+    /// 3. **Enforce guards** (refuse mandatory removal).
+    /// 4. **Validate staging**: dry-run create + initialize added/changed.
+    /// 5. **Commit**: apply the diff.
+    ///
+    /// **On any failure the engine exits.** The error is logged with a
+    /// `reload: FATAL:` prefix and the global shutdown sender is fired,
+    /// which unwinds `serve()` and terminates the process. This prevents
+    /// the engine from silently running with a stale config.
     ///
     /// Default-config mode (`config_path == None`) logs
-    /// `reload: ignored, running with --use-default-config` and returns.
+    /// `reload: ignored, running with --use-default-config` and returns
+    /// (no error — there is simply nothing to reload).
     ///
     /// This method is called from the serve loop on every SIGHUP. Callers are
     /// responsible for serializing concurrent reload attempts (typically via a
@@ -453,25 +454,22 @@ impl ReloadManager {
         registry: Arc<WorkerRegistry>,
         running: &mut Vec<RunningWorker>,
         global_shutdown_tx: watch::Sender<bool>,
-    ) {
+    ) -> anyhow::Result<()> {
         let path = match config_path {
             Some(p) => p,
             None => {
                 tracing::info!("reload: ignored, running with --use-default-config");
-                return;
+                return Ok(());
             }
         };
 
         tracing::info!("reload: SIGHUP received, reloading from {}", path);
 
         // Phases 1 + 2
-        let new_entries = match Self::parse_and_normalize(path).await {
-            Ok(entries) => entries,
-            Err(e) => {
-                tracing::error!("{}", e);
-                return;
-            }
-        };
+        let new_entries = Self::parse_and_normalize(path).await.map_err(|e| {
+            tracing::error!("reload: FATAL: {}", e);
+            e
+        })?;
 
         // Phase 3
         let old_entries: Vec<WorkerEntry> =
@@ -485,26 +483,28 @@ impl ReloadManager {
             diff.unchanged.len(),
         );
 
-        if let Err(e) = Self::enforce_guards(&diff) {
-            tracing::error!("{}", e);
-            return;
-        }
+        Self::enforce_guards(&diff).map_err(|e| {
+            tracing::error!("reload: FATAL: {}", e);
+            e
+        })?;
 
         // Phase 4
-        let staged = match Self::validate_staging(&diff, engine.clone(), registry.clone()).await {
-            Ok(s) => s,
-            Err(_) => return, // already logged
-        };
+        let staged = Self::validate_staging(&diff, engine.clone(), registry.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("reload: FATAL: {}", e);
+                e
+            })?;
 
         // Phase 5
-        // Note: commit() returns errors whose text already carries the
-        // `reload: ...` prefix (see its `ok_or_else` paths), so we log the
-        // error directly rather than prefixing it again.
-        if let Err(e) = Self::commit(&diff, staged, engine.clone(), running, global_shutdown_tx).await {
-            tracing::error!("{}", e);
-            return;
-        }
+        Self::commit(&diff, staged, engine.clone(), running, global_shutdown_tx)
+            .await
+            .map_err(|e| {
+                tracing::error!("reload: FATAL: {}", e);
+                e
+            })?;
 
         tracing::info!("reload: success");
+        Ok(())
     }
 }

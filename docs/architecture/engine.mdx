@@ -117,13 +117,13 @@ On Unix platforms, the Engine can re-read its config file at runtime without res
 kill -HUP $(pgrep iii)
 ```
 
-The reload is atomic: if the new config is invalid, the running engine is left untouched.
+If the new config is valid, the reload applies atomically. If the new config is invalid, **the engine exits with an error** showing exactly what is wrong — the operator must fix the config and restart. This prevents running with a stale config unknowingly.
 
 | Phase | Behavior |
 |-------|----------|
 | **Parse & normalize** | Re-reads the config file, expands env vars, auto-injects mandatory workers, rejects duplicate names |
 | **Diff** | Compares each `WorkerEntry` (name, image, config) against the running set. Unchanged workers are skipped entirely |
-| **Validate** | Dry-runs `create` + `initialize` on every added and changed worker without starting background tasks. Any failure rolls back the staged workers and aborts the reload |
+| **Validate** | Dry-runs `create` + `initialize` on every added and changed worker without starting background tasks. Any failure rolls back the staged workers and exits |
 | **Commit** | Promotes validated replacements for changed workers, then shuts down and removes the old instances; drops removed workers; promotes validated additions |
 
 Unchanged workers keep running through the reload — no blip, no dropped invocations. Only workers whose config entries genuinely changed are destroyed and recreated.
@@ -136,10 +136,10 @@ reload: diff +1 added, -0 removed, ~2 changed, =8 unchanged
 reload: success
 ```
 
-Failure paths log `reload: parse failed: ...`, `reload: validation failed for '<name>': ...`, or `reload: refused to remove mandatory worker '<name>'` and leave the running engine intact.
+Failure paths log `reload: FATAL: ...` with the specific error (including file path, line/column for parse errors, and worker name for validation errors) and then exit the engine process.
 
 <Info title="Limitations">
-  SIGHUP reload is Unix-only. Windows ignores SIGHUP. When the engine is started with `--use-default-config` there is no file to reload from, and SIGHUP logs `reload: ignored` and does nothing. In-flight invocations on changed or removed workers are not drained — they are dropped when the old worker is destroyed.
+  SIGHUP reload is Unix-only. Windows ignores SIGHUP. When the engine is started with `--use-default-config` there is no file to reload from, and SIGHUP logs `reload: ignored` and does nothing. In-flight invocations on changed or removed workers are not drained — they are dropped when the old worker is destroyed. A bad config causes the engine to exit — configure your process supervisor to NOT auto-restart on this exit code.
 </Info>
 
 ## Architecture Agnostic

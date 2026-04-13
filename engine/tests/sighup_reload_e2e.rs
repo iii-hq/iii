@@ -169,12 +169,12 @@ async fn sighup_reload_does_not_crash_engine() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 12: bad YAML must be rejected without crashing serve()
+// Task 12: bad YAML must stop the engine with an error
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn sighup_with_broken_yaml_does_not_crash_engine() {
+async fn sighup_with_broken_yaml_exits_engine() {
     let _sighup_guard = install_sighup_guard();
 
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
@@ -195,21 +195,30 @@ async fn sighup_with_broken_yaml_does_not_crash_engine() {
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Corrupt the config. `parse_and_normalize` must log a parse error and
-    // leave the running workers untouched.
+    // Corrupt the config. The engine must exit with an error describing
+    // the parse failure, not silently continue with the old config.
     write_config(&path, "this: is: not: [valid yaml");
 
     raise_sighup();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+    // serve() must exit within 2 seconds with an error.
+    let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
     assert!(
-        !handle.is_finished(),
-        "serve() should still be running after SIGHUP with broken YAML"
+        result.is_ok(),
+        "serve() did not exit within 2s of SIGHUP with broken YAML"
     );
 
-    handle.abort();
-    let _ = handle.await;
+    let serve_result = result.unwrap().expect("join");
+    assert!(
+        serve_result.is_err(),
+        "serve() should return Err on broken config reload"
+    );
+    let err_msg = format!("{}", serve_result.unwrap_err());
+    assert!(
+        err_msg.contains("parse failed"),
+        "error should mention parse failure, got: {}",
+        err_msg
+    );
 
     drop(tmp);
 }

@@ -555,6 +555,9 @@ impl EngineBuilder {
         #[cfg(not(unix))]
         tracing::info!("reload: SIGHUP not supported on this platform");
 
+        // Track fatal reload errors so we can exit with non-zero after teardown.
+        let mut reload_error: Option<anyhow::Error> = None;
+
         loop {
             #[cfg(unix)]
             {
@@ -563,13 +566,16 @@ impl EngineBuilder {
                         if *global_shutdown_rx.borrow() { break; }
                     }
                     Some(_) = sighup.recv() => {
-                        super::reload::ReloadManager::reload(
+                        if let Err(e) = super::reload::ReloadManager::reload(
                             config_path.as_deref(),
                             engine.clone(),
                             registry.clone(),
                             &mut running,
                             global_shutdown_tx.clone(),
-                        ).await;
+                        ).await {
+                            reload_error = Some(e);
+                            break;
+                        }
                     }
                 }
             }
@@ -580,6 +586,11 @@ impl EngineBuilder {
                 if *global_shutdown_rx.borrow() { break; }
             }
         }
+
+        // Fire global shutdown so the relay task stops all worker background
+        // tasks (needed when the loop broke due to a reload error rather than
+        // a signal-triggered shutdown).
+        let _ = global_shutdown_tx.send(true);
 
         // Teardown -- inline version of the old `destroy()`. Operates on the
         // local `running` Vec directly so we don't have to reconstruct `self`.
@@ -594,6 +605,12 @@ impl EngineBuilder {
 
         // Drop `global_shutdown_tx` last so the relay task unblocks.
         drop(global_shutdown_tx);
+
+        // If the shutdown was caused by a reload failure, propagate the error
+        // so the process exits with a non-zero status code.
+        if let Some(e) = reload_error {
+            return Err(e);
+        }
 
         Ok(())
     }
