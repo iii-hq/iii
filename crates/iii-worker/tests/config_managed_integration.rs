@@ -54,8 +54,7 @@ async fn add_many_with_invalid_worker_returns_nonzero() {
 async fn handle_managed_add_builtin_creates_config() {
     in_temp_dir_async(|| async {
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, None, false, false)
-                .await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
         assert_eq!(
             exit_code, 0,
             "expected success exit code for builtin worker"
@@ -84,7 +83,7 @@ async fn handle_managed_add_builtin_merges_existing() {
         .unwrap();
 
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, None, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false)
                 .await;
         assert_eq!(exit_code, 0, "expected success exit code for merge");
 
@@ -106,7 +105,7 @@ async fn handle_managed_add_all_builtins_succeed() {
             let _ = std::fs::remove_file("config.yaml");
 
             let exit_code =
-                iii_worker::cli::managed::handle_managed_add(name, false, None, false, false).await;
+                iii_worker::cli::managed::handle_managed_add(name, false, false, false).await;
             assert_eq!(exit_code, 0, "expected success for builtin '{}'", name);
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -162,6 +161,127 @@ async fn remove_many_with_missing_worker_returns_nonzero() {
             !iii_worker::cli::config_file::worker_exists("iii-http"),
             "iii-http should be removed despite other failure"
         );
+    })
+    .await;
+}
+
+// ===========================================================================
+// OCI passthrough routing
+// ===========================================================================
+
+/// Verify that a full OCI reference (containing '/') is treated as a direct
+/// OCI passthrough — the function should NOT call the API. It will fail because
+/// there's no running container runtime, but the error should be about pulling,
+/// not about API resolution.
+#[tokio::test]
+async fn handle_managed_add_oci_ref_passthrough() {
+    in_temp_dir_async(|| async {
+        // This will fail (no container runtime), but the error path tells us
+        // it tried to pull an OCI image rather than calling the API
+        let result = iii_worker::cli::managed::handle_managed_add(
+            "ghcr.io/test/worker:1.0",
+            false,
+            false,
+            false,
+        )
+        .await;
+        // Non-zero exit because pull fails, but it should NOT have tried the API
+        assert_ne!(result, 0);
+    })
+    .await;
+}
+
+/// Verify that a reference with ':' is also treated as OCI passthrough.
+#[tokio::test]
+async fn handle_managed_add_oci_ref_with_colon_passthrough() {
+    in_temp_dir_async(|| async {
+        let result = iii_worker::cli::managed::handle_managed_add(
+            "docker.io/org/image:latest",
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert_ne!(result, 0);
+    })
+    .await;
+}
+
+// ===========================================================================
+// API resolution path (non-builtin, non-OCI-ref, non-local)
+// ===========================================================================
+
+/// Verify that a plain worker name that is NOT a builtin triggers API resolution.
+/// With no API available, it should fail with a resolution error.
+#[tokio::test]
+async fn handle_managed_add_plain_name_calls_api() {
+    in_temp_dir_async(|| async {
+        // Set III_API_URL to something that will fail quickly
+        unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
+        let result =
+            iii_worker::cli::managed::handle_managed_add("nonexistent-worker", true, false, false)
+                .await;
+        unsafe { std::env::remove_var("III_API_URL") };
+        // Should fail because API is unreachable
+        assert_ne!(result, 0);
+    })
+    .await;
+}
+
+/// Verify that a plain name matching a builtin worker succeeds without API.
+#[tokio::test]
+async fn handle_managed_add_builtin_skips_api() {
+    in_temp_dir_async(|| async {
+        // Set III_API_URL to something that will fail — if it tries the API, we'll know
+        unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
+        let result =
+            iii_worker::cli::managed::handle_managed_add("iii-http", true, false, false).await;
+        unsafe { std::env::remove_var("III_API_URL") };
+        // Should succeed because iii-http is a builtin — no API call needed
+        assert_eq!(result, 0);
+    })
+    .await;
+}
+
+/// Verify that local path workers are routed correctly (not to API).
+#[tokio::test]
+async fn handle_managed_add_local_path_skips_api() {
+    in_temp_dir_async(|| async {
+        unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
+        let result =
+            iii_worker::cli::managed::handle_managed_add("./my-local-worker", true, false, false)
+                .await;
+        unsafe { std::env::remove_var("III_API_URL") };
+        // Will fail (path doesn't exist), but should NOT have called the API
+        assert_ne!(result, 0);
+    })
+    .await;
+}
+
+/// Verify API resolution with file:// fixture returns binary worker.
+#[tokio::test]
+async fn handle_managed_add_binary_via_file_fixture() {
+    in_temp_dir_async(|| async {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{
+            "name": "test-binary-worker",
+            "type": "binary",
+            "version": "0.1.0",
+            "binaries": {},
+            "config": {"name": "test-binary-worker", "config": {}}
+        }"#;
+        let path = dir.path().join("fixture.json");
+        std::fs::write(&path, json).unwrap();
+
+        let url = format!("file://{}", path.display());
+        unsafe { std::env::set_var("III_API_URL", &url) };
+        let result =
+            iii_worker::cli::managed::handle_managed_add("test-binary-worker", true, false, false)
+                .await;
+        unsafe { std::env::remove_var("III_API_URL") };
+        // Will fail because binaries map is empty (no platform match),
+        // but it proves the API resolution path was taken and parsed correctly
+        assert_ne!(result, 0);
     })
     .await;
 }

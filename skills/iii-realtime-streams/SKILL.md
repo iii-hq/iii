@@ -13,7 +13,7 @@ Comparable to: Socket.io, Pusher, Firebase Realtime
 
 Use the concepts below when they fit the task. Not every stream setup needs all of them.
 
-- **StreamModule** serves WebSocket connections on the configured stream port (default 3112)
+- **iii-stream** serves WebSocket connections on the configured stream port (default 3112)
 - Clients connect at `ws://host:{stream_port}/stream/{stream_name}/{group_id}`
 - **stream::set** / **stream::get** / **stream::list** / **stream::delete** provide CRUD for stream items
 - **stream::send** pushes events to all connected clients in a stream group
@@ -25,7 +25,7 @@ Use the concepts below when they fit the task. Not every stream setup needs all 
     Function
       → trigger('stream::set', { stream_name, group_id, item_id, data })
       → trigger('stream::send', { stream_name, group_id, data })
-        → StreamModule
+        → iii-stream
           → WebSocket push
             → Connected clients at /stream/{stream_name}/{group_id}
 
@@ -74,7 +74,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-StreamModule must be enabled in iii-config.yaml with a port and adapter (KvStore or Redis). See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+iii-stream must be enabled in iii-config.yaml with a port and adapter (KvStore or Redis). See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

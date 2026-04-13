@@ -69,16 +69,16 @@ Use the adaptations below when they apply to the task.
 - Add custom spans around expensive operations (DB queries, LLM calls, external APIs)
 - Create domain-specific metrics (orders processed, payment failures, queue depth)
 - Use `currentTraceId()` to correlate iii traces with external system logs
-- Configure `OtelModule` in iii-config.yaml for engine-side exporter, sampling ratio, and alerts
+- Configure `iii-observability` in iii-config.yaml for engine-side exporter, sampling ratio, and alerts
 - Point the OTLP endpoint at your collector (Jaeger, Grafana Tempo, Datadog Agent)
 
 ## Engine Configuration
 
-OtelModule must be enabled in iii-config.yaml for engine-side traces, metrics, and logs. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+iii-observability must be enabled in iii-config.yaml for engine-side traces, metrics, and logs. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 
-- For engine-side OtelModule YAML configuration, prefer `iii-engine-config`.
+- For engine-side iii-observability YAML configuration, prefer `iii-engine-config`.
 - For SDK init options and function registration, prefer `iii-functions-and-triggers`.
 - Stay with `iii-observability` when the primary problem is SDK-level telemetry: spans, metrics, logs, and trace propagation.
 

@@ -13,7 +13,7 @@ iii-stream
 
 ```mermaid
 graph LR
-    Client[Client] -->|WebSocket| Stream[StreamModule]
+    Client[Client] -->|WebSocket| Stream[iii-stream]
     Stream -->|Auth| Engine[Engine]
     Engine -->|Context| Stream
     Stream -->|Connected| Client

@@ -7,13 +7,13 @@ port: 49134
 # Config blocks between BEGIN/END markers are auto-managed by the CLI.
 # workers:
 #   # === iii:pdfkit BEGIN ===
-#   - class: workers::pdfkit::PdfKitWorker
+#   - name: pdfkit
 #     config:
 #       output_dir: ./output
 #       format: pdf
 #   # === iii:pdfkit END ===
 #   # === iii:image-processor BEGIN ===
-#   - class: workers::image_processor::ImageProcessorWorker
+#   - name: image-processor
 #     config:
 #       max_width: 2048
 #       output_format: webp
@@ -31,10 +31,10 @@ port: 49134
 #   iii worker list                 # Show installed workers
 #   iii worker info pdfkit          # Show registry details
 
-modules:
+workers:
   # REST API module - exposes HTTP endpoints for triggers and the core API surface.
   # Functions with HTTP triggers are served through this module.
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       # TCP port for the HTTP server. Default: 3111
       port: 3111
@@ -61,7 +61,7 @@ modules:
 
   # Stream module - real-time WebSocket pub/sub for live data streaming to clients.
   # Clients connect via WebSocket to receive pushed updates on subscribed channels.
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       # TCP port for WebSocket connections. Default: 3112
       port: ${STREAM_PORT:3112}
@@ -73,7 +73,7 @@ modules:
       # Storage backend for stream state (subscriptions, message history).
       adapter:
         # KvStore adapter - file or memory-based local storage.
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           # Storage mode. Options: file_based (persists to disk), in_memory (lost on restart)
           store_method: file_based
@@ -84,22 +84,22 @@ modules:
       # Alternative adapters:
       # adapter:
       #   # Redis adapter - distributed storage via Redis server.
-      #   class: modules::stream::adapters::RedisAdapter
+      #   name: redis
       #   config:
       #     redis_url: redis://localhost:6379
       # adapter:
       #   # Bridge adapter - connects to another iii engine instance for distributed streaming.
-      #   class: modules::stream::adapters::Bridge
+      #   name: bridge
       #   config:
       #     bridge_url: ws://localhost:49134
 
   # State module - persistent key-value storage for function state across invocations.
   # Functions use ctx.state.get/set to read/write stateful data.
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
         # KvStore adapter - file or memory-based local storage.
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           # Storage mode. Options: file_based (persists to disk), in_memory (lost on restart)
           store_method: file_based
@@ -110,18 +110,18 @@ modules:
       # Alternative adapters:
       # adapter:
       #   # Redis adapter - distributed state via Redis server.
-      #   class: modules::state::adapters::RedisAdapter
+      #   name: redis
       #   config:
       #     redis_url: redis://localhost:6379
       # adapter:
       #   # Bridge adapter - forwards state operations to another iii engine instance.
-      #   class: modules::state::adapters::Bridge
+      #   name: bridge
       #   config:
       #     bridge_url: ws://localhost:49134
 
   # Queue module - background job processing with retries, dead-letter queues, and concurrency control.
   # Functions enqueue jobs; subscribers process them asynchronously.
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -130,7 +130,7 @@ modules:
           type: standard
       adapter:
         # Built-in queue adapter - local job queue with persistence options.
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           # Maximum delivery attempts before moving to dead-letter queue. Default: 3
           max_attempts: 3
@@ -151,17 +151,17 @@ modules:
       # Alternative adapters:
       # adapter:
       #   # Redis adapter - distributed job queue via Redis.
-      #   class: modules::queue::RedisAdapter
+      #   name: redis
       #   config:
       #     redis_url: redis://localhost:6379
       # adapter:
       #   # Bridge adapter - forwards queue operations to another iii engine instance.
-      #   class: modules::queue::adapters::Bridge
+      #   name: bridge
       #   config:
       #     bridge_url: ws://localhost:49134
       # adapter:
       #   # RabbitMQ adapter - enterprise message broker integration.
-      #   class: modules::queue::RabbitMQAdapter
+      #   name: rabbitmq
       #   config:
       #     amqp_url: amqp://localhost:5672
       #     max_attempts: 3
@@ -172,27 +172,27 @@ modules:
 
   # PubSub module - in-process event fanout for decoupled function communication.
   # Functions publish events; multiple subscribers receive them immediately.
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
         # Local adapter - in-process pub/sub, events don't cross engine instances.
-        class: modules::pubsub::LocalAdapter
+        name: local
       # Alternative adapter:
       # adapter:
       #   # Redis adapter - distributed pub/sub across multiple engine instances.
-      #   class: modules::pubsub::RedisAdapter
+      #   name: redis
       #   config:
       #     redis_url: redis://localhost:6379
 
   # Cron module - time-based job scheduling using cron expressions.
   # Functions with cron triggers execute on schedule.
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
         # KV-based cron adapter - uses local KV store for distributed lock coordination.
         # Warning: Local locks only prevent duplicates within same process; multiple engine
         # instances may execute the same cron job. Use RedisCronAdapter for true distributed locking.
-        class: modules::cron::KvCronAdapter
+        name: kv
         config:
           # Lock timeout (ms). Job re-executes if lock holder crashes and lock expires.
           lock_ttl_ms: 30000
@@ -207,13 +207,13 @@ modules:
       # Alternative adapter:
       # adapter:
       #   # Redis cron adapter - true distributed locking across engine instances.
-      #   class: modules::cron::RedisCronAdapter
+      #   name: redis
       #   config:
       #     redis_url: redis://localhost:6379
 
   # Observability module - OpenTelemetry tracing, metrics, logs, and alerting.
   # Provides visibility into function execution, performance, and errors.
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       # Master switch for all observability features.
       enabled: ${OTEL_ENABLED:true}
@@ -323,7 +323,7 @@ modules:
   # HTTP Functions module - enables HTTP-invoked functions (outbound HTTP calls from the engine).
   # Required for functions registered with HttpInvocationConfig.
   # The engine makes the HTTP request on behalf of the function and enforces URL security policies.
-  - class: modules::http_functions::HttpFunctionsModule
+  - name: iii-http-functions
     config:
       security:
         # URL patterns allowed for outbound requests. Use '*' to allow all URLs.
@@ -347,7 +347,7 @@ modules:
   # Useful for setups where workers need to run alongside the engine on the same host.
   # Also useful from frameworks that support this style of operation such as Motia.
   # # Rust worker:
-  # - class: modules::shell::ExecModule
+  # - name: iii-exec
   #   config:
   #     watch:
   #       - workers/**/*.rs
@@ -356,7 +356,7 @@ modules:
   #       - cargo run --build my-rust-worker
   #
   # # Python worker:
-  # - class: modules::shell::ExecModule
+  # - name: iii-exec
   #   config:
   #     watch:
   #       - workers/**/*.py
@@ -365,7 +365,7 @@ modules:
   #       - uv run ./src/my_python_worker.py
   #
   # # Node/TypeScript worker:
-  # - class: modules::shell::ExecModule
+  # - name: iii-exec
   #   config:
   #     watch:
   #       - workers/**/*.ts
@@ -376,7 +376,7 @@ modules:
   #       - pnpm dev:my-node-worker
   #
   # # Motia worker:
-  # - class: modules::shell::ExecModule
+  # - name: iii-exec
   #   config:
   #     watch:
   #       - steps/**/*.ts
@@ -386,7 +386,7 @@ modules:
 
   # Bridge Client module - connects this engine to a remote iii instance for cross-instance
   # function invocation. Enables distributed architectures and function federation.
-  # - class: modules::bridge_client::BridgeClientModule
+  # - name: iii-bridge
   #   config:
   #     # WebSocket URL of the remote iii engine to connect to.
   #     url: ws://localhost:49134
@@ -409,7 +409,7 @@ modules:
 
   # Telemetry module - anonymous product usage analytics for iii development.
   # Helps the team understand usage patterns and prioritize features.
-  - class: modules::telemetry::TelemetryModule
+  - name: iii-telemetry
     config:
       # Enable/disable anonymous telemetry. Set to false to opt out.
       enabled: true
