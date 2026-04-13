@@ -1571,6 +1571,13 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
 /// This function is called when the engine receives an OTLP binary frame
 /// (prefixed with "OTLP") from a worker.
 pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
+    // Skip ingestion entirely when observability is disabled
+    if let Some(config) = get_otel_config() {
+        if !config.enabled.unwrap_or(true) {
+            return Ok(());
+        }
+    }
+
     // Parse the OTLP JSON
     let request: OtlpExportTraceServiceRequest = serde_json::from_str(json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP JSON: {}", e))?;
@@ -1880,6 +1887,13 @@ impl OtlpHistogramDataPoint {
 /// This function is called when the engine receives a metrics frame
 /// (prefixed with "MTRC") from a worker.
 pub async fn ingest_otlp_metrics(json_str: &str) -> anyhow::Result<()> {
+    // Skip ingestion entirely when observability is disabled
+    if let Some(config) = get_otel_config() {
+        if !config.enabled.unwrap_or(true) {
+            return Ok(());
+        }
+    }
+
     use super::metrics::{
         StoredDataPoint, StoredHistogramDataPoint, StoredMetric, StoredMetricType,
         StoredNumberDataPoint, get_metric_storage,
