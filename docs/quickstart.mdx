@@ -112,6 +112,7 @@ Now open `workers/math-worker/math_worker.py` and uncomment the state block so t
 
 ```python
 def add_handler(payload: dict) -> dict:
+    payload = payload.get("body", payload)
     a = payload.get("a", 0)
     b = payload.get("b", 0)
     logger.info(f"math::add called in Python with a={a}, b={b}")
