@@ -125,6 +125,28 @@ async fn handle_managed_start_builtin_short_circuits() {
     .await;
 }
 
+/// Regression: `handle_managed_start` on a builtin that is NOT in config.yaml
+/// must fail with a non-zero exit code. Otherwise the CLI misleads the user
+/// by claiming "served by the iii engine" when the engine won't actually load
+/// the worker (config.yaml is the source of truth for non-default mode).
+#[tokio::test]
+async fn handle_managed_start_unconfigured_builtin_fails() {
+    in_temp_dir_async(|| async {
+        // Do NOT add the builtin. handle_managed_start must refuse.
+        assert!(
+            !iii_worker::cli::config_file::worker_exists("iii-http"),
+            "precondition: iii-http must not be in config.yaml"
+        );
+        let start_rc =
+            iii_worker::cli::managed::handle_managed_start("iii-http", "127.0.0.1", 0).await;
+        assert_ne!(
+            start_rc, 0,
+            "handle_managed_start must fail for unconfigured builtin 'iii-http'"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn handle_managed_add_all_builtins_succeed() {
     in_temp_dir_async(|| async {

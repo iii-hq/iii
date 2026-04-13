@@ -255,8 +255,12 @@ pub async fn handle_managed_add(
                 );
             }
 
-            // The engine's file watcher will detect the config change and
-            // reload automatically — no need to start the worker here.
+            // If the engine is already running, its file watcher will detect
+            // the config change and reload automatically. If it isn't, nudge
+            // the user to start it (or customize first).
+            if !is_engine_running() {
+                eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
+            }
         }
         return 0;
     }
@@ -856,10 +860,21 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
     // Builtin workers are served in-process by the iii engine (see
     // engine/src/workers/config.rs factory registry). They have no external
     // process to spawn and must not be resolved via the remote registry.
+    // Only treat this as success when the builtin is actually configured in
+    // config.yaml — otherwise the engine won't load it and the user would be
+    // misled by a 0 exit code.
     if get_builtin_default(worker_name).is_some() {
+        if !super::config_file::worker_exists(worker_name) {
+            eprintln!(
+                "{} '{}' is a builtin but is not configured. Run `iii worker add {}` first.",
+                "error:".red(),
+                worker_name,
+                worker_name,
+            );
+            return 1;
+        }
         eprintln!(
-            "  {} '{}' is a builtin worker — served by the iii engine process.",
-            "info:".cyan(),
+            "  '{}' is a builtin worker — served by the iii engine process.",
             worker_name,
         );
         if !is_engine_running() {
