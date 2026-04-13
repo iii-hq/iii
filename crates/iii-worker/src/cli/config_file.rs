@@ -573,10 +573,10 @@ fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorker
     if let Some(image) = extract_image(content, name) {
         let config_str = extract_worker_config(content, name);
         let mut env = std::collections::HashMap::new();
-        if let Some(cfg) = config_str {
-            if let Ok(val) = serde_yaml::from_str::<serde_json::Value>(&cfg) {
-                flatten_value_to_env(&val, "", &mut env);
-            }
+        if let Some(cfg) = config_str
+            && let Ok(val) = serde_yaml::from_str::<serde_json::Value>(&cfg)
+        {
+            flatten_value_to_env(&val, "", &mut env);
         }
         return ResolvedWorkerType::Oci { image, env };
     }

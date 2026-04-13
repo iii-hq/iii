@@ -87,7 +87,7 @@ pub async fn run_dev(
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
-            nix::unistd::setsid().map_err(|e| std::io::Error::other(e))?;
+            nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
     }
@@ -126,18 +126,18 @@ pub async fn run_dev(
             // Write PID file so is_worker_running / stop / kill_stale_worker can find us
             let pid_file = rootfs.join("vm.pid");
             let pid = child.id().unwrap_or(0);
-            if pid > 0 {
-                if let Err(e) = std::fs::write(&pid_file, pid.to_string()) {
-                    eprintln!(
-                        "{} Failed to write PID file {}: {}",
-                        "error:".red(),
-                        pid_file.display(),
-                        e
-                    );
-                    // Kill the child so we don't leave an untracked VM running
-                    let _ = child.kill().await;
-                    return 1;
-                }
+            if pid > 0
+                && let Err(e) = std::fs::write(&pid_file, pid.to_string())
+            {
+                eprintln!(
+                    "{} Failed to write PID file {}: {}",
+                    "error:".red(),
+                    pid_file.display(),
+                    e
+                );
+                // Kill the child so we don't leave an untracked VM running
+                let _ = child.kill().await;
+                return 1;
             }
 
             if background {

@@ -237,16 +237,13 @@ pub fn is_local_path(input: &str) -> bool {
 /// Falls back to the directory name if no manifest or no `name` field is found.
 pub fn resolve_worker_name(project_path: &Path) -> String {
     let manifest_path = project_path.join(WORKER_MANIFEST);
-    if manifest_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-            if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(name) = doc.get("name").and_then(|n| n.as_str()) {
-                    if !name.is_empty() {
-                        return name.to_string();
-                    }
-                }
-            }
-        }
+    if manifest_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&manifest_path)
+        && let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content)
+        && let Some(name) = doc.get("name").and_then(|n| n.as_str())
+        && !name.is_empty()
+    {
+        return name.to_string();
     }
     project_path
         .file_name()
@@ -371,26 +368,8 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         );
         eprintln!("  {}  {}", "Path".cyan().bold(), abs_path_str.bold());
 
-        // Auto-start if engine is running (skip if already running)
-        if super::managed::is_engine_running() {
-            if super::managed::is_worker_running(&worker_name) {
-                eprintln!("  {} Worker already running", "\u{2713}".green());
-            } else {
-                let port = super::app::DEFAULT_PORT;
-                let result = start_local_worker(&worker_name, &abs_path_str, port).await;
-                if result == 0 {
-                    eprintln!("  {} Worker auto-started", "\u{2713}".green());
-                } else {
-                    eprintln!(
-                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                        "\u{26a0}".yellow(),
-                        worker_name
-                    );
-                }
-            }
-        } else {
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-        }
+        // The engine's file watcher will detect the config change and
+        // reload automatically — no need to start the worker here.
     }
 
     0

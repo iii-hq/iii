@@ -108,24 +108,8 @@ pub async fn handle_binary_add(
             "config.yaml".dimmed(),
         );
 
-        if is_engine_running() {
-            if is_worker_running(worker_name) {
-                eprintln!("  {} Worker already running", "✓".green());
-            } else {
-                let result = start_binary_worker(worker_name, &install_path).await;
-                if result == 0 {
-                    eprintln!("  {} Worker auto-started", "✓".green());
-                } else {
-                    eprintln!(
-                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                        "⚠".yellow(),
-                        worker_name
-                    );
-                }
-            }
-        } else {
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-        }
+        // The engine's file watcher will detect the config change and
+        // reload automatically — no need to start the worker here.
     }
     0
 }
@@ -177,11 +161,9 @@ pub async fn handle_managed_add(
         let (plain_name, _) = parse_worker_input(image_or_name);
 
         let is_oci_ref = plain_name.contains('/') || plain_name.contains(':');
-        if !is_oci_ref {
-            if let Err(e) = super::registry::validate_worker_name(&plain_name) {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
+        if !is_oci_ref && let Err(e) = super::registry::validate_worker_name(&plain_name) {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
         }
 
         if is_worker_running(&plain_name) {
@@ -273,26 +255,8 @@ pub async fn handle_managed_add(
                 );
             }
 
-            // Auto-start if engine is running (skip if already running)
-            if is_engine_running() {
-                if is_worker_running(&name) {
-                    eprintln!("  {} Worker already running", "✓".green());
-                } else {
-                    let port = super::app::DEFAULT_PORT;
-                    let result = handle_managed_start(&name, "0.0.0.0", port).await;
-                    if result == 0 {
-                        eprintln!("  {} Worker auto-started", "✓".green());
-                    } else {
-                        eprintln!(
-                            "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                            "⚠".yellow(),
-                            name
-                        );
-                    }
-                }
-            } else {
-                eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-            }
+            // The engine's file watcher will detect the config change and
+            // reload automatically — no need to start the worker here.
         }
         return 0;
     }
@@ -415,31 +379,8 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
             "config.yaml".dimmed(),
         );
 
-        // Auto-start if engine is running (skip if already running)
-        if is_engine_running() {
-            if is_worker_running(name) {
-                eprintln!("  {} Worker already running", "✓".green());
-            } else {
-                let port = super::app::DEFAULT_PORT;
-                let worker_def = WorkerDef::Managed {
-                    image: image_ref.to_string(),
-                    env: oci_env.into_iter().collect(),
-                    resources: None,
-                };
-                let result = start_oci_worker(name, &worker_def, port).await;
-                if result == 0 {
-                    eprintln!("  {} Worker auto-started", "✓".green());
-                } else {
-                    eprintln!(
-                        "  {} Could not auto-start worker. Run `iii worker start {}` manually.",
-                        "⚠".yellow(),
-                        name
-                    );
-                }
-            }
-        } else {
-            eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-        }
+        // The engine's file watcher will detect the config change and
+        // reload automatically — no need to start the worker here.
     }
     0
 }
@@ -578,30 +519,29 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     let mut image_count: u32 = 0;
 
     // Clear binary workers
-    if workers_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&workers_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Skip entries with invalid names (e.g. symlinks with path traversal)
-                if super::registry::validate_worker_name(&name).is_err() {
-                    continue;
-                }
-                // Verify resolved path stays under workers_dir
-                if let Ok(resolved) = entry.path().canonicalize() {
-                    if let Ok(base) = workers_dir.canonicalize() {
-                        if !resolved.starts_with(&base) {
-                            continue;
-                        }
-                    }
-                }
-                if is_worker_running(&name) {
-                    skipped.push(name);
-                    continue;
-                }
-                total_freed += dir_size(&entry.path());
-                let _ = std::fs::remove_dir_all(entry.path());
-                worker_count += 1;
+    if workers_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&workers_dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip entries with invalid names (e.g. symlinks with path traversal)
+            if super::registry::validate_worker_name(&name).is_err() {
+                continue;
             }
+            // Verify resolved path stays under workers_dir
+            if let Ok(resolved) = entry.path().canonicalize()
+                && let Ok(base) = workers_dir.canonicalize()
+                && !resolved.starts_with(&base)
+            {
+                continue;
+            }
+            if is_worker_running(&name) {
+                skipped.push(name);
+                continue;
+            }
+            total_freed += dir_size(&entry.path());
+            let _ = std::fs::remove_dir_all(entry.path());
+            worker_count += 1;
         }
     }
 
@@ -610,12 +550,12 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
         // Build set of image hashes belonging to running OCI workers
         let mut protected_hashes = std::collections::HashSet::new();
         for name in super::config_file::list_worker_names() {
-            if is_worker_running(&name) {
-                if let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name) {
-                    let dir = image_cache_dir(&image_ref);
-                    if let Some(hash) = dir.file_name().and_then(|f| f.to_str()) {
-                        protected_hashes.insert(hash.to_string());
-                    }
+            if is_worker_running(&name)
+                && let Some((image_ref, _)) = super::config_file::get_worker_start_info(&name)
+            {
+                let dir = image_cache_dir(&image_ref);
+                if let Some(hash) = dir.file_name().and_then(|f| f.to_str()) {
+                    protected_hashes.insert(hash.to_string());
                 }
             }
         }
@@ -698,23 +638,23 @@ pub fn is_worker_running(worker_name: &str) -> bool {
     let bin_pid = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
     for pid_file in [oci_pid, bin_pid] {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                // Check if process is alive (signal 0 = existence check)
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::kill;
-                    use nix::unistd::Pid;
-                    if kill(Pid::from_raw(pid as i32), None).is_ok() {
-                        return true;
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = pid;
-                    // On non-Unix, assume running if PID file exists
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+        {
+            // Check if process is alive (signal 0 = existence check)
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::kill;
+                use nix::unistd::Pid;
+                if kill(Pid::from_raw(pid as i32), None).is_ok() {
                     return true;
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = pid;
+                // On non-Unix, assume running if PID file exists
+                return true;
             }
         }
     }

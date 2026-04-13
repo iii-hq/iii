@@ -2420,6 +2420,7 @@ dependencies = [
  "indicatif",
  "inventory",
  "lapin",
+ "libc",
  "machineid-rs",
  "mockall",
  "nix 0.30.1",

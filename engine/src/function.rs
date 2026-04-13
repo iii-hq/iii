@@ -58,12 +58,29 @@ pub trait FunctionHandler {
 #[derive(Default)]
 pub struct FunctionsRegistry {
     pub functions: Arc<DashMap<String, Function>>,
+    pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
 }
 
 impl FunctionsRegistry {
+    /// Constructs a registry with a detached scope cell.
+    ///
+    /// The resulting registry's `active_scope` is a fresh `Arc<Mutex<None>>`
+    /// that is NOT shared with any `Engine`, so `begin_worker_scope` calls on
+    /// an Engine will NOT be observed by functions registered here. This is
+    /// only appropriate for isolated unit tests that do not exercise the
+    /// scope API. Production code must go through [`Engine::new`], which
+    /// constructs the registry via [`FunctionsRegistry::with_scope`] so the
+    /// scope cell is shared.
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn with_scope(
+        scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
+    ) -> Self {
         Self {
             functions: Arc::new(DashMap::new()),
+            active_scope: scope,
         }
     }
 
@@ -91,11 +108,22 @@ impl FunctionsRegistry {
                 function_id.purple()
             );
         }
-        self.functions.insert(function_id, function);
+        self.functions.insert(function_id.clone(), function);
+
+        if let Ok(mut scope) = self.active_scope.lock()
+            && let Some(builder) = scope.as_mut()
+        {
+            builder.function_ids.push(function_id);
+        }
     }
 
     pub fn remove(&self, function_id: &str) {
         self.functions.remove(function_id);
+        if let Ok(mut scope) = self.active_scope.lock()
+            && let Some(builder) = scope.as_mut()
+        {
+            builder.function_ids.retain(|id| id != function_id);
+        }
         tracing::info!(
             "{} Function {}",
             "[UNREGISTERED]".red(),

@@ -25,15 +25,16 @@ pub struct ProjectInfo {
 
 impl ProjectInfo {
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(ref lang) = self.language {
-            if !lang.is_empty() && !SUPPORTED_LANGUAGES.contains(&lang.as_str()) {
-                return Err(format!(
-                    "unrecognized language '{}' in {} — supported: {}",
-                    lang,
-                    WORKER_MANIFEST,
-                    SUPPORTED_LANGUAGES.join(", ")
-                ));
-            }
+        if let Some(ref lang) = self.language
+            && !lang.is_empty()
+            && !SUPPORTED_LANGUAGES.contains(&lang.as_str())
+        {
+            return Err(format!(
+                "unrecognized language '{}' in {} — supported: {}",
+                lang,
+                WORKER_MANIFEST,
+                SUPPORTED_LANGUAGES.join(", ")
+            ));
         }
         if self.run_cmd.is_empty() {
             return Err(format!(
