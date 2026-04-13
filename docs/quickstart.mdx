@@ -64,6 +64,10 @@ iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
 However this is not much different than running an equivalent script on its own. The utility of iii comes from being able to place
 any functionality into a worker and then seamlessly compose that worker with other workers.
 
+<Tip>
+  Workers need a moment to install their runtime dependencies after being added. If you see `"message": "Function math::add not found"`, wait a few seconds and try again.
+</Tip>
+
 ## 4. Start the TypeScript worker
 
 ```bash
@@ -81,10 +85,6 @@ Path  /Users/tony/iii/projects/testing/quickstart/workers/caller-worker
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.
-
-<Tip>
-  Workers need a moment to install their runtime dependencies after being added. If you see `"message": "Function math::add not found"`, wait a few seconds and try again.
-</Tip>
 
 ## 5. Call across languages
 
@@ -112,7 +112,6 @@ Now open `workers/math-worker/math_worker.py` and uncomment the state block so t
 
 ```python
 def add_handler(payload: dict) -> dict:
-    payload = payload.get("body", payload) # Handle http messages
     a = payload.get("a", 0)
     b = payload.get("b", 0)
     logger.info(f"math::add called in Python with a={a}, b={b}")
@@ -171,12 +170,23 @@ From the folder containing iii's `config.yaml` run:
 iii worker add iii-http
 ```
 
-Open `workers/caller-worker/src/worker.ts` and uncomment the trigger registration at the bottom of the file:
+Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:
 
 ```typescript
+iii.registerFunction(
+  'http::add_two_numbers',
+  async (payload: { body: { a: number; b: number } }) => {
+    const result = await iii.trigger({
+      function_id: 'math::add_two_numbers',
+      payload: payload.body,
+    });
+    return { status_code: 200, body: result, headers: { 'Content-Type': 'application/json' } };
+  },
+);
+
 iii.registerTrigger({
   type: 'http',
-  function_id: 'math::add_two_numbers',
+  function_id: 'http::add_two_numbers',
   config: { api_path: '/math/add-two-numbers', http_method: 'POST' },
 });
 ```
@@ -218,7 +228,6 @@ logger = Logger()
 
 
 def add_handler(payload: dict) -> dict:
-    payload = payload.get("body", payload)  # Handle http messages
     a = payload.get("a", 0)
     b = payload.get("b", 0)
     logger.info(f"math::add called in Python with a={a}, b={b}")
