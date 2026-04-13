@@ -1572,10 +1572,10 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
 /// (prefixed with "OTLP") from a worker.
 pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
     // Skip ingestion entirely when observability is disabled
-    if let Some(config) = get_otel_config() {
-        if !config.enabled.unwrap_or(true) {
-            return Ok(());
-        }
+    if let Some(config) = get_otel_config()
+        && !config.enabled.unwrap_or(true)
+    {
+        return Ok(());
     }
 
     // Parse the OTLP JSON
@@ -1888,10 +1888,10 @@ impl OtlpHistogramDataPoint {
 /// (prefixed with "MTRC") from a worker.
 pub async fn ingest_otlp_metrics(json_str: &str) -> anyhow::Result<()> {
     // Skip ingestion entirely when observability is disabled
-    if let Some(config) = get_otel_config() {
-        if !config.enabled.unwrap_or(true) {
-            return Ok(());
-        }
+    if let Some(config) = get_otel_config()
+        && !config.enabled.unwrap_or(true)
+    {
+        return Ok(());
     }
 
     use super::metrics::{
@@ -2473,10 +2473,10 @@ fn should_output_to_console() -> bool {
 /// (prefixed with "LOGS") from a worker.
 pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
     // Skip ingestion entirely when observability is disabled
-    if let Some(config) = get_otel_config() {
-        if !config.enabled.unwrap_or(true) {
-            return Ok(());
-        }
+    if let Some(config) = get_otel_config()
+        && !config.enabled.unwrap_or(true)
+    {
+        return Ok(());
     }
 
     tracing::debug!(
