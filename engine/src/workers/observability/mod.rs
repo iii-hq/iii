@@ -2166,6 +2166,84 @@ mod tests {
     }
 
     #[test]
+    fn test_log_storage_apply_retention_falls_back_to_observed_timestamp_when_event_time_zero() {
+        // Regression test: OTLP logs spec allows time_unix_nano == 0 to mean
+        // "unknown event time". Receivers must fall back to
+        // observed_time_unix_nano. Without the fallback, such logs are
+        // evicted on the first retention tick despite a valid observation
+        // time.
+        let storage = otel::InMemoryLogStorage::new(100);
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let one_hour_ns: u64 = 3600 * 1_000_000_000;
+        let recent_observed = now_ns.saturating_sub(60 * 1_000_000_000); // 1m ago
+
+        // Hand-craft a log with timestamp_unix_nano == 0 but a recent
+        // observed_timestamp_unix_nano — the exact shape produced by
+        // ingest_otlp_logs when the SDK sends time_unix_nano=0.
+        let log = otel::StoredLog {
+            timestamp_unix_nano: 0,
+            observed_timestamp_unix_nano: recent_observed,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: "observed-only".to_string(),
+            attributes: HashMap::new(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "svc".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+        storage.store(log);
+        assert_eq!(storage.len(), 1);
+
+        storage.apply_retention(one_hour_ns);
+
+        let logs = storage.get_logs();
+        assert_eq!(
+            logs.len(),
+            1,
+            "log with zero event timestamp must be preserved via observed timestamp"
+        );
+        assert_eq!(logs[0].body, "observed-only");
+    }
+
+    #[test]
+    fn test_log_storage_apply_retention_evicts_when_both_timestamps_expired() {
+        // Complement to the fallback test: if BOTH timestamps are expired,
+        // the log must still be evicted.
+        let storage = otel::InMemoryLogStorage::new(100);
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let one_hour_ns: u64 = 3600 * 1_000_000_000;
+        let old_observed = now_ns.saturating_sub(2 * one_hour_ns); // 2h ago
+
+        let log = otel::StoredLog {
+            timestamp_unix_nano: 0,
+            observed_timestamp_unix_nano: old_observed,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: "stale-observed".to_string(),
+            attributes: HashMap::new(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "svc".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+        storage.store(log);
+        storage.apply_retention(one_hour_ns);
+
+        assert_eq!(storage.get_logs().len(), 0);
+    }
+
+    #[test]
     fn test_log_storage_apply_retention_scans_whole_buffer_for_out_of_order() {
         // Regression test: logs are stored in arrival order, not timestamp
         // order. An older-timestamped log that lands AFTER a newer one must

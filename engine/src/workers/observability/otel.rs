@@ -2243,13 +2243,20 @@ impl InMemoryLogStorage {
         self.tx.subscribe()
     }
 
-    /// Drop logs whose `timestamp_unix_nano` is older than `retention_ns` from now.
+    /// Drop logs whose effective timestamp is older than `retention_ns` from now.
     ///
     /// Scans the entire buffer rather than popping from the front: logs are
     /// stored in arrival order, which does not match timestamp order when
     /// SDK workers batch backdated records, clocks skew across workers, or
     /// sampling interleaves late arrivals. An older-timestamped log trapped
     /// behind a newer one would otherwise survive retention.
+    ///
+    /// The effective timestamp is `timestamp_unix_nano` when non-zero,
+    /// falling back to `observed_timestamp_unix_nano`. Per the OTLP logs
+    /// spec, a `time_unix_nano` of 0 means "unknown" and receivers must use
+    /// `observed_time_unix_nano` instead; without this fallback, logs
+    /// emitted without an event timestamp would be evicted on the very
+    /// first retention tick despite a valid observation time.
     pub fn apply_retention(&self, retention_ns: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2258,7 +2265,14 @@ impl InMemoryLogStorage {
         let cutoff = now.saturating_sub(retention_ns);
 
         let mut logs = self.logs.write().unwrap();
-        logs.retain(|log| log.timestamp_unix_nano >= cutoff);
+        logs.retain(|log| {
+            let effective = if log.timestamp_unix_nano != 0 {
+                log.timestamp_unix_nano
+            } else {
+                log.observed_timestamp_unix_nano
+            };
+            effective >= cutoff
+        });
     }
 }
 
