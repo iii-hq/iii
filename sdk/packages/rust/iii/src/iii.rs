@@ -62,6 +62,8 @@ pub struct WorkerInfo {
     pub function_count: usize,
     pub functions: Vec<String>,
     pub active_invocations: usize,
+    #[serde(default)]
+    pub isolation: Option<String>,
 }
 
 /// Function information returned by `engine::functions::list`
@@ -250,6 +252,8 @@ pub struct WorkerMetadata {
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<WorkerTelemetryMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
 }
 
 impl Default for WorkerMetadata {
@@ -281,6 +285,7 @@ impl Default for WorkerMetadata {
                 language,
                 ..Default::default()
             }),
+            isolation: std::env::var("III_ISOLATION").ok().filter(|s| !s.is_empty()),
         }
     }
 }
@@ -2009,5 +2014,42 @@ mod tests {
 
         assert!(matches!(result, Err(IIIError::Timeout)));
         assert!(iii.inner.pending.lock().unwrap().is_empty());
+    }
+
+    // Both env-var cases live in a single test because Rust runs tests in
+    // parallel by default and the OS env is process-global. Serializing the
+    // set → read → unset → read dance inside one test avoids races without
+    // pulling in serial_test as a dev-dependency.
+    #[test]
+    fn worker_metadata_default_reads_iii_isolation_env_var() {
+        let previous = std::env::var("III_ISOLATION").ok();
+
+        // unset → field is None
+        // SAFETY: tests are single-threaded inside this function and we
+        // restore the original value at the end.
+        unsafe {
+            std::env::remove_var("III_ISOLATION");
+        }
+        let unset = WorkerMetadata::default();
+        assert!(
+            unset.isolation.is_none(),
+            "expected None when III_ISOLATION is unset, got {:?}",
+            unset.isolation
+        );
+
+        // set → field is Some(value)
+        unsafe {
+            std::env::set_var("III_ISOLATION", "docker");
+        }
+        let set = WorkerMetadata::default();
+        assert_eq!(set.isolation.as_deref(), Some("docker"));
+
+        // restore
+        unsafe {
+            match previous {
+                Some(val) => std::env::set_var("III_ISOLATION", val),
+                None => std::env::remove_var("III_ISOLATION"),
+            }
+        }
     }
 }
