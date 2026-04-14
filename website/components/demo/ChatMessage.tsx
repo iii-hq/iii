@@ -30,7 +30,10 @@ function DataStreamButton({ label, onClick }: { label: string; onClick: () => vo
       onClick={onClick}
       className="relative overflow-hidden w-full sm:w-auto px-10 py-4 rounded font-bold text-base cursor-pointer group bg-iii-dark border border-iii-accent/50 text-iii-accent"
     >
-      <div className="absolute inset-0 pointer-events-none overflow-hidden text-iii-accent">
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 pointer-events-none overflow-hidden text-iii-accent"
+      >
         {Array.from({ length: 5 }).map((_, row) => (
           <div
             key={row}
