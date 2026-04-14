@@ -65,7 +65,7 @@ export const homepageFlow: Step[] = [
     sender: alex,
     content:
       'Great. Now we need to auto-approve clean content and flag toxic content for human review.',
-    action: { label: 'View request' },
+    autoAdvance: 1500,
     delay: 500,
   },
   {
@@ -81,7 +81,7 @@ export const homepageFlow: Step[] = [
     sender: alex,
     content:
       'How long is that going to take? Do we need an API for the Python worker?',
-    action: { label: 'Reply' },
+    autoAdvance: 1500,
     delay: 500,
   },
   {
@@ -137,7 +137,7 @@ export const homepageFlow: Step[] = [
     sender: alex,
     content:
       'Can we track how many times each author gets flagged? We need moderation history.',
-    action: { label: 'View request' },
+    autoAdvance: 1500,
     delay: 500,
   },
   {
@@ -162,7 +162,7 @@ export const homepageFlow: Step[] = [
     type: 'slack-message',
     sender: alex,
     content: 'How long to roll that out?',
-    action: { label: 'Reply' },
+    autoAdvance: 1500,
     delay: 500,
   },
   {
@@ -215,7 +215,7 @@ export const homepageFlow: Step[] = [
     sender: alex,
     content:
       'The frontend team needs a REST endpoint to submit content for moderation.',
-    action: { label: 'View request' },
+    autoAdvance: 1500,
     delay: 500,
   },
   {
@@ -282,7 +282,7 @@ export const homepageFlow: Step[] = [
     type: 'slack-message',
     sender: alex,
     content: "Let me guess, it's already done?",
-    action: { label: 'Reply' },
+    autoAdvance: 1500,
     delay: 600,
   },
   {
@@ -310,7 +310,7 @@ export const homepageFlow: Step[] = [
     sender: alex,
     content:
       "We're seeing some classification requests fail intermittently. Can you investigate?",
-    action: { label: 'View request' },
+    autoAdvance: 1500,
     delay: 500,
   },
   {
@@ -345,7 +345,7 @@ export const homepageFlow: Step[] = [
         status: 'ok',
       },
       {
-        label: 'toxicity_model.predict',
+        label: 'detoxify.predict',
         duration: '0.3ms',
         widthPercent: 8,
         depth: 2,
@@ -356,7 +356,7 @@ export const homepageFlow: Step[] = [
     detail: {
       status: 'ERROR',
       service: 'content-classifier',
-      error: 'libonnxruntime.so: cannot open shared object file',
+      error: 'detoxify 0.5.2 — RuntimeError: index out of range in self',
     },
     delay: 400,
   },
@@ -364,29 +364,36 @@ export const homepageFlow: Step[] = [
     id: 'reply-7',
     type: 'reply',
     content:
-      "Found it — the ONNX runtime library isn't installed on one of the classifier replicas. Fixing the Dockerfile now.",
+      "Found it — known bug in detoxify 0.5.2. Bumping to 0.5.3 and restarting the worker.",
     sendLabel: 'Send',
     delay: 250,
   },
   {
-    id: 'code-5',
-    type: 'code-editor',
-    filename: 'Dockerfile',
-    language: 'docker',
-    lines: [
-      'FROM python:3.12-slim',
-      '',
-      'RUN apt-get update && apt-get install -y \\',
-      '    libonnxruntime \\',
-      '    && rm -rf /var/lib/apt/lists/*',
-      '',
-      'COPY requirements.txt .',
-      'RUN pip install -r requirements.txt',
-      '',
-      'COPY . .',
-      'CMD ["python", "content_classifier.py"]',
-    ],
-    doneLabel: 'Deploy',
+    id: 'status-6a',
+    type: 'status',
+    variant: 'info',
+    icon: 'deploy',
+    headline: 'requirements.txt updated',
+    detail: 'detoxify==0.5.2 → detoxify==0.5.3',
+    autoAdvance: 1000,
+    delay: 400,
+  },
+  {
+    id: 'status-6b',
+    type: 'status',
+    variant: 'info',
+    icon: 'deploy',
+    headline: 'iii worker stop content-classifier',
+    autoAdvance: 800,
+    delay: 300,
+  },
+  {
+    id: 'status-6c',
+    type: 'status',
+    variant: 'info',
+    icon: 'deploy',
+    headline: 'iii worker start content-classifier',
+    autoAdvance: 800,
     delay: 300,
   },
   {

@@ -27,7 +27,6 @@ const AppRouter: React.FC = () => {
   if (pathname === '/manifesto') {
     return <ManifestoPage />;
   }
-
   return <App />;
 };
 

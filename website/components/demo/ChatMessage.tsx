@@ -22,6 +22,46 @@ function AvatarInitials({ name }: { name: string }) {
   );
 }
 
+const STREAM_CHARS = '01│─┌┐└┘├┤iii';
+
+function DataStreamButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="relative overflow-hidden w-full sm:w-auto px-10 py-4 rounded font-bold text-base cursor-pointer group bg-iii-black border border-iii-accent/50 text-iii-accent"
+    >
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        {Array.from({ length: 5 }).map((_, row) => (
+          <div
+            key={row}
+            className="absolute whitespace-nowrap text-[9px] font-mono tracking-[2px]"
+            style={{
+              top: `${5 + row * 22}%`,
+              opacity: 0.3,
+              animation: `streamFlow ${4 + row * 0.8}s linear infinite`,
+              animationDelay: `${row * -0.4}s`,
+            }}
+          >
+            {Array.from({ length: 200 }).map((_, i) => (
+              <span key={i}>{STREAM_CHARS[Math.floor(Math.random() * STREAM_CHARS.length)]}</span>
+            ))}
+          </div>
+        ))}
+      </div>
+      <span
+        className="relative z-10 text-white group-hover:text-iii-accent transition-colors"
+        style={{ WebkitTextStroke: '4px #0a0a0a', paintOrder: 'stroke fill' }}
+      >{label}</span>
+      <style>{`
+        @keyframes streamFlow {
+          0% { transform: translateX(-50%); }
+          100% { transform: translateX(0%); }
+        }
+      `}</style>
+    </button>
+  );
+}
+
 export function ChatMessage({ step, isActive, onNext }: ChatMessageProps) {
   const [clicked, setClicked] = useState(false);
 
@@ -83,12 +123,7 @@ export function ChatMessage({ step, isActive, onNext }: ChatMessageProps) {
 
       {isActive && !step.autoAdvance && step.action && !clicked && (
         <div className="basis-full pl-11 flex justify-end xl:basis-auto xl:pl-0 xl:self-end xl:shrink-0">
-          <button
-            onClick={handleClick}
-            className="w-full sm:w-auto px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 animate-[socketPulseInline_2s_ease-in-out_infinite] cursor-pointer"
-          >
-            {step.action.label}
-          </button>
+          <DataStreamButton label={step.action.label} onClick={handleClick} />
         </div>
       )}
     </div>
