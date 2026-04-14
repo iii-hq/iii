@@ -23,7 +23,9 @@ use tracing_subscriber::{
 use crate::telemetry::{ExporterType, OtelConfig, init_otel};
 use crate::workers::config::EngineConfig;
 use crate::workers::observability::logs_layer::OtelLogsLayer;
-use crate::workers::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
+use crate::workers::observability::otel::{
+    OTEL_PASSTHROUGH_TARGET, get_log_storage, get_otel_config, init_log_storage, logs_enabled,
+};
 
 /// Collected field from tracing event
 #[derive(Debug, Clone)]
@@ -57,14 +59,93 @@ impl FieldCollector {
         self.function.as_deref()
     }
 
-    /// Get fields excluding the "function" field (since it's shown in the header)
-    fn get_display_fields(&self) -> Vec<(&String, &FieldValue)> {
+    /// Get fields excluding the "function" field (always hidden since it's
+    /// shown in the header). When `is_passthrough` is true, also hides the
+    /// "service" and "function_name" fields (rendered as the header) and
+    /// any "data" field whose string value is empty (would otherwise render
+    /// as `""`).
+    fn get_display_fields_filtered(&self, is_passthrough: bool) -> Vec<(&String, &FieldValue)> {
         self.fields
             .iter()
-            .filter(|(name, _)| name != "function")
+            .filter(|(name, value)| {
+                if name == "function" {
+                    return false;
+                }
+                if is_passthrough {
+                    if name == "service" || name == "function_name" {
+                        return false;
+                    }
+                    if name == "data" && matches!(value, FieldValue::String(s) if s.is_empty()) {
+                        return false;
+                    }
+                }
+                true
+            })
             .map(|(name, value)| (name, value))
             .collect()
     }
+
+    /// Look up a field by name and return its value as a plain string.
+    fn field_as_string(&self, key: &str) -> Option<String> {
+        self.fields.iter().find_map(|(name, value)| {
+            if name != key {
+                return None;
+            }
+            Some(match value {
+                FieldValue::String(s) => s.clone(),
+                FieldValue::Debug(s) => s.trim_matches('"').to_string(),
+                FieldValue::I64(n) => n.to_string(),
+                FieldValue::U64(n) => n.to_string(),
+                FieldValue::F64(n) => n.to_string(),
+                FieldValue::Bool(b) => b.to_string(),
+            })
+        })
+    }
+}
+
+/// The worker (service) name and step (service.name) name for an OTEL
+/// passthrough event, each optional. Extracted from tracing fields emitted by
+/// `emit_log_to_console`.
+#[derive(Debug, Default)]
+struct PassthroughNames {
+    /// Worker service name, e.g. `todo-worker-python`.
+    worker: Option<String>,
+    /// Step/function name, e.g. `api.get./todos`. Parsed out of the `data`
+    /// JSON blob under the `service.name` attribute.
+    step: Option<String>,
+}
+
+impl PassthroughNames {
+    fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.step.is_none()
+    }
+}
+
+/// Extract the passthrough worker + step names from the collected fields.
+///
+/// Primary source: the `function_name` field emitted directly by
+/// `emit_log_to_console`. Falls back to parsing `service.name` out of the
+/// `data` JSON blob for events produced before the `function_name` field
+/// was added.
+fn extract_passthrough_names(collector: &FieldCollector) -> PassthroughNames {
+    let worker = collector
+        .field_as_string("service")
+        .filter(|s| !s.is_empty());
+
+    let step = collector
+        .field_as_string("function_name")
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            collector.field_as_string("data").and_then(|data| {
+                let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
+                parsed
+                    .get("service.name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+        });
+
+    PassthroughNames { worker, step }
 }
 
 impl Visit for FieldCollector {
@@ -255,17 +336,41 @@ where
         };
         write!(writer, "[{}] ", level_str)?;
 
-        // Use "function" field if present, otherwise use target (module path)
-        let display_name = collector.get_function().unwrap_or(meta.target());
-        write!(writer, "{} ", display_name.cyan().bold())?;
+        // For OTEL-ingested logs from SDK workers, render two separately-
+        // colored header tokens: worker (blue) and step/service.name
+        // (purple). Falls back gracefully when one or both are missing.
+        let is_passthrough = meta.target() == OTEL_PASSTHROUGH_TARGET;
+        let passthrough = if is_passthrough {
+            extract_passthrough_names(&collector)
+        } else {
+            PassthroughNames::default()
+        };
+
+        if is_passthrough && !passthrough.is_empty() {
+            if let Some(w) = passthrough.worker.as_deref() {
+                write!(writer, "{} ", w.blue().bold())?;
+            }
+            if let Some(s) = passthrough.step.as_deref() {
+                write!(writer, "{} ", s.purple().bold())?;
+            }
+        } else {
+            let display_name = if is_passthrough {
+                OTEL_PASSTHROUGH_TARGET
+            } else {
+                collector.get_function().unwrap_or(meta.target())
+            };
+            write!(writer, "{} ", display_name.cyan().bold())?;
+        }
 
         // Write message if present
         if let Some(msg) = &collector.message {
             write!(writer, "{}", msg.white())?;
         }
 
-        // Render fields as tree (excluding "function" since it's in the header)
-        let display_fields = collector.get_display_fields();
+        // Render fields as tree. Hide "function" always; hide "service" and
+        // empty "data" on passthrough events since they're already in the
+        // header / vestigial after service.name stripping in emit_log_to_console.
+        let display_fields = collector.get_display_fields_filtered(is_passthrough);
         let tree = render_fields_tree(&display_fields);
         write!(writer, "{}", tree)?;
 
@@ -400,7 +505,7 @@ fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
         let otel_trace_layer = init_otel(otel_cfg);
 
         // Initialize OTEL logs layer if enabled
-        let otel_logs_layer = if otel_cfg.enabled {
+        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config()) {
             // Get max logs from global config (if set) or use default
             let max_logs = get_otel_config()
                 .and_then(|cfg| cfg.logs_max_count)
@@ -436,7 +541,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
         let otel_trace_layer = init_otel(otel_cfg);
 
         // Initialize OTEL logs layer if enabled
-        let otel_logs_layer = if otel_cfg.enabled {
+        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config()) {
             // Get max logs from global config (if set) or use default
             let max_logs = get_otel_config()
                 .and_then(|cfg| cfg.logs_max_count)
@@ -614,9 +719,9 @@ mod tests {
         let f_other = fs.field("other").unwrap();
         collector.record_i64(&f_other, 7);
 
-        let display = collector.get_display_fields();
+        let display = collector.get_display_fields_filtered(false);
         // "function" is stored on the dedicated field, not in `fields`,
-        // so get_display_fields() just returns whatever is in `fields`.
+        // so the filtered view just returns whatever is in `fields`.
         assert_eq!(display.len(), 2);
         assert_eq!(display[0].0, "extra");
         assert_eq!(display[1].0, "other");
@@ -971,5 +1076,121 @@ modules:
         let _ = std::fs::remove_file(&path);
 
         assert!(TRACING.get().is_some());
+    }
+
+    // =========================================================================
+    // OTEL passthrough header tests
+    // =========================================================================
+
+    #[test]
+    fn test_extract_passthrough_names_reads_function_name_field_directly() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("service", "function_name", "data");
+
+        collector.record_str(&fs.field("service").unwrap(), "todo-worker-python");
+        collector.record_str(&fs.field("function_name").unwrap(), "api.get./todos");
+        collector.record_str(&fs.field("data").unwrap(), r#"{"log.data":{"count":0}}"#);
+
+        let names = extract_passthrough_names(&collector);
+        assert_eq!(names.worker.as_deref(), Some("todo-worker-python"));
+        assert_eq!(names.step.as_deref(), Some("api.get./todos"));
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn test_extract_passthrough_names_falls_back_to_parsing_data() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("service", "function_name", "data");
+
+        collector.record_str(&fs.field("service").unwrap(), "todo-worker-python");
+        // function_name field present but empty (what emit_log_to_console
+        // emits when the `service.name` attribute isn't set).
+        collector.record_str(&fs.field("function_name").unwrap(), "");
+        // Legacy: function name lives only in the data JSON.
+        collector.record_str(
+            &fs.field("data").unwrap(),
+            r#"{"service.name":"api.legacy"}"#,
+        );
+
+        let names = extract_passthrough_names(&collector);
+        assert_eq!(names.worker.as_deref(), Some("todo-worker-python"));
+        assert_eq!(names.step.as_deref(), Some("api.legacy"));
+    }
+
+    #[test]
+    fn test_extract_passthrough_names_step_only_when_worker_missing() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("data");
+
+        collector.record_str(
+            &fs.field("data").unwrap(),
+            r#"{"service.name":"api.get./todos"}"#,
+        );
+
+        let names = extract_passthrough_names(&collector);
+        assert!(names.worker.is_none());
+        assert_eq!(names.step.as_deref(), Some("api.get./todos"));
+    }
+
+    #[test]
+    fn test_extract_passthrough_names_empty_when_nothing_present() {
+        let collector = FieldCollector::new();
+        let names = extract_passthrough_names(&collector);
+        assert!(names.is_empty());
+        assert!(names.worker.is_none());
+        assert!(names.step.is_none());
+    }
+
+    #[test]
+    fn test_get_display_fields_filtered_hides_header_fields_and_empty_data_on_passthrough() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("service", "function_name", "data", "function", "extra");
+
+        collector.record_str(&fs.field("service").unwrap(), "worker");
+        collector.record_str(&fs.field("function_name").unwrap(), "api.get./todos");
+        // Empty string — mirrors the case where emit_log_to_console stripped
+        // the only attribute (`service.name`) leaving nothing to render.
+        collector.record_str(&fs.field("data").unwrap(), "");
+        collector.record_str(&fs.field("function").unwrap(), "fn-name");
+        collector.record_str(&fs.field("extra").unwrap(), "keep");
+
+        // Non-passthrough case: only "function" is hidden.
+        let visible: Vec<&String> = collector
+            .get_display_fields_filtered(false)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(visible.iter().any(|n| *n == "service"));
+        assert!(visible.iter().any(|n| *n == "function_name"));
+        assert!(visible.iter().any(|n| *n == "data"));
+        assert!(visible.iter().any(|n| *n == "extra"));
+        assert!(!visible.iter().any(|n| *n == "function"));
+
+        // Passthrough case: function, service, function_name, AND empty data hidden.
+        let visible: Vec<&String> = collector
+            .get_display_fields_filtered(true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!visible.iter().any(|n| *n == "service"));
+        assert!(!visible.iter().any(|n| *n == "function_name"));
+        assert!(!visible.iter().any(|n| *n == "function"));
+        assert!(!visible.iter().any(|n| *n == "data"));
+        assert!(visible.iter().any(|n| *n == "extra"));
+    }
+
+    #[test]
+    fn test_get_display_fields_filtered_keeps_nonempty_data_on_passthrough() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("data");
+
+        collector.record_str(&fs.field("data").unwrap(), r#"{"log.data":"x"}"#);
+
+        let visible: Vec<&String> = collector
+            .get_display_fields_filtered(true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(visible.iter().any(|n| *n == "data"));
     }
 }

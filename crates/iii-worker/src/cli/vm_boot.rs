@@ -59,6 +59,58 @@ pub struct VmBootArgs {
     pub slot: u64,
 }
 
+/// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtiofsMountEntry {
+    pub tag: String,
+    pub host_path: String,
+    pub guest_path: String,
+}
+
+/// Output of [`build_virtiofs_mount_plan`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtiofsMountPlan {
+    /// Virtio-fs attach entries, in CLI arg order. Each gets a `virtiofs_N` tag.
+    pub entries: Vec<VirtiofsMountEntry>,
+    /// Value of `III_VIRTIOFS_MOUNTS` to pass into the guest env:
+    /// `tag1=/guest/path1;tag2=/guest/path2`.
+    pub env_var: String,
+}
+
+/// Parse `--mount host:guest` CLI args into a virtiofs attach plan and the
+/// matching `III_VIRTIOFS_MOUNTS` env string the guest (iii-init) will consume.
+///
+/// Returns `Err` on the first malformed entry so a bad CLI arg fails the VM
+/// boot instead of producing a partial attach plan.
+pub fn build_virtiofs_mount_plan(mounts: &[String]) -> Result<VirtiofsMountPlan, String> {
+    let mut entries = Vec::with_capacity(mounts.len());
+    let mut env_var = String::new();
+    for (i, mount_str) in mounts.iter().enumerate() {
+        let (host_path, guest_path) = match mount_str.split_once(':') {
+            Some((h, g)) if !h.is_empty() && !g.is_empty() => (h.to_string(), g.to_string()),
+            _ => {
+                return Err(format!(
+                    "Invalid mount format '{}'. Expected host:guest",
+                    mount_str
+                ));
+            }
+        };
+        let tag = format!("virtiofs_{}", i);
+        if !env_var.is_empty() {
+            env_var.push(';');
+        }
+        env_var.push_str(&tag);
+        env_var.push('=');
+        env_var.push_str(&guest_path);
+        entries.push(VirtiofsMountEntry {
+            tag,
+            host_path,
+            guest_path,
+        });
+    }
+    Ok(VirtiofsMountPlan { entries, env_var })
+}
+
 /// Compose the full libkrunfw file path from the resolved directory and platform filename.
 pub fn resolve_krunfw_file_path() -> Option<std::path::PathBuf> {
     let dir = crate::cli::firmware::resolve::resolve_libkrunfw_dir()?;
@@ -207,17 +259,12 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         })
         .fs(move |fs| fs.tag("/dev/root").custom(Box::new(passthrough_fs)));
 
-    for (i, mount_str) in args.mount.iter().enumerate() {
-        let parts: Vec<&str> = mount_str.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(format!(
-                "Invalid mount format '{}'. Expected host:guest",
-                mount_str
-            ));
-        }
-        let tag = format!("virtiofs_{}", i);
-        let path = parts[0].to_string();
-        builder = builder.fs(move |fs| fs.tag(&tag).path(&path));
+    let mount_plan = build_virtiofs_mount_plan(&args.mount)?;
+    let virtiofs_mount_env = mount_plan.env_var.clone();
+    for entry in mount_plan.entries {
+        let tag = entry.tag.clone();
+        let host_path = entry.host_path.clone();
+        builder = builder.fs(move |fs| fs.tag(&tag).path(&host_path));
     }
 
     let tokio_rt = tokio::runtime::Builder::new_multi_thread()
@@ -250,6 +297,9 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_INIT_GW", &gateway_ip);
         e = e.env("III_INIT_CIDR", "30");
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
+        if !virtiofs_mount_env.is_empty() {
+            e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
+        }
 
         for env_str in &args.env {
             if let Some((key, value)) = env_str.split_once('=') {
@@ -354,6 +404,55 @@ mod tests {
             build_worker_cmd("/usr/bin/node", &args),
             "/usr/bin/node script.js --port 3000"
         );
+    }
+
+    #[test]
+    fn build_virtiofs_mount_plan_empty() {
+        let plan = build_virtiofs_mount_plan(&[]).unwrap();
+        assert!(plan.entries.is_empty());
+        assert!(plan.env_var.is_empty());
+    }
+
+    #[test]
+    fn build_virtiofs_mount_plan_single() {
+        let plan = build_virtiofs_mount_plan(&["/host/proj:/workspace".to_string()]).unwrap();
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(plan.entries[0].tag, "virtiofs_0");
+        assert_eq!(plan.entries[0].host_path, "/host/proj");
+        assert_eq!(plan.entries[0].guest_path, "/workspace");
+        assert_eq!(plan.env_var, "virtiofs_0=/workspace");
+    }
+
+    #[test]
+    fn build_virtiofs_mount_plan_multiple_preserves_order_and_indexes_tags() {
+        let plan = build_virtiofs_mount_plan(&["/host/a:/b".to_string(), "/host/c:/d".to_string()])
+            .unwrap();
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[0].tag, "virtiofs_0");
+        assert_eq!(plan.entries[0].host_path, "/host/a");
+        assert_eq!(plan.entries[0].guest_path, "/b");
+        assert_eq!(plan.entries[1].tag, "virtiofs_1");
+        assert_eq!(plan.entries[1].host_path, "/host/c");
+        assert_eq!(plan.entries[1].guest_path, "/d");
+        assert_eq!(plan.env_var, "virtiofs_0=/b;virtiofs_1=/d");
+    }
+
+    #[test]
+    fn build_virtiofs_mount_plan_rejects_missing_colon() {
+        let err = build_virtiofs_mount_plan(&["/host/noguest".to_string()]).unwrap_err();
+        assert!(err.contains("Invalid mount format"));
+    }
+
+    #[test]
+    fn build_virtiofs_mount_plan_rejects_empty_host() {
+        let err = build_virtiofs_mount_plan(&[":/guest".to_string()]).unwrap_err();
+        assert!(err.contains("Invalid mount format"));
+    }
+
+    #[test]
+    fn build_virtiofs_mount_plan_rejects_empty_guest() {
+        let err = build_virtiofs_mount_plan(&["/host:".to_string()]).unwrap_err();
+        assert!(err.contains("Invalid mount format"));
     }
 
     // --- 6.1: check_kvm_nonexistent_path (Linux only) ---

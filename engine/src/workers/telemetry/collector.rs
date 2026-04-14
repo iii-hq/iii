@@ -6,7 +6,7 @@
 
 use std::sync::{
     OnceLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Global telemetry collector with atomic counters for all module operations.
@@ -115,6 +115,22 @@ static TELEMETRY_COLLECTOR: OnceLock<TelemetryCollector> = OnceLock::new();
 /// Get the global telemetry collector instance.
 pub fn collector() -> &'static TelemetryCollector {
     TELEMETRY_COLLECTOR.get_or_init(TelemetryCollector::default)
+}
+
+static FIRST_USER_INVOCATION: OnceLock<tokio::sync::Notify> = OnceLock::new();
+static FIRST_USER_INVOCATION_SENT: AtomicBool = AtomicBool::new(false);
+
+/// Returns the notify handle the boot heartbeat task awaits on.
+pub fn first_user_invocation_notify() -> &'static tokio::sync::Notify {
+    FIRST_USER_INVOCATION.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Signal that a user (non-builtin) function was invoked.
+/// Only the first call actually wakes the listener; subsequent calls are no-ops.
+pub fn notify_user_function_invoked() {
+    if !FIRST_USER_INVOCATION_SENT.swap(true, Ordering::Relaxed) {
+        first_user_invocation_notify().notify_one();
+    }
 }
 
 // Convenience tracking functions

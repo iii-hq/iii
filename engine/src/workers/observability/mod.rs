@@ -448,6 +448,11 @@ impl ObservabilityWorker {
         severity_text: &str,
         severity_number: i32,
     ) {
+        // Respect logs_enabled: if explicitly disabled, skip storage/emit entirely.
+        if !otel::logs_enabled(otel::get_otel_config()) {
+            return;
+        }
+
         // Check sampling ratio before storing
         let should_sample = {
             let ratio = otel::get_otel_config()
@@ -460,9 +465,9 @@ impl ObservabilityWorker {
             return;
         }
 
-        // Initialize storage if not already done
+        // Initialize storage if not already done, honoring the configured cap.
         if otel::get_log_storage().is_none() {
-            otel::init_log_storage(None);
+            otel::init_log_storage(self._config.logs_max_count);
         }
 
         let service_name = input
@@ -1016,8 +1021,12 @@ impl ObservabilityWorker {
                 FunctionResult::Success(Some(response))
             }
             None => {
-                // Initialize storage if not already done and return empty result
-                otel::init_log_storage(None);
+                // Honor logs_enabled: do NOT lazily revive storage when logs
+                // are disabled at config time. Return an empty result so API
+                // consumers get a consistent shape.
+                if otel::logs_enabled(Some(&self._config)) {
+                    otel::init_log_storage(self._config.logs_max_count);
+                }
                 let response = serde_json::json!({
                     "logs": [],
                     "total": 0,
@@ -1435,8 +1444,15 @@ impl Worker for ObservabilityWorker {
             let _ = metrics::get_engine_metrics();
         }
 
-        // Initialize log storage
-        otel::init_log_storage(None);
+        // Initialize log storage only when logs are enabled
+        if otel::logs_enabled(Some(&self._config)) {
+            otel::init_log_storage(self._config.logs_max_count);
+        } else {
+            tracing::info!(
+                "{} OTEL logs disabled via logs_enabled=false; skipping log storage",
+                "[OTEL]".cyan()
+            );
+        }
 
         // Initialize rollup storage for multi-level metric aggregation
         metrics::init_rollup_storage();
@@ -1531,6 +1547,41 @@ impl Worker for ObservabilityWorker {
                     );
                 }
             });
+        }
+
+        // Spawn background task for log retention cleanup
+        if let Some(retention_seconds) = self._config.logs_retention_seconds
+            && retention_seconds > 0
+            && let Some(log_storage) = otel::get_log_storage()
+        {
+            let retention_ns = match retention_seconds.checked_mul(1_000_000_000) {
+                Some(ns) => ns,
+                None => {
+                    tracing::warn!(
+                        "logs_retention_seconds overflow when converting to nanoseconds; disabling log retention task"
+                    );
+                    0
+                }
+            };
+            if retention_ns > 0 {
+                let mut shutdown_rx = shutdown_rx.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+                    loop {
+                        tokio::select! {
+                            result = shutdown_rx.changed() => {
+                                if result.is_err() || *shutdown_rx.borrow() {
+                                    tracing::debug!("[ObservabilityWorker] Log retention task shutting down");
+                                    break;
+                                }
+                            }
+                            _ = interval.tick() => {
+                                log_storage.apply_retention(retention_ns);
+                            }
+                        }
+                    }
+                });
+            }
         }
 
         // Spawn background task for metrics retention cleanup and rollup processing
@@ -2088,6 +2139,141 @@ mod tests {
         let storage = otel::InMemoryLogStorage::new(100);
         assert!(storage.is_empty());
         assert_eq!(storage.len(), 0);
+    }
+
+    #[test]
+    fn test_log_storage_apply_retention_drops_old_and_keeps_recent() {
+        let storage = otel::InMemoryLogStorage::new(100);
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let one_hour_ns: u64 = 3600 * 1_000_000_000;
+        let old_ts = now_ns.saturating_sub(2 * one_hour_ns); // 2h ago
+        let recent_ts = now_ns.saturating_sub(60 * 1_000_000_000); // 1m ago
+
+        storage.store(make_log(None, None, "INFO", 9, "old", "svc", old_ts));
+        storage.store(make_log(None, None, "INFO", 9, "recent", "svc", recent_ts));
+        assert_eq!(storage.len(), 2);
+
+        // Retain only last hour: old entry must be dropped, recent kept.
+        storage.apply_retention(one_hour_ns);
+
+        let logs = storage.get_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].body, "recent");
+    }
+
+    #[test]
+    fn test_log_storage_apply_retention_falls_back_to_observed_timestamp_when_event_time_zero() {
+        // Regression test: OTLP logs spec allows time_unix_nano == 0 to mean
+        // "unknown event time". Receivers must fall back to
+        // observed_time_unix_nano. Without the fallback, such logs are
+        // evicted on the first retention tick despite a valid observation
+        // time.
+        let storage = otel::InMemoryLogStorage::new(100);
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let one_hour_ns: u64 = 3600 * 1_000_000_000;
+        let recent_observed = now_ns.saturating_sub(60 * 1_000_000_000); // 1m ago
+
+        // Hand-craft a log with timestamp_unix_nano == 0 but a recent
+        // observed_timestamp_unix_nano — the exact shape produced by
+        // ingest_otlp_logs when the SDK sends time_unix_nano=0.
+        let log = otel::StoredLog {
+            timestamp_unix_nano: 0,
+            observed_timestamp_unix_nano: recent_observed,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: "observed-only".to_string(),
+            attributes: HashMap::new(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "svc".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+        storage.store(log);
+        assert_eq!(storage.len(), 1);
+
+        storage.apply_retention(one_hour_ns);
+
+        let logs = storage.get_logs();
+        assert_eq!(
+            logs.len(),
+            1,
+            "log with zero event timestamp must be preserved via observed timestamp"
+        );
+        assert_eq!(logs[0].body, "observed-only");
+    }
+
+    #[test]
+    fn test_log_storage_apply_retention_evicts_when_both_timestamps_expired() {
+        // Complement to the fallback test: if BOTH timestamps are expired,
+        // the log must still be evicted.
+        let storage = otel::InMemoryLogStorage::new(100);
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let one_hour_ns: u64 = 3600 * 1_000_000_000;
+        let old_observed = now_ns.saturating_sub(2 * one_hour_ns); // 2h ago
+
+        let log = otel::StoredLog {
+            timestamp_unix_nano: 0,
+            observed_timestamp_unix_nano: old_observed,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: "stale-observed".to_string(),
+            attributes: HashMap::new(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "svc".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+        storage.store(log);
+        storage.apply_retention(one_hour_ns);
+
+        assert_eq!(storage.get_logs().len(), 0);
+    }
+
+    #[test]
+    fn test_log_storage_apply_retention_scans_whole_buffer_for_out_of_order() {
+        // Regression test: logs are stored in arrival order, not timestamp
+        // order. An older-timestamped log that lands AFTER a newer one must
+        // still be evicted by retention. Proves apply_retention scans the
+        // entire buffer rather than stopping at the first non-expired front.
+        let storage = otel::InMemoryLogStorage::new(100);
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let one_hour_ns: u64 = 3600 * 1_000_000_000;
+        let old_ts = now_ns.saturating_sub(2 * one_hour_ns); // 2h ago, expired
+        let recent_ts = now_ns.saturating_sub(60 * 1_000_000_000); // 1m ago, fresh
+
+        // Arrival order puts the fresh log FIRST, then a backdated log
+        // (simulates clock skew / SDK batch flushing older records).
+        storage.store(make_log(None, None, "INFO", 9, "recent", "svc", recent_ts));
+        storage.store(make_log(None, None, "INFO", 9, "backdated", "svc", old_ts));
+        assert_eq!(storage.len(), 2);
+
+        storage.apply_retention(one_hour_ns);
+
+        let logs = storage.get_logs();
+        assert_eq!(
+            logs.len(),
+            1,
+            "backdated entry must be evicted even when trapped behind a newer one"
+        );
+        assert_eq!(logs[0].body, "recent");
     }
 
     #[test]
