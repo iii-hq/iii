@@ -1,13 +1,4 @@
 terraform {
-  # Remote state backend pointing at the very bucket this module creates.
-  #
-  # Chicken-and-egg: on a first-time bootstrap (bucket doesn't exist yet), this
-  # backend config is unusable. For that scenario, see _bootstrap/README.md
-  # "Re-bootstrap from scratch" — you temporarily comment out this block, run
-  # the bootstrap with local state, then uncomment and `terraform init
-  # -migrate-state` to move the state into the newly-created bucket.
-  #
-  # For any subsequent apply (the bucket already exists), this backend Just Works.
   backend "s3" {
     bucket         = "iii-terraform-state-prod-us-east-1"
     key            = "_bootstrap/terraform.tfstate"
