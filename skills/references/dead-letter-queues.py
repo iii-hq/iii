@@ -57,7 +57,7 @@ iii.register_function("payments::charge", payments_charge)
 iii.register_trigger({
     "type": "durable:subscriber",
     "function_id": "payments::charge",
-    "config": {"queue": "payment"},
+    "config": {"topic": "payment"},
 })
 
 # ---

@@ -52,7 +52,7 @@ iii.registerFunction('orders::fulfill', async (data) => {
 iii.registerTrigger({
   type: 'durable:subscriber',
   function_id: 'orders::fulfill',
-  config: { queue: 'fulfillment' },
+  config: { topic: 'fulfillment' },
 })
 
 // ---------------------------------------------------------------------------

@@ -136,6 +136,57 @@ pub fn mount_filesystems() -> Result<(), InitError> {
     Ok(())
 }
 
+/// Recursively `mkdir -p` a guest path, ignoring `EEXIST` at each level.
+fn mkdir_p(path: &str) -> Result<(), InitError> {
+    let mut acc = String::new();
+    for segment in path.trim_start_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        acc.push('/');
+        acc.push_str(segment);
+        mkdir_ignore_exists(&acc)?;
+    }
+    Ok(())
+}
+
+/// Mount virtiofs shares passed via the `III_VIRTIOFS_MOUNTS` env var.
+///
+/// Format: `tag1=/guest/path1;tag2=/guest/path2`. The tag matches the virtiofs
+/// source tag attached in vm_boot. Each guest path is created with `mkdir -p`
+/// before mounting. Failures on individual mounts log a warning and continue
+/// so a bad share cannot wedge worker startup.
+pub fn mount_virtiofs_shares() {
+    let spec = match std::env::var("III_VIRTIOFS_MOUNTS") {
+        Ok(s) if !s.is_empty() => s,
+        _ => return,
+    };
+
+    let pairs = crate::parse::parse_virtiofs_spec(&spec, |entry| {
+        eprintln!("iii-init: warning: malformed virtiofs mount entry: {entry}");
+    });
+
+    for (tag, guest_path) in pairs {
+        if let Err(e) = mkdir_p(&guest_path) {
+            eprintln!("iii-init: warning: mkdir {guest_path} failed: {e}");
+            continue;
+        }
+
+        match mount(
+            Some(tag.as_str()),
+            guest_path.as_str(),
+            Some("virtiofs"),
+            MsFlags::empty(),
+            None::<&str>,
+        ) {
+            Ok(()) | Err(nix::Error::EBUSY) => {}
+            Err(e) => {
+                eprintln!("iii-init: warning: mount virtiofs {tag} -> {guest_path} failed: {e}");
+            }
+        }
+    }
+}
+
 /// Mount cgroup2 and create a memory-limited worker cgroup.
 ///
 /// Reads `III_WORKER_MEM_BYTES` to set `memory.max` on the worker cgroup.

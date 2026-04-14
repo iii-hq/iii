@@ -167,10 +167,66 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
+    parts.push("set -e".to_string());
     parts.push("export HOME=${HOME:-/root}".to_string());
     parts.push("export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string());
     parts.push("export LANG=${LANG:-C.UTF-8}".to_string());
+
+    // Workspace strategy: host project is mounted live at /workspace via
+    // virtiofs (by iii-init from III_VIRTIOFS_MOUNTS). Source edits flow
+    // through naturally. Language dep dirs (node_modules, .venv, target,
+    // etc.) are bind-mounted from the rootfs so their writes stay VM-local
+    // and never hit the host repo. The rootfs-backed bind targets persist
+    // across VM restarts, so npm install / pip install caches survive.
+    //
+    // We tried overlayfs with virtiofs as lower and hit errno 102 (kernel
+    // copy-up path fails for PassthroughFs reads). Bind-mounts sidestep
+    // that entirely.
+    //
+    // Tradeoff: each dep dir becomes a mountpoint, and mount(2) requires
+    // the target to exist. If the host repo doesn't already have one of
+    // these dirs, an empty directory appears on the host (standard
+    // .gitignore entry in every dev setup).
+    // Verify /workspace is an actual virtiofs mountpoint, not just a bare
+    // directory. iii-init's mount_virtiofs_shares() calls mkdir_p on the
+    // guest path before mounting and swallows mount failures as warnings,
+    // so a silent virtiofs failure leaves /workspace existing-but-unmounted.
+    // A plain `-d` check would pass and we'd bind-mount deps onto an empty
+    // rootfs dir -- writes would leak onto rootfs instead of the host repo.
+    parts.push(
+        r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
+  echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
+  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
+  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
+  exit 1
+fi
+DEPS_ROOT=/var/iii/deps
+for d in node_modules .venv target dist __pycache__ .pytest_cache .next; do
+  mkdir -p "$DEPS_ROOT/$d"
+  if [ ! -e "/workspace/$d" ]; then
+    mkdir "/workspace/$d"
+  elif [ ! -d "/workspace/$d" ]; then
+    echo "iii: WARN /workspace/$d exists but is not a directory, skipping bind" >&2
+    continue
+  fi
+  mount --bind "$DEPS_ROOT/$d" "/workspace/$d"
+done
+cd /workspace
+echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
+            .to_string(),
+    );
+
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
+
+    // Force polling for common file watchers. Overlayfs does not propagate
+    // inotify events from lower-layer (host) changes, so without polling
+    // `tsx watch`, watchfiles, cargo-watch etc. never fire on host edits.
+    parts.push("export CHOKIDAR_USEPOLLING=true".to_string());
+    parts.push("export CHOKIDAR_INTERVAL=${CHOKIDAR_INTERVAL:-300}".to_string());
+    parts.push("export WATCHPACK_POLLING=true".to_string());
+    parts.push("export WATCHFILES_FORCE_POLLING=true".to_string());
+    parts.push("export TSC_WATCHFILE=DynamicPriorityPolling".to_string());
+    parts.push("export TSC_WATCHDIRECTORY=DynamicPriorityPolling".to_string());
 
     if !prepared {
         if !project.setup_cmd.is_empty() {
@@ -182,7 +238,7 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
         parts.push("mkdir -p /var && touch /var/.iii-prepared".to_string());
     }
 
-    parts.push(format!("{} && {}", env_exports, project.run_cmd));
+    parts.push(format!("{} && exec {}", env_exports, project.run_cmd));
     parts.join("\n")
 }
 
@@ -226,6 +282,16 @@ pub fn build_local_env(
 // ──────────────────────────────────────────────────────────────────────────────
 // New functions for local-path worker support
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Build the virtiofs mount list for a local-path worker: the host project
+/// dir is shared live at guest `/workspace`. Returns `(host_path, guest_path)`
+/// pairs suitable for `libkrun::run_dev`.
+pub fn build_local_mounts(project_path: &Path) -> Vec<(String, String)> {
+    vec![(
+        project_path.to_string_lossy().into_owned(),
+        "/workspace".to_string(),
+    )]
+}
 
 /// Returns `true` if `input` looks like a local filesystem path rather than
 /// a registry name or OCI reference.
@@ -454,31 +520,23 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         }
     }
 
-    // 5. Re-copy project files to workspace (fresh source each start)
-    //    Preserve installed dependency dirs (node_modules, target, .venv)
-    //    so setup/install doesn't re-run every time.
-    let workspace = managed_dir.join("workspace");
-    let ws = workspace.clone();
-    let pp = project_path.to_path_buf();
-    let copy_result = tokio::task::spawn_blocking(move || {
-        if ws.exists() {
-            clean_workspace_preserving_deps(&ws);
-        }
-        std::fs::create_dir_all(&ws).ok();
-        copy_dir_contents(&pp, &ws)
-    })
-    .await;
-
-    match copy_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            eprintln!("{} Failed to copy project to rootfs: {}", "error:".red(), e);
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("{} Copy task panicked: {}", "error:".red(), e);
-            return 1;
-        }
+    // 5. Host project dir is shared live into the VM via virtiofs at
+    //    /mnt/host-workspace; /workspace is assembled inside the VM as an
+    //    overlay on top of that (see build_libkrun_local_script). No copy
+    //    step — host edits flow through immediately, VM-side writes never
+    //    touch the host.
+    //
+    //    Ensure the overlay mountpoint dir exists in the rootfs so the init
+    //    doesn't fail cd-ing into it before the overlay is assembled.
+    let workspace_dir = managed_dir.join("workspace");
+    if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
+        eprintln!(
+            "{} Failed to create workspace dir {}: {}",
+            "error:".red(),
+            workspace_dir.display(),
+            e
+        );
+        return 1;
     }
 
     // 5. Check .iii-prepared marker
@@ -562,10 +620,15 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     let (vcpus, ram) = parse_manifest_resources(&manifest_path);
 
     let exec_path = "/bin/sh";
+    // The script sets up the overlay at /workspace; no pre-cd needed (and
+    // /workspace is empty until overlay mounts, so cd-before-exec would be
+    // racy).
     let args = vec![
         "-c".to_string(),
-        "cd /workspace && exec bash /opt/iii/dev-run.sh".to_string(),
+        "exec bash /opt/iii/dev-run.sh".to_string(),
     ];
+
+    let mounts = build_local_mounts(project_path);
 
     super::worker_manager::libkrun::run_dev(
         language,
@@ -578,6 +641,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         managed_dir,
         true,
         worker_name,
+        &mounts,
     )
     .await
 }
@@ -589,6 +653,23 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_local_mounts_maps_project_to_workspace() {
+        let mounts = build_local_mounts(Path::new("/abs/host/project"));
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].0, "/abs/host/project");
+        assert_eq!(mounts[0].1, "/workspace");
+    }
+
+    #[test]
+    fn build_local_mounts_preserves_relative_path_string() {
+        // Path stringification is lossy on non-UTF8, but for typical macOS/Linux
+        // paths we round-trip exactly. Documents intended behavior.
+        let mounts = build_local_mounts(Path::new("./relative/path"));
+        assert_eq!(mounts[0].0, "./relative/path");
+        assert_eq!(mounts[0].1, "/workspace");
+    }
 
     #[test]
     fn is_local_path_detects_relative() {
@@ -646,6 +727,10 @@ mod tests {
         assert!(script.contains("npm install"));
         assert!(script.contains("node server.js"));
         assert!(script.contains(".iii-prepared"));
+        assert!(script.contains("mount --bind"));
+        assert!(script.contains("/var/iii/deps"));
+        assert!(script.contains("node_modules"));
+        assert!(script.contains("CHOKIDAR_USEPOLLING=true"));
     }
 
     #[test]
@@ -662,6 +747,7 @@ mod tests {
         assert!(!script.contains("apt-get install nodejs"));
         assert!(!script.contains("npm install"));
         assert!(script.contains("node server.js"));
+        assert!(script.contains("mount --bind"));
     }
 
     #[test]

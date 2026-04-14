@@ -85,7 +85,7 @@ impl InvocationHandler {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
-        let function_kind = if function_id.starts_with("engine::") {
+        let function_kind = if crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
             "internal"
         } else {
             "user"
@@ -155,6 +155,9 @@ impl InvocationHandler {
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
+                    if !crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
+                        let _ = acc.first_user_success_fn.set(function_id.clone());
+                    }
 
                     let _ = invocation.sender.send(Ok(result));
                 }
@@ -190,6 +193,9 @@ impl InvocationHandler {
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
+                    if !crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
+                        let _ = acc.first_user_failure_fn.set(function_id.clone());
+                    }
 
                     let _ = invocation.sender.send(Err(error));
                 }

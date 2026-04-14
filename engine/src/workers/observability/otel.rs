@@ -64,6 +64,13 @@ pub fn get_otel_config() -> Option<&'static ObservabilityWorkerConfig> {
     GLOBAL_OTEL_CONFIG.get()
 }
 
+/// Decide whether OTEL logs storage / emission should be active, given an
+/// optional config. Defaults to `true` when the config (or field) is absent
+/// — matches "opt-out" semantics: logs on unless explicitly disabled.
+pub fn logs_enabled(cfg: Option<&ObservabilityWorkerConfig>) -> bool {
+    cfg.and_then(|c| c.logs_enabled).unwrap_or(true)
+}
+
 /// Exporter type for OpenTelemetry traces.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ExporterType {
@@ -2235,6 +2242,38 @@ impl InMemoryLogStorage {
     pub fn subscribe(&self) -> broadcast::Receiver<StoredLog> {
         self.tx.subscribe()
     }
+
+    /// Drop logs whose effective timestamp is older than `retention_ns` from now.
+    ///
+    /// Scans the entire buffer rather than popping from the front: logs are
+    /// stored in arrival order, which does not match timestamp order when
+    /// SDK workers batch backdated records, clocks skew across workers, or
+    /// sampling interleaves late arrivals. An older-timestamped log trapped
+    /// behind a newer one would otherwise survive retention.
+    ///
+    /// The effective timestamp is `timestamp_unix_nano` when non-zero,
+    /// falling back to `observed_timestamp_unix_nano`. Per the OTLP logs
+    /// spec, a `time_unix_nano` of 0 means "unknown" and receivers must use
+    /// `observed_time_unix_nano` instead; without this fallback, logs
+    /// emitted without an event timestamp would be evicted on the very
+    /// first retention tick despite a valid observation time.
+    pub fn apply_retention(&self, retention_ns: u64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let cutoff = now.saturating_sub(retention_ns);
+
+        let mut logs = self.logs.write().unwrap();
+        logs.retain(|log| {
+            let effective = if log.timestamp_unix_nano != 0 {
+                log.timestamp_unix_nano
+            } else {
+                log.observed_timestamp_unix_nano
+            };
+            effective >= cutoff
+        });
+    }
 }
 
 /// Global in-memory log storage.
@@ -2298,12 +2337,50 @@ pub(crate) const OTEL_PASSTHROUGH_TARGET: &str = "iii::otel_passthrough";
 ///
 /// Uses [`OTEL_PASSTHROUGH_TARGET`] so `OtelLogsLayer` skips these events
 /// and avoids storing them a second time (they are already stored by `ingest_otlp_logs`).
-fn emit_log_to_console(log: &StoredLog) {
+/// Build the (data_json, function_name) pair that `emit_log_to_console`
+/// passes to the tracing macros for a passthrough log record.
+///
+/// - `function_name` is read from the `service.name` attribute (empty
+///   string when absent).
+/// - `data_json` is the JSON-serialized attribute map with `service.name`
+///   stripped out (empty string when the map is empty or has only
+///   `service.name`).
+pub(crate) fn build_console_log_fields(log: &StoredLog) -> (String, &str) {
+    let function_name = log
+        .attributes
+        .get("service.name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     let data = if log.attributes.is_empty() {
         String::new()
     } else {
-        serde_json::to_string(&log.attributes).unwrap_or_default()
+        let filtered: std::collections::BTreeMap<&str, &serde_json::Value> = log
+            .attributes
+            .iter()
+            .filter(|(k, _)| k.as_str() != "service.name")
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        if filtered.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&filtered).unwrap_or_default()
+        }
     };
+
+    (data, function_name)
+}
+
+fn emit_log_to_console(log: &StoredLog) {
+    // Extract the function name from the `service.name` attribute before it
+    // gets stripped from the rendered blob. This is emitted as its own
+    // tracing field (`function_name`) so the console formatter can render
+    // it as a distinct token without having to re-parse `data`.
+    // `service.name` is also excluded from the rendered attribute blob: it
+    // is redundant with the resource-level service name (rendered separately
+    // as the passthrough header by the console formatter) and clutters the
+    // tree.
+    let (data, function_name) = build_console_log_fields(log);
 
     let service = &log.service_name;
     let body = &log.body;
@@ -2311,22 +2388,22 @@ fn emit_log_to_console(log: &StoredLog) {
     // OTEL severity numbers: TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24
     match log.severity_number {
         1..=4 => {
-            tracing::trace!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+            tracing::trace!(target: OTEL_PASSTHROUGH_TARGET, service = %service, function_name = %function_name, data = %data, "{}", body)
         }
         5..=8 => {
-            tracing::debug!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+            tracing::debug!(target: OTEL_PASSTHROUGH_TARGET, service = %service, function_name = %function_name, data = %data, "{}", body)
         }
         9..=12 => {
-            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, function_name = %function_name, data = %data, "{}", body)
         }
         13..=16 => {
-            tracing::warn!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+            tracing::warn!(target: OTEL_PASSTHROUGH_TARGET, service = %service, function_name = %function_name, data = %data, "{}", body)
         }
         17..=24 => {
-            tracing::error!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+            tracing::error!(target: OTEL_PASSTHROUGH_TARGET, service = %service, function_name = %function_name, data = %data, "{}", body)
         }
         _ => {
-            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, function_name = %function_name, data = %data, "{}", body)
         }
     }
 }
@@ -2348,6 +2425,14 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
         "Received OTLP logs from Node SDK"
     );
 
+    // Honor logs_enabled: silently drop incoming OTLP logs when logs are
+    // disabled at config time. Otherwise a Node/Python SDK worker posting
+    // logs would lazily revive the storage that `initialize()` deliberately
+    // did not create.
+    if !logs_enabled(get_otel_config()) {
+        return Ok(());
+    }
+
     // Parse the OTLP logs JSON
     let request: OtlpExportLogsServiceRequest = serde_json::from_str(json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP logs JSON: {}", e))?;
@@ -2356,8 +2441,12 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
     let storage = match get_log_storage() {
         Some(s) => s,
         None => {
-            // Initialize storage if not already done
-            init_log_storage(None);
+            // Initialize storage with the configured cap. Only reached when
+            // logs_enabled=true but initialize() hasn't run yet (e.g.,
+            // worker starts receiving OTLP before ObservabilityWorker's
+            // initialize() runs).
+            let max_logs = get_otel_config().and_then(|c| c.logs_max_count);
+            init_log_storage(max_logs);
             get_log_storage().ok_or_else(|| anyhow::anyhow!("Failed to initialize log storage"))?
         }
     };
@@ -5372,5 +5461,107 @@ mod tests {
             attr_map["exception.stacktrace"].contains("test_fn"),
             "stacktrace should contain function name"
         );
+    }
+
+    // =========================================================================
+    // logs_enabled() decision helper
+    // =========================================================================
+
+    fn cfg_with_logs_enabled(value: Option<bool>) -> ObservabilityWorkerConfig {
+        ObservabilityWorkerConfig {
+            logs_enabled: value,
+            ..ObservabilityWorkerConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_logs_enabled_defaults_true_when_config_absent() {
+        assert!(logs_enabled(None));
+    }
+
+    #[test]
+    fn test_logs_enabled_defaults_true_when_field_absent() {
+        let cfg = cfg_with_logs_enabled(None);
+        assert!(logs_enabled(Some(&cfg)));
+    }
+
+    #[test]
+    fn test_logs_enabled_true_when_explicit_true() {
+        let cfg = cfg_with_logs_enabled(Some(true));
+        assert!(logs_enabled(Some(&cfg)));
+    }
+
+    #[test]
+    fn test_logs_enabled_false_when_explicit_false() {
+        let cfg = cfg_with_logs_enabled(Some(false));
+        assert!(!logs_enabled(Some(&cfg)));
+    }
+
+    // =========================================================================
+    // build_console_log_fields() — service.name strip + function_name extract
+    // =========================================================================
+
+    fn log_with_attributes(attrs: Vec<(&str, serde_json::Value)>) -> StoredLog {
+        StoredLog {
+            timestamp_unix_nano: 0,
+            observed_timestamp_unix_nano: 0,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: "body".to_string(),
+            attributes: attrs.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "test-service".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        }
+    }
+
+    #[test]
+    fn test_build_console_log_fields_extracts_function_name_and_strips_it() {
+        let log = log_with_attributes(vec![
+            ("service.name", serde_json::json!("api.get./todos")),
+            ("log.data", serde_json::json!({"count": 0})),
+        ]);
+
+        let (data, function_name) = build_console_log_fields(&log);
+
+        assert_eq!(function_name, "api.get./todos");
+        // data must be non-empty JSON and must NOT contain "service.name"
+        let parsed: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert!(parsed.get("service.name").is_none());
+        assert!(parsed.get("log.data").is_some());
+    }
+
+    #[test]
+    fn test_build_console_log_fields_empty_when_only_service_name_attribute() {
+        let log = log_with_attributes(vec![("service.name", serde_json::json!("api.get./todos"))]);
+
+        let (data, function_name) = build_console_log_fields(&log);
+
+        assert_eq!(function_name, "api.get./todos");
+        assert!(
+            data.is_empty(),
+            "stripping the only attribute must produce empty data"
+        );
+    }
+
+    #[test]
+    fn test_build_console_log_fields_empty_when_no_attributes() {
+        let log = log_with_attributes(vec![]);
+        let (data, function_name) = build_console_log_fields(&log);
+        assert!(function_name.is_empty());
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn test_build_console_log_fields_missing_service_name_returns_empty_function_name() {
+        let log = log_with_attributes(vec![("log.data", serde_json::json!({"k": 1}))]);
+        let (data, function_name) = build_console_log_fields(&log);
+        assert!(function_name.is_empty());
+        assert!(!data.is_empty());
+        let parsed: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert!(parsed.get("log.data").is_some());
     }
 }

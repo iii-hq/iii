@@ -42,6 +42,7 @@ pub async fn run_dev(
     rootfs: PathBuf,
     background: bool,
     worker_name: &str,
+    mounts: &[(String, String)],
 ) -> i32 {
     let self_exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -71,6 +72,10 @@ pub async fn run_dev(
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
+    }
+
+    for (host, guest) in mounts {
+        cmd.arg("--mount").arg(format!("{}:{}", host, guest));
     }
 
     for arg in args {

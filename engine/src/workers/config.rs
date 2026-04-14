@@ -367,6 +367,10 @@ impl EngineBuilder {
         }
     }
 
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.engine
+    }
+
     /// Returns the currently-tracked running workers.
     pub fn running(&self) -> &[super::reload::RunningWorker] {
         &self.running
