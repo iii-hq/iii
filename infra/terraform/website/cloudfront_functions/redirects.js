@@ -30,54 +30,55 @@ function redirect(location) {
     statusCode: 301,
     statusDescription: 'Moved Permanently',
     headers: {
-      'location': { value: location },
+      location: { value: location },
       'cache-control': { value: 'public, max-age=3600' },
     },
-  };
+  }
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point (called by CloudFront runtime, not imported)
+// biome-ignore lint/complexity/useOptionalChain: CloudFront Functions cloudfront-js-2.0 runtime does NOT support optional chaining (verified via aws cloudfront test-function → SyntaxError: Unexpected token ";" on `request.headers?.host?.value`). Must use traditional && short-circuit guards.
 function handler(event) {
-  const request = event.request;
-  const uri = request.uri;
-  const host = request.headers?.host?.value;
+  var request = event.request
+  var uri = request.uri
+  var host = request.headers && request.headers.host ? request.headers.host.value : undefined
 
   // 1. /docs exact → 301 docs.iii.dev/docs
   if (uri === '/docs') {
-    return redirect('https://docs.iii.dev/docs');
+    return redirect('https://docs.iii.dev/docs')
   }
 
   // /docs/ exact → 301 docs.iii.dev/docs/
   if (uri === '/docs/') {
-    return redirect('https://docs.iii.dev/docs/');
+    return redirect('https://docs.iii.dev/docs/')
   }
 
   // /docs/<anything> → 301 docs.iii.dev/docs/<anything> (preserves the prefix)
   if (uri.indexOf('/docs/') === 0) {
-    return redirect(`https://docs.iii.dev${uri}`);
+    return redirect(`https://docs.iii.dev${uri}`)
   }
 
   // 2. www.iii.dev → 301 apex (preserves path; querystring reattached by CF)
   if (host === 'www.iii.dev') {
-    return redirect(`https://iii.dev${uri}`);
+    return redirect(`https://iii.dev${uri}`)
   }
 
   // 3. /.well-known/* → pass through explicitly (S3 returns 404, no SPA fallback)
   if (uri.indexOf('/.well-known/') === 0) {
-    return request;
+    return request
   }
 
   // 4. SPA fallback: extensionless path, doesn't end with /, not the root.
   //    Rewrite URI to /index.html so S3 returns the SPA shell with 200.
   if (uri !== '/' && uri.charAt(uri.length - 1) !== '/') {
-    const lastSlash = uri.lastIndexOf('/');
-    const lastSegment = uri.substring(lastSlash + 1);
+    const lastSlash = uri.lastIndexOf('/')
+    const lastSegment = uri.substring(lastSlash + 1)
     if (lastSegment.indexOf('.') === -1) {
-      request.uri = '/index.html';
-      return request;
+      request.uri = '/index.html'
+      return request
     }
   }
 
   // 5. Pass through unchanged.
-  return request;
+  return request
 }
