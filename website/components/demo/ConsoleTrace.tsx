@@ -283,9 +283,9 @@ export function ConsoleTrace({ step, isActive, onNext }: ConsoleTraceProps) {
         <div className="flex justify-end px-3 py-2 border-t border-iii-medium/10">
           <button
             onClick={handleDone}
-            className="text-[10px] opacity-50 hover:opacity-100 transition-opacity cursor-pointer shrink-0"
+            className="px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 cursor-pointer"
           >
-            continue
+            Continue
           </button>
         </div>
       )}

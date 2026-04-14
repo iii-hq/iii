@@ -6,7 +6,7 @@ import { CodeEditor } from './CodeEditor';
 import { StatusPanel } from './StatusPanel';
 import { ConsoleTrace } from './ConsoleTrace';
 import { TerminalCommand } from './TerminalCommand';
-import { InstallShButton } from '../InstallShButton';
+
 
 function SlackLogo() {
   return (
@@ -252,7 +252,14 @@ export function DemoSequencer({
               Try it for yourself
             </p>
             <div className="flex justify-center">
-              <InstallShButton className="max-w-[280px]" />
+              <a
+                href="https://docs.iii.dev/quickstart"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-6 py-2.5 text-sm font-bold rounded border border-iii-accent/50 text-iii-accent hover:bg-iii-accent hover:text-iii-black transition-all duration-200"
+              >
+                Quickstart Guide →
+              </a>
             </div>
           </div>
         )}
