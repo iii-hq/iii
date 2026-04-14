@@ -53,9 +53,18 @@ variable "github_repo" {
 }
 
 variable "github_environment" {
-  description = "GitHub environment the deploy role is scoped to"
+  description = <<-EOT
+    GitHub environment the deploy role is scoped to. Must match the environment
+    name used in `.github/workflows/deploy-website.yml`. Scoped to an isolated
+    environment (not the shared `Production`) so the AWS deploy secrets are not
+    exposed to unrelated workflows.
+
+    IMPORTANT: GitHub's OIDC sub claim uses the stored case of the environment
+    name, and IAM trust policy `StringEquals` is case-sensitive. Keep this value
+    in exact sync with the environment name in GitHub repo settings.
+  EOT
   type        = string
-  default     = "production"
+  default     = "iii-website-prod"
 }
 
 variable "csp_report_only" {

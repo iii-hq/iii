@@ -26,7 +26,7 @@ jobs:
   build-and-deploy:
     name: Build & deploy to S3 + CloudFront
     runs-on: ubuntu-latest
-    environment: production
+    environment: iii-website-prod
     timeout-minutes: 15
 
     env:
