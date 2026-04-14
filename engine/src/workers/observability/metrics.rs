@@ -3461,7 +3461,10 @@ mod tests {
         assert!(acc.first_user_success_fn.get().is_none());
 
         let _ = acc.first_user_success_fn.set("math::add".to_string());
-        assert_eq!(acc.first_user_success_fn.get(), Some(&"math::add".to_string()));
+        assert_eq!(
+            acc.first_user_success_fn.get(),
+            Some(&"math::add".to_string())
+        );
 
         let _ = acc.first_user_success_fn.set("math::multiply".to_string());
         assert_eq!(
@@ -3477,7 +3480,10 @@ mod tests {
         assert!(acc.first_user_failure_fn.get().is_none());
 
         let _ = acc.first_user_failure_fn.set("math::add".to_string());
-        assert_eq!(acc.first_user_failure_fn.get(), Some(&"math::add".to_string()));
+        assert_eq!(
+            acc.first_user_failure_fn.get(),
+            Some(&"math::add".to_string())
+        );
 
         let _ = acc.first_user_failure_fn.set("other::fn".to_string());
         assert_eq!(
@@ -3493,8 +3499,14 @@ mod tests {
         let _ = acc.first_user_success_fn.set("math::add".to_string());
         let _ = acc.first_user_failure_fn.set("math::divide".to_string());
 
-        assert_eq!(acc.first_user_success_fn.get(), Some(&"math::add".to_string()));
-        assert_eq!(acc.first_user_failure_fn.get(), Some(&"math::divide".to_string()));
+        assert_eq!(
+            acc.first_user_success_fn.get(),
+            Some(&"math::add".to_string())
+        );
+        assert_eq!(
+            acc.first_user_failure_fn.get(),
+            Some(&"math::divide".to_string())
+        );
     }
 
     // =========================================================================

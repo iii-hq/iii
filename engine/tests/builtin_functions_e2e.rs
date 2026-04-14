@@ -2,11 +2,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use iii::{
-    engine::EngineTrait,
-    workers::telemetry::is_iii_builtin_function_id,
-    EngineBuilder,
-};
+use iii::{EngineBuilder, engine::EngineTrait, workers::telemetry::is_iii_builtin_function_id};
 
 /// Boots the engine with all default modules (ephemeral ports to avoid
 /// conflicts), calls `engine::functions::list` with `include_internal: true`,
