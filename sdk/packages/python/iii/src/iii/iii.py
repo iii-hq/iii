@@ -1291,6 +1291,7 @@ class III:
             "name": worker_name,
             "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
             "pid": os.getpid(),
+            "isolation": os.environ.get("III_ISOLATION") or None,
             "telemetry": telemetry,
         }
 
