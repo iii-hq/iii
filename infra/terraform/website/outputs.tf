@@ -33,6 +33,11 @@ output "github_deploy_role_arn" {
   value       = aws_iam_role.github_deploy_website.arn
 }
 
+output "github_tf_plan_role_arn" {
+  description = "Read-only IAM role ARN assumed by pull_request-triggered GitHub Actions jobs for `terraform plan` — set as repo-level GitHub secret AWS_READONLY_ROLE_ARN"
+  value       = aws_iam_role.github_tf_plan.arn
+}
+
 output "sns_alarms_topic_arn" {
   description = "SNS topic ARN that receives production alarms"
   value       = aws_sns_topic.alarms.arn
