@@ -57,7 +57,7 @@ iii.register_function("orders::fulfill", fulfill_order)
 iii.register_trigger({
     "type": "durable:subscriber",
     "function_id": "orders::fulfill",
-    "config": {"queue": "fulfillment"},
+    "config": {"topic": "fulfillment"},
 })
 
 # ---------------------------------------------------------------------------
