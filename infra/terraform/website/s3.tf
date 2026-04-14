@@ -30,8 +30,6 @@ resource "aws_s3_bucket_public_access_block" "site" {
 }
 
 data "aws_iam_policy_document" "site_bucket" {
-  # Allow CloudFront (scoped to our distribution via OAC + SourceArn) to fetch
-  # individual objects from the bucket.
   statement {
     sid    = "AllowCloudFrontOACGetObject"
     effect = "Allow"
@@ -52,14 +50,7 @@ data "aws_iam_policy_document" "site_bucket" {
     }
   }
 
-  # Allow CloudFront to call ListBucket on the bucket (not objects). Without
-  # this, S3 returns 403 for missing objects instead of 404, because S3 uses
-  # ListBucket permission to distinguish "key doesn't exist" from "access
-  # denied." This does NOT expose a public LIST endpoint — CloudFront only
-  # ever makes GetObject calls for specific keys at the viewer's request. The
-  # ListBucket permission just changes the internal S3 error code from 403 to
-  # 404, which is what end users correctly see for missing paths like
-  # /missing.jpg.
+  # Without ListBucket, S3 returns 403 for missing objects instead of 404.
   statement {
     sid    = "AllowCloudFrontOACListBucketForCorrect404"
     effect = "Allow"

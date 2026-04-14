@@ -53,8 +53,6 @@ jobs:
         id: plan
         working-directory: infra/terraform/website
         env:
-          # var.alarm_email is required (no default). Set via repo secret so
-          # the public repo doesn't carry a PII email address in variables.tf.
           TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
         run: |
           set -o pipefail

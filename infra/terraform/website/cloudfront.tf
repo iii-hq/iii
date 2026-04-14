@@ -1,15 +1,6 @@
 locals {
-  # CSP allowlist derived from website/index.html, website/lib/useCookieConsent.ts,
-  # and website/components/EmailSignupForm.tsx. If you change third-party scripts
-  # in the site, update this string.
-  #
-  # Notes on 'unsafe-inline' / 'unsafe-eval':
-  # - 'unsafe-inline' is required because index.html has inline <script> (GTM bootstrap,
-  #   Tailwind config) and an inline <style> block.
-  # - 'unsafe-eval' is required because the Tailwind CDN runtime uses `new Function()`.
-  # These relax CSP but still provide defense-in-depth vs reflected XSS. Tightening
-  # further would require refactoring the website to drop inline scripts and the
-  # Tailwind CDN, which is out of scope for the migration.
+  # 'unsafe-inline' required for inline GTM/Tailwind scripts in index.html.
+  # 'unsafe-eval' required by the Tailwind CDN runtime (`new Function()`).
   csp = join("; ", [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://cdn.tailwindcss.com https://esm.sh https://cdn.cr-relay.com",
@@ -61,11 +52,8 @@ resource "aws_cloudfront_response_headers_policy" "site" {
       override        = true
     }
 
-    # HSTS: match what iii.dev currently sends (1 year, includeSubDomains, no
-    # preload). Enabling preload is a ONE-WAY DOOR — it applies forever to
-    # cloud.iii.dev (a separate Vercel project) and any *.iii.dev wildcard
-    # subdomain. Audit every subdomain and confirm HTTPS-only before adding
-    # preload + submitting to hstspreload.org in a follow-up PR.
+    # preload is a ONE-WAY DOOR — would apply forever to cloud.iii.dev and any
+    # *.iii.dev wildcard subdomain. Audit every subdomain first.
     strict_transport_security {
       access_control_max_age_sec = 31536000
       include_subdomains         = true
@@ -89,7 +77,6 @@ resource "aws_cloudfront_response_headers_policy" "site" {
   }
 }
 
-# Managed policy IDs — see https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html
 locals {
   cache_policy_optimized_id    = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
   cache_policy_disabled_id     = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
@@ -160,8 +147,7 @@ resource "aws_cloudfront_distribution" "site" {
     origin_request_policy_id   = local.origin_request_all_viewer_id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
 
-    # No function_association: the SPA fallback must NOT rewrite /api/search responses,
-    # and /api/search paths would not match the redirect rules anyway.
+    # No function_association: SPA fallback must not rewrite /api/search responses.
   }
 
   viewer_certificate {

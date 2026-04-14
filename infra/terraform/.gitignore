@@ -22,5 +22,8 @@ terraform.tfvars
 crash.log
 crash.*.log
 
+# Local-only docs
+website/README.md
+
 # Kept on purpose (do NOT ignore):
 # - .terraform.lock.hcl  → provider version pinning, must be committed

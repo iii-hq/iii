@@ -37,8 +37,6 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      # website/ is a standalone npm project, commented out of pnpm-workspace.yaml
-      # (see pnpm-workspace.yaml:10). Uses npm, not pnpm. Node 22 matches _npm.yml.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

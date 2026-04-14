@@ -17,7 +17,6 @@ jobs:
     name: Curl endpoints and assert
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Only run after a successful deploy. Manual dispatches always run.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     env:
@@ -67,23 +66,18 @@ jobs:
           echo "Smoke testing $BASE_URL"
           echo
 
-          # 1. Apex serves HTML 200
           assert_status "/" 200
 
-          # 2. Security headers present
           assert_header_contains "/" "strict-transport-security" "max-age"
           assert_header_contains "/" "x-content-type-options" "nosniff"
 
-          # 3. /docs redirects to docs.iii.dev, PRESERVING the /docs prefix
-          #    (Mintlify serves content only under /docs/*, so the target keeps the prefix.
-          #    See infra/terraform/website/cloudfront_functions/redirects.js header comment.)
+          # /docs redirects preserve the /docs prefix (Mintlify serves only under /docs/*)
           assert_redirect_to "/docs" "https://docs.iii.dev/docs"
           assert_redirect_to "/docs/quickstart" "https://docs.iii.dev/docs/quickstart"
 
-          # 4. /llms.txt currently 404s in production; CF Function passes through to S3 (also 404)
           assert_status "/llms.txt" 404
 
-          # 5. /api/search returns JSON (NOT HTML — catches SPA-fallback-applied-to-API regression)
+          # /api/search must return JSON, not HTML — catches SPA fallback leaking into /api/*
           content_type=$(curl -sSI "$BASE_URL/api/search?q=test" | awk 'BEGIN{IGNORECASE=1} /^content-type:/ {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1)
           if echo "$content_type" | grep -qi 'json'; then
             pass "/api/search?q=test → content-type=$content_type"
@@ -91,10 +85,8 @@ jobs:
             fail "/api/search?q=test → expected JSON content-type, got '$content_type'"
           fi
 
-          # 6. Non-existent asset returns 404 (not SPA fallback)
           assert_status "/this-file-does-not-exist.jpg" 404
 
-          # 7. SPA fallback: extensionless path → 200 HTML
           assert_status "/some/client/route" 200
           assert_header_contains "/some/client/route" "content-type" "text/html"
 
