@@ -3,6 +3,7 @@ export { ChatMessage } from "./ChatMessage";
 export { ReplyComposer } from "./ReplyComposer";
 export { CodeEditor } from "./CodeEditor";
 export { StatusPanel } from "./StatusPanel";
+export { ConsoleTrace } from "./ConsoleTrace";
 
 export { homepagePlaceholderFlow } from "./placeholder-script";
 export { homepageFlow } from "./homepage-script";
@@ -14,6 +15,10 @@ export type {
   ReplyStep,
   CodeEditorStep,
   StatusStep,
+  ConsoleTraceStep,
+  TraceEntry,
+  SpanEntry,
+  SpanDetail,
   DemoMode,
   DemoSequencerProps,
 } from "./types";

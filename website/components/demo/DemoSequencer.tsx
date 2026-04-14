@@ -4,6 +4,7 @@ import { ChatMessage } from './ChatMessage';
 import { ReplyComposer } from './ReplyComposer';
 import { CodeEditor } from './CodeEditor';
 import { StatusPanel } from './StatusPanel';
+import { ConsoleTrace } from './ConsoleTrace';
 import { InstallShButton } from '../InstallShButton';
 
 function SlackLogo() {
@@ -154,6 +155,15 @@ export function DemoSequencer({
       case 'status':
         return (
           <StatusPanel
+            key={`${sessionKey}-${step.id}`}
+            step={step}
+            isActive={isActive}
+            onNext={next}
+          />
+        );
+      case 'console-trace':
+        return (
+          <ConsoleTrace
             key={`${sessionKey}-${step.id}`}
             step={step}
             isActive={isActive}

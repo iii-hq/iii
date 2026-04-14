@@ -44,7 +44,42 @@ export interface StatusStep extends BaseStep {
   detail?: string;
 }
 
-export type Step = SlackMessageStep | ReplyStep | CodeEditorStep | StatusStep;
+export interface TraceEntry {
+  operation: string;
+  duration?: string;
+  status: "ok" | "error";
+}
+
+export interface SpanEntry {
+  label: string;
+  duration: string;
+  /** 0–100, proportion of the parent trace duration */
+  widthPercent: number;
+  depth: number;
+  status: "ok" | "error";
+}
+
+export interface SpanDetail {
+  status: string;
+  service: string;
+  error?: string;
+}
+
+export interface ConsoleTraceStep extends BaseStep {
+  type: "console-trace";
+  traces: TraceEntry[];
+  activeTraceIndex: number;
+  spans: SpanEntry[];
+  errorSpanIndex?: number;
+  detail: SpanDetail;
+}
+
+export type Step =
+  | SlackMessageStep
+  | ReplyStep
+  | CodeEditorStep
+  | StatusStep
+  | ConsoleTraceStep;
 
 export type DemoMode = "hero" | "onboarding";
 
