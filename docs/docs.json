@@ -4,8 +4,8 @@
   "theme": "mint",
   "colors": {
     "primary": "#8a8c00",
-    "light": "#f3f724",
-    "dark": "#fcff5d"
+    "light": "#c8ca00",
+    "dark": "#6b6d00"
   },
   "logo": {
     "light": "/images/icons/iii-black.svg",
