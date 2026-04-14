@@ -48,7 +48,7 @@ Get started with iii by following the [Quickstart guide](https://iii.dev/docs/qu
 Give your AI coding agent full context on iii:
 
 ```bash
-npx skills add iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 ```
 
 Skills covering every iii primitive — HTTP endpoints, queues, cron, state, streams, custom triggers, and more. Works with Claude Code, Cursor, Gemini CLI, Codex, and [30+ other agents](https://agentskills.io). See [skills/](skills/) for the full list.
