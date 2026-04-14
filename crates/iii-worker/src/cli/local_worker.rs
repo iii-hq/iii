@@ -187,11 +187,17 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
     // the target to exist. If the host repo doesn't already have one of
     // these dirs, an empty directory appears on the host (standard
     // .gitignore entry in every dev setup).
+    // Verify /workspace is an actual virtiofs mountpoint, not just a bare
+    // directory. iii-init's mount_virtiofs_shares() calls mkdir_p on the
+    // guest path before mounting and swallows mount failures as warnings,
+    // so a silent virtiofs failure leaves /workspace existing-but-unmounted.
+    // A plain `-d` check would pass and we'd bind-mount deps onto an empty
+    // rootfs dir -- writes would leak onto rootfs instead of the host repo.
     parts.push(
-        r#"if [ ! -d /workspace ]; then
-  echo "iii: ERROR /workspace is not a directory (virtiofs share missing)" >&2
+        r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
+  echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
   echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
-  cat /proc/mounts >&2 2>/dev/null || mount >&2
+  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
   exit 1
 fi
 DEPS_ROOT=/var/iii/deps
@@ -219,7 +225,8 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
     parts.push("export CHOKIDAR_INTERVAL=${CHOKIDAR_INTERVAL:-300}".to_string());
     parts.push("export WATCHPACK_POLLING=true".to_string());
     parts.push("export WATCHFILES_FORCE_POLLING=true".to_string());
-    parts.push("export TSC_WATCHFILE=UseFsEventsOnParentDirectory".to_string());
+    parts.push("export TSC_WATCHFILE=DynamicPriorityPolling".to_string());
+    parts.push("export TSC_WATCHDIRECTORY=DynamicPriorityPolling".to_string());
 
     if !prepared {
         if !project.setup_cmd.is_empty() {
