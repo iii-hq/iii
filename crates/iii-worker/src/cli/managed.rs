@@ -601,6 +601,25 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
 /// Kill any stale worker process from a previous engine run.
 /// Checks OCI/local (vm.pid) and binary (pids/{name}.pid) PID files,
 /// sends SIGTERM+SIGKILL, and removes the PID file.
+/// Kill the host-side source watcher sidecar for `worker_name` and
+/// remove its pid file. No-op when no watcher is running.
+///
+/// Called from the stop path so the watcher doesn't observe the VM
+/// shutdown as a file event and race to restart what we just stopped.
+/// Also called by `kill_stale_worker` (indirectly, via `watch.pid` in
+/// its pid file list) to reap leaks from crashed starts.
+pub async fn reap_source_watcher(worker_name: &str) {
+    let home = dirs::home_dir().unwrap_or_default();
+    let watch_pidfile = home
+        .join(".iii/managed")
+        .join(worker_name)
+        .join("watch.pid");
+    if let Some(watch_pid) = read_pid(&watch_pidfile) {
+        kill_pid_with_grace(watch_pid).await;
+    }
+    let _ = std::fs::remove_file(&watch_pidfile);
+}
+
 pub async fn kill_stale_worker(worker_name: &str) {
     let home = dirs::home_dir().unwrap_or_default();
     let pid_files = [
@@ -1108,14 +1127,7 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
         StopMode::Managed { pid, pidfile } => {
             // Tear down the source watcher sidecar first so it doesn't
             // observe the VM shutdown as a file event and try to restart.
-            let watch_pidfile = home
-                .join(".iii/managed")
-                .join(worker_name)
-                .join("watch.pid");
-            if let Some(watch_pid) = read_pid(&watch_pidfile) {
-                kill_pid_with_grace(watch_pid).await;
-            }
-            let _ = std::fs::remove_file(&watch_pidfile);
+            reap_source_watcher(worker_name).await;
 
             let adapter = super::worker_manager::create_adapter("libkrun");
             let _ = adapter.stop(&pid.to_string(), 10).await;
@@ -2343,6 +2355,79 @@ mod tests {
     async fn kill_stale_worker_no_op_when_no_pid_files() {
         // Should not panic when no PID files exist
         kill_stale_worker("__iii_test_nonexistent_99999__").await;
+    }
+
+    #[tokio::test]
+    async fn kill_stale_worker_removes_watch_pid_file() {
+        // Writes a fake `watch.pid` with a highly unlikely-to-be-alive
+        // PID, then verifies `kill_stale_worker` reaps it from the
+        // pid-file list introduced when the source watcher sidecar
+        // landed. Uses a unique worker name to avoid collisions with
+        // any real workers on the developer's machine.
+        let home = dirs::home_dir().unwrap_or_default();
+        let worker_name = "__iii_test_watch_pid_cleanup__";
+        let managed_dir = home.join(".iii/managed").join(worker_name);
+        let _ = std::fs::create_dir_all(&managed_dir);
+        let watch_pidfile = managed_dir.join("watch.pid");
+        std::fs::write(&watch_pidfile, "2000000000").unwrap();
+        assert!(watch_pidfile.exists());
+
+        kill_stale_worker(worker_name).await;
+
+        assert!(
+            !watch_pidfile.exists(),
+            "watch.pid should be reaped by kill_stale_worker"
+        );
+
+        let _ = std::fs::remove_dir_all(&managed_dir);
+    }
+
+    #[tokio::test]
+    async fn reap_source_watcher_removes_pid_file() {
+        // Exercises the stop-path helper used by `handle_managed_stop`
+        // to tear down the watcher sidecar before stopping the VM. A
+        // dead PID in watch.pid should still produce a clean remove
+        // (signal(0) returns ESRCH, kill_pid_with_grace no-ops, file
+        // is unlinked unconditionally).
+        let home = dirs::home_dir().unwrap_or_default();
+        let worker_name = "__iii_test_reap_watcher__";
+        let managed_dir = home.join(".iii/managed").join(worker_name);
+        let _ = std::fs::create_dir_all(&managed_dir);
+        let watch_pidfile = managed_dir.join("watch.pid");
+        std::fs::write(&watch_pidfile, "2000000001").unwrap();
+        assert!(watch_pidfile.exists());
+
+        reap_source_watcher(worker_name).await;
+
+        assert!(
+            !watch_pidfile.exists(),
+            "watch.pid should be removed by reap_source_watcher"
+        );
+
+        let _ = std::fs::remove_dir_all(&managed_dir);
+    }
+
+    #[tokio::test]
+    async fn reap_source_watcher_no_op_when_no_pid_file() {
+        // Idempotent on the cold path — no watch.pid, nothing to do,
+        // no panic.
+        reap_source_watcher("__iii_test_reap_watcher_nonexistent__").await;
+    }
+
+    #[tokio::test]
+    async fn reap_source_watcher_handles_garbage_pid_content() {
+        // Parse failure must not prevent file removal.
+        let home = dirs::home_dir().unwrap_or_default();
+        let worker_name = "__iii_test_reap_watcher_garbage__";
+        let managed_dir = home.join(".iii/managed").join(worker_name);
+        let _ = std::fs::create_dir_all(&managed_dir);
+        let watch_pidfile = managed_dir.join("watch.pid");
+        std::fs::write(&watch_pidfile, "not-a-pid").unwrap();
+
+        reap_source_watcher(worker_name).await;
+
+        assert!(!watch_pidfile.exists());
+        let _ = std::fs::remove_dir_all(&managed_dir);
     }
 
     #[tokio::test]
