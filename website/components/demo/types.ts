@@ -74,18 +74,27 @@ export interface ConsoleTraceStep extends BaseStep {
   detail: SpanDetail;
 }
 
+export interface TerminalCommandStep extends BaseStep {
+  type: "terminal-command";
+  command: string;
+  output: string;
+  typingSpeed?: number;
+}
+
 export type Step =
   | SlackMessageStep
   | ReplyStep
   | CodeEditorStep
   | StatusStep
-  | ConsoleTraceStep;
+  | ConsoleTraceStep
+  | TerminalCommandStep;
 
 export type DemoMode = "hero" | "onboarding";
 
 export interface DemoSequencerProps {
   steps: Step[];
   mode?: DemoMode;
+  isDarkMode?: boolean;
   onComplete?: () => void;
   className?: string;
 }

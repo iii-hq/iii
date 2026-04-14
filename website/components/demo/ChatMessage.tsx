@@ -28,9 +28,9 @@ function DataStreamButton({ label, onClick }: { label: string; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="relative overflow-hidden w-full sm:w-auto px-10 py-4 rounded font-bold text-base cursor-pointer group bg-iii-black border border-iii-accent/50 text-iii-accent"
+      className="relative overflow-hidden w-full sm:w-auto px-10 py-4 rounded font-bold text-base cursor-pointer group bg-iii-dark border border-iii-accent/50 text-iii-accent"
     >
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+      <div className="absolute inset-0 pointer-events-none overflow-hidden text-iii-accent">
         {Array.from({ length: 5 }).map((_, row) => (
           <div
             key={row}
@@ -49,8 +49,8 @@ function DataStreamButton({ label, onClick }: { label: string; onClick: () => vo
         ))}
       </div>
       <span
-        className="relative z-10 text-white group-hover:text-iii-accent transition-colors"
-        style={{ WebkitTextStroke: '4px #0a0a0a', paintOrder: 'stroke fill' }}
+        className="relative z-10 text-iii-light group-hover:text-iii-accent transition-colors"
+        style={{ WebkitTextStroke: '4px var(--color-dark)', paintOrder: 'stroke fill' }}
       >{label}</span>
       <style>{`
         @keyframes streamFlow {
@@ -85,7 +85,7 @@ export function ChatMessage({ step, isActive, onNext }: ChatMessageProps) {
       className={`flex flex-wrap xl:flex-nowrap gap-3 items-start ${
         isActive
           ? "animate-[fadeSlideIn_0.3s_ease-out_forwards] opacity-0"
-          : "opacity-80"
+          : ""
       }`}
       style={isActive ? { animationFillMode: "forwards" } : undefined}
     >
