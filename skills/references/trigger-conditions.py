@@ -138,7 +138,7 @@ iii.register_trigger({
     "type": "durable:subscriber",
     "function_id": "orders::on-placed",
     "config": {
-        "queue": "order-events",
+        "topic": "order-events",
         "condition_function_id": "conditions::is-order-placed",
     },
 })

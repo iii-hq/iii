@@ -17,6 +17,7 @@ fn main() {
 #[cfg(target_os = "linux")]
 fn run() -> Result<(), iii_init::InitError> {
     iii_init::mount::mount_filesystems()?;
+    iii_init::mount::mount_virtiofs_shares();
     iii_init::rlimit::raise_nofile()?;
     iii_init::network::configure_network()?;
     if let Err(e) = iii_init::network::write_resolv_conf() {
