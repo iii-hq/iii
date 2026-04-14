@@ -37,7 +37,6 @@ variable "search_api_origin" {
 variable "alarm_email" {
   description = "Email address that receives SNS notifications for production alarms"
   type        = string
-  # Intentionally no default — set via terraform.tfvars or TF_VAR_alarm_email.
 }
 
 variable "price_class" {

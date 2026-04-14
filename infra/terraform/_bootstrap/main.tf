@@ -20,12 +20,6 @@ terraform {
 provider "aws" {
   region = "us-east-1"
 
-  # Credentials resolved via the standard AWS SDK credential chain:
-  #   - GitHub Actions: env vars from aws-actions/configure-aws-credentials (OIDC)
-  #   - Local dev:       export AWS_PROFILE=motia-prod before running terraform
-  # Do NOT hardcode `profile = "motia-prod"` — it would override OIDC env
-  # credentials in CI and fail with "failed to get shared config profile".
-
   default_tags {
     tags = {
       Project     = "iii"
