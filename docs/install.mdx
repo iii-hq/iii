@@ -1,0 +1,39 @@
+---
+title: 'Install'
+description: 'Install the iii engine and set up your development environment.'
+---
+
+## 1. Install iii
+
+Install the iii engine:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+```
+
+## 2. Verify installation
+
+Check that iii has installed correctly with the following command. It should return a version number.
+
+```bash
+iii --version
+```
+
+## 3. Add Agent Skills (Optional)
+
+Give your IDEs and AI coding agents full context on iii:
+
+```bash
+npx skillkit add iii-hq/iii/skills
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/quickstart" icon="terminal">
+    Follow the Quickstart and explore a live iii application.
+  </Card>
+  <Card title="Concepts" href="/primitives-and-concepts" icon="table-layout">
+    Understand Functions and Triggers from a conceptual point of view.
+  </Card>
+</CardGroup>

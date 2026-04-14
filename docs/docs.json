@@ -4,14 +4,27 @@
   "theme": "mint",
   "colors": {
     "primary": "#8a8c00",
-    "light": "#f3f724",
-    "dark": "#fcff5d"
+    "light": "#c8ca00",
+    "dark": "#6b6d00"
   },
   "logo": {
     "light": "/images/icons/iii-black.svg",
     "dark": "/images/icons/iii-white.svg"
   },
   "favicon": "/images/favicon/favicon.svg",
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/iii-hq/iii"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Install",
+      "href": "/install"
+    }
+  },
   "navigation": {
     "versions": [
       {
@@ -134,7 +147,7 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["index", "quickstart"]
+                "pages": ["index", "install", "quickstart"]
               },
               {
                 "group": "Primitives & Concepts",
