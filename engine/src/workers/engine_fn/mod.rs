@@ -95,6 +95,8 @@ pub struct WorkerInfo {
     pub latest_metrics: Option<WorkerMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -151,6 +153,8 @@ pub struct RegisterWorkerInput {
     pub telemetry: Option<WorkerConnectionTelemetryMeta>,
     #[serde(default)]
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub isolation: Option<String>,
 }
 
 #[derive(Clone)]
@@ -274,6 +278,7 @@ impl EngineFunctionsWorker {
                 active_invocations,
                 latest_metrics,
                 pid: w.pid,
+                isolation: w.isolation.clone(),
             });
         }
         worker_infos
@@ -298,6 +303,7 @@ impl EngineFunctionsWorker {
             input.os,
             input.telemetry,
             input.pid,
+            input.isolation,
         );
     }
 }
@@ -616,6 +622,27 @@ mod tests {
         assert!(input.pid.is_none());
     }
 
+    #[test]
+    fn register_worker_input_accepts_isolation() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "runtime": "rust",
+            "isolation": "libkrun"
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(input.isolation.as_deref(), Some("libkrun"));
+    }
+
+    #[test]
+    fn register_worker_input_isolation_defaults_to_none() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "runtime": "node"
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert!(input.isolation.is_none());
+    }
+
     fn setup_engine_and_module() -> (Arc<Engine>, EngineFunctionsWorker) {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
@@ -758,6 +785,7 @@ mod tests {
             os: Some("linux".to_string()),
             telemetry: None,
             pid: None,
+            isolation: None,
         };
 
         // Should not panic, just log an error and return
@@ -782,6 +810,7 @@ mod tests {
             os: Some("darwin".to_string()),
             telemetry: None,
             pid: None,
+            isolation: Some("libkrun".to_string()),
         };
 
         module.register_worker_metadata(input).await;
@@ -793,6 +822,7 @@ mod tests {
         assert_eq!(workers[0].version.as_deref(), Some("2.0"));
         assert_eq!(workers[0].name.as_deref(), Some("my-worker"));
         assert_eq!(workers[0].os.as_deref(), Some("darwin"));
+        assert_eq!(workers[0].isolation.as_deref(), Some("libkrun"));
     }
 
     // ---- TriggerRegistrator implementation tests ----
@@ -1291,6 +1321,7 @@ mod tests {
                 os: Some("linux".to_string()),
                 telemetry: None,
                 pid: None,
+                isolation: None,
             })
             .await;
         assert!(matches!(
