@@ -257,6 +257,13 @@ impl EngineFunctionsWorker {
                 continue;
             }
 
+            // Hide workers that never reported a pid — usually engine internals
+            // registered via WorkerConnection::new without the metadata flow.
+            // Direct lookups bypass the filter so debug queries still work.
+            if filter_worker_id.is_none() && w.pid.is_none() {
+                continue;
+            }
+
             let functions = w.get_function_ids().await;
             let function_count = functions.len();
             let active_invocations = w.invocation_count().await;
@@ -769,6 +776,23 @@ mod tests {
             .list_worker_infos(Some("nonexistent-worker-id"))
             .await;
         assert!(workers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_worker_infos_hides_workers_without_pid() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_id = worker.id.to_string();
+        engine.worker_registry.register_worker(worker);
+
+        // Unfiltered listing hides the pid-less worker.
+        let all = module.list_worker_infos(None).await;
+        assert!(all.is_empty());
+
+        // Direct lookup by id still returns it (debug escape hatch).
+        let direct = module.list_worker_infos(Some(&worker_id)).await;
+        assert_eq!(direct.len(), 1);
     }
 
     // ---- register_worker_metadata tests ----
