@@ -24,24 +24,40 @@ resource "aws_route53_record" "preview_aaaa" {
   }
 }
 
-# Apex + www records — created via `terraform import` during Phase 4 cutover.
+# Apex + www records — GATED behind var.manage_apex_records (default false).
 #
-# DO NOT run `terraform apply` on these resources until Phase 4, because External-DNS
-# currently owns the apex A/AAAA records. Apply order during Phase 4:
-#   1. Remove iii-dev and iii-dev-www Ingresses from motia-argocd-values (PR merged + synced).
-#   2. `terraform import aws_route53_record.apex_a <zone_id>_iii.dev_A`
-#      `terraform import aws_route53_record.apex_aaaa <zone_id>_iii.dev_AAAA`
-#      `terraform import aws_route53_record.www_a <zone_id>_www.iii.dev_A`
-#      `terraform import aws_route53_record.www_aaaa <zone_id>_www.iii.dev_AAAA`
-#   3. `terraform apply` — diff shows target changing from k8s NLB alias → CloudFront alias.
-#      Single atomic Route53 UPSERT per record. Zero NXDOMAIN window.
-#   4. Manually clean up the External-DNS `cname-iii.dev` and `cname-www.iii.dev` TXT
-#      ownership records via aws CLI.
+# Phase 2 (preview-only): var.manage_apex_records = false, count = 0, no resources.
+# The apex `iii.dev` and `www.iii.dev` records already exist in Route53 and are
+# NOT touched by this module during Phase 2. Attempting to create them without
+# the gate (which is what happened on the first apply attempt) causes
+# `InvalidChangeBatch: record already exists` because:
+#   - apex iii.dev A/AAAA: manually created ALIAS to the k8s public NLB
+#   - www.iii.dev A/AAAA:  managed by External-DNS from ingress/site/iii-dev-www
+#
+# Phase 4 (cutover): var.manage_apex_records = true, after:
+#   1. An argocd-values PR removes the `iii-dev-www` Ingress so External-DNS
+#      (upsert-only policy) stops managing www.iii.dev. Merge + ArgoCD sync.
+#      The apex `iii-dev` Ingress stays — it was never External-DNS-owned.
+#   2. Import the existing records into TF state (note the [0] index, because
+#      the resources are count-ed):
+#        terraform import 'aws_route53_record.apex_a[0]'    $ZONE_iii.dev_A
+#        terraform import 'aws_route53_record.apex_aaaa[0]' $ZONE_iii.dev_AAAA
+#        terraform import 'aws_route53_record.www_a[0]'     $ZONE_www.iii.dev_A
+#        terraform import 'aws_route53_record.www_aaaa[0]'  $ZONE_www.iii.dev_AAAA
+#   3. `terraform apply -var='manage_apex_records=true'` — diff shows each
+#      record's ALIAS target changing from the k8s NLB to the CloudFront
+#      distribution. Atomic single Route53 UPSERT per record. Zero NXDOMAIN
+#      window.
+#   4. Manually clean up the External-DNS TXT ownership record
+#      `external-dns-cname-www.iii.dev` via aws CLI. (There is no
+#      `cname-iii.dev` TXT — the apex was never External-DNS-owned.)
 #
 # See infra/terraform/website/README.md and the plan at
 # ~/.claude/plans/lazy-nibbling-valiant.md (Phase 4) for the full runbook.
 
 resource "aws_route53_record" "apex_a" {
+  count = var.manage_apex_records ? 1 : 0
+
   zone_id = data.aws_route53_zone.iii_dev.zone_id
   name    = var.apex_domain
   type    = "A"
@@ -54,6 +70,8 @@ resource "aws_route53_record" "apex_a" {
 }
 
 resource "aws_route53_record" "apex_aaaa" {
+  count = var.manage_apex_records ? 1 : 0
+
   zone_id = data.aws_route53_zone.iii_dev.zone_id
   name    = var.apex_domain
   type    = "AAAA"
@@ -66,6 +84,8 @@ resource "aws_route53_record" "apex_aaaa" {
 }
 
 resource "aws_route53_record" "www_a" {
+  count = var.manage_apex_records ? 1 : 0
+
   zone_id = data.aws_route53_zone.iii_dev.zone_id
   name    = var.www_domain
   type    = "A"
@@ -78,6 +98,8 @@ resource "aws_route53_record" "www_a" {
 }
 
 resource "aws_route53_record" "www_aaaa" {
+  count = var.manage_apex_records ? 1 : 0
+
   zone_id = data.aws_route53_zone.iii_dev.zone_id
   name    = var.www_domain
   type    = "AAAA"

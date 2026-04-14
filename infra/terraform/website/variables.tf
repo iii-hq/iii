@@ -63,3 +63,32 @@ variable "csp_report_only" {
   type        = bool
   default     = true
 }
+
+variable "manage_apex_records" {
+  description = <<-EOT
+    PHASE GATE — leave at `false` during Phase 2 (preview-only).
+
+    When `false`, Terraform does NOT create Route53 records for `iii.dev` or
+    `www.iii.dev`. This is correct during Phase 2 because those records already
+    exist in the zone (apex is manually created, www is managed by External-DNS
+    via the `iii-dev-www` Ingress in motia-argocd-values). Creating them from
+    this module would fail with `InvalidChangeBatch: record already exists`.
+
+    Flip to `true` ONLY during Phase 4 (apex cutover), after:
+      1. An argocd-values PR has removed the `iii-dev-www` Ingress (so
+         External-DNS stops managing `www.iii.dev`).
+      2. You have run `terraform import` for the four records:
+           terraform import 'aws_route53_record.apex_a[0]'    $ZONE_iii.dev_A
+           terraform import 'aws_route53_record.apex_aaaa[0]' $ZONE_iii.dev_AAAA
+           terraform import 'aws_route53_record.www_a[0]'     $ZONE_www.iii.dev_A
+           terraform import 'aws_route53_record.www_aaaa[0]'  $ZONE_www.iii.dev_AAAA
+
+    `terraform apply -var='manage_apex_records=true'` will then show an in-place
+    update swapping each record's ALIAS target from the k8s NLB to the
+    CloudFront distribution. Atomic single Route53 UPSERT per record.
+
+    See infra/terraform/website/README.md for the full Phase 4 runbook.
+  EOT
+  type        = bool
+  default     = false
+}
