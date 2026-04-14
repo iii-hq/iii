@@ -34,10 +34,6 @@ description: "Product updates and announcements for iii."
 
   [Managing Container Workers &rarr;](/how-to/managing-container-workers) &middot; [Developing Sandbox Workers &rarr;](/how-to/developing-sandbox-workers)
 
-  ## Worker Isolation badge on the Workers page
-
-  The console Workers page now surfaces an **Isolation** badge next to the runtime badge, reflecting the environment the worker is running inside. Workers launched via `iii worker dev` or `iii worker add <image>` show a purple **LIBKRUN** badge automatically — the launcher injects `III_ISOLATION=libkrun` into the VM environment and the SDK forwards it on registration. Direct SDK connections can export `III_ISOLATION=docker` (or any other value) to tag themselves for filtering and debugging. All three SDKs (Node, Python, Rust) read the env var; the engine stores it on `WorkerConnection` and exposes it via `engine::workers::list`.
-
   ## Topic-based fan-out queues
 
   **Breaking.** The topic-based queue API has been renamed. The trigger type changes from `queue` to `durable:subscriber`, and the publish function changes from `enqueue` to `iii::durable::publish`:

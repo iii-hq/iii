@@ -2016,35 +2016,26 @@ mod tests {
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 
-    // Both env-var cases live in a single test because Rust runs tests in
-    // parallel by default and the OS env is process-global. Serializing the
-    // set → read → unset → read dance inside one test avoids races without
-    // pulling in serial_test as a dev-dependency.
+    // Single test covers both branches so the env var mutation is serialized
+    // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
     fn worker_metadata_default_reads_iii_isolation_env_var() {
         let previous = std::env::var("III_ISOLATION").ok();
 
-        // unset → field is None
-        // SAFETY: tests are single-threaded inside this function and we
-        // restore the original value at the end.
+        // SAFETY: env mutations are serialized within this test and restored at the end.
         unsafe {
             std::env::remove_var("III_ISOLATION");
         }
-        let unset = WorkerMetadata::default();
-        assert!(
-            unset.isolation.is_none(),
-            "expected None when III_ISOLATION is unset, got {:?}",
-            unset.isolation
-        );
+        assert!(WorkerMetadata::default().isolation.is_none());
 
-        // set → field is Some(value)
         unsafe {
             std::env::set_var("III_ISOLATION", "docker");
         }
-        let set = WorkerMetadata::default();
-        assert_eq!(set.isolation.as_deref(), Some("docker"));
+        assert_eq!(
+            WorkerMetadata::default().isolation.as_deref(),
+            Some("docker")
+        );
 
-        // restore
         unsafe {
             match previous {
                 Some(val) => std::env::set_var("III_ISOLATION", val),
