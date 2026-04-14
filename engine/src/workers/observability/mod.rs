@@ -2190,7 +2190,11 @@ mod tests {
         storage.apply_retention(one_hour_ns);
 
         let logs = storage.get_logs();
-        assert_eq!(logs.len(), 1, "backdated entry must be evicted even when trapped behind a newer one");
+        assert_eq!(
+            logs.len(),
+            1,
+            "backdated entry must be evicted even when trapped behind a newer one"
+        );
         assert_eq!(logs[0].body, "recent");
     }
 

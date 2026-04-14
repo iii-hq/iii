@@ -75,9 +75,7 @@ impl FieldCollector {
                     if name == "service" || name == "function_name" {
                         return false;
                     }
-                    if name == "data"
-                        && matches!(value, FieldValue::String(s) if s.is_empty())
-                    {
+                    if name == "data" && matches!(value, FieldValue::String(s) if s.is_empty()) {
                         return false;
                     }
                 }

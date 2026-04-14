@@ -5522,10 +5522,7 @@ mod tests {
 
     #[test]
     fn test_build_console_log_fields_empty_when_only_service_name_attribute() {
-        let log = log_with_attributes(vec![(
-            "service.name",
-            serde_json::json!("api.get./todos"),
-        )]);
+        let log = log_with_attributes(vec![("service.name", serde_json::json!("api.get./todos"))]);
 
         let (data, function_name) = build_console_log_fields(&log);
 
