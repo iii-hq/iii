@@ -3108,7 +3108,10 @@ mod tests {
         }"#;
 
         let result = ingest_otlp_metrics(otlp_json).await;
-        assert!(result.is_ok(), "null string fields should parse: {result:?}");
+        assert!(
+            result.is_ok(),
+            "null string fields should parse: {result:?}"
+        );
 
         let storage = crate::workers::observability::metrics::get_metric_storage().unwrap();
         let metrics = storage.get_metrics();
@@ -3116,7 +3119,10 @@ mod tests {
         assert_eq!(metrics[0].name, "test.counter");
         assert_eq!(metrics[0].description, "");
         assert_eq!(metrics[0].unit, "");
-        assert_eq!(metrics[0].instrumentation_scope_name.as_deref(), Some("iii-py"));
+        assert_eq!(
+            metrics[0].instrumentation_scope_name.as_deref(),
+            Some("iii-py")
+        );
         assert_eq!(metrics[0].instrumentation_scope_version, None);
     }
 
