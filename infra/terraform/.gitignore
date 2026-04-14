@@ -2,8 +2,13 @@
 .terraform/
 .terraform.tfstate.lock.info
 
-# State backups (live state is in S3 for modules with remote backend)
+# State files — ALL Terraform state lives in the S3 remote backend
+# (bucket: iii-terraform-state-prod-us-east-1). Never commit state to git,
+# even for the bootstrap module. See _bootstrap/README.md for the re-bootstrap
+# procedure if you ever need to temporarily use local state.
+*.tfstate
 *.tfstate.backup
+*.tfstate.*.backup
 
 # Plan outputs
 *.tfplan
@@ -19,5 +24,3 @@ crash.*.log
 
 # Kept on purpose (do NOT ignore):
 # - .terraform.lock.hcl  → provider version pinning, must be committed
-# - _bootstrap/terraform.tfstate → chicken-and-egg bootstrap state, see _bootstrap/README.md
-!_bootstrap/terraform.tfstate
