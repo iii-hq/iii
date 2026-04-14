@@ -66,29 +66,66 @@ curl -I https://iii-preview.iii.dev/
 
 ### Phase 4 — apex cutover (user-visible)
 
+During Phase 2 the apex/www records stayed managed by the live production setup
+(apex manual, www External-DNS). They were gated out of the TF module by
+`manage_apex_records = false`. Phase 4 flips that gate and brings those records
+into TF state via `terraform import`.
+
 See the full runbook in the plan. Short version:
 
-1. Open a PR in `motia-argocd-values` removing the `iii-dev` and `iii-dev-www`
-   Ingresses from `apps/site/manifests/iii-dev.yaml`. Merge and let ArgoCD sync.
-2. Confirm External-DNS has stopped managing those hosts (tail its logs).
-3. Import the existing Route53 records into Terraform state:
+1. Open a PR in `motia-argocd-values` removing **only** the `iii-dev-www` Ingress
+   from `apps/site/manifests/iii-dev.yaml`. Leave `iii-dev`, `iii-dev-docs`, and
+   `iii-dev-install` intact:
+     - `iii-dev` (apex) was never External-DNS-owned; removing it does nothing
+       for DNS but could affect the edge-proxy configmap, so leave it.
+     - `iii-dev-docs` and `iii-dev-install` still serve docs.iii.dev and
+       install.iii.dev through the k8s edge proxy (out of scope here).
+   Merge and let ArgoCD sync. Verify with `kubectl get ingress -n site` —
+   `iii-dev-www` should be gone, the other three remain.
+
+2. Confirm External-DNS has stopped managing `www.iii.dev`:
+   ```bash
+   kubectl logs -n external-dns deploy/external-dns --tail 100 | grep www.iii.dev
+   ```
+
+3. Import the existing Route53 records into Terraform state. Note the `[0]`
+   index — the resources are `count = var.manage_apex_records ? 1 : 0`:
    ```bash
    ZONE=$(aws --profile motia-prod route53 list-hosted-zones \
      --query "HostedZones[?Name=='iii.dev.'].Id" --output text | awk -F/ '{print $NF}')
-   terraform import aws_route53_record.apex_a   ${ZONE}_iii.dev_A
-   terraform import aws_route53_record.apex_aaaa ${ZONE}_iii.dev_AAAA
-   terraform import aws_route53_record.www_a    ${ZONE}_www.iii.dev_A
-   terraform import aws_route53_record.www_aaaa ${ZONE}_www.iii.dev_AAAA
+
+   terraform import 'aws_route53_record.apex_a[0]'    "${ZONE}_iii.dev_A"
+   terraform import 'aws_route53_record.apex_aaaa[0]' "${ZONE}_iii.dev_AAAA"
+   terraform import 'aws_route53_record.www_a[0]'     "${ZONE}_www.iii.dev_A"
+   terraform import 'aws_route53_record.www_aaaa[0]'  "${ZONE}_www.iii.dev_AAAA"
    ```
-4. `terraform plan` — expect exactly four target changes (each ALIAS target moves
-   from the k8s NLB to the CloudFront distribution). Any delete/recreate → STOP.
-5. `terraform apply` — single atomic Route53 UPSERT per record. No NXDOMAIN window.
-6. Flip `csp_report_only` to `false` in the plan and apply (optional, can also be
-   done at the same time as step 5):
+   If you forget `-var='manage_apex_records=true'` here, the import will store
+   a resource that's not in config and the next plan will try to delete it.
+   Set the var in `terraform.tfvars` or export `TF_VAR_manage_apex_records=true`
+   before running the imports.
+
+4. `terraform plan -var='manage_apex_records=true'` — expect exactly four
+   in-place updates, each changing the ALIAS target from the k8s NLB
+   (`abfa…elb.us-east-1.amazonaws.com`) to the CloudFront distribution
+   (`d***.cloudfront.net`). Any destroy/create or other drift → STOP.
+
+5. `terraform apply -var='manage_apex_records=true'` — single atomic Route53
+   UPSERT per record. No NXDOMAIN window.
+
+6. Flip `csp_report_only` to `false` (can be combined with step 5):
    ```bash
-   terraform apply -var 'csp_report_only=false'
+   terraform apply -var='manage_apex_records=true' -var='csp_report_only=false'
    ```
-7. Clean up orphaned External-DNS TXT ownership records via aws CLI.
+
+7. Clean up the orphaned External-DNS TXT ownership record for www via aws CLI:
+   ```bash
+   aws --profile motia-prod route53 change-resource-record-sets \
+     --hosted-zone-id $ZONE \
+     --change-batch file:///tmp/delete-www-txt.json
+   ```
+   (Fetch the exact TXT value first with `list-resource-record-sets
+   --query "ResourceRecordSets[?Name=='external-dns-cname-www.iii.dev.']"`.)
+   There is no `cname-iii.dev` TXT because the apex was never External-DNS-owned.
 
 ### Phase 5 — remove preview
 
@@ -96,30 +133,51 @@ After 48–72h of clean metrics:
 
 1. Remove the `preview_*` Route53 records and the `preview_domain` from `acm.tf`'s
    SAN list (or set `preview_domain` to empty and make the records conditional).
-2. `terraform apply` — ACM re-issues the cert with two SANs instead of three.
-3. Delete the Vercel iii-web project.
+2. `terraform apply -var='manage_apex_records=true'` — ACM re-issues the cert with two SANs instead of three.
+3. Delete the explicit CAA record at `iii-preview.iii.dev` (was added as a workaround for the `*.iii.dev` wildcard CNAME intercepting CAA lookup; no longer needed once the preview subdomain goes away).
+4. Delete the Vercel iii-web project.
 
 ## Rollback
 
-If Phase 4 goes bad:
+If Phase 4 goes bad, rollback differs between apex (manually-owned) and www
+(External-DNS-owned):
+
+**Apex `iii.dev`** — manually owned in Route53, not in argocd-values.
 
 ```bash
-# Target-destroy only the apex records — this removes them from Route53, letting
-# External-DNS re-create the old records on its next reconcile loop (30s-ish).
-terraform apply \
-  -target='aws_route53_record.apex_a' \
-  -target='aws_route53_record.apex_aaaa' \
-  -target='aws_route53_record.www_a' \
-  -target='aws_route53_record.www_aaaa' \
-  -destroy
+ZONE=Z05516132AI1ZGB3NLC6D
+aws --profile motia-prod route53 change-resource-record-sets \
+  --hosted-zone-id $ZONE \
+  --change-batch '{
+    "Changes": [{
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "iii.dev.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z26RNL4JYFTOTI",
+          "DNSName": "abfa1050d1bf345f2ad3abef639593d8-62c8780bba490615.elb.us-east-1.amazonaws.com.",
+          "EvaluateTargetHealth": false
+        }
+      }
+    }]
+  }'
+# Repeat for AAAA. Then remove from TF state so future applies don't fight:
+terraform state rm 'aws_route53_record.apex_a[0]' 'aws_route53_record.apex_aaaa[0]'
 ```
 
-Then revert the `motia-argocd-values` PR that removed the Ingresses. ArgoCD
-re-applies them, External-DNS re-upserts, and `iii.dev` is back on the k8s
-edge proxy serving Vercel content.
+**www `www.iii.dev`** — External-DNS originally owned it.
 
-Emergency fallback: re-attach the `iii.dev` domain in the Vercel dashboard and
-manually point Route53 at Vercel's edge via a CNAME.
+1. Revert the `motia-argocd-values` PR that removed the `iii-dev-www` Ingress.
+   ArgoCD re-applies. External-DNS (upsert-only) re-upserts the A/AAAA records
+   pointing at the k8s NLB, overwriting the TF-managed CloudFront ALIAS.
+2. `terraform state rm 'aws_route53_record.www_a[0]' 'aws_route53_record.www_aaaa[0]'`
+
+TTL on ALIAS records is 0 (edge-resolved), so propagation is ~immediate.
+
+**Emergency fallback:** re-attach the `iii.dev` domain in the Vercel dashboard
+and manually point Route53 at Vercel's edge via a CNAME. Bypasses both k8s and
+CloudFront entirely.
 
 ## Related files
 
