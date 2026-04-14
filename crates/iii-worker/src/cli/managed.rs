@@ -114,7 +114,7 @@ pub async fn handle_binary_add(
     0
 }
 
-pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
+pub async fn handle_managed_add_many(worker_names: &[String], wait: bool) -> i32 {
     let total = worker_names.len();
     let brief = total > 1;
     let mut fail_count = 0;
@@ -123,7 +123,7 @@ pub async fn handle_managed_add_many(worker_names: &[String]) -> i32 {
         if brief {
             eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
         }
-        let result = handle_managed_add(name, brief, false, false).await;
+        let result = handle_managed_add(name, brief, false, false, wait).await;
         if result != 0 {
             fail_count += 1;
         }
@@ -149,11 +149,18 @@ pub async fn handle_managed_add(
     brief: bool,
     force: bool,
     reset_config: bool,
+    wait: bool,
 ) -> i32 {
     // Local path workers: starts with '.', '/', or '~'
     if super::local_worker::is_local_path(image_or_name) {
-        return super::local_worker::handle_local_add(image_or_name, force, reset_config, brief)
-            .await;
+        return super::local_worker::handle_local_add(
+            image_or_name,
+            force,
+            reset_config,
+            brief,
+            wait,
+        )
+        .await;
     }
 
     // --force: delete existing artifacts before re-downloading
@@ -389,10 +396,44 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
     0
 }
 
-pub async fn handle_managed_remove_many(worker_names: &[String]) -> i32 {
+pub async fn handle_managed_remove_many(worker_names: &[String], yes: bool) -> i32 {
     let total = worker_names.len();
     let brief = total > 1;
     let mut fail_count = 0;
+
+    // Single batch confirmation for any names that are currently running. We
+    // gather them up-front so the user sees the whole blast radius once, not a
+    // prompt per worker.
+    if !yes {
+        let running: Vec<&String> = worker_names
+            .iter()
+            .filter(|n| is_worker_running(n))
+            .collect();
+        if !running.is_empty() {
+            let list = running
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "  {} {} currently running: {}",
+                "warning:".yellow(),
+                if running.len() == 1 {
+                    "worker is"
+                } else {
+                    "workers are"
+                },
+                list,
+            );
+            eprintln!(
+                "  Removing them from config.yaml triggers an engine reload that will tear the sandbox(es) down."
+            );
+            if !confirm_prompt("  Continue? [y/N] ") {
+                eprintln!("  Aborted.");
+                return 0;
+            }
+        }
+    }
 
     for (i, name) in worker_names.iter().enumerate() {
         if brief {
@@ -424,6 +465,17 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
+    // Distinguish "config.yaml doesn't exist yet" from "worker isn't in it."
+    // The underlying remove_worker surfaces both as the same anyhow error,
+    // which misleads users into thinking their config file is missing.
+    if !super::config_file::worker_exists(worker_name) {
+        eprintln!(
+            "{} Worker '{}' is not in config.yaml. Run `iii worker list` to see known workers.",
+            "error:".red(),
+            worker_name,
+        );
+        return 1;
+    }
     if let Err(e) = super::config_file::remove_worker(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -438,7 +490,22 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
             "config.yaml".dimmed(),
         );
     }
+    println!("{}", worker_name);
     0
+}
+
+/// Read a y/N answer from stdin. Mirrors `confirm_clear` but parameterized on
+/// the prompt so we can reuse it for `remove` and any future destructive ops.
+fn confirm_prompt(prompt: &str) -> bool {
+    use std::io::{Read, Write};
+    #[cfg(unix)]
+    super::local_worker::restore_terminal_cooked_mode();
+    let _ = std::io::stderr().write_all(prompt.as_bytes());
+    let _ = std::io::stderr().flush();
+    let mut buf = [0u8; 64];
+    let n = std::io::stdin().read(&mut buf).unwrap_or(0);
+    let input = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    input.trim().eq_ignore_ascii_case("y")
 }
 
 pub fn handle_managed_clear(worker_name: Option<&str>, skip_confirm: bool) -> i32 {
@@ -464,6 +531,22 @@ fn clear_single_worker(worker_name: &str) -> i32 {
         return 1;
     }
 
+    // Distinguish "worker doesn't exist" from "already clean". The old path
+    // exited 0 on unknown names, which hid typos in automation. If we have no
+    // artifacts AND the name isn't in config.yaml, it's a typo -- exit 1.
+    let home = dirs::home_dir().unwrap_or_default();
+    let has_artifacts = home.join(".iii/workers").join(worker_name).exists()
+        || home.join(".iii/managed").join(worker_name).is_dir();
+    let in_config = super::config_file::worker_exists(worker_name);
+    if !has_artifacts && !in_config {
+        eprintln!(
+            "{} Worker '{}' not found. Run `iii worker list` to see known workers.",
+            "error:".red(),
+            worker_name,
+        );
+        return 1;
+    }
+
     let freed = delete_worker_artifacts(worker_name);
     if freed == 0 {
         eprintln!("  Nothing to clear for '{}'.", worker_name);
@@ -474,6 +557,7 @@ fn clear_single_worker(worker_name: &str) -> i32 {
             freed as f64 / 1_048_576.0,
             worker_name.bold(),
         );
+        println!("{}", worker_name);
     }
     0
 }
@@ -481,25 +565,7 @@ fn clear_single_worker(worker_name: &str) -> i32 {
 /// Prompts the user for confirmation before clearing all artifacts.
 /// Returns `true` if the user confirms with "y".
 fn confirm_clear() -> bool {
-    use std::io::{Read, Write};
-
-    // Restore canonical terminal mode in case a previous VM/worker session
-    // left the terminal in raw mode (no ICANON, no ECHO, no ICRNL).
-    #[cfg(unix)]
-    super::local_worker::restore_terminal_cooked_mode();
-
-    let _ = std::io::stderr()
-        .write_all(b"  This will remove all downloaded workers and images. Continue? [y/N] ");
-    let _ = std::io::stderr().flush();
-
-    // Use read() instead of read_line() so that both CR (\r) and LF (\n)
-    // terminate input.  read_line() only recognises LF, so if the terminal is
-    // in raw/non-canonical mode pressing Enter sends only CR and read_line
-    // blocks forever.
-    let mut buf = [0u8; 64];
-    let n = std::io::stdin().read(&mut buf).unwrap_or(0);
-    let input = std::str::from_utf8(&buf[..n]).unwrap_or("");
-    input.trim().eq_ignore_ascii_case("y")
+    confirm_prompt("  This will remove all downloaded workers and images. Continue? [y/N] ")
 }
 
 fn clear_all_workers(skip_confirm: bool) -> i32 {
@@ -578,14 +644,9 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
         }
     }
 
-    eprintln!(
-        "  {} Cleared {} worker(s) and {} image(s) ({:.1} MB freed)",
-        "✓".green(),
-        worker_count,
-        image_count,
-        total_freed as f64 / 1_048_576.0,
-    );
-
+    // Print skipped warnings FIRST so the final line the user sees is the
+    // success tally, not a "✓ success" followed by warnings (which reads as
+    // "everything worked, oh btw some didn't").
     for name in &skipped {
         eprintln!(
             "  {} Skipped {} (running). Stop it first with `iii worker stop {}`",
@@ -594,6 +655,14 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
             name,
         );
     }
+
+    eprintln!(
+        "  {} Cleared {} worker(s) and {} image(s) ({:.1} MB freed)",
+        "✓".green(),
+        worker_count,
+        image_count,
+        total_freed as f64 / 1_048_576.0,
+    );
 
     0
 }
@@ -1007,7 +1076,7 @@ fn dir_size(path: &std::path::Path) -> u64 {
     total
 }
 
-pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) -> i32 {
+pub async fn handle_managed_stop(worker_name: &str) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -1016,14 +1085,26 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
     let oci_pidfile = home.join(".iii/managed").join(worker_name).join("vm.pid");
     let bin_pidfile = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
+    // Is this name known at all? Check every evidence source we have: config,
+    // managed artifacts, binary workers dir, pidfiles. If none of those apply
+    // and no live process exists, it's a typo -- exit 1 with "not found" so
+    // automation doesn't confuse that with "already stopped."
+    let in_config_yaml = super::config_file::list_worker_names()
+        .iter()
+        .any(|n| n == worker_name);
+    let managed_dir_exists = home.join(".iii/managed").join(worker_name).is_dir();
+    let binary_exists = home.join(".iii/workers").join(worker_name).exists();
+    let worker_known = in_config_yaml
+        || managed_dir_exists
+        || binary_exists
+        || oci_pidfile.exists()
+        || bin_pidfile.exists();
+
     // Reject the well-defined "config worker explicitly listed in config.yaml"
     // case -- the engine owns those, the worker CLI cannot stop them. We only
     // reject when the name is genuinely listed in config; the resolver also
     // returns Config as the no-match fallthrough, which we want to treat as
     // an orphan candidate instead.
-    let in_config_yaml = super::config_file::list_worker_names()
-        .iter()
-        .any(|n| n == worker_name);
     if in_config_yaml
         && matches!(
             super::config_file::resolve_worker_type(worker_name),
@@ -1089,14 +1170,17 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
                 pidfile: stale_pidfile,
             }
         }
-    } else {
+    } else if !worker_known {
         eprintln!(
-            "{} Worker '{}' is not running. Start it with 'iii worker start {}'",
+            "{} Worker '{}' not found. Run `iii worker list` to see known workers.",
             "error:".red(),
             worker_name,
-            worker_name
         );
         return 1;
+    } else {
+        eprintln!("  {} {} already stopped", "✓".green(), worker_name.bold());
+        println!("{}", worker_name);
+        return 0;
     };
 
     eprintln!("  Stopping {}...", worker_name.bold());
@@ -1118,6 +1202,7 @@ pub async fn handle_managed_stop(worker_name: &str, _address: &str, _port: u16) 
     }
 
     eprintln!("  {} {} stopped", "✓".green(), worker_name.bold());
+    println!("{}", worker_name);
     0
 }
 
@@ -1182,17 +1267,47 @@ async fn kill_pid_with_grace(pid: u32) {
     }
 }
 
-pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) -> i32 {
+/// Block up to 120s waiting for the worker to report ready, printing a live
+/// status snapshot. Used by `iii worker start` when the user did not pass
+/// --no-wait. Same contract as `iii worker add --wait`: on timeout we do NOT
+/// fail the command (the process started successfully), we just inform the
+/// user and let them poll with `iii worker status {name}`.
+async fn wait_for_ready(worker_name: &str) {
+    let started = std::time::Instant::now();
+    let final_status =
+        super::status::watch_until_ready(worker_name, Some(std::time::Duration::from_secs(120)))
+            .await;
+    let elapsed = started.elapsed();
+    match final_status.phase {
+        super::status::Phase::Ready => {
+            eprintln!("  {} ready in {:.1}s", "✓".green(), elapsed.as_secs_f64());
+        }
+        _ => {
+            eprintln!(
+                "  {} not ready after {:.0}s.\n  \
+                 Keep watching: iii worker status {}\n  \
+                 Check logs:    iii worker logs {} -f",
+                "⚠".yellow(),
+                elapsed.as_secs_f64(),
+                worker_name,
+                worker_name
+            );
+        }
+    }
+}
+
+pub async fn handle_managed_start(worker_name: &str, wait: bool) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
+    let port = super::app::DEFAULT_PORT;
     // Builtin workers are served in-process by the iii engine (see
     // engine/src/workers/config.rs factory registry). They have no external
     // process to spawn and must not be resolved via the remote registry.
     // Only treat this as success when the builtin is actually configured in
-    // config.yaml — otherwise the engine won't load it and the user would be
-    // misled by a 0 exit code.
+    // config.yaml AND the engine is running -- otherwise `start` is lying by
+    // returning 0 for a no-op and automation thinks something booted.
     if get_builtin_default(worker_name).is_some() {
         if !super::config_file::worker_exists(worker_name) {
             eprintln!(
@@ -1203,33 +1318,47 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
             );
             return 1;
         }
+        if !is_engine_running() {
+            eprintln!(
+                "{} '{}' is a builtin served by the iii engine, but the engine isn't running.\n  \
+                 Start the engine:  iii start",
+                "error:".red(),
+                worker_name,
+            );
+            return 1;
+        }
         eprintln!(
             "  '{}' is a builtin worker — served by the iii engine process.",
             worker_name,
         );
-        if !is_engine_running() {
-            eprintln!("  Start the engine to run it.");
-        }
+        println!("{}", worker_name);
         return 0;
     }
-    match super::config_file::resolve_worker_type(worker_name) {
+    let start_rc = match super::config_file::resolve_worker_type(worker_name) {
         ResolvedWorkerType::Oci { image, env } => {
             let worker_def = WorkerDef::Managed {
                 image,
                 env,
                 resources: None,
             };
-            return start_oci_worker(worker_name, &worker_def, port).await;
+            start_oci_worker(worker_name, &worker_def, port).await
         }
         ResolvedWorkerType::Local { worker_path } => {
-            return super::local_worker::start_local_worker(worker_name, &worker_path, port).await;
+            super::local_worker::start_local_worker(worker_name, &worker_path, port).await
         }
         ResolvedWorkerType::Binary { binary_path } => {
-            return start_binary_worker(worker_name, &binary_path).await;
+            start_binary_worker(worker_name, &binary_path).await
         }
-        ResolvedWorkerType::Config => {
-            // Fall through to registry lookup below
+        ResolvedWorkerType::Config => i32::MIN, // sentinel: fall through to registry
+    };
+    if start_rc != i32::MIN {
+        if start_rc == 0 {
+            if wait {
+                wait_for_ready(worker_name).await;
+            }
+            println!("{}", worker_name);
         }
+        return start_rc;
     }
 
     // Not found locally — try remote registry for auto-install
@@ -1266,7 +1395,14 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
             match binary_download::download_and_install_binary(worker_name, binary_info).await {
                 Ok(installed_path) => {
                     eprintln!("  {} Installed successfully", "✓".green());
-                    return start_binary_worker(worker_name, &installed_path).await;
+                    let rc = start_binary_worker(worker_name, &installed_path).await;
+                    if rc == 0 {
+                        if wait {
+                            wait_for_ready(worker_name).await;
+                        }
+                        println!("{}", worker_name);
+                    }
+                    return rc;
                 }
                 Err(e) => {
                     eprintln!(
@@ -1285,7 +1421,14 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
                 env: std::collections::HashMap::new(),
                 resources: None,
             };
-            return start_oci_worker(worker_name, &worker_def, port).await;
+            let rc = start_oci_worker(worker_name, &worker_def, port).await;
+            if rc == 0 {
+                if wait {
+                    wait_for_ready(worker_name).await;
+                }
+                println!("{}", worker_name);
+            }
+            return rc;
         }
         Err(e) => {
             tracing::warn!("Failed to fetch worker info: {}", e);
@@ -1299,6 +1442,39 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
         worker_name
     );
     1
+}
+
+/// Stop (if running) and start a worker. Idempotent: workers that aren't
+/// running just get started. We delegate to the existing stop/start paths
+/// rather than duplicating the libkrun teardown / pid-discovery logic.
+///
+/// Stop failures are logged but do NOT abort the restart -- the most common
+/// reason stop fails here is "already not running," which is exactly the
+/// state start expects. Start's exit code becomes the command's exit code.
+pub async fn handle_managed_restart(worker_name: &str, wait: bool) -> i32 {
+    if let Err(e) = super::registry::validate_worker_name(worker_name) {
+        eprintln!("{} {}", "error:".red(), e);
+        return 1;
+    }
+
+    // Only stop if we see a live process. handle_managed_stop is tolerant of
+    // "not running" (it returns 0 with an "already stopped" message), but
+    // calling it unconditionally clutters the output with a redundant line.
+    if is_worker_running(worker_name) {
+        eprintln!("  Restarting {}...", worker_name.bold());
+        let stop_rc = handle_managed_stop(worker_name).await;
+        if stop_rc != 0 {
+            eprintln!(
+                "  {} stop exited {} -- continuing with start",
+                "warning:".yellow(),
+                stop_rc
+            );
+        }
+    } else {
+        eprintln!("  {} not running; starting fresh...", worker_name.bold());
+    }
+
+    handle_managed_start(worker_name, wait).await
 }
 
 async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) -> i32 {
@@ -1408,11 +1584,15 @@ async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -
                         std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600));
                 }
             }
+            let pid_display = child
+                .id()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".into());
             eprintln!(
-                "  {} {} started (pid: {:?})",
+                "  {} {} started (pid: {})",
                 "✓".green(),
                 worker_name.bold(),
-                child.id()
+                pid_display
             );
             0
         }
@@ -2388,7 +2568,7 @@ mod tests {
             std::fs::write(proj.join("package.json"), r#"{"name":"test"}"#).unwrap();
 
             let path_str = proj.to_string_lossy().to_string();
-            let exit_code = handle_managed_add(&path_str, false, false, false).await;
+            let exit_code = handle_managed_add(&path_str, false, false, false, false).await;
             assert_eq!(exit_code, 0, "should succeed for valid local path");
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -2410,7 +2590,7 @@ mod tests {
     async fn handle_managed_add_local_path_rejects_nonexistent() {
         in_temp_dir_async(|_dir| async move {
             let exit_code =
-                handle_managed_add("./nonexistent-path-12345", false, false, false).await;
+                handle_managed_add("./nonexistent-path-12345", false, false, false, false).await;
             assert_eq!(exit_code, 1, "should fail for nonexistent local path");
         })
         .await;
@@ -2427,7 +2607,7 @@ mod tests {
             let path_str = proj.to_string_lossy().to_string();
 
             // First add
-            let exit_code = handle_managed_add(&path_str, false, false, false).await;
+            let exit_code = handle_managed_add(&path_str, false, false, false, false).await;
             assert_eq!(exit_code, 0);
             assert!(
                 std::fs::read_to_string("config.yaml")
@@ -2436,7 +2616,7 @@ mod tests {
             );
 
             // Force re-add
-            let exit_code = handle_managed_add(&path_str, false, true, false).await;
+            let exit_code = handle_managed_add(&path_str, false, true, false, false).await;
             assert_eq!(exit_code, 0, "force re-add should succeed");
 
             let content = std::fs::read_to_string("config.yaml").unwrap();

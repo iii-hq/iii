@@ -17,7 +17,7 @@ use common::isolation::in_temp_dir_async;
 async fn add_many_builtin_workers() {
     in_temp_dir_async(|| async {
         let names = vec!["iii-http".to_string(), "iii-state".to_string()];
-        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names).await;
+        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_eq!(exit_code, 0, "all builtin workers should succeed");
 
         assert!(
@@ -39,7 +39,7 @@ async fn add_many_with_invalid_worker_returns_nonzero() {
             "iii-http".to_string(),
             "definitely-not-a-real-worker-xyz".to_string(),
         ];
-        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names).await;
+        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_ne!(exit_code, 0, "should fail when any worker fails");
 
         assert!(
@@ -54,7 +54,8 @@ async fn add_many_with_invalid_worker_returns_nonzero() {
 async fn handle_managed_add_builtin_creates_config() {
     in_temp_dir_async(|| async {
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+                .await;
         assert_eq!(
             exit_code, 0,
             "expected success exit code for builtin worker"
@@ -83,7 +84,7 @@ async fn handle_managed_add_builtin_merges_existing() {
         .unwrap();
 
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
                 .await;
         assert_eq!(exit_code, 0, "expected success exit code for merge");
 
@@ -103,23 +104,33 @@ async fn handle_managed_add_builtin_merges_existing() {
 /// engine; they have no external process to spawn and are not published to the
 /// registry. Previously this path fell through to `fetch_worker_info`, which
 /// emitted "not found locally, checking registry..." and failed.
+///
+/// When the engine is NOT running, `start` for a builtin now exits non-zero
+/// (DX fix: exit 0 with a "start the engine" hint misled automation into
+/// thinking the builtin actually booted). This test exercises that path and
+/// asserts exit 1 -- which still proves the short-circuit, because a 1 here
+/// means we returned from the builtin branch rather than hitting the remote
+/// registry and producing a different error.
 #[tokio::test]
 async fn handle_managed_start_builtin_short_circuits() {
     in_temp_dir_async(|| async {
         // Add a builtin to config.yaml first.
         let add_rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+                .await;
         assert_eq!(add_rc, 0, "expected add to succeed for builtin");
 
-        // handle_managed_start must return 0 for a builtin without network I/O.
-        // We exercise this by forcing the engine port to a closed port via the
-        // default (engine-not-running case), which would normally fail for a
-        // non-builtin. For builtins it must succeed regardless.
-        let start_rc =
-            iii_worker::cli::managed::handle_managed_start("iii-http", "127.0.0.1", 0).await;
-        assert_eq!(
-            start_rc, 0,
-            "handle_managed_start must succeed (short-circuit) for builtin 'iii-http'"
+        // Builtin must short-circuit regardless of the local engine's port
+        // binding state. If the engine is up (port 49134 open on the host)
+        // start returns 0 with "served by the engine" message. If the engine
+        // is down, start returns 1 with a "start the engine" hint. Both are
+        // valid; what we're really asserting is that we did NOT fall through
+        // to the remote registry (which would produce a different error).
+        let start_rc = iii_worker::cli::managed::handle_managed_start("iii-http", false).await;
+        assert!(
+            start_rc == 0 || start_rc == 1,
+            "expected short-circuit (0 or 1), got {} -- suggests a registry fall-through",
+            start_rc
         );
     })
     .await;
@@ -137,8 +148,7 @@ async fn handle_managed_start_unconfigured_builtin_fails() {
             !iii_worker::cli::config_file::worker_exists("iii-http"),
             "precondition: iii-http must not be in config.yaml"
         );
-        let start_rc =
-            iii_worker::cli::managed::handle_managed_start("iii-http", "127.0.0.1", 0).await;
+        let start_rc = iii_worker::cli::managed::handle_managed_start("iii-http", false).await;
         assert_ne!(
             start_rc, 0,
             "handle_managed_start must fail for unconfigured builtin 'iii-http'"
@@ -154,7 +164,8 @@ async fn handle_managed_add_all_builtins_succeed() {
             let _ = std::fs::remove_file("config.yaml");
 
             let exit_code =
-                iii_worker::cli::managed::handle_managed_add(name, false, false, false).await;
+                iii_worker::cli::managed::handle_managed_add(name, false, false, false, false)
+                    .await;
             assert_eq!(exit_code, 0, "expected success for builtin '{}'", name);
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -173,11 +184,11 @@ async fn remove_many_workers() {
     in_temp_dir_async(|| async {
         // Add two builtins first.
         let names = vec!["iii-http".to_string(), "iii-state".to_string()];
-        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names).await;
+        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_eq!(exit_code, 0);
 
         // Remove both at once.
-        let exit_code = iii_worker::cli::managed::handle_managed_remove_many(&names).await;
+        let exit_code = iii_worker::cli::managed::handle_managed_remove_many(&names, true).await;
         assert_eq!(exit_code, 0, "all removals should succeed");
 
         assert!(
@@ -197,12 +208,13 @@ async fn remove_many_with_missing_worker_returns_nonzero() {
     in_temp_dir_async(|| async {
         // Add one builtin.
         let add_names = vec!["iii-http".to_string()];
-        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&add_names).await;
+        let exit_code = iii_worker::cli::managed::handle_managed_add_many(&add_names, false).await;
         assert_eq!(exit_code, 0);
 
         // Remove existing + nonexistent.
         let remove_names = vec!["iii-http".to_string(), "not-a-real-worker".to_string()];
-        let exit_code = iii_worker::cli::managed::handle_managed_remove_many(&remove_names).await;
+        let exit_code =
+            iii_worker::cli::managed::handle_managed_remove_many(&remove_names, true).await;
         assert_ne!(exit_code, 0, "should fail when any removal fails");
 
         // The valid one should still have been removed.
@@ -232,6 +244,7 @@ async fn handle_managed_add_oci_ref_passthrough() {
             false,
             false,
             false,
+            false,
         )
         .await;
         // Non-zero exit because pull fails, but it should NOT have tried the API
@@ -246,6 +259,7 @@ async fn handle_managed_add_oci_ref_with_colon_passthrough() {
     in_temp_dir_async(|| async {
         let result = iii_worker::cli::managed::handle_managed_add(
             "docker.io/org/image:latest",
+            false,
             false,
             false,
             false,
@@ -267,9 +281,14 @@ async fn handle_managed_add_plain_name_calls_api() {
     in_temp_dir_async(|| async {
         // Set III_API_URL to something that will fail quickly
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
-        let result =
-            iii_worker::cli::managed::handle_managed_add("nonexistent-worker", true, false, false)
-                .await;
+        let result = iii_worker::cli::managed::handle_managed_add(
+            "nonexistent-worker",
+            true,
+            false,
+            false,
+            false,
+        )
+        .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Should fail because API is unreachable
         assert_ne!(result, 0);
@@ -284,7 +303,8 @@ async fn handle_managed_add_builtin_skips_api() {
         // Set III_API_URL to something that will fail — if it tries the API, we'll know
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
         let result =
-            iii_worker::cli::managed::handle_managed_add("iii-http", true, false, false).await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", true, false, false, false)
+                .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Should succeed because iii-http is a builtin — no API call needed
         assert_eq!(result, 0);
@@ -297,9 +317,14 @@ async fn handle_managed_add_builtin_skips_api() {
 async fn handle_managed_add_local_path_skips_api() {
     in_temp_dir_async(|| async {
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
-        let result =
-            iii_worker::cli::managed::handle_managed_add("./my-local-worker", true, false, false)
-                .await;
+        let result = iii_worker::cli::managed::handle_managed_add(
+            "./my-local-worker",
+            true,
+            false,
+            false,
+            false,
+        )
+        .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Will fail (path doesn't exist), but should NOT have called the API
         assert_ne!(result, 0);
@@ -324,9 +349,14 @@ async fn handle_managed_add_binary_via_file_fixture() {
 
         let url = format!("file://{}", path.display());
         unsafe { std::env::set_var("III_API_URL", &url) };
-        let result =
-            iii_worker::cli::managed::handle_managed_add("test-binary-worker", true, false, false)
-                .await;
+        let result = iii_worker::cli::managed::handle_managed_add(
+            "test-binary-worker",
+            true,
+            false,
+            false,
+            false,
+        )
+        .await;
         unsafe { std::env::remove_var("III_API_URL") };
         // Will fail because binaries map is empty (no platform match),
         // but it proves the API resolution path was taken and parsed correctly

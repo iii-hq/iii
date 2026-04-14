@@ -245,10 +245,11 @@ impl WorkerRegistry {
         }
 
         // 4. Delegate to iii-worker start (handles registry lookup, binary
-        //    download, OCI pull, and spawning autonomously)
+        //    download, OCI pull, and spawning autonomously). The CLI reads the
+        //    engine port from its own DEFAULT_PORT -- do not pass --port here,
+        //    the Start subcommand does not accept it.
         tracing::info!(worker = %name, "Starting external worker via iii-worker");
-        let port = crate::workers::worker::DEFAULT_PORT;
-        let process = super::registry_worker::ExternalWorkerProcess::spawn(name, port)
+        let process = super::registry_worker::ExternalWorkerProcess::spawn(name)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
         Ok(Box::new(

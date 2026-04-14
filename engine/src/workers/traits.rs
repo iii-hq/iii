@@ -73,6 +73,19 @@ pub trait Worker: Send + Sync {
         Ok(())
     }
 
+    /// Reports whether the backing process/state for this worker is still
+    /// alive. Used by the reloader to detect workers whose external VM or
+    /// child process died without the engine noticing — those get promoted
+    /// from `unchanged` to `changed` on the next config reload so they get
+    /// rebooted instead of being skipped.
+    ///
+    /// Default is `true`: built-in, in-process workers are alive as long as
+    /// the engine is alive. Override for workers that track out-of-process
+    /// state (e.g. detached VMs via pidfile).
+    async fn is_alive(&self) -> bool {
+        true
+    }
+
     /// Registers functions to the engine
     #[allow(unused_variables)]
     fn register_functions(&self, engine: Arc<Engine>) {

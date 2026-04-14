@@ -15,5 +15,6 @@ pub mod managed;
 pub mod project;
 pub mod registry;
 pub mod rootfs;
+pub mod status;
 pub mod vm_boot;
 pub mod worker_manager;

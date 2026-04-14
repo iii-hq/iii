@@ -51,12 +51,48 @@ fn cli_parses_all_subcommands() {
     }
 }
 
+/// Engine/CLI IPC contract: the iii engine spawns `iii-worker start <name>`
+/// from engine/src/workers/registry_worker.rs::ExternalWorkerProcess::spawn
+/// whenever it encounters a worker in config.yaml that isn't a builtin or a
+/// legacy iii.toml module. If either side drifts (e.g. the engine starts
+/// passing `--port` again, or someone re-adds `--port` to the Start
+/// subcommand), clap will reject with exit 2 and every non-builtin worker
+/// silently fails to auto-start. These two tests lock both halves of the
+/// contract.
+#[test]
+fn start_subcommand_matches_engine_spawn_args() {
+    // Exact form the engine uses. Must parse cleanly.
+    let cli = Cli::try_parse_from(["iii-worker", "start", "image-resize"])
+        .expect("engine's spawn args must parse");
+    match cli.command {
+        Commands::Start {
+            worker_name,
+            no_wait,
+        } => {
+            assert_eq!(worker_name, "image-resize");
+            assert!(!no_wait, "engine expects default wait behavior");
+        }
+        _ => panic!("expected Start"),
+    }
+}
+
+#[test]
+fn start_subcommand_rejects_port_flag() {
+    // If someone re-introduces `--port` on Start (or on the engine's spawn
+    // call), this test fails loudly at the CLI side instead of at runtime.
+    let result = Cli::try_parse_from(["iii-worker", "start", "--port", "49134", "--", "x"]);
+    assert!(
+        result.is_err(),
+        "Start must not accept --port -- engine IPC contract depends on it"
+    );
+}
+
 /// `add` subcommand parses worker name and applies defaults.
 #[test]
 fn add_subcommand_fields() {
     let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert_eq!(
                 args.worker_names,
                 vec!["ghcr.io/iii-hq/node:latest".to_string()]
@@ -72,7 +108,7 @@ fn add_subcommand_fields() {
 fn add_subcommand_multiple_workers() {
     let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "iii-http", "iii-state"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert_eq!(args.worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
             assert!(!force);
         }
@@ -215,7 +251,7 @@ resources:
 fn add_force_flag() {
     let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert_eq!(args.worker_names, vec!["pdfkit"]);
             assert!(force);
             assert!(!args.reset_config);
@@ -229,7 +265,7 @@ fn add_force_flag() {
 fn add_force_reset_config() {
     let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force", "--reset-config"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert!(force);
             assert!(args.reset_config);
         }
@@ -252,7 +288,7 @@ fn add_force_short_flag() {
 fn add_subcommand_accepts_local_path() {
     let cli = Cli::parse_from(["iii-worker", "add", "./my-worker"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert_eq!(args.worker_names, vec!["./my-worker"]);
             assert!(!force);
         }
@@ -265,7 +301,7 @@ fn add_subcommand_accepts_local_path() {
 fn add_subcommand_accepts_absolute_path() {
     let cli = Cli::parse_from(["iii-worker", "add", "/tmp/my-worker"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert_eq!(args.worker_names, vec!["/tmp/my-worker"]);
             assert!(!force);
         }
@@ -278,7 +314,7 @@ fn add_subcommand_accepts_absolute_path() {
 fn add_subcommand_local_path_with_force() {
     let cli = Cli::parse_from(["iii-worker", "add", "./my-worker", "--force"]);
     match cli.command {
-        Commands::Add { args, force } => {
+        Commands::Add { args, force, .. } => {
             assert_eq!(args.worker_names, vec!["./my-worker"]);
             assert!(force);
         }

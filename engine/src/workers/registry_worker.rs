@@ -55,10 +55,30 @@ pub fn resolve_iii_worker_binary() -> Option<PathBuf> {
 pub struct ExternalWorkerProcess {
     pub name: String,
     pub child: Arc<Mutex<Option<tokio::process::Child>>>,
+    /// When the process was spawned. `is_alive` grants a grace window from
+    /// this instant to cover the gap between `iii-worker start` exiting and
+    /// the detached VM writing its pidfile.
+    pub spawned_at: std::time::Instant,
 }
 
+/// How long after spawn we trust "still booting, no pidfile yet" as alive.
+///
+/// iii-worker start returns immediately after forking the detached VM boot
+/// process. The VM then provisions rootfs, installs deps, and writes
+/// `~/.iii/managed/{name}/vm.pid` only once libkrun is up. On a warm cache
+/// this is sub-second; a cold first-boot with dep install can take tens of
+/// seconds. 30s is conservative enough to avoid false-negative "dead" reads
+/// during boot without masking a genuine crash for long.
+const SPAWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl ExternalWorkerProcess {
-    pub async fn spawn(name: &str, port: u16) -> Result<Self, String> {
+    /// Spawns `iii-worker start <name>` as a detached child. The CLI reads the
+    /// engine port from its own `DEFAULT_PORT` constant (which must stay in
+    /// lockstep with the engine's), so we intentionally do NOT pass `--port`
+    /// here -- `iii worker start` does not expose that flag and clap will
+    /// reject it with exit 2, silently breaking auto-start for every
+    /// non-builtin worker.
+    pub async fn spawn(name: &str) -> Result<Self, String> {
         let worker_binary = resolve_iii_worker_binary()
             .ok_or_else(|| {
                 "iii-worker binary not found. Install with `iii update worker` or place in ~/.local/bin/".to_string()
@@ -77,7 +97,7 @@ impl ExternalWorkerProcess {
             .map_err(|e| format!("Failed to create stderr log: {}", e))?;
 
         let mut cmd = tokio::process::Command::new(&worker_binary);
-        cmd.args(["start", "--port", &port.to_string(), "--", name])
+        cmd.args(["start", name])
             .stdout(stdout_file)
             .stderr(stderr_file);
 
@@ -94,7 +114,49 @@ impl ExternalWorkerProcess {
         Ok(Self {
             name: name.to_string(),
             child: Arc::new(Mutex::new(Some(child))),
+            spawned_at: std::time::Instant::now(),
         })
+    }
+
+    /// Probes whether the detached worker process is still alive.
+    ///
+    /// The real VM PID lives in `~/.iii/managed/{name}/vm.pid` — the tokio
+    /// `Child` handle is stale because `iii-worker start` exits immediately
+    /// after spawning the detached boot process.
+    ///
+    /// Returns:
+    /// - `true` if a pidfile exists and the PID responds to signal 0
+    /// - `true` if we're still inside the post-spawn grace window (VM might
+    ///   just be finishing boot and writing its pidfile)
+    /// - `false` otherwise (crashed, force-stopped, or never booted)
+    pub fn is_alive(&self) -> bool {
+        let pidfile = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".iii/managed")
+            .join(&self.name)
+            .join("vm.pid");
+
+        if let Ok(s) = std::fs::read_to_string(&pidfile)
+            && let Ok(pid) = s.trim().parse::<u32>()
+        {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::kill;
+                use nix::unistd::Pid;
+                if kill(Pid::from_raw(pid as i32), None).is_ok() {
+                    return true;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = pid;
+                return true;
+            }
+        }
+
+        // No pidfile (or stale/dead pid). Grant a grace window from spawn
+        // so we don't misread a still-booting worker as dead.
+        self.spawned_at.elapsed() < SPAWN_GRACE
     }
 
     pub async fn stop(&self) {
@@ -187,6 +249,10 @@ impl Worker for ExternalWorkerWrapper {
         Ok(())
     }
 
+    async fn is_alive(&self) -> bool {
+        self.process.is_alive()
+    }
+
     fn register_functions(&self, _engine: Arc<Engine>) {
         // External workers register their own functions via the bridge protocol
     }
@@ -210,6 +276,7 @@ mod tests {
         let process = ExternalWorkerProcess {
             name: "test-worker".to_string(),
             child: Arc::new(Mutex::new(None)),
+            spawned_at: std::time::Instant::now(),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
         assert_eq!(wrapper.name(), "ExternalWorker(test-worker)");
@@ -229,6 +296,7 @@ mod tests {
         let process = ExternalWorkerProcess {
             name: "init-test".to_string(),
             child: Arc::new(Mutex::new(None)),
+            spawned_at: std::time::Instant::now(),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
         assert!(wrapper.initialize().await.is_ok());
@@ -239,6 +307,7 @@ mod tests {
         let process = ExternalWorkerProcess {
             name: "destroy-test".to_string(),
             child: Arc::new(Mutex::new(None)),
+            spawned_at: std::time::Instant::now(),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
         assert!(wrapper.destroy().await.is_ok());

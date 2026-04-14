@@ -1,8 +1,11 @@
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use iii::EngineBuilder;
 use iii::workers::config::{EngineConfig, WorkerEntry};
-use iii::workers::reload::{ReloadDiff, ReloadManager};
+use iii::workers::reload::{ReloadDiff, ReloadManager, RunningWorker, WorkerRegistrations};
+use iii::workers::traits::Worker;
 
 fn write_config(contents: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::new().expect("tempfile");
@@ -177,4 +180,133 @@ fn enforce_guards_allows_removing_non_mandatory_workers() {
 #[test]
 fn enforce_guards_allows_empty_diff() {
     assert!(ReloadManager::enforce_guards(&ReloadDiff::default()).is_ok());
+}
+
+// -----------------------------------------------------------------------------
+// Test helpers: a bare-minimum Worker that reports a configurable is_alive
+// value so we can drive promote_dead_unchanged deterministically.
+// -----------------------------------------------------------------------------
+
+struct TestWorker {
+    alive: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Worker for TestWorker {
+    fn name(&self) -> &'static str {
+        "test-worker"
+    }
+
+    async fn create(
+        _engine: Arc<iii::engine::Engine>,
+        _config: Option<serde_json::Value>,
+    ) -> anyhow::Result<Box<dyn Worker>>
+    where
+        Self: Sized,
+    {
+        Err(anyhow::anyhow!("TestWorker::create not used in unit tests"))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+}
+
+fn running_worker(name: &str, alive: bool) -> RunningWorker {
+    let entry = WorkerEntry {
+        name: name.to_string(),
+        image: None,
+        config: None,
+    };
+    let worker: Arc<dyn Worker> = Arc::new(TestWorker {
+        alive: AtomicBool::new(alive),
+    });
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+    RunningWorker {
+        entry,
+        worker,
+        shutdown_tx,
+        registrations: WorkerRegistrations::default(),
+    }
+}
+
+#[tokio::test]
+async fn promote_dead_unchanged_leaves_live_workers_alone() {
+    let running = vec![running_worker("alive-worker", true)];
+    let new_entries = vec![WorkerEntry {
+        name: "alive-worker".into(),
+        image: None,
+        config: None,
+    }];
+    let mut diff = ReloadDiff {
+        unchanged: vec!["alive-worker".into()],
+        ..Default::default()
+    };
+
+    let promoted = ReloadManager::promote_dead_unchanged(&mut diff, &new_entries, &running).await;
+
+    assert_eq!(promoted, Vec::<String>::new(), "nothing should be promoted");
+    assert_eq!(diff.unchanged, vec!["alive-worker".to_string()]);
+    assert!(diff.changed.is_empty());
+}
+
+#[tokio::test]
+async fn promote_dead_unchanged_revives_dead_worker() {
+    // This is the regression test for `iii worker add ./w --force` not
+    // restarting the VM: the CLI rewrites config.yaml with the same entry,
+    // the diff says unchanged, but the tracked worker is dead. The reloader
+    // must promote it to `changed` so commit() destroys + restarts.
+    let running = vec![
+        running_worker("alive-worker", true),
+        running_worker("dead-worker", false),
+    ];
+    let new_entries = vec![
+        WorkerEntry {
+            name: "alive-worker".into(),
+            image: None,
+            config: None,
+        },
+        WorkerEntry {
+            name: "dead-worker".into(),
+            image: None,
+            config: None,
+        },
+    ];
+    let mut diff = ReloadDiff {
+        unchanged: vec!["alive-worker".into(), "dead-worker".into()],
+        ..Default::default()
+    };
+
+    let promoted = ReloadManager::promote_dead_unchanged(&mut diff, &new_entries, &running).await;
+
+    assert_eq!(promoted, vec!["dead-worker".to_string()]);
+    assert_eq!(diff.unchanged, vec!["alive-worker".to_string()]);
+    assert_eq!(diff.changed.len(), 1);
+    assert_eq!(diff.changed[0].name, "dead-worker");
+}
+
+#[tokio::test]
+async fn promote_dead_unchanged_skips_entries_without_a_tracked_worker() {
+    // Defensive: if diff.unchanged contains a name not in `running`, we
+    // cannot assess liveness. Leave it alone rather than dropping it.
+    let running: Vec<RunningWorker> = Vec::new();
+    let new_entries = vec![WorkerEntry {
+        name: "orphan".into(),
+        image: None,
+        config: None,
+    }];
+    let mut diff = ReloadDiff {
+        unchanged: vec!["orphan".into()],
+        ..Default::default()
+    };
+
+    let promoted = ReloadManager::promote_dead_unchanged(&mut diff, &new_entries, &running).await;
+
+    assert!(promoted.is_empty());
+    assert_eq!(diff.unchanged, vec!["orphan".to_string()]);
+    assert!(diff.changed.is_empty());
 }

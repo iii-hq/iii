@@ -18,14 +18,16 @@ async fn handle_managed_add_force_builtin_re_adds() {
     in_temp_dir_async(|| async {
         // First add creates config
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false).await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+                .await;
         assert_eq!(exit_code, 0);
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
 
         // Force re-add succeeds (builtins have no artifacts to delete)
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false).await;
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false, false)
+                .await;
         assert_eq!(exit_code, 0);
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
@@ -45,7 +47,7 @@ async fn handle_managed_add_force_reset_config_clears_overrides() {
 
         // Force with reset_config should clear user overrides and re-apply defaults
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, true)
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, true, false)
                 .await;
         assert_eq!(exit_code, 0);
 
@@ -71,7 +73,7 @@ async fn handle_managed_add_force_without_reset_preserves_config() {
 
         // Force WITHOUT reset_config should preserve user overrides
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false)
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false, false)
                 .await;
         assert_eq!(exit_code, 0);
 

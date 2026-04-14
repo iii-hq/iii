@@ -326,12 +326,25 @@ pub fn resolve_worker_name(project_path: &Path) -> String {
 /// 4. Run setup+install scripts inside a libkrun VM
 /// 5. Extract default config from iii.worker.yaml
 /// 6. Append to config.yaml with `worker_path`
-pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief: bool) -> i32 {
+pub async fn handle_local_add(
+    path: &str,
+    force: bool,
+    reset_config: bool,
+    brief: bool,
+    wait: bool,
+) -> i32 {
     // 1. Resolve path to absolute
     let project_path = match std::fs::canonicalize(path) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{} Invalid path '{}': {}", "error:".red(), path, e);
+            eprintln!(
+                "{} Cannot resolve path '{}': {}\n  \
+                 Fix: pass a path that exists, e.g. `iii worker add ./my-worker`.\n  \
+                 If the directory should exist, check spelling and current working dir.",
+                "error:".red(),
+                path,
+                e
+            );
             return 1;
         }
     };
@@ -339,7 +352,8 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
     // 2. Validate directory exists
     if !project_path.is_dir() {
         eprintln!(
-            "{} '{}' is not a directory",
+            "{} '{}' exists but is not a directory.\n  \
+             Fix: point at the worker's project directory, not a file.",
             "error:".red(),
             project_path.display()
         );
@@ -351,8 +365,13 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         Some(p) => p,
         None => {
             eprintln!(
-                "{} Could not detect project type in '{}'. \
-                 Add iii.worker.yaml or use package.json/Cargo.toml/pyproject.toml.",
+                "{} No project manifest detected in '{}'.\n  \
+                 Looked for: iii.worker.yaml, package.json, Cargo.toml, pyproject.toml.\n  \
+                 Fix: run from inside your worker project, or create iii.worker.yaml:\n      \
+                     name: my-worker\n      \
+                     runtime:\n        \
+                       language: typescript\n      \
+                     command: [\"node\", \"src/index.js\"]",
                 "error:".red(),
                 project_path.display()
             );
@@ -361,23 +380,29 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
     };
 
     if let Err(msg) = project.validate() {
-        eprintln!("{} {}", "error:".red(), msg);
+        eprintln!(
+            "{} Project manifest is invalid: {}\n  \
+             Fix: see https://motia.dev/docs/iii/worker-manifest for the schema.",
+            "error:".red(),
+            msg
+        );
         return 1;
     }
 
     // 4. Resolve worker name
     let worker_name = resolve_worker_name(&project_path);
 
-    if !brief {
-        eprintln!("  Adding local worker {}...", worker_name.bold());
-    }
-
     // 5. Check if already exists in config.yaml
     if super::config_file::worker_exists(&worker_name) {
         if !force {
             eprintln!(
-                "{} Worker '{}' already exists in config.yaml. Use --force to replace.",
+                "{} Worker '{}' is already in config.yaml.\n  \
+                 Fix options:\n    \
+                   - Keep it: `iii worker status {}` to see how it's doing.\n    \
+                   - Replace it: rerun with --force (stops VM, clears artifacts).\n    \
+                   - Wipe the config entry too: --force --reset-config.",
                 "error:".red(),
+                worker_name,
                 worker_name
             );
             return 1;
@@ -385,7 +410,7 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         // --force: stop if running, clear artifacts
         if super::managed::is_worker_running(&worker_name) {
             eprintln!("  Stopping running worker {}...", worker_name.bold());
-            super::managed::handle_managed_stop(&worker_name, "0.0.0.0", 49134).await;
+            super::managed::handle_managed_stop(&worker_name).await;
         }
         let freed = super::managed::delete_worker_artifacts(&worker_name);
         if freed > 0 {
@@ -418,25 +443,112 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         &abs_path_str,
         config_yaml.as_deref(),
     ) {
-        eprintln!("{} {}", "error:".red(), e);
+        eprintln!(
+            "{} Failed to update config.yaml: {}\n  \
+             Fix: check that config.yaml is writable and valid YAML.",
+            "error:".red(),
+            e
+        );
         return 1;
     }
 
-    // 8. Print success
+    // 8. Decide the output shape. The worker is queued in config.yaml but has
+    //    NOT booted yet — never claim success with ✓. Output depends on three
+    //    axes: brief (multi-add row), engine state, and whether the caller
+    //    asked us to --wait.
+    let engine_running = super::managed::is_engine_running();
+
     if brief {
-        eprintln!("        {} {}", "\u{2713}".green(), worker_name.bold());
+        // Multi-worker add: one short row per worker. ⟳ if the engine will
+        // pick it up, ⚠ if it won't.
+        let glyph = if engine_running {
+            "\u{27F3}"
+        } else {
+            "\u{26A0}"
+        };
+        eprintln!("        {} {}", glyph.cyan(), worker_name.bold());
+        return 0;
+    }
+
+    // 9. --wait: skip the "follow along" nudge entirely (we ARE following
+    //    along now), drop straight into the live snapshot, and print a
+    //    one-line closer with elapsed time.
+    if wait {
+        if !engine_running {
+            eprintln!(
+                "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
+                 --wait cannot observe it boot — run `iii start` in another terminal first.",
+                "\u{26A0}".yellow(),
+                worker_name.bold(),
+                "local".dimmed()
+            );
+            return 0;
+        }
+
+        eprintln!(
+            "\n  {} Adding {} ({})...",
+            "→".cyan(),
+            worker_name.bold(),
+            "local".dimmed()
+        );
+
+        let started = std::time::Instant::now();
+        let final_status = super::status::watch_until_ready(
+            &worker_name,
+            Some(std::time::Duration::from_secs(120)),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        match final_status.phase {
+            super::status::Phase::Ready => {
+                eprintln!("  {} ready in {:.1}s", "✓".green(), elapsed.as_secs_f64());
+                return 0;
+            }
+            _ => {
+                eprintln!(
+                    "  {} not ready after {:.0}s (worker is still queued in config.yaml).\n  \
+                       Keep watching: iii worker status {}\n  \
+                       Check logs:    iii worker logs {} -f",
+                    "⚠".yellow(),
+                    elapsed.as_secs_f64(),
+                    worker_name,
+                    worker_name
+                );
+                return 2;
+            }
+        }
+    }
+
+    // 10. Non-wait path (user passed --no-wait): two-branch tight message
+    //     depending on engine state. Hints drop `--watch` because status
+    //     live-refreshes by default now.
+    if engine_running {
+        eprintln!(
+            "\n  {} Added {} ({}) — queued in config.yaml.\n  \
+             Watch it boot: iii worker status {}\n  \
+             Tail logs:     iii worker logs {} -f",
+            "→".cyan(),
+            worker_name.bold(),
+            "local".dimmed(),
+            worker_name,
+            worker_name
+        );
     } else {
         eprintln!(
-            "\n  {} Worker {} added to {}",
-            "\u{2713}".green(),
+            "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
+             Start it:  iii start\n  \
+             Then:      iii worker status {}",
+            "\u{26A0}".yellow(),
             worker_name.bold(),
-            "config.yaml".dimmed(),
+            "local".dimmed(),
+            worker_name
         );
-        eprintln!("  {}  {}", "Path".cyan().bold(), abs_path_str.bold());
-
-        // The engine's file watcher will detect the config change and
-        // reload automatically — no need to start the worker here.
     }
+
+    // Stash the absolute path in a debug-visible spot without cluttering the
+    // happy-path output. Users who need it can run `iii worker status`.
+    tracing::debug!(worker = %worker_name, path = %abs_path_str, "local worker queued");
 
     0
 }
