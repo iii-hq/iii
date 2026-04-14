@@ -27,6 +27,26 @@ pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
 }
 
+/// Build the env map for a libkrun VM boot, injecting `III_ISOLATION=libkrun`
+/// so workers registered inside the VM report their isolation context to the
+/// engine. Used by both `run_dev` (sandbox workers) and `LibkrunAdapter::start`
+/// (container workers) so both managed-worker types light up the Workers page
+/// badge without additional configuration.
+///
+/// Precedence: **the launcher always wins.** `III_ISOLATION` reflects ground
+/// truth about which runtime booted the worker, so a value baked into an OCI
+/// image (`ENV III_ISOLATION=docker`) or passed in via `spec.env` must not be
+/// able to misrepresent the actual sandbox. If a caller really needs a nested
+/// override, that belongs behind a distinct contract (future: `III_ISOLATION_OVERRIDE`).
+pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<String, String> {
+    let mut merged = HashMap::with_capacity(caller_env.len() + 1);
+    for (key, value) in caller_env {
+        merged.insert(key, value);
+    }
+    merged.insert("III_ISOLATION".to_string(), "libkrun".to_string());
+    merged
+}
+
 /// Run a dev worker session inside a libkrun VM.
 ///
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
@@ -44,6 +64,8 @@ pub async fn run_dev(
     worker_name: &str,
     mounts: &[(String, String)],
 ) -> i32 {
+    let env = build_vm_env(env);
+
     let self_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -426,10 +448,11 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             .arg(Self::stdout_log(&spec.name));
 
         let image_env = read_oci_env(&worker_rootfs);
-        let mut merged_env: HashMap<String, String> = image_env.into_iter().collect();
+        let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
         for (key, value) in &spec.env {
-            merged_env.insert(key.clone(), value.clone());
+            caller_env.insert(key.clone(), value.clone());
         }
+        let merged_env = build_vm_env(caller_env);
 
         for (key, value) in &merged_env {
             cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -578,6 +601,40 @@ mod tests {
     fn test_libkrun_available_returns_bool() {
         let result = libkrun_available();
         let _ = result;
+    }
+
+    #[test]
+    fn build_vm_env_injects_isolation_marker_into_empty_input() {
+        let merged = build_vm_env(HashMap::new());
+        assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn build_vm_env_preserves_caller_vars_and_adds_isolation() {
+        let mut caller = HashMap::new();
+        caller.insert("NODE_ENV".to_string(), "production".to_string());
+        caller.insert("III_URL".to_string(), "ws://127.0.0.1:3111".to_string());
+        let merged = build_vm_env(caller);
+        assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
+        assert_eq!(merged.get("NODE_ENV"), Some(&"production".to_string()));
+        assert_eq!(
+            merged.get("III_URL"),
+            Some(&"ws://127.0.0.1:3111".to_string())
+        );
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn build_vm_env_launcher_overrides_caller_isolation() {
+        // Ground-truth guarantee: the launcher (which actually booted the VM) wins
+        // over any `III_ISOLATION` smuggled in via an OCI image's `ENV` directive
+        // or a managed worker's `spec.env`. Without this invariant a container
+        // worker could self-report `docker` while actually running in libkrun.
+        let mut caller = HashMap::new();
+        caller.insert("III_ISOLATION".to_string(), "docker".to_string());
+        let merged = build_vm_env(caller);
+        assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
     }
 
     #[test]
