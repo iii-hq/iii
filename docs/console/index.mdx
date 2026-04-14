@@ -66,6 +66,27 @@ These counters update automatically via WebSocket and reflect the current state 
 
 The Dashboard also includes an application flow diagram that shows how triggers, functions, and data flow through your system.
 
+## Workers
+
+The Workers page lists every worker process currently connected to the engine, with live metrics (memory, CPU, event-loop lag), connection time, active invocations, and registered functions.
+
+| Column     | Description                                                             |
+|------------|-------------------------------------------------------------------------|
+| Name       | Worker name or short ID if unnamed                                       |
+| Runtime    | Language runtime badge (`node`, `python`, `rust`) with SDK version        |
+| Isolation  | Isolation context badge (`libkrun`, `docker`, `k8s`, ...) when reported  |
+| IP         | Worker's remote address                                                 |
+| PID        | Worker process ID                                                       |
+| Functions  | Number of functions the worker has registered                            |
+| Active     | Number of currently in-flight invocations                                |
+| Connected  | Time since the worker connected                                         |
+
+Click a worker to open a detail panel showing full metadata, telemetry (language, project, framework), live metrics, and the list of functions the worker has registered.
+
+<Info title="Isolation badge">
+  Workers launched via `iii worker dev` or `iii worker add <image>` run inside libkrun microVMs and the launcher injects `III_ISOLATION=libkrun`, so you'll see a purple `LIBKRUN` badge next to the runtime badge. The badge is descriptive (what the worker reports about its environment), not an attestation — a direct SDK connection can self-set `III_ISOLATION=docker` (or anything else) before starting. Workers that don't set the variable show no isolation badge.
+</Info>
+
 ## Functions
 
 The Functions page lists every function registered with the iii engine and lets you invoke any of them directly with custom JSON input.
@@ -382,6 +403,7 @@ iii-console [OPTIONS]
 | `OTEL_DISABLED`     | `--no-otel`            | Disable OTEL export            |
 | `OTEL_SERVICE_NAME` | `--otel-service-name`  | OTEL service name              |
 | `III_ENABLE_FLOW`   | `--enable-flow`        | Enable Flow visualization      |
+| `III_ISOLATION`     | —                      | Reported by the SDK as the worker's isolation context in the Workers page. Auto-set to `libkrun` by `iii worker dev` and `iii worker add <image>`. Set manually (`III_ISOLATION=docker`) for container/k8s deployments. |
 
 ### Default Ports
 

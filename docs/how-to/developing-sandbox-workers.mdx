@@ -17,6 +17,8 @@ Requires **macOS Apple Silicon** or **Linux with KVM**.
 
 A sandbox is a hardware-isolated microVM powered by [libkrun](https://github.com/containers/libkrun). Each sandbox has its own root filesystem, network stack, and process tree — completely separate from the host and from other workers. The engine manages the VM lifecycle, so you interact with sandboxed workers through the same `iii worker` commands you use for container workers.
 
+Workers started with `iii worker dev` (or any `iii worker` command that launches a libkrun VM) have `III_ISOLATION=libkrun` injected into their environment by the launcher, and the SDK forwards that value when it registers with the engine. You'll see a purple **LIBKRUN** badge next to the worker in the [console Workers page](/docs/console#workers). The badge is descriptive (what the worker reports about its environment), not an attestation — direct SDK connections can override the value by exporting `III_ISOLATION` themselves.
+
 ## Steps
 
 ### 1. Create a Worker Project

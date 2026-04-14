@@ -11,6 +11,8 @@ Use the `iii worker` commands to manage container workers throughout their lifec
 
 Container workers are OCI images that the engine pulls, extracts, and runs in isolated sandboxes. The `iii worker` CLI manages these workers declaratively through `config.yaml`, so you rarely need to edit configuration files by hand.
 
+Container workers run inside libkrun microVMs. The `iii worker` launcher injects `III_ISOLATION=libkrun` into the VM environment, and the worker's SDK forwards it on registration, so each one shows up with a purple **LIBKRUN** badge on the [console Workers page](/docs/console#workers). The launcher always wins: if an image bakes `III_ISOLATION=docker` into its env directives, the launcher overrides it to `libkrun` so the badge reflects the actual runtime.
+
 ## Steps
 
 ### 1. Add a Worker
