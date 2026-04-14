@@ -37,19 +37,48 @@ pub const DEBOUNCE_MS: u64 = 500;
 /// normal operation — including during the restart itself, which would
 /// otherwise produce an infinite restart loop.
 pub const IGNORED_DIR_NAMES: &[&str] = &[
+    // Node / TypeScript
     "node_modules",
+    ".pnpm-store",
+    ".parcel-cache",
+    ".turbo",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    // Rust
     "target",
+    // Python
     ".venv",
     "venv",
     "__pycache__",
     ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    // Go / PHP / Ruby share "vendor"
+    "vendor",
+    // Ruby
+    ".bundle",
+    // JVM (Maven, Gradle)
+    ".gradle",
+    ".m2",
+    // .NET
+    "obj",
+    ".nuget",
+    // Elixir / Erlang
+    "_build",
+    "deps",
+    // Generic build output
     "dist",
     "build",
-    ".next",
-    ".turbo",
+    "out",
+    "coverage",
+    ".cache",
+    // VCS
     ".git",
     ".svn",
     ".hg",
+    // IDE / OS
     ".idea",
     ".vscode",
     ".DS_Store",
@@ -260,6 +289,108 @@ mod tests {
         ));
         assert!(should_ignore_path(
             &PathBuf::from("/proj/dist/index.js"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_go_vendor() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/vendor/github.com/pkg/errors/errors.go"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_jvm_build_dirs() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.gradle/caches/x"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.m2/repository/a/b.jar"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_dotnet_artifacts() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/obj/Debug/Foo.dll"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.nuget/packages/x"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_elixir_artifacts() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/_build/dev/lib/app.beam"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/deps/phoenix/mix.exs"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_ruby_bundle() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.bundle/config"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_python_extended_caches() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.mypy_cache/3.11/foo.data.json"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.ruff_cache/0.1.0/foo.py"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.tox/py311/lib/x"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_pnpm_and_parcel_caches() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.pnpm-store/v3/foo"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.parcel-cache/foo"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_generic_coverage_and_out() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/coverage/lcov-report/index.html"),
+            &root()
+        ));
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/out/bundle.js"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn does_not_ignore_bin_directory() {
+        // `bin/` is too generic — some projects commit CLI shims there.
+        // Never ignore it.
+        assert!(!should_ignore_path(
+            &PathBuf::from("/proj/bin/cli.ts"),
             &root()
         ));
     }

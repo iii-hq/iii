@@ -218,15 +218,12 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
 
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
 
-    // Force polling for common file watchers. Overlayfs does not propagate
-    // inotify events from lower-layer (host) changes, so without polling
-    // `tsx watch`, watchfiles, cargo-watch etc. never fire on host edits.
-    parts.push("export CHOKIDAR_USEPOLLING=true".to_string());
-    parts.push("export CHOKIDAR_INTERVAL=${CHOKIDAR_INTERVAL:-300}".to_string());
-    parts.push("export WATCHPACK_POLLING=true".to_string());
-    parts.push("export WATCHFILES_FORCE_POLLING=true".to_string());
-    parts.push("export TSC_WATCHFILE=DynamicPriorityPolling".to_string());
-    parts.push("export TSC_WATCHDIRECTORY=DynamicPriorityPolling".to_string());
+    // Host source changes are handled by the host-side `__watch-source`
+    // sidecar (see source_watcher.rs), which restarts the whole VM on
+    // change. In-VM watchers are not expected to detect host edits, so
+    // no polling env vars are exported here — they'd just add overhead
+    // and couldn't help tsx 4.x anyway (tsx uses fs.watch with no
+    // polling fallback, and doesn't depend on chokidar).
 
     if !prepared {
         if !project.setup_cmd.is_empty() {
@@ -819,7 +816,11 @@ mod tests {
         assert!(script.contains("mount --bind"));
         assert!(script.contains("/var/iii/deps"));
         assert!(script.contains("node_modules"));
-        assert!(script.contains("CHOKIDAR_USEPOLLING=true"));
+        // Polling env vars were removed — the host-side __watch-source
+        // sidecar handles reload-on-edit by restarting the whole VM.
+        assert!(!script.contains("CHOKIDAR_USEPOLLING"));
+        assert!(!script.contains("WATCHFILES_FORCE_POLLING"));
+        assert!(!script.contains("TSC_WATCHFILE"));
     }
 
     #[test]
