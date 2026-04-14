@@ -179,6 +179,32 @@ def test_pre_start_buffer_drops_oldest_when_full():
     assert last == str(SharedEngineConnection.MAX_QUEUE).encode()
 
 
+def test_serialize_metrics_emits_empty_string_for_missing_scope_version():
+    """Regression: meter_provider.get_meter(name) produces scope.version=None in
+    the Python OTel SDK. The serializer must emit "" (not JSON null) so the Rust
+    engine's String deserializer doesn't reject the payload.
+    """
+    from iii.telemetry_exporters import _serialize_metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.resources import Resource
+
+    reader = InMemoryMetricReader()
+    resource = Resource.create({"service.name": "iii-py-test"})
+    provider = MeterProvider(resource=resource, metric_readers=[reader])
+    meter = provider.get_meter("iii-py-test")  # no version argument
+    counter = meter.create_counter("test.counter")
+    counter.add(1, {"k": "v"})
+
+    payload = _serialize_metrics(reader.get_metrics_data()).decode()
+    parsed = json.loads(payload)
+
+    scope = parsed["resourceMetrics"][0]["scopeMetrics"][0]["scope"]
+    assert scope["name"] == "iii-py-test"
+    assert scope["version"] == ""
+    assert scope["version"] is not None
+
+
 @pytest.mark.asyncio
 async def test_start_drains_pre_start_buffer_into_queue():
     """start() moves buffered frames into the asyncio queue."""

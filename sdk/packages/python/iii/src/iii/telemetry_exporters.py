@@ -395,8 +395,8 @@ def _serialize_metrics(metrics_data: Any) -> bytes:
             scope_metrics_json.append(
                 {
                     "scope": {
-                        "name": scope.name if scope else "",
-                        "version": scope.version if scope else "",
+                        "name": (scope.name if scope else "") or "",
+                        "version": (scope.version if scope else "") or "",
                     },
                     "metrics": metrics_json,
                 }
