@@ -22,7 +22,8 @@ resource "aws_route53_record" "preview_aaaa" {
   }
 }
 
-# Apex + www records gated behind var.manage_apex_records — see variable description.
+# Apex + www records gated behind manage_apex_records / manage_www_records so the
+# two subdomains can be cut over independently. See variable descriptions.
 
 resource "aws_route53_record" "apex_a" {
   count = var.manage_apex_records ? 1 : 0
@@ -53,7 +54,7 @@ resource "aws_route53_record" "apex_aaaa" {
 }
 
 resource "aws_route53_record" "www_a" {
-  count = var.manage_apex_records ? 1 : 0
+  count = var.manage_www_records ? 1 : 0
 
   zone_id = data.aws_route53_zone.iii_dev.zone_id
   name    = var.www_domain
@@ -67,7 +68,7 @@ resource "aws_route53_record" "www_a" {
 }
 
 resource "aws_route53_record" "www_aaaa" {
-  count = var.manage_apex_records ? 1 : 0
+  count = var.manage_www_records ? 1 : 0
 
   zone_id = data.aws_route53_zone.iii_dev.zone_id
   name    = var.www_domain
