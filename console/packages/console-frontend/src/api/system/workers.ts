@@ -35,6 +35,7 @@ export interface WorkerInfo {
   active_invocations: number
   latest_metrics: WorkerMetrics | null
   pid: number | null
+  isolation: string | null
   telemetry: WorkerTelemetry | null
   internal?: boolean
 }

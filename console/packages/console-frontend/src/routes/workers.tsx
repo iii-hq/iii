@@ -97,6 +97,22 @@ function getRuntimeBadgeClass(runtime: string | null): string {
   }
 }
 
+function getIsolationBadgeClass(isolation: string | null): string {
+  switch (isolation?.toLowerCase()) {
+    case 'libkrun':
+      return 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+    case 'docker':
+      return 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+    case 'kubernetes':
+    case 'k8s':
+      return 'bg-sky-500/10 text-sky-400 border-sky-500/30'
+    case 'firecracker':
+      return 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+    default:
+      return 'bg-white/5 text-muted border-border'
+  }
+}
+
 function getStatusDotClass(status: string): string {
   switch (status) {
     case 'connected':
@@ -354,6 +370,14 @@ function WorkersPage() {
                           {worker.version ? ` ${worker.version}` : ''}
                         </Badge>
                       )}
+                      {worker.isolation && (
+                        <Badge
+                          variant="outline"
+                          className={`text-[9px] uppercase max-w-[8rem] truncate ${getIsolationBadgeClass(worker.isolation)}`}
+                        >
+                          {worker.isolation.slice(0, 64)}
+                        </Badge>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5 text-[10px] text-muted font-mono">
                       <span>{worker.ip_address}</span>
@@ -444,6 +468,7 @@ function WorkersPage() {
                       label: 'PID',
                       value: selectedWorker.pid != null ? String(selectedWorker.pid) : null,
                     },
+                    { label: 'Isolation', value: selectedWorker.isolation },
                     { label: 'Status', value: selectedWorker.status },
                     {
                       label: 'Connected',
