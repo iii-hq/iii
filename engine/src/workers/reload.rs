@@ -33,14 +33,12 @@ pub struct WorkerRegistrations {
 /// mutate, and consume these.
 #[derive(Debug, Default)]
 pub(crate) struct ScopeBuilder {
-    pub worker_name: String,
     pub function_ids: Vec<String>,
 }
 
 impl ScopeBuilder {
-    pub fn new(worker_name: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            worker_name,
             function_ids: Vec::new(),
         }
     }

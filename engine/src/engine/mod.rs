@@ -280,9 +280,8 @@ impl Engine {
             scope.is_none(),
             "begin_worker_scope called while a scope was already active"
         );
-        *scope = Some(crate::workers::reload::ScopeBuilder::new(
-            worker_name.to_string(),
-        ));
+        tracing::trace!(worker = %worker_name, "begin_worker_scope");
+        *scope = Some(crate::workers::reload::ScopeBuilder::new());
     }
 
     /// Closes the current scope and returns the registrations captured inside
