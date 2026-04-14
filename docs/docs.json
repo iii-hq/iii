@@ -12,6 +12,19 @@
     "dark": "/images/icons/iii-white.svg"
   },
   "favicon": "/images/favicon/favicon.svg",
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/iii-hq/iii"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Install",
+      "href": "/install"
+    }
+  },
   "navigation": {
     "versions": [
       {
