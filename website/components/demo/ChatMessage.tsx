@@ -26,7 +26,7 @@ function BadgeButton({ label, count, onClick }: { label: string; count?: number;
   return (
     <button
       onClick={onClick}
-      className="relative px-5 py-2.5 rounded font-bold text-sm cursor-pointer bg-iii-accent text-black hover:brightness-110 transition-all"
+      className="relative px-5 py-2.5 rounded font-bold text-sm cursor-pointer bg-iii-accent text-black hover:brightness-110 transition-all animate-[btnWiggle_1s_ease-in-out_3s_infinite] hover:animate-none"
     >
       {label}
       {count != null && (
@@ -43,8 +43,15 @@ function BadgeButton({ label, count, onClick }: { label: string; count?: number;
           100% { transform: scale(1); opacity: 1; }
         }
         @keyframes badgePing {
-          0% { transform: scale(1); opacity: 0.6; }
+          0% { transform: scale(1); opacity: 0.8; }
           100% { transform: scale(2.2); opacity: 0; }
+        }
+        @keyframes btnWiggle {
+          0%, 100% { transform: rotate(0deg); }
+          20% { transform: rotate(-3deg); }
+          40% { transform: rotate(3deg); }
+          60% { transform: rotate(-2deg); }
+          80% { transform: rotate(2deg); }
         }
       `}</style>
     </button>
