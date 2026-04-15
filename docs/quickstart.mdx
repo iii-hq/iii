@@ -135,12 +135,7 @@ def add_handler(payload: dict) -> dict:
     return result
 ```
 
-Restart the Python worker and call it a few times:
-
-```bash
-iii worker stop math-worker
-iii worker start math-worker
-```
+Save the file and call the function a few times:
 
 ```bash
 iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
@@ -195,12 +190,7 @@ iii.registerTrigger({
 });
 ```
 
-Restart the TypeScript worker, then call the new endpoint with curl:
-
-```bash
-iii worker stop caller-worker
-iii worker start caller-worker
-```
+Save the file, then call the new endpoint with curl:
 
 ```bash
 curl -X POST http://localhost:3111/math/add-two-numbers \

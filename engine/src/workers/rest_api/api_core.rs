@@ -354,7 +354,7 @@ impl HttpWorker {
         tracing::info!(
             "{} Endpoint {} → {}",
             "[REGISTERED]".green(),
-            format!("{} /{}", method, http_path).bright_yellow().bold(),
+            format!("{} {}", method, http_path).bright_yellow().bold(),
             function_id.purple()
         );
 

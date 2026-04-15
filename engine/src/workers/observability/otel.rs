@@ -1164,6 +1164,43 @@ impl OtlpArrayValue {
     }
 }
 
+/// Deserialize a String that may arrive as a JSON string or null, mapping null to empty string.
+/// OTLP JSON senders sometimes emit `null` for optional scope/metric string fields.
+fn deserialize_string_or_null<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct StringOrNullVisitor;
+
+    impl<'de> de::Visitor<'de> for StringOrNullVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or null")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(v.to_owned())
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(String::new())
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(String::new())
+        }
+    }
+
+    deserializer.deserialize_any(StringOrNullVisitor)
+}
+
 /// Deserialize an i64 that may arrive as a JSON number or a quoted string (OTLP protobuf int64).
 fn deserialize_int64_string_or_number<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
 where
@@ -1714,19 +1751,20 @@ struct OtlpScopeMetrics {
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct OtlpScope {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     version: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpMetric {
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     unit: String,
     #[serde(default)]
     gauge: Option<OtlpGauge>,
@@ -3028,6 +3066,64 @@ mod tests {
         } else {
             panic!("Expected histogram data point");
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_metrics_null_scope_and_metric_strings() {
+        // Regression: Python SDK emits `"version": null` when a meter is created
+        // without a version, and other senders may emit null for description/unit.
+        // The ingestion path must tolerate these without failing.
+        crate::workers::observability::metrics::init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = crate::workers::observability::metrics::get_metric_storage() {
+            storage.clear();
+        }
+
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "iii-py"}
+                    }]
+                },
+                "scopeMetrics": [{
+                    "scope": {"name": "iii-py", "version": null},
+                    "metrics": [{
+                        "name": "test.counter",
+                        "description": null,
+                        "unit": null,
+                        "sum": {
+                            "isMonotonic": true,
+                            "aggregationTemporality": 2,
+                            "dataPoints": [{
+                                "attributes": [],
+                                "timeUnixNano": "1704067200000000000",
+                                "asDouble": 1.0
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_metrics(otlp_json).await;
+        assert!(
+            result.is_ok(),
+            "null string fields should parse: {result:?}"
+        );
+
+        let storage = crate::workers::observability::metrics::get_metric_storage().unwrap();
+        let metrics = storage.get_metrics();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "test.counter");
+        assert_eq!(metrics[0].description, "");
+        assert_eq!(metrics[0].unit, "");
+        assert_eq!(
+            metrics[0].instrumentation_scope_name.as_deref(),
+            Some("iii-py")
+        );
+        assert_eq!(metrics[0].instrumentation_scope_version, None);
     }
 
     #[tokio::test]

@@ -1,0 +1,99 @@
+name: Website Smoke Tests
+
+on:
+  workflow_run:
+    workflows: ["Deploy Website"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Base URL to smoke test against (e.g. https://iii-preview.iii.dev or https://iii.dev)'
+        required: true
+        default: 'https://iii.dev'
+        type: string
+
+jobs:
+  smoke:
+    name: Curl endpoints and assert
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    env:
+      BASE_URL: ${{ inputs.base_url || 'https://iii.dev' }}
+
+    steps:
+      - name: Smoke checks
+        run: |
+          set -u
+          failures=0
+          pass() { echo "PASS  $1"; }
+          fail() { echo "FAIL  $1"; failures=$((failures + 1)); }
+
+          assert_status() {
+            local path="$1" expected="$2"
+            local code
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -L --max-redirs 0 "$BASE_URL$path" || true)
+            if [ "$code" = "$expected" ]; then
+              pass "$path → $code"
+            else
+              fail "$path → expected $expected, got $code"
+            fi
+          }
+
+          assert_redirect_to() {
+            local path="$1" expected="$2"
+            local loc
+            loc=$(curl -sSI "$BASE_URL$path" | awk 'BEGIN{IGNORECASE=1} /^location:/ {print $2}' | tr -d '\r\n')
+            if [ "$loc" = "$expected" ]; then
+              pass "$path → 301 $loc"
+            else
+              fail "$path → expected redirect to $expected, got '$loc'"
+            fi
+          }
+
+          assert_header_contains() {
+            local path="$1" header="$2" needle="$3"
+            local value
+            value=$(curl -sSI "$BASE_URL$path" | awk -v h="$header" 'BEGIN{IGNORECASE=1} tolower($1)==tolower(h)":" {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1)
+            if echo "$value" | grep -qi "$needle"; then
+              pass "$path header '$header' contains '$needle'"
+            else
+              fail "$path header '$header' expected to contain '$needle', got '$value'"
+            fi
+          }
+
+          echo "Smoke testing $BASE_URL"
+          echo
+
+          assert_status "/" 200
+
+          assert_header_contains "/" "strict-transport-security" "max-age"
+          assert_header_contains "/" "x-content-type-options" "nosniff"
+
+          # /docs redirects preserve the /docs prefix (Mintlify serves only under /docs/*)
+          assert_redirect_to "/docs" "https://docs.iii.dev/docs"
+          assert_redirect_to "/docs/quickstart" "https://docs.iii.dev/docs/quickstart"
+
+          assert_status "/llms.txt" 404
+
+          # /api/search must return JSON, not HTML — catches SPA fallback leaking into /api/*
+          content_type=$(curl -sSI "$BASE_URL/api/search?q=test" | awk 'BEGIN{IGNORECASE=1} /^content-type:/ {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1)
+          if echo "$content_type" | grep -qi 'json'; then
+            pass "/api/search?q=test → content-type=$content_type"
+          else
+            fail "/api/search?q=test → expected JSON content-type, got '$content_type'"
+          fi
+
+          assert_status "/this-file-does-not-exist.jpg" 404
+
+          assert_status "/some/client/route" 200
+          assert_header_contains "/some/client/route" "content-type" "text/html"
+
+          echo
+          if [ "$failures" -eq 0 ]; then
+            echo "All smoke checks passed ✓"
+          else
+            echo "$failures smoke check(s) failed ✗"
+            exit 1
+          fi

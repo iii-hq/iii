@@ -1,0 +1,97 @@
+name: Deploy Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'infra/terraform/website/**'
+      - '.github/workflows/deploy-website.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to deploy (default: current default branch)'
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-website
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build & deploy to S3 + CloudFront
+    runs-on: ubuntu-latest
+    environment: iii-website-prod
+    timeout-minutes: 15
+
+    env:
+      AWS_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'website/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm install --include=dev
+
+      - name: Build
+        working-directory: website
+        env:
+          VITE_MAILMODO_FORM_URL: ${{ secrets.VITE_MAILMODO_FORM_URL }}
+        run: npm run build
+
+      - name: Configure AWS credentials (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync hashed assets (long cache, immutable)
+        run: |
+          aws s3 sync website/dist/ "s3://${{ vars.S3_BUCKET }}/" \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "*.html"
+
+      - name: Sync HTML (no cache, must revalidate)
+        run: |
+          aws s3 sync website/dist/ "s3://${{ vars.S3_BUCKET }}/" \
+            --delete \
+            --cache-control "public,max-age=0,must-revalidate" \
+            --exclude "*" \
+            --include "*.html"
+
+      - name: Create CloudFront invalidation
+        id: invalidation
+        run: |
+          inv_id=$(aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CF_DISTRIBUTION_ID }}" \
+            --paths '/*' \
+            --query 'Invalidation.Id' \
+            --output text)
+          echo "id=$inv_id" >> "$GITHUB_OUTPUT"
+          echo "Invalidation $inv_id created."
+
+      - name: Job summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## iii.dev deploy complete
+
+          - Bucket: \`${{ vars.S3_BUCKET }}\`
+          - Distribution: \`${{ vars.CF_DISTRIBUTION_ID }}\`
+          - Invalidation: \`${{ steps.invalidation.outputs.id }}\`
+          - Commit: \`${{ github.sha }}\`
+          EOF
