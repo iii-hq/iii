@@ -1,0 +1,502 @@
+---
+title: 'Migrating from Motia (Python)'
+description: 'How to move from the Motia framework to iii-sdk directly in Python.'
+---
+
+Motia was a higher-level framework built on top of `iii-sdk`. It handled file scanning, middleware wiring, trigger registration, and production packaging automatically. These conveniences came at a cost: they hid iii's three core primitives — **Workers**, **Functions**, and **Triggers** — behind opaque abstractions that limited what you could build.
+
+By moving to `iii-sdk` directly, you unlock the full power of the engine:
+
+- **Add new workers** that register their own functions and triggers, enabling multi-worker orchestration across services, languages, and runtimes.
+- **Connect from the browser** using `iii-browser-sdk` with [Worker RBAC](/how-to/worker-rbac) for secure, real-time frontends — no REST layer needed. See [Use iii in the browser](/how-to/use-iii-in-the-browser).
+- **Treat Motia as one worker among many** instead of a standalone monolith. Your existing Motia code becomes just another worker in a larger iii deployment.
+- **Understand the primitives directly.** Working with `register_function`, `register_trigger`, and `register_worker` builds a mental model that transfers across all iii SDKs and documentation.
+
+<Callout type="tip">Before diving into this migration, we recommend reading the [iii documentation](/) to understand Workers, Functions, and Triggers. The [quickstart](/quickstart) and [Everything is a Worker](/changelog/0-11-0/everything-is-a-worker) pages are good starting points.</Callout>
+
+<Callout type="info">For the Node / TypeScript migration, see [Migrating from Motia (Node.js)](/changelog/0-11-0/migrating-from-motia-js).</Callout>
+
+---
+
+## Step 1 — Update dependencies
+
+Remove `motia` and add `iii-sdk`.
+
+```bash
+pip uninstall motia
+pip install iii-sdk==0.11.0
+```
+
+| Before (Motia) | After (iii-sdk) |
+|---|---|
+| `motia` (pip) | `iii-sdk==0.11.0` (pip) |
+| `motia build` | `python -m build` or a container image |
+| `motia dev` | `python -m src.main` with a file watcher |
+
+<Callout type="info">The Python package is distributed as `iii-sdk` on PyPI but imported as `iii` (e.g., `from iii import register_worker`).</Callout>
+
+---
+
+## Step 2 — Initialize the SDK
+
+Create `src/lib/iii_client.py`. This replaces the implicit connection that Motia managed for you.
+
+```python
+import os
+from iii import Logger, register_worker, InitOptions
+
+iii = register_worker(
+    address=os.environ.get("III_URL", "ws://localhost:49134"),
+    options=InitOptions(worker_name="api-worker"),
+)
+
+logger = Logger()
+```
+
+Every `from motia import logger` in your codebase changes to `from src.lib.iii_client import logger`.
+
+---
+
+## Step 3 — Register functions and triggers directly
+
+Motia auto-registered functions and triggers from exported `config` objects. With `iii-sdk` Python, you call `iii.register_function` and `iii.register_trigger` directly at module scope — there's no helper to build. Each handler module registers its function and trigger(s) when imported. This mirrors the Motia `config` + `handler` structure without the implicit discovery.
+
+Continue to Step 4 to see the handler patterns.
+
+<Callout type="info">`iii-sdk` Python supports engine-native HTTP middleware via `middleware_function_ids`. See [Use HTTP middleware](/how-to/use-http-middleware) for the full pattern.</Callout>
+
+---
+
+## Step 4 — Migrate handlers
+
+### HTTP
+
+<Tabs>
+<Tab title="Motia">
+```python
+from motia import http, ApiRequest, ApiResponse
+
+config = {
+    "name": "Health",
+    "description": "Health check",
+    "triggers": [http("GET", "/health")],
+    "enqueues": [],
+}
+
+def handler(_request: ApiRequest) -> ApiResponse:
+    return ApiResponse(status=200, body={"ok": True})
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+def health(_data):
+    return {"statusCode": 200, "body": {"ok": True}}
+
+iii.register_function("health", health)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "health",
+    "config": {"api_path": "/health", "http_method": "GET"},
+})
+```
+</Tab>
+</Tabs>
+
+### HTTP with middleware
+
+<Tabs>
+<Tab title="Motia">
+```python
+from motia import http, ApiRequest, ApiResponse
+
+def require_auth(request: ApiRequest) -> bool:
+    return request.headers.get("authorization") is not None
+
+config = {
+    "name": "ListTags",
+    "description": "List tags",
+    "triggers": [http("GET", "/tag", middleware=[require_auth])],
+    "enqueues": [],
+}
+
+def handler(request: ApiRequest) -> ApiResponse:
+    org_id = request.headers.get("x-org-id")
+    return ApiResponse(status=200, body={"tags": list_tags_for_org(org_id)})
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+from src.middleware.auth import require_auth  # registers "middleware::require-auth"
+
+def list_tags(data):
+    headers = data.get("headers") or {}
+    org_id = headers.get("x-org-id")
+    return {"statusCode": 200, "body": {"tags": list_tags_for_org(org_id)}}
+
+iii.register_function("list-tags", list_tags)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "list-tags",
+    "config": {
+        "api_path": "/tag",
+        "http_method": "GET",
+        "middleware_function_ids": ["middleware::require-auth"],
+    },
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">`iii-sdk` Python uses engine-native middleware registered as regular functions with a `middleware::` prefix. See [Use HTTP middleware](/how-to/use-http-middleware) for the full pattern.</Callout>
+
+### Cron
+
+<Tabs>
+<Tab title="Motia">
+```python
+from motia import cron, logger
+
+config = {
+    "name": "DailyReport",
+    "description": "Generate daily report",
+    "triggers": [cron("0 0 9 * * * *")],
+    "enqueues": [],
+}
+
+def handler(input: None) -> None:
+    generate_report()
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+def daily_report(_data) -> None:
+    generate_report()
+
+iii.register_function("daily-report", daily_report)
+iii.register_trigger({
+    "type": "cron",
+    "function_id": "daily-report",
+    "config": {"expression": "0 0 9 * * * *"},
+})
+```
+</Tab>
+</Tabs>
+
+### Queue (durable subscriber)
+
+<Tabs>
+<Tab title="Motia">
+```python
+from motia import queue, logger
+from typing import Any
+
+config = {
+    "name": "ProcessOrder",
+    "description": "Process created orders",
+    "triggers": [queue("order.created")],
+    "enqueues": [],
+}
+
+def handler(input: Any) -> None:
+    process_order(input)
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+def process_order(data) -> None:
+    process_order_impl(data)
+
+iii.register_function("process-order", process_order)
+iii.register_trigger({
+    "type": "durable:subscriber",
+    "function_id": "process-order",
+    "config": {"topic": "order.created"},
+})
+```
+</Tab>
+</Tabs>
+
+To publish to a topic, use `iii.trigger` instead of Motia's `enqueue`:
+
+```python
+iii.trigger({
+    "function_id": "iii::durable::publish",
+    "payload": {"topic": "order.created", "data": order_payload},
+})
+```
+
+### State
+
+<Tabs>
+<Tab title="Motia">
+```python
+from motia import StateTriggerInput, state, logger
+
+config = {
+    "name": "OnStateChange",
+    "description": "React to state changes",
+    "triggers": [state()],
+    "enqueues": [],
+}
+
+def handler(input: StateTriggerInput) -> None:
+    handle_state_change(input)
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+def on_state_change(data) -> None:
+    handle_state_change(data)
+
+iii.register_function("on-state-change", on_state_change)
+iii.register_trigger({
+    "type": "state",
+    "function_id": "on-state-change",
+    "config": {},
+})
+```
+</Tab>
+</Tabs>
+
+### Stream
+
+<Tabs>
+<Tab title="Motia">
+```python
+from motia import StreamTriggerInput, stream, logger
+
+config = {
+    "name": "ChatMessage",
+    "description": "Handle chat messages",
+    "triggers": [stream("chat", group_id="room-1")],
+    "enqueues": [],
+}
+
+def handler(input: StreamTriggerInput) -> None:
+    handle_chat_message(input)
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+def chat_message(data) -> None:
+    handle_chat_message(data)
+
+iii.register_function("chat-message", chat_message)
+iii.register_trigger({
+    "type": "stream",
+    "function_id": "chat-message",
+    "config": {"stream_name": "chat", "group_id": "room-1"},
+})
+```
+</Tab>
+</Tabs>
+
+### Multiple triggers on one function
+
+A function can be driven by multiple triggers. This was possible in Motia via the `triggers` array, and maps directly to multiple `register_trigger` calls for the same `function_id`:
+
+```python
+def order_handler(data) -> None:
+    handle_order(data)
+
+iii.register_function("order-handler", order_handler)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "order-handler",
+    "config": {"api_path": "/orders", "http_method": "POST"},
+})
+iii.register_trigger({
+    "type": "durable:subscriber",
+    "function_id": "order-handler",
+    "config": {"topic": "order.retry"},
+})
+```
+
+---
+
+## Step 5 — Update request and response shapes
+
+### Request properties
+
+Motia wrapped `iii-sdk`'s HTTP request into friendlier property names. With `iii-sdk` you receive the raw shape.
+
+| Property | Motia (`input.*`) | iii-sdk (`input.*`) |
+|---|---|---|
+| Route params | `params` | `path_params` |
+| Query string | `query` | `query_params` |
+| JSON body | `body` | `body` |
+| Headers | `headers` | `headers` |
+| HTTP method | `method` | `method` |
+| Request stream | `requestBody` | `request_body` |
+| Response stream | `response` | `response` |
+
+Motia Python's `ApiRequest` already exposed `path_params`, `query_params`, `body`, `headers`, `method`. When switching to `iii-sdk`, handlers receive those fields in a **plain dict** instead of a Pydantic model, so attribute access (`request.path_params`) becomes dict-key access (`data["path_params"]`).
+
+```python
+# Before (Motia — Pydantic model, attribute access)
+folder_id = request.path_params.get("folderId")
+parent_folder_id = request.query_params.get("parentFolderId")
+
+# After (iii-sdk — raw dict, key access)
+folder_id = (data.get("path_params") or {}).get("folderId")
+parent_folder_id = (data.get("query_params") or {}).get("parentFolderId")
+```
+
+### `query_params` value types
+
+In `iii-sdk`, `query_params` values are `str | list[str]`. Use a helper to safely extract the first value:
+
+```python
+def first_query_param(data: dict, name: str) -> str | None:
+    value = (data.get("query_params") or {}).get(name)
+    if value is None:
+        return None
+    return value[0] if isinstance(value, list) else value
+```
+
+### Response shape
+
+`iii-sdk` uses `statusCode` instead of `status`. This applies to every handler return and middleware response.
+
+```python
+# Before (Motia)
+return ApiResponse(status=200, body={"tags": all_tags})
+return ApiResponse(status=404, body={"error": "Not found"})
+
+# After (iii-sdk)
+return {"statusCode": 200, "body": {"tags": all_tags}}
+return {"statusCode": 404, "body": {"error": "Not found"}}
+```
+
+---
+
+## Step 6 — Set up the entry point
+
+Motia discovered `*_step.py` files automatically. With `iii-sdk` Python, create `src/main.py` that imports every handler module as a side effect.
+
+```python
+# src/main.py
+import signal
+import time
+
+from src.lib.iii_client import iii  # noqa: F401 — connects on import
+
+# Import every handler module; each registers its function + trigger at import time.
+from src.handlers import health  # noqa: F401
+from src.handlers import auth  # noqa: F401
+from src.handlers.orders import create_order  # noqa: F401
+from src.handlers.orders import list_orders  # noqa: F401
+from src.handlers.reports import daily_report  # noqa: F401
+# ... import every handler module
+
+
+def _shutdown(*_args) -> None:
+    iii.shutdown()
+    raise SystemExit(0)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+    while True:
+        time.sleep(1)
+```
+
+Each import executes the `register_function` and `register_trigger` calls at the module level, registering the function and its triggers with the engine.
+
+### File renaming
+
+Rename all `*_step.py` files to remove the `_step` suffix:
+
+```
+src/steps/health_step.py  →  src/handlers/health.py
+src/steps/auth_step.py    →  src/handlers/auth.py
+```
+
+The directory structure is yours to decide — `handlers/`, `routes/`, `rest/`, or any layout that fits your project.
+
+---
+
+## Step 7 — Development workflow
+
+The `iii-exec` worker has a built-in file watcher. In your `config.yaml`, declare `watch` globs alongside the `exec` command — no extra dependencies, no wrapper process:
+
+```yaml
+workers:
+  - name: iii-exec
+    config:
+      watch:
+        - src/**/*.py
+      exec:
+        - python
+        - -m
+        - src.main
+```
+
+Any change matching a `watch` glob restarts the `exec` pipeline.
+
+---
+
+## Step 8 — Production build
+
+Python has no direct `esbuild` equivalent. The recommended production path is a virtualenv (or container image) with pinned dependencies.
+
+Add to `pyproject.toml`:
+
+```toml
+[project]
+name = "my-worker"
+version = "0.1.0"
+dependencies = [
+    "iii-sdk==0.11.0",
+]
+```
+
+Build and run:
+
+```bash
+pip install .
+python -m src.main
+```
+
+For containerized deploys, a minimal `Dockerfile`:
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir .
+COPY src ./src
+CMD ["python", "-m", "src.main"]
+```
+
+Update your production config to run the installed module (omit `watch` in production):
+
+```yaml
+workers:
+  - name: iii-exec
+    config:
+      exec:
+        - python
+        - -m
+        - src.main
+```
+
+<Callout type="info">Unlike `esbuild`, you do not bundle Python sources — the runtime imports modules directly. Ship your source tree (or a wheel) rather than a single file.</Callout>
+
+---
+
+## Migration checklist
+
+- [ ] Remove `motia` from `requirements.txt` / `pyproject.toml`, add `iii-sdk==0.11.0`
+- [ ] Create `src/lib/iii_client.py` with `register_worker` and `Logger`
+- [ ] Rename all `*_step.py` files to drop the `_step` suffix
+- [ ] Replace all `from motia import ...` with `from iii import ...` (and `from src.lib.iii_client import ...` for `iii` / `logger`)
+- [ ] Convert every `config` dict + `handler` function to `iii.register_function(...)` + `iii.register_trigger(...)` calls
+- [ ] Replace `ApiResponse(status=...)` with plain dicts using `statusCode` (e.g., `{"statusCode": 200, "body": ...}`)
+- [ ] Replace `request.path_params` / `request.query_params` attribute access with dict-key access on the raw payload (`data["path_params"]`, `data.get("query_params")`)
+- [ ] Replace `requestBody` with `request_body` in streaming handlers
+- [ ] Create `src/main.py` with side-effect imports for every handler module
+- [ ] Replace `motia dev` with an `iii-exec` worker using `watch` + `exec` in your `config.yaml`
+- [ ] Replace `motia build` with `pip install .` (and a `Dockerfile` for containerized deploys)
+- [ ] Test all endpoints, cron jobs, queue subscribers, and stream handlers
