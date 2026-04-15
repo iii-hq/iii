@@ -1815,7 +1815,7 @@ struct OtlpNumberDataPoint {
     time_unix_nano: OtlpNumericString,
     #[serde(default)]
     as_double: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_int64_string_or_number")]
     as_int: Option<i64>,
 }
 
@@ -3124,6 +3124,62 @@ mod tests {
             Some("iii-py")
         );
         assert_eq!(metrics[0].instrumentation_scope_version, None);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_metrics_asint_as_string() {
+        // Regression: OTLP protobuf int64 fields are encoded as JSON strings
+        // (because JS cannot safely represent all 64-bit integers). The Python
+        // SDK emits `"asInt": "2048"` rather than `"asInt": 2048`, so the Rust
+        // NumberDataPoint deserializer must accept both forms.
+        crate::workers::observability::metrics::init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = crate::workers::observability::metrics::get_metric_storage() {
+            storage.clear();
+        }
+
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "iii-py"}
+                    }]
+                },
+                "scopeMetrics": [{
+                    "scope": {"name": "iii-py", "version": ""},
+                    "metrics": [{
+                        "name": "iii.worker.memory.rss",
+                        "description": "",
+                        "unit": "bytes",
+                        "gauge": {
+                            "dataPoints": [{
+                                "attributes": [],
+                                "timeUnixNano": "1704067200000000000",
+                                "asInt": "2048"
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_metrics(otlp_json).await;
+        assert!(
+            result.is_ok(),
+            "asInt encoded as a quoted string should parse: {result:?}"
+        );
+
+        let storage = crate::workers::observability::metrics::get_metric_storage().unwrap();
+        let metrics = storage.get_metrics();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "iii.worker.memory.rss");
+        match &metrics[0].data_points[0] {
+            crate::workers::observability::metrics::StoredDataPoint::Number(dp) => {
+                assert_eq!(dp.value, 2048.0);
+            }
+            _ => panic!("expected number data point"),
+        }
     }
 
     #[tokio::test]
