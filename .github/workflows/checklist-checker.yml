@@ -1,0 +1,16 @@
+name: 'PR Tasks Completed Check'
+on:
+  pull_request:
+    types: [opened, edited]
+
+jobs:
+  task-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all tasks are completed
+        run: |
+          UNCHECKED=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH" | grep -cE '^\s*- \[ \]' || true)
+          if [ "$UNCHECKED" -gt 0 ]; then
+            echo "::error::PR has $UNCHECKED unchecked task(s)"
+            exit 1
+          fi
