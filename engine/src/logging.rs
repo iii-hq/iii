@@ -682,7 +682,10 @@ mod tests {
         let red = format!("{}", "[UNREGISTERED]".red());
         let purple = format!("{}", "discord::send_message".purple());
         assert_eq!(red, "[UNREGISTERED]", "red() must not inject ANSI");
-        assert_eq!(purple, "discord::send_message", "purple() must not inject ANSI");
+        assert_eq!(
+            purple, "discord::send_message",
+            "purple() must not inject ANSI"
+        );
         assert!(!red.contains('\u{1b}'));
         assert!(!purple.contains('\u{1b}'));
 
