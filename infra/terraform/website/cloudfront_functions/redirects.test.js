@@ -39,28 +39,24 @@ function locationOf(result) {
   return result.headers.location.value
 }
 
-test('/docs exact → 301 https://docs.iii.dev/docs', () => {
+// NOTE: /docs and /docs/* paths are handled by dedicated ordered_cache_behaviors
+// against the docs-nlb origin (see cloudfront.tf) and never reach this function in
+// production. These tests document that the function no longer rewrites or
+// redirects anything under /docs so a future regression is caught immediately.
+
+test('/docs → function does not redirect (handled by docs-nlb behavior in prod)', () => {
   const result = handler(buildEvent('/docs', 'iii.dev'))
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://docs.iii.dev/docs')
+  assert.ok(!isRedirect(result), 'must not be a 301 — /docs is served from the NLB origin')
+  // /docs has no dot in the last segment and no trailing slash, so SPA fallback kicks in.
+  // In production this function isn't attached to the /docs behavior, so it's moot — but
+  // we pin the current function-level behavior to catch accidental reintroductions.
+  assert.equal(result.uri, '/index.html')
 })
 
-test('/docs/ trailing slash → 301 https://docs.iii.dev/docs/', () => {
-  const result = handler(buildEvent('/docs/', 'iii.dev'))
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/')
-})
-
-test('/docs/quickstart → 301 https://docs.iii.dev/docs/quickstart', () => {
+test('/docs/quickstart → function does not redirect (handled by docs-nlb behavior in prod)', () => {
   const result = handler(buildEvent('/docs/quickstart', 'iii.dev'))
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/quickstart')
-})
-
-test('/docs/guide/deep/nested → preserves deep path on redirect', () => {
-  const result = handler(buildEvent('/docs/guide/deep/nested', 'iii.dev'))
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/guide/deep/nested')
+  assert.ok(!isRedirect(result), 'must not be a 301 — /docs/* is served from the NLB origin')
+  assert.equal(result.uri, '/index.html')
 })
 
 test('/docsfoo → NOT redirected (not under /docs/)', () => {
@@ -87,14 +83,15 @@ test('www.iii.dev/some/page → 301 https://iii.dev/some/page', () => {
   assert.equal(locationOf(result), 'https://iii.dev/some/page')
 })
 
-test('www.iii.dev/docs/foo → 301 https://docs.iii.dev/docs/foo (ONE hop, not two)', () => {
+test('www.iii.dev/docs/foo → 301 https://iii.dev/docs/foo (www→apex canonicalization)', () => {
+  // With /docs* moved off this function and onto the docs-nlb cache behavior, the
+  // www→apex redirect is the only rule left that touches www.iii.dev. In production
+  // the /docs* ordered behavior has no function_association, so www.iii.dev/docs/foo
+  // flows straight to the NLB without canonicalization — that's an accepted
+  // trade-off documented alongside the behavior in cloudfront.tf.
   const result = handler(buildEvent('/docs/foo', 'www.iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(
-    locationOf(result),
-    'https://docs.iii.dev/docs/foo',
-    'docs redirect must win over www→apex redirect to avoid a 2-hop chain',
-  )
+  assert.equal(locationOf(result), 'https://iii.dev/docs/foo')
 })
 
 test('/ (root) → pass through unchanged', () => {
@@ -157,10 +154,10 @@ test('/.well-known/foo (no extension) → pass through, NOT SPA rewritten', () =
   assert.equal(result.uri, '/.well-known/foo', '.well-known is an explicit exemption from SPA fallback')
 })
 
-test('missing host header → still handles other rules correctly', () => {
-  const event = buildEvent('/docs/foo', undefined)
+test('missing host header → SPA fallback still applies for extensionless paths', () => {
+  const event = buildEvent('/some/page', undefined)
   delete event.request.headers.host
   const result = handler(event)
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://docs.iii.dev/docs/foo')
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/index.html')
 })

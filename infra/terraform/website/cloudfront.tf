@@ -28,7 +28,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 resource "aws_cloudfront_function" "redirects" {
   name    = "iii-website-prod-redirects"
   runtime = "cloudfront-js-2.0"
-  comment = "viewer-request: www->apex, /docs->docs.iii.dev, /llms.txt redirect, SPA fallback"
+  comment = "viewer-request (default behavior only): www->apex, SPA fallback. /docs* is on its own behavior -> docs-nlb origin."
   publish = true
   code    = file("${path.module}/cloudfront_functions/redirects.js")
 }
@@ -118,6 +118,31 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
+  # docs-nlb: serves iii.dev/docs* in place instead of redirecting to docs.iii.dev.
+  # COUPLING: origin domain_name is var.docs_domain (docs.iii.dev) because CloudFront
+  # uses it for origin TLS SNI, and ingress-nginx serves the iii-dev-tls-docs cert for
+  # that SNI. The viewer's Host header (iii.dev) is forwarded via the AllViewer origin
+  # request policy on the /docs* cache behaviors below, so ingress-nginx routes the
+  # request via the iii-dev Ingress → iii-edge-proxy default server block → /docs
+  # location → motiadev.mintlify.dev.
+  #
+  # IMPORTANT: when docs.iii.dev migrates off the k8s NLB to a Mintlify custom domain
+  # (see infra/terraform/website/NEXT-STEPS.md item 13), this origin must be repointed
+  # in the same change or iii.dev/docs will break.
+  origin {
+    origin_id   = "docs-nlb"
+    domain_name = var.docs_domain
+
+    custom_origin_config {
+      http_port                = 80
+      https_port               = 443
+      origin_protocol_policy   = "https-only"
+      origin_ssl_protocols     = ["TLSv1.2"]
+      origin_keepalive_timeout = 5
+      origin_read_timeout      = 30
+    }
+  }
+
   default_cache_behavior {
     target_origin_id       = "s3-site"
     viewer_protocol_policy = "redirect-to-https"
@@ -148,6 +173,45 @@ resource "aws_cloudfront_distribution" "site" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
 
     # No function_association: SPA fallback must not rewrite /api/search responses.
+  }
+
+  # /docs (exact) and /docs/* → docs-nlb. Two behaviors are required because CloudFront
+  # path patterns are literal: `/docs` matches only the exact path, `/docs/*` matches
+  # everything under it.
+  #
+  # No function_association: the redirects function's SPA fallback would rewrite
+  # /docs/quickstart to /index.html and the www→apex redirect is intentionally
+  # skipped here (see redirects.test.js note — www.iii.dev/docs/foo reaches Mintlify
+  # without canonicalization, accepted trade-off).
+  #
+  # No response_headers_policy: Mintlify emits its own Cache-Control and security
+  # headers; the site CSP would break Mintlify's inline scripts.
+  #
+  # cache_policy_disabled mirrors search-api: predictable "no stale docs" story,
+  # at the cost of every request round-tripping to the origin. Revisit once we
+  # have a signal on traffic / origin cost.
+  ordered_cache_behavior {
+    path_pattern           = "/docs"
+    target_origin_id       = "docs-nlb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = local.cache_policy_disabled_id
+    origin_request_policy_id = local.origin_request_all_viewer_id
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/docs/*"
+    target_origin_id       = "docs-nlb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = local.cache_policy_disabled_id
+    origin_request_policy_id = local.origin_request_all_viewer_id
   }
 
   viewer_certificate {
