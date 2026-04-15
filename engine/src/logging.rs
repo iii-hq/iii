@@ -626,6 +626,20 @@ mod tests {
         init_log_from_config(Some("/tmp/iii_no_such_logging_config_98765.yaml"));
     }
 
+    #[test]
+    #[serial]
+    fn colored_emits_ansi_when_override_true() {
+        // Baseline: when we force the colored override on, ANSI escapes appear in the
+        // output. Regression guard so Task 2's JSON-mode test has something to negate.
+        colored::control::set_override(true);
+        let s = format!("{}", "hello".red());
+        assert!(
+            s.contains('\u{1b}'),
+            "expected ANSI escape in colored output with override=true, got {:?}",
+            s
+        );
+    }
+
     // =========================================================================
     // FieldCollector tests
     // =========================================================================
