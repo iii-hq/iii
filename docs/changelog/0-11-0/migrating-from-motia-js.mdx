@@ -38,7 +38,7 @@ pnpm add -D esbuild
 
 Create `src/lib/iii.ts`. This replaces the implicit connection that Motia managed for you.
 
-```typescript
+```typescript title="@/lib/iii"
 import { Logger, registerWorker } from 'iii-sdk'
 
 export const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
