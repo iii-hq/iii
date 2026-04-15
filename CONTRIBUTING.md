@@ -262,14 +262,6 @@ git push origin release/v0.7.0
 
 For pre-releases, add a suffix: `release/v0.7.0-alpha`, `release/v0.7.0-beta`, `release/v0.7.0-rc`.
 
-## Licensing
-
-This project uses a dual licensing model. The engine runtime (`engine/`) is licensed under the [Elastic License 2.0](engine/LICENSE). All other components (SDKs, CLI, console, frameworks, docs, website) are licensed under the [Apache License 2.0](sdk/LICENSE).
-
-By submitting a contribution, you agree that your contribution will be licensed under the applicable license for the component you are contributing to.
-
-See [NOTICE.md](NOTICE.md) for the full breakdown.
-
 ## Project Structure
 
 See [STRUCTURE.md](STRUCTURE.md) for the full directory layout and dependency chain.
