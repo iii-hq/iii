@@ -298,14 +298,16 @@ pub fn restart_via_cli(worker_name: &str, kind: ChangeKind) {
 
 /// Fast path — talk to the in-VM supervisor over the unix socket that
 /// `__vm-boot`'s proxy publishes. Blocks until the supervisor answers
-/// or the 500ms timeout fires. A plain single-thread tokio runtime is
-/// spun up inline; this function is called from the watcher's sync
-/// callback boundary and returns quickly either way.
+/// or the 500ms timeout fires.
+///
+/// Uses the blocking `std::os::unix::net` variant because this function
+/// is invoked from the watcher's sync callback, which itself runs
+/// inside a tokio runtime — nesting tokio runtimes here panics with
+/// "Cannot start a runtime from within a runtime". The wire protocol
+/// and socket are identical to the async path; only the I/O primitive
+/// differs.
 fn try_fast_restart(worker_name: &str) -> anyhow::Result<()> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    rt.block_on(super::supervisor_ctl::request_restart(worker_name))
+    super::supervisor_ctl::request_restart_blocking(worker_name)
 }
 
 /// Slow path — spawn `iii-worker start <name>` which internally calls

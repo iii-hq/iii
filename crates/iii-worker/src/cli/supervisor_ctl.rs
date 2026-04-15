@@ -114,6 +114,55 @@ pub async fn status(worker_name: &str) -> anyhow::Result<(Option<u32>, u32)> {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Blocking variant
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// The source watcher runs inside a tokio runtime (see main.rs
+// __watch-source dispatch). Its file-change callback is a sync
+// `FnMut(&str, ChangeKind)`, so it cannot `.await` anything. Spinning
+// up a nested tokio runtime with `Runtime::new() + block_on` panics
+// ("Cannot start a runtime from within a runtime"). The cleanest fix
+// is to sidestep tokio on this path — use blocking std network calls.
+// Same socket, same protocol, same wire format.
+
+/// Blocking variant of [`round_trip`]. Safe to call from inside a
+/// tokio context because it performs no async work itself.
+fn round_trip_blocking(worker_name: &str, req: Request) -> anyhow::Result<Response> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let sock = control_socket_path(worker_name);
+    let stream = UnixStream::connect(&sock)?;
+    stream.set_read_timeout(Some(DEFAULT_TIMEOUT))?;
+    stream.set_write_timeout(Some(DEFAULT_TIMEOUT))?;
+
+    let mut writer = &stream;
+    let line = protocol::encode_request(&req) + "\n";
+    writer.write_all(line.as_bytes())?;
+    writer.flush()?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut resp_line = String::new();
+    let n = reader.read_line(&mut resp_line)?;
+    if n == 0 {
+        anyhow::bail!("supervisor closed channel without responding");
+    }
+    Ok(protocol::decode_response(&resp_line)?)
+}
+
+/// Blocking `Request::Restart`. Used by the source watcher's sync
+/// callback path.
+pub fn request_restart_blocking(worker_name: &str) -> anyhow::Result<()> {
+    match round_trip_blocking(worker_name, Request::Restart)? {
+        Response::Ok => Ok(()),
+        Response::Error { message } => {
+            anyhow::bail!("supervisor restart error: {message}")
+        }
+        other => anyhow::bail!("unexpected supervisor response: {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +208,44 @@ mod tests {
 
     fn sandbox_worker_name() -> String {
         format!("__iii_test_supervisor_ctl_{}__", std::process::id())
+    }
+
+    #[tokio::test]
+    async fn request_restart_blocking_succeeds_from_within_tokio_context() {
+        // The motivating bug: watcher's sync callback runs inside a
+        // tokio runtime and cannot spin up a nested one. This test
+        // proves that request_restart_blocking is safe to call from a
+        // tokio context — no runtime nesting, no panic.
+        let worker = format!("{}_blk", sandbox_worker_name());
+        stub_server(control_socket_path(&worker), r#"{"result":"ok"}"#).await;
+
+        // Call from inside the async test, mirroring how the watcher
+        // calls it from its async-contextual sync callback.
+        let w = worker.clone();
+        tokio::task::spawn_blocking(move || request_restart_blocking(&w))
+            .await
+            .expect("join")
+            .expect("restart ok");
+
+        let _ =
+            tokio::fs::remove_dir_all(dirs::home_dir().unwrap().join(".iii/managed").join(&worker))
+                .await;
+    }
+
+    #[test]
+    fn request_restart_blocking_errors_on_missing_socket() {
+        // No stub running. Blocking connect should fail fast with
+        // ENOENT or ECONNREFUSED. Caller maps this to "fall back to
+        // full VM restart" and carries on.
+        let worker = format!("__iii_test_supervisor_ctl_missing_{}__", std::process::id());
+        let err = request_restart_blocking(&worker).expect_err("should error");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("no such file")
+                || msg.contains("not found")
+                || msg.contains("connection refused"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
