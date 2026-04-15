@@ -7,7 +7,19 @@ jobs:
   task-check:
     runs-on: ubuntu-latest
     steps:
+      - name: Check org membership
+        id: org-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          USER=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
+          if gh api "/orgs/iii-hq/members/$USER" --silent 2>/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check all tasks are completed
+        if: steps.org-check.outputs.skip == 'false'
         run: |
           BODY=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH")
           TOTAL=$(echo "$BODY" | grep -cE '^\s*- \[[ xX]\]' || true)
