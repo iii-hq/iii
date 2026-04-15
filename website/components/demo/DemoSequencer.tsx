@@ -7,7 +7,6 @@ import { StatusPanel } from './StatusPanel';
 import { ConsoleTrace } from './ConsoleTrace';
 import { TerminalCommand } from './TerminalCommand';
 
-
 function SlackLogo() {
   return (
     <svg
@@ -191,7 +190,11 @@ export function DemoSequencer({
   return (
     <div
       className={`rounded-xl border ${isDarkMode ? 'border-iii-medium/20' : 'border-iii-black/50'} bg-iii-black/80 backdrop-blur-sm flex flex-col overflow-hidden ${containerHeight} ${className}`}
-      style={{ '--color-accent': isDarkMode ? '#f3f724' : '#2f7fff' } as React.CSSProperties}
+      style={
+        {
+          '--color-accent': isDarkMode ? '#f3f724' : '#2f7fff',
+        } as React.CSSProperties
+      }
     >
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-iii-medium/10 bg-iii-dark/40 shrink-0">
         <div className="flex items-center gap-2">
@@ -253,7 +256,7 @@ export function DemoSequencer({
             </p>
             <div className="flex justify-center">
               <a
-                href="https://docs.iii.dev/quickstart"
+                href="https://iii.dev/docs/quickstart"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="px-6 py-2.5 text-sm font-bold rounded border border-iii-accent/50 text-iii-accent hover:bg-iii-accent hover:text-iii-black transition-all duration-200"
