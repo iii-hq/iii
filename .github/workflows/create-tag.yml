@@ -253,6 +253,10 @@ jobs:
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" console/packages/console-rust/Cargo.toml
           echo "Updated console/packages/console-rust/Cargo.toml to $NEW_VERSION"
 
+      - name: Sync Cargo.lock
+        if: inputs.target == 'iii' && inputs.dry_run != true
+        run: cargo update --workspace
+
       - name: Update motia manifests
         if: inputs.target == 'motia' && inputs.dry_run != true
         env:
