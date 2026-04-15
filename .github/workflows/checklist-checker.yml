@@ -9,7 +9,17 @@ jobs:
     steps:
       - name: Check all tasks are completed
         run: |
-          UNCHECKED=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH" | grep -cE '^\s*- \[ \]' || true)
+          BODY=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH")
+          TOTAL=$(echo "$BODY" | grep -cE '^\s*- \[[ xX]\]' || true)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::PR has no checklist items — do not remove the template checklist"
+            exit 1
+          fi
+          if ! echo "$BODY" | grep -qE '^\s*- \[[xX]\].*Apache 2'; then
+            echo "::error::The Apache 2 licensing checkbox must be checked"
+            exit 1
+          fi
+          UNCHECKED=$(echo "$BODY" | grep -cE '^\s*- \[ \]' || true)
           if [ "$UNCHECKED" -gt 0 ]; then
             echo "::error::PR has $UNCHECKED unchecked task(s)"
             exit 1
