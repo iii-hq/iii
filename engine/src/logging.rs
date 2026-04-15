@@ -640,6 +640,34 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial]
+    fn init_prod_log_disables_ansi_in_colored_crate() {
+        // Arrange: force ANSI on, then sanity-check the precondition.
+        colored::control::set_override(true);
+        assert!(
+            format!("{}", "x".red()).contains('\u{1b}'),
+            "precondition failed: colored should be emitting ANSI when override is true"
+        );
+
+        // Act: apply just the color-override step from the JSON init path.
+        // We cannot call `init_prod_log` directly in a unit test because it
+        // installs a global tracing subscriber via OnceCell — only one process-
+        // wide init is allowed. Instead, we call the small extracted helper.
+        disable_ansi_for_json_logs();
+
+        // Assert: any subsequent `.red()` / `.purple()` produces plain text.
+        let red = format!("{}", "[UNREGISTERED]".red());
+        let purple = format!("{}", "discord::send_message".purple());
+        assert_eq!(red, "[UNREGISTERED]", "red() must not inject ANSI");
+        assert_eq!(purple, "discord::send_message", "purple() must not inject ANSI");
+        assert!(!red.contains('\u{1b}'));
+        assert!(!purple.contains('\u{1b}'));
+
+        // Cleanup so other #[serial] tests start from a known state.
+        colored::control::unset_override();
+    }
+
     // =========================================================================
     // FieldCollector tests
     // =========================================================================
