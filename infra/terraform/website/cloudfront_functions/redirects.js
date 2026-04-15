@@ -1,6 +1,4 @@
 // Viewer-request handler for the default (S3) behavior. Tested in redirects.test.js.
-// /docs* is handled by its own ordered cache behavior against the docs-nlb origin
-// (see cloudfront.tf), so it never reaches this function.
 
 function redirect(location) {
   return {

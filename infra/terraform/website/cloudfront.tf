@@ -28,7 +28,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 resource "aws_cloudfront_function" "redirects" {
   name    = "iii-website-prod-redirects"
   runtime = "cloudfront-js-2.0"
-  comment = "viewer-request (default behavior only): www->apex, SPA fallback. /docs* is on its own behavior -> docs-nlb origin."
+  comment = "viewer-request (default behavior only): www->apex, SPA fallback"
   publish = true
   code    = file("${path.module}/cloudfront_functions/redirects.js")
 }
@@ -118,17 +118,9 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
-  # docs-nlb: serves iii.dev/docs* in place instead of redirecting to docs.iii.dev.
-  # COUPLING: origin domain_name is var.docs_domain (docs.iii.dev) because CloudFront
-  # uses it for origin TLS SNI, and ingress-nginx serves the iii-dev-tls-docs cert for
-  # that SNI. The viewer's Host header (iii.dev) is forwarded via the AllViewer origin
-  # request policy on the /docs* cache behaviors below, so ingress-nginx routes the
-  # request via the iii-dev Ingress → iii-edge-proxy default server block → /docs
-  # location → motiadev.mintlify.dev.
-  #
-  # IMPORTANT: when docs.iii.dev migrates off the k8s NLB to a Mintlify custom domain
-  # (see infra/terraform/website/NEXT-STEPS.md item 13), this origin must be repointed
-  # in the same change or iii.dev/docs will break.
+  # domain_name is docs.iii.dev so origin TLS SNI matches iii-dev-tls-docs at
+  # ingress-nginx; the /docs* behaviors forward Host: iii.dev via AllViewer.
+  # Coupled to docs.iii.dev staying on the k8s NLB (see NEXT-STEPS.md item 13).
   origin {
     origin_id   = "docs-nlb"
     domain_name = var.docs_domain
@@ -175,21 +167,11 @@ resource "aws_cloudfront_distribution" "site" {
     # No function_association: SPA fallback must not rewrite /api/search responses.
   }
 
-  # /docs (exact) and /docs/* → docs-nlb. Two behaviors are required because CloudFront
-  # path patterns are literal: `/docs` matches only the exact path, `/docs/*` matches
-  # everything under it.
-  #
+  # Two behaviors because CloudFront path patterns are literal: /docs matches
+  # only the exact path, /docs/* matches everything under it.
   # No function_association: the redirects function's SPA fallback would rewrite
-  # /docs/quickstart to /index.html and the www→apex redirect is intentionally
-  # skipped here (see redirects.test.js note — www.iii.dev/docs/foo reaches Mintlify
-  # without canonicalization, accepted trade-off).
-  #
-  # No response_headers_policy: Mintlify emits its own Cache-Control and security
-  # headers; the site CSP would break Mintlify's inline scripts.
-  #
-  # cache_policy_disabled mirrors search-api: predictable "no stale docs" story,
-  # at the cost of every request round-tripping to the origin. Revisit once we
-  # have a signal on traffic / origin cost.
+  # /docs/quickstart to /index.html.
+  # No response_headers_policy: the site CSP would break Mintlify's inline scripts.
   ordered_cache_behavior {
     path_pattern           = "/docs"
     target_origin_id       = "docs-nlb"

@@ -39,23 +39,15 @@ function locationOf(result) {
   return result.headers.location.value
 }
 
-// NOTE: /docs and /docs/* paths are handled by dedicated ordered_cache_behaviors
-// against the docs-nlb origin (see cloudfront.tf) and never reach this function in
-// production. These tests document that the function no longer rewrites or
-// redirects anything under /docs so a future regression is caught immediately.
-
-test('/docs → function does not redirect (handled by docs-nlb behavior in prod)', () => {
+test('/docs → function does not redirect', () => {
   const result = handler(buildEvent('/docs', 'iii.dev'))
-  assert.ok(!isRedirect(result), 'must not be a 301 — /docs is served from the NLB origin')
-  // /docs has no dot in the last segment and no trailing slash, so SPA fallback kicks in.
-  // In production this function isn't attached to the /docs behavior, so it's moot — but
-  // we pin the current function-level behavior to catch accidental reintroductions.
+  assert.ok(!isRedirect(result))
   assert.equal(result.uri, '/index.html')
 })
 
-test('/docs/quickstart → function does not redirect (handled by docs-nlb behavior in prod)', () => {
+test('/docs/quickstart → function does not redirect', () => {
   const result = handler(buildEvent('/docs/quickstart', 'iii.dev'))
-  assert.ok(!isRedirect(result), 'must not be a 301 — /docs/* is served from the NLB origin')
+  assert.ok(!isRedirect(result))
   assert.equal(result.uri, '/index.html')
 })
 
@@ -83,12 +75,7 @@ test('www.iii.dev/some/page → 301 https://iii.dev/some/page', () => {
   assert.equal(locationOf(result), 'https://iii.dev/some/page')
 })
 
-test('www.iii.dev/docs/foo → 301 https://iii.dev/docs/foo (www→apex canonicalization)', () => {
-  // With /docs* moved off this function and onto the docs-nlb cache behavior, the
-  // www→apex redirect is the only rule left that touches www.iii.dev. In production
-  // the /docs* ordered behavior has no function_association, so www.iii.dev/docs/foo
-  // flows straight to the NLB without canonicalization — that's an accepted
-  // trade-off documented alongside the behavior in cloudfront.tf.
+test('www.iii.dev/docs/foo → 301 https://iii.dev/docs/foo', () => {
   const result = handler(buildEvent('/docs/foo', 'www.iii.dev'))
   assert.ok(isRedirect(result))
   assert.equal(locationOf(result), 'https://iii.dev/docs/foo')
