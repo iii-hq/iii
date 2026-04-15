@@ -419,20 +419,21 @@ The directory structure is yours to decide — `handlers/`, `routes/`, `rest/`, 
 
 ## Step 7 — Development workflow
 
-Install a file watcher (e.g., `watchdog`) and configure the worker command. In your `config.yaml`, configure the worker under `iii-exec`:
-
-```bash
-pip install watchdog
-```
+The `iii-exec` worker has a built-in file watcher. In your `config.yaml`, declare `watch` globs alongside the `exec` command — no extra dependencies, no wrapper process:
 
 ```yaml
 workers:
   - name: iii-exec
     config:
-      command: watchmedo auto-restart --directory src --pattern '*.py' --recursive -- python -m src.main
+      watch:
+        - src/**/*.py
+      exec:
+        - python
+        - -m
+        - src.main
 ```
 
-`watchmedo` (ships with `watchdog`) restarts the process on any `.py` change under `src/`.
+Any change matching a `watch` glob restarts the `exec` pipeline.
 
 ---
 
@@ -469,13 +470,16 @@ COPY src ./src
 CMD ["python", "-m", "src.main"]
 ```
 
-Update your production config to run the installed module:
+Update your production config to run the installed module (omit `watch` in production):
 
 ```yaml
 workers:
   - name: iii-exec
     config:
-      command: python -m src.main
+      exec:
+        - python
+        - -m
+        - src.main
 ```
 
 <Callout type="info">Unlike `esbuild`, you do not bundle Python sources — the runtime imports modules directly. Ship your source tree (or a wheel) rather than a single file.</Callout>
@@ -485,7 +489,6 @@ workers:
 ## Migration checklist
 
 - [ ] Remove `motia` from `requirements.txt` / `pyproject.toml`, add `iii-sdk==0.11.0`
-- [ ] Install `watchdog` for development file watching
 - [ ] Create `src/lib/iii_client.py` with `register_worker` and `Logger`
 - [ ] Rename all `*_step.py` files to drop the `_step` suffix
 - [ ] Replace all `from motia import ...` with `from iii import ...` (and `from src.lib.iii_client import ...` for `iii` / `logger`)
@@ -494,6 +497,6 @@ workers:
 - [ ] Replace `request.path_params` / `request.query_params` attribute access with dict-key access on the raw payload (`data["path_params"]`, `data.get("query_params")`)
 - [ ] Replace `requestBody` with `request_body` in streaming handlers
 - [ ] Create `src/main.py` with side-effect imports for every handler module
-- [ ] Replace `motia dev` with `watchmedo auto-restart ... -- python -m src.main` in your dev config
+- [ ] Replace `motia dev` with an `iii-exec` worker using `watch` + `exec` in your `config.yaml`
 - [ ] Replace `motia build` with `pip install .` (and a `Dockerfile` for containerized deploys)
 - [ ] Test all endpoints, cron jobs, queue subscribers, and stream handlers
