@@ -285,7 +285,9 @@ impl Default for WorkerMetadata {
                 language,
                 ..Default::default()
             }),
-            isolation: std::env::var("III_ISOLATION").ok().filter(|s| !s.is_empty()),
+            isolation: std::env::var("III_ISOLATION")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
