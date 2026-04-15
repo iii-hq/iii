@@ -16,6 +16,7 @@ export interface SlackMessageStep extends BaseStep {
   content: string;
   action?: {
     label: string;
+    count?: number;
   };
 }
 

@@ -22,43 +22,29 @@ function AvatarInitials({ name }: { name: string }) {
   );
 }
 
-const STREAM_CHARS = '01│─┌┐└┘├┤iii';
-
-function DataStreamButton({ label, onClick }: { label: string; onClick: () => void }) {
+function BadgeButton({ label, count, onClick }: { label: string; count?: number; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="relative overflow-hidden w-full sm:w-auto px-10 py-4 rounded font-bold text-base cursor-pointer group bg-iii-dark border border-iii-accent/50 text-iii-accent"
+      className="relative px-5 py-2.5 rounded font-bold text-sm cursor-pointer bg-iii-accent text-black hover:brightness-110 transition-all"
     >
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 pointer-events-none overflow-hidden text-iii-accent"
-      >
-        {Array.from({ length: 5 }).map((_, row) => (
-          <div
-            key={row}
-            className="absolute whitespace-nowrap text-[9px] font-mono tracking-[2px]"
-            style={{
-              top: `${5 + row * 22}%`,
-              opacity: 0.3,
-              animation: `streamFlow ${4 + row * 0.8}s linear infinite`,
-              animationDelay: `${row * -0.4}s`,
-            }}
-          >
-            {Array.from({ length: 200 }).map((_, i) => (
-              <span key={i}>{STREAM_CHARS[Math.floor(Math.random() * STREAM_CHARS.length)]}</span>
-            ))}
-          </div>
-        ))}
-      </div>
-      <span
-        className="relative z-10 text-iii-light group-hover:text-iii-accent transition-colors"
-        style={{ WebkitTextStroke: '4px var(--color-dark)', paintOrder: 'stroke fill' }}
-      >{label}</span>
+      {label}
+      {count != null && (
+        <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full bg-red-500 text-white text-[11px] font-bold shadow-sm ring-2 ring-iii-dark opacity-0 animate-[badgePopIn_0.4s_ease-out_1s_forwards]">
+          <span className="absolute inset-0 rounded-full bg-red-500 animate-[badgePing_2s_ease-out_1.5s_infinite]" />
+          <span className="relative">{count}</span>
+        </span>
+      )}
       <style>{`
-        @keyframes streamFlow {
-          0% { transform: translateX(-50%); }
-          100% { transform: translateX(0%); }
+        @keyframes badgePopIn {
+          0% { transform: scale(0); opacity: 0; }
+          60% { transform: scale(1.25); opacity: 1; }
+          80% { transform: scale(0.9); }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes badgePing {
+          0% { transform: scale(1); opacity: 0.6; }
+          100% { transform: scale(2.2); opacity: 0; }
         }
       `}</style>
     </button>
@@ -126,7 +112,7 @@ export function ChatMessage({ step, isActive, onNext }: ChatMessageProps) {
 
       {isActive && !step.autoAdvance && step.action && !clicked && (
         <div className="basis-full pl-11 flex justify-end xl:basis-auto xl:pl-0 xl:self-end xl:shrink-0">
-          <DataStreamButton label={step.action.label} onClick={handleClick} />
+          <BadgeButton label={step.action.label} count={step.action.count} onClick={handleClick} />
         </div>
       )}
     </div>

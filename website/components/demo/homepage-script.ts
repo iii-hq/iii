@@ -13,7 +13,7 @@ export const homepageFlow: Step[] = [
     sender: alex,
     content:
       'We need to classify user-submitted content for toxicity before it goes live. Can you set something up?',
-    action: { label: 'Start ticket' },
+    action: { label: 'Start ticket', count: 1 },
     delay: 500,
   },
   {
