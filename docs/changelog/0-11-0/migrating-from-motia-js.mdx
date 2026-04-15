@@ -52,153 +52,9 @@ Every `import { logger } from 'motia'` in your codebase changes to `import { log
 
 ---
 
-## Step 3 — Create the `fn()` helper
+## Step 3 — Migrate handlers
 
-Motia auto-registered functions and triggers from exported `config` objects. With iii-sdk you call `registerFunction` and `registerTrigger` directly. The `fn()` helper below gives you a chainable API that keeps handler files concise while remaining fully explicit.
-
-Create `src/lib/iii-helpers.ts`:
-
-```typescript
-import type { RemoteFunctionHandler, Trigger, HttpRequest } from 'iii-sdk'
-import { iii } from './iii'
-
-export type Middleware = (input: HttpRequest) => Promise<any | void> | any | void
-
-export interface HttpOptions {
-  middleware?: Middleware[]
-}
-
-export interface QueueOptions {
-  config?: {
-    type?: 'fifo' | 'standard'
-    maxRetries?: number
-    visibilityTimeout?: number
-    delaySeconds?: number
-    concurrency?: number
-    backoffType?: string
-    backoffDelayMs?: number
-  }
-}
-
-export interface StreamOptions {
-  groupId?: string
-  itemId?: string
-}
-
-export interface FnOptions {
-  description?: string
-  metadata?: Record<string, unknown>
-}
-
-export interface FnRegistration {
-  http(method: string, path: string, options?: HttpOptions): FnRegistration
-  cron(expression: string): FnRegistration
-  queue(topic: string, options?: QueueOptions): FnRegistration
-  state(): FnRegistration
-  stream(streamName: string, options?: StreamOptions): FnRegistration
-  unregister(): void
-}
-
-export function fn(
-  id: string,
-  handler: RemoteFunctionHandler,
-  options?: FnOptions,
-): FnRegistration {
-  let ref = iii.registerFunction(id, handler, options)
-  const triggers: Trigger[] = []
-
-  const registration: FnRegistration = {
-    http(method, path, httpOptions?) {
-      if (httpOptions?.middleware?.length) {
-        const originalHandler = handler
-
-        const wrappedHandler: RemoteFunctionHandler = async (input) => {
-          for (const mw of httpOptions.middleware!) {
-            const result = await mw(input)
-            if (result && typeof result === 'object' && 'status_code' in result) return result
-          }
-          return originalHandler(input)
-        }
-        ref.unregister()
-        ref = iii.registerFunction(id, wrappedHandler, options)
-      }
-
-      triggers.push(
-        iii.registerTrigger({
-          type: 'http',
-          function_id: ref.id,
-          config: { api_path: path, http_method: method },
-        }),
-      )
-      return registration
-    },
-
-    cron(expression) {
-      triggers.push(
-        iii.registerTrigger({
-          type: 'cron',
-          function_id: ref.id,
-          config: { expression },
-        }),
-      )
-      return registration
-    },
-
-    queue(topic, queueOptions?) {
-      triggers.push(
-        iii.registerTrigger({
-          type: 'durable:subscriber',
-          function_id: ref.id,
-          config: {
-            topic,
-            ...(queueOptions?.config ? { queue_config: queueOptions.config } : {}),
-          },
-        }),
-      )
-      return registration
-    },
-
-    state() {
-      triggers.push(
-        iii.registerTrigger({
-          type: 'state',
-          function_id: ref.id,
-          config: {},
-        }),
-      )
-      return registration
-    },
-
-    stream(streamName, streamOptions?) {
-      triggers.push(
-        iii.registerTrigger({
-          type: 'stream',
-          function_id: ref.id,
-          config: {
-            stream_name: streamName,
-            ...(streamOptions?.groupId ? { group_id: streamOptions.groupId } : {}),
-            ...(streamOptions?.itemId ? { item_id: streamOptions.itemId } : {}),
-          },
-        }),
-      )
-      return registration
-    },
-
-    unregister() {
-      for (const t of triggers) t.unregister()
-      ref.unregister()
-    },
-  }
-
-  return registration
-}
-```
-
-<Callout type="info">The `fn()` helper handles middleware by wrapping the handler at registration time. iii also supports engine-native HTTP middleware via `middleware_function_ids`. See [Use HTTP middleware](/how-to/use-http-middleware) for details.</Callout>
-
----
-
-## Step 4 — Migrate handlers
+Motia auto-registered functions and triggers from exported `config` objects. With iii-sdk you call `registerFunction` and `registerTrigger` directly.
 
 ### HTTP
 
@@ -221,11 +77,17 @@ export const handler: Handlers<typeof config> = async (_input, _ctx) => {
 </Tab>
 <Tab title="iii-sdk">
 ```typescript
-import { fn } from '@/lib/iii-helpers'
+import { iii } from '@/lib/iii'
 
-fn('health', async () => {
+const ref = iii.registerFunction('health', async () => {
   return { status_code: 200, body: { ok: true } }
-}).http('GET', '/health')
+})
+
+iii.registerTrigger({
+  type: 'http',
+  function_id: ref.id,
+  config: { api_path: '/health', http_method: 'GET' },
+})
 ```
 </Tab>
 </Tabs>
@@ -251,14 +113,25 @@ export const handler: Handlers<typeof config> = async (input, ctx) => {
 </Tab>
 <Tab title="iii-sdk">
 ```typescript
-import { fn } from '@/lib/iii-helpers'
-import { auth } from '@/middleware/auth'
+import { iii } from '@/lib/iii'
 
-fn('list-tags', async (input) => {
+const ref = iii.registerFunction('list-tags', async (input) => {
   const { sub: userId, orgId } = input.tokenInfo
   return { status_code: 200, body: { tags: allTags } }
-}).http('GET', '/tag', { middleware: [auth({ required: true })] })
+})
+
+iii.registerTrigger({
+  type: 'http',
+  function_id: ref.id,
+  config: {
+    api_path: '/tag',
+    http_method: 'GET',
+    middleware_function_ids: ['middleware::auth'],
+  },
+})
 ```
+
+<Callout type="info">Middleware functions must be registered separately with `registerFunction`. See [Use HTTP middleware](/how-to/use-http-middleware) for details.</Callout>
 </Tab>
 </Tabs>
 
@@ -282,11 +155,17 @@ export const handler: Handlers<typeof config> = async (_input, _ctx) => {
 </Tab>
 <Tab title="iii-sdk">
 ```typescript
-import { fn } from '@/lib/iii-helpers'
+import { iii } from '@/lib/iii'
 
-fn('daily-report', async () => {
+const ref = iii.registerFunction('daily-report', async () => {
   await generateReport()
-}).cron('0 0 9 * * * *')
+})
+
+iii.registerTrigger({
+  type: 'cron',
+  function_id: ref.id,
+  config: { expression: '0 0 9 * * * *' },
+})
 ```
 </Tab>
 </Tabs>
@@ -311,11 +190,17 @@ export const handler: Handlers<typeof config> = async (input, _ctx) => {
 </Tab>
 <Tab title="iii-sdk">
 ```typescript
-import { fn } from '@/lib/iii-helpers'
+import { iii } from '@/lib/iii'
 
-fn('process-order', async (input) => {
+const ref = iii.registerFunction('process-order', async (input) => {
   await processOrder(input)
-}).queue('order.created')
+})
+
+iii.registerTrigger({
+  type: 'durable:subscriber',
+  function_id: ref.id,
+  config: { topic: 'order.created' },
+})
 ```
 </Tab>
 </Tabs>
@@ -351,11 +236,17 @@ export const handler: Handlers<typeof config> = async (input, _ctx) => {
 </Tab>
 <Tab title="iii-sdk">
 ```typescript
-import { fn } from '@/lib/iii-helpers'
+import { iii } from '@/lib/iii'
 
-fn('on-state-change', async (input) => {
+const ref = iii.registerFunction('on-state-change', async (input) => {
   await handleStateChange(input)
-}).state()
+})
+
+iii.registerTrigger({
+  type: 'state',
+  function_id: ref.id,
+  config: {},
+})
 ```
 </Tab>
 </Tabs>
@@ -380,30 +271,46 @@ export const handler: Handlers<typeof config> = async (input, _ctx) => {
 </Tab>
 <Tab title="iii-sdk">
 ```typescript
-import { fn } from '@/lib/iii-helpers'
+import { iii } from '@/lib/iii'
 
-fn('chat-message', async (input) => {
+const ref = iii.registerFunction('chat-message', async (input) => {
   await handleChatMessage(input)
-}).stream('chat', { groupId: 'room-1' })
+})
+
+iii.registerTrigger({
+  type: 'stream',
+  function_id: ref.id,
+  config: { stream_name: 'chat', group_id: 'room-1' },
+})
 ```
 </Tab>
 </Tabs>
 
 ### Multiple triggers on one function
 
-A function can chain multiple triggers. This was possible in Motia via the `triggers` array, and maps directly to chained calls:
+A function can have multiple triggers. This was possible in Motia via the `triggers` array, and maps directly to multiple `registerTrigger` calls sharing the same `function_id`:
 
 ```typescript
-fn('order-handler', async (input) => {
+const ref = iii.registerFunction('order-handler', async (input) => {
   await handleOrder(input)
 })
-  .http('POST', '/orders')
-  .queue('order.retry')
+
+iii.registerTrigger({
+  type: 'http',
+  function_id: ref.id,
+  config: { api_path: '/orders', http_method: 'POST' },
+})
+
+iii.registerTrigger({
+  type: 'durable:subscriber',
+  function_id: ref.id,
+  config: { topic: 'order.retry' },
+})
 ```
 
 ---
 
-## Step 5 — Update request and response shapes
+## Step 4 — Update request and response shapes
 
 ### Request properties
 
@@ -460,7 +367,7 @@ return { status_code: 404, body: { error: 'Not found' } }
 
 ---
 
-## Step 6 — Set up the entry point
+## Step 5 — Set up the entry point
 
 Motia discovered `.step.ts` files automatically. With iii-sdk, you create a single entry point that imports all handler files as side effects.
 
@@ -476,7 +383,7 @@ import './handlers/reports/daily-report'
 // ... import every handler file
 ```
 
-Each import executes the `fn()` call at the module level, registering the function and its triggers with the engine.
+Each import executes the `registerFunction` and `registerTrigger` calls at the module level, registering the function and its triggers with the engine.
 
 ### File renaming
 
@@ -491,7 +398,7 @@ The directory structure is yours to decide — `handlers/`, `routes/`, `rest/`, 
 
 ---
 
-## Step 7 — Development workflow
+## Step 6 — Development workflow
 
 Replace Motia's dev command with a direct `bun` watcher. In your `config.yaml`, configure the worker under `iii-exec`:
 
@@ -506,7 +413,7 @@ Run the engine, and it will start your worker process with file watching built i
 
 ---
 
-## Step 8 — Production build
+## Step 7 — Production build
 
 Motia had `motia build`. Replace it with a plain esbuild config.
 
@@ -565,10 +472,9 @@ workers:
 - [ ] Remove `motia` from dependencies, add `iii-sdk@0.11.0`
 - [ ] Add `esbuild` as a dev dependency
 - [ ] Create `src/lib/iii.ts` with `registerWorker` and `Logger`
-- [ ] Create `src/lib/iii-helpers.ts` with the `fn()` helper
 - [ ] Rename all `*.step.ts` files to `*.ts`
 - [ ] Replace all `import { ... } from 'motia'` with iii-sdk imports
-- [ ] Convert every `config` + `handler` export to a `fn()` call with chained triggers
+- [ ] Convert every `config` + `handler` export to `registerFunction` + `registerTrigger` calls
 - [ ] Replace `status` with `status_code` in every handler return
 - [ ] Replace `params` with `path_params` and `query` with `query_params`
 - [ ] Replace `requestBody` with `request_body` in streaming handlers
