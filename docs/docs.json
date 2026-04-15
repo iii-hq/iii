@@ -178,7 +178,6 @@
                     ]
                   },
                   "how-to/use-iii-in-the-browser",
-                  "how-to/worker-rbac",
                   "how-to/configure-engine",
                   "how-to/observability-and-logs",
                   {
@@ -206,8 +205,9 @@
                     ]
                   },
                   {
-                    "group": "Containers",
+                    "group": "Workers",
                     "pages": [
+                      "how-to/worker-rbac",
                       "how-to/managing-container-workers",
                       "how-to/developing-sandbox-workers"
                     ]
