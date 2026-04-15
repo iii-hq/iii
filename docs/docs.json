@@ -177,6 +177,14 @@
                       "how-to/create-custom-trigger-type"
                     ]
                   },
+                  {
+                    "group": "Workers",
+                    "pages": [
+                      "how-to/worker-rbac",
+                      "how-to/managing-container-workers",
+                      "how-to/developing-sandbox-workers"
+                    ]
+                  },
                   "how-to/use-iii-in-the-browser",
                   "how-to/configure-engine",
                   "how-to/observability-and-logs",
@@ -202,14 +210,6 @@
                       "how-to/react-to-state-changes",
                       "how-to/use-channels",
                       "how-to/stream-realtime-data"
-                    ]
-                  },
-                  {
-                    "group": "Workers",
-                    "pages": [
-                      "how-to/worker-rbac",
-                      "how-to/managing-container-workers",
-                      "how-to/developing-sandbox-workers"
                     ]
                   }
                 ]
