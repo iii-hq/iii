@@ -1,11 +1,18 @@
 ---
-title: 'Migrating from Motia'
-description: 'How to move from the Motia framework to iii-sdk directly.'
+title: 'Migrating from Motia (Node.js)'
+description: 'How to move from the Motia framework to iii-sdk directly in Node.js.'
 ---
 
-Motia was a higher-level framework built on top of `iii-sdk`. It handled file scanning, middleware wiring, trigger registration, and production bundling automatically. These conveniences came at a cost: they hid iii's primitives behind opaque abstractions that made multi-worker orchestration, remote function triggering, and custom build pipelines difficult or impossible to use.
+Motia was a higher-level framework built on top of `iii-sdk`. It handled file scanning, middleware wiring, trigger registration, and production bundling automatically. These conveniences came at a cost: they hid iii's three core primitives — **Workers**, **Functions**, and **Triggers** — behind opaque abstractions that limited what you could build.
 
-With `iii-sdk` directly, you register functions and triggers explicitly, structure your project however you want, and own your build pipeline end to end.
+By moving to `iii-sdk` directly, you unlock the full power of the engine:
+
+- **Add new workers** that register their own functions and triggers, enabling multi-worker orchestration across services, languages, and runtimes.
+- **Connect from the browser** using `iii-browser-sdk` with [Worker RBAC](/how-to/worker-rbac) for secure, real-time frontends — no REST layer needed. See [Use iii in the browser](/how-to/use-iii-in-the-browser).
+- **Treat Motia as one worker among many** instead of a standalone monolith. Your existing Motia code becomes just another worker in a larger iii deployment.
+- **Understand the primitives directly.** Working with `registerFunction`, `registerTrigger`, and `registerWorker` builds a mental model that transfers across all iii SDKs and documentation.
+
+<Callout type="tip">Before diving into this migration, we recommend reading the [iii documentation](/) to understand Workers, Functions, and Triggers. The [quickstart](/quickstart) and [Everything is a Worker](/changelog/0-11-0/everything-is-a-worker) pages are good starting points.</Callout>
 
 ---
 
