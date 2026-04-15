@@ -490,8 +490,29 @@ pub fn init_log_from_config(config_path: Option<&str>) {
     }
 }
 
+/// Disable ANSI color output in the `colored` crate process-wide.
+///
+/// Why: the engine's `tracing::info!(...)` macros interpolate colored
+/// strings (e.g. `"[UNREGISTERED]".red()`) that the `colored` crate
+/// resolves to ANSI escapes at call time. When the JSON formatter then
+/// serializes the `message` field, those escape bytes are preserved
+/// verbatim, producing log lines like `"\u001b[31m[UNREGISTERED]\u001b[0m"`
+/// that break downstream JSON log consumers (MOT-2812).
+///
+/// Setting the `colored` override to `false` makes every subsequent
+/// `.red()` / `.bold()` / etc. a no-op string wrapper, so JSON logs stay
+/// plain ASCII. Local text logging never calls this, so human-readable
+/// logs keep their colors.
+fn disable_ansi_for_json_logs() {
+    colored::control::set_override(false);
+}
+
 fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
     TRACING.get_or_init(|| {
+        // Prevent ANSI escape codes from leaking into JSON-formatted logs.
+        // See `disable_ansi_for_json_logs` for rationale (MOT-2812).
+        disable_ansi_for_json_logs();
+
         let filter = EnvFilter::new(log_level);
 
         // JSON formatting layer
@@ -638,6 +659,7 @@ mod tests {
             "expected ANSI escape in colored output with override=true, got {:?}",
             s
         );
+        colored::control::unset_override();
     }
 
     #[test]
