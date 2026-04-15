@@ -4,7 +4,9 @@ import { ChatMessage } from './ChatMessage';
 import { ReplyComposer } from './ReplyComposer';
 import { CodeEditor } from './CodeEditor';
 import { StatusPanel } from './StatusPanel';
-import { InstallShButton } from '../InstallShButton';
+import { ConsoleTrace } from './ConsoleTrace';
+import { TerminalCommand } from './TerminalCommand';
+
 
 function SlackLogo() {
   return (
@@ -36,6 +38,7 @@ function SlackLogo() {
 export function DemoSequencer({
   steps,
   mode = 'hero',
+  isDarkMode = true,
   onComplete,
   className = '',
 }: DemoSequencerProps) {
@@ -160,6 +163,24 @@ export function DemoSequencer({
             onNext={next}
           />
         );
+      case 'console-trace':
+        return (
+          <ConsoleTrace
+            key={`${sessionKey}-${step.id}`}
+            step={step}
+            isActive={isActive}
+            onNext={next}
+          />
+        );
+      case 'terminal-command':
+        return (
+          <TerminalCommand
+            key={`${sessionKey}-${step.id}`}
+            step={step}
+            isActive={isActive}
+            onNext={next}
+          />
+        );
       default:
         return null;
     }
@@ -169,7 +190,8 @@ export function DemoSequencer({
 
   return (
     <div
-      className={`rounded-xl border border-iii-medium/20 bg-iii-black/80 backdrop-blur-sm flex flex-col overflow-hidden ${containerHeight} ${className}`}
+      className={`rounded-xl border ${isDarkMode ? 'border-iii-medium/20' : 'border-iii-black/50'} bg-iii-black/80 backdrop-blur-sm flex flex-col overflow-hidden ${containerHeight} ${className}`}
+      style={{ '--color-accent': isDarkMode ? '#f3f724' : '#2f7fff' } as React.CSSProperties}
     >
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-iii-medium/10 bg-iii-dark/40 shrink-0">
         <div className="flex items-center gap-2">
@@ -193,7 +215,7 @@ export function DemoSequencer({
 
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-brand-dark"
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-brand-dark bg-iii-black text-iii-light"
       >
         {steps.map((step, index) => {
           if (index > visibleUpTo) return null;
@@ -230,7 +252,14 @@ export function DemoSequencer({
               Try it for yourself
             </p>
             <div className="flex justify-center">
-              <InstallShButton className="max-w-[280px]" />
+              <a
+                href="https://docs.iii.dev/quickstart"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-6 py-2.5 text-sm font-bold rounded border border-iii-accent/50 text-iii-accent hover:bg-iii-accent hover:text-iii-black transition-all duration-200"
+              >
+                Quickstart Guide →
+              </a>
             </div>
           </div>
         )}
