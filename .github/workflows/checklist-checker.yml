@@ -1,7 +1,7 @@
 name: 'PR Tasks Completed Check'
 on:
   pull_request:
-    types: [opened, edited]
+    types: [opened, edited, synchronize, reopened]
 
 jobs:
   task-check:
@@ -27,7 +27,7 @@ jobs:
             echo "::error::PR has no checklist items — do not remove the template checklist"
             exit 1
           fi
-          if ! echo "$BODY" | grep -qE '^\s*- \[[xX]\].*Apache 2'; then
+          if ! echo "$BODY" | grep -qE '^\s*- \[[xX]\] I am licensing the entirety of this PR under Apache 2 and have all necessary rights to the code I am contributing\.$'; then
             echo "::error::The Apache 2 licensing checkbox must be checked"
             exit 1
           fi
