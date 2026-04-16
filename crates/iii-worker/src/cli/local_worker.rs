@@ -163,6 +163,13 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Build the boot script that `iii-init` will exec as the worker command.
+///
+/// No supervisor wrapping: the in-VM `iii-init` binary absorbs the
+/// supervisor role (see `iii_init::supervisor`) and opens the control
+/// channel itself when the host sets `III_CONTROL_PORT`. That removes
+/// the separate `/opt/iii/supervisor` binary and its install plumbing
+/// that this function used to emit as `exec /opt/iii/supervisor ...`.
 pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> String {
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
@@ -218,15 +225,12 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
 
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
 
-    // Force polling for common file watchers. Overlayfs does not propagate
-    // inotify events from lower-layer (host) changes, so without polling
-    // `tsx watch`, watchfiles, cargo-watch etc. never fire on host edits.
-    parts.push("export CHOKIDAR_USEPOLLING=true".to_string());
-    parts.push("export CHOKIDAR_INTERVAL=${CHOKIDAR_INTERVAL:-300}".to_string());
-    parts.push("export WATCHPACK_POLLING=true".to_string());
-    parts.push("export WATCHFILES_FORCE_POLLING=true".to_string());
-    parts.push("export TSC_WATCHFILE=DynamicPriorityPolling".to_string());
-    parts.push("export TSC_WATCHDIRECTORY=DynamicPriorityPolling".to_string());
+    // Host source changes are handled by the host-side `__watch-source`
+    // sidecar (see source_watcher.rs), which restarts the whole VM on
+    // change. In-VM watchers are not expected to detect host edits, so
+    // no polling env vars are exported here — they'd just add overhead
+    // and couldn't help tsx 4.x anyway (tsx uses fs.watch with no
+    // polling fallback, and doesn't depend on chokidar).
 
     if !prepared {
         if !project.setup_cmd.is_empty() {
@@ -238,6 +242,12 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
         parts.push("mkdir -p /var && touch /var/.iii-prepared".to_string());
     }
 
+    // Exec the user command directly. When the host has configured a
+    // control port (III_CONTROL_PORT env set by vm_boot), `iii-init`
+    // enters supervisor mode and wraps this command internally with
+    // restart/shutdown RPC handling. When no control port is set,
+    // iii-init takes its legacy path and just supervises the one
+    // process until it exits.
     parts.push(format!("{} && exec {}", env_exports, project.run_cmd));
     parts.join("\n")
 }
@@ -326,12 +336,25 @@ pub fn resolve_worker_name(project_path: &Path) -> String {
 /// 4. Run setup+install scripts inside a libkrun VM
 /// 5. Extract default config from iii.worker.yaml
 /// 6. Append to config.yaml with `worker_path`
-pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief: bool) -> i32 {
+pub async fn handle_local_add(
+    path: &str,
+    force: bool,
+    reset_config: bool,
+    brief: bool,
+    wait: bool,
+) -> i32 {
     // 1. Resolve path to absolute
     let project_path = match std::fs::canonicalize(path) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{} Invalid path '{}': {}", "error:".red(), path, e);
+            eprintln!(
+                "{} Cannot resolve path '{}': {}\n  \
+                 Fix: pass a path that exists, e.g. `iii worker add ./my-worker`.\n  \
+                 If the directory should exist, check spelling and current working dir.",
+                "error:".red(),
+                path,
+                e
+            );
             return 1;
         }
     };
@@ -339,7 +362,8 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
     // 2. Validate directory exists
     if !project_path.is_dir() {
         eprintln!(
-            "{} '{}' is not a directory",
+            "{} '{}' exists but is not a directory.\n  \
+             Fix: point at the worker's project directory, not a file.",
             "error:".red(),
             project_path.display()
         );
@@ -351,8 +375,13 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         Some(p) => p,
         None => {
             eprintln!(
-                "{} Could not detect project type in '{}'. \
-                 Add iii.worker.yaml or use package.json/Cargo.toml/pyproject.toml.",
+                "{} No project manifest detected in '{}'.\n  \
+                 Looked for: iii.worker.yaml, package.json, Cargo.toml, pyproject.toml.\n  \
+                 Fix: run from inside your worker project, or create iii.worker.yaml:\n      \
+                     name: my-worker\n      \
+                     runtime:\n        \
+                       language: typescript\n      \
+                     command: [\"node\", \"src/index.js\"]",
                 "error:".red(),
                 project_path.display()
             );
@@ -361,23 +390,29 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
     };
 
     if let Err(msg) = project.validate() {
-        eprintln!("{} {}", "error:".red(), msg);
+        eprintln!(
+            "{} Project manifest is invalid: {}\n  \
+             Fix: see https://motia.dev/docs/iii/worker-manifest for the schema.",
+            "error:".red(),
+            msg
+        );
         return 1;
     }
 
     // 4. Resolve worker name
     let worker_name = resolve_worker_name(&project_path);
 
-    if !brief {
-        eprintln!("  Adding local worker {}...", worker_name.bold());
-    }
-
     // 5. Check if already exists in config.yaml
     if super::config_file::worker_exists(&worker_name) {
         if !force {
             eprintln!(
-                "{} Worker '{}' already exists in config.yaml. Use --force to replace.",
+                "{} Worker '{}' is already in config.yaml.\n  \
+                 Fix options:\n    \
+                   - Keep it: `iii worker status {}` to see how it's doing.\n    \
+                   - Replace it: rerun with --force (stops VM, clears artifacts).\n    \
+                   - Wipe the config entry too: --force --reset-config.",
                 "error:".red(),
+                worker_name,
                 worker_name
             );
             return 1;
@@ -385,7 +420,7 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         // --force: stop if running, clear artifacts
         if super::managed::is_worker_running(&worker_name) {
             eprintln!("  Stopping running worker {}...", worker_name.bold());
-            super::managed::handle_managed_stop(&worker_name, "0.0.0.0", 49134).await;
+            super::managed::handle_managed_stop(&worker_name).await;
         }
         let freed = super::managed::delete_worker_artifacts(&worker_name);
         if freed > 0 {
@@ -418,25 +453,114 @@ pub async fn handle_local_add(path: &str, force: bool, reset_config: bool, brief
         &abs_path_str,
         config_yaml.as_deref(),
     ) {
-        eprintln!("{} {}", "error:".red(), e);
+        eprintln!(
+            "{} Failed to update config.yaml: {}\n  \
+             Fix: check that config.yaml is writable and valid YAML.",
+            "error:".red(),
+            e
+        );
         return 1;
     }
 
-    // 8. Print success
+    // 8. Decide the output shape. The worker is queued in config.yaml but has
+    //    NOT booted yet — never claim success with ✓. Output depends on three
+    //    axes: brief (multi-add row), engine state, and whether the caller
+    //    asked us to --wait.
+    let engine_running = super::managed::is_engine_running();
+
     if brief {
-        eprintln!("        {} {}", "\u{2713}".green(), worker_name.bold());
+        // Multi-worker add: one short row per worker. ⟳ if the engine will
+        // pick it up, ⚠ if it won't.
+        let glyph = if engine_running {
+            "\u{27F3}"
+        } else {
+            "\u{26A0}"
+        };
+        eprintln!("        {} {}", glyph.cyan(), worker_name.bold());
+        return 0;
+    }
+
+    // 9. --wait: skip the "follow along" nudge entirely (we ARE following
+    //    along now), drop straight into the live snapshot, and print a
+    //    one-line closer with elapsed time.
+    if wait {
+        if !engine_running {
+            eprintln!(
+                "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
+                 --wait cannot observe it boot — run `iii start` in another terminal first.",
+                "\u{26A0}".yellow(),
+                worker_name.bold(),
+                "local".dimmed()
+            );
+            return 0;
+        }
+
+        eprintln!(
+            "\n  {} Adding {} ({})...",
+            "→".cyan(),
+            worker_name.bold(),
+            "local".dimmed()
+        );
+
+        let started = std::time::Instant::now();
+        let port = super::config_file::manager_port();
+        let final_status = super::status::watch_until_ready(
+            &worker_name,
+            Some(std::time::Duration::from_secs(120)),
+            port,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        match final_status.phase {
+            super::status::Phase::Ready => {
+                eprintln!("  {} ready in {:.1}s", "✓".green(), elapsed.as_secs_f64());
+                return 0;
+            }
+            _ => {
+                eprintln!(
+                    "  {} not ready after {:.0}s (worker is still queued in config.yaml).\n  \
+                       Keep watching: iii worker status {}\n  \
+                       Check logs:    iii worker logs {} -f",
+                    "⚠".yellow(),
+                    elapsed.as_secs_f64(),
+                    worker_name,
+                    worker_name
+                );
+                return 2;
+            }
+        }
+    }
+
+    // 10. Non-wait path (user passed --no-wait): two-branch tight message
+    //     depending on engine state. Hints drop `--watch` because status
+    //     live-refreshes by default now.
+    if engine_running {
+        eprintln!(
+            "\n  {} Added {} ({}) — queued in config.yaml.\n  \
+             Watch it boot: iii worker status {}\n  \
+             Tail logs:     iii worker logs {} -f",
+            "→".cyan(),
+            worker_name.bold(),
+            "local".dimmed(),
+            worker_name,
+            worker_name
+        );
     } else {
         eprintln!(
-            "\n  {} Worker {} added to {}",
-            "\u{2713}".green(),
+            "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
+             Start it:  iii start\n  \
+             Then:      iii worker status {}",
+            "\u{26A0}".yellow(),
             worker_name.bold(),
-            "config.yaml".dimmed(),
+            "local".dimmed(),
+            worker_name
         );
-        eprintln!("  {}  {}", "Path".cyan().bold(), abs_path_str.bold());
-
-        // The engine's file watcher will detect the config change and
-        // reload automatically — no need to start the worker here.
     }
+
+    // Stash the absolute path in a debug-visible spot without cluttering the
+    // happy-path output. Users who need it can run `iii worker status`.
+    tracing::debug!(worker = %worker_name, path = %abs_path_str, "local worker queued");
 
     0
 }
@@ -539,17 +663,13 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         return 1;
     }
 
-    // 5. Check .iii-prepared marker
+    // 5. Check .iii-prepared marker. Silent when true — the boot script
+    //    skips setup_cmd/install_cmd and nothing user-visible is happening
+    //    in the fast path. Printing a "Using cached deps" banner every
+    //    start made it look like install was running every restart (it
+    //    wasn't), which confused users reading watcher.log tails.
     let prepared_marker = managed_dir.join("var").join(".iii-prepared");
     let is_prepared = prepared_marker.exists();
-
-    if is_prepared {
-        eprintln!(
-            "  {} Using cached deps {}",
-            "\u{2713}".green(),
-            "(use --force to reinstall)".dimmed()
-        );
-    }
 
     // 6. Build env with engine URL + OCI env + config.yaml env
     let engine_url = engine_url_for_runtime("libkrun", "0.0.0.0", port, &None);
@@ -574,7 +694,10 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         env.entry(key).or_insert(value);
     }
 
-    // 7. Build script
+    // 7. Build boot script. No supervisor wrap is emitted — the in-VM
+    //    `iii-init` binary absorbs that role (see iii_init::supervisor).
+    //    Fast-restart is enabled whenever vm_boot wires the control port,
+    //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
     let script = build_libkrun_local_script(&project, is_prepared);
 
     let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
@@ -630,7 +753,8 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     let mounts = build_local_mounts(project_path);
 
-    super::worker_manager::libkrun::run_dev(
+    let managed_dir_for_watcher = managed_dir.clone();
+    let exit_code = super::worker_manager::libkrun::run_dev(
         language,
         worker_path,
         exec_path,
@@ -643,7 +767,140 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         worker_name,
         &mounts,
     )
-    .await
+    .await;
+
+    // Spawn the host-side source watcher sidecar. Virtiofs doesn't
+    // propagate inotify, so in-VM watchers (tsx watch, node --watch,
+    // cargo watch, etc.) don't see host edits — we watch from the host
+    // and re-invoke `iii-worker start` on change to kill+restart.
+    //
+    // Only spawn after the VM was successfully started; otherwise a
+    // watcher fire would race into kill_stale_worker against nothing.
+    if exit_code == 0 {
+        if let Err(e) =
+            spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher).await
+        {
+            eprintln!(
+                "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
+                "warning:".yellow(),
+                e
+            );
+        }
+    }
+
+    exit_code
+}
+
+/// Write the sidecar PID to `pid_file` with symlink-replace defense.
+///
+/// On Unix, opens with `O_NOFOLLOW` + mode `0o600` so a local attacker
+/// with dir-traverse access can't pre-plant a symlink at `watch.pid`
+/// pointing at a sensitive file (e.g. `~/.ssh/authorized_keys`) and
+/// have our write clobber it. Matches the hardening already applied to
+/// the watcher log file immediately above.
+///
+/// On non-Unix, falls back to `std::fs::write`. Failures are logged and
+/// swallowed — a missing pidfile only degrades stop-path reaping, not
+/// correctness of a running watcher.
+fn write_pid_file(pid_file: &std::path::Path, pid: u32) {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(nix::libc::O_NOFOLLOW);
+        opts.mode(0o600);
+    }
+    match opts.open(pid_file) {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = write!(f, "{}", pid) {
+                tracing::warn!(path = %pid_file.display(), error = %e, "failed to write pidfile");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(path = %pid_file.display(), error = %e, "failed to open pidfile");
+        }
+    }
+}
+
+/// Spawn the hidden `__watch-source` sidecar process, detached, with
+/// its PID recorded so `kill_stale_worker` can reap it on stop.
+async fn spawn_source_watcher(
+    worker_name: &str,
+    project_path: &Path,
+    managed_dir: &Path,
+) -> std::io::Result<()> {
+    use std::path::PathBuf;
+
+    // If a watcher is already running for this worker (stale PID file
+    // from a crashed previous start), reap it first so we don't stack
+    // sidecars that fight over the same project dir. Delegates to the
+    // grace-period reaper in managed.rs so both reap paths stay in sync.
+    super::managed::reap_source_watcher(worker_name).await;
+
+    let pid_file = managed_dir.join("watch.pid");
+    let self_exe = std::env::current_exe()?;
+    let logs_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".iii/logs")
+        .join(worker_name);
+    std::fs::create_dir_all(&logs_dir)?;
+    // Lock log dir to 0o700 so another local user can't traverse in and
+    // plant a symlink at watcher.log pointing at, e.g., ~/.ssh/authorized_keys.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&logs_dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let log_path = logs_dir.join("watcher.log");
+    let mut log_opts = std::fs::OpenOptions::new();
+    log_opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NOFOLLOW on the final path component so a pre-planted
+        // symlink (by another local user with dir-traverse access)
+        // can't redirect our appends to an arbitrary file.
+        log_opts.custom_flags(nix::libc::O_NOFOLLOW);
+        // Create as 0o600 — owner-only.
+        log_opts.mode(0o600);
+    }
+    let log_file = log_opts.open(&log_path)?;
+    let log_file2 = log_file.try_clone()?;
+
+    let project_abs =
+        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+
+    let mut cmd = std::process::Command::new(&self_exe);
+    cmd.arg("__watch-source")
+        .arg("--worker")
+        .arg(worker_name)
+        .arg("--project")
+        .arg(&project_abs)
+        .stdin(std::process::Stdio::null())
+        .stdout(log_file)
+        .stderr(log_file2);
+
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            nix::unistd::setsid().map_err(std::io::Error::other)?;
+            Ok(())
+        });
+    }
+
+    let child = cmd.spawn()?;
+    let pid = child.id();
+    write_pid_file(&pid_file, pid);
+
+    eprintln!(
+        "  {} source watcher online (pid: {})",
+        "\u{2713}".green(),
+        pid
+    );
+    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -730,7 +987,11 @@ mod tests {
         assert!(script.contains("mount --bind"));
         assert!(script.contains("/var/iii/deps"));
         assert!(script.contains("node_modules"));
-        assert!(script.contains("CHOKIDAR_USEPOLLING=true"));
+        // Polling env vars were removed — the host-side __watch-source
+        // sidecar handles reload-on-edit by restarting the whole VM.
+        assert!(!script.contains("CHOKIDAR_USEPOLLING"));
+        assert!(!script.contains("WATCHFILES_FORCE_POLLING"));
+        assert!(!script.contains("TSC_WATCHFILE"));
     }
 
     #[test]
@@ -883,5 +1144,41 @@ resources:
         let (cpus, memory) = parse_manifest_resources(&manifest_path);
         assert_eq!(cpus, 4);
         assert_eq!(memory, 4096);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_pid_file_refuses_to_follow_symlink() {
+        // Attacker (or stale state) pre-plants watch.pid as a symlink
+        // pointing at a sensitive file. write_pid_file must fail open
+        // instead of clobbering the symlink target.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("sensitive-target");
+        std::fs::write(&target, "DO-NOT-OVERWRITE").unwrap();
+
+        let pid_file = dir.path().join("watch.pid");
+        std::os::unix::fs::symlink(&target, &pid_file).unwrap();
+
+        write_pid_file(&pid_file, 42);
+
+        // Target must be untouched.
+        let contents = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(contents, "DO-NOT-OVERWRITE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_pid_file_creates_file_with_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("watch.pid");
+
+        write_pid_file(&pid_file, 1234);
+
+        let meta = std::fs::metadata(&pid_file).unwrap();
+        // Mask off file-type bits, keep permission bits only.
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "pidfile must be 0o600, got {mode:o}");
+        assert_eq!(std::fs::read_to_string(&pid_file).unwrap(), "1234");
     }
 }

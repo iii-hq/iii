@@ -234,6 +234,12 @@ pub struct Engine {
     pub channel_manager: Arc<ChannelManager>,
     pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
+    /// Effective `iii-worker-manager` port, resolved from config at build
+    /// time. Set once by `EngineBuilder::build`; subsequent reads see the
+    /// same value for the engine's lifetime. Used by `registry_worker::
+    /// ExternalWorkerProcess::spawn` so externally-spawned workers connect
+    /// back to the actual configured port, not a hardcoded DEFAULT_PORT.
+    worker_manager_port: Arc<std::sync::OnceLock<u16>>,
 }
 
 impl Default for Engine {
@@ -254,11 +260,31 @@ impl Engine {
             channel_manager: Arc::new(ChannelManager::new()),
             queue_module: Arc::new(tokio::sync::RwLock::new(None)),
             active_scope,
+            worker_manager_port: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
         *self.queue_module.write().await = Some(module);
+    }
+
+    /// Returns the effective `iii-worker-manager` port. Resolved from config
+    /// by `EngineBuilder::build` (see `set_worker_manager_port`); falls back
+    /// to `workers::worker::DEFAULT_PORT` if never set (direct `Engine::new`
+    /// paths used only by tests).
+    pub fn worker_manager_port(&self) -> u16 {
+        self.worker_manager_port
+            .get()
+            .copied()
+            .unwrap_or(crate::workers::worker::DEFAULT_PORT)
+    }
+
+    /// Records the effective port. Called once by `EngineBuilder::build`
+    /// after scanning the worker list for an `iii-worker-manager` entry.
+    /// Subsequent calls are ignored (OnceLock semantics) so the port cannot
+    /// drift mid-lifetime.
+    pub fn set_worker_manager_port(&self, port: u16) {
+        let _ = self.worker_manager_port.set(port);
     }
 
     /// Opens a scope so that registrations made between here and

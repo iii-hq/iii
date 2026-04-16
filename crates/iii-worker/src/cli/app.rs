@@ -43,13 +43,24 @@ pub enum Commands {
         /// Force re-download: delete existing artifacts before adding
         #[arg(long, short = 'f')]
         force: bool,
+
+        /// Don't block waiting for the engine to finish booting the sandbox.
+        /// By default `add` waits up to 120s for the worker to report ready.
+        #[arg(long)]
+        no_wait: bool,
     },
 
-    /// Remove one or more workers (stops and removes containers)
+    /// Remove one or more workers from config.yaml. The engine's file watcher
+    /// tears down any running sandbox. Artifacts under ~/.iii/managed/{name}/
+    /// remain; use `iii worker clear {name}` to delete them.
     Remove {
         /// Worker names to remove (e.g., "pdfkit")
         #[arg(value_name = "WORKER", required = true, num_args = 1..)]
         worker_names: Vec<String>,
+
+        /// Skip the confirmation prompt when a worker is currently running
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
@@ -69,17 +80,21 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Start a previously stopped managed worker container
+    /// Start a previously stopped managed worker container.
+    /// By default waits up to 120s for the worker to report ready.
     Start {
         /// Worker name to start
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
+        /// Don't block waiting for the worker to report ready.
+        #[arg(long)]
+        no_wait: bool,
 
-        /// Engine WebSocket port
+        /// Engine WebSocket port the spawned worker connects back to. Defaults
+        /// to DEFAULT_PORT; the engine passes its configured
+        /// iii-worker-manager port when auto-spawning external workers so
+        /// non-default manager ports don't silently break connectivity.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
@@ -89,18 +104,41 @@ pub enum Commands {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
         worker_name: String,
+    },
 
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
+    /// Restart a managed worker: stop if running, then start. Idempotent --
+    /// running workers get a clean cycle, stopped workers just start.
+    /// By default waits up to 120s for the worker to report ready.
+    Restart {
+        /// Worker name to restart
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
 
-        /// Engine WebSocket port
+        /// Don't block waiting for the worker to report ready.
+        #[arg(long)]
+        no_wait: bool,
+
+        /// Engine WebSocket port the spawned worker connects back to. Same
+        /// semantics as `start --port`.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
 
     /// List all workers and their status
     List,
+
+    /// Show detailed status of one worker (config, sandbox, process, logs).
+    /// By default refreshes live in place until the worker reaches a terminal
+    /// phase (ready/missing). Pass --no-watch for a one-shot snapshot.
+    Status {
+        /// Worker name
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
+
+        /// Print a one-shot snapshot and exit immediately (no live refresh)
+        #[arg(long)]
+        no_watch: bool,
+    },
 
     /// Show logs from a managed worker container
     Logs {
@@ -124,4 +162,20 @@ pub enum Commands {
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
+
+    /// Internal: host-side source watcher sidecar for local-path workers
+    #[command(name = "__watch-source", hide = true)]
+    WatchSource(WatchSourceArgs),
+}
+
+/// Arguments for the hidden `__watch-source` subcommand.
+#[derive(Args, Debug)]
+pub struct WatchSourceArgs {
+    /// Worker name to restart when source files change
+    #[arg(long, value_name = "NAME")]
+    pub worker: String,
+
+    /// Absolute project directory to watch recursively
+    #[arg(long, value_name = "PATH")]
+    pub project: String,
 }

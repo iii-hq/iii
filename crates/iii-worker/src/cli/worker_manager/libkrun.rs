@@ -69,6 +69,10 @@ pub async fn run_dev(
     cmd.arg("--workdir").arg("/workspace");
     cmd.arg("--vcpus").arg(vcpus.to_string());
     cmd.arg("--ram").arg(ram_mib.to_string());
+    // Control channel for host-driven fast restarts. __vm-boot owns the
+    // proxy thread + socketpair; we just tell it where to put the unix
+    // socket so the watcher (and stop handler) knows where to connect.
+    cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -424,6 +428,15 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
 
         cmd.arg("--console-output")
             .arg(Self::stdout_log(&spec.name));
+
+        // Control channel for host-driven fast restarts. The socket is
+        // colocated with the pid file under ~/.iii/managed/<name>/ so
+        // supervisor_ctl::control_socket_path resolves to the same place
+        // the watcher and stop handler use. Without this, iii-init's
+        // supervisor mode stays dormant and every source edit falls back
+        // to a full VM restart.
+        cmd.arg("--control-sock")
+            .arg(worker_dir.join("control.sock"));
 
         let image_env = read_oci_env(&worker_rootfs);
         let mut merged_env: HashMap<String, String> = image_env.into_iter().collect();

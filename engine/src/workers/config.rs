@@ -245,9 +245,13 @@ impl WorkerRegistry {
         }
 
         // 4. Delegate to iii-worker start (handles registry lookup, binary
-        //    download, OCI pull, and spawning autonomously)
-        tracing::info!(worker = %name, "Starting external worker via iii-worker");
-        let port = crate::workers::worker::DEFAULT_PORT;
+        //    download, OCI pull, and spawning autonomously). Pass the
+        //    engine's effective `iii-worker-manager` port so the spawned
+        //    VM-based worker connects back to the right place. `EngineBuilder::build`
+        //    pre-resolves this from config; direct `Engine::new` paths fall
+        //    back to DEFAULT_PORT via `worker_manager_port()`.
+        let port = engine.worker_manager_port();
+        tracing::info!(worker = %name, port = port, "Starting external worker via iii-worker");
         let process = super::registry_worker::ExternalWorkerProcess::spawn(name, port)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
@@ -469,6 +473,24 @@ impl EngineBuilder {
         }
 
         assign_instance_ids(&mut workers);
+
+        // Resolve the effective `iii-worker-manager` port BEFORE creating
+        // workers so the step-4 delegation path in `WorkerRegistry::create_worker`
+        // can hand it to `ExternalWorkerProcess::spawn`. We pick the first
+        // `iii-worker-manager` entry whose config parses -- fixtures like
+        // `sdk/fixtures/config-test.yaml` sometimes declare two manager
+        // instances on different ports for test isolation, and there's no
+        // unambiguous "primary" beyond declaration order. Fall back to
+        // DEFAULT_PORT if no entry is present or its config is shaped
+        // unexpectedly; that matches the legacy hardcoded behavior.
+        let resolved_port = workers
+            .iter()
+            .find(|e| e.worker_type() == "iii-worker-manager")
+            .and_then(|e| e.config.clone())
+            .and_then(|v| serde_json::from_value::<super::worker::WorkerManagerConfig>(v).ok())
+            .map(|c| c.port)
+            .unwrap_or(super::worker::DEFAULT_PORT);
+        self.engine.set_worker_manager_port(resolved_port);
 
         for entry in workers {
             tracing::debug!("Creating worker: {}", entry.name);
@@ -1663,6 +1685,103 @@ workers:
         assert_eq!(
             config.workers[0].image.as_deref(),
             Some("ghcr.io/org/w:2.0.0")
+        );
+    }
+
+    // =========================================================================
+    // Engine worker_manager_port resolution
+    //
+    // Regression: `ExternalWorkerProcess::spawn` previously hardcoded
+    // DEFAULT_PORT (49134) when invoking `iii-worker start`, silently breaking
+    // auto-spawn for any engine running on a non-default `iii-worker-manager`
+    // port. The fix resolves the effective port at build time and stores it
+    // on `Engine`; these tests pin the resolution behavior.
+    // =========================================================================
+
+    #[test]
+    fn engine_worker_manager_port_defaults_to_default_port() {
+        // Direct `Engine::new` (used by test paths) must report DEFAULT_PORT
+        // until a builder sets it. Anything else would be a silent config
+        // regression masquerading as test isolation.
+        let engine = Engine::new();
+        assert_eq!(
+            engine.worker_manager_port(),
+            super::super::worker::DEFAULT_PORT,
+            "fresh Engine must default to DEFAULT_PORT"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_builder_resolves_custom_worker_manager_port_from_config() {
+        // The key regression: when config.yaml sets a non-default port for
+        // `iii-worker-manager`, `EngineBuilder::build` must surface that port
+        // on the Engine so the step-4 delegation path hands it to
+        // `ExternalWorkerProcess::spawn` instead of the hardcoded default.
+        //
+        // Pick a port no one else binds. 49199 matches the value used in
+        // `sdk/fixtures/config-test.yaml` -- if that fixture's port ever
+        // needs rewording, this test keeps the plumbing honest.
+        let custom_port: u16 = 49199;
+        let builder = EngineBuilder::new()
+            .add_worker(
+                "iii-worker-manager",
+                Some(serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": custom_port,
+                })),
+            )
+            .build()
+            .await
+            .expect("build with custom iii-worker-manager port");
+
+        assert_eq!(
+            builder.engine().worker_manager_port(),
+            custom_port,
+            "builder must resolve iii-worker-manager port from config"
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[tokio::test]
+    async fn engine_builder_falls_back_to_default_when_no_manager_entry() {
+        // Edge: configs that don't declare `iii-worker-manager` still get
+        // one injected via the `mandatory` registration path. That entry
+        // has no custom config, so the port resolution must land on
+        // DEFAULT_PORT. Losing this fallback would regress every existing
+        // deployment that doesn't explicitly pin a port.
+        let builder = EngineBuilder::new()
+            .with_config(EngineConfig {
+                modules: Vec::new(),
+                workers: Vec::new(),
+            })
+            .build()
+            .await
+            .expect("build with no explicit workers");
+
+        assert_eq!(
+            builder.engine().worker_manager_port(),
+            super::super::worker::DEFAULT_PORT,
+            "absent/default iii-worker-manager must resolve to DEFAULT_PORT"
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[test]
+    fn engine_worker_manager_port_is_set_once() {
+        // OnceLock semantics: first set wins. This guards against a future
+        // refactor that might try to mutate the port mid-lifetime (e.g. from
+        // a config hot-reload), which would silently drift external worker
+        // connections. If the port genuinely needs to change, the user
+        // should restart the engine.
+        let engine = Engine::new();
+        engine.set_worker_manager_port(49199);
+        engine.set_worker_manager_port(50000); // ignored
+        assert_eq!(
+            engine.worker_manager_port(),
+            49199,
+            "second set_worker_manager_port must be a no-op"
         );
     }
 }

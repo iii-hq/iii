@@ -4,19 +4,13 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-pub mod app;
-pub mod binary_download;
-pub mod builtin_defaults;
-pub mod config_file;
-pub mod firmware;
-pub mod lifecycle;
-pub mod local_worker;
-pub mod managed;
-pub mod project;
-pub mod registry;
-pub mod rootfs;
-pub mod source_watcher;
-pub mod status;
-pub mod supervisor_ctl;
-pub mod vm_boot;
-pub mod worker_manager;
+//! iii-supervisor library facade.
+//!
+//! The binary (`src/main.rs`) is thin: parse args, hand off to the
+//! pieces exposed here. Tests and host-side integrators import these
+//! modules directly — notably `protocol` is consumed by `iii-worker`'s
+//! `supervisor_ctl` for wire-compatible RPC.
+
+pub mod child;
+pub mod control;
+pub mod protocol;

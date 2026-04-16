@@ -141,6 +141,57 @@ impl ReloadManager {
         Ok(entries)
     }
 
+    /// Walks `diff.unchanged` and asks each tracked worker whether its
+    /// backing process is still alive. Dead ones get pulled out of
+    /// `unchanged` and pushed into `changed` so the commit step will
+    /// destroy + restart them.
+    ///
+    /// This fixes the class of bugs where the engine's `running` list
+    /// believes a worker is up but its detached VM / child process has died
+    /// or been reaped out of band — most commonly via
+    /// `iii worker add --force`, which wipes the managed dir and rewrites
+    /// config.yaml with a structurally identical entry, leaving diff with
+    /// nothing to do.
+    ///
+    /// Returns the list of names that were promoted so the caller can log
+    /// them (e.g. in the reload summary).
+    pub async fn promote_dead_unchanged(
+        diff: &mut ReloadDiff,
+        new_entries: &[WorkerEntry],
+        running: &[RunningWorker],
+    ) -> Vec<String> {
+        let new_by_name: HashMap<&str, &WorkerEntry> =
+            new_entries.iter().map(|e| (e.name.as_str(), e)).collect();
+        let running_by_name: HashMap<&str, &RunningWorker> = running
+            .iter()
+            .map(|rw| (rw.entry.name.as_str(), rw))
+            .collect();
+        let mut promoted: Vec<String> = Vec::new();
+        let mut still_unchanged: Vec<String> = Vec::with_capacity(diff.unchanged.len());
+        for name in diff.unchanged.drain(..) {
+            let is_alive = match running_by_name.get(name.as_str()) {
+                Some(rw) => rw.worker.is_alive().await,
+                None => true, // no tracked worker — can't assess, leave alone
+            };
+            if is_alive {
+                still_unchanged.push(name);
+            } else if let Some(entry) = new_by_name.get(name.as_str()) {
+                tracing::warn!(
+                    worker = %name,
+                    "reload: tracked worker is dead, promoting to CHANGED for restart"
+                );
+                diff.changed.push((*entry).clone());
+                promoted.push(name);
+            } else {
+                // unchanged must appear in new_entries by construction of
+                // diff_entries; this branch is a defensive fallback.
+                still_unchanged.push(name);
+            }
+        }
+        diff.unchanged = still_unchanged;
+        promoted
+    }
+
     /// Refuse removal of mandatory workers.
     pub fn enforce_guards(diff: &ReloadDiff) -> anyhow::Result<()> {
         let mandatory_names: std::collections::HashSet<&'static str> =
@@ -301,12 +352,16 @@ impl ReloadManager {
         })?;
 
         let old_entries: Vec<WorkerEntry> = running.iter().map(|rw| rw.entry.clone()).collect();
-        let diff = diff_entries(&old_entries, &new_entries);
+        let mut diff = diff_entries(&old_entries, &new_entries);
+
+        let promoted = Self::promote_dead_unchanged(&mut diff, &new_entries, running).await;
+
         tracing::info!(
-            "reload: diff +{} added, -{} removed, ~{} changed, ={} unchanged",
+            "reload: diff +{} added, -{} removed, ~{} changed ({} revived), ={} unchanged",
             diff.added.len(),
             diff.removed.len(),
             diff.changed.len(),
+            promoted.len(),
             diff.unchanged.len(),
         );
 

@@ -330,7 +330,8 @@ async fn handle_local_add_valid_path() {
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
 
-        let result = handle_local_add(project_dir.to_str().unwrap(), false, false, true).await;
+        let result =
+            handle_local_add(project_dir.to_str().unwrap(), false, false, true, false).await;
         assert_eq!(result, 0, "handle_local_add should return 0 for valid path");
 
         // Without manifest, resolve_worker_name falls back to directory name
@@ -376,7 +377,7 @@ async fn handle_local_add_rejects_duplicate_without_force() {
             .build(&cwd);
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), false, false, true).await;
+            handle_local_add(project_dir.to_str().unwrap(), false, false, true, false).await;
         assert_eq!(
             result, 1,
             "should return 1 when worker exists and force=false"
@@ -407,7 +408,7 @@ async fn handle_local_add_force_replaces_existing() {
             .build(&cwd);
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), true, true, true).await;
+            handle_local_add(project_dir.to_str().unwrap(), true, true, true, false).await;
         assert_eq!(result, 0, "should return 0 with force=true");
 
         let stored_path = get_worker_path("my-worker");
@@ -441,7 +442,7 @@ async fn handle_local_add_canonicalizes_relative_path() {
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
 
-        let result = handle_local_add("./rel-worker", false, false, true).await;
+        let result = handle_local_add("./rel-worker", false, false, true, false).await;
         assert_eq!(result, 0, "should succeed with relative path");
 
         // Without manifest, name falls back to directory name "rel-worker"
@@ -461,7 +462,8 @@ async fn handle_local_add_canonicalizes_relative_path() {
 #[tokio::test]
 async fn handle_local_add_invalid_path_returns_error() {
     in_temp_dir_async(|| async {
-        let result = handle_local_add("/nonexistent/path/to/worker", false, false, true).await;
+        let result =
+            handle_local_add("/nonexistent/path/to/worker", false, false, true, false).await;
         assert_eq!(result, 1, "should return 1 for nonexistent path");
     })
     .await;

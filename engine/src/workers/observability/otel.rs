@@ -1627,6 +1627,13 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
 /// This function is called when the engine receives an OTLP binary frame
 /// (prefixed with "OTLP") from a worker.
 pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
+    // Skip ingestion entirely when observability is disabled
+    if let Some(config) = get_otel_config()
+        && !config.enabled.unwrap_or(true)
+    {
+        return Ok(());
+    }
+
     // Parse the OTLP JSON
     let request: OtlpExportTraceServiceRequest = serde_json::from_str(json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP JSON: {}", e))?;
@@ -1938,6 +1945,13 @@ impl OtlpHistogramDataPoint {
 /// This function is called when the engine receives a metrics frame
 /// (prefixed with "MTRC") from a worker.
 pub async fn ingest_otlp_metrics(json_str: &str) -> anyhow::Result<()> {
+    // Skip ingestion entirely when observability is disabled
+    if let Some(config) = get_otel_config()
+        && !config.enabled.unwrap_or(true)
+    {
+        return Ok(());
+    }
+
     use super::metrics::{
         StoredDataPoint, StoredHistogramDataPoint, StoredMetric, StoredMetricType,
         StoredNumberDataPoint, get_metric_storage,
@@ -2516,6 +2530,13 @@ fn should_output_to_console() -> bool {
 /// This function is called when the engine receives a logs frame
 /// (prefixed with "LOGS") from a worker.
 pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
+    // Skip ingestion entirely when observability is disabled
+    if let Some(config) = get_otel_config()
+        && !config.enabled.unwrap_or(true)
+    {
+        return Ok(());
+    }
+
     tracing::debug!(
         logs_size = json_str.len(),
         "Received OTLP logs from Node SDK"
@@ -2537,13 +2558,7 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
     let storage = match get_log_storage() {
         Some(s) => s,
         None => {
-            // Initialize storage with the configured cap. Only reached when
-            // logs_enabled=true but initialize() hasn't run yet (e.g.,
-            // worker starts receiving OTLP before ObservabilityWorker's
-            // initialize() runs).
-            let max_logs = get_otel_config().and_then(|c| c.logs_max_count);
-            init_log_storage(max_logs);
-            get_log_storage().ok_or_else(|| anyhow::anyhow!("Failed to initialize log storage"))?
+            return Err(anyhow::anyhow!("Log storage not initialized"));
         }
     };
 
@@ -3500,6 +3515,71 @@ mod tests {
 
         // Should not add any new logs
         assert_eq!(logs.len(), 0);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_logs_storage_not_initialized_error() {
+        // This test validates the "storage not initialized" error path.
+        // Because get_log_storage() uses a OnceLock that may already be set by
+        // other tests, we test the function doesn't crash with valid JSON.
+        // If storage happens to be initialized (from prior tests), the call
+        // succeeds; if not, it returns the expected error.
+
+        let valid_json = r#"{
+            "resourceLogs": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "test-service"}
+                    }]
+                },
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "timeUnixNano": "1704067200000000000",
+                        "observedTimeUnixNano": "1704067200000000000",
+                        "severityNumber": 9,
+                        "severityText": "INFO",
+                        "body": {"stringValue": "Should not be stored when disabled"}
+                    }]
+                }]
+            }]
+        }"#;
+
+        // Clear storage if it exists so we can verify no new logs are added
+        if let Some(storage) = get_log_storage() {
+            storage.clear();
+        }
+
+        let result = ingest_otlp_logs(valid_json).await;
+
+        // The result depends on test ordering:
+        // - If otel config is set with enabled=false -> Ok(()) from early return
+        // - If storage is initialized -> Ok(()) and log is stored
+        // - If storage is NOT initialized -> Err("Log storage not initialized")
+        // In all cases, the function should not panic.
+        match &result {
+            Ok(()) => {
+                // Either early-returned due to disabled config, or successfully ingested.
+                // If storage exists and config doesn't disable it, verify the log was stored.
+                if let Some(config) = get_otel_config() {
+                    if !config.enabled.unwrap_or(true) {
+                        // Config says disabled - verify nothing was stored
+                        if let Some(storage) = get_log_storage() {
+                            assert_eq!(storage.get_logs().len(), 0);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // Should be the "Log storage not initialized" error
+                assert!(
+                    e.to_string().contains("Log storage not initialized"),
+                    "Unexpected error: {}",
+                    e
+                );
+            }
+        }
     }
 
     #[test]
