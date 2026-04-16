@@ -39,6 +39,65 @@ pub enum Phase {
     Failed,
 }
 
+/// Inputs to [`derive_phase`]. Pure-function boundary so the classification
+/// rules can be tested without touching disk or sockets.
+pub struct DeriveInputs {
+    pub engine_running: bool,
+    pub is_binary: bool,
+    pub running: bool,
+    pub prepared: bool,
+    pub managed_dir_exists: bool,
+}
+
+/// Classify a worker into a [`Phase`] given its observable state.
+///
+/// Binary workers are evaluated first because they are plain host processes:
+/// once the engine has spawned them, they run independently of the engine's
+/// TCP port. A live pid IS ready; a dead one means the process exited (or
+/// never started). Gating on `engine_running` would shadow binary workers as
+/// `EngineDown` during an engine restart even though the worker is alive,
+/// and would leave `iii worker add --wait <binary>` hanging because
+/// `EngineDown` is not a terminal wait phase.
+///
+/// For VM workers, `Ready` requires BOTH a live VM pid AND the
+/// `.iii-prepared` marker. The VM pid goes live the moment libkrun boots,
+/// but the in-guest init script then runs setup/install (which can take
+/// minutes on first boot with a cold dep cache). The marker is only written
+/// at the end of that script, so it's the honest signal the worker is
+/// actually ready to handle events, not just that the VM kernel is up.
+pub fn derive_phase(inputs: DeriveInputs) -> Phase {
+    let DeriveInputs {
+        engine_running,
+        is_binary,
+        running,
+        prepared,
+        managed_dir_exists,
+    } = inputs;
+
+    if is_binary {
+        return if running { Phase::Ready } else { Phase::Failed };
+    }
+    if !engine_running {
+        return Phase::EngineDown;
+    }
+    if running && prepared {
+        Phase::Ready
+    } else if running {
+        // VM is up, deps still installing. Surface as Preparing — the
+        // sandbox line already explains the detail.
+        Phase::Preparing
+    } else if prepared {
+        // Deps installed previously, VM restarting (e.g. after --force we
+        // wiped the managed dir, but this branch covers the "second boot on
+        // a warm cache" window).
+        Phase::Booting
+    } else if managed_dir_exists {
+        Phase::Preparing
+    } else {
+        Phase::Queued
+    }
+}
+
 /// Full snapshot of one worker at one point in time.
 pub struct WorkerStatus {
     pub name: String,
@@ -109,36 +168,13 @@ impl WorkerStatus {
                 .max()
         });
 
-        // Ready requires BOTH a live VM process AND the `.iii-prepared`
-        // marker. The VM pid goes live the moment libkrun boots, but the
-        // in-guest init script then runs setup/install (which can take
-        // minutes on first boot with a cold dep cache). The marker is only
-        // written at the end of that script, so it's the honest signal that
-        // the worker is actually ready to handle events — not just that the
-        // VM kernel is up.
-        let phase = if !engine_running {
-            Phase::EngineDown
-        } else if is_binary {
-            // Binary workers are plain host processes — no VM, no rootfs, no
-            // `.iii-prepared` marker. A live pid IS ready; a dead one means
-            // the process exited (or never started).
-            if running { Phase::Ready } else { Phase::Failed }
-        } else if running && prepared {
-            Phase::Ready
-        } else if running {
-            // VM is up, deps still installing. Surface as Preparing — the
-            // sandbox line already explains the detail.
-            Phase::Preparing
-        } else if prepared {
-            // Deps installed previously, VM restarting (e.g. after --force
-            // we wiped the managed dir, but this branch covers the "second
-            // boot on a warm cache" window).
-            Phase::Booting
-        } else if managed_dir_exists {
-            Phase::Preparing
-        } else {
-            Phase::Queued
-        };
+        let phase = derive_phase(DeriveInputs {
+            engine_running,
+            is_binary,
+            running,
+            prepared,
+            managed_dir_exists,
+        });
 
         Self {
             name: name.to_string(),
@@ -596,5 +632,127 @@ mod tests {
             "process row must NOT call a live pid stale, got:\n{}",
             text
         );
+    }
+
+    /// Regression for the classifier bug where binary workers reported
+    /// `Phase::EngineDown` whenever the engine's TCP port was down, even
+    /// though a binary worker's host process is independent of that port
+    /// once spawned. The consequences: the `status` headline would hide the
+    /// worker behind an "engine not running" banner, and
+    /// `iii worker add --wait <binary>` would hang forever because
+    /// `EngineDown` is not a terminal wait phase.
+    ///
+    /// Fix: evaluate `is_binary` before `engine_running` in `derive_phase`.
+    /// If either assertion flips (e.g., someone re-introduces the old gate),
+    /// `--wait` on binary workers will silently hang again.
+    #[test]
+    fn derive_phase_binary_alive_ignores_engine_down() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: false,
+            is_binary: true,
+            running: true,
+            prepared: false,
+            managed_dir_exists: false,
+        });
+        assert_eq!(
+            p,
+            Phase::Ready,
+            "binary worker with a live pid must classify as Ready regardless of engine port state"
+        );
+    }
+
+    #[test]
+    fn derive_phase_binary_dead_engine_down_is_failed_not_engine_down() {
+        // A binary worker that hasn't started (or has crashed) is `Failed`,
+        // not `EngineDown`. The render() path still prints `engine: stopped`
+        // on its own row, so the user doesn't lose that information — we
+        // just stop letting it shadow the worker headline.
+        let p = derive_phase(DeriveInputs {
+            engine_running: false,
+            is_binary: true,
+            running: false,
+            prepared: false,
+            managed_dir_exists: false,
+        });
+        assert_eq!(p, Phase::Failed);
+    }
+
+    #[test]
+    fn derive_phase_vm_worker_engine_down_still_classifies_as_engine_down() {
+        // VM workers DO depend on the engine to boot libkrun, so the
+        // EngineDown gate is still load-bearing for them. If this flips,
+        // VM workers will be misclassified as Queued/Preparing during an
+        // engine restart and `--wait` will spin on a phase that can never
+        // advance.
+        let p = derive_phase(DeriveInputs {
+            engine_running: false,
+            is_binary: false,
+            running: false,
+            prepared: false,
+            managed_dir_exists: false,
+        });
+        assert_eq!(p, Phase::EngineDown);
+    }
+
+    #[test]
+    fn derive_phase_vm_worker_happy_path_is_ready_when_running_and_prepared() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            running: true,
+            prepared: true,
+            managed_dir_exists: true,
+        });
+        assert_eq!(p, Phase::Ready);
+    }
+
+    #[test]
+    fn derive_phase_vm_worker_running_without_marker_is_preparing() {
+        // The honest "installing deps inside VM" window: libkrun is up but
+        // the in-guest init script hasn't written `.iii-prepared` yet.
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            running: true,
+            prepared: false,
+            managed_dir_exists: true,
+        });
+        assert_eq!(p, Phase::Preparing);
+    }
+
+    #[test]
+    fn derive_phase_vm_worker_prepared_but_dead_is_booting() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            running: false,
+            prepared: true,
+            managed_dir_exists: true,
+        });
+        assert_eq!(p, Phase::Booting);
+    }
+
+    #[test]
+    fn derive_phase_vm_worker_managed_dir_without_marker_is_preparing() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            running: false,
+            prepared: false,
+            managed_dir_exists: true,
+        });
+        assert_eq!(p, Phase::Preparing);
+    }
+
+    #[test]
+    fn derive_phase_vm_worker_fresh_is_queued() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            running: false,
+            prepared: false,
+            managed_dir_exists: false,
+        });
+        assert_eq!(p, Phase::Queued);
     }
 }
