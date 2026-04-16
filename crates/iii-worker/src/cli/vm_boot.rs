@@ -441,6 +441,14 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);
     let worker_heap_bytes = worker_heap_mib * 1024 * 1024;
 
+    // When --control-sock is provided the host wires an `iii.control`
+    // virtio-console port into the VM; telling iii-init about it via
+    // III_CONTROL_PORT flips iii-init into supervisor mode so it serves
+    // Restart/Shutdown/Ping/Status RPCs over that port. Without the env
+    // var, iii-init falls back to its legacy single-spawn waitpid path.
+    let control_port_env = args.control_sock.is_some();
+    let control_workdir = args.workdir.clone();
+
     builder = builder.exec(|mut e| {
         e = e.path("/init.krun").workdir(&args.workdir);
         e = e.env("III_WORKER_CMD", &worker_cmd);
@@ -449,6 +457,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_INIT_GW", &gateway_ip);
         e = e.env("III_INIT_CIDR", "30");
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
+        if control_port_env {
+            e = e.env("III_CONTROL_PORT", "iii.control");
+            e = e.env("III_WORKER_WORKDIR", &control_workdir);
+        }
         if !virtiofs_mount_env.is_empty() {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
         }

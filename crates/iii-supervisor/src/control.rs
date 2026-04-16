@@ -13,9 +13,39 @@
 //! one end of a `socketpair` so we can drive it without booting a VM.
 
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
 use crate::child::State;
 use crate::protocol::{self, Request, Response};
+
+/// Walk `/sys/class/virtio-ports/*/name` and return the `/dev/<dev>`
+/// path for the entry whose name matches `target`. Returns `None` when
+/// sysfs isn't mounted, no entries exist, or no name matches.
+///
+/// Virtio-console port numbering depends on controller count and whether
+/// the implicit console is enabled — hardcoding `/dev/vport0p1` breaks
+/// when libkrun wires the implicit console first. The sysfs name is
+/// stable by construction (we pick it on the host), so lookup by name
+/// is the right primitive.
+///
+/// Exposed as a public library function so both the standalone supervisor
+/// binary and the merged `iii-init` path can locate the control port the
+/// same way.
+pub fn find_virtio_port_by_name(target: &str) -> Option<PathBuf> {
+    let sysfs = std::path::Path::new("/sys/class/virtio-ports");
+    let entries = std::fs::read_dir(sysfs).ok()?;
+    for entry in entries.flatten() {
+        let dev_name = entry.file_name();
+        let dev_name_str = dev_name.to_string_lossy();
+        let name_file = entry.path().join("name");
+        if let Ok(contents) = std::fs::read_to_string(&name_file)
+            && contents.trim() == target
+        {
+            return Some(PathBuf::from("/dev").join(dev_name_str.as_ref()));
+        }
+    }
+    None
+}
 
 /// Dispatch a single request against the supervisor's state, returning
 /// the response to send back. Pure function of `(state, req)` — no I/O.

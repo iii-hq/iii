@@ -429,6 +429,15 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         cmd.arg("--console-output")
             .arg(Self::stdout_log(&spec.name));
 
+        // Control channel for host-driven fast restarts. The socket is
+        // colocated with the pid file under ~/.iii/managed/<name>/ so
+        // supervisor_ctl::control_socket_path resolves to the same place
+        // the watcher and stop handler use. Without this, iii-init's
+        // supervisor mode stays dormant and every source edit falls back
+        // to a full VM restart.
+        cmd.arg("--control-sock")
+            .arg(worker_dir.join("control.sock"));
+
         let image_env = read_oci_env(&worker_rootfs);
         let mut merged_env: HashMap<String, String> = image_env.into_iter().collect();
         for (key, value) in &spec.env {

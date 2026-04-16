@@ -163,25 +163,18 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Supervisor binary path inside the guest rootfs. Must stay in sync
-/// with the `install_supervisor_into_rootfs` destination in
-/// `start_local_worker`.
-pub const GUEST_SUPERVISOR_PATH: &str = "/opt/iii/supervisor";
-
 pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> String {
-    build_libkrun_local_script_ex(project, prepared, true)
+    build_libkrun_local_script_ex(project, prepared)
 }
 
-/// Variant of `build_libkrun_local_script` that can disable the
-/// supervisor wrapper. Used when the supervisor binary isn't available
-/// on disk — the VM still boots with the raw `run_cmd`, but fast
-/// restart is disabled and source edits fall back to the full
-/// `iii-worker start` path.
-pub fn build_libkrun_local_script_ex(
-    project: &ProjectInfo,
-    prepared: bool,
-    wrap_with_supervisor: bool,
-) -> String {
+/// Build the boot script that `iii-init` will exec as the worker command.
+///
+/// No supervisor wrapping: the in-VM `iii-init` binary absorbs the
+/// supervisor role (see `iii_init::supervisor`) and opens the control
+/// channel itself when the host sets `III_CONTROL_PORT`. That removes
+/// the separate `/opt/iii/supervisor` binary and its install plumbing
+/// that this function used to emit as `exec /opt/iii/supervisor ...`.
+pub fn build_libkrun_local_script_ex(project: &ProjectInfo, prepared: bool) -> String {
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
@@ -253,47 +246,14 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
         parts.push("mkdir -p /var && touch /var/.iii-prepared".to_string());
     }
 
-    // When the supervisor binary is installed in the rootfs, wrap the
-    // user's run_cmd so host-driven restarts can cycle the worker
-    // process without rebooting the whole VM. Shell-quote run_cmd as a
-    // single supervisor arg so pipes / env / `&&` in the user command
-    // still parse correctly (supervisor itself re-execs via `/bin/sh -c`).
-    //
-    // When wrap_with_supervisor is false (supervisor missing on host),
-    // we fall back to exec'ing run_cmd directly — the VM still boots,
-    // file edits just trigger a full restart via `iii-worker start`.
-    if wrap_with_supervisor {
-        // --control-port is omitted so the supervisor resolves it
-        // via sysfs (/sys/class/virtio-ports/*/name = "iii.control").
-        // Hardcoding /dev/vport0p1 breaks when libkrun enumerates an
-        // implicit console ahead of our named port.
-        parts.push(format!(
-            "{} && exec {} --run-cmd {} --workdir /workspace",
-            env_exports,
-            GUEST_SUPERVISOR_PATH,
-            shell_escape_arg(&project.run_cmd),
-        ));
-    } else {
-        parts.push(format!("{} && exec {}", env_exports, project.run_cmd));
-    }
+    // Exec the user command directly. When the host has configured a
+    // control port (III_CONTROL_PORT env set by vm_boot), `iii-init`
+    // enters supervisor mode and wraps this command internally with
+    // restart/shutdown RPC handling. When no control port is set,
+    // iii-init takes its legacy path and just supervises the one
+    // process until it exits.
+    parts.push(format!("{} && exec {}", env_exports, project.run_cmd));
     parts.join("\n")
-}
-
-/// Quote an arbitrary string so it can be passed as a single argument
-/// through `/bin/sh`. Uses single-quote form and escapes any embedded
-/// single quotes via the standard `'\''` closing-reopening trick.
-fn shell_escape_arg(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(c);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 pub fn build_env_exports(env: &HashMap<String, String>) -> String {
@@ -593,17 +553,13 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         return 1;
     }
 
-    // 5. Check .iii-prepared marker
+    // 5. Check .iii-prepared marker. Silent when true — the boot script
+    //    skips setup_cmd/install_cmd and nothing user-visible is happening
+    //    in the fast path. Printing a "Using cached deps" banner every
+    //    start made it look like install was running every restart (it
+    //    wasn't), which confused users reading watcher.log tails.
     let prepared_marker = managed_dir.join("var").join(".iii-prepared");
     let is_prepared = prepared_marker.exists();
-
-    if is_prepared {
-        eprintln!(
-            "  {} Using cached deps {}",
-            "\u{2713}".green(),
-            "(use --force to reinstall)".dimmed()
-        );
-    }
 
     // 6. Build env with engine URL + OCI env + config.yaml env
     let engine_url = engine_url_for_runtime("libkrun", "0.0.0.0", port, &None);
@@ -628,40 +584,11 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         env.entry(key).or_insert(value);
     }
 
-    // 7. Install the in-VM supervisor binary (optional). When present,
-    //    the boot script wraps run_cmd with the supervisor and source
-    //    edits take the fast path (restart child, keep VM alive). When
-    //    missing, the VM still boots but restarts cycle the whole VM.
-    let supervisor_dest = managed_dir.join("opt").join("iii").join("supervisor");
-    let wrap_with_supervisor =
-        match super::supervisor_provision::install_supervisor_into_rootfs(&supervisor_dest) {
-            Ok(true) => {
-                tracing::debug!(dest = %supervisor_dest.display(), "supervisor installed");
-                true
-            }
-            Ok(false) => {
-                eprintln!(
-                    "  {} iii-supervisor binary not found. Fast-restart disabled; \
-                 source edits will trigger a full VM restart.\n    \
-                 To enable: build with \
-                 `cargo build -p iii-supervisor --target <musl-target> --release` \
-                 and copy to ~/.iii/lib/iii-supervisor, or set III_SUPERVISOR_PATH.",
-                    "warning:".yellow(),
-                );
-                false
-            }
-            Err(e) => {
-                eprintln!(
-                    "  {} Failed to install supervisor: {}. Fast-restart disabled.",
-                    "warning:".yellow(),
-                    e
-                );
-                false
-            }
-        };
-
-    // 8. Build script (wrapped with supervisor if available)
-    let script = build_libkrun_local_script_ex(&project, is_prepared, wrap_with_supervisor);
+    // 7. Build boot script. No supervisor wrap is emitted — the in-VM
+    //    `iii-init` binary absorbs that role (see iii_init::supervisor).
+    //    Fast-restart is enabled whenever vm_boot wires the control port,
+    //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
+    let script = build_libkrun_local_script_ex(&project, is_prepared);
 
     let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
     std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
