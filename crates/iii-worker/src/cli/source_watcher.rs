@@ -236,6 +236,46 @@ fn watch_pruned(watcher: &mut notify::RecommendedWatcher, root: &Path) -> anyhow
     Ok(())
 }
 
+/// Register `NonRecursive` watches on any paths from a burst that turn
+/// out to be non-ignored directories. The initial `watch_pruned` pass
+/// only covers directories that exist at startup; this catches
+/// post-startup `mkdir` calls so edits inside new subdirs don't go
+/// silent on Linux. Paths that aren't directories (files, stat errors,
+/// ignored-subtree matches) are skipped. Duplicate registrations are
+/// harmless — `notify` treats `watch(existing_path)` as a no-op on
+/// inotify. Errors are logged at debug level and swallowed so a single
+/// unwatchable dir doesn't tear down the watcher.
+///
+/// macOS FSEvents is inherently recursive and auto-covers new subdirs
+/// already, so this call is a no-op there aside from the logging cost.
+fn register_new_dirs(
+    watcher: &mut notify::RecommendedWatcher,
+    paths: &[PathBuf],
+    root: &Path,
+) {
+    for p in paths {
+        // Cheap rejection first — ignored subtrees (node_modules etc.)
+        // must never be watched even if they were just created.
+        if should_ignore_path(p, root) {
+            continue;
+        }
+        // Skip non-directories. `is_dir` follows symlinks, which is
+        // fine here: a user-placed symlink-to-dir is legitimately
+        // something they want reloaded on edit. Errors from stat (file
+        // already gone, permission denied) make is_dir return false.
+        if !p.is_dir() {
+            continue;
+        }
+        if let Err(e) = watcher.watch(p, RecursiveMode::NonRecursive) {
+            tracing::debug!(
+                path = %p.display(),
+                error = %e,
+                "source watcher: could not register new dir, skipping"
+            );
+        }
+    }
+}
+
 /// Run the watch loop: watch `project_path` recursively, debounce
 /// events, and invoke `on_change(worker_name)` whenever a non-ignored
 /// path fires. `on_change` is expected to trigger the restart (in
@@ -335,6 +375,17 @@ where
         while let Ok(ev) = rx.try_recv() {
             burst_paths.extend(ev.paths);
         }
+
+        // Register watches on any directories that appeared during this
+        // burst. inotify's NonRecursive semantics mean a freshly-created
+        // subdir has no descriptor yet, so edits inside it would go
+        // silent until the next event in a pre-existing watched dir.
+        // We do this once per burst (not on every callback invocation)
+        // because the watcher handle lives here, not in the closure.
+        // Files written between `mkdir` and this registration are
+        // inherently missed — matches inotify's own semantics and is
+        // best-effort by design.
+        register_new_dirs(&mut watcher, &burst_paths, &project_path);
 
         let kind = if burst_paths.iter().any(|p| is_dep_manifest(p)) {
             ChangeKind::DepManifest
@@ -922,6 +973,63 @@ mod tests {
             counter.load(Ordering::SeqCst),
             0,
             "node_modules writes must not trigger restarts"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn watch_and_restart_fires_on_edit_inside_newly_created_dir() {
+        // Regression: the initial `watch_pruned` pass only watches
+        // directories that exist at startup. A `mkdir src/feature`
+        // AFTER the watcher boots needs to be picked up so edits inside
+        // it trigger restarts. This test exercises the create-dir path
+        // (inotify on Linux; on macOS FSEvents handles it anyway, so
+        // the assertion holds for different reasons).
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_cb = counter.clone();
+
+        let worker_name = "new-dir-worker".to_string();
+        let root_clone = root.clone();
+        let handle = tokio::spawn(async move {
+            let _ = watch_and_restart(worker_name, root_clone, move |_, _| {
+                counter_cb.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
+        });
+
+        // Let the initial watcher come online.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // mkdir inside the project AFTER startup.
+        let new_dir = root.join("feature");
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        // Wait past the debounce window so the mkdir burst completes
+        // AND register_new_dirs runs on the resulting event. The
+        // mkdir itself may or may not trigger a restart callback
+        // depending on platform event coalescence — we don't assert on
+        // that count yet, we just want the new-dir watch registered.
+        tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS + 400)).await;
+        let after_mkdir = counter.load(Ordering::SeqCst);
+
+        // Now write INSIDE the new directory. Without the fix, inotify
+        // has no watch descriptor on `feature/` so this write is
+        // silent and the counter stays at `after_mkdir`.
+        std::fs::write(new_dir.join("x.ts"), "console.log(1)").unwrap();
+        tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS + 400)).await;
+
+        let fired_after_nested_write = counter.load(Ordering::SeqCst);
+        assert!(
+            fired_after_nested_write > after_mkdir,
+            "expected a restart after writing inside newly-created dir, \
+             counter went {after_mkdir} -> {fired_after_nested_write}"
         );
 
         handle.abort();
