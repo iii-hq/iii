@@ -58,7 +58,7 @@ impl Drop for HomeGuard {
 /// assumption that the dirs always exist.
 #[test]
 fn discover_disk_worker_names_empty_home() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
@@ -71,7 +71,7 @@ fn discover_disk_worker_names_empty_home() {
 /// function returns the union, sorted and deduplicated.
 #[test]
 fn discover_disk_worker_names_finds_managed_and_pids() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
@@ -93,7 +93,7 @@ fn discover_disk_worker_names_finds_managed_and_pids() {
 /// guaranteed-alive sentinel, exercising the real signal-0 path.
 #[test]
 fn is_worker_running_true_for_alive_pid() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
@@ -113,7 +113,7 @@ fn is_worker_running_true_for_alive_pid() {
 /// excludes a name from the orphan set if it is also missing from config.
 #[test]
 fn is_worker_running_false_for_dead_pid() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
@@ -140,7 +140,7 @@ fn is_worker_running_false_for_dead_pid() {
 /// an empty Vec, which we accept.
 #[test]
 fn discover_running_from_ps_returns_some_processes() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
@@ -170,16 +170,25 @@ fn discover_running_from_ps_returns_some_processes() {
 /// orphan binary workers whose pidfiles have been removed.
 ///
 /// Skipped on non-Unix and on platforms without `/bin/sleep`.
+///
+/// macOS caveat: `/var -> /private/var` is a symlink, and `tempfile::tempdir`
+/// lands under `$TMPDIR` which is typically `/var/folders/...`. Once a
+/// process is spawned, the kernel stores the canonicalized path, and
+/// `ps -o args=` emits `/private/var/folders/...`. Without canonicalizing
+/// the HOME we use for `workers_prefix`, `strip_prefix` misses the match
+/// and the test flakes as "expected pid, got None". Linux doesn't have
+/// this specific symlink but canonicalize is still the right call.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn find_worker_pid_from_ps_locates_live_orphan_binary() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
-    let _home = HomeGuard::new(tmp.path());
+    let canonical_home = std::fs::canonicalize(tmp.path()).unwrap();
+    let _home = HomeGuard::new(&canonical_home);
 
     // Stage an executable at the exact path the scanner uses to recognise
     // binary workers. Copying /bin/sleep keeps this dependency-free.
-    let workers_dir = tmp.path().join(".iii/workers");
+    let workers_dir = canonical_home.join(".iii/workers");
     std::fs::create_dir_all(&workers_dir).unwrap();
     let worker_name = format!("test-orphan-{}", std::process::id());
     let worker_bin = workers_dir.join(&worker_name);
@@ -195,10 +204,19 @@ fn find_worker_pid_from_ps_locates_live_orphan_binary() {
         .spawn()
         .expect("spawn sentinel sleep process");
 
-    // Give the OS a moment to register the new process in /proc or ps.
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    let found = find_worker_pid_from_ps(&worker_name);
+    // macOS `ps` has a non-deterministic window after fork/exec before a new
+    // process appears in the table — observed failures at 200ms with passes
+    // at 400-600ms under CI load. Poll with short sleeps instead of a single
+    // fixed sleep so the test is robust without slowing the happy path.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut found = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(pid) = find_worker_pid_from_ps(&worker_name) {
+            found = Some(pid);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     // Always tear down the sentinel before asserting, so a failed assertion
     // doesn't leak a 60-second sleep.
@@ -208,7 +226,7 @@ fn find_worker_pid_from_ps_locates_live_orphan_binary() {
     assert_eq!(
         found,
         Some(child.id()),
-        "expected to find sentinel pid {}, got {found:?}",
+        "expected to find sentinel pid {} within 3s, got {found:?}",
         child.id()
     );
 }
@@ -218,7 +236,7 @@ fn find_worker_pid_from_ps_locates_live_orphan_binary() {
 /// unrelated process.
 #[test]
 fn find_worker_pid_from_ps_returns_none_for_unknown_name() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
@@ -249,13 +267,17 @@ fn find_worker_pid_from_ps_returns_none_for_unknown_name() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn restart_orphan_invisible_to_is_worker_running_but_visible_to_ps() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
-    let _home = HomeGuard::new(tmp.path());
+    // Canonicalize — see the note in
+    // `find_worker_pid_from_ps_locates_live_orphan_binary` for the macOS
+    // `/var -> /private/var` reason.
+    let canonical_home = std::fs::canonicalize(tmp.path()).unwrap();
+    let _home = HomeGuard::new(&canonical_home);
 
     // Stage a binary-worker executable at the recognised path, but do NOT
     // create the corresponding pidfile under ~/.iii/pids/{name}.pid.
-    let workers_dir = tmp.path().join(".iii/workers");
+    let workers_dir = canonical_home.join(".iii/workers");
     std::fs::create_dir_all(&workers_dir).unwrap();
     let worker_name = format!("test-restart-orphan-{}", std::process::id());
     let worker_bin = workers_dir.join(&worker_name);
@@ -270,11 +292,20 @@ fn restart_orphan_invisible_to_is_worker_running_but_visible_to_ps() {
         .spawn()
         .expect("spawn sentinel sleep process");
 
-    // Give the OS a moment to register the new process in /proc or ps.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // macOS `ps` has a fork/exec registration window that varies under load
+    // (see find_worker_pid_from_ps_locates_live_orphan_binary). Poll briefly
+    // for the process to appear instead of a single fixed sleep.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut found_by_ps = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(pid) = find_worker_pid_from_ps(&worker_name) {
+            found_by_ps = Some(pid);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     let running_by_pidfile = is_worker_running(&worker_name);
-    let found_by_ps = find_worker_pid_from_ps(&worker_name);
 
     // Always tear down before asserting.
     let _ = child.kill();

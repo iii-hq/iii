@@ -11,6 +11,54 @@ use std::path::Path;
 
 const CONFIG_FILE: &str = "config.yaml";
 
+/// Resolve the engine's effective `iii-worker-manager` port from config.yaml.
+///
+/// Mirrors the engine-side resolution in
+/// `engine/src/workers/config.rs::EngineBuilder::build` so the CLI's
+/// liveness probe targets the same port the engine binds. Without this,
+/// `iii worker status` / `--wait` / `--watch` hardcode `DEFAULT_PORT` and
+/// silently report "engine stopped" whenever the user runs the engine on
+/// a non-default port (SDK integration tests, multi-engine dev setups).
+///
+/// Falls back to `DEFAULT_PORT` if:
+/// - config.yaml does not exist (fresh project, before first `worker add`)
+/// - config.yaml is unreadable or not valid YAML
+/// - no `iii-worker-manager` entry is present (mandatory-injection path
+///   uses `DEFAULT_PORT` engine-side too)
+/// - the entry has no `config.port` field, or the port is not a u16
+pub fn manager_port() -> u16 {
+    let path = Path::new(CONFIG_FILE);
+    if !path.exists() {
+        return super::app::DEFAULT_PORT;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return super::app::DEFAULT_PORT;
+    };
+    manager_port_from(&content)
+}
+
+/// Pure extraction used by [`manager_port`] and exposed for unit tests so the
+/// YAML parsing doesn't need filesystem I/O to exercise.
+pub(crate) fn manager_port_from(content: &str) -> u16 {
+    let yaml: serde_yaml::Value = match serde_yaml::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return super::app::DEFAULT_PORT,
+    };
+    let entry = yaml
+        .get("workers")
+        .and_then(|w| w.as_sequence())
+        .and_then(|seq| {
+            seq.iter()
+                .find(|w| w.get("name").and_then(|n| n.as_str()) == Some("iii-worker-manager"))
+        });
+    entry
+        .and_then(|w| w.get("config"))
+        .and_then(|c| c.get("port"))
+        .and_then(|p| p.as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .unwrap_or(super::app::DEFAULT_PORT)
+}
+
 /// Canonical worker type resolved from config.yaml + filesystem.
 #[derive(Debug)]
 pub enum ResolvedWorkerType {
@@ -1267,5 +1315,62 @@ mod tests {
         assert_eq!(workers.len(), 1);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // manager_port resolution. Pins the contract that the CLI's engine-
+    // liveness probe targets the SAME port the engine resolves at build
+    // time — see engine_builder_resolves_custom_worker_manager_port_from_config
+    // in engine/src/workers/config.rs. Any drift here silently re-breaks
+    // --wait / status on non-default manager ports.
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn manager_port_from_picks_custom_port_when_configured() {
+        let yaml = r#"
+workers:
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: 49199
+"#;
+        assert_eq!(manager_port_from(yaml), 49199);
+    }
+
+    #[test]
+    fn manager_port_from_falls_back_to_default_when_entry_missing() {
+        let yaml = "workers:\n  - name: iii-http\n";
+        assert_eq!(manager_port_from(yaml), super::super::app::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn manager_port_from_falls_back_to_default_on_missing_port_field() {
+        let yaml = r#"
+workers:
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+"#;
+        assert_eq!(manager_port_from(yaml), super::super::app::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn manager_port_from_rejects_out_of_range_port() {
+        // 99999 overflows u16; must not panic, must fall back.
+        let yaml = r#"
+workers:
+  - name: iii-worker-manager
+    config:
+      port: 99999
+"#;
+        assert_eq!(manager_port_from(yaml), super::super::app::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn manager_port_from_returns_default_on_malformed_yaml() {
+        assert_eq!(
+            manager_port_from("not: valid: yaml: :"),
+            super::super::app::DEFAULT_PORT
+        );
     }
 }

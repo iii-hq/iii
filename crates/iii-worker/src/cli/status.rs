@@ -16,7 +16,7 @@ use colored::Colorize;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::config_file::{ResolvedWorkerType, resolve_worker_type, worker_exists};
-use super::managed::{is_engine_running, is_worker_running};
+use super::managed::{is_engine_running_on, is_worker_running};
 
 /// Terminal phase for waiters — once we reach `Ready` or `Failed` we stop
 /// polling.
@@ -117,8 +117,15 @@ pub struct WorkerStatus {
 }
 
 impl WorkerStatus {
+    /// Probes using the configured `iii-worker-manager` port from
+    /// config.yaml. Prefer [`Self::probe_on`] at call sites that already
+    /// hold a port so a `--port` override isn't silently ignored.
     pub fn probe(name: &str) -> Self {
-        let engine_running = is_engine_running();
+        Self::probe_on(name, super::config_file::manager_port())
+    }
+
+    pub fn probe_on(name: &str, port: u16) -> Self {
+        let engine_running = is_engine_running_on(port);
         let exists_in_config = worker_exists(name);
 
         if !exists_in_config {
@@ -347,13 +354,29 @@ impl WorkerStatus {
     }
 }
 
-fn read_pid(name: &str) -> Option<u32> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let candidates = [
-        home.join(".iii/managed").join(name).join("vm.pid"),
-        home.join(".iii/pids").join(format!("{}.pid", name)),
-    ];
-    for path in candidates {
+/// Candidate pidfile paths for `worker_name`, ordered by probe priority.
+///
+/// - OCI/VM workers: `~/.iii/managed/{name}/vm.pid`
+/// - Binary workers: `~/.iii/pids/{name}.pid`
+///
+/// MUST stay in sync with `engine/src/workers/registry_worker.rs::
+/// pid_file_candidates`. Engine and iii-worker are sibling crates with no
+/// shared dep; duplicating this function keeps the path convention single-
+/// sourced within each crate. If you add a third worker type or location
+/// here, mirror it there.
+pub(crate) fn pid_file_candidates(
+    home: &std::path::Path,
+    worker_name: &str,
+) -> [std::path::PathBuf; 2] {
+    [
+        home.join("managed").join(worker_name).join("vm.pid"),
+        home.join("pids").join(format!("{}.pid", worker_name)),
+    ]
+}
+
+pub(crate) fn read_pid(name: &str) -> Option<u32> {
+    let home = dirs::home_dir()?.join(".iii");
+    for path in pid_file_candidates(&home, name) {
         if let Ok(s) = std::fs::read_to_string(&path)
             && let Ok(pid) = s.trim().parse::<u32>()
         {
@@ -363,10 +386,13 @@ fn read_pid(name: &str) -> Option<u32> {
     None
 }
 
-/// Entry point for `iii worker status`.
+/// Entry point for `iii worker status`. Resolves the engine port from
+/// config.yaml; there is no CLI override for this command today (it has
+/// no `--port` flag) because `iii worker status` is a diagnostic.
 pub async fn handle_worker_status(worker_name: &str, watch: bool) -> i32 {
+    let port = super::config_file::manager_port();
     if !watch {
-        let status = WorkerStatus::probe(worker_name);
+        let status = WorkerStatus::probe_on(worker_name, port);
         for line in status.render() {
             eprintln!("{}", line);
         }
@@ -378,7 +404,7 @@ pub async fn handle_worker_status(worker_name: &str, watch: bool) -> i32 {
     }
 
     // --watch: live-redraw with no timeout (Ctrl-C to abort).
-    let final_status = watch_until_ready(worker_name, None).await;
+    let final_status = watch_until_ready(worker_name, None, port).await;
     match final_status.phase {
         Phase::Ready => 0,
         Phase::NotInConfig => 1,
@@ -391,14 +417,21 @@ pub async fn handle_worker_status(worker_name: &str, watch: bool) -> i32 {
 /// the process is killed.
 ///
 /// `timeout = None` means "wait forever" (used by `--watch`); `Some(d)` is
-/// used by `--wait` so the CLI doesn't hang on a stuck VM.
+/// used by `--wait` so the CLI doesn't hang on a stuck VM. `port` is the
+/// engine's `iii-worker-manager` port — each probe re-checks it so the
+/// "engine: running/stopped" line reflects the correct engine even when
+/// the user runs on a non-default port.
 ///
 /// Returns the final status so callers can render a closing message.
-pub async fn watch_until_ready(worker_name: &str, timeout: Option<Duration>) -> WorkerStatus {
+pub async fn watch_until_ready(
+    worker_name: &str,
+    timeout: Option<Duration>,
+    port: u16,
+) -> WorkerStatus {
     let started = Instant::now();
     let mut first = true;
     loop {
-        let status = WorkerStatus::probe(worker_name);
+        let status = WorkerStatus::probe_on(worker_name, port);
         let lines = status.render();
 
         if !first {
@@ -754,5 +787,218 @@ mod tests {
             managed_dir_exists: false,
         });
         assert_eq!(p, Phase::Queued);
+    }
+
+    // ---------------------------------------------------------------------
+    // read_pid + pid_file_candidates pure-function tests.
+    //
+    // These don't need HOME mutation — pid_file_candidates takes the `.iii`
+    // root as an argument, so we can exercise every malformed-pidfile path
+    // without racing other tests for a process-global env var.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn pid_file_candidates_orders_vm_then_binary() {
+        let home = std::path::Path::new("/fake/.iii");
+        let got = pid_file_candidates(home, "demo");
+        assert_eq!(got[0], home.join("managed/demo/vm.pid"));
+        assert_eq!(got[1], home.join("pids/demo.pid"));
+    }
+
+    /// read_pid must silently skip malformed pidfile contents. Any panic or
+    /// wrong-typed parse (e.g. i32 instead of u32) would bubble through to
+    /// the status renderer and either blow up `iii worker status` or mis-
+    /// display a pid. Cases drawn from malformed-file bugs we've hit in the
+    /// wild: trailing whitespace, empty files, race with a writer that
+    /// flushed an empty buffer, accidental negative numbers.
+    #[test]
+    fn read_pid_silently_skips_malformed_pidfiles() {
+        // Must serialize under PROBE_ENV_LOCK because HOME is process-global
+        // and every probe test mutates it. Without the guard, parallel
+        // probe_* tests win the race and read_pid sees the wrong HOME.
+        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = ProbeEnvGuard::new(tmp.path());
+
+        let pids = tmp.path().join(".iii/pids");
+        std::fs::create_dir_all(&pids).unwrap();
+
+        for (name, contents) in [
+            ("empty", ""),
+            ("garbage", "not-a-pid"),
+            ("negative", "-1"),
+            ("overflow", "9999999999999"),
+            ("whitespace-only", "   \n"),
+        ] {
+            std::fs::write(pids.join(format!("{}.pid", name)), contents).unwrap();
+            assert_eq!(
+                read_pid(name),
+                None,
+                "malformed pidfile content {:?} must yield None, not panic or mis-parse",
+                contents,
+            );
+        }
+
+        // Well-formed pidfile with surrounding whitespace still parses.
+        std::fs::write(pids.join("padded.pid"), "  12345  \n").unwrap();
+        assert_eq!(read_pid("padded"), Some(12345));
+    }
+
+    /// watch_until_ready must honor its timeout even when the worker never
+    /// reaches a terminal phase. A regression that ignores the timeout arg
+    /// would deadlock `iii worker add --wait` and any caller of
+    /// wait_for_ready. We build a scenario where probe repeatedly reports
+    /// a non-terminal phase (no config.yaml + empty HOME → NotInConfig is
+    /// terminal, so we stage a config.yaml entry but keep engine "down" via
+    /// a missing socket → Phase::EngineDown, non-terminal).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watch_until_ready_honors_timeout() {
+        // Shares PROBE_ENV_LOCK with every other test that mutates
+        // HOME+CWD. Using a separate lock would let the tempdirs overlap
+        // and corrupt each other's filesystem view.
+        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = ProbeEnvGuard::new(tmp.path());
+
+        // Minimal config.yaml with one VM worker so probe() does not early-
+        // return NotInConfig (terminal). We leave the engine socket closed
+        // so probe classifies as EngineDown (non-terminal for VM workers).
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            "workers:\n  - name: pending-vm\n",
+        )
+        .unwrap();
+
+        let start = std::time::Instant::now();
+        // Port 1 is privileged and never bound by an engine, so
+        // is_engine_running_on returns false → Phase::EngineDown (non-terminal)
+        // regardless of what's actually running on the host. Pinning this
+        // makes the test self-contained — it doesn't flake if a real engine
+        // happens to be bound on DEFAULT_PORT when the test runs.
+        let status = watch_until_ready("pending-vm", Some(Duration::from_millis(200)), 1).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "watch_until_ready must return within the timeout window, elapsed = {:?}",
+            elapsed
+        );
+        assert!(
+            !status.is_terminal_for_wait(),
+            "timeout path must return a non-terminal status (got {:?}); \
+             otherwise the function returned for the wrong reason",
+            status.phase
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // WorkerStatus::probe coverage. Builds a fake HOME + CWD with the
+    // filesystem layout probe() reads, then asserts the probe output. This
+    // is the gluing layer between disk state and Phase classification —
+    // previously exercised only indirectly through integration paths.
+    // ---------------------------------------------------------------------
+
+    /// Shared guard for tests that mutate HOME + CWD. HOME is process-global,
+    /// CWD is process-global, so any two tests that touch either must run
+    /// one at a time.
+    static PROBE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ProbeEnvGuard {
+        home: Option<std::ffi::OsString>,
+        cwd: Option<std::path::PathBuf>,
+    }
+
+    impl ProbeEnvGuard {
+        fn new(home: &std::path::Path) -> Self {
+            let original_home = std::env::var_os("HOME");
+            let original_cwd = std::env::current_dir().ok();
+            // SAFETY: test-only, serialized via PROBE_ENV_LOCK.
+            unsafe { std::env::set_var("HOME", home) };
+            std::env::set_current_dir(home).unwrap();
+            Self {
+                home: original_home,
+                cwd: original_cwd,
+            }
+        }
+    }
+
+    impl Drop for ProbeEnvGuard {
+        fn drop(&mut self) {
+            if let Some(cwd) = &self.cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            // SAFETY: test-only, serialized via PROBE_ENV_LOCK.
+            unsafe {
+                match &self.home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn probe_returns_not_in_config_when_worker_missing() {
+        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = ProbeEnvGuard::new(tmp.path());
+        // No config.yaml written — worker_exists returns false.
+        let s = WorkerStatus::probe("ghost");
+        assert_eq!(s.phase, Phase::NotInConfig);
+        assert!(!s.managed_dir_exists);
+        assert!(s.pid.is_none());
+        assert!(!s.alive);
+    }
+
+    /// Binary worker with a live pidfile must probe to Ready regardless of
+    /// engine port state. This is the end-to-end equivalent of
+    /// `derive_phase_binary_alive_ignores_engine_down` — ensures the probe
+    /// layer plumbs the binary flag correctly into derive_phase.
+    ///
+    /// `resolve_worker_type` classifies a worker as `Binary` only when a
+    /// file exists at `~/.iii/workers/{name}` (see `check_binary_fallback`
+    /// in config_file.rs); the config.yaml entry alone is insufficient.
+    #[test]
+    fn probe_binary_worker_with_live_pidfile_is_ready() {
+        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = ProbeEnvGuard::new(tmp.path());
+
+        let name = "bin-w";
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!("workers:\n  - name: {}\n", name),
+        )
+        .unwrap();
+
+        // Binary worker is detected by presence of the binary file under
+        // ~/.iii/workers/{name}. Staging an empty file is enough for the
+        // classifier — we don't execute it.
+        let workers_dir = tmp.path().join(".iii/workers");
+        std::fs::create_dir_all(&workers_dir).unwrap();
+        std::fs::write(workers_dir.join(name), b"").unwrap();
+
+        let pids = tmp.path().join(".iii/pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        // Write OUR pid so kill(pid, 0) succeeds on the alive check.
+        std::fs::write(
+            pids.join(format!("{}.pid", name)),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        let s = WorkerStatus::probe(name);
+        assert_eq!(s.pid, Some(std::process::id()));
+        assert!(s.alive, "is_worker_running must see our live pidfile");
+        assert_eq!(
+            s.worker_type,
+            Some("binary"),
+            "binary workers must be classified as binary, not config; got {:?}",
+            s.worker_type
+        );
+        // Phase depends on engine liveness which we can't control from a
+        // unit test, but regardless of engine state a binary with a live
+        // pid MUST be Ready (that's the point of the classifier fix).
+        assert_eq!(s.phase, Phase::Ready);
     }
 }

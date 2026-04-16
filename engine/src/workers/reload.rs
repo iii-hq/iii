@@ -162,10 +162,14 @@ impl ReloadManager {
     ) -> Vec<String> {
         let new_by_name: HashMap<&str, &WorkerEntry> =
             new_entries.iter().map(|e| (e.name.as_str(), e)).collect();
+        let running_by_name: HashMap<&str, &RunningWorker> = running
+            .iter()
+            .map(|rw| (rw.entry.name.as_str(), rw))
+            .collect();
         let mut promoted: Vec<String> = Vec::new();
         let mut still_unchanged: Vec<String> = Vec::with_capacity(diff.unchanged.len());
         for name in diff.unchanged.drain(..) {
-            let is_alive = match running.iter().find(|rw| rw.entry.name == name) {
+            let is_alive = match running_by_name.get(name.as_str()) {
                 Some(rw) => rw.worker.is_alive().await,
                 None => true, // no tracked worker — can't assess, leave alone
             };

@@ -5,6 +5,23 @@
 // See LICENSE and PATENTS files for details.
 
 //! CLI command handlers for managing OCI-based workers.
+//!
+//! # Output contract
+//!
+//! - **stdout**: machine-readable worker name on success (one line). Scripts
+//!   pipe `iii worker start foo | xargs ...` and rely on this being the only
+//!   thing on stdout.
+//! - **stderr**: all human-facing status, progress, errors, prompts, and
+//!   decorative output. Every line here is cosmetic and may change between
+//!   releases without breaking anyone.
+//!
+//! Two implications:
+//! 1. Never `println!` anything that isn't the worker name. Use `eprintln!`
+//!    for everything else, including successes like "✓ ready in 3.2s".
+//! 2. Failures exit non-zero WITHOUT printing to stdout. Consumers of the
+//!    stdout contract check the exit code first.
+//!
+//! The same contract applies in `local_worker.rs` and `status.rs`.
 
 use colored::Colorize;
 
@@ -163,7 +180,10 @@ pub async fn handle_managed_add(
         .await;
     }
 
-    // --force: delete existing artifacts before re-downloading
+    // --force: stop if running, delete artifacts, then proceed with a fresh
+    // add. Before the fix this path errored out with "Stop it first" when a
+    // running worker was detected — which defeats the point of --force. The
+    // whole sequence (stop → clear → add) is what a user means by "force."
     if force {
         let (plain_name, _) = parse_worker_input(image_or_name);
 
@@ -175,12 +195,22 @@ pub async fn handle_managed_add(
 
         if is_worker_running(&plain_name) {
             eprintln!(
-                "{} Worker '{}' is currently running. Stop it first with `iii worker stop {}`",
-                "error:".red(),
-                plain_name,
-                plain_name,
+                "  {} {} is running, stopping first...",
+                "⟳".cyan(),
+                plain_name.bold()
             );
-            return 1;
+            let stop_rc = handle_managed_stop(&plain_name).await;
+            if stop_rc != 0 {
+                // Don't abort — artifacts will be wiped below anyway, and the
+                // most common "failure" is "already stopped between is_worker_running
+                // and the signal" which is benign. Surface it so a stuck worker
+                // doesn't silently confuse the user.
+                eprintln!(
+                    "  {} stop exited {} — continuing with force add anyway",
+                    "warning:".yellow(),
+                    stop_rc
+                );
+            }
         }
 
         if super::builtin_defaults::get_builtin_default(&plain_name).is_some() {
@@ -226,7 +256,8 @@ pub async fn handle_managed_add(
         if !brief {
             eprintln!("  {} Resolved to {}", "✓".green(), image_or_name.dimmed());
         }
-        return handle_oci_pull_and_add(name, image_or_name, brief).await;
+        let rc = handle_oci_pull_and_add(name, image_or_name, brief).await;
+        return finish_add(name, rc, wait, brief).await;
     }
 
     // Shorthand name — resolve via API
@@ -269,6 +300,9 @@ pub async fn handle_managed_add(
                 eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
             }
         }
+        // Builtins run in-process with the engine; there is no detached VM
+        // or binary to watch. The Phase machinery would loop on Queued until
+        // timeout, so skip wait_for_ready for builtins even when wait=true.
         return 0;
     }
 
@@ -284,7 +318,7 @@ pub async fn handle_managed_add(
         }
     };
 
-    match response {
+    let rc = match response {
         WorkerInfoResponse::Binary(r) => handle_binary_add(&name, &r, brief).await,
         WorkerInfoResponse::Oci(r) => {
             if !brief {
@@ -292,7 +326,39 @@ pub async fn handle_managed_add(
             }
             handle_oci_pull_and_add(&r.name, &r.image_url, brief).await
         }
+    };
+    finish_add(&name, rc, wait, brief).await
+}
+
+/// Shared tail for every non-local `handle_managed_add` exit path.
+///
+/// `handle_managed_add` accepts `wait: bool` from the `--wait` / `--no-wait`
+/// flag (default wait=true per the CLI definition in app.rs). Before this
+/// helper, `wait` was only honored on the local-path branch — OCI/binary/
+/// registry adds silently dropped it, contradicting the `add` command's
+/// documented "waits up to 120s by default" contract. We also skip the
+/// wait when `rc != 0` (nothing to wait on if the add itself failed) and
+/// when `brief` is set (multi-worker `add-many` renders per-row status
+/// and a blocking wait per entry would produce confusing output).
+async fn finish_add(worker_name: &str, rc: i32, wait: bool, brief: bool) -> i32 {
+    if rc != 0 || !wait || brief {
+        return rc;
     }
+    let port = super::config_file::manager_port();
+    if !is_engine_running_on(port) {
+        // Engine down → no file watcher → config.yaml change won't be
+        // picked up. A wait would run to timeout. Tell the user instead.
+        eprintln!(
+            "\n  {} engine not running; start it to observe boot.\n  \
+               Start:         iii start\n  \
+               Then watch:    iii worker status {}",
+            "⚠".yellow(),
+            worker_name,
+        );
+        return rc;
+    }
+    wait_for_ready(worker_name, port).await;
+    rc
 }
 
 async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i32 {
@@ -968,14 +1034,26 @@ pub fn is_worker_running(worker_name: &str) -> bool {
     false
 }
 
-/// Probes `127.0.0.1:DEFAULT_PORT` to check whether the engine is listening.
+/// Probes `127.0.0.1:{port}` to check whether the engine is listening.
 /// Uses a 200ms timeout to avoid blocking the CLI.
-pub fn is_engine_running() -> bool {
+///
+/// Callers that don't already know the port should resolve via
+/// `super::config_file::manager_port()`; those who already hold a port
+/// (e.g. after a user passed `--port`) should use it directly so an
+/// override isn't silently ignored.
+pub fn is_engine_running_on(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], super::app::DEFAULT_PORT)),
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_millis(200),
     )
     .is_ok()
+}
+
+/// Convenience for call sites without a known port: resolves the
+/// `iii-worker-manager` port from config.yaml (or falls back to
+/// `DEFAULT_PORT`) and probes it.
+pub fn is_engine_running() -> bool {
+    is_engine_running_on(super::config_file::manager_port())
 }
 
 /// Deletes local artifacts for a worker (binary dir or OCI image dir).
@@ -1272,11 +1350,19 @@ async fn kill_pid_with_grace(pid: u32) {
 /// --no-wait. Same contract as `iii worker add --wait`: on timeout we do NOT
 /// fail the command (the process started successfully), we just inform the
 /// user and let them poll with `iii worker status {name}`.
-async fn wait_for_ready(worker_name: &str) {
+///
+/// `port` is the engine's configured `iii-worker-manager` port so the
+/// engine-liveness probe inside `watch_until_ready` targets the engine the
+/// worker is actually talking to. Without this, users on a non-default
+/// port would see "engine: stopped" until the wait timed out.
+async fn wait_for_ready(worker_name: &str, port: u16) {
     let started = std::time::Instant::now();
-    let final_status =
-        super::status::watch_until_ready(worker_name, Some(std::time::Duration::from_secs(120)))
-            .await;
+    let final_status = super::status::watch_until_ready(
+        worker_name,
+        Some(std::time::Duration::from_secs(120)),
+        port,
+    )
+    .await;
     let elapsed = started.elapsed();
     match final_status.phase {
         super::status::Phase::Ready => {
@@ -1341,31 +1427,25 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
         println!("{}", worker_name);
         return 0;
     }
-    let start_rc = match super::config_file::resolve_worker_type(worker_name) {
+    let local_outcome = match super::config_file::resolve_worker_type(worker_name) {
         ResolvedWorkerType::Oci { image, env } => {
             let worker_def = WorkerDef::Managed {
                 image,
                 env,
                 resources: None,
             };
-            start_oci_worker(worker_name, &worker_def, port).await
+            StartOutcome::Exit(start_oci_worker(worker_name, &worker_def, port).await)
         }
-        ResolvedWorkerType::Local { worker_path } => {
-            super::local_worker::start_local_worker(worker_name, &worker_path, port).await
-        }
+        ResolvedWorkerType::Local { worker_path } => StartOutcome::Exit(
+            super::local_worker::start_local_worker(worker_name, &worker_path, port).await,
+        ),
         ResolvedWorkerType::Binary { binary_path } => {
-            start_binary_worker(worker_name, &binary_path).await
+            StartOutcome::Exit(start_binary_worker(worker_name, &binary_path).await)
         }
-        ResolvedWorkerType::Config => i32::MIN, // sentinel: fall through to registry
+        ResolvedWorkerType::Config => StartOutcome::FallThrough,
     };
-    if start_rc != i32::MIN {
-        if start_rc == 0 {
-            if wait {
-                wait_for_ready(worker_name).await;
-            }
-            println!("{}", worker_name);
-        }
-        return start_rc;
+    if let StartOutcome::Exit(rc) = local_outcome {
+        return finish_start(worker_name, rc, wait, port).await;
     }
 
     // Not found locally — try remote registry for auto-install
@@ -1403,13 +1483,7 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
                 Ok(installed_path) => {
                     eprintln!("  {} Installed successfully", "✓".green());
                     let rc = start_binary_worker(worker_name, &installed_path).await;
-                    if rc == 0 {
-                        if wait {
-                            wait_for_ready(worker_name).await;
-                        }
-                        println!("{}", worker_name);
-                    }
-                    return rc;
+                    return finish_start(worker_name, rc, wait, port).await;
                 }
                 Err(e) => {
                     eprintln!(
@@ -1429,13 +1503,7 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
                 resources: None,
             };
             let rc = start_oci_worker(worker_name, &worker_def, port).await;
-            if rc == 0 {
-                if wait {
-                    wait_for_ready(worker_name).await;
-                }
-                println!("{}", worker_name);
-            }
-            return rc;
+            return finish_start(worker_name, rc, wait, port).await;
         }
         Err(e) => {
             tracing::warn!("Failed to fetch worker info: {}", e);
@@ -1449,6 +1517,29 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
         worker_name
     );
     1
+}
+
+/// Classifies what `handle_managed_start`'s local-resolution branch wants the
+/// caller to do next: either return an exit code straight to the user, or
+/// fall through to the remote-registry path. Introduced to replace an
+/// `i32::MIN` sentinel that overloaded the exit-code type as a control token.
+enum StartOutcome {
+    Exit(i32),
+    FallThrough,
+}
+
+/// Shared tail for every successful start path: wait (if requested) then
+/// emit the machine-readable worker name on stdout per the module output
+/// contract. Keeping this in one place prevents the stdout contract from
+/// drifting across the four call sites that used to inline it.
+async fn finish_start(worker_name: &str, rc: i32, wait: bool, port: u16) -> i32 {
+    if rc == 0 {
+        if wait {
+            wait_for_ready(worker_name, port).await;
+        }
+        println!("{}", worker_name);
+    }
+    rc
 }
 
 /// Stop (if running) and start a worker. Idempotent: workers that aren't

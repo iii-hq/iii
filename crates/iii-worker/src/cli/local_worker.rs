@@ -493,9 +493,11 @@ pub async fn handle_local_add(
         );
 
         let started = std::time::Instant::now();
+        let port = super::config_file::manager_port();
         let final_status = super::status::watch_until_ready(
             &worker_name,
             Some(std::time::Duration::from_secs(120)),
+            port,
         )
         .await;
         let elapsed = started.elapsed();

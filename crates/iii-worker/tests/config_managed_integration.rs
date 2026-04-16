@@ -374,3 +374,182 @@ async fn handle_managed_add_binary_via_file_fixture() {
     })
     .await;
 }
+
+/// Restart must reject invalid worker names BEFORE calling stop or start.
+/// Otherwise name-validation bugs would silently cascade into whatever
+/// garbage-in behavior `iii worker stop <bad>` has today. The fast-fail also
+/// guarantees we never execute side effects against an unvalidated name.
+#[tokio::test]
+async fn handle_managed_restart_invalid_name_fails_fast() {
+    in_temp_dir_async(|| async {
+        let rc = iii_worker::cli::managed::handle_managed_restart(
+            "bad name with spaces",
+            false,
+            iii_worker::DEFAULT_PORT,
+        )
+        .await;
+        assert_eq!(
+            rc, 1,
+            "invalid worker name must return 1 before stop/start run"
+        );
+    })
+    .await;
+}
+
+/// Restart against a configured-but-not-running builtin must still invoke
+/// the stop path. The orphan-safety contract (`commit 5f3cfc27`) is:
+/// `handle_managed_restart` calls `handle_managed_stop` unconditionally so
+/// its three-tier PID discovery (OCI pidfile → binary pidfile → `ps` scan)
+/// can catch orphaned processes whose pidfiles are missing. If a future
+/// refactor gates stop on `is_worker_running`, this test should still pass
+/// because stop itself is a no-op for a not-running worker — but the intent
+/// it pins is: restart returns start's rc, never early-returns, never
+/// panics, regardless of whether anything is currently running.
+#[tokio::test]
+async fn handle_managed_restart_on_not_running_surfaces_start_rc() {
+    in_temp_dir_async(|| async {
+        // Add a builtin so start has something valid to resolve.
+        let add_rc =
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+                .await;
+        assert_eq!(add_rc, 0);
+
+        let restart_rc = iii_worker::cli::managed::handle_managed_restart(
+            "iii-http",
+            false,
+            iii_worker::DEFAULT_PORT,
+        )
+        .await;
+        // Builtin start short-circuits with rc=0 or rc=1 depending on whether
+        // the engine is actually running on DEFAULT_PORT. Either is valid
+        // here — we're asserting that restart did NOT panic or hit an
+        // unintended error path.
+        assert!(
+            restart_rc == 0 || restart_rc == 1,
+            "restart must surface start's rc; got {}",
+            restart_rc
+        );
+    })
+    .await;
+}
+
+/// Remove-many with `--yes` must bypass the running-worker confirmation
+/// prompt entirely. The new DX (commit b655977c) added a single batch
+/// prompt when any target is currently running. If this gate regresses
+/// (e.g., someone inverts the `!yes` check), automation that relies on
+/// `--yes` for unattended cleanup would hang forever on stdin.
+#[tokio::test]
+async fn handle_managed_remove_many_with_yes_bypasses_prompt() {
+    in_temp_dir_async(|| async {
+        let names = vec!["iii-http".to_string(), "iii-state".to_string()];
+        let add_rc = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
+        assert_eq!(add_rc, 0);
+
+        // Simulate a "running" worker by writing a live pidfile (our own PID)
+        // under the binary-worker path. `is_worker_running` reads pidfiles
+        // directly, so this is enough to trigger the prompt branch in
+        // handle_managed_remove_many — but --yes must skip it.
+        let home = dirs::home_dir().unwrap();
+        let pids = home.join(".iii/pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        let pidfile = pids.join("iii-http.pid");
+        std::fs::write(&pidfile, std::process::id().to_string()).unwrap();
+
+        let rc = iii_worker::cli::managed::handle_managed_remove_many(&names, /*yes=*/ true).await;
+        // Cleanup the pidfile before asserting.
+        let _ = std::fs::remove_file(&pidfile);
+
+        assert_eq!(rc, 0, "--yes must bypass the prompt and succeed");
+        assert!(!iii_worker::cli::config_file::worker_exists("iii-http"));
+        assert!(!iii_worker::cli::config_file::worker_exists("iii-state"));
+    })
+    .await;
+}
+
+/// Regression: `iii worker add --force` used to error with "Worker is
+/// currently running. Stop it first with `iii worker stop`" instead of
+/// doing what --force implies — stop, clean, then re-add. The fix at
+/// `handle_managed_add` (managed.rs force branch) now invokes
+/// `handle_managed_stop` unconditionally when `is_worker_running` returns
+/// true, so the user doesn't have to run two commands for what reads like
+/// one destructive intent.
+///
+/// We prove the behavior by spawning a real sentinel process (copy of
+/// /bin/sleep at the binary-worker path so `handle_managed_stop`'s three-
+/// tier discovery recognizes it), writing its pid to the pidfile, and
+/// asserting that `--force` add returns 0 — no "Stop it first" error.
+/// We deliberately do NOT assert that the pidfile is removed: on platforms
+/// where `ps` lookup is flaky or the sentinel exits between spawn and
+/// stop, pidfile cleanup may or may not happen. The contract we care
+/// about is: --force doesn't refuse.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn handle_managed_add_force_auto_stops_running_worker() {
+    in_temp_dir_async(|| async {
+        // Seed config.yaml with a builtin.
+        let add_rc =
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+                .await;
+        assert_eq!(add_rc, 0);
+
+        // Spawn a real sentinel process so the auto-stop path can signal a
+        // non-test-process PID. Staging our own PID would make stop attempt
+        // to SIGTERM the test runner itself — genuinely bad.
+        let home = dirs::home_dir().unwrap();
+        let pids = home.join(".iii/pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sentinel");
+        let pidfile = pids.join("iii-http.pid");
+        std::fs::write(&pidfile, child.id().to_string()).unwrap();
+
+        // --force add: the fix makes this succeed without requiring the
+        // user to stop first. Before the fix this returned 1 with the
+        // "Stop it first" error.
+        let rc =
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false, false)
+                .await;
+
+        // Always tear down the sentinel regardless of assertion outcome.
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&pidfile);
+
+        assert_eq!(
+            rc, 0,
+            "--force add must not refuse when worker is running; got rc={}",
+            rc
+        );
+    })
+    .await;
+}
+
+/// Regression: `iii worker add` with wait=true used to only honor the wait
+/// flag on the local-path branch. OCI/builtin/binary paths silently
+/// dropped it. The fix routes all non-local paths through `finish_add`
+/// which applies the wait. For builtins specifically, we skip the wait
+/// (builtins run in-process with the engine and have no Phase::Ready
+/// state machine to watch). This test pins that skip: wait=true on a
+/// builtin returns quickly without hanging, even with no engine running.
+#[tokio::test]
+async fn handle_managed_add_wait_on_builtin_returns_without_hanging() {
+    in_temp_dir_async(|| async {
+        let started = std::time::Instant::now();
+        // wait=true (5th param). Engine is not running on the test machine's
+        // DEFAULT_PORT in the tempdir, but the builtin short-circuit must
+        // still return immediately — builtins have no boot to observe.
+        let rc =
+            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, true)
+                .await;
+        let elapsed = started.elapsed();
+        assert_eq!(rc, 0);
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "builtin add with wait=true must not hang; elapsed = {:?}",
+            elapsed
+        );
+    })
+    .await;
+}
