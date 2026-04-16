@@ -1282,6 +1282,12 @@ pub async fn handle_managed_stop(worker_name: &str) -> i32 {
         );
         return 1;
     } else {
+        // VM died out-of-band but the watcher sidecar may still be
+        // alive holding watch.pid — if we return here without reaping
+        // it, the watcher will keep firing on file changes and try to
+        // respawn a VM that nothing is tracking. Tear it down before
+        // reporting "already stopped."
+        reap_source_watcher(worker_name).await;
         eprintln!("  {} {} already stopped", "✓".green(), worker_name.bold());
         println!("{}", worker_name);
         return 0;
