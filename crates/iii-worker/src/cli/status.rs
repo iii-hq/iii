@@ -88,7 +88,29 @@ pub fn derive_phase(inputs: DeriveInputs) -> Phase {
     } = inputs;
 
     if is_binary {
-        return if running { Phase::Ready } else { Phase::Failed };
+        // Binary workers are host processes spawned by the engine's
+        // file-watcher pipeline: config.yaml change → reload →
+        // ExternalWorkerProcess::spawn → iii-worker start → child process
+        // writes ~/.iii/pids/{name}.pid. The config-to-pid window is
+        // typically 100ms-several-seconds depending on engine load.
+        //
+        // A missing pidfile during that window is NOT "Failed" — it's
+        // "engine hasn't spawned it yet." Returning `Failed` here used to
+        // make `iii worker add <binary> --wait` exit "failed after 0s"
+        // because Phase::Failed is terminal for wait, so watch_until_ready
+        // bailed before the engine even saw the config change.
+        //
+        // Use `Queued` when the engine is up (non-terminal → wait keeps
+        // polling until pid appears OR the 120s timeout fires) and
+        // `EngineDown` when it isn't (the engine has to come up first;
+        // same semantics as VM workers in that state).
+        return if running {
+            Phase::Ready
+        } else if engine_running {
+            Phase::Queued
+        } else {
+            Phase::EngineDown
+        };
     }
     if !engine_running {
         return Phase::EngineDown;
@@ -234,11 +256,18 @@ impl WorkerStatus {
                 "{} engine not running (start it with `iii start`)",
                 "⚠".yellow()
             ),
-            Phase::Queued => format!(
-                "{} {} queued — engine will boot its sandbox shortly",
-                "⟳".cyan(),
-                self.name.bold()
-            ),
+            Phase::Queued => {
+                // Binary workers don't have a sandbox; the engine spawns
+                // them as plain host processes. Tailor the message so we
+                // don't confuse the user into looking for a VM that will
+                // never exist.
+                let tail = if self.worker_type == Some("binary") {
+                    "engine will spawn it shortly"
+                } else {
+                    "engine will boot its sandbox shortly"
+                };
+                format!("{} {} queued — {}", "⟳".cyan(), self.name.bold(), tail)
+            }
             Phase::Preparing => {
                 if self.alive {
                     // VM kernel booted; init script is running setup/install
@@ -746,11 +775,12 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_binary_dead_engine_down_is_failed_not_engine_down() {
-        // A binary worker that hasn't started (or has crashed) is `Failed`,
-        // not `EngineDown`. The render() path still prints `engine: stopped`
-        // on its own row, so the user doesn't lose that information — we
-        // just stop letting it shadow the worker headline.
+    fn derive_phase_binary_engine_down_is_engine_down_not_failed() {
+        // Binary workers are spawned by the engine's file watcher; without
+        // a live engine nothing will spawn them. `EngineDown` is the honest
+        // signal here — the previous `Failed` classification conflated
+        // "engine not up" with "crashed after spawn" and led users to
+        // restart things that didn't actually need restarting.
         let p = derive_phase(DeriveInputs {
             engine_running: false,
             is_binary: true,
@@ -759,7 +789,53 @@ mod tests {
             prepared: false,
             managed_dir_exists: false,
         });
-        assert_eq!(p, Phase::Failed);
+        assert_eq!(p, Phase::EngineDown);
+    }
+
+    /// Regression for the reported bug where `iii worker add image-resize`
+    /// (a binary worker) printed "✗ image-resize failed" / "not ready
+    /// after 0s" the instant the `add --wait` path invoked the probe —
+    /// before the engine had a chance to pick up the config change and
+    /// spawn the worker.
+    ///
+    /// Root cause: binary + not running returned Phase::Failed
+    /// unconditionally. Phase::Failed is terminal for wait
+    /// (`is_terminal_for_wait`), so `watch_until_ready` exited immediately.
+    ///
+    /// Fix: binary + engine_running + not running = Phase::Queued
+    /// (non-terminal, wait keeps polling). The wait-loop's own 120s
+    /// timeout still bounds genuine crash loops.
+    #[test]
+    fn derive_phase_binary_waiting_for_engine_to_spawn_is_queued() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: true,
+            is_local: false,
+            running: false,
+            prepared: false,
+            managed_dir_exists: false,
+        });
+        assert_eq!(p, Phase::Queued);
+        // Also assert non-terminal so a future change to is_terminal_for_wait
+        // can't silently re-introduce the "failed after 0s" UX.
+        let status = WorkerStatus {
+            name: "bin".into(),
+            phase: p,
+            engine_running: true,
+            worker_type: Some("binary"),
+            worker_path: None,
+            managed_dir_exists: false,
+            prepared: false,
+            pid: None,
+            alive: false,
+            logs_dir: None,
+            logs_last_modified: None,
+        };
+        assert!(
+            !status.is_terminal_for_wait(),
+            "binary worker pending spawn must NOT be terminal — \
+             otherwise watch_until_ready exits before the engine spawns."
+        );
     }
 
     #[test]
