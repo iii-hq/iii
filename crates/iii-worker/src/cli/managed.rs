@@ -1448,30 +1448,28 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool) -> i32 {
 /// running just get started. We delegate to the existing stop/start paths
 /// rather than duplicating the libkrun teardown / pid-discovery logic.
 ///
-/// Stop failures are logged but do NOT abort the restart -- the most common
-/// reason stop fails here is "already not running," which is exactly the
-/// state start expects. Start's exit code becomes the command's exit code.
+/// Stop is invoked unconditionally so its three-tier PID discovery (OCI
+/// pidfile, binary pidfile, `ps` scan) can catch orphan processes whose
+/// pidfiles are missing or stale. `is_worker_running` only consults
+/// pidfiles, so gating on it would let those orphans slip through and
+/// start would then spawn a duplicate. Stop failures are logged but do
+/// NOT abort the restart -- the most common reason stop "fails" here is
+/// "already not running," which returns 0. Start's exit code becomes the
+/// command's exit code.
 pub async fn handle_managed_restart(worker_name: &str, wait: bool) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
 
-    // Only stop if we see a live process. handle_managed_stop is tolerant of
-    // "not running" (it returns 0 with an "already stopped" message), but
-    // calling it unconditionally clutters the output with a redundant line.
-    if is_worker_running(worker_name) {
-        eprintln!("  Restarting {}...", worker_name.bold());
-        let stop_rc = handle_managed_stop(worker_name).await;
-        if stop_rc != 0 {
-            eprintln!(
-                "  {} stop exited {} -- continuing with start",
-                "warning:".yellow(),
-                stop_rc
-            );
-        }
-    } else {
-        eprintln!("  {} not running; starting fresh...", worker_name.bold());
+    eprintln!("  Restarting {}...", worker_name.bold());
+    let stop_rc = handle_managed_stop(worker_name).await;
+    if stop_rc != 0 {
+        eprintln!(
+            "  {} stop exited {} -- continuing with start",
+            "warning:".yellow(),
+            stop_rc
+        );
     }
 
     handle_managed_start(worker_name, wait).await

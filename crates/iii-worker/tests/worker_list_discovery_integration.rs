@@ -225,3 +225,75 @@ fn find_worker_pid_from_ps_returns_none_for_unknown_name() {
     let unique = format!("definitely-no-such-worker-{}", std::process::id());
     assert_eq!(find_worker_pid_from_ps(&unique), None);
 }
+
+/// Regression test for the restart-path duplicate-spawn bug in
+/// [`handle_managed_restart`] (`crates/iii-worker/src/cli/managed.rs`).
+///
+/// The old restart path gated stop on `is_worker_running`, which only reads
+/// pidfiles. When a worker's pidfile was deleted but the process kept running
+/// (orphan), the gate returned false, stop was skipped, and start spawned a
+/// duplicate. The fix now calls `handle_managed_stop` unconditionally, whose
+/// three-tier discovery (OCI pidfile → binary pidfile → `ps` scan) catches
+/// those orphans.
+///
+/// This test pins down the exact discovery asymmetry the fix relies on: stage
+/// a real live orphan process at the expected binary-worker path but leave
+/// **no pidfile on disk**, then assert that:
+///   1. `is_worker_running` is blind to it (proves the old gate short-circuited).
+///   2. `find_worker_pid_from_ps` (used by `handle_managed_stop`) still finds it
+///      (proves the new unconditional-stop path catches it).
+///
+/// If either assertion flips in the future — e.g., `is_worker_running` gains a
+/// `ps` fallback, or `find_worker_pid_from_ps` loses it — revisit whether the
+/// unconditional-stop pattern in `handle_managed_restart` is still load-bearing.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn restart_orphan_invisible_to_is_worker_running_but_visible_to_ps() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::new(tmp.path());
+
+    // Stage a binary-worker executable at the recognised path, but do NOT
+    // create the corresponding pidfile under ~/.iii/pids/{name}.pid.
+    let workers_dir = tmp.path().join(".iii/workers");
+    std::fs::create_dir_all(&workers_dir).unwrap();
+    let worker_name = format!("test-restart-orphan-{}", std::process::id());
+    let worker_bin = workers_dir.join(&worker_name);
+    std::fs::copy("/bin/sleep", &worker_bin).expect("/bin/sleep must exist on Unix");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&worker_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let mut child = std::process::Command::new(&worker_bin)
+        .arg("60")
+        .spawn()
+        .expect("spawn sentinel sleep process");
+
+    // Give the OS a moment to register the new process in /proc or ps.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let running_by_pidfile = is_worker_running(&worker_name);
+    let found_by_ps = find_worker_pid_from_ps(&worker_name);
+
+    // Always tear down before asserting.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        !running_by_pidfile,
+        "is_worker_running saw orphan {worker_name} without any pidfile on disk. \
+         If this is intentional (e.g., is_worker_running gained a ps fallback), \
+         the unconditional-stop pattern in handle_managed_restart may be redundant \
+         and should be reviewed."
+    );
+    assert_eq!(
+        found_by_ps,
+        Some(child.id()),
+        "handle_managed_stop's ps fallback failed to find live orphan \
+         {worker_name} (pid {}). The restart-path fix depends on this lookup \
+         working; if it has regressed, handle_managed_restart will once again \
+         risk spawning duplicate workers.",
+        child.id()
+    );
+}
