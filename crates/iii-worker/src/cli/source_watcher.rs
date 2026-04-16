@@ -258,31 +258,47 @@ where
     let root_for_filter = project_path.clone();
     let mut watcher = notify::RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                use notify::EventKind;
-                let is_change = matches!(
-                    event.kind,
-                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-                );
-                if !is_change {
+            // Backend-level errors (inotify queue overflow on Linux,
+            // FSEvents stream errors on macOS, permission changes
+            // revoking an existing watch) are surfaced here. Previously
+            // we silently swallowed them, which made "why did my
+            // watcher stop restarting?" impossible to diagnose from
+            // logs alone. Plumbing errors all the way to the consumer
+            // channel would require a `Result`-carrying channel and
+            // offers no more actionable information — the consumer
+            // can't retry a per-event backend error anyway. Logging
+            // here is the smallest change that closes the observability
+            // gap.
+            let event = match res {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(error = %e, "source watcher: notify backend error");
                     return;
                 }
-                // On macOS FSEvents reports bare directory-level events
-                // on the project root whenever any descendant changes
-                // (including inside node_modules). A "path == root"
-                // entry tells us nothing a specific-file event doesn't,
-                // so drop it alongside ignored subtrees. If every path
-                // in the event is either an ignored subtree OR the
-                // bare root, skip — real edits always name a child path.
-                let has_relevant_path = event
-                    .paths
-                    .iter()
-                    .any(|p| !should_ignore_path(p, &root_for_filter) && p != &root_for_filter);
-                if !has_relevant_path {
-                    return;
-                }
-                let _ = tx.send(event);
+            };
+            use notify::EventKind;
+            let is_change = matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            );
+            if !is_change {
+                return;
             }
+            // On macOS FSEvents reports bare directory-level events
+            // on the project root whenever any descendant changes
+            // (including inside node_modules). A "path == root"
+            // entry tells us nothing a specific-file event doesn't,
+            // so drop it alongside ignored subtrees. If every path
+            // in the event is either an ignored subtree OR the
+            // bare root, skip — real edits always name a child path.
+            let has_relevant_path = event
+                .paths
+                .iter()
+                .any(|p| !should_ignore_path(p, &root_for_filter) && p != &root_for_filter);
+            if !has_relevant_path {
+                return;
+            }
+            let _ = tx.send(event);
         },
         notify::Config::default(),
     )?;
