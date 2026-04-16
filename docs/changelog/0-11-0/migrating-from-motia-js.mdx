@@ -308,6 +308,244 @@ iii.registerTrigger({
 })
 ```
 
+### Stream and State operations
+
+In Motia, you used the `Stream` class and `stateManager` to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you can call `iii.trigger()` directly or create your own wrapper classes.
+
+#### Calling `iii.trigger()` directly
+
+<Tabs>
+<Tab title="Stream">
+```typescript
+import { iii } from '@/lib/iii'
+
+const todo = await iii.trigger({
+  function_id: 'stream::get',
+  payload: { stream_name: 'todos', group_id: 'user-1', item_id: 'todo-1' },
+})
+
+await iii.trigger({
+  function_id: 'stream::set',
+  payload: { stream_name: 'todos', group_id: 'user-1', item_id: 'todo-1', data: { title: 'Buy milk' } },
+})
+
+await iii.trigger({
+  function_id: 'stream::delete',
+  payload: { stream_name: 'todos', group_id: 'user-1', item_id: 'todo-1' },
+})
+
+const items = await iii.trigger({
+  function_id: 'stream::list',
+  payload: { stream_name: 'todos', group_id: 'user-1' },
+})
+```
+</Tab>
+<Tab title="State">
+```typescript
+import { iii } from '@/lib/iii'
+
+const theme = await iii.trigger({
+  function_id: 'state::get',
+  payload: { scope: 'settings', key: 'theme' },
+})
+
+await iii.trigger({
+  function_id: 'state::set',
+  payload: { scope: 'settings', key: 'theme', value: 'dark' },
+})
+
+await iii.trigger({
+  function_id: 'state::delete',
+  payload: { scope: 'settings', key: 'theme' },
+})
+
+const allSettings = await iii.trigger({
+  function_id: 'state::list',
+  payload: { scope: 'settings' },
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">Additional function IDs: `stream::update`, `stream::list_groups`, `stream::send` for streams; `state::update`, `state::list_groups` for state.</Callout>
+
+#### Creating wrapper classes
+
+If you prefer the ergonomics Motia's `Stream` and `StateManager` provided, create thin wrappers around `iii.trigger()`:
+
+```typescript title="@/lib/stream"
+import { iii } from '@/lib/iii'
+
+export class Stream {
+  constructor(private name: string) {}
+
+  async get<T>(groupId: string, itemId: string): Promise<T | null> {
+    return iii.trigger({
+      function_id: 'stream::get',
+      payload: { stream_name: this.name, group_id: groupId, item_id: itemId },
+    }) as Promise<T | null>
+  }
+
+  async set<T>(groupId: string, itemId: string, data: T) {
+    return iii.trigger({
+      function_id: 'stream::set',
+      payload: { stream_name: this.name, group_id: groupId, item_id: itemId, data },
+    })
+  }
+
+  async delete(groupId: string, itemId: string) {
+    return iii.trigger({
+      function_id: 'stream::delete',
+      payload: { stream_name: this.name, group_id: groupId, item_id: itemId },
+    })
+  }
+
+  async list<T>(groupId: string): Promise<T[]> {
+    return iii.trigger({
+      function_id: 'stream::list',
+      payload: { stream_name: this.name, group_id: groupId },
+    }) as Promise<T[]>
+  }
+}
+```
+
+```typescript title="@/lib/state"
+import { iii } from '@/lib/iii'
+
+export class StateManager {
+  async get<T>(scope: string, key: string): Promise<T | null> {
+    return iii.trigger({ function_id: 'state::get', payload: { scope, key } }) as Promise<T | null>
+  }
+
+  async set<T>(scope: string, key: string, value: T) {
+    return iii.trigger({ function_id: 'state::set', payload: { scope, key, value } })
+  }
+
+  async delete(scope: string, key: string) {
+    return iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
+  }
+
+  async list<T>(scope: string): Promise<T[]> {
+    return iii.trigger({ function_id: 'state::list', payload: { scope } }) as Promise<T[]>
+  }
+}
+
+export const stateManager = new StateManager()
+```
+
+Usage is then the same as it was in Motia:
+
+```typescript
+import { Stream } from '@/lib/stream'
+import { stateManager } from '@/lib/state'
+
+const todoStream = new Stream('todos')
+const todo = await todoStream.get('user-1', 'todo-1')
+await todoStream.set('user-1', 'todo-1', { title: 'Buy milk' })
+
+const theme = await stateManager.get('settings', 'theme')
+await stateManager.set('settings', 'theme', 'dark')
+```
+
+### Stream lifecycle hooks (`onJoin` / `onLeave`)
+
+In Motia, `*.stream.ts` files could define `onJoin` and `onLeave` callbacks inside the `StreamConfig`. The framework registered a single shared function for each hook and dispatched by stream name internally.
+
+With iii-sdk, you register these as regular functions with `stream:join` and `stream:leave` triggers. The handler receives a `StreamJoinLeaveEvent` with `{ stream_name, group_id, id, context }`.
+
+<Tabs>
+<Tab title="Motia">
+```typescript
+import { type StreamConfig } from 'motia'
+
+export const config: StreamConfig = {
+  name: 'todo',
+  schema: todoSchema,
+  baseConfig: { storageType: 'default' },
+
+  onJoin: async (subscription, _context, authContext) => {
+    return { unauthorized: false }
+  },
+
+  onLeave: async (subscription, _context, authContext) => {
+    // cleanup logic
+  },
+}
+```
+</Tab>
+<Tab title="iii-sdk">
+```typescript
+import { iii } from '@/lib/iii'
+
+iii.registerFunction('stream::on-join', async (event) => {
+  const { stream_name, group_id, id, context } = event
+  return { unauthorized: false }
+})
+
+iii.registerTrigger({
+  type: 'stream:join',
+  function_id: 'stream::on-join',
+  config: {},
+})
+
+iii.registerFunction('stream::on-leave', async (event) => {
+  const { stream_name, group_id, id, context } = event
+  // cleanup logic
+})
+
+iii.registerTrigger({
+  type: 'stream:leave',
+  function_id: 'stream::on-leave',
+  config: {},
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">If you had multiple streams with different `onJoin` / `onLeave` logic, dispatch by `event.stream_name` inside the handler or register separate function IDs per stream.</Callout>
+
+### Stream authentication (`authenticateStream`)
+
+In Motia, `motia.config.ts` exported an `authenticateStream` function that ran during WebSocket upgrade. With iii-sdk, you register a function directly and reference its ID in the engine's stream module config.
+
+<Tabs>
+<Tab title="Motia">
+```typescript
+// motia.config.ts
+import type { AuthenticateStream } from 'motia'
+
+export const authenticateStream: AuthenticateStream = async (req, context) => {
+  return { context: { userId: 'sergio' } }
+}
+```
+</Tab>
+<Tab title="iii-sdk">
+```typescript
+import { iii } from '@/lib/iii'
+
+iii.registerFunction('stream::authenticate', async (input) => {
+  const { headers, path, query_params, addr } = input
+  return { context: { userId: 'sergio' } }
+})
+```
+</Tab>
+</Tabs>
+
+The engine calls this function during WebSocket upgrade. Reference the function ID in your `config.yaml`:
+
+```yaml
+workers:
+  - name: iii-stream
+    config:
+      auth_function: stream::authenticate
+```
+
+Key differences:
+
+- Motia used `queryParams` (camelCase); iii-sdk uses `query_params` (snake_case).
+- No trigger registration is needed for auth — it is config-driven via `auth_function`.
+- The `motia.config.ts` file is no longer needed; delete it.
+
 ---
 
 ## Step 4 — Update request and response shapes
@@ -478,6 +716,10 @@ workers:
 - [ ] Replace `status` with `status_code` in every handler return
 - [ ] Replace `params` with `path_params` and `query` with `query_params`
 - [ ] Replace `requestBody` with `request_body` in streaming handlers
+- [ ] Replace `Stream` and `stateManager` usage with `iii.trigger()` calls or custom wrappers
+- [ ] Migrate stream `onJoin` / `onLeave` hooks to `registerFunction` + `registerTrigger` (`stream:join` / `stream:leave`)
+- [ ] Migrate `authenticateStream` from `motia.config.ts` to a registered function and set `auth_function` in `config.yaml`
+- [ ] Delete `motia.config.ts`
 - [ ] Create `src/main.ts` with side-effect imports for every handler
 - [ ] Replace `motia dev` with `bun run --watch src/main.ts` in your dev config
 - [ ] Replace `motia build` with an esbuild config
