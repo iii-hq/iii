@@ -5,7 +5,7 @@ This guide covers two major migration areas:
 1. **HTTP handler signature changes** -- moving from `(req, ctx)` to `MotiaHttpArgs`-based `{ request, response }` destructuring, including SSE support.
 2. **Context API changes** -- `state`, `enqueue`, `logger`, and `streams` have been removed from `FlowContext` and are now standalone imports.
 
-> For a complete migration from Motia v0.17.x to 1.0-RC, see the [full migration guide](https://motia.dev/docs/getting-started/migration-guide).
+> For migrating Motia-based projects to iii, see [Migrating from Motia.js](https://iii.dev/docs/changelog/0-11-0/migrating-from-motia-js).
 
 ---
 
