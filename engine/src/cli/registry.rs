@@ -83,7 +83,7 @@ pub static REGISTRY: &[BinarySpec] = &[
     },
     BinarySpec {
         name: "iii-tools",
-        repo: "iii-hq/cli-tooling",
+        repo: "iii-hq/iii",
         has_checksum: true,
         supported_targets: &[
             "aarch64-apple-darwin",
@@ -96,7 +96,7 @@ pub static REGISTRY: &[BinarySpec] = &[
             cli_command: "create",
             binary_subcommand: Some("create"),
         }],
-        tag_prefix: None,
+        tag_prefix: Some("iii"),
     },
     BinarySpec {
         name: "iii-cloud",
@@ -195,7 +195,8 @@ mod tests {
     fn test_resolve_create() {
         let (spec, sub) = resolve_command("create").unwrap();
         assert_eq!(spec.name, "iii-tools");
-        assert_eq!(spec.repo, "iii-hq/cli-tooling");
+        assert_eq!(spec.repo, "iii-hq/iii");
+        assert_eq!(spec.tag_prefix, Some("iii"));
         assert_eq!(sub, Some("create"));
     }
 
