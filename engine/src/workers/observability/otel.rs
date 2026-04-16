@@ -1111,6 +1111,62 @@ impl<'de> Deserialize<'de> for OtlpNumericString {
     }
 }
 
+/// Wrapper type that can deserialize either a number or a string to i64.
+///
+/// Mirrors `OtlpNumericString` but for signed 64-bit integers. Per the OTLP/JSON
+/// spec, protobuf `int64`/`sint64`/`sfixed64` fields are encoded as JSON strings
+/// (because JavaScript numbers can't represent the full i64 range). The Node,
+/// Python, and Rust SDKs all emit `asInt` as a string; without this visitor the
+/// engine fails to parse any integer-valued gauge or counter metric.
+#[derive(Debug, Default, Clone, Copy)]
+struct OtlpIntString(i64);
+
+impl<'de> Deserialize<'de> for OtlpIntString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct IntStringVisitor;
+
+        impl<'de> Visitor<'de> for IntStringVisitor {
+            type Value = OtlpIntString;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a signed integer or a string containing a signed integer")
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(OtlpIntString(v))
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                i64::try_from(v)
+                    .map(OtlpIntString)
+                    .map_err(|_| de::Error::custom(format!("value {} overflows i64", v)))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                v.parse::<i64>()
+                    .map(OtlpIntString)
+                    .map_err(|_| de::Error::custom(format!("invalid signed integer string: {}", v)))
+            }
+        }
+
+        deserializer.deserialize_any(IntStringVisitor)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpStatus {
@@ -1815,8 +1871,10 @@ struct OtlpNumberDataPoint {
     time_unix_nano: OtlpNumericString,
     #[serde(default)]
     as_double: Option<f64>,
+    /// Per OTLP/JSON spec this is encoded as a string, but some senders use a
+    /// bare JSON number. `OtlpIntString` accepts both.
     #[serde(default)]
-    as_int: Option<i64>,
+    as_int: Option<OtlpIntString>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1846,7 +1904,7 @@ struct OtlpHistogramDataPoint {
 impl OtlpNumberDataPoint {
     fn get_value(&self) -> f64 {
         self.as_double
-            .or_else(|| self.as_int.map(|i| i as f64))
+            .or_else(|| self.as_int.map(|i| i.0 as f64))
             .unwrap_or(0.0)
     }
 
@@ -2979,7 +3037,7 @@ mod tests {
                         "sum": {
                             "dataPoints": [{
                                 "timeUnixNano": "1704067200000000000",
-                                "asInt": 1234
+                                "asInt": "1234"
                             }],
                             "aggregationTemporality": 2,
                             "isMonotonic": true
@@ -3000,6 +3058,70 @@ mod tests {
             crate::workers::observability::metrics::StoredMetricType::Counter => {}
             _ => panic!("Expected Counter metric type"),
         }
+
+        // Verify the string-encoded value made it through intact.
+        use crate::workers::observability::metrics::StoredDataPoint;
+        let stored_value = match &metrics[0].data_points[0] {
+            StoredDataPoint::Number(dp) => dp.value,
+            _ => panic!("Expected Number data point"),
+        };
+        assert_eq!(stored_value, 1234.0);
+    }
+
+    /// Regression test for the "Failed to parse OTLP metrics JSON: invalid type:
+    /// string, expected i64" error observed in production. Per the OTLP/JSON
+    /// spec, int64 fields (including `asInt`) are serialized as strings. The
+    /// Node, Python, and Rust SDKs all emit `asInt` as a string, so the engine
+    /// MUST accept both forms.
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_metrics_as_int_string_form() {
+        crate::workers::observability::metrics::init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = crate::workers::observability::metrics::get_metric_storage() {
+            storage.clear();
+        }
+
+        // Shape produced by a real Python SDK worker emitting an integer gauge.
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "rss-service"}
+                    }]
+                },
+                "scopeMetrics": [{
+                    "metrics": [{
+                        "name": "process.memory.rss",
+                        "unit": "By",
+                        "gauge": {
+                            "dataPoints": [{
+                                "timeUnixNano": "1704067200000000000",
+                                "asInt": "2048"
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_metrics(otlp_json).await;
+        assert!(
+            result.is_ok(),
+            "SDK-shaped payload with asInt-as-string must parse: {:?}",
+            result
+        );
+
+        let storage = crate::workers::observability::metrics::get_metric_storage().unwrap();
+        let metrics = storage.get_metrics_by_name("process.memory.rss");
+        assert_eq!(metrics.len(), 1);
+
+        use crate::workers::observability::metrics::StoredDataPoint;
+        let stored_value = match &metrics[0].data_points[0] {
+            StoredDataPoint::Number(dp) => dp.value,
+            _ => panic!("Expected Number data point"),
+        };
+        assert_eq!(stored_value, 2048.0);
     }
 
     #[tokio::test]
@@ -4032,6 +4154,45 @@ mod tests {
     fn test_otlp_numeric_string_from_negative() {
         let json = r#"-1"#;
         let result: Result<OtlpNumericString, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    // ==========================================================================
+    // OtlpIntString Deserializer Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_otlp_int_string_from_string() {
+        let json = r#""2048""#;
+        let result: OtlpIntString = serde_json::from_str(json).unwrap();
+        assert_eq!(result.0, 2048);
+    }
+
+    #[test]
+    fn test_otlp_int_string_from_negative_string() {
+        let json = r#""-42""#;
+        let result: OtlpIntString = serde_json::from_str(json).unwrap();
+        assert_eq!(result.0, -42);
+    }
+
+    #[test]
+    fn test_otlp_int_string_from_number() {
+        let json = r#"12345"#;
+        let result: OtlpIntString = serde_json::from_str(json).unwrap();
+        assert_eq!(result.0, 12345);
+    }
+
+    #[test]
+    fn test_otlp_int_string_from_negative_number() {
+        let json = r#"-7"#;
+        let result: OtlpIntString = serde_json::from_str(json).unwrap();
+        assert_eq!(result.0, -7);
+    }
+
+    #[test]
+    fn test_otlp_int_string_rejects_garbage() {
+        let json = r#""not a number""#;
+        let result: Result<OtlpIntString, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
 
