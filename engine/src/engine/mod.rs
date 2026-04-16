@@ -1390,6 +1390,80 @@ impl Engine {
         Ok(())
     }
 
+    /// Handles OTEL-only WebSocket connections.
+    ///
+    /// SDKs open a second WS exclusively for OpenTelemetry (OTLP/MTRC/LOGS
+    /// binary frames). Routing that traffic through `handle_worker` would
+    /// pollute `worker_registry` with ghost rows that have no metadata, no
+    /// functions, and no pid — doubling the worker count, inflating the
+    /// `workers_active` metric, and adding noise to `Worker registered`
+    /// logs. This handler performs the same RBAC handshake as a normal
+    /// worker connection but skips `worker_registry.register_worker`, and
+    /// only accepts telemetry binary frames on the inbound side.
+    pub async fn handle_otel(
+        &self,
+        socket: WebSocket,
+        peer: SocketAddr,
+        uri: Uri,
+        headers: HeaderMap,
+        config: Arc<WorkerManagerConfig>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        tracing::debug!(peer = %peer, "OTEL connection opened");
+        let (mut ws_tx, mut ws_rx) = socket.split();
+
+        // Reuse the worker RBAC gate so OTEL traffic can't bypass auth.
+        if let Err(err) =
+            rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers).await
+        {
+            let error_msg = serde_json::json!({
+                "type": "error",
+                "error": { "code": err.code, "message": err.message }
+            });
+            let _ = ws_tx
+                .send(WsMessage::Text(error_msg.to_string().into()))
+                .await;
+            let _ = ws_tx.send(WsMessage::Close(None)).await;
+            return Ok(());
+        }
+
+        loop {
+            tokio::select! {
+                frame = ws_rx.next() => {
+                    match frame {
+                        Some(Ok(WsMessage::Binary(bytes))) => {
+                            if !handle_telemetry_frame(&bytes, &peer).await {
+                                tracing::warn!(peer = %peer, "Unrecognized binary frame on /otel (dropping)");
+                            }
+                        }
+                        Some(Ok(WsMessage::Text(_))) => {
+                            // /otel is binary-only. Text frames here are a
+                            // protocol mistake — ignore rather than crash.
+                            tracing::debug!(peer = %peer, "Ignoring text frame on /otel");
+                        }
+                        Some(Ok(WsMessage::Close(_))) => {
+                            tracing::debug!(peer = %peer, "OTEL peer closed");
+                            break;
+                        }
+                        Some(Ok(WsMessage::Ping(payload))) => {
+                            let _ = ws_tx.send(WsMessage::Pong(payload)).await;
+                        }
+                        Some(Ok(WsMessage::Pong(_))) => {}
+                        Some(Err(_)) | None => break,
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::debug!(peer = %peer, "Shutdown signal received, closing OTEL connection");
+                    let _ = ws_tx.send(WsMessage::Close(None)).await;
+                    break;
+                }
+            }
+        }
+
+        tracing::debug!(peer = %peer, "OTEL connection closed");
+        Ok(())
+    }
+
     async fn cleanup_worker(&self, worker: &WorkerConnection) {
         let regular_functions = worker.get_regular_function_ids().await;
         let external_functions = worker.get_external_function_ids().await;
