@@ -44,6 +44,14 @@ pub enum Phase {
 pub struct DeriveInputs {
     pub engine_running: bool,
     pub is_binary: bool,
+    /// Local-path workers run an in-VM deps-install script that terminates
+    /// by writing `/var/.iii-prepared` (see `build_libkrun_local_script` in
+    /// `local_worker.rs`). Only they produce or consume that marker. OCI
+    /// images bake their deps at build time, so the marker is meaningless
+    /// there — treating it as a readiness gate for OCI keeps workers stuck
+    /// in `Phase::Preparing` forever, even after they've connected to the
+    /// engine and registered functions.
+    pub is_local: bool,
     pub running: bool,
     pub prepared: bool,
     pub managed_dir_exists: bool,
@@ -51,24 +59,29 @@ pub struct DeriveInputs {
 
 /// Classify a worker into a [`Phase`] given its observable state.
 ///
-/// Binary workers are evaluated first because they are plain host processes:
-/// once the engine has spawned them, they run independently of the engine's
-/// TCP port. A live pid IS ready; a dead one means the process exited (or
-/// never started). Gating on `engine_running` would shadow binary workers as
-/// `EngineDown` during an engine restart even though the worker is alive,
-/// and would leave `iii worker add --wait <binary>` hanging because
-/// `EngineDown` is not a terminal wait phase.
+/// Worker-kind-specific gates, evaluated in order:
 ///
-/// For VM workers, `Ready` requires BOTH a live VM pid AND the
-/// `.iii-prepared` marker. The VM pid goes live the moment libkrun boots,
-/// but the in-guest init script then runs setup/install (which can take
-/// minutes on first boot with a cold dep cache). The marker is only written
-/// at the end of that script, so it's the honest signal the worker is
-/// actually ready to handle events, not just that the VM kernel is up.
+/// **Binary** — plain host processes, independent of the engine's TCP port
+/// once spawned. Live pid = Ready; dead = Failed. Gating on `engine_running`
+/// would shadow binary workers as `EngineDown` during an engine restart, and
+/// would leave `iii worker add --wait <binary>` hanging because `EngineDown`
+/// is not a terminal wait phase.
+///
+/// **OCI** — image has deps baked in; no in-VM install step runs. The
+/// `.iii-prepared` marker is never written (see `start_oci_worker`). For
+/// these, `running` alone is the honest ready signal: the worker process
+/// is up inside libkrun and has already connected to the engine.
+///
+/// **Local** — rootfs cloned, then an in-guest init script runs
+/// setup/install (which can take minutes on first boot with a cold dep
+/// cache). `Ready` requires BOTH a live VM pid AND `.iii-prepared`, because
+/// the VM pid goes live the moment libkrun boots — well before the deps
+/// install finishes.
 pub fn derive_phase(inputs: DeriveInputs) -> Phase {
     let DeriveInputs {
         engine_running,
         is_binary,
+        is_local,
         running,
         prepared,
         managed_dir_exists,
@@ -79,6 +92,18 @@ pub fn derive_phase(inputs: DeriveInputs) -> Phase {
     }
     if !engine_running {
         return Phase::EngineDown;
+    }
+    if !is_local {
+        // OCI (or builtin `Config`) paths: no deps-install marker lifecycle.
+        // Running is the honest ready signal; absence reverts to the boot
+        // staging signals we can still observe.
+        return if running {
+            Phase::Ready
+        } else if managed_dir_exists {
+            Phase::Preparing
+        } else {
+            Phase::Queued
+        };
     }
     if running && prepared {
         Phase::Ready
@@ -152,6 +177,7 @@ impl WorkerStatus {
             ResolvedWorkerType::Config => ("config", None),
         };
         let is_binary = matches!(resolved, ResolvedWorkerType::Binary { .. });
+        let is_local = matches!(resolved, ResolvedWorkerType::Local { .. });
 
         let home = dirs::home_dir().unwrap_or_default();
         let managed_dir = home.join(".iii/managed").join(name);
@@ -178,6 +204,7 @@ impl WorkerStatus {
         let phase = derive_phase(DeriveInputs {
             engine_running,
             is_binary,
+            is_local,
             running,
             prepared,
             managed_dir_exists,
@@ -299,6 +326,29 @@ impl WorkerStatus {
                 "sandbox:".dimmed(),
                 "n/a (binary worker runs on host)".dimmed()
             )
+        } else if self.worker_type == Some("oci") {
+            // OCI images bake deps at build time — no in-VM install, no
+            // `.iii-prepared` marker. The honest statuses here are:
+            //   - no managed dir yet (pre-boot)
+            //   - running (libkrun up, deps were in the image)
+            // Suppressing the local-only "deps still installing" line.
+            match (self.managed_dir_exists, self.alive) {
+                (false, _) => format!(
+                    "{:>12}  {}",
+                    "sandbox:".dimmed(),
+                    "no managed dir yet".dimmed()
+                ),
+                (true, true) => format!(
+                    "{:>12}  {} (image-baked deps)",
+                    "sandbox:".dimmed(),
+                    "running".green()
+                ),
+                (true, false) => format!(
+                    "{:>12}  {} (rootfs ready)",
+                    "sandbox:".dimmed(),
+                    "prepared".green()
+                ),
+            }
         } else {
             match (self.managed_dir_exists, self.prepared) {
                 (false, _) => format!(
@@ -683,6 +733,7 @@ mod tests {
         let p = derive_phase(DeriveInputs {
             engine_running: false,
             is_binary: true,
+            is_local: false,
             running: true,
             prepared: false,
             managed_dir_exists: false,
@@ -703,6 +754,7 @@ mod tests {
         let p = derive_phase(DeriveInputs {
             engine_running: false,
             is_binary: true,
+            is_local: false,
             running: false,
             prepared: false,
             managed_dir_exists: false,
@@ -720,6 +772,7 @@ mod tests {
         let p = derive_phase(DeriveInputs {
             engine_running: false,
             is_binary: false,
+            is_local: true,
             running: false,
             prepared: false,
             managed_dir_exists: false,
@@ -728,10 +781,11 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_vm_worker_happy_path_is_ready_when_running_and_prepared() {
+    fn derive_phase_local_worker_happy_path_is_ready_when_running_and_prepared() {
         let p = derive_phase(DeriveInputs {
             engine_running: true,
             is_binary: false,
+            is_local: true,
             running: true,
             prepared: true,
             managed_dir_exists: true,
@@ -740,12 +794,15 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_vm_worker_running_without_marker_is_preparing() {
+    fn derive_phase_local_worker_running_without_marker_is_preparing() {
         // The honest "installing deps inside VM" window: libkrun is up but
         // the in-guest init script hasn't written `.iii-prepared` yet.
+        // This only applies to local-path workers — OCI images don't
+        // have an install phase.
         let p = derive_phase(DeriveInputs {
             engine_running: true,
             is_binary: false,
+            is_local: true,
             running: true,
             prepared: false,
             managed_dir_exists: true,
@@ -754,10 +811,11 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_vm_worker_prepared_but_dead_is_booting() {
+    fn derive_phase_local_worker_prepared_but_dead_is_booting() {
         let p = derive_phase(DeriveInputs {
             engine_running: true,
             is_binary: false,
+            is_local: true,
             running: false,
             prepared: true,
             managed_dir_exists: true,
@@ -766,10 +824,11 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_vm_worker_managed_dir_without_marker_is_preparing() {
+    fn derive_phase_local_worker_managed_dir_without_marker_is_preparing() {
         let p = derive_phase(DeriveInputs {
             engine_running: true,
             is_binary: false,
+            is_local: true,
             running: false,
             prepared: false,
             managed_dir_exists: true,
@@ -778,15 +837,73 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_vm_worker_fresh_is_queued() {
+    fn derive_phase_local_worker_fresh_is_queued() {
         let p = derive_phase(DeriveInputs {
             engine_running: true,
             is_binary: false,
+            is_local: true,
             running: false,
             prepared: false,
             managed_dir_exists: false,
         });
         assert_eq!(p, Phase::Queued);
+    }
+
+    /// OCI regression: `iii worker add docker.io/foo/bar` images bake their
+    /// deps at build time — the in-VM install script that writes
+    /// `/var/.iii-prepared` never runs for these. Before the fix, the
+    /// probe treated a running-but-no-marker OCI worker as Preparing
+    /// forever, even after the worker had already connected to the engine
+    /// and registered its functions. This is the bug reported for
+    /// `todo-worker-python` (OCI image shows "preparing (rootfs cloned,
+    /// deps still installing)" with engine logs proving REGISTERED endpoints).
+    ///
+    /// Fix: a running OCI worker is Ready. The `.iii-prepared` marker
+    /// is a local-worker-only concept.
+    #[test]
+    fn derive_phase_oci_worker_running_is_ready_without_marker() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            is_local: false,
+            running: true,
+            prepared: false,
+            managed_dir_exists: true,
+        });
+        assert_eq!(
+            p,
+            Phase::Ready,
+            "OCI worker with a live VM pid must classify as Ready — \
+             deps are baked into the image, no in-VM install step runs."
+        );
+    }
+
+    #[test]
+    fn derive_phase_oci_worker_no_managed_dir_is_queued() {
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            is_local: false,
+            running: false,
+            prepared: false,
+            managed_dir_exists: false,
+        });
+        assert_eq!(p, Phase::Queued);
+    }
+
+    #[test]
+    fn derive_phase_oci_worker_managed_dir_but_not_running_is_preparing() {
+        // Intermediate state between "queued" and "running": rootfs was
+        // extracted, libkrun hasn't come up yet. Brief window during boot.
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            is_local: false,
+            running: false,
+            prepared: false,
+            managed_dir_exists: true,
+        });
+        assert_eq!(p, Phase::Preparing);
     }
 
     // ---------------------------------------------------------------------
