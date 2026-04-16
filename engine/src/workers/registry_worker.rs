@@ -58,12 +58,19 @@ fn pid_file_candidates(home: &std::path::Path, worker_name: &str) -> [PathBuf; 2
 ///
 /// Any drift here silently breaks the non-default `iii-worker-manager` port
 /// case — the exact bug this module exists to fix.
-fn spawn_args(worker_name: &str, port: u16) -> [String; 4] {
+fn spawn_args(worker_name: &str, port: u16) -> [String; 5] {
+    // `--no-wait` keeps the child process short-lived. Without it the default
+    // `wait=true` path pulls `wait_for_ready` → `watch_until_ready`, which
+    // eprintln's a 500ms status-panel redraw loop into the engine-redirected
+    // stderr.log. `iii worker logs -f` then tails that noise interleaved with
+    // the VM's actual console output. The engine already probes liveness via
+    // `is_alive`, so blocking the child on the panel loop is pure pollution.
     [
         "start".into(),
         worker_name.into(),
         "--port".into(),
         port.to_string(),
+        "--no-wait".into(),
     ]
 }
 
@@ -545,8 +552,21 @@ mod tests {
                 "start".to_string(),
                 "pdfkit".to_string(),
                 "--port".to_string(),
-                "49199".to_string()
+                "49199".to_string(),
+                "--no-wait".to_string(),
             ],
+        );
+    }
+
+    /// Regression lock: the engine auto-spawn MUST pass `--no-wait`.
+    /// Dropping it resurrects the status-panel redraw loop that poisons
+    /// `~/.iii/logs/<name>/stderr.log` (visible via `iii worker logs -f`).
+    #[test]
+    fn spawn_args_always_passes_no_wait() {
+        let args = spawn_args("anything", 1234);
+        assert!(
+            args.iter().any(|a| a == "--no-wait"),
+            "engine spawn must include --no-wait to avoid polluting stderr.log"
         );
     }
 

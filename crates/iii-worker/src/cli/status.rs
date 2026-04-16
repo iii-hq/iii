@@ -1091,10 +1091,12 @@ mod tests {
     // previously exercised only indirectly through integration paths.
     // ---------------------------------------------------------------------
 
-    /// Shared guard for tests that mutate HOME + CWD. HOME is process-global,
-    /// CWD is process-global, so any two tests that touch either must run
-    /// one at a time.
-    static PROBE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Shared guard for tests that mutate HOME + CWD. Aliased to the
+    /// crate-wide test lock at `super::super::test_support::TEST_HOME_LOCK`
+    /// so tests across modules (supervisor_ctl, etc.) that read HOME
+    /// via `dirs::home_dir()` don't race against HOME mutations
+    /// here and pick up a tempdir path that breaches SUN_LEN.
+    use super::super::test_support::TEST_HOME_LOCK as PROBE_ENV_LOCK;
 
     struct ProbeEnvGuard {
         home: Option<std::ffi::OsString>,

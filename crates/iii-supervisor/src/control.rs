@@ -49,7 +49,7 @@ pub fn find_virtio_port_by_name(target: &str) -> Option<PathBuf> {
 
 /// Dispatch a single request against the supervisor's state, returning
 /// the response to send back. Pure function of `(state, req)` — no I/O.
-pub fn dispatch(state: &State, req: Request) -> (Response, bool) {
+pub fn dispatch(state: &State, req: &Request) -> (Response, bool) {
     match req {
         Request::Ping => (
             Response::Alive {
@@ -153,7 +153,7 @@ where
         match protocol::decode_request(&line) {
             Ok(req) => {
                 tracing::debug!(request = ?req, "dispatching");
-                let (resp, should_exit) = dispatch(&state, req.clone());
+                let (resp, should_exit) = dispatch(&state, &req);
                 writeln!(writer, "{}", protocol::encode_response(&resp))?;
                 writer.flush()?;
                 on_dispatch(&req, &resp, &state);
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn dispatch_ping_returns_alive_with_pid_zero_when_no_child() {
         let state = sleep_state();
-        let (resp, exit) = dispatch(&state, Request::Ping);
+        let (resp, exit) = dispatch(&state, &Request::Ping);
         assert!(!exit);
         assert!(matches!(resp, Response::Alive { pid: 0 }));
     }
@@ -199,7 +199,7 @@ mod tests {
     fn dispatch_ping_returns_alive_with_running_pid() {
         let state = sleep_state();
         let pid = state.spawn_initial().unwrap();
-        let (resp, _) = dispatch(&state, Request::Ping);
+        let (resp, _) = dispatch(&state, &Request::Ping);
         assert_eq!(resp, Response::Alive { pid });
         state.kill_for_shutdown().unwrap();
     }
@@ -210,7 +210,7 @@ mod tests {
         state.spawn_initial().unwrap();
         state.kill_and_respawn().unwrap();
         state.kill_and_respawn().unwrap();
-        let (resp, _) = dispatch(&state, Request::Status);
+        let (resp, _) = dispatch(&state, &Request::Status);
         match resp {
             Response::Status { restarts, pid } => {
                 assert_eq!(restarts, 2);
@@ -225,7 +225,7 @@ mod tests {
     fn dispatch_restart_bumps_counter() {
         let state = sleep_state();
         state.spawn_initial().unwrap();
-        let (resp, exit) = dispatch(&state, Request::Restart);
+        let (resp, exit) = dispatch(&state, &Request::Restart);
         assert_eq!(resp, Response::Ok);
         assert!(!exit);
         assert_eq!(state.restarts(), 1);
@@ -236,7 +236,7 @@ mod tests {
     fn dispatch_shutdown_requests_exit() {
         let state = sleep_state();
         state.spawn_initial().unwrap();
-        let (resp, exit) = dispatch(&state, Request::Shutdown);
+        let (resp, exit) = dispatch(&state, &Request::Shutdown);
         assert_eq!(resp, Response::Ok);
         assert!(exit, "shutdown must request loop exit");
         assert_eq!(state.pid(), None);

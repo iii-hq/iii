@@ -402,6 +402,25 @@ pub async fn handle_local_add(
     // 4. Resolve worker name
     let worker_name = resolve_worker_name(&project_path);
 
+    // Defense in depth: the manifest's `name:` field is attacker-
+    // reachable via a hand-edited or copy-pasted iii.worker.yaml, and
+    // it flows into filesystem operations below (delete_worker_artifacts
+    // does remove_dir_all on ~/.iii/workers/<name> and ~/.iii/managed/<name>).
+    // `Path::join` preserves `..` components, so a name like
+    // `../../../some_dir` produces a real traversal path. The primary
+    // validator at `append_worker_with_path` normally blocks such names
+    // from entering config.yaml, but re-validate here so a stale or
+    // malicious manifest can't slip past on the --force path.
+    if let Err(msg) = super::registry::validate_worker_name(&worker_name) {
+        eprintln!(
+            "{} Worker name from manifest is invalid: {}\n  \
+             Names must be single path segments with no `/`, `\\`, `..`, or shell metachars.",
+            "error:".red(),
+            msg
+        );
+        return 1;
+    }
+
     // 5. Check if already exists in config.yaml
     if super::config_file::worker_exists(&worker_name) {
         if !force {
@@ -791,38 +810,12 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     exit_code
 }
 
-/// Write the sidecar PID to `pid_file` with symlink-replace defense.
-///
-/// On Unix, opens with `O_NOFOLLOW` + mode `0o600` so a local attacker
-/// with dir-traverse access can't pre-plant a symlink at `watch.pid`
-/// pointing at a sensitive file (e.g. `~/.ssh/authorized_keys`) and
-/// have our write clobber it. Matches the hardening already applied to
-/// the watcher log file immediately above.
-///
-/// On non-Unix, falls back to `std::fs::write`. Failures are logged and
-/// swallowed — a missing pidfile only degrades stop-path reaping, not
-/// correctness of a running watcher.
-fn write_pid_file(pid_file: &std::path::Path, pid: u32) {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).write(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(nix::libc::O_NOFOLLOW);
-        opts.mode(0o600);
-    }
-    match opts.open(pid_file) {
-        Ok(mut f) => {
-            use std::io::Write;
-            if let Err(e) = write!(f, "{}", pid) {
-                tracing::warn!(path = %pid_file.display(), error = %e, "failed to write pidfile");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(path = %pid_file.display(), error = %e, "failed to open pidfile");
-        }
-    }
-}
+// Sidecar pidfile writes delegate to super::pidfile::write_pid_file for
+// unified hardening across all managed-dir pidfiles. See that module
+// for rationale; in short, O_NOFOLLOW + 0o600 on Unix so a symlink
+// pre-planted at watch.pid can't redirect our write to a sensitive
+// target.
+use super::pidfile::write_pid_file;
 
 /// Spawn the hidden `__watch-source` sidecar process, detached, with
 /// its PID recorded so `kill_stale_worker` can reap it on stop.
@@ -1146,39 +1139,6 @@ resources:
         assert_eq!(memory, 4096);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn write_pid_file_refuses_to_follow_symlink() {
-        // Attacker (or stale state) pre-plants watch.pid as a symlink
-        // pointing at a sensitive file. write_pid_file must fail open
-        // instead of clobbering the symlink target.
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("sensitive-target");
-        std::fs::write(&target, "DO-NOT-OVERWRITE").unwrap();
-
-        let pid_file = dir.path().join("watch.pid");
-        std::os::unix::fs::symlink(&target, &pid_file).unwrap();
-
-        write_pid_file(&pid_file, 42);
-
-        // Target must be untouched.
-        let contents = std::fs::read_to_string(&target).unwrap();
-        assert_eq!(contents, "DO-NOT-OVERWRITE");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_pid_file_creates_file_with_owner_only_mode() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("watch.pid");
-
-        write_pid_file(&pid_file, 1234);
-
-        let meta = std::fs::metadata(&pid_file).unwrap();
-        // Mask off file-type bits, keep permission bits only.
-        let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "pidfile must be 0o600, got {mode:o}");
-        assert_eq!(std::fs::read_to_string(&pid_file).unwrap(), "1234");
-    }
+    // Symlink-defense + 0o600 mode tests moved to super::pidfile where
+    // the shared implementation lives.
 }

@@ -187,20 +187,58 @@ pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
 ///
 /// Best-effort: permission errors on subdirs are logged and skipped,
 /// not propagated. The watcher stays online for the rest of the tree.
-fn watch_pruned(watcher: &mut notify::RecommendedWatcher, root: &Path) -> anyhow::Result<()> {
+fn watch_pruned(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+    registered: &mut HashSet<PathBuf>,
+) -> anyhow::Result<()> {
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
     queue.push_back(root.to_path_buf());
 
     while let Some(dir) = queue.pop_front() {
-        if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
-            tracing::debug!(
-                path = %dir.display(),
-                error = %e,
-                "watch_pruned: skipping unwatchable dir"
-            );
-            continue;
+        match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                registered.insert(dir.clone());
+            }
+            Err(e) => {
+                // Detect inotify ENOSPC (io::ErrorKind::StorageFull on
+                // stable) and call it out once with an actionable
+                // remediation. notify wraps the OS error in its own
+                // variants so we match on the error string rather than
+                // plumbing through a platform-specific check.
+                //
+                // ENOSPC is terminal: the kernel's inotify budget is
+                // a per-user counter, so every remaining `inotify_add_watch`
+                // for this user will fail the same way. Continuing the
+                // walk would burn one syscall per dir on large trees
+                // (tens of thousands on a monorepo). Abort the walk —
+                // the watcher stays online for already-registered dirs,
+                // and the user now has an actionable log line.
+                let msg = e.to_string();
+                if msg.contains("No space left on device")
+                    || msg.contains("watch limit")
+                    || msg.contains("ENOSPC")
+                {
+                    tracing::warn!(
+                        path = %dir.display(),
+                        error = %e,
+                        "source watcher: inotify watch budget exhausted — file changes in \
+                         some directories will go undetected. Raise the limit with: \
+                         `sudo sysctl fs.inotify.max_user_watches=524288` (persist via \
+                         /etc/sysctl.d/). Aborting the rest of the walk to avoid a storm \
+                         of failing syscalls."
+                    );
+                    return Ok(());
+                }
+                tracing::debug!(
+                    path = %dir.display(),
+                    error = %e,
+                    "watch_pruned: skipping unwatchable dir"
+                );
+                continue;
+            }
         }
 
         let read = match std::fs::read_dir(&dir) {
@@ -248,26 +286,47 @@ fn watch_pruned(watcher: &mut notify::RecommendedWatcher, root: &Path) -> anyhow
 ///
 /// macOS FSEvents is inherently recursive and auto-covers new subdirs
 /// already, so this call is a no-op there aside from the logging cost.
-fn register_new_dirs(watcher: &mut notify::RecommendedWatcher, paths: &[PathBuf], root: &Path) {
+fn register_new_dirs(
+    watcher: &mut notify::RecommendedWatcher,
+    paths: &[PathBuf],
+    root: &Path,
+    registered: &mut HashSet<PathBuf>,
+) {
+    // `registered` persists across bursts: it's seeded from `watch_pruned`
+    // and grown each time we successfully register a new dir. Skipping
+    // already-registered paths collapses per-burst work to O(new unique
+    // dirs) instead of O(events) — crucial under IDE-save-heavy loops
+    // where the same parent directories appear in every burst.
     for p in paths {
+        if registered.contains(p) {
+            continue;
+        }
         // Cheap rejection first — ignored subtrees (node_modules etc.)
         // must never be watched even if they were just created.
         if should_ignore_path(p, root) {
             continue;
         }
-        // Skip non-directories. `is_dir` follows symlinks, which is
-        // fine here: a user-placed symlink-to-dir is legitimately
-        // something they want reloaded on edit. Errors from stat (file
-        // already gone, permission denied) make is_dir return false.
-        if !p.is_dir() {
-            continue;
+        // Use `symlink_metadata` so a user-placed symlink-to-dir in
+        // the project doesn't silently register a watch outside the
+        // project root. `watch_pruned` already skips symlinks on the
+        // initial walk; match its policy here. Errors from stat
+        // (file already gone, permission denied, race with delete)
+        // are treated as "not a watchable dir".
+        match std::fs::symlink_metadata(p) {
+            Ok(md) if md.file_type().is_dir() => {}
+            _ => continue,
         }
-        if let Err(e) = watcher.watch(p, RecursiveMode::NonRecursive) {
-            tracing::debug!(
-                path = %p.display(),
-                error = %e,
-                "source watcher: could not register new dir, skipping"
-            );
+        match watcher.watch(p, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                registered.insert(p.clone());
+            }
+            Err(e) => {
+                tracing::debug!(
+                    path = %p.display(),
+                    error = %e,
+                    "source watcher: could not register new dir, skipping"
+                );
+            }
         }
     }
 }
@@ -304,6 +363,9 @@ where
     // preserves today's behavior.
     let root_for_filter =
         std::fs::canonicalize(&project_path).unwrap_or_else(|_| project_path.clone());
+    // Clone for the closure — the outer scope still needs its copy to
+    // pass into register_new_dirs below.
+    let root_for_closure = root_for_filter.clone();
     let mut watcher = notify::RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
             // Backend-level errors (inotify queue overflow on Linux,
@@ -342,7 +404,7 @@ where
             let has_relevant_path = event
                 .paths
                 .iter()
-                .any(|p| !should_ignore_path(p, &root_for_filter) && p != &root_for_filter);
+                .any(|p| !should_ignore_path(p, &root_for_closure) && p != &root_for_closure);
             if !has_relevant_path {
                 return;
             }
@@ -351,13 +413,21 @@ where
         notify::Config::default(),
     )?;
 
+    // Persistent registry of directories the watcher has a live watch
+    // descriptor on. Seeded by `watch_pruned`, grown by
+    // `register_new_dirs` on each burst. Lets the burst-time registrar
+    // skip redundant `lstat` + `watcher.watch` calls for dirs that are
+    // already watched — matters on IDE-save-heavy loops where the same
+    // parents appear in every burst.
+    let mut registered_dirs: HashSet<PathBuf> = HashSet::new();
+
     // Walk the project once and register watches on directories that
     // aren't in the ignore list. notify's RecursiveMode::Recursive
     // otherwise registers inotify watches inside node_modules/target/
     // .git — thousands of watch descriptors on a large project, and
     // per-event post-delivery filtering. NonRecursive on pruned
     // directories avoids both costs.
-    watch_pruned(&mut watcher, &project_path)?;
+    watch_pruned(&mut watcher, &project_path, &mut registered_dirs)?;
 
     tracing::info!(
         worker = %worker_name,
@@ -393,7 +463,17 @@ where
         // Files written between `mkdir` and this registration are
         // inherently missed — matches inotify's own semantics and is
         // best-effort by design.
-        register_new_dirs(&mut watcher, &burst_paths, &project_path);
+        // Use the canonicalized root for the ignore filter — event
+        // paths may be canonical (macOS FSEvents) while project_path
+        // is not, so strip_prefix would mismatch and the filter would
+        // fail. watch_and_restart already computed root_for_filter
+        // above; we pass it through here for symmetry.
+        register_new_dirs(
+            &mut watcher,
+            &burst_paths,
+            &root_for_filter,
+            &mut registered_dirs,
+        );
 
         let kind = if burst_paths.iter().any(|p| is_dep_manifest(p)) {
             ChangeKind::DepManifest
@@ -465,6 +545,20 @@ fn try_fast_restart(worker_name: &str) -> anyhow::Result<()> {
     super::supervisor_ctl::request_restart_blocking(worker_name)
 }
 
+/// Build the argv handed to `iii-worker start` in the full-VM restart
+/// path. Factored out of `restart_via_full_vm` so the contract can be
+/// regression-tested without spawning a real process.
+///
+/// `--no-wait` is load-bearing: the watcher runs with stdout/stderr
+/// redirected to `watcher.log` (see `spawn_source_watcher`), so any
+/// output the child emits gets appended to that file. The default
+/// wait path prints the 500ms status-panel redraw loop plus
+/// "✓ started / ✓ ready / <name>" lines, all of which would pollute
+/// watcher.log on every slow-path restart.
+pub(crate) fn full_vm_restart_args(worker_name: &str) -> [&str; 3] {
+    ["start", worker_name, "--no-wait"]
+}
+
 /// Slow path — spawn `iii-worker start <name>` which internally calls
 /// `kill_stale_worker` (killing the old VM + watcher sidecar) and
 /// boots a fresh VM. Taken when the supervisor is unreachable or when
@@ -478,12 +572,15 @@ fn restart_via_full_vm(worker_name: &str) {
         }
     };
 
+    // Discard the child's stdout/stderr. Inheriting here would pipe the
+    // child's chatter into `watcher.log` (the watcher's own redirected
+    // stdout/stderr). The watcher only cares about exit status for the
+    // tracing::info!/warn! below, which is captured separately.
     let output = std::process::Command::new(&self_exe)
-        .arg("start")
-        .arg(worker_name)
+        .args(full_vm_restart_args(worker_name))
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .output();
 
     match output {
@@ -517,6 +614,23 @@ mod tests {
 
     fn root() -> PathBuf {
         PathBuf::from("/proj")
+    }
+
+    /// Regression lock: the watcher's slow-path restart MUST pass
+    /// `--no-wait`. Without it, the child spawned by `restart_via_full_vm`
+    /// blocks on `watch_until_ready`, which eprintln's the 500ms status
+    /// panel redraw loop. The watcher's stderr is redirected to
+    /// `~/.iii/logs/<name>/watcher.log`, so that loop would append the
+    /// panel (ANSI redraw escapes and all) to watcher.log on every slow
+    /// path restart.
+    #[test]
+    fn full_vm_restart_args_include_no_wait() {
+        let args = full_vm_restart_args("my-worker");
+        assert_eq!(args, ["start", "my-worker", "--no-wait"]);
+        assert!(
+            args.iter().any(|a| *a == "--no-wait"),
+            "watcher slow-path restart must pass --no-wait to avoid polluting watcher.log"
+        );
     }
 
     #[test]

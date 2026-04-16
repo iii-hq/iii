@@ -64,6 +64,8 @@ fn cli_parses_all_subcommands() {
 fn start_subcommand_matches_engine_spawn_args() {
     // Bare-name form used when a human runs `iii-worker start <name>` from
     // the terminal. Must still parse cleanly and default port to DEFAULT_PORT.
+    // Humans DO expect the wait-for-ready status panel here; only the engine
+    // auto-spawn path opts out via --no-wait.
     let cli = Cli::try_parse_from(["iii-worker", "start", "image-resize"])
         .expect("bare start form must parse");
     match cli.command {
@@ -73,7 +75,7 @@ fn start_subcommand_matches_engine_spawn_args() {
             port,
         } => {
             assert_eq!(worker_name, "image-resize");
-            assert!(!no_wait, "engine expects default wait behavior");
+            assert!(!no_wait, "bare human invocation keeps default wait=true");
             assert_eq!(
                 port,
                 iii_worker::DEFAULT_PORT,
@@ -90,8 +92,19 @@ fn start_subcommand_accepts_port_flag_from_engine_spawn() {
     // non-default iii-worker-manager port is configured. If this ever stops
     // parsing, clap rejects with exit 2 and every auto-spawned external
     // worker on a non-default port silently fails to connect.
-    let cli = Cli::try_parse_from(["iii-worker", "start", "pdfkit", "--port", "49199"])
-        .expect("engine's --port spawn form must parse");
+    //
+    // `--no-wait` is part of that contract now: without it, the child blocks
+    // on the 500ms status-panel redraw loop and floods stderr.log with ANSI
+    // redraw noise that bleeds into `iii worker logs -f`.
+    let cli = Cli::try_parse_from([
+        "iii-worker",
+        "start",
+        "pdfkit",
+        "--port",
+        "49199",
+        "--no-wait",
+    ])
+    .expect("engine's --port --no-wait spawn form must parse");
     match cli.command {
         Commands::Start {
             worker_name,
@@ -99,7 +112,7 @@ fn start_subcommand_accepts_port_flag_from_engine_spawn() {
             port,
         } => {
             assert_eq!(worker_name, "pdfkit");
-            assert!(!no_wait, "engine expects default wait behavior");
+            assert!(no_wait, "engine auto-spawn must pass --no-wait");
             assert_eq!(port, 49199, "--port must surface the custom port");
         }
         _ => panic!("expected Start"),

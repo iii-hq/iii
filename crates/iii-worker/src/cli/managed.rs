@@ -556,7 +556,6 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
             "config.yaml".dimmed(),
         );
     }
-    println!("{}", worker_name);
     0
 }
 
@@ -623,7 +622,6 @@ fn clear_single_worker(worker_name: &str) -> i32 {
             freed as f64 / 1_048_576.0,
             worker_name.bold(),
         );
-        println!("{}", worker_name);
     }
     0
 }
@@ -1084,7 +1082,21 @@ pub fn is_engine_running() -> bool {
 
 /// Deletes local artifacts for a worker (binary dir or OCI image dir).
 /// Returns the number of bytes freed, or 0 if nothing was found.
+///
+/// Defense-in-depth: `worker_name` is joined into `~/.iii/...` paths
+/// that get `remove_dir_all`'d. `Path::join` preserves `..` components,
+/// so an unvalidated traversal name would delete attacker-chosen
+/// directories under the user's HOME. Callers are expected to have
+/// validated, but we re-check here so the sink itself is safe.
 pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
+    if let Err(msg) = super::registry::validate_worker_name(worker_name) {
+        eprintln!(
+            "  {} refusing to delete artifacts for invalid worker name: {}",
+            "warning:".yellow(),
+            msg
+        );
+        return 0;
+    }
     let home = dirs::home_dir().unwrap_or_default();
     let mut freed: u64 = 0;
 
@@ -1289,7 +1301,6 @@ pub async fn handle_managed_stop(worker_name: &str) -> i32 {
         // reporting "already stopped."
         reap_source_watcher(worker_name).await;
         eprintln!("  {} {} already stopped", "✓".green(), worker_name.bold());
-        println!("{}", worker_name);
         return 0;
     };
 
@@ -1332,7 +1343,6 @@ pub async fn handle_managed_stop(worker_name: &str) -> i32 {
     }
 
     eprintln!("  {} {} stopped", "✓".green(), worker_name.bold());
-    println!("{}", worker_name);
     0
 }
 
@@ -1511,7 +1521,6 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
             "  '{}' is a builtin worker — served by the iii engine process.",
             worker_name,
         );
-        println!("{}", worker_name);
         return 0;
     }
     let local_outcome = match super::config_file::resolve_worker_type(worker_name) {
@@ -1620,11 +1629,8 @@ enum StartOutcome {
 /// contract. Keeping this in one place prevents the stdout contract from
 /// drifting across the four call sites that used to inline it.
 async fn finish_start(worker_name: &str, rc: i32, wait: bool, port: u16) -> i32 {
-    if rc == 0 {
-        if wait {
-            wait_for_ready(worker_name, port).await;
-        }
-        println!("{}", worker_name);
+    if rc == 0 && wait {
+        wait_for_ready(worker_name, port).await;
     }
     rc
 }
@@ -1760,13 +1766,12 @@ async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -
             }
             if let Some(pid) = child.id() {
                 let pid_path = pid_dir.join(format!("{}.pid", worker_name));
-                let _ = std::fs::write(&pid_path, pid.to_string());
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600));
-                }
+                // Route through the shared hardened writer: O_NOFOLLOW +
+                // atomic 0o600 mode at O_CREAT. A plain fs::write here
+                // would follow a pre-planted symlink at the target and
+                // a post-hoc set_permissions leaves a create/chmod
+                // TOCTOU window. See cli/pidfile.rs for rationale.
+                super::pidfile::write_pid_file(&pid_path, pid);
             }
             let pid_display = child
                 .id()
@@ -2052,21 +2057,11 @@ pub async fn handle_managed_logs(
     if has_new_logs {
         let mut found_content = false;
 
-        if let Ok(contents) = std::fs::read_to_string(&stdout_path)
-            && !contents.is_empty()
-        {
-            found_content = true;
-            let lines: Vec<&str> = contents.lines().collect();
-            let start = if lines.len() > 100 {
-                lines.len() - 100
-            } else {
-                0
-            };
-            for line in &lines[start..] {
-                println!("{}", line);
-            }
-        }
-
+        // Read stderr.log first: it holds the host vm-boot subprocess's own
+        // eprintln! output (e.g. "  Booting VM...") which fires BEFORE the
+        // VM enters, so those lines are chronologically the oldest. stdout.log
+        // is the VM's --console-output stream, which only starts producing
+        // content once the guest is actually running.
         if let Ok(contents) = std::fs::read_to_string(&stderr_path)
             && !contents.is_empty()
         {
@@ -2079,6 +2074,21 @@ pub async fn handle_managed_logs(
             };
             for line in &lines[start..] {
                 eprintln!("{}", line);
+            }
+        }
+
+        if let Ok(contents) = std::fs::read_to_string(&stdout_path)
+            && !contents.is_empty()
+        {
+            found_content = true;
+            let lines: Vec<&str> = contents.lines().collect();
+            let start = if lines.len() > 100 {
+                lines.len() - 100
+            } else {
+                0
+            };
+            for line in &lines[start..] {
+                println!("{}", line);
             }
         }
 
