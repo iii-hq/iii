@@ -1,0 +1,71 @@
+---
+title: 'Examples migrated from Motia'
+description: 'Side-by-side links to the original Motia source and the iii-sdk port for every example we migrated as part of 0.11.0.'
+---
+
+These examples were ported from the Motia framework to **`iii-sdk@0.11.0`** following the [Motia → Node](/changelog/0-11-0/migrating-from-motia-js) and [Motia → Python](/changelog/0-11-0/migrating-from-motia-py) migration guides.
+
+Each row links the **original Motia source** alongside the **iii version** so you can read the same workflow in both shapes — every wrapper stripped, every primitive (`registerFunction`, `registerTrigger`, `iii.trigger`) made explicit.
+
+## Examples
+
+<CardGroup cols={1}>
+  <Card title="human-in-the-loop" icon="user-check" href="https://github.com/iii-hq/examples/tree/main/human-in-the-loop">
+    Order approval workflow that pauses for a human and resumes via webhook. Demonstrates HTTP, durable subscribers, and state-driven workflow control.
+
+    **Before:** [`MotiaDev/motia-examples/.../human-in-the-loop`](https://github.com/MotiaDev/motia-examples/tree/main/examples/foundational/workflow-patterns/human-in-the-loop)
+    **After:** [`iii-hq/examples/human-in-the-loop`](https://github.com/iii-hq/examples/tree/main/human-in-the-loop)
+  </Card>
+
+  <Card title="todo-app" icon="list-check" href="https://github.com/iii-hq/examples/tree/main/todo-app">
+    Todo REST API with real-time stream mirror, durable topics for notifications/analytics/achievements, and cron jobs for cleanup and stats.
+
+    **Before:** [`MotiaDev/motia-examples/.../todo-app`](https://github.com/MotiaDev/motia-examples/tree/main/examples/foundational/api-patterns/todo-app)
+    **After:** [`iii-hq/examples/todo-app`](https://github.com/iii-hq/examples/tree/main/todo-app)
+  </Card>
+
+  <Card title="ai-chat-agent" icon="comments" href="https://github.com/iii-hq/examples/tree/main/ai-chat-agent">
+    AI chat agent with conversation memory, web search tools, and live streaming responses through `stream::set` updates.
+
+    **Before:** [`MotiaDev/motia-examples/.../ai-chat-agent`](https://github.com/MotiaDev/motia-examples/tree/main/examples/foundational/ai-chat-agent)
+    **After:** [`iii-hq/examples/ai-chat-agent`](https://github.com/iii-hq/examples/tree/main/ai-chat-agent)
+  </Card>
+
+  <Card title="property-search-agent" icon="house-laptop" href="https://github.com/iii-hq/examples/tree/main/property-search-agent">
+    Multi-step property search agent in Python (`iii-sdk` async) — scraping, enrichment, neighbourhood analysis, and market trends as separate workers.
+
+    **Before:** [`MotiaDev/motia-examples/.../property-search-agent`](https://github.com/MotiaDev/motia-examples/tree/main/examples/agentic/property-search-agent)
+    **After:** [`iii-hq/examples/property-search-agent`](https://github.com/iii-hq/examples/tree/main/property-search-agent)
+  </Card>
+</CardGroup>
+
+## What stayed the same
+
+The business logic, topic names, function IDs, and trigger semantics carry over almost verbatim. If you can read the Motia version you can read the iii version.
+
+## What changed
+
+| Concern | Motia | iii-sdk@0.11.0 |
+| --- | --- | --- |
+| Setup | `motia` framework + auto file scan | `registerWorker(...)` + `import './handlers/...'` side effects in `src/main.ts` |
+| HTTP responses | `{ status, body }` | `{ status_code, body }` |
+| Path / query | `params`, `query` | `path_params`, `query_params` (values are `string \| string[]`) |
+| State | `stateManager.get/set/list` | `iii.trigger({ function_id: 'state::get' \| 'state::set' \| 'state::list' \| 'state::delete', ... })` |
+| Streams | `Stream` class | `iii.trigger({ function_id: 'stream::set' \| 'stream::delete' \| 'stream::list' \| ..., ... })` |
+| Queue publish | `emit({ topic, data })` | `iii.trigger({ function_id: 'iii::durable::publish', payload: { topic, data } })` |
+| Queue subscriber | `EventConfig.subscribes` | `registerTrigger({ type: 'durable:subscriber', config: { topic } })` |
+| Cron expression | 5-field `cron` | 7-field `expression` (sec min hour dom month dow year) |
+| HTTP path style | `/orders/validate` | `/orders/validate` (leading `/` is **required** in iii) |
+
+## Try them locally
+
+Each folder ships with its own `iii-config.yaml`, `package.json`/`pyproject.toml`, and a smoke-test script (`test-*.sh`) so you can run the engine + worker and exercise the full flow in one command.
+
+```bash
+git clone https://github.com/iii-hq/examples
+cd examples/todo-app
+pnpm install --ignore-workspace
+iii --config ./iii-config.yaml
+# then in another terminal
+bash test-todo-flow.sh
+```
