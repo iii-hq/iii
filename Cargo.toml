@@ -9,6 +9,7 @@ members = [
   "crates/iii-init",
   "crates/iii-filesystem",
   "crates/iii-network",
+  "crates/iii-supervisor",
   "crates/iii-worker",
 ]
 

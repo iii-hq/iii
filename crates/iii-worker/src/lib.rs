@@ -11,5 +11,5 @@
 
 pub mod cli;
 
-pub use cli::app::{AddArgs, Cli, Commands, DEFAULT_PORT};
+pub use cli::app::{AddArgs, Cli, Commands, DEFAULT_PORT, WatchSourceArgs};
 pub use cli::vm_boot::VmBootArgs;

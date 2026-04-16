@@ -57,6 +57,21 @@ pub struct VmBootArgs {
     /// Network slot for IP/MAC address derivation (0-65535)
     #[arg(long, default_value = "0")]
     pub slot: u64,
+
+    /// Unix socket path where this `__vm-boot` process will listen for
+    /// control requests from the host (source watcher, stop handler).
+    ///
+    /// When set, `__vm-boot` creates an internal `socketpair(AF_UNIX)`,
+    /// wires one end into the VM as a virtio-console port named
+    /// `iii.control` (guest device: `/dev/vport0p1`), and spawns a
+    /// proxy thread that serves the listed socket: incoming bytes are
+    /// forwarded to the VM's port, replies are forwarded back. The
+    /// in-VM `iii-supervisor` reads/writes the other end.
+    ///
+    /// When absent, the VM boots without a control port and all
+    /// restarts fall back to the full `iii-worker start` path.
+    #[arg(long)]
+    pub control_sock: Option<String>,
 }
 
 /// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
@@ -189,6 +204,143 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
         .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
 }
 
+/// Create a unix stream `socketpair` for the control channel. The guest
+/// fd will be handed to `ConsoleBuilder::port` and must remain open for
+/// the lifetime of the VM; we deliberately `forget` the owned wrapper
+/// and return the raw fd number so it isn't closed when this function
+/// returns. The host end is kept as a `UnixStream` in the caller.
+///
+/// Rationale: libkrun takes ownership of the guest fd internally at
+/// VM build time. Dropping our Rust-owned wrapper after handing the
+/// raw fd to libkrun would close the fd underneath the VM; forgetting
+/// keeps it alive. Closing happens on process exit, which is exactly
+/// when the VM goes down — correct.
+#[cfg(unix)]
+fn setup_control_socketpair() -> Result<(std::os::unix::net::UnixStream, i32), String> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    use std::os::unix::net::UnixStream;
+
+    let (host_end, guest_end) =
+        UnixStream::pair().map_err(|e| format!("control socketpair: {e}"))?;
+
+    // Clear CLOEXEC on the guest fd so it remains open through any
+    // libkrun internal fork/exec pathway. (On most platforms
+    // UnixStream::pair sets FD_CLOEXEC; libkrun consumes the fd
+    // in-process so CLOEXEC doesn't matter today, but this is cheap
+    // insurance against future changes.)
+    unsafe {
+        let fd = guest_end.as_raw_fd();
+        let flags = nix::libc::fcntl(fd, nix::libc::F_GETFD);
+        if flags >= 0 {
+            nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC);
+        }
+    }
+
+    let guest_fd = guest_end.into_raw_fd();
+    Ok((host_end, guest_fd))
+}
+
+/// Spawn a detached background thread that listens on `sock_path` and
+/// bridges accepted connections to `host_end`. Each client gets
+/// exclusive access to the channel for the duration of their
+/// connection (the supervisor protocol is strictly request/response,
+/// one in flight at a time).
+///
+/// The listener is bound to a fresh unix socket — any stale file at
+/// `sock_path` is unlinked first. The socket is NOT unlinked on exit;
+/// the caller's `on_exit` hook (which already deletes the pid file
+/// and similar) is the right place for that. In practice the socket
+/// file becomes inert when the __vm-boot process dies, and any
+/// subsequent `iii worker start` overwrites it via the same unlink
+/// step at the top of this function.
+#[cfg(unix)]
+fn spawn_control_proxy(sock_path: String, host_end: std::os::unix::net::UnixStream) {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    // Ensure the parent dir exists and any stale socket is gone. The
+    // parent dir should already exist (managed_dir is created earlier
+    // in the worker start path), but we don't rely on that.
+    if let Some(parent) = PathBuf::from(&sock_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::remove_file(&sock_path);
+
+    let listener = match UnixListener::bind(&sock_path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!(
+                "warning: control proxy bind({sock_path}) failed: {e}. \
+                 Fast-path restart is disabled; full VM restarts still work."
+            );
+            return;
+        }
+    };
+
+    let host = Arc::new(Mutex::new(host_end));
+
+    thread::Builder::new()
+        .name("iii-control-proxy".to_string())
+        .spawn(move || {
+            for conn in listener.incoming() {
+                let mut client = match conn {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let mut guard = match host.lock() {
+                    Ok(g) => g,
+                    Err(_) => return, // poisoned — give up
+                };
+
+                // Copy client → VM until we see a newline (one JSON
+                // request per connection in our protocol).
+                let mut req_buf = Vec::with_capacity(256);
+                let mut byte = [0u8; 1];
+                loop {
+                    match client.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            req_buf.push(byte[0]);
+                            if byte[0] == b'\n' {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if req_buf.is_empty() {
+                    continue;
+                }
+                if guard.write_all(&req_buf).is_err() || guard.flush().is_err() {
+                    return;
+                }
+
+                // Now copy VM → client until we see a newline (one
+                // JSON response per request).
+                loop {
+                    match guard.read(&mut byte) {
+                        Ok(0) => return, // VM end closed — supervisor gone
+                        Ok(_) => {
+                            if client.write_all(&byte).is_err() {
+                                break;
+                            }
+                            if byte[0] == b'\n' {
+                                let _ = client.flush();
+                                break;
+                            }
+                        }
+                        Err(_) => return,
+                    }
+                }
+                // Drop client at end of iteration → connection closes.
+            }
+        })
+        .expect("spawn control proxy thread");
+}
+
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
 /// This function does NOT return -- `krun_start_enter` replaces the process.
 pub fn run(args: &VmBootArgs) -> ! {
@@ -289,6 +441,14 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);
     let worker_heap_bytes = worker_heap_mib * 1024 * 1024;
 
+    // When --control-sock is provided the host wires an `iii.control`
+    // virtio-console port into the VM; telling iii-init about it via
+    // III_CONTROL_PORT flips iii-init into supervisor mode so it serves
+    // Restart/Shutdown/Ping/Status RPCs over that port. Without the env
+    // var, iii-init falls back to its legacy single-spawn waitpid path.
+    let control_port_env = args.control_sock.is_some();
+    let control_workdir = args.workdir.clone();
+
     builder = builder.exec(|mut e| {
         e = e.path("/init.krun").workdir(&args.workdir);
         e = e.env("III_WORKER_CMD", &worker_cmd);
@@ -297,6 +457,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_INIT_GW", &gateway_ip);
         e = e.env("III_INIT_CIDR", "30");
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
+        if control_port_env {
+            e = e.env("III_CONTROL_PORT", "iii.control");
+            e = e.env("III_WORKER_WORKDIR", &control_workdir);
+        }
         if !virtiofs_mount_env.is_empty() {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
         }
@@ -310,9 +474,39 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e
     });
 
-    if let Some(ref path) = args.console_output {
-        builder = builder.console(|c| c.output(path));
+    // Configure the console device.
+    //
+    // `output(path)` sets the main console log file; `port("iii.control",
+    // fd, fd)` adds a named virtio-console port backed by the guest-side
+    // end of a socketpair. msb_krun routes both independently
+    // (msb_krun builder.rs:367-391).
+    //
+    // When --control-sock is set, we:
+    //   1. Create a socketpair — one end for the VM, one for the host.
+    //   2. Spawn a proxy thread that listens on the unix socket and
+    //      bridges bytes between connected clients and the host end.
+    //   3. Hand the guest end to ConsoleBuilder::port.
+    //
+    // The proxy thread outlives this function — it runs until the
+    // `__vm-boot` process exits (i.e. until the VM powers off), which
+    // is exactly the lifetime of the control channel.
+    let console_output_path = args.console_output.clone();
+    let mut guest_control_fd: Option<i32> = None;
+    if let Some(sock_path) = args.control_sock.clone() {
+        let (host_end, guest_fd) = setup_control_socketpair()?;
+        spawn_control_proxy(sock_path, host_end);
+        guest_control_fd = Some(guest_fd);
     }
+
+    builder = builder.console(move |mut c| {
+        if let Some(path) = console_output_path {
+            c = c.output(path);
+        }
+        if let Some(fd) = guest_control_fd {
+            c = c.port("iii.control", fd, fd);
+        }
+        c
+    });
 
     if let Some(ref pid_path) = args.pid_file {
         let path = pid_path.clone();

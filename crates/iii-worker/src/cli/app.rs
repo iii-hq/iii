@@ -162,4 +162,20 @@ pub enum Commands {
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
+
+    /// Internal: host-side source watcher sidecar for local-path workers
+    #[command(name = "__watch-source", hide = true)]
+    WatchSource(WatchSourceArgs),
+}
+
+/// Arguments for the hidden `__watch-source` subcommand.
+#[derive(Args, Debug)]
+pub struct WatchSourceArgs {
+    /// Worker name to restart when source files change
+    #[arg(long, value_name = "NAME")]
+    pub worker: String,
+
+    /// Absolute project directory to watch recursively
+    #[arg(long, value_name = "PATH")]
+    pub project: String,
 }

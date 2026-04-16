@@ -99,6 +99,17 @@ async fn main() -> anyhow::Result<()> {
         Commands::VmBoot(args) => {
             iii_worker::cli::vm_boot::run(&args);
         }
+        Commands::WatchSource(args) => {
+            let project = std::path::PathBuf::from(&args.project);
+            let worker = args.worker.clone();
+            iii_worker::cli::source_watcher::watch_and_restart(
+                worker,
+                project,
+                iii_worker::cli::source_watcher::restart_via_cli,
+            )
+            .await?;
+            0
+        }
     };
 
     std::process::exit(exit_code);

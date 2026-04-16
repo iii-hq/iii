@@ -1,0 +1,24 @@
+[package]
+name = "iii-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+description = "In-VM process supervisor library. Consumed by iii-init (guest side) for host-driven worker restart RPCs, and by iii-worker (host side) for the wire protocol types."
+
+[lib]
+name = "iii_supervisor"
+path = "src/lib.rs"
+
+# No [[bin]] target: the standalone iii-supervisor binary was absorbed
+# into iii-init (see iii_init::supervisor::run_supervised). One fewer
+# binary in the rootfs, one fewer cross-compile target to maintain.
+
+[dependencies]
+anyhow = "1.0.100"
+nix = { version = "0.30.1", features = ["signal", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
