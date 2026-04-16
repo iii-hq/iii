@@ -310,9 +310,7 @@ iii.registerTrigger({
 
 ### Stream and State operations
 
-In Motia, you used the `Stream` class and `stateManager` to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you can call `iii.trigger()` directly or create your own wrapper classes.
-
-#### Calling `iii.trigger()` directly
+In Motia, you used the `Stream` class and `stateManager` to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/workers/iii-stream) and [State](/workers/iii-state) worker docs for the full list of operations.
 
 <Tabs>
 <Tab title="Stream">
@@ -368,84 +366,6 @@ const allSettings = await iii.trigger({
 </Tabs>
 
 <Callout type="info">Additional function IDs: `stream::update`, `stream::list_groups`, `stream::send` for streams; `state::update`, `state::list_groups` for state.</Callout>
-
-#### Creating wrapper classes
-
-If you prefer the ergonomics Motia's `Stream` and `StateManager` provided, create thin wrappers around `iii.trigger()`:
-
-```typescript title="@/lib/stream"
-import { iii } from '@/lib/iii'
-
-export class Stream {
-  constructor(private name: string) {}
-
-  async get<T>(groupId: string, itemId: string): Promise<T | null> {
-    return iii.trigger({
-      function_id: 'stream::get',
-      payload: { stream_name: this.name, group_id: groupId, item_id: itemId },
-    }) as Promise<T | null>
-  }
-
-  async set<T>(groupId: string, itemId: string, data: T) {
-    return iii.trigger({
-      function_id: 'stream::set',
-      payload: { stream_name: this.name, group_id: groupId, item_id: itemId, data },
-    })
-  }
-
-  async delete(groupId: string, itemId: string) {
-    return iii.trigger({
-      function_id: 'stream::delete',
-      payload: { stream_name: this.name, group_id: groupId, item_id: itemId },
-    })
-  }
-
-  async list<T>(groupId: string): Promise<T[]> {
-    return iii.trigger({
-      function_id: 'stream::list',
-      payload: { stream_name: this.name, group_id: groupId },
-    }) as Promise<T[]>
-  }
-}
-```
-
-```typescript title="@/lib/state"
-import { iii } from '@/lib/iii'
-
-export class StateManager {
-  async get<T>(scope: string, key: string): Promise<T | null> {
-    return iii.trigger({ function_id: 'state::get', payload: { scope, key } }) as Promise<T | null>
-  }
-
-  async set<T>(scope: string, key: string, value: T) {
-    return iii.trigger({ function_id: 'state::set', payload: { scope, key, value } })
-  }
-
-  async delete(scope: string, key: string) {
-    return iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
-  }
-
-  async list<T>(scope: string): Promise<T[]> {
-    return iii.trigger({ function_id: 'state::list', payload: { scope } }) as Promise<T[]>
-  }
-}
-
-export const stateManager = new StateManager()
-```
-
-Usage is then the same as it was in Motia:
-
-```typescript
-import { Stream } from '@/lib/stream'
-import { stateManager } from '@/lib/state'
-
-const todoStream = new Stream('todos')
-const todo = await todoStream.get('user-1', 'todo-1')
-await todoStream.set('user-1', 'todo-1', { title: 'Buy milk' })
-
-const theme = await stateManager.get('settings', 'theme')
-await stateManager.set('settings', 'theme', 'dark')
-```
 
 ### Stream lifecycle hooks (`onJoin` / `onLeave`)
 

@@ -314,9 +314,7 @@ iii.register_trigger({
 
 ### Stream and State operations
 
-In Motia, you used the `Stream` class and `stateManager` singleton to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you can call `iii.trigger()` directly or create your own wrapper classes.
-
-#### Calling `iii.trigger()` directly
+In Motia, you used the `Stream` class and `stateManager` singleton to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/workers/iii-stream) and [State](/workers/iii-state) worker docs for the full list of operations.
 
 <Tabs>
 <Tab title="Stream">
@@ -372,78 +370,6 @@ all_settings = iii.trigger({
 </Tabs>
 
 <Callout type="info">Additional function IDs: `stream::update`, `stream::list_groups`, `stream::send` for streams; `state::update`, `state::list_groups` for state.</Callout>
-
-#### Creating wrapper classes
-
-If you prefer the ergonomics Motia's `Stream` and `stateManager` provided, create thin wrappers around `iii.trigger()`:
-
-```python title="src/lib/stream.py"
-from src.lib.iii_client import iii
-
-
-class Stream:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def get(self, group_id: str, item_id: str):
-        return iii.trigger({
-            "function_id": "stream::get",
-            "payload": {"stream_name": self.name, "group_id": group_id, "item_id": item_id},
-        })
-
-    def set(self, group_id: str, item_id: str, data):
-        return iii.trigger({
-            "function_id": "stream::set",
-            "payload": {"stream_name": self.name, "group_id": group_id, "item_id": item_id, "data": data},
-        })
-
-    def delete(self, group_id: str, item_id: str):
-        return iii.trigger({
-            "function_id": "stream::delete",
-            "payload": {"stream_name": self.name, "group_id": group_id, "item_id": item_id},
-        })
-
-    def list(self, group_id: str):
-        return iii.trigger({
-            "function_id": "stream::list",
-            "payload": {"stream_name": self.name, "group_id": group_id},
-        })
-```
-
-```python title="src/lib/state.py"
-from src.lib.iii_client import iii
-
-
-class StateManager:
-    def get(self, scope: str, key: str):
-        return iii.trigger({"function_id": "state::get", "payload": {"scope": scope, "key": key}})
-
-    def set(self, scope: str, key: str, value):
-        return iii.trigger({"function_id": "state::set", "payload": {"scope": scope, "key": key, "value": value}})
-
-    def delete(self, scope: str, key: str):
-        return iii.trigger({"function_id": "state::delete", "payload": {"scope": scope, "key": key}})
-
-    def list(self, scope: str):
-        return iii.trigger({"function_id": "state::list", "payload": {"scope": scope}})
-
-
-state_manager = StateManager()
-```
-
-Usage is then the same as it was in Motia:
-
-```python
-from src.lib.stream import Stream
-from src.lib.state import state_manager
-
-todo_stream = Stream("todos")
-todo = todo_stream.get("user-1", "todo-1")
-todo_stream.set("user-1", "todo-1", {"title": "Buy milk"})
-
-theme = state_manager.get("settings", "theme")
-state_manager.set("settings", "theme", "dark")
-```
 
 ### Stream lifecycle hooks (`onJoin` / `onLeave`)
 
