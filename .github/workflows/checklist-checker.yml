@@ -1,0 +1,35 @@
+name: 'PR Tasks Completed Check'
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  task-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check repo permission
+        id: perm-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          USER=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/$USER/permission" --jq '.permission')
+          echo "level=$PERM" >> "$GITHUB_OUTPUT"
+      - name: Check all tasks are completed
+        if: steps.perm-check.outputs.level != 'admin'
+        run: |
+          BODY=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH")
+          TOTAL=$(echo "$BODY" | grep -cE '^\s*- \[[ xX]\]' || true)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::PR has no checklist items — do not remove the template checklist"
+            exit 1
+          fi
+          if ! echo "$BODY" | grep -qE '^\s*- \[[xX]\] I am licensing the entirety of this PR under Apache 2 and have all necessary rights to the code I am contributing\.$'; then
+            echo "::error::The Apache 2 licensing checkbox must be checked"
+            exit 1
+          fi
+          UNCHECKED=$(echo "$BODY" | grep -cE '^\s*- \[ \]' || true)
+          if [ "$UNCHECKED" -gt 0 ]; then
+            echo "::error::PR has $UNCHECKED unchecked task(s)"
+            exit 1
+          fi

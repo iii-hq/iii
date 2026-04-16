@@ -19,7 +19,31 @@ Check that iii has installed correctly with the following command. It should ret
 iii --version
 ```
 
-## 3. Add Agent Skills (Optional)
+## 3. Install the VS Code Extension (Optional)
+
+The iii Language Server extension gives your editor live awareness of your iii project:
+
+- **Completions** — function IDs, trigger types, payload properties, and known values like stream names and API paths.
+- **Hover documentation** — request and response schemas for any registered function.
+- **Diagnostics** — validates function IDs, required payload fields, trigger configs, cron expressions, and HTTP methods as you type.
+
+Works with TypeScript, Python, and Rust files. Requires a running iii engine.
+
+<Frame>
+  <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server in action — completions, hover docs, and diagnostics" />
+</Frame>
+
+**VS Code / Cursor**
+
+Open the Extensions panel and search for `iii-lsp`, or install from the terminal:
+
+```bash
+code --install-extension iii-hq.iii-lsp
+```
+
+For Cursor, replace `code` with `cursor`.
+
+## 4. Add Agent Skills (Optional)
 
 Give your IDEs and AI coding agents full context on iii:
 

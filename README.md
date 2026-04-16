@@ -25,11 +25,11 @@ These primitives result in an execution model and system traits that make iii un
 
 ## Three Concepts
 
-| Concept       | What it does |
-| ------------- | ------------ |
-| **Function**  | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint. |
-| **Trigger**   | What causes a Function to run - explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event. |
-| **Worker**    | The runtime that connects your functions and triggers to the engine. Workers register and deregister themselves without configuration. Once connected, their functions are available across the entire backend. |
+| Concept      | What it does                                                                                                                                                                                                    |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Function** | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint.                                                |
+| **Trigger**  | What causes a Function to run - explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event.                                      |
+| **Worker**   | The runtime that connects your functions and triggers to the engine. Workers register and deregister themselves without configuration. Once connected, their functions are available across the entire backend. |
 
 ## Quick Start
 
@@ -59,16 +59,15 @@ The [iii-console](console/) is a developer and operations dashboard for inspecti
 
 ## Repository Structure
 
-| Directory      | What it is                                              | README                                  |
-| -------------- | ------------------------------------------------------- | --------------------------------------- |
-| `engine/`      | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)    |
-| `sdk/`         | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)          |
-| `console/`     | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md)  |
-| `frameworks/`  | Higher-level frameworks built on the SDK                 | [frameworks/motia/](frameworks/motia/)  |
-| `skills/`      | Agent skills for AI coding agents                         | [skills/README.md](skills/README.md)    |
-| `website/`     | iii website                                              | [website/](website/)                    |
-| `docs/`        | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)        |
-
+| Directory     | What it is                                              | README                                 |
+| ------------- | ------------------------------------------------------- | -------------------------------------- |
+| `engine/`     | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
+| `sdk/`        | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)         |
+| `console/`    | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md) |
+| `frameworks/` | Higher-level frameworks built on the SDK                | [frameworks/motia/](frameworks/motia/) |
+| `skills/`     | Agent skills for AI coding agents                       | [skills/README.md](skills/README.md)   |
+| `website/`    | iii website                                             | [website/](website/)                   |
+| `docs/`       | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
 
 See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain, and CI/CD details.
 
@@ -86,18 +85,18 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 
 ## License
 
-The iii project uses a dual licensing model:
+The iii is licensed as such:
 
-| Directory        | License              |
-| ---------------- | -------------------- |
-| `engine/`        | [Elastic License 2.0](engine/LICENSE) |
-| `sdk/`           | [Apache License 2.0](sdk/LICENSE) |
-| `cli/`           | [Apache License 2.0](cli/LICENSE) |
-| `console/`       | [Apache License 2.0](console/LICENSE) |
-| `frameworks/`    | [Apache License 2.0](frameworks/motia/LICENSE) |
-| `docs/`          | [Apache License 2.0](docs/LICENSE) |
-| `website/`       | [Apache License 2.0](website/LICENSE) |
+| Directory     | License                                        |
+| ------------- | ---------------------------------------------- |
+| `engine/`     | [Elastic License 2.0](engine/LICENSE)          |
+| `sdk/`        | [Apache License 2.0](sdk/LICENSE)              |
+| `cli/`        | [Apache License 2.0](cli/LICENSE)              |
+| `console/`    | [Apache License 2.0](console/LICENSE)          |
+| `frameworks/` | [Apache License 2.0](frameworks/motia/LICENSE) |
+| `docs/`       | [Apache License 2.0](docs/LICENSE)             |
+| `website/`    | [Apache License 2.0](website/LICENSE)          |
 
 The engine runtime is licensed under the Elastic License 2.0 (ELv2). All SDKs, frameworks, CLI, console, documentation, and the website are licensed under the Apache License 2.0.
 
-See [NOTICE.md](NOTICE.md) for details.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for additional details.
