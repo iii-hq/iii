@@ -291,7 +291,19 @@ where
 {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
 
-    let root_for_filter = project_path.clone();
+    // Canonicalize the project root for event-path comparison.
+    // macOS FSEvents reports events with canonical `/private/var/...`
+    // paths even when the caller watched the uncanonical `/var/...`
+    // (symlink) form. Without this, the bare-root filter below fails
+    // (`p != &root_for_filter` becomes trivially true when one side
+    // is canonical and the other isn't) and every node_modules write
+    // leaks through the filter. Production callers already canonicalize
+    // upstream, but tests that pass `tempfile::tempdir().path()` hit
+    // the mismatch on macOS CI runners. Falling back to the raw path
+    // on canonicalize failure (e.g. project dir just got deleted)
+    // preserves today's behavior.
+    let root_for_filter =
+        std::fs::canonicalize(&project_path).unwrap_or_else(|_| project_path.clone());
     let mut watcher = notify::RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
             // Backend-level errors (inotify queue overflow on Linux,
