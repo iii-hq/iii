@@ -213,6 +213,18 @@ fn terminate_gracefully(child: &mut Child) {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 
+    // If the child was already reaped out-of-band (PID-1 waitpid(-1)
+    // loop, another wait, etc.), `child.id()` still returns the stale
+    // PID — which the kernel may have recycled into a totally unrelated
+    // process group by now. Signalling it would hit an innocent
+    // bystander. Check liveness first and bail if we've lost the right
+    // to signal.
+    match child.try_wait() {
+        Ok(Some(_)) => return, // already exited + reaped
+        Err(_) => return,      // ECHILD → reaped elsewhere
+        Ok(None) => {}         // still running, proceed
+    }
+
     // Leader's pid == pgid (set by `process_group(0)` in spawn_child).
     let pgid = Pid::from_raw(child.id() as i32);
     // Ignore the result — ESRCH (group already gone) is benign, and
