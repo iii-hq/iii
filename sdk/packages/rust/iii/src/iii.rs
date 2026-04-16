@@ -645,6 +645,63 @@ impl RegisterFunction {
     }
 }
 
+/// Conventional Unix signal numbers used by the shutdown handler. Hard-
+/// coded so we don't pull in `libc` directly; these values are stable
+/// across every supported platform.
+const SIGTERM_NUM: i32 = 15;
+const SIGINT_NUM: i32 = 2;
+
+/// How long the handler waits between sending `Outbound::Shutdown` to
+/// `run_connection` and forcibly `process::exit`-ing. Matches the
+/// equivalent grace window used by the in-VM supervisor's
+/// `terminate_gracefully` (iii-supervisor::child::SHUTDOWN_GRACE) so
+/// either side bottoming out independently produces the same observed
+/// timing. 500ms is plenty for `run_connection`'s Shutdown branch to
+/// flush the WS Close frame on a healthy localhost.
+const AUTO_SHUTDOWN_GRACE_MS: u64 = 500;
+
+/// Trap SIGTERM/SIGINT and turn the first one into a clean shutdown:
+/// signal `run_connection` to drain (which sends a WS Close frame),
+/// wait briefly for the close to flush, then `process::exit(128 +
+/// signum)`.
+///
+/// Runs on the connection thread's tokio runtime so it can use
+/// `tokio::signal::unix::signal` without spinning up a new runtime
+/// or pulling in `signal-hook`. Does NOT call `III::shutdown` — that
+/// would `join()` the connection thread, but we are running ON that
+/// thread, so the join would deadlock.
+async fn run_auto_shutdown_handler(iii: III) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
+        tracing::warn!("iii: failed to install SIGTERM handler; auto-shutdown disabled");
+        return;
+    };
+    let Ok(mut sigint) = signal(SignalKind::interrupt()) else {
+        tracing::warn!("iii: failed to install SIGINT handler; auto-shutdown disabled");
+        return;
+    };
+
+    let signum = tokio::select! {
+        _ = sigterm.recv() => SIGTERM_NUM,
+        _ = sigint.recv() => SIGINT_NUM,
+    };
+
+    iii.inner.running.store(false, Ordering::SeqCst);
+    let _ = iii.inner.outbound.send(Outbound::Shutdown);
+
+    // Yield long enough for `run_connection` to pick up Outbound::Shutdown
+    // off the mpsc, send the WS Close frame, and have the bytes leave the
+    // outbound socket buffer.
+    sleep(Duration::from_millis(AUTO_SHUTDOWN_GRACE_MS)).await;
+
+    // process::exit terminates immediately and skips Drop. That's OK —
+    // we already signalled `run_connection` to wind down, and the
+    // 500ms grace covered the close-frame flush. Any other resources
+    // (file handles, sockets) get reclaimed by the kernel on exit.
+    std::process::exit(128 + signum);
+}
+
 struct IIIInner {
     address: String,
     outbound: mpsc::UnboundedSender<Outbound>,
@@ -665,6 +722,11 @@ struct IIIInner {
     functions_available_trigger: Mutex<Option<Trigger>>,
     headers: Mutex<Option<HashMap<String, String>>>,
     otel_config: Mutex<Option<OtelConfig>>,
+    /// When true, `connect()` spawns a task that traps SIGTERM/SIGINT
+    /// and triggers a clean shutdown + `process::exit(128 + signum)`.
+    /// Mirrors Python's `auto_shutdown: bool = True` and Node's
+    /// `autoShutdown: boolean = true`. Default `true`.
+    auto_shutdown: AtomicBool,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -728,6 +790,7 @@ impl III {
             functions_available_trigger: Mutex::new(None),
             headers: Mutex::new(None),
             otel_config: Mutex::new(None),
+            auto_shutdown: AtomicBool::new(true),
         };
         Self {
             inner: Arc::new(inner),
@@ -752,6 +815,13 @@ impl III {
     /// Set OpenTelemetry configuration (call before connect)
     pub fn set_otel_config(&self, config: OtelConfig) {
         *self.inner.otel_config.lock_or_recover() = Some(config);
+    }
+
+    /// Toggle the auto-installed SIGTERM/SIGINT handler. See
+    /// [`InitOptions::auto_shutdown`](crate::InitOptions::auto_shutdown).
+    /// Call before `connect()` (typically via `register_worker`).
+    pub fn set_auto_shutdown(&self, value: bool) {
+        self.inner.auto_shutdown.store(value, Ordering::SeqCst);
     }
 
     pub(crate) fn connect(&self) {
@@ -784,6 +854,8 @@ impl III {
         // In Rust, a spawned thread does not keep the process alive on its own;
         // call shutdown() to signal the thread and join connection_thread so
         // run_connection() can exit cleanly before main() returns.
+        let auto_shutdown = self.inner.auto_shutdown.load(Ordering::SeqCst);
+
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
             .spawn(move || {
@@ -794,6 +866,24 @@ impl III {
 
                 rt.block_on(async move {
                     let otel_active = telemetry::init_otel(otel_config).await;
+
+                    // Spawn the auto-shutdown signal trap inside the
+                    // connection runtime. Doing it here (instead of from
+                    // a separate thread) lets us use `tokio::signal::unix`
+                    // without bringing in extra dependencies, and keeps
+                    // the signal-driven shutdown path on the same runtime
+                    // that's draining `outbound`. Without this, a SIGTERM
+                    // from the in-VM supervisor's fast-restart kills the
+                    // process before any WS Close frame is sent — the
+                    // engine sees the disconnect via TCP timeout (slow,
+                    // racy), and the next worker's registration arrives
+                    // before cleanup_worker has run.
+                    if auto_shutdown {
+                        let iii_for_signal = iii.clone();
+                        tokio::spawn(async move {
+                            run_auto_shutdown_handler(iii_for_signal).await;
+                        });
+                    }
 
                     iii.run_connection(rx).await;
 
@@ -1453,6 +1543,26 @@ impl III {
                     self.set_connection_state(IIIConnectionState::Connected);
                     let (mut ws_tx, mut ws_rx) = stream.split();
 
+                    // Drain anything the caller buffered on the outbound mpsc
+                    // BEFORE connect (e.g. the RegisterFunction message that
+                    // `register_function_inner` sends synchronously). Without
+                    // this drain, `collect_registrations` would produce a
+                    // second copy for every pre-connect registration and the
+                    // engine would log `Function ... is already registered.
+                    // Overwriting.` for each one. `dedupe_registrations` below
+                    // only helps if both copies live in the same `queue`, so
+                    // the drain has to happen here, not in the inner loop.
+                    loop {
+                        match rx.try_recv() {
+                            Ok(Outbound::Message(msg)) => queue.push(msg),
+                            Ok(Outbound::Shutdown) => {
+                                self.inner.running.store(false, Ordering::SeqCst);
+                                return;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+
                     queue.extend(self.collect_registrations());
                     Self::dedupe_registrations(&mut queue);
                     if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
@@ -1479,6 +1589,22 @@ impl III {
                                     }
                                     Some(Outbound::Shutdown) => {
                                         self.inner.running.store(false, Ordering::SeqCst);
+                                        // Send a clean WebSocket Close frame so the
+                                        // engine sees a graceful disconnect and runs
+                                        // cleanup_worker promptly. Without this, the
+                                        // engine has to detect the drop via TCP-level
+                                        // EOF, which on a fast restart can race the
+                                        // next worker's registration arrival — leaving
+                                        // the engine logging "Function … is already
+                                        // registered. Overwriting." and (worse)
+                                        // deleting the new worker's registrations when
+                                        // the late cleanup eventually fires.
+                                        //
+                                        // Errors are intentionally ignored: if the WS
+                                        // is already half-closed we just want to exit
+                                        // the loop and let the connection drop.
+                                        let _ = ws_tx.send(WsMessage::Close(None)).await;
+                                        let _ = ws_tx.close().await;
                                         return;
                                     }
                                     None => {

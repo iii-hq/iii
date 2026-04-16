@@ -53,7 +53,7 @@ pub use serde_json::Value;
 ///
 /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct InitOptions {
     /// Custom worker metadata. Auto-detected if `None`.
     pub metadata: Option<WorkerMetadata>,
@@ -61,6 +61,34 @@ pub struct InitOptions {
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
     pub otel: Option<crate::telemetry::types::OtelConfig>,
+    /// Auto-install `SIGTERM` and `SIGINT` handlers that send a clean
+    /// WebSocket Close frame to the engine, then `process::exit(128 +
+    /// signal_number)`. Default `true`.
+    ///
+    /// Without this, `SIGTERM` takes the default disposition (immediate
+    /// process termination) and the WebSocket connection drops without
+    /// a Close frame. The engine then relies on TCP-level disconnect
+    /// detection, which on a fast restart can race the next worker's
+    /// registration — producing spurious `Function ... is already
+    /// registered. Overwriting.` warnings and (worse) deleting the new
+    /// worker's fresh registrations when the late cleanup finally
+    /// fires.
+    ///
+    /// Set `false` to own signal handling yourself (common when
+    /// embedding the SDK inside a larger service that already traps
+    /// signals).
+    pub auto_shutdown: bool,
+}
+
+impl Default for InitOptions {
+    fn default() -> Self {
+        Self {
+            metadata: None,
+            headers: None,
+            otel: None,
+            auto_shutdown: true,
+        }
+    }
 }
 
 /// Create and return a connected SDK instance. The WebSocket connection is
@@ -91,6 +119,7 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
         metadata,
         headers,
         otel,
+        auto_shutdown,
     } = options;
 
     let iii = if let Some(metadata) = metadata {
@@ -107,6 +136,7 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
         iii.set_otel_config(cfg);
     }
 
+    iii.set_auto_shutdown(auto_shutdown);
     iii.connect();
 
     iii

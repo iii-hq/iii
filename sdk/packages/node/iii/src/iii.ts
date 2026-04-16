@@ -114,6 +114,21 @@ export type InitOptions = {
   otel?: Omit<OtelConfig, 'engineWsUrl'>
   /** Custom HTTP headers sent during the WebSocket handshake. */
   headers?: Record<string, string>
+  /**
+   * Auto-install `SIGTERM` and `SIGINT` handlers that call {@link ISdk.shutdown}
+   * and then `process.exit(128 + signal_number)`. Defaults to `true`.
+   *
+   * Without this, `SIGTERM` takes Node's default action (immediate termination)
+   * and the WebSocket dies without a Close frame. The engine then races between
+   * cleaning up the old worker's registrations and processing the new worker's
+   * register messages, which produces spurious "function is already registered,
+   * Overwriting" warnings in the engine log and, rarely, wipes the fresh
+   * registrations entirely.
+   *
+   * Set to `false` if you want to own signal handling (for example, to drain
+   * in-flight work before calling `shutdown()` yourself).
+   */
+  autoShutdown?: boolean
   /** @internal */
   telemetry?: TelemetryOptions
 }
@@ -138,6 +153,7 @@ class Sdk implements ISdk {
   private reconnectAttempt = 0
   private connectionState: IIIConnectionState = 'disconnected'
   private isShuttingDown = false
+  private signalHandlers?: Array<{ signal: NodeJS.Signals; handler: () => void }>
 
   constructor(
     private readonly address: string,
@@ -155,6 +171,52 @@ class Sdk implements ISdk {
     initOtel({ ...options?.otel, engineWsUrl: this.address })
 
     this.connect()
+
+    // Auto-install signal handlers so dev-loop supervisors (e.g. iii-worker's
+    // SIGTERM-based fast restart) get a clean WebSocket close before the
+    // process dies. See InitOptions.autoShutdown for rationale.
+    if (options?.autoShutdown !== false) {
+      this.installSignalHandlers()
+    }
+  }
+
+  /**
+   * Install SIGTERM/SIGINT handlers that call {@link shutdown} and then exit
+   * with the conventional `128 + signal_number` status. Stored so they can
+   * be removed by {@link shutdown} (avoid `process.exit` being called after
+   * an explicit shutdown) and on re-install (avoid listener leaks).
+   */
+  private installSignalHandlers(): void {
+    const targets: Array<{ signal: NodeJS.Signals; code: number }> = [
+      { signal: 'SIGTERM', code: 15 },
+      { signal: 'SIGINT', code: 2 },
+    ]
+
+    this.signalHandlers = targets.map(({ signal, code }) => {
+      const handler = () => {
+        // shutdown() is idempotent via isShuttingDown; awaiting it ensures the
+        // WS Close frame is flushed before the process exits so the engine's
+        // cleanup_worker runs before the next worker connects.
+        this.shutdown()
+          .catch(() => {
+            // swallow — we're exiting anyway; shutdown errors shouldn't mask
+            // the signal-code exit
+          })
+          .finally(() => {
+            process.exit(128 + code)
+          })
+      }
+      process.on(signal, handler)
+      return { signal, handler }
+    })
+  }
+
+  private removeSignalHandlers(): void {
+    if (!this.signalHandlers) return
+    for (const { signal, handler } of this.signalHandlers) {
+      process.off(signal, handler)
+    }
+    this.signalHandlers = undefined
   }
 
   /**
@@ -654,6 +716,11 @@ class Sdk implements ISdk {
   shutdown = async (): Promise<void> => {
     this.isShuttingDown = true
 
+    // Release signal handlers synchronously, BEFORE any awaits. If something
+    // further down (OTel exporter flush, WS close) hangs or throws, the
+    // process still won't trip our auto-shutdown handler on a second signal.
+    this.removeSignalHandlers()
+
     this.stopMetricsReporting()
 
     // Shutdown OpenTelemetry
@@ -672,9 +739,40 @@ class Sdk implements ISdk {
     this.invocations.clear()
 
     // Close WebSocket
+    //
+    // Await the close handshake instead of fire-and-forget. Without this
+    // await the signal-handler caller runs process.exit() before the
+    // close frame hits the wire; the engine only notices our
+    // disappearance via eventual TCP timeout, by which point the NEXT
+    // worker (spawned by iii-worker's fast-restart) has already
+    // registered its functions. The engine's cleanup_worker for the
+    // old connection then fires late and removes function registrations
+    // that the new worker has already overwritten — which is exactly
+    // the "change a file and registrations don't get unregistered"
+    // symptom in the bug report.
+    //
+    // 500ms safety timeout so shutdown() can't hang forever if the peer
+    // is unreachable or TCP is wedged. On a healthy localhost the close
+    // handshake completes in <10ms.
     if (this.ws) {
-      this.ws.removeAllListeners()
-      this.ws.close()
+      const ws = this.ws
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          ws.removeAllListeners()
+          resolve()
+        }
+        const timer = setTimeout(done, 500)
+        timer.unref()
+        ws.once('close', () => {
+          clearTimeout(timer)
+          done()
+        })
+        try {
+          ws.close()
+        } catch {
+          // Already closing/closed — just wait for the event or timeout.
+        }
+      })
       this.ws = undefined
     }
 

@@ -6,6 +6,7 @@ import logging
 import os
 import platform
 import random
+import signal
 import threading
 import traceback
 import uuid
@@ -135,6 +136,68 @@ class III:
         self._connected_event = threading.Event()
         self._schedule_on_loop(self.connect_async())
 
+        # Signal handlers: store previous handlers so shutdown() can restore
+        # them and so we don't replace a handler the host app deliberately
+        # set. Only the main thread can install signal handlers in CPython;
+        # if we're constructed from a worker thread the install is skipped
+        # with a debug log.
+        self._signal_handlers: dict[int, Any] = {}
+        if self._options.auto_shutdown:
+            self._install_signal_handlers()
+
+    def _install_signal_handlers(self) -> None:
+        """Install SIGTERM/SIGINT handlers that call :meth:`shutdown` and then
+        exit with ``128 + signum``.
+
+        The in-VM iii-worker supervisor sends SIGTERM to cycle the worker on
+        source edits; without this, Python takes its default action (immediate
+        termination) and the WebSocket dies without a Close frame, which
+        causes the engine to double-register functions on the next start.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            log.debug(
+                "auto_shutdown: skipping signal handler install (not on main thread)"
+            )
+            return
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous = signal.signal(signum, self._on_shutdown_signal)
+                self._signal_handlers[signum] = previous
+            except (ValueError, OSError) as exc:
+                # ValueError: not main thread. OSError: unsupported platform.
+                log.debug(
+                    "auto_shutdown: could not install handler for %s: %s",
+                    signum,
+                    exc,
+                )
+
+    def _remove_signal_handlers(self) -> None:
+        """Restore previously-installed signal handlers. Safe to call twice."""
+        if not self._signal_handlers:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            # Can't modify handlers off the main thread; leave them in place.
+            return
+        for signum, previous in self._signal_handlers.items():
+            try:
+                signal.signal(signum, previous)
+            except (ValueError, OSError):
+                pass
+        self._signal_handlers.clear()
+
+    def _on_shutdown_signal(self, signum: int, _frame: Any) -> None:
+        """Triggered by SIGTERM/SIGINT when auto_shutdown is enabled."""
+        # Best effort: close the WS via the blocking shutdown() path from the
+        # main thread, then os._exit with the conventional signal exit code.
+        # We use os._exit rather than sys.exit to avoid re-entrancy issues
+        # with the non-daemon background event-loop thread during a signal
+        # handler.
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+        os._exit(128 + signum)
+
     def _run_on_loop(self, coro: Coroutine[Any, Any, TResult]) -> TResult:
         if threading.current_thread() is self._thread:
             raise RuntimeError(
@@ -173,6 +236,12 @@ class III:
             >>> # ... do work ...
             >>> iii.shutdown()
         """
+        # Restore signal handlers on the caller's thread — signal.signal()
+        # can only be called from the main thread, so doing it inside
+        # shutdown_async (which runs on the background event-loop thread)
+        # silently no-ops. Do it first so we never leave our handler
+        # attached after an explicit shutdown.
+        self._remove_signal_handlers()
         self._run_on_loop(self.shutdown_async())
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)

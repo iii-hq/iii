@@ -71,6 +71,16 @@ class InitOptions:
         reconnection_config: WebSocket reconnection behavior.
         otel: OpenTelemetry configuration. Enabled by default.
             Set ``{'enabled': False}`` or env ``OTEL_ENABLED=false`` to disable.
+        auto_shutdown: Auto-install ``SIGTERM`` and ``SIGINT`` handlers that
+            call :meth:`III.shutdown` and then ``os._exit(128 + signal_number)``.
+            Default ``True``. Without this, ``SIGTERM`` takes Python's default
+            (immediate termination) and the WebSocket dies without a Close
+            frame. The engine then races between cleaning up the old worker's
+            registrations and processing the new worker's register messages,
+            producing spurious ``function is already registered. Overwriting``
+            warnings in the engine log. Set ``False`` to own signal handling
+            yourself (common when embedding the SDK inside a larger service
+            that already traps signals).
         telemetry: Internal telemetry metadata.
     """
 
@@ -80,4 +90,5 @@ class InitOptions:
     reconnection_config: ReconnectionConfig | None = None
     otel: OtelConfig | dict[str, Any] | None = None
     headers: dict[str, str] | None = None
+    auto_shutdown: bool = True
     telemetry: TelemetryOptions | None = None
