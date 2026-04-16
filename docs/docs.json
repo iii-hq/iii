@@ -307,6 +307,9 @@
       }
     ]
   },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude"]
+  },
   "integrations": {
     "gtm": {
       "tagId": "GTM-N8DCTFB8"
