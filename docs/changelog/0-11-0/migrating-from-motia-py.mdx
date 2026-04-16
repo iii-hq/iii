@@ -312,6 +312,167 @@ iii.register_trigger({
 })
 ```
 
+### Stream and State operations
+
+In Motia, you used the `Stream` class and `stateManager` singleton to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/workers/iii-stream) and [State](/workers/iii-state) worker docs for the full list of operations.
+
+<Tabs>
+<Tab title="Stream">
+```python
+from src.lib.iii_client import iii
+
+todo = iii.trigger({
+    "function_id": "stream::get",
+    "payload": {"stream_name": "todos", "group_id": "user-1", "item_id": "todo-1"},
+})
+
+iii.trigger({
+    "function_id": "stream::set",
+    "payload": {"stream_name": "todos", "group_id": "user-1", "item_id": "todo-1", "data": {"title": "Buy milk"}},
+})
+
+iii.trigger({
+    "function_id": "stream::delete",
+    "payload": {"stream_name": "todos", "group_id": "user-1", "item_id": "todo-1"},
+})
+
+items = iii.trigger({
+    "function_id": "stream::list",
+    "payload": {"stream_name": "todos", "group_id": "user-1"},
+})
+```
+</Tab>
+<Tab title="State">
+```python
+from src.lib.iii_client import iii
+
+theme = iii.trigger({
+    "function_id": "state::get",
+    "payload": {"scope": "settings", "key": "theme"},
+})
+
+iii.trigger({
+    "function_id": "state::set",
+    "payload": {"scope": "settings", "key": "theme", "value": "dark"},
+})
+
+iii.trigger({
+    "function_id": "state::delete",
+    "payload": {"scope": "settings", "key": "theme"},
+})
+
+all_settings = iii.trigger({
+    "function_id": "state::list",
+    "payload": {"scope": "settings"},
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">Additional function IDs: `stream::update`, `stream::list_groups`, `stream::send` for streams; `state::update`, `state::list_groups` for state.</Callout>
+
+### Stream lifecycle hooks (`onJoin` / `onLeave`)
+
+In Motia, stream files could define `onJoin` and `onLeave` callbacks inside the stream config. The framework registered a single shared function for each hook and dispatched by stream name internally.
+
+With iii-sdk, you register these as regular functions with `stream:join` and `stream:leave` triggers. The handler receives a dict with `stream_name`, `group_id`, `id`, and `context`.
+
+<Tabs>
+<Tab title="Motia">
+```python
+config = {
+    "name": "todo",
+    "schema": todo_schema,
+    "base_config": {"storage_type": "default"},
+}
+
+def on_join(subscription, context, auth_context):
+    return {"unauthorized": False}
+
+def on_leave(subscription, context, auth_context):
+    pass  # cleanup logic
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+from src.lib.iii_client import iii
+
+def stream_on_join(event):
+    stream_name = event.get("stream_name")
+    group_id = event.get("group_id")
+    item_id = event.get("id")
+    context = event.get("context")
+    return {"unauthorized": False}
+
+iii.register_function("stream::on-join", stream_on_join)
+iii.register_trigger({
+    "type": "stream:join",
+    "function_id": "stream::on-join",
+    "config": {},
+})
+
+def stream_on_leave(event):
+    stream_name = event.get("stream_name")
+    group_id = event.get("group_id")
+    item_id = event.get("id")
+    context = event.get("context")
+    # cleanup logic
+
+iii.register_function("stream::on-leave", stream_on_leave)
+iii.register_trigger({
+    "type": "stream:leave",
+    "function_id": "stream::on-leave",
+    "config": {},
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">If you had multiple streams with different `onJoin` / `onLeave` logic, dispatch by `event["stream_name"]` inside the handler or register separate function IDs per stream.</Callout>
+
+### Stream authentication (`authenticateStream`)
+
+In Motia, `motia_config.py` (or `motia.config.ts` for JS projects) exported an authentication function that ran during WebSocket upgrade. With iii-sdk, you register a function directly and reference its ID in the engine's stream module config.
+
+<Tabs>
+<Tab title="Motia">
+```python
+# motia_config.py
+def authenticate_stream(req, context):
+    return {"context": {"userId": "sergio"}}
+```
+</Tab>
+<Tab title="iii-sdk">
+```python
+from src.lib.iii_client import iii
+
+def stream_authenticate(data):
+    headers = data.get("headers")
+    path = data.get("path")
+    query_params = data.get("query_params")
+    addr = data.get("addr")
+    return {"context": {"userId": "sergio"}}
+
+iii.register_function("stream::authenticate", stream_authenticate)
+```
+</Tab>
+</Tabs>
+
+The engine calls this function during WebSocket upgrade. Reference the function ID in your `config.yaml`:
+
+```yaml
+workers:
+  - name: iii-stream
+    config:
+      auth_function: stream::authenticate
+```
+
+Key differences:
+
+- Motia used `queryParams` (camelCase); iii-sdk uses `query_params` (snake_case).
+- No trigger registration is needed for auth — it is config-driven via `auth_function`.
+- The `motia_config.py` file is no longer needed; delete it.
+
 ---
 
 ## Step 5 — Update request and response shapes
@@ -496,6 +657,10 @@ workers:
 - [ ] Replace `ApiResponse(status=...)` with plain dicts using `statusCode` (e.g., `{"statusCode": 200, "body": ...}`)
 - [ ] Replace `request.path_params` / `request.query_params` attribute access with dict-key access on the raw payload (`data["path_params"]`, `data.get("query_params")`)
 - [ ] Replace `requestBody` with `request_body` in streaming handlers
+- [ ] Replace `Stream` and `stateManager` usage with `iii.trigger()` calls or custom wrappers
+- [ ] Migrate stream `on_join` / `on_leave` hooks to `register_function` + `register_trigger` (`stream:join` / `stream:leave`)
+- [ ] Migrate `authenticate_stream` from `motia_config.py` to a registered function and set `auth_function` in `config.yaml`
+- [ ] Delete `motia_config.py`
 - [ ] Create `src/main.py` with side-effect imports for every handler module
 - [ ] Replace `motia dev` with an `iii-exec` worker using `watch` + `exec` in your `config.yaml`
 - [ ] Replace `motia build` with `pip install .` (and a `Dockerfile` for containerized deploys)
