@@ -24,6 +24,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
@@ -133,6 +134,17 @@ pub enum ChangeKind {
     DepManifest,
 }
 
+/// O(1) lookup set for dep-manifest classification. Built once; used on
+/// every watcher burst.
+static DEP_MANIFEST_SET: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| DEP_MANIFEST_NAMES.iter().copied().collect());
+
+/// O(1) lookup set for ignore-path classification. Built once; hit on
+/// every notify event, which can fire thousands of times per second
+/// during bulk operations.
+static IGNORED_DIR_SET: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| IGNORED_DIR_NAMES.iter().copied().collect());
+
 /// Returns `true` if `path` is a dep manifest that should force a full
 /// VM restart (and not a fast supervisor cycle).
 pub fn is_dep_manifest(path: &Path) -> bool {
@@ -140,7 +152,7 @@ pub fn is_dep_manifest(path: &Path) -> bool {
         Some(n) => n,
         None => return false,
     };
-    DEP_MANIFEST_NAMES.iter().any(|d| *d == name)
+    DEP_MANIFEST_SET.contains(name)
 }
 
 /// Returns true if a notify event on this path should be ignored.
@@ -154,18 +166,74 @@ pub fn is_dep_manifest(path: &Path) -> bool {
 /// ignored — users frequently edit those and expect a restart. Only
 /// named artifact dirs are filtered.
 pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
-    let ignored: HashSet<&str> = IGNORED_DIR_NAMES.iter().copied().collect();
-
     let rel = path.strip_prefix(project_root).unwrap_or(path);
     for component in rel.components() {
         if let std::path::Component::Normal(os) = component
             && let Some(s) = os.to_str()
-            && ignored.contains(s)
+            && IGNORED_DIR_SET.contains(s)
         {
             return true;
         }
     }
     false
+}
+
+/// Register non-recursive watches on every directory under `root`
+/// EXCEPT those whose name (or any ancestor's name) matches
+/// [`IGNORED_DIR_NAMES`]. This prunes inotify watch registration at
+/// setup time, avoiding thousands of useless descriptors inside
+/// `node_modules`/`target`/`.git` and cutting per-event filter cost
+/// (events from ignored subtrees never fire at all).
+///
+/// Best-effort: permission errors on subdirs are logged and skipped,
+/// not propagated. The watcher stays online for the rest of the tree.
+fn watch_pruned(watcher: &mut notify::RecommendedWatcher, root: &Path) -> anyhow::Result<()> {
+    use std::collections::VecDeque;
+
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(dir) = queue.pop_front() {
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            tracing::debug!(
+                path = %dir.display(),
+                error = %e,
+                "watch_pruned: skipping unwatchable dir"
+            );
+            continue;
+        }
+
+        let read = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(
+                    path = %dir.display(),
+                    error = %e,
+                    "watch_pruned: cannot enumerate, skipping children"
+                );
+                continue;
+            }
+        };
+
+        for entry in read.flatten() {
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !ft.is_dir() || ft.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name();
+            if let Some(s) = name.to_str()
+                && IGNORED_DIR_SET.contains(s)
+            {
+                continue;
+            }
+            queue.push_back(entry.path());
+        }
+    }
+
+    Ok(())
 }
 
 /// Run the watch loop: watch `project_path` recursively, debounce
@@ -213,7 +281,13 @@ where
         notify::Config::default(),
     )?;
 
-    watcher.watch(&project_path, RecursiveMode::Recursive)?;
+    // Walk the project once and register watches on directories that
+    // aren't in the ignore list. notify's RecursiveMode::Recursive
+    // otherwise registers inotify watches inside node_modules/target/
+    // .git — thousands of watch descriptors on a large project, and
+    // per-event post-delivery filtering. NonRecursive on pruned
+    // directories avoids both costs.
+    watch_pruned(&mut watcher, &project_path)?;
 
     tracing::info!(
         worker = %worker_name,

@@ -1341,10 +1341,45 @@ enum StopMode {
 }
 
 /// Reads a PID file, returning `Some(pid)` when contents parse as `u32`.
+///
+/// On Unix, opens with `O_NOFOLLOW` + verifies the opened file is a
+/// regular file owned by the current euid before reading. Defends
+/// against symlink-replace attacks: a local attacker who can write
+/// into the managed dir can't redirect the read elsewhere, and can't
+/// trick us into treating a file they own as a valid pid marker that
+/// we then `kill()` on. On non-Unix platforms falls back to plain
+/// read_to_string.
 fn read_pid(path: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(path)
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.file_type().is_file() {
+            return None;
+        }
+        let our_uid = unsafe { nix::libc::geteuid() };
+        if meta.uid() != our_uid {
+            return None;
+        }
+        // Cap at a few bytes — a PID is at most 10 decimal digits.
+        let mut buf = [0u8; 32];
+        let n = file.read(&mut buf).ok()?;
+        let s = std::str::from_utf8(&buf[..n]).ok()?;
+        return s.trim().parse::<u32>().ok();
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+    }
 }
 
 /// Returns `true` if `pid` refers to a live process. Uses signal 0 as a

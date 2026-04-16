@@ -12,8 +12,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Virtio-console port name used to carry the supervisor control channel.
+/// Set host-side via `ConsoleBuilder::port("iii.control", ...)` and
+/// discovered guest-side by walking `/sys/class/virtio-ports/*/name`.
+/// Single source of truth for both ends.
+pub const CONTROL_PORT_NAME: &str = "iii.control";
+
 /// Commands the host can send to the in-VM supervisor.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     /// Kill the current child process and respawn it with the same run_cmd.

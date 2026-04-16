@@ -442,10 +442,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let pidfile = tmp.path().join("grandchild.pid");
-        let run_cmd = format!(
-            "sleep 30 & echo $! > {}; wait",
-            pidfile.display()
-        );
+        let run_cmd = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
 
         let state = State::new(Config {
             run_cmd,

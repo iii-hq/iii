@@ -31,7 +31,7 @@
 //! binary, the extra exec hop, and the install plumbing that shipped it
 //! into every rootfs.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -248,58 +248,31 @@ fn exit_is_terminal(state: &iii_supervisor::child::State, dead_pid: i32) -> bool
 /// main thread keeps running until the child exits, at which point
 /// the whole VM powers down via `process::exit`.
 ///
-/// Mirrors `iii_supervisor::control::serve` but adds the side effect
-/// of syncing [`CHILD_PID`] and the worker cgroup after each successful
-/// restart. We can't use `serve` directly because it has no post-dispatch
-/// hook, and syncing these from the signal handler isn't async-signal-safe.
-fn run_control_loop(
-    state: iii_supervisor::child::State,
-    port_path: &Path,
-) -> anyhow::Result<()> {
-    use iii_supervisor::control::dispatch;
-    use iii_supervisor::protocol::{self, Request, Response};
+/// Delegates the read-dispatch-write loop to
+/// `iii_supervisor::control::serve_with`, hooking the post-dispatch
+/// callback to sync [`CHILD_PID`] + the worker cgroup after every
+/// successful `Restart`. We can't sync these from a signal handler
+/// (not async-signal-safe), so they live here.
+fn run_control_loop(state: iii_supervisor::child::State, port_path: &Path) -> anyhow::Result<()> {
+    use iii_supervisor::control::serve_with;
+    use iii_supervisor::protocol::{Request, Response};
 
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(port_path)?;
-    let mut writer = file.try_clone()?;
-    let mut reader = BufReader::new(file);
+    let writer = file.try_clone()?;
+    let reader = BufReader::new(file);
 
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 {
-            break;
+    serve_with(state, reader, writer, |req, resp, state| {
+        if matches!(req, Request::Restart)
+            && matches!(resp, Response::Ok)
+            && let Some(new_pid) = state.pid()
+        {
+            CHILD_PID.store(new_pid as i32, Ordering::SeqCst);
+            attach_to_worker_cgroup(new_pid as i32);
         }
-        match protocol::decode_request(&line) {
-            Ok(req) => {
-                let is_restart = matches!(req, Request::Restart);
-                let (resp, should_exit) = dispatch(&state, req);
-                writeln!(writer, "{}", protocol::encode_response(&resp))?;
-                writer.flush()?;
-                if is_restart
-                    && matches!(resp, Response::Ok)
-                    && let Some(new_pid) = state.pid()
-                {
-                    CHILD_PID.store(new_pid as i32, Ordering::SeqCst);
-                    attach_to_worker_cgroup(new_pid as i32);
-                }
-                if should_exit {
-                    break;
-                }
-            }
-            Err(e) => {
-                let err = Response::Error {
-                    message: format!("malformed request: {e}"),
-                };
-                writeln!(writer, "{}", protocol::encode_response(&err))?;
-                writer.flush()?;
-            }
-        }
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -321,14 +294,6 @@ mod tests {
             matches!(err, InitError::MissingWorkerCmd),
             "expected MissingWorkerCmd, got: {err}"
         );
-    }
-
-    #[test]
-    fn test_child_pid_starts_at_zero() {
-        // Racy against other tests that spawn children (they set CHILD_PID).
-        // We only assert >= 0, which every well-formed value satisfies; this
-        // test exists to lock in the static's existence and default.
-        assert!(CHILD_PID.load(Ordering::SeqCst) >= 0);
     }
 
     #[test]

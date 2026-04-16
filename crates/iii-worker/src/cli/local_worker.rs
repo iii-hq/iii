@@ -163,10 +163,6 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> String {
-    build_libkrun_local_script_ex(project, prepared)
-}
-
 /// Build the boot script that `iii-init` will exec as the worker command.
 ///
 /// No supervisor wrapping: the in-VM `iii-init` binary absorbs the
@@ -174,7 +170,7 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
 /// channel itself when the host sets `III_CONTROL_PORT`. That removes
 /// the separate `/opt/iii/supervisor` binary and its install plumbing
 /// that this function used to emit as `exec /opt/iii/supervisor ...`.
-pub fn build_libkrun_local_script_ex(project: &ProjectInfo, prepared: bool) -> String {
+pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> String {
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
@@ -702,7 +698,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
     //    Fast-restart is enabled whenever vm_boot wires the control port,
     //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
-    let script = build_libkrun_local_script_ex(&project, is_prepared);
+    let script = build_libkrun_local_script(&project, is_prepared);
 
     let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
     std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
@@ -780,14 +776,16 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     //
     // Only spawn after the VM was successfully started; otherwise a
     // watcher fire would race into kill_stale_worker against nothing.
-    if exit_code == 0
-        && let Err(e) = spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher)
-    {
-        eprintln!(
-            "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
-            "warning:".yellow(),
-            e
-        );
+    if exit_code == 0 {
+        if let Err(e) =
+            spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher).await
+        {
+            eprintln!(
+                "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
+                "warning:".yellow(),
+                e
+            );
+        }
     }
 
     exit_code
@@ -795,7 +793,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
 /// Spawn the hidden `__watch-source` sidecar process, detached, with
 /// its PID recorded so `kill_stale_worker` can reap it on stop.
-fn spawn_source_watcher(
+async fn spawn_source_watcher(
     worker_name: &str,
     project_path: &Path,
     managed_dir: &Path,
@@ -803,29 +801,39 @@ fn spawn_source_watcher(
     use std::path::PathBuf;
 
     // If a watcher is already running for this worker (stale PID file
-    // from a crashed previous start), kill it first so we don't stack
-    // sidecars that fight over the same project dir.
-    let pid_file = managed_dir.join("watch.pid");
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-        && let Ok(pid) = pid_str.trim().parse::<i32>()
-    {
-        #[cfg(unix)]
-        unsafe {
-            nix::libc::kill(pid, nix::libc::SIGTERM);
-        }
-    }
-    let _ = std::fs::remove_file(&pid_file);
+    // from a crashed previous start), reap it first so we don't stack
+    // sidecars that fight over the same project dir. Delegates to the
+    // grace-period reaper in managed.rs so both reap paths stay in sync.
+    super::managed::reap_source_watcher(worker_name).await;
 
+    let pid_file = managed_dir.join("watch.pid");
     let self_exe = std::env::current_exe()?;
     let logs_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".iii/logs")
         .join(worker_name);
     std::fs::create_dir_all(&logs_dir)?;
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(logs_dir.join("watcher.log"))?;
+    // Lock log dir to 0o700 so another local user can't traverse in and
+    // plant a symlink at watcher.log pointing at, e.g., ~/.ssh/authorized_keys.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&logs_dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let log_path = logs_dir.join("watcher.log");
+    let mut log_opts = std::fs::OpenOptions::new();
+    log_opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NOFOLLOW on the final path component so a pre-planted
+        // symlink (by another local user with dir-traverse access)
+        // can't redirect our appends to an arbitrary file.
+        log_opts.custom_flags(nix::libc::O_NOFOLLOW);
+        // Create as 0o600 — owner-only.
+        log_opts.mode(0o600);
+    }
+    let log_file = log_opts.open(&log_path)?;
     let log_file2 = log_file.try_clone()?;
 
     let project_abs =

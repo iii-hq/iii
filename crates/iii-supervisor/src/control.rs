@@ -91,30 +91,76 @@ pub fn dispatch(state: &State, req: Request) -> (Response, bool) {
 /// `reader` and `writer` are intentionally separate so a caller can wrap
 /// the same underlying fd twice (e.g. with `try_clone`) without needing
 /// interior mutability on the stream itself.
-pub fn serve<R: BufRead, W: Write>(
+pub fn serve<R: BufRead, W: Write>(state: State, reader: R, writer: W) -> anyhow::Result<()> {
+    serve_with(state, reader, writer, |_req, _resp, _state| {})
+}
+
+/// Like [`serve`] but calls `on_dispatch(req, resp, state)` after every
+/// successfully-parsed request/response cycle. Lets callers hook
+/// post-dispatch side effects (e.g. `iii-init` syncs its `CHILD_PID`
+/// atomic and worker cgroup after every `Restart`) without duplicating
+/// the whole read-dispatch-write loop.
+///
+/// `on_dispatch` is NOT called for malformed requests — those short-
+/// circuit with an `Error` response and don't reflect a real command.
+/// Line-length capping is enforced here so a misbehaving writer can't
+/// OOM the supervisor by streaming bytes without a newline.
+pub fn serve_with<R, W, F>(
     state: State,
     mut reader: R,
     mut writer: W,
-) -> anyhow::Result<()> {
+    mut on_dispatch: F,
+) -> anyhow::Result<()>
+where
+    R: BufRead,
+    W: Write,
+    F: FnMut(&Request, &Response, &State),
+{
+    /// Max accepted line length. The protocol carries tiny JSON
+    /// (`{"op":"restart"}` + similar). Anything beyond this is either
+    /// malformed or an attacker flooding bytes without a newline to OOM
+    /// the supervisor. 4 KiB leaves ample headroom for any legitimate
+    /// request/response.
+    const MAX_LINE: u64 = 4096;
+
     let mut line = String::new();
     loop {
         line.clear();
-        let n = reader.read_line(&mut line)?;
+        // Take(MAX_LINE) on a mutable ref caps a single read_line call
+        // without consuming the reader — Take<&mut R> implements BufRead
+        // when R does, so read_line is still available.
+        let n = {
+            use std::io::Read;
+            reader.by_ref().take(MAX_LINE).read_line(&mut line)?
+        };
         if n == 0 {
             // EOF — host closed its end of the channel.
             tracing::info!("control channel closed, exiting loop");
             break;
         }
-        let resp = match protocol::decode_request(&line) {
+        // A full MAX_LINE read without a terminating newline means the
+        // peer is either speaking the wrong protocol or actively
+        // streaming junk. Reply with Error and drop the channel so
+        // memory can't grow further.
+        if n as u64 == MAX_LINE && !line.ends_with('\n') {
+            let err = Response::Error {
+                message: format!("request exceeds {MAX_LINE}-byte cap"),
+            };
+            writeln!(writer, "{}", protocol::encode_response(&err))?;
+            writer.flush()?;
+            break;
+        }
+        match protocol::decode_request(&line) {
             Ok(req) => {
                 tracing::debug!(request = ?req, "dispatching");
-                let (r, should_exit) = dispatch(&state, req);
-                writeln!(writer, "{}", protocol::encode_response(&r))?;
+                let (resp, should_exit) = dispatch(&state, req.clone());
+                writeln!(writer, "{}", protocol::encode_response(&resp))?;
                 writer.flush()?;
+                on_dispatch(&req, &resp, &state);
+                tracing::debug!(response = ?resp, "dispatched");
                 if should_exit {
                     break;
                 }
-                r
             }
             Err(e) => {
                 let err = Response::Error {
@@ -122,10 +168,8 @@ pub fn serve<R: BufRead, W: Write>(
                 };
                 writeln!(writer, "{}", protocol::encode_response(&err))?;
                 writer.flush()?;
-                err
             }
-        };
-        tracing::debug!(response = ?resp, "dispatched");
+        }
     }
     Ok(())
 }

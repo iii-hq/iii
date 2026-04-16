@@ -255,17 +255,31 @@ fn setup_control_socketpair() -> Result<(std::os::unix::net::UnixStream, i32), S
 /// step at the top of this function.
 #[cfg(unix)]
 fn spawn_control_proxy(sock_path: String, host_end: std::os::unix::net::UnixStream) {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
+
+    /// Host↔VM round-trip budget. Matches the host-side
+    /// `supervisor_ctl::DEFAULT_TIMEOUT` so callers' timeouts and the
+    /// proxy's timeouts converge on the same deadline.
+    const VM_IO_TIMEOUT: Duration = Duration::from_millis(500);
+
+    /// Cap on a single request or response line, matching
+    /// `iii_supervisor::control::serve_with`. A client streaming bytes
+    /// without a newline can't grow memory beyond this.
+    const MAX_LINE: usize = 4096;
 
     // Ensure the parent dir exists and any stale socket is gone. The
     // parent dir should already exist (managed_dir is created earlier
     // in the worker start path), but we don't rely on that.
     if let Some(parent) = PathBuf::from(&sock_path).parent() {
         let _ = std::fs::create_dir_all(parent);
+        // Lock the parent to 0o700 so no other local user can traverse
+        // into it to reach the control socket. Best-effort.
+        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
     }
     let _ = std::fs::remove_file(&sock_path);
 
@@ -279,66 +293,145 @@ fn spawn_control_proxy(sock_path: String, host_end: std::os::unix::net::UnixStre
             return;
         }
     };
+    // Lock the socket file to 0o600 (owner rw only). Combined with
+    // SO_PEERCRED checks below, this is defense-in-depth: without the
+    // peer uid check a local user whose uid != ours could still use
+    // a stolen fd, but fs perms block the typical unprivileged path.
+    let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
+
+    // Cap how long any single read from the VM end can block. A wedged
+    // supervisor otherwise pins the mutex forever and every subsequent
+    // client deadlocks on host.lock(). 500ms matches the host-side
+    // supervisor_ctl round-trip budget.
+    let _ = host_end.set_read_timeout(Some(VM_IO_TIMEOUT));
+    let _ = host_end.set_write_timeout(Some(VM_IO_TIMEOUT));
 
     let host = Arc::new(Mutex::new(host_end));
+    let our_uid = unsafe { nix::libc::geteuid() };
 
     thread::Builder::new()
         .name("iii-control-proxy".to_string())
         .spawn(move || {
             for conn in listener.incoming() {
-                let mut client = match conn {
+                let client = match conn {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
+                // Reject clients running as a different uid. The control
+                // channel is strictly for the local owner of the worker.
+                if !peer_uid_matches(&client, our_uid) {
+                    continue;
+                }
+
                 let mut guard = match host.lock() {
                     Ok(g) => g,
                     Err(_) => return, // poisoned — give up
                 };
 
-                // Copy client → VM until we see a newline (one JSON
-                // request per connection in our protocol).
-                let mut req_buf = Vec::with_capacity(256);
-                let mut byte = [0u8; 1];
-                loop {
-                    match client.read(&mut byte) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            req_buf.push(byte[0]);
-                            if byte[0] == b'\n' {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                if req_buf.is_empty() {
-                    continue;
-                }
-                if guard.write_all(&req_buf).is_err() || guard.flush().is_err() {
+                if !proxy_one_round_trip(client, &mut *guard, MAX_LINE) {
+                    // VM-end failure (EOF, IO error, timeout). Drop the
+                    // listener so future fast-restarts fall back to the
+                    // full path instead of accepting doomed connections.
                     return;
-                }
-
-                // Now copy VM → client until we see a newline (one
-                // JSON response per request).
-                loop {
-                    match guard.read(&mut byte) {
-                        Ok(0) => return, // VM end closed — supervisor gone
-                        Ok(_) => {
-                            if client.write_all(&byte).is_err() {
-                                break;
-                            }
-                            if byte[0] == b'\n' {
-                                let _ = client.flush();
-                                break;
-                            }
-                        }
-                        Err(_) => return,
-                    }
                 }
                 // Drop client at end of iteration → connection closes.
             }
         })
         .expect("spawn control proxy thread");
+
+    /// One request/response exchange. Returns `true` to keep the
+    /// listener alive, `false` if the host↔VM channel itself has
+    /// failed (caller should abandon the proxy thread).
+    #[cfg(unix)]
+    fn proxy_one_round_trip(client: UnixStream, vm: &mut UnixStream, max_line: usize) -> bool {
+        use std::io::{BufRead, BufReader, Read, Write};
+        // Client-side reads can hang on a slow peer but the listener
+        // is still useful — bound the client read with the same budget
+        // as the VM side so a lazy attacker can't wedge the proxy.
+        let _ = client.set_read_timeout(Some(VM_IO_TIMEOUT));
+        let _ = client.set_write_timeout(Some(VM_IO_TIMEOUT));
+
+        let mut client_reader = BufReader::new(&client);
+        let mut req = Vec::with_capacity(128);
+        match (&mut client_reader)
+            .take(max_line as u64)
+            .read_until(b'\n', &mut req)
+        {
+            Ok(0) => return true, // client closed without sending — next
+            Ok(_) => {}
+            Err(_) => return true, // slow/bad client, keep listener
+        }
+        // Forward to VM.
+        if vm.write_all(&req).is_err() || vm.flush().is_err() {
+            return false;
+        }
+
+        // Pull one line of response from VM back to client.
+        let mut vm_reader = BufReader::new(&*vm);
+        let mut resp = Vec::with_capacity(64);
+        let read_result = (&mut vm_reader)
+            .take(max_line as u64)
+            .read_until(b'\n', &mut resp);
+        let mut client_writer = &client;
+        match read_result {
+            Ok(0) => false, // VM closed — supervisor gone
+            Ok(_) => {
+                let _ = client_writer.write_all(&resp);
+                let _ = client_writer.flush();
+                true
+            }
+            Err(_) => false, // VM timeout or IO error — bail
+        }
+    }
+
+    /// Check SO_PEERCRED on Linux / LOCAL_PEERCRED via getpeereid on
+    /// macOS+BSD: does the connecting peer share our euid? If not,
+    /// refuse the connection. Protects against lateral attacks on
+    /// multi-tenant dev hosts where $HOME perms can't be relied on.
+    #[cfg(unix)]
+    fn peer_uid_matches(stream: &UnixStream, expected: u32) -> bool {
+        use std::os::unix::io::AsRawFd;
+
+        let fd = stream.as_raw_fd();
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut cred: nix::libc::ucred = unsafe { std::mem::zeroed() };
+            let mut len: nix::libc::socklen_t =
+                std::mem::size_of::<nix::libc::ucred>() as nix::libc::socklen_t;
+            let rc = unsafe {
+                nix::libc::getsockopt(
+                    fd,
+                    nix::libc::SOL_SOCKET,
+                    nix::libc::SO_PEERCRED,
+                    &mut cred as *mut _ as *mut nix::libc::c_void,
+                    &mut len,
+                )
+            };
+            return rc == 0 && cred.uid == expected;
+        }
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd",
+        ))]
+        {
+            let mut uid: nix::libc::uid_t = 0;
+            let mut gid: nix::libc::gid_t = 0;
+            let rc = unsafe { nix::libc::getpeereid(fd, &mut uid, &mut gid) };
+            return rc == 0 && uid == expected;
+        }
+
+        // Other unices: fail closed. Don't forward to the VM.
+        #[allow(unreachable_code)]
+        {
+            let _ = (fd, expected);
+            false
+        }
+    }
 }
 
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
@@ -458,7 +551,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_INIT_CIDR", "30");
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
         if control_port_env {
-            e = e.env("III_CONTROL_PORT", "iii.control");
+            e = e.env(
+                "III_CONTROL_PORT",
+                iii_supervisor::protocol::CONTROL_PORT_NAME,
+            );
             e = e.env("III_WORKER_WORKDIR", &control_workdir);
         }
         if !virtiofs_mount_env.is_empty() {
@@ -503,7 +599,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             c = c.output(path);
         }
         if let Some(fd) = guest_control_fd {
-            c = c.port("iii.control", fd, fd);
+            c = c.port(iii_supervisor::protocol::CONTROL_PORT_NAME, fd, fd);
         }
         c
     });

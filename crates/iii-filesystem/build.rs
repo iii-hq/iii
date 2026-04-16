@@ -38,10 +38,7 @@ fn main() {
         // appears or its mtime moves. This is exactly the semantics we
         // want: "re-copy whenever the upstream binary changes, for any
         // reason, in any dep".
-        println!(
-            "cargo:rerun-if-changed={}",
-            binary_path.display()
-        );
+        println!("cargo:rerun-if-changed={}", binary_path.display());
 
         if !triple.is_empty() && binary_path.is_file() {
             std::fs::copy(&binary_path, &dest).expect("failed to copy iii-init to OUT_DIR");

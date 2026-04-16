@@ -128,7 +128,38 @@ pub async fn status(worker_name: &str) -> anyhow::Result<(Option<u32>, u32)> {
 
 /// Blocking variant of [`round_trip`]. Safe to call from inside a
 /// tokio context because it performs no async work itself.
+///
+/// Wraps the connect+send+recv cycle in a total deadline equal to
+/// `DEFAULT_TIMEOUT`. `UnixStream::connect` has no native timeout in
+/// std, and a wedged listener could theoretically stall it — running
+/// the whole round-trip on a worker thread with `recv_timeout` bounds
+/// the entire sync RPC, not just the per-syscall read/write pieces.
 fn round_trip_blocking(worker_name: &str, req: Request) -> anyhow::Result<Response> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let (tx, rx) = mpsc::channel::<anyhow::Result<Response>>();
+    let worker_name = worker_name.to_string();
+    thread::spawn(move || {
+        let result = round_trip_blocking_inner(&worker_name, req);
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(DEFAULT_TIMEOUT) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            anyhow::bail!(
+                "supervisor blocking round-trip timeout after {:?}",
+                DEFAULT_TIMEOUT
+            )
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("supervisor blocking round-trip thread died without result")
+        }
+    }
+}
+
+fn round_trip_blocking_inner(worker_name: &str, req: Request) -> anyhow::Result<Response> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
