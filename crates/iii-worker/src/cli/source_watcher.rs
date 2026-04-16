@@ -248,11 +248,7 @@ fn watch_pruned(watcher: &mut notify::RecommendedWatcher, root: &Path) -> anyhow
 ///
 /// macOS FSEvents is inherently recursive and auto-covers new subdirs
 /// already, so this call is a no-op there aside from the logging cost.
-fn register_new_dirs(
-    watcher: &mut notify::RecommendedWatcher,
-    paths: &[PathBuf],
-    root: &Path,
-) {
+fn register_new_dirs(watcher: &mut notify::RecommendedWatcher, paths: &[PathBuf], root: &Path) {
     for p in paths {
         // Cheap rejection first — ignored subtrees (node_modules etc.)
         // must never be watched even if they were just created.

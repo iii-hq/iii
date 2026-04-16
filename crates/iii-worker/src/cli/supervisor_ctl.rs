@@ -20,7 +20,7 @@
 //! falls back to a full `iii-worker start` which is slow but always
 //! works.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use iii_supervisor::protocol::{self, Request, Response};
@@ -34,18 +34,50 @@ use tokio::net::UnixStream;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Resolve the control-socket path for a named worker.
-pub fn control_socket_path(worker_name: &str) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_default();
-    home.join(".iii/managed")
+///
+/// Validates `worker_name` is a single-segment non-empty basename —
+/// not absolute, no parent components, no interior slashes — because
+/// `Path::join` with an absolute path silently replaces the base, and
+/// `..` components would escape the managed dir. Both would let a
+/// malformed config or CLI arg redirect the socket connect to an
+/// arbitrary path. The trust model today treats config.yaml / CLI
+/// args as trusted, but the cost of defense-in-depth here is one
+/// component walk per RPC and the failure mode (clear error) is
+/// strictly better than the silent misdirection it prevents.
+///
+/// Also fails if `HOME` is unset — the previous `unwrap_or_default`
+/// produced a relative path starting with `.iii/managed/...`, which
+/// would resolve against `$CWD` and connect to the wrong socket
+/// entirely when invoked from different directories.
+pub fn control_socket_path(worker_name: &str) -> anyhow::Result<PathBuf> {
+    if worker_name.is_empty() {
+        anyhow::bail!("worker_name is empty");
+    }
+    let p = Path::new(worker_name);
+    if p.is_absolute() {
+        anyhow::bail!("worker_name must not be absolute: {worker_name:?}");
+    }
+    // Reject any `..` or `/` in the name. Accept only a single Normal
+    // component — `a/b` or `../x` both fail here even though only one
+    // of them is technically traversal, because a legitimate worker
+    // name is always a single directory basename.
+    let mut comps = p.components();
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(_)), None) => {}
+        _ => anyhow::bail!("worker_name must be a single path segment: {worker_name:?}"),
+    }
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    Ok(home
+        .join(".iii/managed")
         .join(worker_name)
-        .join("control.sock")
+        .join("control.sock"))
 }
 
 /// Send a request, await a single-line response, return it.
 ///
 /// Every RPC entry point funnels through here.
 async fn round_trip(worker_name: &str, req: Request) -> anyhow::Result<Response> {
-    let sock = control_socket_path(worker_name);
+    let sock = control_socket_path(worker_name)?;
     let fut = async {
         let mut stream = UnixStream::connect(&sock).await?;
         let line = protocol::encode_request(&req) + "\n";
@@ -163,7 +195,7 @@ fn round_trip_blocking_inner(worker_name: &str, req: Request) -> anyhow::Result<
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
-    let sock = control_socket_path(worker_name);
+    let sock = control_socket_path(worker_name)?;
     let stream = UnixStream::connect(&sock)?;
     stream.set_read_timeout(Some(DEFAULT_TIMEOUT))?;
     stream.set_write_timeout(Some(DEFAULT_TIMEOUT))?;
@@ -200,16 +232,55 @@ mod tests {
 
     #[test]
     fn control_socket_path_segments_by_worker_name() {
-        let p = control_socket_path("my-worker");
+        let p = control_socket_path("my-worker").unwrap();
         let s = p.to_string_lossy();
         assert!(s.ends_with("/.iii/managed/my-worker/control.sock"));
     }
 
     #[test]
     fn control_socket_path_does_not_collide_across_workers() {
-        let a = control_socket_path("a");
-        let b = control_socket_path("b");
+        let a = control_socket_path("a").unwrap();
+        let b = control_socket_path("b").unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn control_socket_path_rejects_empty_name() {
+        assert!(control_socket_path("").is_err());
+    }
+
+    #[test]
+    fn control_socket_path_rejects_absolute_path() {
+        // Path::join with an absolute path silently replaces the base,
+        // which would route the socket connect to /etc/... — exactly
+        // the redirection we're defending against.
+        let err = control_socket_path("/etc/passwd").unwrap_err();
+        assert!(
+            err.to_string().contains("absolute"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn control_socket_path_rejects_parent_traversal() {
+        for bad in ["..", "../escape", "foo/../bar", "a/b"] {
+            let err = control_socket_path(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("single path segment")
+                    || err.to_string().contains("absolute"),
+                "expected rejection for {bad:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_socket_path_accepts_single_segment_names() {
+        for ok in ["worker", "w1", "a-b", "a_b", "worker.v2"] {
+            assert!(
+                control_socket_path(ok).is_ok(),
+                "expected {ok:?} to be accepted"
+            );
+        }
     }
 
     /// Spawn a minimal stub server at `sock_path` that accepts one
@@ -248,7 +319,7 @@ mod tests {
         // proves that request_restart_blocking is safe to call from a
         // tokio context — no runtime nesting, no panic.
         let worker = format!("{}_blk", sandbox_worker_name());
-        stub_server(control_socket_path(&worker), r#"{"result":"ok"}"#).await;
+        stub_server(control_socket_path(&worker).unwrap(), r#"{"result":"ok"}"#).await;
 
         // Call from inside the async test, mirroring how the watcher
         // calls it from its async-contextual sync callback.
@@ -282,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn request_restart_succeeds_on_ok_response() {
         let worker = sandbox_worker_name();
-        stub_server(control_socket_path(&worker), r#"{"result":"ok"}"#).await;
+        stub_server(control_socket_path(&worker).unwrap(), r#"{"result":"ok"}"#).await;
         request_restart(&worker).await.expect("restart ok");
         let _ =
             tokio::fs::remove_dir_all(dirs::home_dir().unwrap().join(".iii/managed").join(&worker))
@@ -293,7 +364,7 @@ mod tests {
     async fn request_restart_propagates_error_response() {
         let worker = format!("{}_err", sandbox_worker_name());
         stub_server(
-            control_socket_path(&worker),
+            control_socket_path(&worker).unwrap(),
             r#"{"result":"error","message":"boom"}"#,
         )
         .await;
@@ -308,7 +379,7 @@ mod tests {
     async fn ping_reports_pid_from_alive_response() {
         let worker = format!("{}_ping", sandbox_worker_name());
         stub_server(
-            control_socket_path(&worker),
+            control_socket_path(&worker).unwrap(),
             r#"{"result":"alive","pid":4242}"#,
         )
         .await;
