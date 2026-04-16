@@ -47,6 +47,49 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
     OTEL_STATE.get_or_init(|| Mutex::new(None))
 }
 
+/// Normalize an engine WebSocket URL into the dedicated OTEL endpoint.
+///
+/// The engine exposes `/otel` for telemetry-only WS connections. Appending
+/// the path here means the SDK never shows up in `worker_registry` as a
+/// ghost null-metadata worker. Handles trailing slashes, existing query
+/// strings, and URLs that already point at a path.
+fn append_otel_path(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with("/otel") {
+        return trimmed.to_string();
+    }
+    format!("{trimmed}/otel")
+}
+
+#[cfg(test)]
+mod otel_path_tests {
+    use super::append_otel_path;
+
+    #[test]
+    fn appends_otel_path() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134"),
+            "ws://localhost:49134/otel"
+        );
+    }
+
+    #[test]
+    fn strips_trailing_slash_before_appending() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134/"),
+            "ws://localhost:49134/otel"
+        );
+    }
+
+    #[test]
+    fn is_idempotent() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134/otel"),
+            "ws://localhost:49134/otel"
+        );
+    }
+}
+
 /// Initialize OpenTelemetry with the given configuration.
 ///
 /// Sets up distributed tracing, optional metrics, and optional log export
@@ -92,10 +135,17 @@ pub async fn init_otel(config: OtelConfig) -> bool {
         .service_instance_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let ws_url = config
-        .engine_ws_url
-        .or_else(|| std::env::var("III_URL").ok())
-        .unwrap_or_else(|| "ws://localhost:49134".to_string());
+    let ws_url = {
+        let base = config
+            .engine_ws_url
+            .or_else(|| std::env::var("III_URL").ok())
+            .unwrap_or_else(|| "ws://localhost:49134".to_string());
+        // Route OTEL to the dedicated `/otel` endpoint so the engine
+        // doesn't register this connection in `worker_registry`. The
+        // telemetry socket would otherwise show up as a ghost worker
+        // (null name/os/pid/runtime) alongside every real worker.
+        append_otel_path(&base)
+    };
 
     let reconnection_config = config.reconnection_config.unwrap_or_default();
 

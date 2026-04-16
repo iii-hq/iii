@@ -74,10 +74,9 @@ async fn otel_path_skips_worker_registry_registration() {
     // Step 1: connect a normal worker socket to `/`. This should register
     // exactly one WorkerConnection, proving the test harness is wired
     // correctly (and that the default route behavior is unchanged).
-    let (mut normal_ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/", port))
-            .await
-            .expect("connect to / should succeed");
+    let (mut normal_ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/", port))
+        .await
+        .expect("connect to / should succeed");
 
     // The engine's `handle_worker` sends a `WorkerRegistered` message
     // synchronously after `register_worker`, so once the client observes
