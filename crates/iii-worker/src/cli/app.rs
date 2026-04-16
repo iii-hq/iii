@@ -90,6 +90,13 @@ pub enum Commands {
         /// Don't block waiting for the worker to report ready.
         #[arg(long)]
         no_wait: bool,
+
+        /// Engine WebSocket port the spawned worker connects back to. Defaults
+        /// to DEFAULT_PORT; the engine passes its configured
+        /// iii-worker-manager port when auto-spawning external workers so
+        /// non-default manager ports don't silently break connectivity.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
     },
 
     /// Stop a managed worker container
@@ -110,6 +117,11 @@ pub enum Commands {
         /// Don't block waiting for the worker to report ready.
         #[arg(long)]
         no_wait: bool,
+
+        /// Engine WebSocket port the spawned worker connects back to. Same
+        /// semantics as `start --port`.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
     },
 
     /// List all workers and their status

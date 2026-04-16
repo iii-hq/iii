@@ -126,7 +126,12 @@ async fn handle_managed_start_builtin_short_circuits() {
         // is down, start returns 1 with a "start the engine" hint. Both are
         // valid; what we're really asserting is that we did NOT fall through
         // to the remote registry (which would produce a different error).
-        let start_rc = iii_worker::cli::managed::handle_managed_start("iii-http", false).await;
+        let start_rc = iii_worker::cli::managed::handle_managed_start(
+            "iii-http",
+            false,
+            iii_worker::DEFAULT_PORT,
+        )
+        .await;
         assert!(
             start_rc == 0 || start_rc == 1,
             "expected short-circuit (0 or 1), got {} -- suggests a registry fall-through",
@@ -148,7 +153,12 @@ async fn handle_managed_start_unconfigured_builtin_fails() {
             !iii_worker::cli::config_file::worker_exists("iii-http"),
             "precondition: iii-http must not be in config.yaml"
         );
-        let start_rc = iii_worker::cli::managed::handle_managed_start("iii-http", false).await;
+        let start_rc = iii_worker::cli::managed::handle_managed_start(
+            "iii-http",
+            false,
+            iii_worker::DEFAULT_PORT,
+        )
+        .await;
         assert_ne!(
             start_rc, 0,
             "handle_managed_start must fail for unconfigured builtin 'iii-http'"

@@ -72,13 +72,16 @@ pub struct ExternalWorkerProcess {
 const SPAWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl ExternalWorkerProcess {
-    /// Spawns `iii-worker start <name>` as a detached child. The CLI reads the
-    /// engine port from its own `DEFAULT_PORT` constant (which must stay in
-    /// lockstep with the engine's), so we intentionally do NOT pass `--port`
-    /// here -- `iii worker start` does not expose that flag and clap will
-    /// reject it with exit 2, silently breaking auto-start for every
-    /// non-builtin worker.
-    pub async fn spawn(name: &str) -> Result<Self, String> {
+    /// Spawns `iii-worker start <name> --port <port>` as a detached child.
+    ///
+    /// `port` is the engine's configured `iii-worker-manager` port; the CLI
+    /// uses it to build the `III_ENGINE_URL` env var handed to the spawned
+    /// VM-based worker so it connects back to the right place. When the
+    /// engine runs on the default port this is equivalent to the pre-fix
+    /// behavior; when it runs on a non-default port (e.g. SDK integration
+    /// tests with multiple `iii-worker-manager` entries), the spawned worker
+    /// no longer silently connects to the wrong port.
+    pub async fn spawn(name: &str, port: u16) -> Result<Self, String> {
         let worker_binary = resolve_iii_worker_binary()
             .ok_or_else(|| {
                 "iii-worker binary not found. Install with `iii update worker` or place in ~/.local/bin/".to_string()
@@ -96,8 +99,9 @@ impl ExternalWorkerProcess {
         let stderr_file = std::fs::File::create(logs_dir.join("stderr.log"))
             .map_err(|e| format!("Failed to create stderr log: {}", e))?;
 
+        let port_str = port.to_string();
         let mut cmd = tokio::process::Command::new(&worker_binary);
-        cmd.args(["start", name])
+        cmd.args(["start", name, "--port", &port_str])
             .stdout(stdout_file)
             .stderr(stderr_file);
 
@@ -108,6 +112,7 @@ impl ExternalWorkerProcess {
         tracing::info!(
             worker = %name,
             pid = ?child.id(),
+            port = port,
             "Worker starting via iii-worker (logs: `iii worker logs {}`)", name
         );
 

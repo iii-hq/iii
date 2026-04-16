@@ -51,40 +51,78 @@ fn cli_parses_all_subcommands() {
     }
 }
 
-/// Engine/CLI IPC contract: the iii engine spawns `iii-worker start <name>`
-/// from engine/src/workers/registry_worker.rs::ExternalWorkerProcess::spawn
+/// Engine/CLI IPC contract: the iii engine spawns `iii-worker start <name>
+/// --port <N>` from engine/src/workers/registry_worker.rs::ExternalWorkerProcess::spawn
 /// whenever it encounters a worker in config.yaml that isn't a builtin or a
-/// legacy iii.toml module. If either side drifts (e.g. the engine starts
-/// passing `--port` again, or someone re-adds `--port` to the Start
-/// subcommand), clap will reject with exit 2 and every non-builtin worker
-/// silently fails to auto-start. These two tests lock both halves of the
-/// contract.
+/// legacy iii.toml module. The --port flag carries the engine's configured
+/// iii-worker-manager port so spawned workers connect back to the right
+/// place (previously hardcoded DEFAULT_PORT, silently breaking non-default
+/// manager ports). These tests lock both halves of the contract: (a) the
+/// bare-name form still parses for backward compat with direct CLI use, and
+/// (b) the engine's new --port form parses and surfaces the port correctly.
 #[test]
 fn start_subcommand_matches_engine_spawn_args() {
-    // Exact form the engine uses. Must parse cleanly.
+    // Bare-name form used when a human runs `iii-worker start <name>` from
+    // the terminal. Must still parse cleanly and default port to DEFAULT_PORT.
     let cli = Cli::try_parse_from(["iii-worker", "start", "image-resize"])
-        .expect("engine's spawn args must parse");
+        .expect("bare start form must parse");
     match cli.command {
         Commands::Start {
             worker_name,
             no_wait,
+            port,
         } => {
             assert_eq!(worker_name, "image-resize");
             assert!(!no_wait, "engine expects default wait behavior");
+            assert_eq!(
+                port,
+                iii_worker::DEFAULT_PORT,
+                "bare form must default to DEFAULT_PORT"
+            );
         }
         _ => panic!("expected Start"),
     }
 }
 
 #[test]
-fn start_subcommand_rejects_port_flag() {
-    // If someone re-introduces `--port` on Start (or on the engine's spawn
-    // call), this test fails loudly at the CLI side instead of at runtime.
-    let result = Cli::try_parse_from(["iii-worker", "start", "--port", "49134", "--", "x"]);
-    assert!(
-        result.is_err(),
-        "Start must not accept --port -- engine IPC contract depends on it"
-    );
+fn start_subcommand_accepts_port_flag_from_engine_spawn() {
+    // Exact form the engine's ExternalWorkerProcess::spawn emits when a
+    // non-default iii-worker-manager port is configured. If this ever stops
+    // parsing, clap rejects with exit 2 and every auto-spawned external
+    // worker on a non-default port silently fails to connect.
+    let cli = Cli::try_parse_from(["iii-worker", "start", "pdfkit", "--port", "49199"])
+        .expect("engine's --port spawn form must parse");
+    match cli.command {
+        Commands::Start {
+            worker_name,
+            no_wait,
+            port,
+        } => {
+            assert_eq!(worker_name, "pdfkit");
+            assert!(!no_wait, "engine expects default wait behavior");
+            assert_eq!(port, 49199, "--port must surface the custom port");
+        }
+        _ => panic!("expected Start"),
+    }
+}
+
+#[test]
+fn restart_subcommand_accepts_port_flag() {
+    // Restart funnels through handle_managed_start too, so a CLI user who
+    // runs `iii-worker restart foo --port 49199` against a non-default
+    // engine must see the port flow through. Otherwise the same silent-fail
+    // pattern returns via the restart path.
+    let cli = Cli::try_parse_from(["iii-worker", "restart", "pdfkit", "--port", "49199"])
+        .expect("restart --port must parse");
+    match cli.command {
+        Commands::Restart {
+            worker_name, port, ..
+        } => {
+            assert_eq!(worker_name, "pdfkit");
+            assert_eq!(port, 49199);
+        }
+        _ => panic!("expected Restart"),
+    }
 }
 
 /// `add` subcommand parses worker name and applies defaults.

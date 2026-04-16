@@ -1296,12 +1296,19 @@ async fn wait_for_ready(worker_name: &str) {
     }
 }
 
-pub async fn handle_managed_start(worker_name: &str, wait: bool) -> i32 {
+/// Starts a managed worker, pointing it back at the engine on `port`.
+///
+/// `port` is the WebSocket port the spawned worker will connect to (used to
+/// build `III_ENGINE_URL` for VM-based workers and to probe engine liveness).
+/// Callers that don't know any better pass `DEFAULT_PORT`; the engine's
+/// auto-spawn path in `registry_worker::ExternalWorkerProcess::spawn` passes
+/// the configured `iii-worker-manager` port so non-default manager ports
+/// don't silently break connectivity for external workers.
+pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
-    let port = super::app::DEFAULT_PORT;
     // Builtin workers are served in-process by the iii engine (see
     // engine/src/workers/config.rs factory registry). They have no external
     // process to spawn and must not be resolved via the remote registry.
@@ -1456,7 +1463,7 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool) -> i32 {
 /// NOT abort the restart -- the most common reason stop "fails" here is
 /// "already not running," which returns 0. Start's exit code becomes the
 /// command's exit code.
-pub async fn handle_managed_restart(worker_name: &str, wait: bool) -> i32 {
+pub async fn handle_managed_restart(worker_name: &str, wait: bool, port: u16) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -1472,7 +1479,7 @@ pub async fn handle_managed_restart(worker_name: &str, wait: bool) -> i32 {
         );
     }
 
-    handle_managed_start(worker_name, wait).await
+    handle_managed_start(worker_name, wait, port).await
 }
 
 async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) -> i32 {

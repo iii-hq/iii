@@ -72,14 +72,16 @@ async fn main() -> anyhow::Result<()> {
         Commands::Start {
             worker_name,
             no_wait,
-        } => iii_worker::cli::managed::handle_managed_start(&worker_name, !no_wait).await,
+            port,
+        } => iii_worker::cli::managed::handle_managed_start(&worker_name, !no_wait, port).await,
         Commands::Stop { worker_name } => {
             iii_worker::cli::managed::handle_managed_stop(&worker_name).await
         }
         Commands::Restart {
             worker_name,
             no_wait,
-        } => iii_worker::cli::managed::handle_managed_restart(&worker_name, !no_wait).await,
+            port,
+        } => iii_worker::cli::managed::handle_managed_restart(&worker_name, !no_wait, port).await,
         Commands::List => iii_worker::cli::managed::handle_worker_list().await,
         Commands::Status {
             worker_name,
