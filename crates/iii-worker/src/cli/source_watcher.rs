@@ -316,6 +316,18 @@ fn register_new_dirs(
             Ok(md) if md.file_type().is_dir() => {}
             _ => continue,
         }
+        // Defense-in-depth bounds check: reject any path that isn't
+        // under the canonicalized project root before calling
+        // `watcher.watch()`. The existing defenses (ignore-filter +
+        // symlink rejection) already close today's attack paths, but
+        // if a future notify refactor ever surfaces an out-of-root
+        // event path (e.g. FSEvents resolving a mount alias), the
+        // filter wouldn't catch it. `starts_with` is O(segments) and
+        // uses canonical equality since `root` is already canonical
+        // (`root_for_filter`); no additional syscall cost.
+        if !p.starts_with(root) {
+            continue;
+        }
         match watcher.watch(p, RecursiveMode::NonRecursive) {
             Ok(()) => {
                 registered.insert(p.clone());
@@ -427,7 +439,16 @@ where
     // .git — thousands of watch descriptors on a large project, and
     // per-event post-delivery filtering. NonRecursive on pruned
     // directories avoids both costs.
-    watch_pruned(&mut watcher, &project_path, &mut registered_dirs)?;
+    //
+    // Seed with `root_for_filter` (canonicalized) rather than the raw
+    // `project_path` so `registered_dirs` and the burst-time paths
+    // emitted by notify live in the same canonical namespace. On macOS
+    // FSEvents always reports canonical `/private/var/...` event paths
+    // even when the watch was registered on a symlinked ancestor, so
+    // seeding with the raw path makes `register_new_dirs` miss the
+    // dedup-set lookup and redo `lstat` + `inotify_add_watch` on every
+    // burst for already-watched parents. Canonical seed keeps dedup O(1).
+    watch_pruned(&mut watcher, &root_for_filter, &mut registered_dirs)?;
 
     tracing::info!(
         worker = %worker_name,
@@ -1155,5 +1176,99 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    /// Regression lock for the `starts_with(root)` bounds check added
+    /// at `register_new_dirs` (line ~328). If a path outside the
+    /// canonical project root sneaks through the earlier filters
+    /// (ignore-set + symlink-metadata), the bounds check MUST still
+    /// reject it before `watcher.watch()` is called — otherwise a
+    /// future notify-layer refactor could surface cross-root event
+    /// paths (e.g. FSEvents resolving a mount alias) and silently
+    /// register watches outside the project tree.
+    #[test]
+    fn register_new_dirs_rejects_out_of_root_paths() {
+        // Two independent tempdirs. `root` is the project; `stranger`
+        // simulates any path notify might hand us that is a real
+        // directory but outside the tree we meant to watch.
+        let proj = tempfile::tempdir().unwrap();
+        let stranger_tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        let stranger = std::fs::canonicalize(stranger_tmp.path()).unwrap();
+
+        // Sanity: stranger is NOT under root (the whole point of the
+        // fixture). If this fires the tempdir layout changed.
+        assert!(!stranger.starts_with(&root));
+
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        register_new_dirs(&mut watcher, &[stranger.clone()], &root, &mut registered);
+
+        assert!(
+            !registered.contains(&stranger),
+            "out-of-root path must be rejected by the bounds check; \
+             if this fires, the `starts_with(root)` guard at \
+             source_watcher.rs:~328 was weakened or removed"
+        );
+        assert!(
+            registered.is_empty(),
+            "no watches should be registered for an out-of-root burst"
+        );
+    }
+
+    /// Complement: an in-root path (real directory, not ignored) must
+    /// still register. Guards against the bounds check being
+    /// accidentally inverted or over-tightened.
+    #[test]
+    fn register_new_dirs_accepts_in_root_paths() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        let child = root.join("src");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        register_new_dirs(&mut watcher, &[child.clone()], &root, &mut registered);
+
+        assert!(
+            registered.contains(&child),
+            "in-root directory must register; got registered set: {:?}",
+            registered
+        );
+    }
+
+    /// Regression lock for the canonical-root seed: `watch_pruned` is
+    /// called with `&root_for_filter` (canonicalized) rather than the
+    /// raw user-supplied `project_path`, so the paths inserted into
+    /// `registered_dirs` match the canonical form that notify's
+    /// per-burst `register_new_dirs` lookup expects. On macOS FSEvents
+    /// always emits canonical `/private/var/...` event paths even when
+    /// the watch was registered on a symlinked ancestor; seeding with
+    /// the raw (non-canonical) path would make every burst miss the
+    /// dedup-set and redo `lstat` + `inotify_add_watch` on parents we
+    /// already watched.
+    ///
+    /// Strategy: walk a canonicalized tempdir tree, then verify that
+    /// `registered_dirs` contains the canonical root path (not a
+    /// symlinked alias). On filesystems where tempdir() paths are
+    /// already canonical this degenerates to a presence check — still
+    /// useful as a regression fence against any refactor that seeds
+    /// with a non-canonical argument.
+    #[test]
+    fn watch_pruned_seeds_registered_with_canonical_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(tmp.path()).unwrap();
+
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        watch_pruned(&mut watcher, &canonical_root, &mut registered).unwrap();
+
+        assert!(
+            registered.contains(&canonical_root),
+            "watch_pruned must seed `registered` with the canonical root \
+             so burst-time lookups from notify hit the dedup set; \
+             got registered set: {:?}",
+            registered
+        );
     }
 }

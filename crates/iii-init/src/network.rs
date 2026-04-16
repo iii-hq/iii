@@ -80,6 +80,15 @@ pub fn configure_network() -> Result<(), InitError> {
     // Write /etc/hosts mapping localhost to the gateway IP so DNS resolution
     // of "localhost" returns the gateway (reachable via the virtual network)
     // instead of 127.0.0.1 (unreachable guest loopback).
+    //
+    // Defensive create_dir_all: most rootfs images ship /etc, but a
+    // half-populated managed_dir (see local_worker.rs rootfs-clone path)
+    // can have the VM booting against a tree where /etc hasn't been
+    // created yet. Matches the pattern in `write_resolv_conf` above so
+    // both network writes behave consistently. Swallow errors — we're
+    // in best-effort territory and the subsequent write warning is the
+    // real diagnostic.
+    let _ = std::fs::create_dir_all("/etc");
     if let Err(e) = std::fs::write("/etc/hosts", format!("{gw}\tlocalhost\n")) {
         eprintln!("iii-init: warning: failed to write /etc/hosts: {e}");
     }

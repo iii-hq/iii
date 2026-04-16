@@ -317,7 +317,30 @@ fn spawn_control_proxy(
     }
     let _ = std::fs::remove_file(&sock_path);
 
-    let listener = match UnixListener::bind(&sock_path) {
+    // Narrow umask around the bind so the socket inode is created with
+    // 0o600 mode from the start, rather than born with the process
+    // umask (typically 0o002 / 0o022) and chmod'd afterwards. The prior
+    // `set_permissions` approach left a narrow TOCTOU window where a
+    // same-uid attacker could `connect()` before we locked the perms;
+    // SO_PEERCRED would reject cross-uid clients but not same-uid ones.
+    // umask(0o077) yields 0o600 files (default mode 0o666 & !0o077 = 0o600),
+    // closing the window. Restore the prior umask immediately after bind.
+    //
+    // Kept for defense-in-depth: SO_PEERCRED (below) remains the primary
+    // authz check and the parent dir is already 0o700 from line ~316.
+    //
+    // Caveat: `umask` is process-global, not per-thread. If a concurrent
+    // Tokio task (or any other thread) happens to create a file between
+    // the `umask(0o077)` and restore call, that file also inherits 0o077.
+    // The window is a few syscalls wide and `iii worker start` is
+    // effectively serial at this point in boot, so the practical risk is
+    // low; the `set_permissions` follow-up below catches the rare miss.
+    let prev_umask = unsafe { nix::libc::umask(0o077) };
+    let bind_result = UnixListener::bind(&sock_path);
+    unsafe {
+        nix::libc::umask(prev_umask);
+    }
+    let listener = match bind_result {
         Ok(l) => l,
         Err(e) => {
             eprintln!(
@@ -327,10 +350,10 @@ fn spawn_control_proxy(
             return None;
         }
     };
-    // Lock the socket file to 0o600 (owner rw only). Combined with
-    // SO_PEERCRED checks below, this is defense-in-depth: without the
-    // peer uid check a local user whose uid != ours could still use
-    // a stolen fd, but fs perms block the typical unprivileged path.
+    // Belt-and-suspenders: some platforms or `nix` versions of `umask`
+    // might not influence Unix-socket inode creation mode. The
+    // `set_permissions` call here is a no-op when bind already produced
+    // 0o600 (the common case), and a corrective chmod otherwise.
     let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
 
     // Capture (dev, ino) of the just-bound socket so the on_exit hook
