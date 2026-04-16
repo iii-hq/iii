@@ -766,27 +766,33 @@ pub async fn kill_stale_worker(worker_name: &str) {
     ];
 
     for pid_file in &pid_files {
-        if let Ok(pid_str) = tokio::fs::read_to_string(pid_file).await {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::{Signal, kill};
-                    use nix::unistd::Pid;
-                    let p = Pid::from_raw(pid);
-                    // Only kill if process is still alive
-                    if kill(p, None).is_ok() {
-                        tracing::info!(worker = %worker_name, pid, "Killing stale worker process");
-                        let _ = kill(p, Signal::SIGTERM);
-                        // Brief wait then force-kill
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        let _ = kill(p, Signal::SIGKILL);
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = pid;
+        // Route through the hardened reader so a pre-planted symlink
+        // at `pid_file` can't redirect us into an arbitrary file, and
+        // a pidfile owned by another uid is ignored instead of honored.
+        // We still attempt `remove_file` whenever the file exists so
+        // stale/unreadable pidfiles get cleaned up regardless.
+        let existed = pid_file.exists();
+        if let Some(pid) = read_pid(pid_file) {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{Signal, kill};
+                use nix::unistd::Pid;
+                let p = Pid::from_raw(pid as i32);
+                // Only kill if process is still alive.
+                if kill(p, None).is_ok() {
+                    tracing::info!(worker = %worker_name, pid, "Killing stale worker process");
+                    let _ = kill(p, Signal::SIGTERM);
+                    // Brief wait then force-kill.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let _ = kill(p, Signal::SIGKILL);
                 }
             }
+            #[cfg(not(unix))]
+            {
+                let _ = pid;
+            }
+        }
+        if existed {
             let _ = tokio::fs::remove_file(pid_file).await;
         }
     }
@@ -1033,10 +1039,8 @@ pub fn is_worker_running(worker_name: &str) -> bool {
     let bin_pid = home.join(".iii/pids").join(format!("{}.pid", worker_name));
 
     for pid_file in [oci_pid, bin_pid] {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-            && let Ok(pid) = pid_str.trim().parse::<u32>()
-        {
-            // Check if process is alive (signal 0 = existence check)
+        if let Some(pid) = read_pid(&pid_file) {
+            // Check if process is alive (signal 0 = existence check).
             #[cfg(unix)]
             {
                 use nix::sys::signal::kill;
@@ -1048,7 +1052,7 @@ pub fn is_worker_running(worker_name: &str) -> bool {
             #[cfg(not(unix))]
             {
                 let _ = pid;
-                // On non-Unix, assume running if PID file exists
+                // On non-Unix, assume running if PID file exists.
                 return true;
             }
         }
@@ -1675,9 +1679,10 @@ async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) 
         .join(".iii/managed")
         .join(worker_name)
         .join("vm.pid");
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        let _ = adapter.stop(pid_str.trim(), 5).await;
-        let _ = adapter.remove(pid_str.trim()).await;
+    if let Some(pid) = read_pid(&pid_file) {
+        let pid_str = pid.to_string();
+        let _ = adapter.stop(&pid_str, 5).await;
+        let _ = adapter.remove(&pid_str).await;
     }
 
     match adapter.start(&spec).await {
@@ -2771,6 +2776,38 @@ mod tests {
 
         // File should still be removed even with garbage content
         assert!(!pid_file.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_stale_worker_ignores_symlinked_pidfile() {
+        // A pre-planted symlink at the pidfile location must not be
+        // followed: read_pid opens with O_NOFOLLOW and returns None, so
+        // we skip the kill. The symlink itself is still removed so
+        // subsequent starts aren't jammed up by stale state.
+        let home = dirs::home_dir().unwrap_or_default();
+        let worker_name = "__iii_test_symlink_pidfile__";
+        let managed_dir = home.join(".iii/managed").join(worker_name);
+        let _ = std::fs::create_dir_all(&managed_dir);
+
+        // Attacker-controlled file we must NOT overwrite or target.
+        let sensitive = managed_dir.join("sensitive");
+        std::fs::write(&sensitive, "DO-NOT-TOUCH").unwrap();
+
+        let watch_pidfile = managed_dir.join("watch.pid");
+        std::os::unix::fs::symlink(&sensitive, &watch_pidfile).unwrap();
+
+        kill_stale_worker(worker_name).await;
+
+        // Symlink removed, target untouched.
+        assert!(!watch_pidfile.exists(), "symlink should be cleaned up");
+        assert_eq!(
+            std::fs::read_to_string(&sensitive).unwrap(),
+            "DO-NOT-TOUCH",
+            "symlink target must not be read/modified"
+        );
+
+        let _ = std::fs::remove_dir_all(&managed_dir);
     }
 
     #[test]
