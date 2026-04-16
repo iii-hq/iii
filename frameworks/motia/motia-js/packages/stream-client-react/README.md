@@ -1,3 +1,7 @@
+> [!WARNING]
+> **Motia is deprecated.** Active development has moved to [iii.dev](https://iii.dev).
+> [Read the announcement](https://blog.motia.dev/motia-helped-us-build-something-incredible/) · [Migrating from Motia.js](https://iii.dev/docs/changelog/0-11-0/migrating-from-motia-js)
+
 # @motiadev/stream-client-react
 
 Motia Stream Client React Package – Responsible for managing streams of data in React applications.
