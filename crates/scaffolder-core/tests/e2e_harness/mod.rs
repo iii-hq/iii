@@ -617,7 +617,7 @@ fn iii_bin() -> String {
 }
 
 /// Resolve iii-mono root: III_MONO_ROOT env, or ../iii-mono relative to workspace.
-// TODO: Update sibling path resolution when cli-tooling is merged into the monorepo.
+// cli-tooling has been merged into the monorepo; workspace root is the mono root.
 fn iii_mono_root() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("III_MONO_ROOT") {
         let path = PathBuf::from(p);
@@ -625,7 +625,7 @@ fn iii_mono_root() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    // cli-tooling and iii-mono are siblings under the same parent
+    // Workspace root is the monorepo root
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()

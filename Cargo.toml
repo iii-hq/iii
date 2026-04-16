@@ -27,7 +27,7 @@ homepage = "https://iii.dev"
 iii-sdk = { path = "sdk/packages/rust/iii" }
 scaffolder-core = { path = "crates/scaffolder-core" }
 
-# Shared dependencies used by cli-tooling crates
+# Shared dependencies used by tooling crates
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "process", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

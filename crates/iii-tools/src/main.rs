@@ -23,7 +23,7 @@ impl ProductConfig for IiiConfig {
     }
 
     fn default_template_url(&self) -> &'static str {
-        "https://raw.githubusercontent.com/iii-hq/cli-tooling/main/templates/iii"
+        "https://raw.githubusercontent.com/iii-hq/iii/main/templates/iii"
     }
 
     fn template_url_env(&self) -> &'static str {
