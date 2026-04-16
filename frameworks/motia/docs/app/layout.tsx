@@ -1,6 +1,8 @@
 import type { Metadata } from 'next'
 import { Geist } from 'next/font/google'
+import Link from 'next/link'
 import './globals.css'
+import { Banner } from 'fumadocs-ui/components/banner'
 import { RootProvider } from 'fumadocs-ui/provider'
 
 const geistSans = Geist({
@@ -28,6 +30,22 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${geistSans.variable} antialiased`}>
+        <Banner id="motia-deprecation" variant="rainbow" changeLayout>
+          <span>
+            Motia is being deprecated. Say hello to{' '}
+            <Link href="https://iii.dev" className="underline font-semibold">
+              iii.dev
+            </Link>
+            !{' '}
+            <span className="opacity-60">•</span>{' '}
+            <Link
+              href="https://iii.dev/docs/changelog/0-11-0/migrating-from-motia-js"
+              className="underline font-semibold"
+            >
+              View the transition guide
+            </Link>
+          </span>
+        </Banner>
         <RootProvider>{children}</RootProvider>
       </body>
     </html>
