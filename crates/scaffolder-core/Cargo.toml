@@ -1,0 +1,41 @@
+[package]
+name = "scaffolder-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core library for project scaffolding with template support"
+
+[features]
+default = ["tui"]
+tui = ["dep:cliclack", "dep:console", "dep:ctrlc"]
+
+[dependencies]
+# Always included (core functionality)
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+semver = { workspace = true }
+walkdir = { workspace = true }
+zip = { workspace = true }
+open = { workspace = true }
+colored = { workspace = true }
+dirs = { workspace = true }
+uuid = { workspace = true }
+serde_json = { workspace = true }
+
+# Optional: only for tui feature
+cliclack = { workspace = true, optional = true }
+console = { workspace = true, optional = true }
+ctrlc = { workspace = true, optional = true }
+
+[dev-dependencies]
+url = { workspace = true }
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["full", "macros"] }
+tempfile = { workspace = true }
+libc = "0.2"

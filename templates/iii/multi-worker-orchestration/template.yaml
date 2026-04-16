@@ -1,0 +1,30 @@
+name: Multi Worker Orchestration Example
+description: Learn the iii basics while orchestrating workers
+version: '0.1.0'
+min_iii_version: '0.11.0'
+
+# Shown as "Included", always selected (not deselectable); runtime checks advisory
+treat_required_as_included: true
+requires:
+  - python
+  - rust
+  - typescript
+optional: []
+
+# Explicit list of files to copy (shared_files from root are added automatically)
+files:
+  - README.md
+  - workers/client/package.json
+  - workers/client/tsconfig.json
+  - workers/client/iii.worker.yaml
+  - workers/client/src/worker.ts
+  - workers/data-worker/requirements.txt
+  - workers/data-worker/iii.worker.yaml
+  - workers/data-worker/data_worker.py
+  - workers/compute-worker/Cargo.toml
+  - workers/compute-worker/iii.worker.yaml
+  - workers/compute-worker/src/main.rs
+  - workers/payment-worker/package.json
+  - workers/payment-worker/tsconfig.json
+  - workers/payment-worker/iii.worker.yaml
+  - workers/payment-worker/src/external-worker.ts

@@ -1,0 +1,7 @@
+name: compute-worker
+runtime:
+  language: rust
+  package_manager: cargo
+scripts:
+  install: 'cargo build --release'
+  start: 'cargo run --release'

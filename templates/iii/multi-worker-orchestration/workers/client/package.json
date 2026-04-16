@@ -1,0 +1,25 @@
+{
+  "name": "client",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "An example client or orchestration worker",
+  "scripts": {
+    "dev": "node --import tsx src/worker.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "iii-sdk": "0.11.0-next.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.2",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "iii",
+    "sdk",
+    "quickstart"
+  ],
+  "author": "",
+  "license": "Apache-2.0"
+}

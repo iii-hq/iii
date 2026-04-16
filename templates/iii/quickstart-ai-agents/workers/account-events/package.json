@@ -1,0 +1,19 @@
+{
+  "name": "account-events",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Account events worker — emits upgrade events to the iii event bus",
+  "scripts": {
+    "dev": "npx tsx --watch src/worker.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "iii-sdk": "^0.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "license": "Apache-2.0"
+}

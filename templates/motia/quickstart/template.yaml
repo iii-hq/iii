@@ -1,0 +1,30 @@
+# Quickstart template configuration
+name: Quickstart
+description: Learn the very basics of Motia. If you're just getting started then start here!
+version: "0.1.0"
+min_iii_version: "0.11.0"
+
+# Languages that must be included (user cannot deselect)
+requires:
+  - typescript
+
+# Languages that can optionally be included
+# optional:
+#   - javascript
+#   - python
+
+# Explicit file manifest for fetching
+files:
+  # Root config files
+  # - .env.example
+  - package.json
+  # - requirements.txt
+  - iii-config.yaml
+
+  # Step files - filtered by language selection
+  - src/create-ticket.step.ts
+  - src/escalate-ticket.step.ts
+  - src/list-tickets.step.ts
+  - src/notify-customer.step.ts
+  - src/sla-monitor.step.ts
+  - src/triage-ticket.step.ts

@@ -74,3 +74,6 @@ sdk/packages/python/iii/api-docs.json
 
 
 docs/plans/
+
+# Generated template archives (built in CI, not committed)
+templates/**/*.zip

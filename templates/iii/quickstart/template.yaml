@@ -1,0 +1,24 @@
+name: Quickstart (Cross-Language Math)
+description: Call a Python function from a Node worker using iii trigger
+version: '0.1.0'
+min_iii_version: '0.11.0'
+
+treat_required_as_included: true
+requires:
+  - python
+  - typescript
+optional: []
+
+# Explicit list of files to copy (shared_files from root are added automatically)
+files:
+  - README.md
+  - workers/math-worker/iii.worker.yaml
+  - workers/math-worker/requirements.txt
+  - workers/math-worker/math_worker.py
+  - workers/caller-worker/package.json
+  - workers/caller-worker/tsconfig.json
+  - workers/caller-worker/iii.worker.yaml
+  - workers/caller-worker/src/worker.ts
+
+next_steps:
+  - 'Continue with the quickstart at: https://iii.dev/docs/quickstart'
