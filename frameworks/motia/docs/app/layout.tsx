@@ -33,16 +33,24 @@ export default function RootLayout({
         <Banner id="motia-deprecation" variant="rainbow" changeLayout>
           <span>
             Motia is being deprecated. Say hello to{' '}
-            <Link href="https://iii.dev" className="underline font-semibold">
+            <Link href="https://iii.dev" className="font-semibold underline">
               iii.dev
             </Link>
             !{' '}
-            <span className="opacity-60">•</span>{' '}
+            <Link
+              href="https://blog.motia.dev/motia-helped-us-build-something-incredible/"
+              className="font-semibold underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Read the blog
+            </Link>
+            <span className="opacity-60"> • </span>
             <Link
               href="https://iii.dev/docs/changelog/0-11-0/migrating-from-motia-js"
-              className="underline font-semibold"
+              className="font-semibold underline"
             >
-              View the transition guide
+              View the migration guide
             </Link>
           </span>
         </Banner>
