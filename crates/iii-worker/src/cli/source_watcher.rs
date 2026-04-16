@@ -267,12 +267,18 @@ where
                 if !is_change {
                     return;
                 }
-                let all_ignored = !event.paths.is_empty()
-                    && event
-                        .paths
-                        .iter()
-                        .all(|p| should_ignore_path(p, &root_for_filter));
-                if all_ignored {
+                // On macOS FSEvents reports bare directory-level events
+                // on the project root whenever any descendant changes
+                // (including inside node_modules). A "path == root"
+                // entry tells us nothing a specific-file event doesn't,
+                // so drop it alongside ignored subtrees. If every path
+                // in the event is either an ignored subtree OR the
+                // bare root, skip — real edits always name a child path.
+                let has_relevant_path = event
+                    .paths
+                    .iter()
+                    .any(|p| !should_ignore_path(p, &root_for_filter) && p != &root_for_filter);
+                if !has_relevant_path {
                     return;
                 }
                 let _ = tx.send(event);
