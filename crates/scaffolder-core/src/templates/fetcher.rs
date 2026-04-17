@@ -7,10 +7,14 @@
 use super::manifest::{RootManifest, SharedFile, TemplateManifest};
 use crate::product::ProductConfig;
 use anyhow::{Context, Result};
+use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
 use url::Url;
+
+/// Maximum concurrent file fetches per template load
+const FETCH_CONCURRENCY: usize = 8;
 
 /// Template source - either remote URL or local directory
 #[derive(Debug, Clone)]
@@ -91,9 +95,8 @@ impl TemplateFetcher {
         Ok(url)
     }
 
-    async fn get_bytes(&self, url: &Url) -> Result<Vec<u8>> {
-        let response = self
-            .client
+    async fn get_bytes_with(client: &reqwest::Client, url: &Url) -> Result<Vec<u8>> {
+        let response = client
             .get(url.clone())
             .send()
             .await
@@ -102,6 +105,10 @@ impl TemplateFetcher {
             anyhow::bail!("Failed to fetch {}: HTTP {}", url, response.status());
         }
         Ok(response.bytes().await?.to_vec())
+    }
+
+    async fn get_bytes(&self, url: &Url) -> Result<Vec<u8>> {
+        Self::get_bytes_with(&self.client, url).await
     }
 
     async fn get_string(&self, url: &Url) -> Result<String> {
@@ -138,8 +145,9 @@ impl TemplateFetcher {
 
     /// Load a file for a template, applying shared-file renames
     /// `file_path` is the path relative to the template (what will live on disk in the project)
-    async fn load_template_file(
-        &self,
+    async fn load_template_file_with(
+        client: &reqwest::Client,
+        source: &TemplateSource,
         template_name: &str,
         file_path: &str,
         shared_files: &[SharedFile],
@@ -150,18 +158,18 @@ impl TemplateFetcher {
             .find(|s| s.destination() == file_path)
             .map(|s| s.source.as_str());
 
-        match &self.source {
+        match source {
             TemplateSource::Remote(base_url) => {
-                let url = if let Some(source) = shared_source {
-                    Self::build_url(base_url, source)?
+                let url = if let Some(src) = shared_source {
+                    Self::build_url(base_url, src)?
                 } else {
                     Self::build_url(base_url, &format!("{}/{}", template_name, file_path))?
                 };
-                self.get_bytes(&url).await
+                Self::get_bytes_with(client, &url).await
             }
             TemplateSource::Local(dir) => {
-                let full_path = if let Some(source) = shared_source {
-                    dir.join(source)
+                let full_path = if let Some(src) = shared_source {
+                    dir.join(src)
                 } else {
                     dir.join(template_name).join(file_path)
                 };
@@ -214,23 +222,37 @@ impl TemplateFetcher {
             }
         }
 
+        let shared_files = root_manifest.shared_files.clone();
+        let client = &self.client;
+        let source = &self.source;
+        let results: Vec<(String, Result<Vec<u8>>)> = stream::iter(manifest.files.clone())
+            .map(|file_path| {
+                let shared = shared_files.clone();
+                async move {
+                    let bytes = Self::load_template_file_with(
+                        client,
+                        source,
+                        template_name,
+                        &file_path,
+                        &shared,
+                    )
+                    .await;
+                    (file_path, bytes)
+                }
+            })
+            .buffer_unordered(FETCH_CONCURRENCY)
+            .collect()
+            .await;
+
         let mut files: HashMap<String, Vec<u8>> = HashMap::new();
-        for file_path in &manifest.files {
-            match self
-                .load_template_file(template_name, file_path, &root_manifest.shared_files)
-                .await
-            {
-                Ok(bytes) => {
-                    files.insert(file_path.clone(), bytes);
-                }
-                Err(err) => {
-                    // Warn but don't fail - file might be optional
-                    eprintln!(
-                        "Warning: could not load '{}' from template '{}': {}",
-                        file_path, template_name, err
-                    );
-                }
-            }
+        for (file_path, res) in results {
+            let bytes = res.with_context(|| {
+                format!(
+                    "Failed to load '{}' from template '{}'",
+                    file_path, template_name
+                )
+            })?;
+            files.insert(file_path, bytes);
         }
 
         self.template_cache

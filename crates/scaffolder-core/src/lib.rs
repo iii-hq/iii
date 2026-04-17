@@ -38,7 +38,6 @@
 //! let fetcher = TemplateFetcher::from_config(&MyConfig).unwrap();
 //! ```
 
-pub mod config;
 pub mod product;
 pub mod runtime;
 pub mod telemetry;

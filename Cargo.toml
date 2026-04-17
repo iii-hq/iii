@@ -34,11 +34,11 @@ serde_json = "1"
 serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
 anyhow = "1"
 thiserror = "2"
 semver = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-zip = "2"
 colored = "3"
 dirs = "6"
 url = "2"

@@ -5038,6 +5038,7 @@ dependencies = [
  "console 0.15.11",
  "ctrlc",
  "dirs",
+ "futures",
  "open",
  "reqwest 0.12.28",
  "semver",

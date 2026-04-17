@@ -15,6 +15,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 reqwest = { workspace = true }
+futures = { workspace = true }
 url = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
