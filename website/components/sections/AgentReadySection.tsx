@@ -434,7 +434,8 @@ let topology_handler_id = format!("chat::topology.{}", Uuid::new_v4());
 iii.register_function(RegisterFunction::new(
     topology_handler_id.clone(),
     move |input: serde_json::Value| {
-        logger.info("Topology changed", &format!("{}", input["functions"].as_array().map(|f| f.len()).unwrap_or(0)));
+        let log = Logger::new();
+        log.info("Topology changed", &format!("{}", input["functions"].as_array().map(|f| f.len()).unwrap_or(0)));
         Ok(json!(null))
     },
 ));
@@ -443,7 +444,6 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "engine::functions-available".to_string(),
     function_id: topology_handler_id,
     config: json!({}),
-    ..Default::default()
 });`,
     },
   },

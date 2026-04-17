@@ -29,7 +29,7 @@ async fn connect_successfully() {
         result
             .get("functions")
             .cloned()
-            .unwrap_or(Value::Array(vec![])),
+            .expect("functions field should be present in discovery response"),
     )
     .expect("deserialize functions");
     // Just verify it returns a valid list (may be empty if no functions registered)
@@ -148,7 +148,7 @@ async fn list_registered_functions() {
         result
             .get("functions")
             .cloned()
-            .unwrap_or(Value::Array(vec![])),
+            .expect("functions field should be present in discovery response"),
     )
     .expect("deserialize functions");
     let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
