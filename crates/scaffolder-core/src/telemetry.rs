@@ -280,27 +280,34 @@ pub async fn write_project_ini(
 }
 
 pub async fn run_dependency_install(project_dir: &Path, langs: &[Language]) -> Result<()> {
+    let mut failures: Vec<String> = Vec::new();
+
+    // JS/TS: npm install at project root when package.json is present.
     let has_js_ts = langs
         .iter()
         .any(|l| matches!(l, Language::TypeScript | Language::JavaScript));
     if has_js_ts && project_dir.join("package.json").exists() {
-        let status = tokio::process::Command::new("npm")
+        let res = tokio::process::Command::new("npm")
             .args(["install"])
             .current_dir(project_dir)
             .status()
-            .await
-            .context("spawn npm install")?;
-        if !status.success() {
-            anyhow::bail!("npm install exited with status {}", status);
+            .await;
+        match res {
+            Ok(s) if s.success() => {}
+            Ok(s) => failures.push(format!("npm install: exit {}", s)),
+            Err(e) => failures.push(format!("npm install: {}", e)),
         }
-        return Ok(());
     }
 
+    // Python: prefer `uv sync`, fall back to pip/pip3 on requirements.txt.
+    // Run independently of the JS branch above so mixed-language projects
+    // (e.g. TS + Python in the quickstart) install both.
     let has_python = langs.contains(&Language::Python);
     let has_pyproject = project_dir.join("pyproject.toml").exists();
     let has_requirements = project_dir.join("requirements.txt").exists();
     if has_python && (has_pyproject || has_requirements) {
-        let mut attempts: Vec<String> = Vec::new();
+        let mut python_ok = false;
+        let mut python_attempts: Vec<String> = Vec::new();
 
         if has_pyproject {
             let uv = tokio::process::Command::new("uv")
@@ -309,12 +316,12 @@ pub async fn run_dependency_install(project_dir: &Path, langs: &[Language]) -> R
                 .status()
                 .await;
             match uv {
-                Ok(s) if s.success() => return Ok(()),
-                Ok(s) => attempts.push(format!("uv sync: exit {}", s)),
-                Err(e) => attempts.push(format!("uv sync: {}", e)),
+                Ok(s) if s.success() => python_ok = true,
+                Ok(s) => python_attempts.push(format!("uv sync: exit {}", s)),
+                Err(e) => python_attempts.push(format!("uv sync: {}", e)),
             }
         }
-        if has_requirements {
+        if !python_ok && has_requirements {
             for bin in ["pip", "pip3"] {
                 let res = tokio::process::Command::new(bin)
                     .args(["install", "-r", "requirements.txt"])
@@ -322,16 +329,25 @@ pub async fn run_dependency_install(project_dir: &Path, langs: &[Language]) -> R
                     .status()
                     .await;
                 match res {
-                    Ok(s) if s.success() => return Ok(()),
-                    Ok(s) => attempts.push(format!("{}: exit {}", bin, s)),
-                    Err(e) => attempts.push(format!("{}: {}", bin, e)),
+                    Ok(s) if s.success() => {
+                        python_ok = true;
+                        break;
+                    }
+                    Ok(s) => python_attempts.push(format!("{}: exit {}", bin, s)),
+                    Err(e) => python_attempts.push(format!("{}: {}", bin, e)),
                 }
             }
         }
 
+        if !python_ok {
+            failures.extend(python_attempts);
+        }
+    }
+
+    if !failures.is_empty() {
         eprintln!(
-            "Warning: Python dependency install skipped - none of the attempted installers succeeded ({}). Install manually in {}.",
-            attempts.join(", "),
+            "Warning: dependency install incomplete - some installers did not succeed ({}). Install manually in {}.",
+            failures.join(", "),
             project_dir.display()
         );
     }
