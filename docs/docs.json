@@ -49,7 +49,6 @@
                 "group": "How-to Guides",
                 "pages": [
                   "how-to/use-functions-and-triggers",
-                  "how-to/discover-workers-functions-triggers",
                   {
                     "group": "Functions",
                     "pages": [
