@@ -3441,6 +3441,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_unregister_function_regular_skips_when_owner_hijacked() {
+        // UnregisterFunction on the non-invocation path: if worker A was the
+        // registered owner but worker B has since claimed the id, A's
+        // Unregister must NOT wipe B's live registration. Gate the teardown
+        // on `release_function_if_owner` — when the CAS fails, skip silently.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(tx_a);
+        engine.worker_registry.register_worker(worker_a.clone());
+        engine
+            .router_msg(
+                &worker_a,
+                &Message::RegisterFunction {
+                    id: "reg_hijacked".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("A register should succeed");
+
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(worker_b.clone());
+        engine
+            .router_msg(
+                &worker_b,
+                &Message::RegisterFunction {
+                    id: "reg_hijacked".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("B register should succeed");
+
+        // Ownership has transferred to B even though A still has the id in
+        // its local function_ids set (A's set was not cleared by B's register).
+        assert_eq!(
+            *engine
+                .function_owners
+                .get("reg_hijacked")
+                .expect("owner present"),
+            worker_b.id,
+            "owner should be B after hijacking register"
+        );
+
+        // A sends a stale UnregisterFunction. Before the gate, this would
+        // have called `remove_function_from_engine` and wiped B's live
+        // registration.
+        engine
+            .router_msg(
+                &worker_a,
+                &Message::UnregisterFunction {
+                    id: "reg_hijacked".to_string(),
+                },
+            )
+            .await
+            .expect("A's stale unregister should not error");
+
+        assert!(
+            engine.functions.get("reg_hijacked").is_some(),
+            "B's live registration must survive A's stale UnregisterFunction"
+        );
+        assert_eq!(
+            *engine
+                .function_owners
+                .get("reg_hijacked")
+                .expect("owner still present"),
+            worker_b.id,
+            "owner entry must remain B — gate must not release B's ownership"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unregister_function_external_skips_when_owner_hijacked() {
+        // HTTP-invocation variant of the hijacked-Unregister test. Worker A
+        // registers an external function, worker B claims it, then A sends
+        // UnregisterFunction. The gate on `release_external_function_if_owner`
+        // must abort the teardown before `http_module.unregister_http_function`
+        // and `service_registry.remove_function_from_services` run — either
+        // would otherwise wipe B's live entries.
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let make_msg = || Message::RegisterFunction {
+            id: "ext_hijacked".to_string(),
+            description: Some("hijacked external".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: "http://example.com/hijacked".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(tx_a);
+        engine.worker_registry.register_worker(worker_a.clone());
+        engine
+            .router_msg(&worker_a, &make_msg())
+            .await
+            .expect("A register should succeed");
+
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(worker_b.clone());
+        engine
+            .router_msg(&worker_b, &make_msg())
+            .await
+            .expect("B register should succeed");
+
+        assert_eq!(
+            *engine
+                .external_function_owners
+                .get("ext_hijacked")
+                .expect("external owner present"),
+            worker_b.id,
+            "external owner should be B after hijacking register"
+        );
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(http_module.http_functions().contains_key("ext_hijacked"));
+
+        // A's stale UnregisterFunction — A still has the id in its local
+        // external_function_ids set. Before the gate, the teardown would
+        // have wiped http_module + service_registry entries that now belong
+        // to B.
+        engine
+            .router_msg(
+                &worker_a,
+                &Message::UnregisterFunction {
+                    id: "ext_hijacked".to_string(),
+                },
+            )
+            .await
+            .expect("A's stale external unregister should not error");
+
+        assert!(
+            engine.functions.get("ext_hijacked").is_some(),
+            "B's live engine.functions entry must survive A's stale UnregisterFunction"
+        );
+        assert!(
+            http_module.http_functions().contains_key("ext_hijacked"),
+            "B's http_module entry must survive A's stale UnregisterFunction"
+        );
+        assert_eq!(
+            *engine
+                .external_function_owners
+                .get("ext_hijacked")
+                .expect("external owner still present"),
+            worker_b.id,
+            "external owner entry must remain B"
+        );
+    }
+
+    #[tokio::test]
     async fn test_cleanup_worker_with_triggers() {
         ensure_default_meter();
         let engine = Engine::new();
