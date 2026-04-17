@@ -23,7 +23,3 @@ pub use templates::{
     copy_template, LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest, TemplateSource,
 };
 pub use tui::run;
-
-/// CLI version - used for template compatibility checking
-/// Each binary should define its own version, but this provides a fallback
-pub const DEFAULT_CLI_VERSION: &str = "0.1.0";
