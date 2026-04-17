@@ -1575,6 +1575,18 @@ impl III {
                             Ok(Outbound::Message(msg)) => queue.push(msg),
                             Ok(Outbound::Shutdown) => {
                                 self.inner.running.store(false, Ordering::SeqCst);
+                                // Mirror the inner-loop Shutdown arm: send a
+                                // clean Close frame so the engine sees a
+                                // graceful disconnect instead of having to
+                                // detect the drop via TCP timeout. Without
+                                // this, a Shutdown that lands between
+                                // connect_async returning and the inner loop
+                                // starting (rare but reachable in tests doing
+                                // rapid connect+shutdown) would reproduce the
+                                // exact bug the inner-loop fix was meant to
+                                // close.
+                                let _ = ws_tx.send(WsMessage::Close(None)).await;
+                                let _ = ws_tx.close().await;
                                 return;
                             }
                             Err(_) => break,
