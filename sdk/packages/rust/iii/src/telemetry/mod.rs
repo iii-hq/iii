@@ -51,8 +51,9 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
 ///
 /// The engine exposes `/otel` for telemetry-only WS connections. Appending
 /// the path here means the SDK never shows up in `worker_registry` as a
-/// ghost null-metadata worker. Handles trailing slashes, existing query
-/// strings, and URLs that already point at a path.
+/// ghost null-metadata worker. Handles trailing slashes and is idempotent
+/// when the URL already ends in `/otel`. Callers must not pass URLs that
+/// include a query string — this helper does not split path from query.
 fn append_otel_path(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with("/otel") {
