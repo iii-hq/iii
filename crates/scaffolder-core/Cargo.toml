@@ -5,12 +5,7 @@ edition.workspace = true
 authors.workspace = true
 description = "Core library for project scaffolding with template support"
 
-[features]
-default = ["tui"]
-tui = ["dep:cliclack", "dep:console", "dep:ctrlc"]
-
 [dependencies]
-# Always included (core functionality)
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
@@ -27,11 +22,9 @@ dirs = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-
-# Optional: only for tui feature
-cliclack = { workspace = true, optional = true }
-console = { workspace = true, optional = true }
-ctrlc = { workspace = true, optional = true }
+cliclack = { workspace = true }
+console = { workspace = true }
+ctrlc = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

@@ -10,7 +10,7 @@ name = "motia"
 path = "src/main.rs"
 
 [dependencies]
-scaffolder-core = { workspace = true, features = ["tui"] }
+scaffolder-core = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
