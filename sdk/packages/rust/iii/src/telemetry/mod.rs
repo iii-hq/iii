@@ -55,9 +55,7 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
 /// when the URL already ends in `/otel`, and preserves query strings and
 /// fragments by inserting `/otel` into the path segment only.
 fn append_otel_path(base: &str) -> String {
-    let split_idx = base
-        .find(|c: char| c == '?' || c == '#')
-        .unwrap_or(base.len());
+    let split_idx = base.find(['?', '#']).unwrap_or(base.len());
     let (prefix, suffix) = base.split_at(split_idx);
     let trimmed = prefix.trim_end_matches('/');
     if trimmed.ends_with("/otel") {
