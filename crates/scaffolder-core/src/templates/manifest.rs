@@ -241,6 +241,9 @@ mod tests {
             "next_steps:\n  - Step one\n  - Step two\n  - Step three\n",
         )))
         .unwrap();
-        assert_eq!(manifest.next_steps, vec!["Step one", "Step two", "Step three"]);
+        assert_eq!(
+            manifest.next_steps,
+            vec!["Step one", "Step two", "Step three"]
+        );
     }
 }

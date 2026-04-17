@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 /// CLI arguments for the create command
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct CreateArgs {
     /// Local directory to use for templates instead of fetching from remote
     pub template_dir: Option<PathBuf>,
@@ -30,18 +31,6 @@ pub struct CreateArgs {
     pub yes: bool,
 }
 
-impl Default for CreateArgs {
-    fn default() -> Self {
-        Self {
-            template_dir: None,
-            template: None,
-            directory: None,
-            languages: None,
-            skip_tool_check: false,
-            yes: false,
-        }
-    }
-}
 
 /// Run the CLI with interactive prompts
 pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &str) -> Result<()> {
@@ -72,11 +61,14 @@ pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &s
     }
 
     // Check iii engine version compatibility (hard block, respects --skip-tool-check)
-    if !args.skip_tool_check {
-        if let Some(min_ver) = &manifest.min_iii_version {
+    if !args.skip_tool_check
+        && let Some(min_ver) = &manifest.min_iii_version {
             match version::check_iii_engine_version(min_ver) {
                 Ok(installed) => {
-                    cliclack::log::success(format!("iii engine {} (>= {} required)", installed, min_ver))?;
+                    cliclack::log::success(format!(
+                        "iii engine {} (>= {} required)",
+                        installed, min_ver
+                    ))?;
                 }
                 Err(msg) => {
                     cliclack::log::error(&msg)?;
@@ -84,7 +76,6 @@ pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &s
                 }
             }
         }
-    }
 
     // Step 4: Select directory
     let project_dir = select_directory(&args)?;
@@ -347,15 +338,14 @@ fn select_directory(args: &CreateArgs) -> Result<PathBuf> {
     };
 
     // Validate parent directory exists
-    if let Some(parent) = path.parent() {
-        if !parent.exists() && parent != std::path::Path::new("") {
+    if let Some(parent) = path.parent()
+        && !parent.exists() && parent != std::path::Path::new("") {
             anyhow::bail!("Parent directory does not exist: {}", parent.display());
         }
-    }
 
     // Warn if directory exists and has files
-    if path.exists() && path.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&path) {
+    if path.exists() && path.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&path) {
             let count = entries.count();
             if count > 0 {
                 cliclack::log::warning(format!("Directory has {} existing items", count))?;
@@ -374,7 +364,6 @@ fn select_directory(args: &CreateArgs) -> Result<PathBuf> {
                 }
             }
         }
-    }
 
     Ok(path)
 }
@@ -418,7 +407,10 @@ fn select_languages(
     }
 
     if !required_languages.is_empty() {
-        let names: Vec<&str> = required_languages.iter().map(|l| l.display_name()).collect();
+        let names: Vec<&str> = required_languages
+            .iter()
+            .map(|l| l.display_name())
+            .collect();
         cliclack::log::info(format!("Required: {}", names.join(", ")))?;
     }
 
@@ -454,12 +446,10 @@ fn select_languages(
             let mut multi = cliclack::multiselect(prompt);
 
             for lang in &selectable {
-                multi = multi.item(lang.clone(), lang.display_name(), "");
+                multi = multi.item(*lang, lang.display_name(), "");
             }
 
-            let selected: Vec<check::Language> = multi
-                .required(false)
-                .interact()?;
+            let selected: Vec<check::Language> = multi.required(false).interact()?;
 
             selected_languages = required_languages.clone();
             selected_languages.extend(included_languages.iter().copied());
@@ -478,7 +468,10 @@ fn select_languages(
     let included_set: std::collections::HashSet<_> = included_languages.iter().collect();
     let selected_set: std::collections::HashSet<_> = selected_languages.iter().collect();
     if !included_languages.is_empty() && included_set != selected_set {
-        let names: Vec<&str> = included_languages.iter().map(|l| l.display_name()).collect();
+        let names: Vec<&str> = included_languages
+            .iter()
+            .map(|l| l.display_name())
+            .collect();
         cliclack::log::info(format!("Included: {}", names.join(", ")))?;
     }
 
@@ -604,11 +597,10 @@ fn print_next_steps(
 ) -> Result<()> {
     let mut steps: Vec<String> = Vec::new();
 
-    if let Some(current) = std::env::current_dir().ok() {
-        if current != *project_dir {
+    if let Ok(current) = std::env::current_dir()
+        && current != *project_dir {
             steps.push(format!("cd {}", project_dir.display()));
         }
-    }
 
     steps.extend(manifest.next_steps.iter().cloned());
 

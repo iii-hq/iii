@@ -54,11 +54,10 @@ fn read_device_id() -> Option<String> {
 }
 
 pub fn is_telemetry_disabled() -> bool {
-    if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED") {
-        if val == "false" || val == "0" {
+    if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
+        && (val == "false" || val == "0") {
             return true;
         }
-    }
     if std::env::var("III_TELEMETRY_DEV").ok().as_deref() == Some("true") {
         return true;
     }
@@ -229,7 +228,14 @@ async fn send_amplitude(
     tools_version: &str,
     event_properties: serde_json::Value,
 ) {
-    send_amplitude_to(&resolve_endpoint(), event_type, platform, tools_version, event_properties).await;
+    send_amplitude_to(
+        &resolve_endpoint(),
+        event_type,
+        platform,
+        tools_version,
+        event_properties,
+    )
+    .await;
 }
 
 pub fn spawn_project_event(
@@ -242,13 +248,7 @@ pub fn spawn_project_event(
         return None;
     }
     Some(tokio::spawn(async move {
-        send_amplitude(
-            event_type,
-            platform,
-            &tools_version,
-            event_properties,
-        )
-        .await;
+        send_amplitude(event_type, platform, &tools_version, event_properties).await;
     }))
 }
 
@@ -269,7 +269,9 @@ pub async fn write_project_ini(
     fs::create_dir_all(&dir)
         .await
         .context("create .iii directory")?;
-    let body = format!("[project]\nproject_id={project_id}\nproject_name={project_name}\nsource={template}\n");
+    let body = format!(
+        "[project]\nproject_id={project_id}\nproject_name={project_name}\nsource={template}\n"
+    );
     fs::write(dir.join("project.ini"), body)
         .await
         .context("write project.ini")?;
@@ -400,7 +402,9 @@ mod tests {
 
         // Point HOME at a temp dir so telemetry.yaml won't exist
         let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", tmp.path()); }
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
 
         send_amplitude_to(
             &endpoint,
@@ -411,7 +415,9 @@ mod tests {
         )
         .await;
 
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
 
         let requests: Vec<Request> = mock_server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
@@ -419,7 +425,10 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         let event = &body["events"][0];
         assert_eq!(event["event_type"], "iii_tools_telemetry_failed");
-        assert_eq!(event["event_properties"]["reason"], "telemetry_yaml_missing");
+        assert_eq!(
+            event["event_properties"]["reason"],
+            "telemetry_yaml_missing"
+        );
     }
 
     #[tokio::test]
@@ -443,7 +452,9 @@ mod tests {
         )
         .unwrap();
 
-        unsafe { std::env::set_var("HOME", tmp.path()); }
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
 
         let endpoint = format!("{}/2/httpapi", mock_server.uri());
 
@@ -461,7 +472,9 @@ mod tests {
         )
         .await;
 
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
 
         let requests: Vec<Request> = mock_server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);

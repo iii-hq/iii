@@ -8,7 +8,7 @@ pub mod check;
 pub mod tool;
 
 pub use check::{
-    check_bun, check_node, check_python, check_runtimes, check_runtimes_with_advisory, Language,
-    RuntimeInfo,
+    Language, RuntimeInfo, check_bun, check_node, check_python, check_runtimes,
+    check_runtimes_with_advisory,
 };
 pub use tool::ToolManager;

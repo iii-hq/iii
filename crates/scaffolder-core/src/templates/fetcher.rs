@@ -185,7 +185,10 @@ impl TemplateFetcher {
         Ok(manifest)
     }
 
-    async fn fetch_template_manifest_raw(&mut self, template_name: &str) -> Result<TemplateManifest> {
+    async fn fetch_template_manifest_raw(
+        &mut self,
+        template_name: &str,
+    ) -> Result<TemplateManifest> {
         let base = self.ensure_local().await?;
         let path = base.join(template_name).join("template.yaml");
         let content = fs::read_to_string(&path)
@@ -238,15 +241,14 @@ impl TemplateFetcher {
         let shared_files = root_manifest.shared_files.clone();
         let mut files: HashMap<String, Vec<u8>> = HashMap::new();
         for file_path in &manifest.files {
-            let bytes =
-                Self::load_template_file(&base, template_name, file_path, &shared_files)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to load '{}' from template '{}'",
-                            file_path, template_name
-                        )
-                    })?;
+            let bytes = Self::load_template_file(&base, template_name, file_path, &shared_files)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to load '{}' from template '{}'",
+                        file_path, template_name
+                    )
+                })?;
             files.insert(file_path.clone(), bytes);
         }
 

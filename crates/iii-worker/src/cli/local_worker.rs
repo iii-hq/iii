@@ -860,8 +860,8 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     //
     // Only spawn after the VM was successfully started; otherwise a
     // watcher fire would race into kill_stale_worker against nothing.
-    if exit_code == 0 {
-        if let Err(e) =
+    if exit_code == 0
+        && let Err(e) =
             spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher).await
         {
             eprintln!(
@@ -870,7 +870,6 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
                 e
             );
         }
-    }
 
     exit_code
 }

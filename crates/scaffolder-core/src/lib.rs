@@ -18,8 +18,8 @@ pub mod tui;
 
 // Re-export main types for convenience
 pub use product::ProductConfig;
-pub use runtime::{check_runtimes, Language, RuntimeInfo};
+pub use runtime::{Language, RuntimeInfo, check_runtimes};
 pub use templates::{
-    copy_template, LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest, TemplateSource,
+    LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest, TemplateSource, copy_template,
 };
 pub use tui::run;

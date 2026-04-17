@@ -2,7 +2,9 @@
 //! a local bare repo) paths, shared-file renames, and hard-fail behavior on
 //! missing files.
 
-use scaffolder_core::{LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest, TemplateSource};
+use scaffolder_core::{
+    LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest, TemplateSource,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
@@ -44,7 +46,11 @@ fn write_product_fixture(root: &Path) {
     std::fs::create_dir_all(iii.join("quickstart/src")).unwrap();
     std::fs::write(iii.join("template.yaml"), root_manifest_yaml()).unwrap();
     std::fs::write(iii.join("default-gitignore"), b"node_modules\n").unwrap();
-    std::fs::write(iii.join("quickstart/template.yaml"), template_manifest_yaml()).unwrap();
+    std::fs::write(
+        iii.join("quickstart/template.yaml"),
+        template_manifest_yaml(),
+    )
+    .unwrap();
     std::fs::write(iii.join("quickstart/README.md"), b"# Quickstart\n").unwrap();
     std::fs::write(iii.join("quickstart/src/index.ts"), b"export {};\n").unwrap();
 }
@@ -175,10 +181,7 @@ async fn remote_loads_template_files_after_clone() {
     let manifest = fetcher.fetch_template_manifest("quickstart").await.unwrap();
     assert_eq!(manifest.name, "Quickstart");
 
-    let readme = fetcher
-        .fetch_file("quickstart", "README.md")
-        .await
-        .unwrap();
+    let readme = fetcher.fetch_file("quickstart", "README.md").await.unwrap();
     assert_eq!(readme, "# Quickstart\n");
 
     let gitignore = fetcher

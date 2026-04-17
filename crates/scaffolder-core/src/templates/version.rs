@@ -62,9 +62,8 @@ pub fn validate_iii_version(
         )
     })?;
 
-    let required = Version::parse(min_version).map_err(|_| {
-        format!("Invalid min_iii_version in template.yaml: {}", min_version)
-    })?;
+    let required = Version::parse(min_version)
+        .map_err(|_| format!("Invalid min_iii_version in template.yaml: {}", min_version))?;
 
     if base_version(&installed) < base_version(&required) {
         Err(format!(

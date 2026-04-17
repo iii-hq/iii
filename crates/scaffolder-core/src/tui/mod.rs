@@ -2,4 +2,4 @@
 
 mod prompts;
 
-pub use prompts::{run, CreateArgs};
+pub use prompts::{CreateArgs, run};

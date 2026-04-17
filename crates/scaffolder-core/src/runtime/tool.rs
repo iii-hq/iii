@@ -178,7 +178,11 @@ impl ToolManager {
     pub fn open_docs(&self) -> Result<()> {
         println!(
             "{}",
-            format!("Opening {} documentation in your browser...", self.config.display_name).cyan()
+            format!(
+                "Opening {} documentation in your browser...",
+                self.config.display_name
+            )
+            .cyan()
         );
         open::that(self.config.docs_url)?;
         Ok(())

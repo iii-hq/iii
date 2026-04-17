@@ -152,8 +152,7 @@ pub fn check_runtimes_with_advisory(
             .iter()
             .filter(|l| matches!(l, Language::TypeScript | Language::JavaScript))
             .collect();
-        let js_advisory =
-            !js_ts_langs.is_empty() && js_ts_langs.iter().all(|l| is_advisory(l));
+        let js_advisory = !js_ts_langs.is_empty() && js_ts_langs.iter().all(|l| is_advisory(l));
 
         let any_js_available = bun.available || node.available;
         if bun.available {

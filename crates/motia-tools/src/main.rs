@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use scaffolder_core::tui::CreateArgs;
 use scaffolder_core::ProductConfig;
+use scaffolder_core::tui::CreateArgs;
 use std::path::PathBuf;
 
 /// CLI version
