@@ -50,3 +50,4 @@ ctrlc = "3"
 # Shared dev-dependencies
 wiremock = "0.6"
 tempfile = "3"
+serial_test = "3"

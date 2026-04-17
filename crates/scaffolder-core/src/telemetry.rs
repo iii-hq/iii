@@ -381,6 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(home_env)]
     async fn sends_failed_event_when_yaml_missing() {
         let mock_server = MockServer::start().await;
 
@@ -418,6 +419,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(home_env)]
     async fn sends_normal_event_when_yaml_exists() {
         let mock_server = MockServer::start().await;
 

@@ -29,3 +29,4 @@ ctrlc = { workspace = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+serial_test = { workspace = true }
