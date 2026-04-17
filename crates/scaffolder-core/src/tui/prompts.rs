@@ -204,6 +204,10 @@ async fn handle_tool_check<C: ProductConfig>(_config: &C, args: &CreateArgs) -> 
                 "After installing {}, run this command again.",
                 tool.config().display_name
             ))?;
+            // Restore the terminal cursor before exiting - without this, the
+            // cliclack spinners leave the cursor hidden. The cursor-restore
+            // in main() runs only on normal return, not on process::exit.
+            let _ = console::Term::stderr().show_cursor();
             std::process::exit(0);
         }
         "skip" => {
