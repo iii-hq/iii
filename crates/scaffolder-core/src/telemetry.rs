@@ -294,39 +294,43 @@ pub async fn run_dependency_install(project_dir: &Path, langs: &[Language]) -> R
     }
 
     let has_python = langs.contains(&Language::Python);
-    if has_python && project_dir.join("pyproject.toml").exists() {
-        let uv = tokio::process::Command::new("uv")
-            .args(["sync"])
-            .current_dir(project_dir)
-            .status()
-            .await;
-        if let Ok(s) = uv {
-            if s.success() {
-                return Ok(());
+    let has_pyproject = project_dir.join("pyproject.toml").exists();
+    let has_requirements = project_dir.join("requirements.txt").exists();
+    if has_python && (has_pyproject || has_requirements) {
+        let mut attempts: Vec<String> = Vec::new();
+
+        if has_pyproject {
+            let uv = tokio::process::Command::new("uv")
+                .args(["sync"])
+                .current_dir(project_dir)
+                .status()
+                .await;
+            match uv {
+                Ok(s) if s.success() => return Ok(()),
+                Ok(s) => attempts.push(format!("uv sync: exit {}", s)),
+                Err(e) => attempts.push(format!("uv sync: {}", e)),
             }
         }
-    }
-    if has_python && project_dir.join("requirements.txt").exists() {
-        let pip = tokio::process::Command::new("pip")
-            .args(["install", "-r", "requirements.txt"])
-            .current_dir(project_dir)
-            .status()
-            .await;
-        if let Ok(s) = pip {
-            if s.success() {
-                return Ok(());
+        if has_requirements {
+            for bin in ["pip", "pip3"] {
+                let res = tokio::process::Command::new(bin)
+                    .args(["install", "-r", "requirements.txt"])
+                    .current_dir(project_dir)
+                    .status()
+                    .await;
+                match res {
+                    Ok(s) if s.success() => return Ok(()),
+                    Ok(s) => attempts.push(format!("{}: exit {}", bin, s)),
+                    Err(e) => attempts.push(format!("{}: {}", bin, e)),
+                }
             }
         }
-        let pip3 = tokio::process::Command::new("pip3")
-            .args(["install", "-r", "requirements.txt"])
-            .current_dir(project_dir)
-            .status()
-            .await;
-        if let Ok(s) = pip3 {
-            if s.success() {
-                return Ok(());
-            }
-        }
+
+        eprintln!(
+            "Warning: Python dependency install skipped - none of the attempted installers succeeded ({}). Install manually in {}.",
+            attempts.join(", "),
+            project_dir.display()
+        );
     }
 
     Ok(())
