@@ -442,6 +442,8 @@ export type WorkerInfo = {
   functions: string[]
   /** Number of currently active invocations. */
   active_invocations: number
+  /** Self-reported isolation context (e.g. `libkrun`, `docker`, `k8s`). */
+  isolation?: string | null
 }
 
 export type WorkerRegisteredMessage = {

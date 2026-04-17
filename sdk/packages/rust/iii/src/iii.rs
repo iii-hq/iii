@@ -62,6 +62,8 @@ pub struct WorkerInfo {
     pub function_count: usize,
     pub functions: Vec<String>,
     pub active_invocations: usize,
+    #[serde(default)]
+    pub isolation: Option<String>,
 }
 
 /// Function information returned by `engine::functions::list`
@@ -250,6 +252,8 @@ pub struct WorkerMetadata {
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<WorkerTelemetryMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
 }
 
 impl Default for WorkerMetadata {
@@ -281,6 +285,9 @@ impl Default for WorkerMetadata {
                 language,
                 ..Default::default()
             }),
+            isolation: std::env::var("III_ISOLATION")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
@@ -2009,5 +2016,33 @@ mod tests {
 
         assert!(matches!(result, Err(IIIError::Timeout)));
         assert!(iii.inner.pending.lock().unwrap().is_empty());
+    }
+
+    // Single test covers both branches so the env var mutation is serialized
+    // within one function (env vars are process-global and cargo runs tests in parallel).
+    #[test]
+    fn worker_metadata_default_reads_iii_isolation_env_var() {
+        let previous = std::env::var("III_ISOLATION").ok();
+
+        // SAFETY: env mutations are serialized within this test and restored at the end.
+        unsafe {
+            std::env::remove_var("III_ISOLATION");
+        }
+        assert!(WorkerMetadata::default().isolation.is_none());
+
+        unsafe {
+            std::env::set_var("III_ISOLATION", "docker");
+        }
+        assert_eq!(
+            WorkerMetadata::default().isolation.as_deref(),
+            Some("docker")
+        );
+
+        unsafe {
+            match previous {
+                Some(val) => std::env::set_var("III_ISOLATION", val),
+                None => std::env::remove_var("III_ISOLATION"),
+            }
+        }
     }
 }

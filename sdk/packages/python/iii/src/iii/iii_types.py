@@ -636,6 +636,10 @@ class WorkerInfo(BaseModel):
     function_count: int = Field(description="Number of registered functions.")
     functions: list[str] = Field(description="List of registered function IDs.")
     active_invocations: int = Field(description="Number of currently executing invocations.")
+    isolation: str | None = Field(
+        default=None,
+        description="Self-reported isolation context (e.g. ``libkrun``, ``docker``, ``k8s``).",
+    )
 
 
 class StreamChannelRef(BaseModel):

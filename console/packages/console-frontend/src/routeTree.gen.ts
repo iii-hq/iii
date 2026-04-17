@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as TriggersRouteImport } from './routes/triggers'
 import { Route as TracesRouteImport } from './routes/traces'
 import { Route as StreamsRouteImport } from './routes/streams'
@@ -21,6 +22,11 @@ import { Route as DeadLetterRouteImport } from './routes/dead-letter'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as IndexRouteImport } from './routes/index'
 
+const WorkersRoute = WorkersRouteImport.update({
+  id: '/workers',
+  path: '/workers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TriggersRoute = TriggersRouteImport.update({
   id: '/triggers',
   path: '/triggers',
@@ -89,6 +95,7 @@ export interface FileRoutesByFullPath {
   '/streams': typeof StreamsRoute
   '/traces': typeof TracesRoute
   '/triggers': typeof TriggersRoute
+  '/workers': typeof WorkersRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -102,6 +109,7 @@ export interface FileRoutesByTo {
   '/streams': typeof StreamsRoute
   '/traces': typeof TracesRoute
   '/triggers': typeof TriggersRoute
+  '/workers': typeof WorkersRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -116,6 +124,7 @@ export interface FileRoutesById {
   '/streams': typeof StreamsRoute
   '/traces': typeof TracesRoute
   '/triggers': typeof TriggersRoute
+  '/workers': typeof WorkersRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -131,6 +140,7 @@ export interface FileRouteTypes {
     | '/streams'
     | '/traces'
     | '/triggers'
+    | '/workers'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -144,6 +154,7 @@ export interface FileRouteTypes {
     | '/streams'
     | '/traces'
     | '/triggers'
+    | '/workers'
   id:
     | '__root__'
     | '/'
@@ -157,6 +168,7 @@ export interface FileRouteTypes {
     | '/streams'
     | '/traces'
     | '/triggers'
+    | '/workers'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -171,10 +183,18 @@ export interface RootRouteChildren {
   StreamsRoute: typeof StreamsRoute
   TracesRoute: typeof TracesRoute
   TriggersRoute: typeof TriggersRoute
+  WorkersRoute: typeof WorkersRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/workers': {
+      id: '/workers'
+      path: '/workers'
+      fullPath: '/workers'
+      preLoaderRoute: typeof WorkersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/triggers': {
       id: '/triggers'
       path: '/triggers'
@@ -267,6 +287,7 @@ const rootRouteChildren: RootRouteChildren = {
   StreamsRoute: StreamsRoute,
   TracesRoute: TracesRoute,
   TriggersRoute: TriggersRoute,
+  WorkersRoute: WorkersRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

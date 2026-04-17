@@ -15,6 +15,12 @@ export interface WorkerMetrics {
   uptime_seconds: number
 }
 
+export interface WorkerTelemetry {
+  language: string | null
+  project_name: string | null
+  framework: string | null
+}
+
 export interface WorkerInfo {
   id: string
   name: string | null
@@ -28,6 +34,9 @@ export interface WorkerInfo {
   functions: string[]
   active_invocations: number
   latest_metrics: WorkerMetrics | null
+  pid: number | null
+  isolation: string | null
+  telemetry: WorkerTelemetry | null
   internal?: boolean
 }
 

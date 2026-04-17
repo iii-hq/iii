@@ -555,6 +555,7 @@ class Sdk implements ISdk {
         name: this.workerName,
         os: getOsInfo(),
         pid: process.pid,
+        isolation: process.env.III_ISOLATION || null,
         telemetry: {
           language,
           project_name: telemetryOpts?.project_name,

@@ -49,6 +49,7 @@ export function useKeyboard({ onToggleCommandPalette, onToggleShortcutHelp }: Us
       if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
         const pages = [
+          '/workers',
           '/functions',
           '/triggers',
           '/states',
@@ -57,12 +58,11 @@ export function useKeyboard({ onToggleCommandPalette, onToggleShortcutHelp }: Us
           '/dead-letter',
           '/traces',
           '/logs',
-          '/config',
         ] as const
         const index = parseInt(e.key, 10) - 1
         if (index < pages.length) {
           const page = pages[index]
-          // Cmd+6 (Dead Letter phantom) goes to queues DLQ tab
+          // Cmd+7 (Dead Letter phantom) goes to queues DLQ tab
           if (page === '/dead-letter') {
             navigate({ to: '/queues', search: { tab: 'dead-letters' } })
           } else if (page === '/queues') {

@@ -123,7 +123,7 @@ export {
   isManagementApiAvailable,
 } from './system/status'
 // System - Workers
-export type { WorkerInfo, WorkerMetrics } from './system/workers'
+export type { WorkerInfo, WorkerMetrics, WorkerTelemetry } from './system/workers'
 export { fetchWorkers } from './system/workers'
 // Shared types
 export type {
