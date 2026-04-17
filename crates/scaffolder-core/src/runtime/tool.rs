@@ -97,26 +97,31 @@ impl ToolManager {
         let mut stdout_reader = BufReader::new(stdout).lines();
         let mut stderr_reader = BufReader::new(stderr).lines();
 
-        // Stream output with timeout
+        // Stream output with timeout. Track EOF for each stream independently
+        // so the loop stops polling a closed pipe (otherwise next_line keeps
+        // returning Ok(None) and the select! busy-spins).
         let output_task = async {
-            loop {
+            let mut stdout_done = false;
+            let mut stderr_done = false;
+            while !(stdout_done && stderr_done) {
                 tokio::select! {
-                    line = stdout_reader.next_line() => {
+                    line = stdout_reader.next_line(), if !stdout_done => {
                         match line {
                             Ok(Some(line)) => println!("  {}", line),
-                            Ok(None) => break,
+                            Ok(None) => stdout_done = true,
                             Err(e) => {
                                 eprintln!("{} {}", "Error reading stdout:".red(), e);
-                                break;
+                                stdout_done = true;
                             }
                         }
                     }
-                    line = stderr_reader.next_line() => {
+                    line = stderr_reader.next_line(), if !stderr_done => {
                         match line {
                             Ok(Some(line)) => eprintln!("  {}", line.yellow()),
-                            Ok(None) => {}
+                            Ok(None) => stderr_done = true,
                             Err(e) => {
                                 eprintln!("{} {}", "Error reading stderr:".red(), e);
+                                stderr_done = true;
                             }
                         }
                     }
