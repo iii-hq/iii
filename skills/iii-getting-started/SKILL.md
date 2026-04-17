@@ -30,8 +30,10 @@ iii create
 
 Follow the interactive prompts to select a template and language. The default quickstart template includes TypeScript, Python, and Rust workers.
 
+Then change into the project directory you chose at the prompt:
+
 ```bash
-cd quickstart
+cd <your-project>
 ```
 
 ## Step 3: Start the Engine
