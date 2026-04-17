@@ -1,14 +1,11 @@
-//! Unit tests for TemplateFetcher: Remote (wiremock) and Local paths.
-//!
-//! Covers: root manifest loading, template manifest loading, file fetching with
-//! and without shared-file renames, hard-fail semantics on missing files, and
-//! end-to-end scaffolding against a mock templates repo.
+//! Unit tests for TemplateFetcher: Local (disk) and Remote (git clone from
+//! a local bare repo) paths, shared-file renames, and hard-fail behavior on
+//! missing files.
 
-use scaffolder_core::{LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest};
-use std::path::PathBuf;
+use scaffolder_core::{LanguageFiles, RootManifest, TemplateFetcher, TemplateManifest, TemplateSource};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tempfile::TempDir;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn root_manifest_yaml() -> &'static str {
     r#"
@@ -40,48 +37,44 @@ files:
 "#
 }
 
-fn write_local_fixture(dir: &PathBuf) {
-    // Root
-    std::fs::write(dir.join("template.yaml"), root_manifest_yaml()).unwrap();
-    std::fs::write(dir.join("default-gitignore"), b"node_modules\n").unwrap();
-    // Template
-    let tpl = dir.join("quickstart");
-    std::fs::create_dir_all(tpl.join("src")).unwrap();
-    std::fs::write(tpl.join("template.yaml"), template_manifest_yaml()).unwrap();
-    std::fs::write(tpl.join("README.md"), b"# Quickstart\n").unwrap();
-    std::fs::write(tpl.join("src/index.ts"), b"export {};\n").unwrap();
+/// Write a product-subdir layout (iii/ containing the root manifest,
+/// shared files, and the quickstart template) under `root`.
+fn write_product_fixture(root: &Path) {
+    let iii = root.join("iii");
+    std::fs::create_dir_all(iii.join("quickstart/src")).unwrap();
+    std::fs::write(iii.join("template.yaml"), root_manifest_yaml()).unwrap();
+    std::fs::write(iii.join("default-gitignore"), b"node_modules\n").unwrap();
+    std::fs::write(iii.join("quickstart/template.yaml"), template_manifest_yaml()).unwrap();
+    std::fs::write(iii.join("quickstart/README.md"), b"# Quickstart\n").unwrap();
+    std::fs::write(iii.join("quickstart/src/index.ts"), b"export {};\n").unwrap();
 }
 
-async fn mock_remote_fixture(server: &MockServer) {
-    // Root manifest
-    Mock::given(method("GET"))
-        .and(path("/template.yaml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(root_manifest_yaml()))
-        .mount(server)
-        .await;
-    // Shared file (at base, not inside template dir)
-    Mock::given(method("GET"))
-        .and(path("/default-gitignore"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("node_modules\n"))
-        .mount(server)
-        .await;
-    // Template manifest
-    Mock::given(method("GET"))
-        .and(path("/quickstart/template.yaml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(template_manifest_yaml()))
-        .mount(server)
-        .await;
-    // Template files
-    Mock::given(method("GET"))
-        .and(path("/quickstart/README.md"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("# Quickstart\n"))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/quickstart/src/index.ts"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("export {};\n"))
-        .mount(server)
-        .await;
+/// Initialize `dir` as a git repo with one commit on `main` containing the
+/// fixture. Returns a file:// URL suitable for `git clone`.
+fn init_git_fixture(dir: &Path) -> url::Url {
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    write_product_fixture(dir);
+    run(&["init", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["add", "-A"]);
+    run(&["commit", "-m", "fixture"]);
+    url::Url::from_file_path(dir).expect("valid file URL")
+}
+
+fn local_subdir(root: &Path) -> PathBuf {
+    root.join("iii")
 }
 
 // ---------------------------------------------------------------------------
@@ -91,9 +84,9 @@ async fn mock_remote_fixture(server: &MockServer) {
 #[tokio::test]
 async fn local_loads_root_manifest() {
     let tmp = TempDir::new().unwrap();
-    write_local_fixture(&tmp.path().to_path_buf());
+    write_product_fixture(tmp.path());
 
-    let mut fetcher = TemplateFetcher::from_local(tmp.path().to_path_buf(), "test");
+    let mut fetcher = TemplateFetcher::from_local(local_subdir(tmp.path()), "test");
     let root = fetcher.fetch_root_manifest().await.unwrap();
 
     assert_eq!(root.templates, vec!["quickstart"]);
@@ -105,9 +98,9 @@ async fn local_loads_root_manifest() {
 #[tokio::test]
 async fn local_loads_template_manifest_and_files() {
     let tmp = TempDir::new().unwrap();
-    write_local_fixture(&tmp.path().to_path_buf());
+    write_product_fixture(tmp.path());
 
-    let mut fetcher = TemplateFetcher::from_local(tmp.path().to_path_buf(), "test");
+    let mut fetcher = TemplateFetcher::from_local(local_subdir(tmp.path()), "test");
     let manifest = fetcher.fetch_template_manifest("quickstart").await.unwrap();
 
     assert_eq!(manifest.name, "Quickstart");
@@ -120,9 +113,9 @@ async fn local_loads_template_manifest_and_files() {
 #[tokio::test]
 async fn local_shared_file_rename_reads_from_root() {
     let tmp = TempDir::new().unwrap();
-    write_local_fixture(&tmp.path().to_path_buf());
+    write_product_fixture(tmp.path());
 
-    let mut fetcher = TemplateFetcher::from_local(tmp.path().to_path_buf(), "test");
+    let mut fetcher = TemplateFetcher::from_local(local_subdir(tmp.path()), "test");
     let _ = fetcher.fetch_template_manifest("quickstart").await.unwrap();
     let gitignore = fetcher
         .fetch_file("quickstart", ".gitignore")
@@ -135,11 +128,10 @@ async fn local_shared_file_rename_reads_from_root() {
 #[tokio::test]
 async fn local_missing_file_hard_fails() {
     let tmp = TempDir::new().unwrap();
-    write_local_fixture(&tmp.path().to_path_buf());
-    // Corrupt: remove a file declared in the template manifest
-    std::fs::remove_file(tmp.path().join("quickstart/src/index.ts")).unwrap();
+    write_product_fixture(tmp.path());
+    std::fs::remove_file(tmp.path().join("iii/quickstart/src/index.ts")).unwrap();
 
-    let mut fetcher = TemplateFetcher::from_local(tmp.path().to_path_buf(), "test");
+    let mut fetcher = TemplateFetcher::from_local(local_subdir(tmp.path()), "test");
     let result = fetcher.fetch_template_manifest("quickstart").await;
 
     assert!(result.is_err(), "missing file must hard-fail");
@@ -151,99 +143,97 @@ async fn local_missing_file_hard_fails() {
 }
 
 // ---------------------------------------------------------------------------
-// Remote mode (wiremock)
+// Remote mode (clones a local git fixture)
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn remote_loads_root_manifest() {
-    let server = MockServer::start().await;
-    mock_remote_fixture(&server).await;
+fn remote_source(repo: &Path) -> TemplateSource {
+    let url = init_git_fixture(repo);
+    TemplateSource::Remote {
+        repo_url: url,
+        subdir: "iii".to_string(),
+        branch: "main".to_string(),
+    }
+}
 
-    let url = url::Url::parse(&server.uri()).unwrap();
-    let mut fetcher =
-        TemplateFetcher::new(scaffolder_core::TemplateSource::Remote(url), "test");
+#[tokio::test]
+async fn remote_clones_and_loads_root_manifest() {
+    let repo = TempDir::new().unwrap();
+    let source = remote_source(repo.path());
+
+    let mut fetcher = TemplateFetcher::new(source, "test");
     let root = fetcher.fetch_root_manifest().await.unwrap();
 
     assert_eq!(root.templates, vec!["quickstart"]);
 }
 
 #[tokio::test]
-async fn remote_loads_template_manifest_and_files() {
-    let server = MockServer::start().await;
-    mock_remote_fixture(&server).await;
+async fn remote_loads_template_files_after_clone() {
+    let repo = TempDir::new().unwrap();
+    let source = remote_source(repo.path());
 
-    let url = url::Url::parse(&server.uri()).unwrap();
-    let mut fetcher =
-        TemplateFetcher::new(scaffolder_core::TemplateSource::Remote(url), "test");
+    let mut fetcher = TemplateFetcher::new(source, "test");
     let manifest = fetcher.fetch_template_manifest("quickstart").await.unwrap();
-
     assert_eq!(manifest.name, "Quickstart");
+
     let readme = fetcher
         .fetch_file("quickstart", "README.md")
         .await
         .unwrap();
     assert_eq!(readme, "# Quickstart\n");
-}
 
-#[tokio::test]
-async fn remote_shared_file_rename_fetches_from_root() {
-    let server = MockServer::start().await;
-    mock_remote_fixture(&server).await;
-
-    let url = url::Url::parse(&server.uri()).unwrap();
-    let mut fetcher =
-        TemplateFetcher::new(scaffolder_core::TemplateSource::Remote(url), "test");
-    let _ = fetcher.fetch_template_manifest("quickstart").await.unwrap();
     let gitignore = fetcher
         .fetch_file("quickstart", ".gitignore")
         .await
         .unwrap();
-
     assert_eq!(gitignore, "node_modules\n");
 }
 
 #[tokio::test]
-async fn remote_404_on_required_file_hard_fails() {
-    let server = MockServer::start().await;
-    // Root and template manifest are fine
-    Mock::given(method("GET"))
-        .and(path("/template.yaml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(root_manifest_yaml()))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/quickstart/template.yaml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(template_manifest_yaml()))
-        .mount(&server)
-        .await;
-    // Shared file OK, README OK, src/index.ts returns 404
-    Mock::given(method("GET"))
-        .and(path("/default-gitignore"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("node_modules\n"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/quickstart/README.md"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("# Quickstart\n"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/quickstart/src/index.ts"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&server)
-        .await;
+async fn remote_missing_subdir_fails() {
+    let repo = TempDir::new().unwrap();
+    // Init repo but skip writing the iii subdir
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{:?}", out);
+    };
+    std::fs::write(repo.path().join("README.md"), b"empty\n").unwrap();
+    run(&["init", "-b", "main"]);
+    run(&["config", "user.email", "t@e.com"]);
+    run(&["config", "user.name", "T"]);
+    run(&["add", "-A"]);
+    run(&["commit", "-m", "empty"]);
+    let url = url::Url::from_file_path(repo.path()).unwrap();
 
-    let url = url::Url::parse(&server.uri()).unwrap();
-    let mut fetcher =
-        TemplateFetcher::new(scaffolder_core::TemplateSource::Remote(url), "test");
-    let result = fetcher.fetch_template_manifest("quickstart").await;
+    let source = TemplateSource::Remote {
+        repo_url: url,
+        subdir: "iii".to_string(),
+        branch: "main".to_string(),
+    };
+    let mut fetcher = TemplateFetcher::new(source, "test");
+    let result = fetcher.fetch_root_manifest().await;
 
-    assert!(result.is_err(), "404 on required file must hard-fail");
+    assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
     assert!(
-        err.contains("src/index.ts") && err.contains("404"),
-        "error should name file and HTTP status: {err}"
+        err.contains("Subdirectory 'iii'"),
+        "should report missing subdir: {err}"
     );
+}
+
+#[tokio::test]
+async fn remote_invalid_url_fails() {
+    let source = TemplateSource::Remote {
+        repo_url: url::Url::parse("https://invalid.invalid.example/nope.git").unwrap(),
+        subdir: "iii".to_string(),
+        branch: "main".to_string(),
+    };
+    let mut fetcher = TemplateFetcher::new(source, "test");
+    let result = fetcher.fetch_root_manifest().await;
+    assert!(result.is_err(), "bogus host should fail cleanly");
 }
 
 // ---------------------------------------------------------------------------

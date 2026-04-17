@@ -15,7 +15,6 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 reqwest = { workspace = true }
-futures = { workspace = true }
 url = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
@@ -27,6 +26,7 @@ colored = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 # Optional: only for tui feature
 cliclack = { workspace = true, optional = true }
@@ -36,4 +36,3 @@ ctrlc = { workspace = true, optional = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["full", "macros"] }
-tempfile = { workspace = true }
