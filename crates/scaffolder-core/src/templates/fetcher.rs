@@ -1,21 +1,16 @@
-//! Template fetching from remote (GitHub) or local directory
+//! Template fetching from remote (GitHub templates repo) or local directory
 //!
-//! Both remote and local templates use zip files for consistency:
-//! - Remote: Fetches pre-built zips from URL
-//! - Local: Automatically builds zips from template folders, then uses them
-//!
-//! This ensures identical behavior between development and production.
+//! Templates are stored as plain files in a dedicated repository (iii-hq/templates).
+//! - Remote: fetches individual files over raw HTTPS from the templates repo
+//! - Local: reads files directly from disk (for development use)
 
 use super::manifest::{RootManifest, SharedFile, TemplateManifest};
 use crate::product::ProductConfig;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
 use tokio::fs;
 use url::Url;
-use zip::write::SimpleFileOptions;
-use zip::{ZipArchive, ZipWriter};
 
 /// Template source - either remote URL or local directory
 #[derive(Debug, Clone)]
@@ -40,7 +35,7 @@ impl TemplateSource {
     }
 }
 
-/// Cached template data extracted from zip
+/// Cached template data
 #[derive(Debug, Clone)]
 struct TemplateCache {
     manifest: TemplateManifest,
@@ -51,7 +46,9 @@ struct TemplateCache {
 pub struct TemplateFetcher {
     source: TemplateSource,
     client: reqwest::Client,
-    /// Cache of downloaded/built and extracted templates
+    /// Cached root manifest (fetched once per session)
+    root_manifest_cache: Option<RootManifest>,
+    /// Cache of loaded templates
     template_cache: HashMap<String, TemplateCache>,
 }
 
@@ -64,6 +61,7 @@ impl TemplateFetcher {
                 .user_agent(user_agent)
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
+            root_manifest_cache: None,
             template_cache: HashMap::new(),
         }
     }
@@ -82,242 +80,161 @@ impl TemplateFetcher {
     /// Build a URL by appending a path segment, preserving query parameters
     fn build_url(base: &Url, path_segment: &str) -> Result<Url> {
         let mut url = base.clone();
-        // Append path segment to existing path
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("URL cannot have path segments: {}", base))?
-            .pop_if_empty()
-            .push(path_segment);
+            .pop_if_empty();
+        for part in path_segment.split('/').filter(|s| !s.is_empty()) {
+            url.path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("URL cannot have path segments: {}", base))?
+                .push(part);
+        }
         Ok(url)
     }
 
+    async fn get_bytes(&self, url: &Url) -> Result<Vec<u8>> {
+        let response = self
+            .client
+            .get(url.clone())
+            .send()
+            .await
+            .with_context(|| format!("Failed to fetch {}", url))?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to fetch {}: HTTP {}", url, response.status());
+        }
+        Ok(response.bytes().await?.to_vec())
+    }
+
+    async fn get_string(&self, url: &Url) -> Result<String> {
+        let bytes = self.get_bytes(url).await?;
+        String::from_utf8(bytes).with_context(|| format!("{} is not valid UTF-8", url))
+    }
+
     /// Fetch the root manifest listing available templates
-    pub async fn fetch_root_manifest(&self) -> Result<RootManifest> {
-        match &self.source {
+    pub async fn fetch_root_manifest(&mut self) -> Result<RootManifest> {
+        if let Some(cached) = &self.root_manifest_cache {
+            return Ok(cached.clone());
+        }
+
+        let manifest: RootManifest = match &self.source {
             TemplateSource::Remote(base_url) => {
                 let url = Self::build_url(base_url, "template.yaml")?;
-                let response = self
-                    .client
-                    .get(url.clone())
-                    .send()
-                    .await
-                    .with_context(|| {
-                        format!("Failed to fetch root template manifest from {}", url)
-                    })?;
-
-                if !response.status().is_success() {
-                    anyhow::bail!(
-                        "Failed to fetch root manifest from {}: HTTP {}",
-                        url,
-                        response.status()
-                    );
-                }
-
-                let content = response.text().await?;
-                serde_yaml::from_str(&content).context("Failed to parse root manifest")
+                let content = self.get_string(&url).await.with_context(|| {
+                    format!("Failed to fetch root template manifest from {}", url)
+                })?;
+                serde_yaml::from_str(&content).context("Failed to parse root manifest")?
             }
             TemplateSource::Local(path) => {
                 let manifest_path = path.join("template.yaml");
                 let content = fs::read_to_string(&manifest_path)
                     .await
                     .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-                serde_yaml::from_str(&content).context("Failed to parse root manifest")
+                serde_yaml::from_str(&content).context("Failed to parse root manifest")?
+            }
+        };
+
+        self.root_manifest_cache = Some(manifest.clone());
+        Ok(manifest)
+    }
+
+    /// Load a file for a template, applying shared-file renames
+    /// `file_path` is the path relative to the template (what will live on disk in the project)
+    async fn load_template_file(
+        &self,
+        template_name: &str,
+        file_path: &str,
+        shared_files: &[SharedFile],
+    ) -> Result<Vec<u8>> {
+        // If this file matches a shared-file destination, read from the shared source instead
+        let shared_source: Option<&str> = shared_files
+            .iter()
+            .find(|s| s.destination() == file_path)
+            .map(|s| s.source.as_str());
+
+        match &self.source {
+            TemplateSource::Remote(base_url) => {
+                let url = if let Some(source) = shared_source {
+                    Self::build_url(base_url, source)?
+                } else {
+                    Self::build_url(base_url, &format!("{}/{}", template_name, file_path))?
+                };
+                self.get_bytes(&url).await
+            }
+            TemplateSource::Local(dir) => {
+                let full_path = if let Some(source) = shared_source {
+                    dir.join(source)
+                } else {
+                    dir.join(template_name).join(file_path)
+                };
+                fs::read(&full_path)
+                    .await
+                    .with_context(|| format!("Failed to read {}", full_path.display()))
             }
         }
     }
 
-    /// Build a zip file for a local template (reads files list from template.yaml)
-    /// Includes shared files from root templates directory with optional renaming
-    pub fn build_local_zip(
-        template_dir: &PathBuf,
-        template_name: &str,
-        shared_files: &[SharedFile],
-    ) -> Result<Vec<u8>> {
-        let template_path = template_dir.join(template_name);
-        let manifest_path = template_path.join("template.yaml");
+    async fn fetch_template_manifest_raw(&self, template_name: &str) -> Result<TemplateManifest> {
+        match &self.source {
+            TemplateSource::Remote(base_url) => {
+                let url =
+                    Self::build_url(base_url, &format!("{}/template.yaml", template_name))?;
+                let content = self.get_string(&url).await.with_context(|| {
+                    format!("Failed to fetch template '{}' manifest", template_name)
+                })?;
+                serde_yaml::from_str(&content).with_context(|| {
+                    format!("Failed to parse template '{}' manifest", template_name)
+                })
+            }
+            TemplateSource::Local(dir) => {
+                let path = dir.join(template_name).join("template.yaml");
+                let content = fs::read_to_string(&path)
+                    .await
+                    .with_context(|| format!("Failed to read {}", path.display()))?;
+                serde_yaml::from_str(&content).with_context(|| {
+                    format!("Failed to parse template '{}' manifest", template_name)
+                })
+            }
+        }
+    }
 
-        // Read and parse the template manifest to get the files list
-        let manifest_content = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-        let mut manifest: TemplateManifest = serde_yaml::from_str(&manifest_content)
-            .with_context(|| format!("Failed to parse template '{}' manifest", template_name))?;
+    /// Load and cache a template (manifest + all listed files, including shared files)
+    async fn load_template(&mut self, template_name: &str) -> Result<()> {
+        if self.template_cache.contains_key(template_name) {
+            return Ok(());
+        }
 
-        // Add shared file destinations to manifest.files so they're included in language filtering
-        for shared in shared_files {
+        let root_manifest = self.fetch_root_manifest().await?;
+        let mut manifest = self.fetch_template_manifest_raw(template_name).await?;
+
+        // Shared files expand the file list so they are treated uniformly during
+        // language filtering and copying.
+        for shared in &root_manifest.shared_files {
             let dest = shared.destination().to_string();
             if !manifest.files.contains(&dest) {
                 manifest.files.push(dest);
             }
         }
 
-        // Re-serialize manifest with shared files included
-        let manifest_content =
-            serde_yaml::to_string(&manifest).context("Failed to serialize updated manifest")?;
-
-        // Create zip in memory
-        let mut zip_buffer = Vec::new();
-        {
-            let mut zip = ZipWriter::new(Cursor::new(&mut zip_buffer));
-            let options =
-                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-            // Always include template.yaml first (with updated files list)
-            let template_yaml_path = format!("{}/template.yaml", template_name);
-            zip.start_file(&template_yaml_path, options)?;
-            zip.write_all(manifest_content.as_bytes())?;
-
-            // Add shared files from root templates directory (with renaming)
-            for shared in shared_files {
-                let source_path = template_dir.join(&shared.source);
-                let dest_name = shared.destination();
-
-                if source_path.exists() {
-                    let content = std::fs::read(&source_path).with_context(|| {
-                        format!("Failed to read shared file {}", source_path.display())
-                    })?;
-                    let zip_path = format!("{}/{}", template_name, dest_name);
-                    zip.start_file(&zip_path, options)?;
-                    zip.write_all(&content)?;
-                } else {
-                    eprintln!(
-                        "Warning: Shared file '{}' not found in {}",
-                        shared.source,
-                        template_dir.display()
-                    );
+        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+        for file_path in &manifest.files {
+            match self
+                .load_template_file(template_name, file_path, &root_manifest.shared_files)
+                .await
+            {
+                Ok(bytes) => {
+                    files.insert(file_path.clone(), bytes);
                 }
-            }
-
-            // Add each file from the manifest's original files list (excluding shared file dests)
-            let shared_dests: std::collections::HashSet<_> =
-                shared_files.iter().map(|s| s.destination()).collect();
-
-            for file_path in &manifest.files {
-                // Skip if this is a shared file destination (already added above)
-                if shared_dests.contains(file_path.as_str()) {
-                    continue;
-                }
-
-                let full_path = template_path.join(file_path);
-                if full_path.exists() {
-                    let content = std::fs::read(&full_path)
-                        .with_context(|| format!("Failed to read {}", full_path.display()))?;
-                    let zip_path = format!("{}/{}", template_name, file_path);
-                    zip.start_file(&zip_path, options)?;
-                    zip.write_all(&content)?;
-                } else {
+                Err(err) => {
                     // Warn but don't fail - file might be optional
                     eprintln!(
-                        "Warning: File '{}' not found (specified in {})",
-                        full_path.display(),
-                        manifest_path.display()
+                        "Warning: could not load '{}' from template '{}': {}",
+                        file_path, template_name, err
                     );
                 }
             }
-
-            zip.finish()?;
         }
 
-        Ok(zip_buffer)
-    }
-
-    /// Extract a zip into the template cache
-    fn extract_zip_to_cache(zip_bytes: &[u8], template_name: &str) -> Result<TemplateCache> {
-        let cursor = Cursor::new(zip_bytes);
-        let mut archive = ZipArchive::new(cursor).with_context(|| {
-            format!(
-                "Failed to read zip archive for template '{}'",
-                template_name
-            )
-        })?;
-
-        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
-        let mut manifest: Option<TemplateManifest> = None;
-
-        // The zip contains files with paths like: {template_name}/file.txt
-        // We need to strip the template_name prefix
-        let prefix = format!("{}/", template_name);
-
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let full_path = file.name().to_string();
-
-            // Skip directories
-            if file.is_dir() {
-                continue;
-            }
-
-            // Strip the template_name prefix from the path
-            let relative_path = if full_path.starts_with(&prefix) {
-                full_path[prefix.len()..].to_string()
-            } else {
-                full_path.clone()
-            };
-
-            // Read file contents
-            let mut contents = Vec::new();
-            file.read_to_end(&mut contents)?;
-
-            // Check if this is the manifest
-            if relative_path == "template.yaml" {
-                let content_str = String::from_utf8_lossy(&contents);
-                manifest = Some(serde_yaml::from_str(&content_str).with_context(|| {
-                    format!("Failed to parse template '{}' manifest", template_name)
-                })?);
-            }
-
-            files.insert(relative_path, contents);
-        }
-
-        let manifest = manifest.ok_or_else(|| {
-            anyhow::anyhow!("Template '{}' zip missing template.yaml", template_name)
-        })?;
-
-        Ok(TemplateCache { manifest, files })
-    }
-
-    /// Fetch/build and cache a template's zip file
-    async fn fetch_and_cache_template(&mut self, template_name: &str) -> Result<()> {
-        if self.template_cache.contains_key(template_name) {
-            return Ok(());
-        }
-
-        let zip_bytes = match &self.source {
-            TemplateSource::Remote(base_url) => {
-                // Fetch the zip file from remote
-                let zip_url = Self::build_url(base_url, &format!("{}.zip", template_name))?;
-                let response = self
-                    .client
-                    .get(zip_url.clone())
-                    .send()
-                    .await
-                    .with_context(|| format!("Failed to fetch template zip: {}", template_name))?;
-
-                if !response.status().is_success() {
-                    anyhow::bail!(
-                        "Failed to fetch template '{}' zip from {}: HTTP {}",
-                        template_name,
-                        zip_url,
-                        response.status()
-                    );
-                }
-
-                response.bytes().await?.to_vec()
-            }
-            TemplateSource::Local(path) => {
-                // Read root manifest to get shared files
-                let root_manifest_path = path.join("template.yaml");
-                let root_content = std::fs::read_to_string(&root_manifest_path)
-                    .with_context(|| format!("Failed to read {}", root_manifest_path.display()))?;
-                let root_manifest: RootManifest = serde_yaml::from_str(&root_content)
-                    .context("Failed to parse root template.yaml")?;
-
-                // Build zip from local template folder with shared files
-                Self::build_local_zip(path, template_name, &root_manifest.shared_files)?
-            }
-        };
-
-        let cache = Self::extract_zip_to_cache(&zip_bytes, template_name)?;
-        self.template_cache.insert(template_name.to_string(), cache);
-
+        self.template_cache
+            .insert(template_name.to_string(), TemplateCache { manifest, files });
         Ok(())
     }
 
@@ -326,7 +243,7 @@ impl TemplateFetcher {
         &mut self,
         template_name: &str,
     ) -> Result<TemplateManifest> {
-        self.fetch_and_cache_template(template_name).await?;
+        self.load_template(template_name).await?;
         let cache = self
             .template_cache
             .get(template_name)
@@ -347,7 +264,7 @@ impl TemplateFetcher {
         template_name: &str,
         file_path: &str,
     ) -> Result<Vec<u8>> {
-        self.fetch_and_cache_template(template_name).await?;
+        self.load_template(template_name).await?;
         let cache = self
             .template_cache
             .get(template_name)

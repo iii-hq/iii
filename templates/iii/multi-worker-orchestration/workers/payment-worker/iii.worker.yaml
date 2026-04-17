@@ -1,8 +1,0 @@
-name: payment-worker
-runtime:
-  language: typescript
-  package_manager: npm
-  entry: src/external-worker.ts
-scripts:
-  install: 'npm install'
-  start: 'npm run dev'

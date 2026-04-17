@@ -23,7 +23,7 @@ impl ProductConfig for MotiaConfig {
     }
 
     fn default_template_url(&self) -> &'static str {
-        "https://raw.githubusercontent.com/iii-hq/iii/main/templates/motia"
+        "https://raw.githubusercontent.com/iii-hq/templates/main/motia"
     }
 
     fn template_url_env(&self) -> &'static str {
@@ -60,8 +60,6 @@ pub struct Args {
 pub enum Command {
     /// Create a new Motia project
     Create(CliCreateArgs),
-    /// Build zip files for all templates in the template directory (for development use)
-    BuildZips(BuildZipsArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -104,13 +102,6 @@ impl From<CliCreateArgs> for CreateArgs {
     }
 }
 
-#[derive(Parser, Debug)]
-pub struct BuildZipsArgs {
-    /// Local directory containing templates to build zips from (for development use)
-    #[arg(long = "template-dir")]
-    pub template_dir: Option<PathBuf>,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Ensure terminal cursor is restored on panic
@@ -140,10 +131,6 @@ async fn main() -> Result<()> {
             let _ = console::Term::stderr().show_cursor();
 
             result
-        }
-        Some(Command::BuildZips(build_args)) => {
-            // Build zip files for templates
-            scaffolder_core::templates::build_zips(&config, &build_args.template_dir).await
         }
         None => {
             // No subcommand provided, default to create behavior (interactive mode)

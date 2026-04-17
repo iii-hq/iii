@@ -21,7 +21,6 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 semver = { workspace = true }
 walkdir = { workspace = true }
-zip = { workspace = true }
 open = { workspace = true }
 colored = { workspace = true }
 dirs = { workspace = true }
@@ -34,8 +33,6 @@ console = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 
 [dev-dependencies]
-url = { workspace = true }
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["full", "macros"] }
 tempfile = { workspace = true }
-libc = "0.2"

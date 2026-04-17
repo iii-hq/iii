@@ -1,8 +1,0 @@
-name: math-worker
-runtime:
-  language: python
-  package_manager: pip
-  entry: math_worker.py
-scripts:
-  install: "pip install -r requirements.txt"
-  start: "watchfiles 'python math_worker.py'"

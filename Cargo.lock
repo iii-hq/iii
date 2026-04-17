@@ -5038,7 +5038,6 @@ dependencies = [
  "console 0.15.11",
  "ctrlc",
  "dirs",
- "libc",
  "open",
  "reqwest 0.12.28",
  "semver",
@@ -5052,7 +5051,6 @@ dependencies = [
  "uuid",
  "walkdir",
  "wiremock",
- "zip",
 ]
 
 [[package]]

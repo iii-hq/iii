@@ -1,8 +1,0 @@
-name: data-worker
-runtime:
-  language: python
-  package_manager: pip
-  entry: data_worker.py
-scripts:
-  install: "pip install -r requirements.txt"
-  start: "python data_worker.py"
