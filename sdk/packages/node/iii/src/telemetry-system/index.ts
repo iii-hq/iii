@@ -53,8 +53,10 @@ export * from './context'
  * up as a ghost null-metadata worker).
  */
 function appendOtelPath(base: string): string {
-  const trimmed = base.replace(/\/+$/, '')
-  return trimmed.endsWith('/otel') ? trimmed : `${trimmed}/otel`
+  const url = new URL(base)
+  const path = url.pathname.replace(/\/+$/, '')
+  url.pathname = path.endsWith('/otel') ? path : `${path}/otel`
+  return url.toString()
 }
 
 // Module-level state

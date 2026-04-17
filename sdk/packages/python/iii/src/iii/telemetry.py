@@ -31,12 +31,16 @@ def _append_otel_path(base: str) -> str:
 
     The engine exposes ``/otel`` for telemetry-only WS connections; routing
     there keeps this socket out of ``worker_registry`` (otherwise it shows
-    up as a ghost null-metadata worker alongside the real worker).
+    up as a ghost null-metadata worker alongside the real worker). Query
+    strings and fragments are preserved.
     """
-    trimmed = base.rstrip("/")
-    if trimmed.endswith("/otel"):
-        return trimmed
-    return f"{trimmed}/otel"
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(base)
+    path = parts.path.rstrip("/")
+    if not path.endswith("/otel"):
+        path = f"{path}/otel"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def init_otel(

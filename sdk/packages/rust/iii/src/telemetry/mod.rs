@@ -51,15 +51,20 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
 ///
 /// The engine exposes `/otel` for telemetry-only WS connections. Appending
 /// the path here means the SDK never shows up in `worker_registry` as a
-/// ghost null-metadata worker. Handles trailing slashes and is idempotent
-/// when the URL already ends in `/otel`. Callers must not pass URLs that
-/// include a query string — this helper does not split path from query.
+/// ghost null-metadata worker. Handles trailing slashes, is idempotent
+/// when the URL already ends in `/otel`, and preserves query strings and
+/// fragments by inserting `/otel` into the path segment only.
 fn append_otel_path(base: &str) -> String {
-    let trimmed = base.trim_end_matches('/');
+    let split_idx = base
+        .find(|c: char| c == '?' || c == '#')
+        .unwrap_or(base.len());
+    let (prefix, suffix) = base.split_at(split_idx);
+    let trimmed = prefix.trim_end_matches('/');
     if trimmed.ends_with("/otel") {
-        return trimmed.to_string();
+        format!("{trimmed}{suffix}")
+    } else {
+        format!("{trimmed}/otel{suffix}")
     }
-    format!("{trimmed}/otel")
 }
 
 #[cfg(test)]
@@ -87,6 +92,38 @@ mod otel_path_tests {
         assert_eq!(
             append_otel_path("ws://localhost:49134/otel"),
             "ws://localhost:49134/otel"
+        );
+    }
+
+    #[test]
+    fn preserves_query_string() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134?token=abc"),
+            "ws://localhost:49134/otel?token=abc"
+        );
+    }
+
+    #[test]
+    fn preserves_query_string_when_already_otel() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134/otel?token=abc"),
+            "ws://localhost:49134/otel?token=abc"
+        );
+    }
+
+    #[test]
+    fn preserves_fragment() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134#frag"),
+            "ws://localhost:49134/otel#frag"
+        );
+    }
+
+    #[test]
+    fn strips_trailing_slash_before_query() {
+        assert_eq!(
+            append_otel_path("ws://localhost:49134/otel/?token=abc"),
+            "ws://localhost:49134/otel?token=abc"
         );
     }
 }
