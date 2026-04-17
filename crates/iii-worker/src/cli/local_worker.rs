@@ -863,13 +863,13 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     if exit_code == 0
         && let Err(e) =
             spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher).await
-        {
-            eprintln!(
-                "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
-                "warning:".yellow(),
-                e
-            );
-        }
+    {
+        eprintln!(
+            "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
+            "warning:".yellow(),
+            e
+        );
+    }
 
     exit_code
 }

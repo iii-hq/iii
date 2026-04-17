@@ -55,9 +55,10 @@ fn read_device_id() -> Option<String> {
 
 pub fn is_telemetry_disabled() -> bool {
     if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
-        && (val == "false" || val == "0") {
-            return true;
-        }
+        && (val == "false" || val == "0")
+    {
+        return true;
+    }
     if std::env::var("III_TELEMETRY_DEV").ok().as_deref() == Some("true") {
         return true;
     }

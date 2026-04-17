@@ -9,8 +9,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 /// CLI arguments for the create command
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CreateArgs {
     /// Local directory to use for templates instead of fetching from remote
     pub template_dir: Option<PathBuf>,
@@ -30,7 +29,6 @@ pub struct CreateArgs {
     /// Auto-confirm all prompts (non-interactive mode)
     pub yes: bool,
 }
-
 
 /// Run the CLI with interactive prompts
 pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &str) -> Result<()> {
@@ -62,20 +60,21 @@ pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &s
 
     // Check iii engine version compatibility (hard block, respects --skip-tool-check)
     if !args.skip_tool_check
-        && let Some(min_ver) = &manifest.min_iii_version {
-            match version::check_iii_engine_version(min_ver) {
-                Ok(installed) => {
-                    cliclack::log::success(format!(
-                        "iii engine {} (>= {} required)",
-                        installed, min_ver
-                    ))?;
-                }
-                Err(msg) => {
-                    cliclack::log::error(&msg)?;
-                    anyhow::bail!("{}", msg);
-                }
+        && let Some(min_ver) = &manifest.min_iii_version
+    {
+        match version::check_iii_engine_version(min_ver) {
+            Ok(installed) => {
+                cliclack::log::success(format!(
+                    "iii engine {} (>= {} required)",
+                    installed, min_ver
+                ))?;
+            }
+            Err(msg) => {
+                cliclack::log::error(&msg)?;
+                anyhow::bail!("{}", msg);
             }
         }
+    }
 
     // Step 4: Select directory
     let project_dir = select_directory(&args)?;
@@ -339,31 +338,35 @@ fn select_directory(args: &CreateArgs) -> Result<PathBuf> {
 
     // Validate parent directory exists
     if let Some(parent) = path.parent()
-        && !parent.exists() && parent != std::path::Path::new("") {
-            anyhow::bail!("Parent directory does not exist: {}", parent.display());
-        }
+        && !parent.exists()
+        && parent != std::path::Path::new("")
+    {
+        anyhow::bail!("Parent directory does not exist: {}", parent.display());
+    }
 
     // Warn if directory exists and has files
-    if path.exists() && path.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&path) {
-            let count = entries.count();
-            if count > 0 {
-                cliclack::log::warning(format!("Directory has {} existing items", count))?;
+    if path.exists()
+        && path.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&path)
+    {
+        let count = entries.count();
+        if count > 0 {
+            cliclack::log::warning(format!("Directory has {} existing items", count))?;
 
-                // Auto-confirm with --yes flag
-                let confirm = if args.yes {
-                    true
-                } else {
-                    cliclack::confirm("Continue anyway?")
-                        .initial_value(true)
-                        .interact()?
-                };
+            // Auto-confirm with --yes flag
+            let confirm = if args.yes {
+                true
+            } else {
+                cliclack::confirm("Continue anyway?")
+                    .initial_value(true)
+                    .interact()?
+            };
 
-                if !confirm {
-                    anyhow::bail!("Setup cancelled.");
-                }
+            if !confirm {
+                anyhow::bail!("Setup cancelled.");
             }
         }
+    }
 
     Ok(path)
 }
@@ -598,9 +601,10 @@ fn print_next_steps(
     let mut steps: Vec<String> = Vec::new();
 
     if let Ok(current) = std::env::current_dir()
-        && current != *project_dir {
-            steps.push(format!("cd {}", project_dir.display()));
-        }
+        && current != *project_dir
+    {
+        steps.push(format!("cd {}", project_dir.display()));
+    }
 
     steps.extend(manifest.next_steps.iter().cloned());
 
