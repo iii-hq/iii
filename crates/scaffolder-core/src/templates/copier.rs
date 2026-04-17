@@ -4,8 +4,23 @@ use crate::runtime::check::Language;
 use crate::templates::fetcher::TemplateFetcher;
 use crate::templates::manifest::{FileLanguage, LanguageFiles, TemplateManifest};
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Component, Path};
 use tokio::fs;
+
+/// Reject paths that could escape `target_dir`: absolute paths (which `Path::join` would
+/// use as the full result), `..` components, and Windows drive prefixes.
+fn is_safe_relative_path(file_path: &str) -> bool {
+    let p = Path::new(file_path);
+    if p.is_absolute() {
+        return false;
+    }
+    !p.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
+}
 
 /// Copy template files to the target directory, filtering by selected languages
 pub async fn copy_template(
@@ -26,6 +41,12 @@ pub async fn copy_template(
     for file_path in &manifest.files {
         // Check if this file should be included based on language selection
         if should_include_file(file_path, selected_languages, language_files) {
+            if !is_safe_relative_path(file_path) {
+                anyhow::bail!(
+                    "Unsafe path in template manifest: {} (must be relative and must not contain '..')",
+                    file_path
+                );
+            }
             // Ensure parent directories exist
             let target_path = target_dir.join(file_path);
             if let Some(parent) = target_path.parent() {
@@ -74,6 +95,22 @@ fn should_include_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_safe_relative_path_accepts_normal_paths() {
+        assert!(is_safe_relative_path("README.md"));
+        assert!(is_safe_relative_path("src/index.ts"));
+        assert!(is_safe_relative_path(".gitignore"));
+        assert!(is_safe_relative_path("deeply/nested/file.txt"));
+    }
+
+    #[test]
+    fn is_safe_relative_path_rejects_absolute_and_parent_dir() {
+        assert!(!is_safe_relative_path("/etc/passwd"));
+        assert!(!is_safe_relative_path("../escape"));
+        assert!(!is_safe_relative_path("src/../../escape"));
+        assert!(!is_safe_relative_path("./src/../../escape"));
+    }
 
     fn test_language_files() -> LanguageFiles {
         LanguageFiles {
