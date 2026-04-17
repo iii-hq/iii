@@ -132,11 +132,14 @@ pub async fn run_dev(
 
     match cmd.spawn() {
         Ok(mut child) => {
-            // Write PID file so is_worker_running / stop / kill_stale_worker can find us
+            // Write PID file so is_worker_running / stop / kill_stale_worker can find us.
+            // Use the hardened writer: O_NOFOLLOW + 0o600 on Unix so a
+            // symlink pre-planted at vm.pid can't redirect our write to
+            // a sensitive file. Matches the watch.pid hardening.
             let pid_file = rootfs.join("vm.pid");
             let pid = child.id().unwrap_or(0);
             if pid > 0
-                && let Err(e) = std::fs::write(&pid_file, pid.to_string())
+                && let Err(e) = crate::cli::pidfile::write_pid_file_strict(&pid_file, pid)
             {
                 eprintln!(
                     "{} Failed to write PID file {}: {}",
@@ -465,7 +468,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let child = cmd.spawn().context("failed to spawn VM boot process")?;
 
         let pid = child.id();
-        std::fs::write(Self::pid_file(&spec.name), pid.to_string())?;
+        crate::cli::pidfile::write_pid_file_strict(&Self::pid_file(&spec.name), pid)?;
 
         tracing::info!(name = %spec.name, pid = pid, "started libkrun VM");
 

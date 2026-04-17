@@ -312,8 +312,21 @@ mod tests {
         format!("__iii_test_supervisor_ctl_{}__", std::process::id())
     }
 
+    /// Guard that locks the process-global HOME so other tests in the
+    /// crate (notably `status::tests` which temporarily points HOME at
+    /// a long `/var/folders/...` tempdir) can't make our resolved
+    /// socket path breach macOS's 104-byte SUN_LEN limit while this
+    /// test is mid-run. Thin wrapper over
+    /// [`crate::cli::test_support::lock_home`] — the shared helper
+    /// keeps the invariant documented in one place and gives any new
+    /// test module an obvious entry point.
+    fn lock_home() -> std::sync::MutexGuard<'static, ()> {
+        super::super::test_support::lock_home()
+    }
+
     #[tokio::test]
     async fn request_restart_blocking_succeeds_from_within_tokio_context() {
+        let _h = lock_home();
         // The motivating bug: watcher's sync callback runs inside a
         // tokio runtime and cannot spin up a nested one. This test
         // proves that request_restart_blocking is safe to call from a
@@ -336,6 +349,7 @@ mod tests {
 
     #[test]
     fn request_restart_blocking_errors_on_missing_socket() {
+        let _h = lock_home();
         // No stub running. Blocking connect should fail fast with
         // ENOENT or ECONNREFUSED. Caller maps this to "fall back to
         // full VM restart" and carries on.
@@ -352,6 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_restart_succeeds_on_ok_response() {
+        let _h = lock_home();
         let worker = sandbox_worker_name();
         stub_server(control_socket_path(&worker).unwrap(), r#"{"result":"ok"}"#).await;
         request_restart(&worker).await.expect("restart ok");
@@ -362,6 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_restart_propagates_error_response() {
+        let _h = lock_home();
         let worker = format!("{}_err", sandbox_worker_name());
         stub_server(
             control_socket_path(&worker).unwrap(),
@@ -377,6 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_reports_pid_from_alive_response() {
+        let _h = lock_home();
         let worker = format!("{}_ping", sandbox_worker_name());
         stub_server(
             control_socket_path(&worker).unwrap(),
@@ -392,6 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn round_trip_fails_fast_when_socket_missing() {
+        let _h = lock_home();
         let worker = format!("{}_missing", sandbox_worker_name());
         // Don't start a server — the socket doesn't exist.
         let err = ping(&worker).await.expect_err("should fail");

@@ -11,8 +11,28 @@
 //! control-channel decoding live in sibling modules.
 
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// Acquire the state lock without poisoning the whole VM on panic.
+///
+/// `Mutex::lock()` returns `Err` when a previous holder panicked while
+/// the guard was live. `.expect(...)` turns that into a fresh panic,
+/// which on PID-1 terminates the VM. The state behind the mutex is
+/// small (`Child` handle + restart counter) and the supervisor is
+/// already designed to tolerate out-of-band child reaping, so recovering
+/// the inner data is strictly better than crashing: at worst we observe
+/// partially-updated state for one RPC, which the host either retries
+/// or escalates to a full VM restart.
+fn lock_or_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            tracing::error!("inner mutex was poisoned; recovering");
+            poisoned.into_inner()
+        }
+    }
+}
 
 /// Grace period between SIGTERM and SIGKILL when cycling the worker.
 ///
@@ -35,6 +55,13 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 /// syscall, ~µs) while giving up to 50 chances to catch a fast exit
 /// before escalating to SIGKILL.
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Delay between the initial spawn attempt and the retry in
+/// `spawn_with_one_retry`. Short enough that the host-side
+/// `supervisor_ctl` 500ms read timeout does not fire while a single
+/// transient EAGAIN/ENOMEM is being absorbed, long enough that the
+/// kernel has a fair chance to free a fork-table slot.
+const RESPAWN_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Configuration captured once at supervisor startup. Immutable after.
 #[derive(Debug, Clone)]
@@ -77,8 +104,19 @@ impl State {
     /// supervisor boot, before entering the control loop. Returns an
     /// error if spawn fails; supervisor should exit in that case so the
     /// host can observe the VM going down and fall back.
+    ///
+    /// Intentionally does NOT retry on transient errors — boot-time
+    /// spawn failure already escalates to the host by way of the
+    /// supervisor exiting, and the host's full-VM restart path provides
+    /// its own retry layer. Masking boot-time EAGAIN here would hide a
+    /// real "wrong run_cmd / workdir / binary missing" class of bug
+    /// under a 50ms stall. The restart-time path
+    /// (`kill_and_respawn` → `spawn_with_one_retry`) retries because
+    /// the cost of escalation — a full VM teardown that breaks the
+    /// dev-loop — is disproportionate to a single transient fork
+    /// failure.
     pub fn spawn_initial(&self) -> anyhow::Result<u32> {
-        let mut guard = self.inner.lock().expect("inner mutex poisoned");
+        let mut guard = lock_or_recover(&self.inner);
         let child = Self::spawn_child(&self.config)?;
         let pid = child.id();
         guard.child = Some(child);
@@ -97,15 +135,78 @@ impl State {
     /// [`SHUTDOWN_GRACE`], escalate to SIGKILL if the child is still
     /// alive. See [`terminate_gracefully`] for the rationale.
     pub fn kill_and_respawn(&self) -> anyhow::Result<u32> {
-        let mut guard = self.inner.lock().expect("inner mutex poisoned");
-        if let Some(mut old) = guard.child.take() {
-            terminate_gracefully(&mut old);
+        // Terminate the old child under the lock so no concurrent
+        // reader observes a torn `Inner { child: Some(old), … }` state.
+        {
+            let mut guard = lock_or_recover(&self.inner);
+            if let Some(mut old) = guard.child.take() {
+                terminate_gracefully(&mut old);
+            }
         }
-        let child = Self::spawn_child(&self.config)?;
+
+        // Spawn the replacement WITHOUT holding the lock. The retry
+        // path below sleeps up to `RESPAWN_RETRY_DELAY` between
+        // attempts — if that sleep happened under the mutex, every
+        // concurrent `Status`/`Ping`/`Restart` RPC would block for
+        // the sleep duration. Since the host-side `supervisor_ctl`
+        // has a 500ms read timeout, a chained retry under real
+        // fork-table pressure could trip that timeout and escalate
+        // to a full VM teardown — exactly the outcome the retry is
+        // meant to avoid.
+        let child = Self::spawn_with_one_retry(&self.config)?;
         let pid = child.id();
+
+        // Re-acquire the lock to insert the new child. Because the
+        // control loop is single-threaded and the only other writers
+        // are `spawn_initial` (called once at boot) and
+        // `kill_for_shutdown` (terminal), no racing writer can have
+        // re-populated `child` in the window above. Assert that
+        // invariant defensively: if we ever grow concurrent writers,
+        // we'd rather fail loud here than silently leak the child we
+        // just spawned.
+        let mut guard = lock_or_recover(&self.inner);
+        debug_assert!(
+            guard.child.is_none(),
+            "kill_and_respawn: racing writer re-populated child during respawn"
+        );
         guard.child = Some(child);
         guard.restarts = guard.restarts.saturating_add(1);
         Ok(pid)
+    }
+
+    /// Spawn the worker with a single retry after `RESPAWN_RETRY_DELAY`.
+    ///
+    /// Retries transient spawn failures (EAGAIN under fork storms,
+    /// ENOMEM under memory pressure). A persistent failure still
+    /// propagates: the PID-1 reap loop sees `state.pid() == None`,
+    /// marks the exit terminal, and the VM goes down so the host
+    /// watcher can fall back to a full restart. Bounded retry lets a
+    /// dev-loop edit survive brief fork-table exhaustion without a
+    /// teardown cycle.
+    ///
+    /// Factored out of `kill_and_respawn` so the retry contract can
+    /// be regression-tested without mocking the state machine (see
+    /// `spawn_with_one_retry_retries_once_then_succeeds` and
+    /// `spawn_with_one_retry_propagates_persistent_failure`).
+    fn spawn_with_one_retry(config: &Config) -> anyhow::Result<Child> {
+        match Self::spawn_child(config) {
+            Ok(c) => Ok(c),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "spawn_child failed during restart; retrying once after {}ms",
+                    RESPAWN_RETRY_DELAY.as_millis()
+                );
+                std::thread::sleep(RESPAWN_RETRY_DELAY);
+                Self::spawn_child(config).map_err(|e2| {
+                    tracing::error!(
+                        error = %e2,
+                        "spawn_child retry also failed; VM will exit and host will full-restart"
+                    );
+                    e2
+                })
+            }
+        }
     }
 
     /// Kill the current child, do NOT respawn, mark supervisor as
@@ -116,7 +217,7 @@ impl State {
     /// dev-time shutdowns should still give the worker a chance to
     /// flush stdio and close sockets before hard-killing it.
     pub fn kill_for_shutdown(&self) -> anyhow::Result<()> {
-        let mut guard = self.inner.lock().expect("inner mutex poisoned");
+        let mut guard = lock_or_recover(&self.inner);
         if let Some(mut old) = guard.child.take() {
             terminate_gracefully(&mut old);
         }
@@ -127,10 +228,16 @@ impl State {
     /// after an unexpected child exit that `kill_and_respawn` hasn't yet
     /// been called to recover from.
     pub fn pid(&self) -> Option<u32> {
-        let mut guard = self.inner.lock().expect("inner mutex poisoned");
+        let mut guard = lock_or_recover(&self.inner);
         // Check if the stored child has died on its own. `try_wait`
         // non-destructively reaps dead children so we don't report a
-        // stale pid.
+        // stale pid. On `Err(ECHILD)` the child was reaped by someone
+        // else (typically the PID-1 `waitpid(-1)` loop in supervisor
+        // mode) — the handle is stale and the kernel may have already
+        // recycled the pid, so returning `child.id()` would lie about
+        // liveness (and could coincide with an unrelated same-uid
+        // process). Treat any try_wait error as "handle is stale" and
+        // drop it.
         if let Some(child) = guard.child.as_mut() {
             match child.try_wait() {
                 Ok(Some(_)) => {
@@ -138,7 +245,10 @@ impl State {
                     return None;
                 }
                 Ok(None) => return Some(child.id()),
-                Err(_) => return Some(child.id()),
+                Err(_) => {
+                    guard.child = None;
+                    return None;
+                }
             }
         }
         None
@@ -146,7 +256,7 @@ impl State {
 
     /// Total restart count since supervisor boot.
     pub fn restarts(&self) -> u32 {
-        self.inner.lock().expect("inner mutex poisoned").restarts
+        lock_or_recover(&self.inner).restarts
     }
 
     fn spawn_child(config: &Config) -> anyhow::Result<Child> {
@@ -309,6 +419,97 @@ mod tests {
         // Give the child a moment to exit.
         thread::sleep(Duration::from_millis(100));
         assert_eq!(state.pid(), None, "exited child must not report a pid");
+    }
+
+    #[test]
+    fn pid_clears_handle_when_child_reaped_out_of_band() {
+        // Regression for the stale-dead-pid bug: in supervisor mode the
+        // PID-1 `waitpid(-1)` loop reaps the child before `State::pid()`
+        // is queried. `try_wait()` on a reaped child returns `Err(ECHILD)`;
+        // we must treat that as "handle is stale" and return None,
+        // rather than falling through to `child.id()` and reporting a
+        // pid the kernel may have already recycled.
+        let state = State::new(Config {
+            run_cmd: "true".to_string(),
+            workdir: "/tmp".to_string(),
+        });
+        let pid = state.spawn_initial().unwrap();
+        // Reap the child from the outside so the stored Rust handle
+        // becomes stale — mirrors what the PID-1 waitpid(-1) loop does.
+        use nix::sys::wait::{WaitPidFlag, waitpid};
+        use nix::unistd::Pid;
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        loop {
+            match waitpid(Pid::from_raw(pid as i32), Some(WaitPidFlag::WNOHANG)) {
+                Ok(nix::sys::wait::WaitStatus::StillAlive) => {}
+                Ok(_) => break,
+                Err(nix::Error::ECHILD) => break,
+                Err(e) => panic!("waitpid: {e}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child {pid} never exited"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        // Now the internal Child handle references a reaped pid. pid()
+        // must not lie by returning the stale value.
+        assert_eq!(
+            state.pid(),
+            None,
+            "stale reaped child must not report a live pid"
+        );
+    }
+
+    #[test]
+    fn spawn_with_one_retry_returns_ok_without_sleeping_on_happy_path() {
+        // When the first spawn succeeds the helper must not sleep at
+        // all. A regression that unconditionally slept would double the
+        // dev-loop restart latency.
+        let start = Instant::now();
+        let mut child = State::spawn_with_one_retry(&sleep_config()).unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < RESPAWN_RETRY_DELAY / 2,
+            "happy path must not sleep, elapsed = {:?}",
+            elapsed
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn spawn_with_one_retry_retries_exactly_once_on_persistent_failure() {
+        // Bad workdir makes `Command::spawn` fail at chdir-in-child
+        // time: the stdlib's exec-failure pipe returns the errno from
+        // the child before `.spawn()` returns, so the parent observes
+        // a proper Err. Every attempt with this config fails the same
+        // way, which lets us pin the retry contract:
+        //   - exactly one retry (not zero, not two)
+        //   - sleep of RESPAWN_RETRY_DELAY between attempts
+        //   - final error propagates
+        let bad = Config {
+            run_cmd: "true".to_string(),
+            workdir: "/nonexistent/__iii_supervisor_retry_test__".to_string(),
+        };
+
+        let start = Instant::now();
+        let result = State::spawn_with_one_retry(&bad);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "persistent spawn failure must propagate");
+        assert!(
+            elapsed >= RESPAWN_RETRY_DELAY,
+            "persistent failure must sleep at least the retry delay, elapsed = {:?}",
+            elapsed
+        );
+        // Upper bound: well under 2 * delay so a refactor that loops
+        // forever or adds a second retry trips this.
+        assert!(
+            elapsed < RESPAWN_RETRY_DELAY * 3,
+            "persistent failure must NOT retry more than once, elapsed = {:?}",
+            elapsed
+        );
     }
 
     #[test]

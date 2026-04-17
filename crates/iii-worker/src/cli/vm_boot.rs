@@ -204,6 +204,38 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
         .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
 }
 
+/// Identity of a bound control socket: path plus (dev, ino) of the
+/// filesystem entry that `UnixListener::bind` produced. Captured at
+/// bind time and consulted by the VM-exit cleanup hook so we only
+/// unlink the socket we created — never a replacement someone else
+/// bound at the same path in the meantime.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+struct SocketFingerprint {
+    path: String,
+    dev: u64,
+    ino: u64,
+}
+
+#[cfg(unix)]
+impl SocketFingerprint {
+    /// Remove the socket file iff its (dev, ino) still match what we
+    /// captured at bind time. Silently does nothing if the path has
+    /// been replaced (another VM rebinding), is gone, or can't be
+    /// stat'd — all three are benign at VM-exit time.
+    fn remove_if_unchanged(&self) {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::metadata(&self.path) {
+            Ok(m) if m.dev() == self.dev && m.ino() == self.ino => {
+                let _ = std::fs::remove_file(&self.path);
+            }
+            _ => {
+                // Replaced, gone, or unstatable — leave it alone.
+            }
+        }
+    }
+}
+
 /// Create a unix stream `socketpair` for the control channel. The guest
 /// fd will be handed to `ConsoleBuilder::port` and must remain open for
 /// the lifetime of the VM; we deliberately `forget` the owned wrapper
@@ -247,15 +279,17 @@ fn setup_control_socketpair() -> Result<(std::os::unix::net::UnixStream, i32), S
 /// one in flight at a time).
 ///
 /// The listener is bound to a fresh unix socket — any stale file at
-/// `sock_path` is unlinked first. The socket is NOT unlinked on exit;
-/// the caller's `on_exit` hook (which already deletes the pid file
-/// and similar) is the right place for that. In practice the socket
-/// file becomes inert when the __vm-boot process dies, and any
-/// subsequent `iii worker start` overwrites it via the same unlink
-/// step at the top of this function.
+/// `sock_path` is unlinked first. The `on_exit` hook in the caller
+/// unlinks it again on VM shutdown so stop leaves a tidy managed dir.
+/// Even without that cleanup the file becomes inert when the
+/// __vm-boot process dies, and any subsequent `iii worker start`
+/// overwrites it via the same unlink step below.
 #[cfg(unix)]
-fn spawn_control_proxy(sock_path: String, host_end: std::os::unix::net::UnixStream) {
-    use std::os::unix::fs::PermissionsExt;
+fn spawn_control_proxy(
+    sock_path: String,
+    host_end: std::os::unix::net::UnixStream,
+) -> Option<SocketFingerprint> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -283,21 +317,58 @@ fn spawn_control_proxy(sock_path: String, host_end: std::os::unix::net::UnixStre
     }
     let _ = std::fs::remove_file(&sock_path);
 
-    let listener = match UnixListener::bind(&sock_path) {
+    // Narrow umask around the bind so the socket inode is created with
+    // 0o600 mode from the start, rather than born with the process
+    // umask (typically 0o002 / 0o022) and chmod'd afterwards. The prior
+    // `set_permissions` approach left a narrow TOCTOU window where a
+    // same-uid attacker could `connect()` before we locked the perms;
+    // SO_PEERCRED would reject cross-uid clients but not same-uid ones.
+    // umask(0o077) yields 0o600 files (default mode 0o666 & !0o077 = 0o600),
+    // closing the window. Restore the prior umask immediately after bind.
+    //
+    // Kept for defense-in-depth: SO_PEERCRED (below) remains the primary
+    // authz check and the parent dir is already 0o700 from line ~316.
+    //
+    // Caveat: `umask` is process-global, not per-thread. If a concurrent
+    // Tokio task (or any other thread) happens to create a file between
+    // the `umask(0o077)` and restore call, that file also inherits 0o077.
+    // The window is a few syscalls wide and `iii worker start` is
+    // effectively serial at this point in boot, so the practical risk is
+    // low; the `set_permissions` follow-up below catches the rare miss.
+    let prev_umask = unsafe { nix::libc::umask(0o077) };
+    let bind_result = UnixListener::bind(&sock_path);
+    unsafe {
+        nix::libc::umask(prev_umask);
+    }
+    let listener = match bind_result {
         Ok(l) => l,
         Err(e) => {
             eprintln!(
                 "warning: control proxy bind({sock_path}) failed: {e}. \
                  Fast-path restart is disabled; full VM restarts still work."
             );
-            return;
+            return None;
         }
     };
-    // Lock the socket file to 0o600 (owner rw only). Combined with
-    // SO_PEERCRED checks below, this is defense-in-depth: without the
-    // peer uid check a local user whose uid != ours could still use
-    // a stolen fd, but fs perms block the typical unprivileged path.
+    // Belt-and-suspenders: some platforms or `nix` versions of `umask`
+    // might not influence Unix-socket inode creation mode. The
+    // `set_permissions` call here is a no-op when bind already produced
+    // 0o600 (the common case), and a corrective chmod otherwise.
     let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
+
+    // Capture (dev, ino) of the just-bound socket so the on_exit hook
+    // can refuse to unlink if the file at `sock_path` has since been
+    // replaced — a fast `stop → start` race can let the new VM bind
+    // the same path before the old VM's on_exit fires; without this
+    // fingerprint check the stale hook would nuke the live socket
+    // and silently downgrade fast-path restart to a full-VM cycle.
+    let fingerprint = std::fs::metadata(&sock_path)
+        .ok()
+        .map(|m| SocketFingerprint {
+            path: sock_path.clone(),
+            dev: m.dev(),
+            ino: m.ino(),
+        });
 
     // Cap how long any single read from the VM end can block. A wedged
     // supervisor otherwise pins the mutex forever and every subsequent
@@ -432,6 +503,8 @@ fn spawn_control_proxy(sock_path: String, host_end: std::os::unix::net::UnixStre
             false
         }
     }
+
+    fingerprint
 }
 
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
@@ -588,9 +661,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // is exactly the lifetime of the control channel.
     let console_output_path = args.console_output.clone();
     let mut guest_control_fd: Option<i32> = None;
+    let mut control_sock_fingerprint: Option<SocketFingerprint> = None;
     if let Some(sock_path) = args.control_sock.clone() {
         let (host_end, guest_fd) = setup_control_socketpair()?;
-        spawn_control_proxy(sock_path, host_end);
+        control_sock_fingerprint = spawn_control_proxy(sock_path, host_end);
         guest_control_fd = Some(guest_fd);
     }
 
@@ -604,10 +678,30 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         c
     });
 
-    if let Some(ref pid_path) = args.pid_file {
-        let path = pid_path.clone();
+    // Register VM-exit cleanup for pidfile and control socket
+    // independently — they're separate resources and may be enabled
+    // independently of each other (a future caller may want a control
+    // socket without a persistent pidfile, or vice versa). Coupling
+    // them inside `if let Some(pid_file)` would silently regress the
+    // socket-cleanup path for such callers.
+    //
+    // libkrun's Builder::on_exit replaces the previous hook, so we
+    // fold everything into a single closure that checks each resource
+    // independently.
+    let pid_path_for_exit = args.pid_file.clone();
+    let sock_fingerprint_for_exit = control_sock_fingerprint.clone();
+    if pid_path_for_exit.is_some() || sock_fingerprint_for_exit.is_some() {
         builder = builder.on_exit(move |exit_code| {
-            let _ = std::fs::remove_file(&path);
+            if let Some(ref p) = pid_path_for_exit {
+                let _ = std::fs::remove_file(p);
+            }
+            // Only unlink the control socket if it's still the one we
+            // bound — a fast `stop → start` can let a new VM rebind
+            // the same path before this hook fires. The fingerprint
+            // check makes stale unlinks a no-op.
+            if let Some(ref fp) = sock_fingerprint_for_exit {
+                fp.remove_if_unchanged();
+            }
             if exit_code != 0 {
                 eprintln!("  VM exited with code {}", exit_code);
             }

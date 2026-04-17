@@ -564,7 +564,8 @@ Replace Motia's dev command with a direct `bun` watcher. In your `config.yaml`, 
 workers:
   - name: iii-exec
     config:
-      command: bun run --watch src/main.ts
+      exec:
+        - bun run --watch src/main.ts
 ```
 
 Run the engine, and it will start your worker process with file watching built in.
@@ -620,7 +621,8 @@ Update your production config to run the bundled output:
 workers:
   - name: iii-exec
     config:
-      command: bun run --enable-source-maps dist/index-production.js
+      exec: 
+        - bun run --enable-source-maps dist/index-production.js
 ```
 
 ---

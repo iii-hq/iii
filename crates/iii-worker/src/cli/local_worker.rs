@@ -402,6 +402,25 @@ pub async fn handle_local_add(
     // 4. Resolve worker name
     let worker_name = resolve_worker_name(&project_path);
 
+    // Defense in depth: the manifest's `name:` field is attacker-
+    // reachable via a hand-edited or copy-pasted iii.worker.yaml, and
+    // it flows into filesystem operations below (delete_worker_artifacts
+    // does remove_dir_all on ~/.iii/workers/<name> and ~/.iii/managed/<name>).
+    // `Path::join` preserves `..` components, so a name like
+    // `../../../some_dir` produces a real traversal path. The primary
+    // validator at `append_worker_with_path` normally blocks such names
+    // from entering config.yaml, but re-validate here so a stale or
+    // malicious manifest can't slip past on the --force path.
+    if let Err(msg) = super::registry::validate_worker_name(&worker_name) {
+        eprintln!(
+            "{} Worker name from manifest is invalid: {}\n  \
+             Names must be single path segments with no `/`, `\\`, `..`, or shell metachars.",
+            "error:".red(),
+            msg
+        );
+        return 1;
+    }
+
     // 5. Check if already exists in config.yaml
     if super::config_file::worker_exists(&worker_name) {
         if !force {
@@ -565,6 +584,23 @@ pub async fn handle_local_add(
     0
 }
 
+/// Return `true` when `managed_dir` needs a rootfs clone before VM boot.
+///
+/// The predicate is `!managed_dir.join("bin").exists()` — every OCI base
+/// image we ship populates `/bin`, and none of the failure-mode artifacts
+/// (iii-init runtime mkdirs for /dev /proc /sys /etc /tmp /run, our own
+/// side-effect writes under /opt /workspace, stray vm.pid / watch.pid, a
+/// leftover `/rootfs` subdir from an older codepath) do. Plain
+/// `!managed_dir.exists()` is insufficient: a half-start that created
+/// runtime mountpoints then died would falsely register as "already
+/// prepared" and surface as a confusing `supervisor spawn_initial failed:
+/// No such file or directory` from iii-init once the VM tried to exec
+/// `/bin/sh`. Extracted as a named helper so the regression tests can
+/// exercise the exact predicate the start path uses.
+fn needs_rootfs_clone(managed_dir: &std::path::Path) -> bool {
+    !managed_dir.join("bin").exists()
+}
+
 /// Start a local-path worker VM.
 ///
 /// Re-copies project files, builds env, and runs via libkrun.
@@ -629,8 +665,41 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         }
     };
 
-    if !managed_dir.exists() {
+    // Detect "managed_dir exists but the rootfs was never cloned here"
+    // by probing for `/bin` — every OCI base image we ship has it, and
+    // neither iii-init's runtime mount dirs (/dev, /proc, /sys, /etc,
+    // /tmp, /run) nor our own side-effect writes (/opt, /workspace,
+    // vm.pid, watch.pid, /rootfs from an older codepath) populate it.
+    //
+    // Matches the `path.join("bin").exists()` idiom in
+    // `worker_manager/oci.rs::prepare_rootfs`. A plain `managed_dir.exists()`
+    // check is too weak: any prior half-start (VM booted, iii-init mkdir'd
+    // /dev/proc/sys, then died before finishing) leaves the dir present
+    // but FHS-less, so the next start would skip the clone and boot a VM
+    // with no `/bin/sh` — which surfaces as a confusing
+    // "supervisor spawn_initial failed: No such file or directory" from
+    // iii-init rather than a clear "rootfs never got populated" error.
+    //
+    // Self-heal: if the marker is missing but the dir exists, wipe it
+    // first so `cp -c -a SRC DEST` (rootfs::clone_rootfs) creates DEST
+    // fresh as a copy of SRC. Without the wipe, cp's "copy INTO existing
+    // dir" semantics would nest the rootfs at `managed_dir/python/`
+    // instead of at `managed_dir/`. Anything the user cares about under
+    // managed_dir is regenerated on boot (logs, vm.pid, dep caches come
+    // back after pip install / npm install).
+    if needs_rootfs_clone(&managed_dir) {
         eprintln!("  Preparing sandbox...");
+        if managed_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&managed_dir)
+        {
+            eprintln!(
+                "{} Failed to clear stale managed dir {}: {}",
+                "error:".red(),
+                managed_dir.display(),
+                e
+            );
+            return 1;
+        }
         let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
             Ok(p) => p,
             Err(e) => {
@@ -791,38 +860,12 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     exit_code
 }
 
-/// Write the sidecar PID to `pid_file` with symlink-replace defense.
-///
-/// On Unix, opens with `O_NOFOLLOW` + mode `0o600` so a local attacker
-/// with dir-traverse access can't pre-plant a symlink at `watch.pid`
-/// pointing at a sensitive file (e.g. `~/.ssh/authorized_keys`) and
-/// have our write clobber it. Matches the hardening already applied to
-/// the watcher log file immediately above.
-///
-/// On non-Unix, falls back to `std::fs::write`. Failures are logged and
-/// swallowed — a missing pidfile only degrades stop-path reaping, not
-/// correctness of a running watcher.
-fn write_pid_file(pid_file: &std::path::Path, pid: u32) {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).write(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(nix::libc::O_NOFOLLOW);
-        opts.mode(0o600);
-    }
-    match opts.open(pid_file) {
-        Ok(mut f) => {
-            use std::io::Write;
-            if let Err(e) = write!(f, "{}", pid) {
-                tracing::warn!(path = %pid_file.display(), error = %e, "failed to write pidfile");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(path = %pid_file.display(), error = %e, "failed to open pidfile");
-        }
-    }
-}
+// Sidecar pidfile writes delegate to super::pidfile::write_pid_file for
+// unified hardening across all managed-dir pidfiles. See that module
+// for rationale; in short, O_NOFOLLOW + 0o600 on Unix so a symlink
+// pre-planted at watch.pid can't redirect our write to a sensitive
+// target.
+use super::pidfile::write_pid_file;
 
 /// Spawn the hidden `__watch-source` sidecar process, detached, with
 /// its PID recorded so `kill_stale_worker` can reap it on stop.
@@ -1146,39 +1189,86 @@ resources:
         assert_eq!(memory, 4096);
     }
 
-    #[cfg(unix)]
+    // Symlink-defense + 0o600 mode tests moved to super::pidfile where
+    // the shared implementation lives.
+
+    /// Regression test for the "managed_dir exists but is missing /bin"
+    /// failure mode. A half-populated managed_dir — created by a prior
+    /// iii-init boot that mkdir'd /dev/proc/sys but died before the
+    /// rootfs was cloned, or by an older codepath that placed the
+    /// rootfs at `managed_dir/rootfs/` rather than at `managed_dir/` —
+    /// must be detected as "needs re-clone" by `needs_rootfs_clone`.
+    ///
+    /// The pre-fix guard (`!managed_dir.exists()`) skipped the clone
+    /// and let the VM boot against an FHS-less rootfs, surfacing as a
+    /// confusing `supervisor spawn_initial failed: No such file or
+    /// directory (os error 2)` from iii-init because `/bin/sh` didn't
+    /// exist. This test calls the extracted helper so a refactor that
+    /// weakens the predicate back to `!managed_dir.exists()` — or any
+    /// other too-permissive check — fails here.
     #[test]
-    fn write_pid_file_refuses_to_follow_symlink() {
-        // Attacker (or stale state) pre-plants watch.pid as a symlink
-        // pointing at a sensitive file. write_pid_file must fail open
-        // instead of clobbering the symlink target.
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("sensitive-target");
-        std::fs::write(&target, "DO-NOT-OVERWRITE").unwrap();
+    fn needs_rootfs_clone_true_for_half_populated_managed_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("todo-worker-python");
 
-        let pid_file = dir.path().join("watch.pid");
-        std::os::unix::fs::symlink(&target, &pid_file).unwrap();
+        // Simulate iii-init-style runtime dirs (created on prior boot)
+        // + a stale /rootfs subdir from an older codepath — the exact
+        // layout the user hit in the wild.
+        for d in [
+            "dev",
+            "proc",
+            "sys",
+            "etc",
+            "tmp",
+            "run",
+            "opt",
+            "workspace",
+            "rootfs/bin",
+            "rootfs/usr",
+        ] {
+            std::fs::create_dir_all(managed.join(d)).unwrap();
+        }
+        std::fs::write(managed.join("vm.pid"), "12345").unwrap();
+        std::fs::write(managed.join("watch.pid"), "12346").unwrap();
 
-        write_pid_file(&pid_file, 42);
-
-        // Target must be untouched.
-        let contents = std::fs::read_to_string(&target).unwrap();
-        assert_eq!(contents, "DO-NOT-OVERWRITE");
+        // Dir exists — the old too-weak guard would skip the clone.
+        assert!(managed.exists());
+        // But the helper must flag this as "rootfs never got populated
+        // here, must re-clone" — otherwise the VM boots against an
+        // FHS-less tree and iii-init dies trying to exec /bin/sh.
+        assert!(
+            needs_rootfs_clone(&managed),
+            "half-populated managed_dir must register as `needs clone`"
+        );
     }
 
-    #[cfg(unix)]
+    /// Complement: a fully-cloned managed_dir (with `/bin` present)
+    /// must be recognized as ready so we don't nuke a healthy sandbox
+    /// on every start and pay the re-clone cost. Exercises the helper
+    /// directly for the same reason as the sibling test above.
     #[test]
-    fn write_pid_file_creates_file_with_owner_only_mode() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("watch.pid");
+    fn needs_rootfs_clone_false_for_fully_cloned_managed_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("todo-worker-python");
+        std::fs::create_dir_all(managed.join("bin")).unwrap();
+        std::fs::create_dir_all(managed.join("usr")).unwrap();
+        assert!(
+            !needs_rootfs_clone(&managed),
+            "fully-cloned managed_dir must NOT trigger a re-clone"
+        );
+    }
 
-        write_pid_file(&pid_file, 1234);
-
-        let meta = std::fs::metadata(&pid_file).unwrap();
-        // Mask off file-type bits, keep permission bits only.
-        let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "pidfile must be 0o600, got {mode:o}");
-        assert_eq!(std::fs::read_to_string(&pid_file).unwrap(), "1234");
+    /// Absence case: `needs_rootfs_clone(nonexistent_path)` must be true.
+    /// Covers the first-start path where the parent `~/.iii/managed/`
+    /// exists but the per-worker subdir has never been created.
+    #[test]
+    fn needs_rootfs_clone_true_when_managed_dir_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = tmp.path().join("never-started");
+        assert!(!managed.exists());
+        assert!(
+            needs_rootfs_clone(&managed),
+            "absent managed_dir must register as `needs clone`"
+        );
     }
 }

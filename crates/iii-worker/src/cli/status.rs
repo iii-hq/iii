@@ -456,9 +456,11 @@ pub(crate) fn pid_file_candidates(
 pub(crate) fn read_pid(name: &str) -> Option<u32> {
     let home = dirs::home_dir()?.join(".iii");
     for path in pid_file_candidates(&home, name) {
-        if let Ok(s) = std::fs::read_to_string(&path)
-            && let Ok(pid) = s.trim().parse::<u32>()
-        {
+        // Route through the shared hardened reader so the status CLI
+        // can't be tricked by a symlink-planted pidfile into displaying
+        // or waiting on an attacker-chosen PID. See `pidfile` module
+        // docstring for the attacker model.
+        if let Some(pid) = super::pidfile::read_pid(&path) {
             return Some(pid);
         }
     }
@@ -1006,10 +1008,10 @@ mod tests {
     /// flushed an empty buffer, accidental negative numbers.
     #[test]
     fn read_pid_silently_skips_malformed_pidfiles() {
-        // Must serialize under PROBE_ENV_LOCK because HOME is process-global
+        // Must serialize under test_support::lock_home because HOME is process-global
         // and every probe test mutates it. Without the guard, parallel
         // probe_* tests win the race and read_pid sees the wrong HOME.
-        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = lock_home();
         let tmp = tempfile::tempdir().unwrap();
         let _env = ProbeEnvGuard::new(tmp.path());
 
@@ -1046,10 +1048,10 @@ mod tests {
     /// a missing socket → Phase::EngineDown, non-terminal).
     #[tokio::test(flavor = "multi_thread")]
     async fn watch_until_ready_honors_timeout() {
-        // Shares PROBE_ENV_LOCK with every other test that mutates
+        // Shares test_support::lock_home with every other test that mutates
         // HOME+CWD. Using a separate lock would let the tempdirs overlap
         // and corrupt each other's filesystem view.
-        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = lock_home();
         let tmp = tempfile::tempdir().unwrap();
         let _env = ProbeEnvGuard::new(tmp.path());
 
@@ -1091,10 +1093,15 @@ mod tests {
     // previously exercised only indirectly through integration paths.
     // ---------------------------------------------------------------------
 
-    /// Shared guard for tests that mutate HOME + CWD. HOME is process-global,
-    /// CWD is process-global, so any two tests that touch either must run
-    /// one at a time.
-    static PROBE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Shared guard for tests that mutate HOME + CWD. Delegates to
+    /// the crate-wide `test_support::lock_home` so tests across modules
+    /// (supervisor_ctl, etc.) that read HOME via `dirs::home_dir()`
+    /// don't race against HOME mutations here and pick up a tempdir
+    /// path that breaches SUN_LEN. Using the helper (rather than
+    /// open-coding `.lock().unwrap_or_else(…)` at each call site)
+    /// centralizes the poison-recovery contract in one place and keeps
+    /// the pattern discoverable for future tests.
+    use super::super::test_support::lock_home;
 
     struct ProbeEnvGuard {
         home: Option<std::ffi::OsString>,
@@ -1105,7 +1112,7 @@ mod tests {
         fn new(home: &std::path::Path) -> Self {
             let original_home = std::env::var_os("HOME");
             let original_cwd = std::env::current_dir().ok();
-            // SAFETY: test-only, serialized via PROBE_ENV_LOCK.
+            // SAFETY: test-only, serialized via test_support::lock_home.
             unsafe { std::env::set_var("HOME", home) };
             std::env::set_current_dir(home).unwrap();
             Self {
@@ -1120,7 +1127,7 @@ mod tests {
             if let Some(cwd) = &self.cwd {
                 let _ = std::env::set_current_dir(cwd);
             }
-            // SAFETY: test-only, serialized via PROBE_ENV_LOCK.
+            // SAFETY: test-only, serialized via test_support::lock_home.
             unsafe {
                 match &self.home {
                     Some(v) => std::env::set_var("HOME", v),
@@ -1132,7 +1139,7 @@ mod tests {
 
     #[test]
     fn probe_returns_not_in_config_when_worker_missing() {
-        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = lock_home();
         let tmp = tempfile::tempdir().unwrap();
         let _env = ProbeEnvGuard::new(tmp.path());
         // No config.yaml written — worker_exists returns false.
@@ -1153,7 +1160,7 @@ mod tests {
     /// in config_file.rs); the config.yaml entry alone is insufficient.
     #[test]
     fn probe_binary_worker_with_live_pidfile_is_ready() {
-        let _g = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = lock_home();
         let tmp = tempfile::tempdir().unwrap();
         let _env = ProbeEnvGuard::new(tmp.path());
 

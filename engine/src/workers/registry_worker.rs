@@ -52,18 +52,73 @@ fn pid_file_candidates(home: &std::path::Path, worker_name: &str) -> [PathBuf; 2
     ]
 }
 
+/// Hardened pidfile read. Mirrors `iii-worker::cli::pidfile::read_pid`;
+/// engine has no dep on iii-worker so the check is duplicated inline
+/// alongside `pid_file_candidates`.
+///
+/// Defends against a local-user pidfile planting attack: without
+/// O_NOFOLLOW + ownership check, an attacker with write access to
+/// `~/.iii/pids/` (or `~/.iii/managed/<name>/`) can symlink a worker's
+/// pidfile to any numeric-content file (e.g. `/proc/1/sched`, an
+/// attacker-owned file with "1\n"). The engine then reads a wrong PID
+/// and either (a) `kill(pid, 0)` succeeds against an unrelated live
+/// process, making `is_alive` return true forever so the real worker
+/// never gets restarted, or (b) in worst-case future uses, signals the
+/// wrong PID. Requiring euid-ownership rejects planted files.
+///
+/// Returns `None` on any failure — the caller (`is_alive`) treats
+/// unreadable pidfiles as "no live pidfile" and falls through to the
+/// grace window, which is the correct conservative behavior.
+#[cfg(unix)]
+fn read_pid_hardened(path: &std::path::Path) -> Option<u32> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let our_uid = unsafe { nix::libc::geteuid() };
+    if meta.uid() != our_uid {
+        return None;
+    }
+    let mut buf = [0u8; 32];
+    let n = file.read(&mut buf).ok()?;
+    let s = std::str::from_utf8(&buf[..n]).ok()?;
+    s.trim().parse::<u32>().ok()
+}
+
+#[cfg(not(unix))]
+fn read_pid_hardened(path: &std::path::Path) -> Option<u32> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
 /// Build the argv handed to `iii-worker start` when the engine auto-spawns a
 /// non-builtin worker. Kept pure so the CLI/engine IPC contract can be
 /// regression-tested without spawning a real process (see tests).
 ///
 /// Any drift here silently breaks the non-default `iii-worker-manager` port
 /// case — the exact bug this module exists to fix.
-fn spawn_args(worker_name: &str, port: u16) -> [String; 4] {
+fn spawn_args(worker_name: &str, port: u16) -> [String; 5] {
+    // `--no-wait` keeps the child process short-lived. Without it the default
+    // `wait=true` path pulls `wait_for_ready` → `watch_until_ready`, which
+    // eprintln's a 500ms status-panel redraw loop into the engine-redirected
+    // stderr.log. `iii worker logs -f` then tails that noise interleaved with
+    // the VM's actual console output. The engine already probes liveness via
+    // `is_alive`, so blocking the child on the panel loop is pure pollution.
     [
         "start".into(),
         worker_name.into(),
         "--port".into(),
         port.to_string(),
+        "--no-wait".into(),
     ]
 }
 
@@ -198,9 +253,10 @@ impl ExternalWorkerProcess {
         };
 
         for pidfile in pid_file_candidates(&home, &self.name) {
-            if let Ok(s) = std::fs::read_to_string(&pidfile)
-                && let Ok(pid) = s.trim().parse::<u32>()
-            {
+            // `read_pid_hardened` uses O_NOFOLLOW + euid-ownership check
+            // to reject attacker-planted symlinks or foreign-owned files;
+            // see its docstring for the attacker model.
+            if let Some(pid) = read_pid_hardened(&pidfile) {
                 #[cfg(unix)]
                 {
                     use nix::sys::signal::kill;
@@ -545,8 +601,21 @@ mod tests {
                 "start".to_string(),
                 "pdfkit".to_string(),
                 "--port".to_string(),
-                "49199".to_string()
+                "49199".to_string(),
+                "--no-wait".to_string(),
             ],
+        );
+    }
+
+    /// Regression lock: the engine auto-spawn MUST pass `--no-wait`.
+    /// Dropping it resurrects the status-panel redraw loop that poisons
+    /// `~/.iii/logs/<name>/stderr.log` (visible via `iii worker logs -f`).
+    #[test]
+    fn spawn_args_always_passes_no_wait() {
+        let args = spawn_args("anything", 1234);
+        assert!(
+            args.iter().any(|a| a == "--no-wait"),
+            "engine spawn must include --no-wait to avoid polluting stderr.log"
         );
     }
 
@@ -588,5 +657,35 @@ mod tests {
         let got = pid_file_candidates(home, "demo");
         assert_eq!(got[0], home.join("managed/demo/vm.pid"));
         assert_eq!(got[1], home.join("pids/demo.pid"));
+    }
+
+    /// Engine-side mirror of iii-worker's
+    /// `pidfile::tests::known_call_sites_route_through_module`. Pins the
+    /// three hardening invariants in `read_pid_hardened` so a future
+    /// refactor can't silently drop O_NOFOLLOW, the uid-ownership check,
+    /// or the regular-file check and regress the attacker model.
+    /// Engine has no dep on iii-worker, so the hardening is duplicated
+    /// inline above — this grep-style test is the only thing preventing
+    /// the duplicate from drifting out of sync with the canonical copy.
+    #[test]
+    #[cfg(unix)]
+    fn read_pid_hardened_retains_hardening_tokens() {
+        // `file!()` is relative to the crate root, so anchor via
+        // `CARGO_MANIFEST_DIR` for reliable lookup under any `cargo test`
+        // invocation (workspace-relative vs crate-relative cwd).
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("src/workers/registry_worker.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {:?} for self-grep: {}", path, e));
+        for token in ["O_NOFOLLOW", "meta.uid()", "file_type().is_file()"] {
+            assert!(
+                src.contains(token),
+                "read_pid_hardened must reference `{}` — dropping it regresses the pidfile \
+                 attacker model (see iii-worker::cli::pidfile docstring). If you genuinely \
+                 need to remove this check, reproduce the security rationale in the commit \
+                 message and update this test.",
+                token,
+            );
+        }
     }
 }
