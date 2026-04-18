@@ -221,12 +221,15 @@ fn mount_cgroup2() -> Result<(), InitError> {
     // Set memory limit from env var (passed by vm_boot.rs).
     if let Ok(mem_bytes) = std::env::var("III_WORKER_MEM_BYTES") {
         let _ = std::fs::write("/sys/fs/cgroup/worker/memory.max", &mem_bytes);
-        // If the host attached a swap disk, let this cgroup use swap
-        // up to the same byte budget as RAM. Without this, cgroup v2
-        // defaults `memory.swap.max` to 0 and the process OOM-kills
-        // at memory.max even when system swap is available.
+        // If the host attached a swap disk, let this cgroup consume
+        // all available swap — bounded by the swap device itself
+        // (currently 2 GiB, see `SWAP_IMAGE_BYTES` in the host
+        // libkrun.rs). cgroup v2 defaults `memory.swap.max` to 0,
+        // which prevents ANY swap usage and re-OOM-kills memory-
+        // hungry runtimes (bun) at memory.max even with a swap
+        // device attached. "max" means "as much as the system has."
         if std::env::var("III_SWAP_DEV").is_ok() {
-            let _ = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", &mem_bytes);
+            let _ = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", "max");
         }
     }
 
