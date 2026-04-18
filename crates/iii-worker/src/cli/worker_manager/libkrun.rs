@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::oci::{
     expected_oci_arch, pull_and_extract_rootfs, read_cached_rootfs_arch, read_oci_entrypoint,
@@ -21,10 +21,45 @@ use super::oci::{
 };
 use crate::cli::rootfs::clone_rootfs;
 
+/// Size of the per-worker swap image, in bytes. 2 GiB sparse — the
+/// host pays zero bytes until the guest kernel writes swap pages, then
+/// only for the pages actually written. Big enough to keep bun's
+/// allocator from re-OOMing at reasonable workloads; small enough that
+/// a worst-case full image on 16 workers stays under 32 GiB.
+const SWAP_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Check if libkrun runtime is available on this system.
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.
 pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
+}
+
+/// Create a sparse file of `size_bytes` at `path` if it doesn't
+/// already exist. Uses `File::set_len` which produces a sparse file on
+/// every filesystem we care about (APFS, ext4, xfs, btrfs). No-op if
+/// the file already exists at the right size — idempotent across
+/// restarts so the guest's written swap pages survive VM reboots.
+///
+/// Returns Err on creation failure; the caller treats that as
+/// "continue without swap" (warning, not fatal) — a non-bun worker
+/// never needs this file.
+fn ensure_swap_image(path: &Path, size_bytes: u64) -> std::io::Result<()> {
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.is_file()
+        && meta.len() == size_bytes
+    {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    f.set_len(size_bytes)?;
+    Ok(())
 }
 
 /// Build the VM boot env. Launcher wins: `III_ISOLATION=libkrun` is written
@@ -86,6 +121,24 @@ pub async fn run_dev(
     // proxy thread + socketpair; we just tell it where to put the unix
     // socket so the watcher (and stop handler) knows where to connect.
     cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
+
+    // Block-device-backed swap. Always attach for local-path workers —
+    // the backing file is sparse so the cost is zero bytes until the
+    // guest actually swaps pages out. Solves the bun-inside-microVM
+    // OOM (bun's allocator ignores cgroup v2 and fills physical RAM;
+    // with real disk swap the kernel can page cold bytes out instead
+    // of OOM-killing). Safe for non-bun workers — they just never use
+    // it. Errors here are non-fatal: a worker without swap runs the
+    // same way it did before this feature.
+    let swap_path = rootfs.join("swap.img");
+    if let Err(e) = ensure_swap_image(&swap_path, SWAP_IMAGE_BYTES) {
+        eprintln!(
+            "warning: could not create swap image at {}: {e}; continuing without swap",
+            swap_path.display()
+        );
+    } else {
+        cmd.arg("--swap-path").arg(&swap_path);
+    }
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -638,6 +691,62 @@ mod tests {
         caller.insert("III_ISOLATION".to_string(), "docker".to_string());
         let merged = build_vm_env(caller);
         assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
+    }
+
+    #[test]
+    fn ensure_swap_image_creates_sparse_file_at_requested_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("swap.img");
+        ensure_swap_image(&path, 4096).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), 4096);
+    }
+
+    #[test]
+    fn ensure_swap_image_is_idempotent_when_correct_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("swap.img");
+        ensure_swap_image(&path, 8192).unwrap();
+        // Write a marker byte in the middle so we can tell if the file
+        // gets clobbered on the second call.
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap();
+        f.seek(SeekFrom::Start(1000)).unwrap();
+        f.write_all(&[0x42]).unwrap();
+        drop(f);
+        // Second call with same size: must not truncate or overwrite.
+        ensure_swap_image(&path, 8192).unwrap();
+        let mut f = std::fs::File::open(&path).unwrap();
+        f.seek(SeekFrom::Start(1000)).unwrap();
+        let mut buf = [0u8; 1];
+        use std::io::Read;
+        f.read_exact(&mut buf).unwrap();
+        assert_eq!(buf[0], 0x42, "ensure_swap_image must preserve existing file contents");
+    }
+
+    #[test]
+    fn ensure_swap_image_creates_parent_dir_if_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("deeper/nested/swap.img");
+        ensure_swap_image(&path, 1024).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn ensure_swap_image_grows_file_when_size_mismatches() {
+        // If a previous run used a smaller size and we've since bumped
+        // SWAP_IMAGE_BYTES, grow to the new size. Does NOT shrink —
+        // set_len with the same-or-larger size is the only case the
+        // current impl targets; shrinking would drop written swap
+        // pages, and we don't expect to ever reduce the const.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("swap.img");
+        ensure_swap_image(&path, 4096).unwrap();
+        ensure_swap_image(&path, 8192).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 8192);
     }
 
     #[test]

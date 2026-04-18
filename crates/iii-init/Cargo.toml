@@ -23,3 +23,6 @@ thiserror = "2"
 iii-supervisor = { path = "../iii-supervisor" }
 # Needed for the blocking control loop inside supervisor mode.
 anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

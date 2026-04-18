@@ -25,7 +25,7 @@ integration-oci = []
 iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
 iii-supervisor = { path = "../iii-supervisor" }
-msb_krun = { version = "0.1.9", features = ["net"] }
+msb_krun = { version = "0.1.9", features = ["net", "blk"] }
 oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }

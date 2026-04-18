@@ -190,6 +190,11 @@ pub fn mount_virtiofs_shares() {
 /// Mount cgroup2 and create a memory-limited worker cgroup.
 ///
 /// Reads `III_WORKER_MEM_BYTES` to set `memory.max` on the worker cgroup.
+/// When swap is attached (`III_SWAP_DEV` set), also sets
+/// `memory.swap.max = memory.max` so memory-hungry workers (bun,
+/// large JVMs) can page to real disk-backed swap instead of hitting
+/// the cgroup's hard OOM-kill limit.
+///
 /// The supervisor moves the worker process into this cgroup after spawn.
 /// Fails gracefully if the kernel lacks cgroup v2 or memory controller support.
 fn mount_cgroup2() -> Result<(), InitError> {
@@ -216,9 +221,84 @@ fn mount_cgroup2() -> Result<(), InitError> {
     // Set memory limit from env var (passed by vm_boot.rs).
     if let Ok(mem_bytes) = std::env::var("III_WORKER_MEM_BYTES") {
         let _ = std::fs::write("/sys/fs/cgroup/worker/memory.max", &mem_bytes);
+        // If the host attached a swap disk, let this cgroup use swap
+        // up to the same byte budget as RAM. Without this, cgroup v2
+        // defaults `memory.swap.max` to 0 and the process OOM-kills
+        // at memory.max even when system swap is available.
+        if std::env::var("III_SWAP_DEV").is_ok() {
+            let _ = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", &mem_bytes);
+        }
     }
 
     Ok(())
+}
+
+/// Format and enable a block-device-backed swap partition, if the host
+/// attached one. Keyed off `III_SWAP_DEV` (e.g. `/dev/vda`) set by
+/// `vm_boot.rs` when `--swap-path` was provided.
+///
+/// Idempotent: if the device already has a swap signature (previous
+/// boot), skip `mkswap` and go straight to `swapon`. This avoids
+/// wiping the signature on every restart, which matters because the
+/// host's sparse swap file accumulates written pages across boots and
+/// re-formatting would drop them (and make them no longer sparse — the
+/// file stays the size it grew to).
+///
+/// Errors are warnings, not fatal: a bun worker with a broken swap
+/// path still runs (it just OOM-kills later at the cgroup limit like
+/// before). Node/Python workers don't need swap at all.
+pub fn setup_swap() {
+    let dev = match std::env::var("III_SWAP_DEV") {
+        Ok(d) if !d.is_empty() => d,
+        _ => return,
+    };
+    // Check for existing swap signature. `blkid` would be cleaner but
+    // isn't in the minimal rootfs; a magic-byte probe at offset 0xff6
+    // is what mkswap writes and what the kernel checks.
+    let has_swap_sig = read_swap_signature(&dev);
+    if !has_swap_sig {
+        // `mkswap` is provided by util-linux, available in every OCI
+        // base image we ship (node, python, rust, bun).
+        let status = std::process::Command::new("mkswap")
+            .arg(&dev)
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                eprintln!("iii-init: warning: mkswap {dev} exit {s}; skipping swapon");
+                return;
+            }
+            Err(e) => {
+                eprintln!("iii-init: warning: mkswap {dev} failed: {e}; skipping swapon");
+                return;
+            }
+        }
+    }
+    let status = std::process::Command::new("swapon").arg(&dev).status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("iii-init: warning: swapon {dev} exit {s}"),
+        Err(e) => eprintln!("iii-init: warning: swapon {dev} failed: {e}"),
+    }
+}
+
+/// Read the 10-byte swap signature at offset 0xff6 to tell whether
+/// `mkswap` has already been run on this device. The signature is
+/// "SWAPSPACE2" for mkswap v2 (every currently-in-use format).
+fn read_swap_signature(dev: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = match std::fs::File::open(dev) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    if f.seek(SeekFrom::Start(0xff6)).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 10];
+    if f.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    &buf == b"SWAPSPACE2"
 }
 
 #[cfg(test)]
@@ -280,6 +360,46 @@ mod tests {
             "/dev/fd symlink must precede /tmp mount"
         );
         assert!(tmp_pos < run_pos, "/tmp must be mounted before /run");
+    }
+
+    #[test]
+    fn read_swap_signature_returns_false_for_missing_path() {
+        assert!(!read_swap_signature("/nonexistent/path/does/not/exist"));
+    }
+
+    #[test]
+    fn read_swap_signature_returns_false_for_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        assert!(!read_swap_signature(tmp.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn read_swap_signature_detects_mkswap_magic_at_offset() {
+        // Reproduce the exact byte layout mkswap v2 writes: zeros,
+        // then "SWAPSPACE2" at offset 0xff6. Any other byte pattern
+        // at that offset must read as "not formatted."
+        use std::io::{Seek, SeekFrom, Write};
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.as_file_mut().set_len(0x1000).unwrap();
+        tmp.as_file_mut().seek(SeekFrom::Start(0xff6)).unwrap();
+        tmp.as_file_mut().write_all(b"SWAPSPACE2").unwrap();
+        tmp.as_file_mut().sync_all().unwrap();
+        assert!(read_swap_signature(tmp.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn read_swap_signature_rejects_wrong_magic() {
+        // A sparse file with zeros at the signature offset is a fresh
+        // swap.img the host just created — must NOT claim it's
+        // already formatted, or setup_swap would skip mkswap and
+        // swapon would fail on raw zeros.
+        use std::io::{Seek, SeekFrom, Write};
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.as_file_mut().set_len(0x1000).unwrap();
+        tmp.as_file_mut().seek(SeekFrom::Start(0xff6)).unwrap();
+        tmp.as_file_mut().write_all(b"GARBAGE\0\0\0").unwrap();
+        tmp.as_file_mut().sync_all().unwrap();
+        assert!(!read_swap_signature(tmp.path().to_str().unwrap()));
     }
 
     #[test]
