@@ -175,6 +175,10 @@ pub async fn run_dev(
     // proxy thread + socketpair; we just tell it where to put the unix
     // socket so the watcher (and stop handler) knows where to connect.
     cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
+    // Shell-exec channel for `iii worker exec`. Colocated with the
+    // control socket so a single managed dir holds every endpoint for
+    // this VM. __vm-boot spawns the async relay if the path is given.
+    cmd.arg("--shell-sock").arg(rootfs.join("shell.sock"));
 
     // Block-device-backed swap. Always attach for local-path workers —
     // the backing file is sparse so the cost is zero bytes until the
@@ -568,6 +572,11 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // to a full VM restart.
         cmd.arg("--control-sock")
             .arg(worker_dir.join("control.sock"));
+        // Shell-exec channel alongside the control channel. `iii worker
+        // exec` connects to shell.sock; the in-VM dispatcher thread
+        // handles requests. Absent => exec refuses with a clear error.
+        cmd.arg("--shell-sock")
+            .arg(worker_dir.join("shell.sock"));
 
         let image_env = read_oci_env(&worker_rootfs);
         let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();

@@ -16,6 +16,13 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn run() -> Result<(), iii_init::InitError> {
+    // Pivot `/` off the libkrun virtiofs share onto a tmpfs before
+    // any other mount work. The virtiofs root directory has a
+    // readdir bug that OOM-kills `ls /` and similar listings; the
+    // pivot replaces `/` with a well-behaved tmpfs and re-exposes
+    // rootfs content via per-directory bind mounts. See root_pivot
+    // module for the full rationale.
+    iii_init::root_pivot::pivot_to_tmpfs_root()?;
     iii_init::mount::mount_filesystems()?;
     iii_init::mount::mount_virtiofs_shares();
     // Must run AFTER mount_filesystems (needs /sys/fs/cgroup for the

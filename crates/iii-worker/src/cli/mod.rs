@@ -16,6 +16,8 @@ pub mod pidfile;
 pub mod project;
 pub mod registry;
 pub mod rootfs;
+pub mod shell_client;
+pub mod shell_relay;
 pub mod source_watcher;
 pub mod status;
 pub mod supervisor_ctl;

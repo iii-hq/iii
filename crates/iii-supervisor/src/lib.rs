@@ -14,3 +14,4 @@
 pub mod child;
 pub mod control;
 pub mod protocol;
+pub mod shell_protocol;

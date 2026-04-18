@@ -118,6 +118,25 @@ pub struct VmBootArgs {
     /// limit. 0 means "don't set" (fall back to iii-init's raise).
     #[arg(long, default_value = "65536")]
     pub nofile_limit: u64,
+
+    /// Unix socket path where this `__vm-boot` process will listen for
+    /// `iii worker exec` clients. Separate from `--control-sock`
+    /// because exec-style sessions are multiplexed (many concurrent
+    /// requests on one virtio-console port), which the single-request
+    /// control proxy doesn't support.
+    ///
+    /// When set, `__vm-boot` creates a second `socketpair(AF_UNIX)`,
+    /// wires one end into the VM as a named virtio-console port
+    /// (`iii.exec`), and spawns the async [`crate::cli::shell_relay`]
+    /// task on the existing tokio runtime to route frames between
+    /// connecting clients and the VM. The in-VM `iii-init` shell
+    /// dispatcher reads/writes the other end.
+    ///
+    /// When absent, the VM boots without an exec port and
+    /// `iii worker exec <name>` refuses with a clear "unavailable"
+    /// error rather than silently hanging on a missing socket.
+    #[arg(long)]
+    pub shell_sock: Option<String>,
 }
 
 /// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
@@ -693,6 +712,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // Restart/Shutdown/Ping/Status RPCs over that port. Without the env
     // var, iii-init falls back to its legacy single-spawn waitpid path.
     let control_port_env = args.control_sock.is_some();
+    // Analogous to III_CONTROL_PORT: flips iii-init into spawning its
+    // shell dispatcher thread on the named virtio-console port.
+    // Independent of control_port_env — the two channels live on
+    // separate ports and are enabled independently.
+    let shell_port_env = args.shell_sock.is_some();
     let control_workdir = args.workdir.clone();
     let nofile_limit = args.nofile_limit;
 
@@ -723,6 +747,12 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
                 iii_supervisor::protocol::CONTROL_PORT_NAME,
             );
             e = e.env("III_WORKER_WORKDIR", &control_workdir);
+        }
+        if shell_port_env {
+            e = e.env(
+                "III_SHELL_PORT",
+                iii_supervisor::shell_protocol::SHELL_PORT_NAME,
+            );
         }
         if !virtiofs_mount_env.is_empty() {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
@@ -762,12 +792,45 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         guest_control_fd = Some(guest_fd);
     }
 
+    // Second virtio-console port for the shell-exec channel. Same
+    // socketpair mechanism as the control port above — libkrun owns
+    // the guest fd for the VM's lifetime, and the host end is held
+    // by the async relay that fans it out to connecting clients.
+    //
+    // The relay runs on `tokio_rt` (the same runtime the smoltcp
+    // network is using). It outlives `boot_vm` because tokio keeps
+    // its tasks alive as long as the runtime handle is reachable,
+    // and the runtime is dropped only when __vm-boot exits.
+    let mut guest_shell_fd: Option<i32> = None;
+    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> =
+        None;
+    if let Some(sock_path) = args.shell_sock.clone() {
+        let (host_end, guest_fd) = setup_control_socketpair()?;
+        match crate::cli::shell_relay::spawn(
+            tokio_rt.handle(),
+            std::path::PathBuf::from(sock_path),
+            host_end,
+        ) {
+            Ok(fp) => shell_sock_fingerprint = Some(fp),
+            Err(e) => {
+                eprintln!(
+                    "warning: shell relay failed to start ({e}). \
+                     `iii worker exec` disabled; VM boots normally."
+                );
+            }
+        }
+        guest_shell_fd = Some(guest_fd);
+    }
+
     builder = builder.console(move |mut c| {
         if let Some(path) = console_output_path {
             c = c.output(path);
         }
         if let Some(fd) = guest_control_fd {
             c = c.port(iii_supervisor::protocol::CONTROL_PORT_NAME, fd, fd);
+        }
+        if let Some(fd) = guest_shell_fd {
+            c = c.port(iii_supervisor::shell_protocol::SHELL_PORT_NAME, fd, fd);
         }
         c
     });
@@ -784,7 +847,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // independently.
     let pid_path_for_exit = args.pid_file.clone();
     let sock_fingerprint_for_exit = control_sock_fingerprint.clone();
-    if pid_path_for_exit.is_some() || sock_fingerprint_for_exit.is_some() {
+    let shell_fingerprint_for_exit = shell_sock_fingerprint.clone();
+    if pid_path_for_exit.is_some()
+        || sock_fingerprint_for_exit.is_some()
+        || shell_fingerprint_for_exit.is_some()
+    {
         builder = builder.on_exit(move |exit_code| {
             if let Some(ref p) = pid_path_for_exit {
                 let _ = std::fs::remove_file(p);
@@ -794,6 +861,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             // the same path before this hook fires. The fingerprint
             // check makes stale unlinks a no-op.
             if let Some(ref fp) = sock_fingerprint_for_exit {
+                fp.remove_if_unchanged();
+            }
+            // Same fingerprint-guarded cleanup for the shell socket.
+            if let Some(ref fp) = shell_fingerprint_for_exit {
                 fp.remove_if_unchanged();
             }
             if exit_code != 0 {
