@@ -112,6 +112,12 @@ async fn main() -> anyhow::Result<()> {
             // `std::process::exit`. If we ever see the join below
             // return cleanly, something has returned from `run` that
             // was supposed to diverge — treat it as a bug, exit 1.
+            //
+            // TODO(msb_krun upstream): remove this std::thread dispatch
+            // once virtio-blk Drop uses `Handle::try_current()` instead
+            // of unconditional `block_on`. Draft issue at
+            // ~/.claude/plans/msb_krun-upstream-issue-draft.md — file via
+            // `gh issue create` against microsandbox/microsandbox.
             let handle = std::thread::Builder::new()
                 .name("iii-worker-vm-boot".to_string())
                 .spawn(move || iii_worker::cli::vm_boot::run(&args))

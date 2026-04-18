@@ -28,6 +28,57 @@ use crate::cli::rootfs::clone_rootfs;
 /// a worst-case full image on 16 workers stays under 32 GiB.
 const SWAP_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Forward optional VM-boot tuning flags to the `__vm-boot` child
+/// based on opt-in environment variables. Keeps the public API of
+/// `run_dev` / `LibkrunAdapter::start` unchanged while giving
+/// operators a single place to enable hyperthreading, nested
+/// virtualization, virtiofs DAX window tuning, and the worker-side
+/// NOFILE rlimit for perf experiments.
+///
+/// Variables read (all optional; omit to take each CLI default):
+///   - `III_VM_HYPERTHREADING=1|true|on|yes` → `--hyperthreading`
+///   - `III_VM_NESTED_VIRT=1|true|on|yes`   → `--nested-virt`
+///   - `III_VM_VIRTIOFS_SHM_SIZE_MIB=<int>` → `--virtiofs-shm-size-mib <n>` (0 = skip)
+///   - `III_VM_NOFILE_LIMIT=<int>`     → `--nofile-limit <n>` (0 = let iii-init own it)
+///
+/// Bad values are ignored silently (a typo in an opt-in perf flag
+/// should never fail a worker boot). Appending args to both
+/// `std::process::Command` and `tokio::process::Command` needs the
+/// same logic, so we take `&mut CommandArgsExt` via the closure
+/// rather than committing to either concrete type.
+fn apply_vm_tuning_env(mut push: impl FnMut(&str, Option<&str>)) {
+    let parse_bool = |v: &str| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
+
+    if std::env::var("III_VM_HYPERTHREADING")
+        .ok()
+        .filter(|v| parse_bool(v))
+        .is_some()
+    {
+        push("--hyperthreading", None);
+    }
+    if std::env::var("III_VM_NESTED_VIRT")
+        .ok()
+        .filter(|v| parse_bool(v))
+        .is_some()
+    {
+        push("--nested-virt", None);
+    }
+    if let Some(n) = std::env::var("III_VM_VIRTIOFS_SHM_SIZE_MIB")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        let owned = n.to_string();
+        push("--virtiofs-shm-size-mib", Some(&owned));
+    }
+    if let Some(n) = std::env::var("III_VM_NOFILE_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        let owned = n.to_string();
+        push("--nofile-limit", Some(&owned));
+    }
+}
+
 /// Check if libkrun runtime is available on this system.
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.
 pub fn libkrun_available() -> bool {
@@ -151,6 +202,14 @@ pub async fn run_dev(
     for arg in args {
         cmd.arg("--arg").arg(arg);
     }
+
+    // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
+    apply_vm_tuning_env(|flag, val| {
+        cmd.arg(flag);
+        if let Some(v) = val {
+            cmd.arg(v);
+        }
+    });
 
     if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
         cmd.env(
@@ -520,6 +579,16 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         for arg in &exec_args {
             cmd.arg("--arg").arg(arg);
         }
+
+        // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
+        // Same opt-in model as `run_dev` — unset vars keep defaults
+        // so this is strictly additive.
+        apply_vm_tuning_env(|flag, val| {
+            cmd.arg(flag);
+            if let Some(v) = val {
+                cmd.arg(v);
+            }
+        });
 
         if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
             cmd.env(

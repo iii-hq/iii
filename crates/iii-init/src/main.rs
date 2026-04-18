@@ -24,6 +24,12 @@ fn run() -> Result<(), iii_init::InitError> {
     // the cgroup has swap headroom before the worker child gets moved
     // into it.
     iii_init::mount::setup_swap();
+    // Fakes `/proc/meminfo::MemTotal` to the per-worker cap so Bun's
+    // Zig allocator — which reads MemTotal directly and ignores
+    // cgroup v2 `memory.max` — sees the right budget. Must run AFTER
+    // mount_filesystems (needs /run tmpfs for the faux file) and
+    // BEFORE exec_worker (so the child reads the bind-mounted view).
+    iii_init::mount::override_proc_meminfo();
     iii_init::rlimit::raise_nofile()?;
     iii_init::network::configure_network()?;
     if let Err(e) = iii_init::network::write_resolv_conf() {

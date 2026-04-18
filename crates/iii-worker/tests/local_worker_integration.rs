@@ -139,6 +139,7 @@ fn build_libkrun_local_script_not_prepared() {
         install_cmd: "npm install".to_string(),
         run_cmd: "npm start".to_string(),
         env: HashMap::new(),
+        base_image: None,
     };
     let script = build_libkrun_local_script(&project, false);
     assert!(
@@ -163,6 +164,7 @@ fn build_libkrun_local_script_prepared() {
         install_cmd: "npm install".to_string(),
         run_cmd: "npm start".to_string(),
         env: HashMap::new(),
+        base_image: None,
     };
     let script = build_libkrun_local_script(&project, true);
     assert!(

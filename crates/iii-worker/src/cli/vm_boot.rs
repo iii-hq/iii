@@ -86,6 +86,38 @@ pub struct VmBootArgs {
     /// happens alongside the managed dir in `iii worker clear`.
     #[arg(long)]
     pub swap_path: Option<String>,
+
+    /// Enable SMT / hyperthreading in the guest. Default off — matches
+    /// Firecracker's conservative default and avoids noisy-neighbour
+    /// effects between co-tenant workers. Flip on to squeeze more
+    /// throughput on Intel hosts where the perf delta is measurable.
+    #[arg(long, default_value = "false")]
+    pub hyperthreading: bool,
+
+    /// Enable nested virtualization. Default off — a microworker VM has
+    /// no need to run its own hypervisor, and enabling nested-KVM is a
+    /// measurable perf hit. Flip on only for CI/test scenarios that
+    /// explicitly boot a VM inside the worker.
+    #[arg(long, default_value = "false")]
+    pub nested_virt: bool,
+
+    /// DAX window size (MiB) for every virtiofs mount. 0 means
+    /// "take the msb_krun default". Larger windows cut syscall
+    /// roundtrips on read-heavy mounts (node_modules, .venv,
+    /// site-packages); cost is guest virtual address space and a
+    /// small amount of host RAM per mount. Safe starting point:
+    /// 256 for dev workflows with large dep trees.
+    #[arg(long, default_value = "0")]
+    pub virtiofs_shm_size_mib: u32,
+
+    /// Soft / hard limit for `RLIMIT_NOFILE` applied to the guest
+    /// worker process via libkrun's `KRUN_RLIMITS`. Complements the
+    /// guest-side raise in `iii-init::rlimit::raise_nofile` — setting
+    /// it here means every fd opened by `init.krun` BEFORE iii-init
+    /// runs (dynamic loader, early allocations) also sees the raised
+    /// limit. 0 means "don't set" (fall back to iii-init's raise).
+    #[arg(long, default_value = "65536")]
+    pub nofile_limit: u64,
 }
 
 /// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
@@ -580,8 +612,15 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
 
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
 
+    let hyperthreading = args.hyperthreading;
+    let nested_virt = args.nested_virt;
     let mut builder = VmBuilder::new()
-        .machine(|m| m.vcpus(args.vcpus as u8).memory_mib(args.ram as usize))
+        .machine(|m| {
+            m.vcpus(args.vcpus as u8)
+                .memory_mib(args.ram as usize)
+                .hyperthreading(hyperthreading)
+                .nested_virt(nested_virt)
+        })
         .kernel(|k| {
             let k = match resolve_krunfw_file_path() {
                 Some(path) => k.krunfw_path(&path),
@@ -593,10 +632,21 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
 
     let mount_plan = build_virtiofs_mount_plan(&args.mount)?;
     let virtiofs_mount_env = mount_plan.env_var.clone();
+    // Per-mount DAX window. 0 (the CLI default) skips the call so
+    // msb_krun's built-in default applies; any positive value is
+    // converted to bytes and set on every virtiofs attach.
+    let shm_bytes_per_mount: usize = (args.virtiofs_shm_size_mib as usize)
+        .saturating_mul(1024 * 1024);
     for entry in mount_plan.entries {
         let tag = entry.tag.clone();
         let host_path = entry.host_path.clone();
-        builder = builder.fs(move |fs| fs.tag(&tag).path(&host_path));
+        builder = builder.fs(move |fs| {
+            let mut fs = fs.tag(&tag);
+            if shm_bytes_per_mount > 0 {
+                fs = fs.shm_size(shm_bytes_per_mount);
+            }
+            fs.path(&host_path)
+        });
     }
 
     // Attach the swap disk (if configured) BEFORE the network so it
@@ -644,9 +694,20 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // var, iii-init falls back to its legacy single-spawn waitpid path.
     let control_port_env = args.control_sock.is_some();
     let control_workdir = args.workdir.clone();
+    let nofile_limit = args.nofile_limit;
 
     builder = builder.exec(|mut e| {
         e = e.path("/init.krun").workdir(&args.workdir);
+        // Bound the open-file table for the guest worker from the host
+        // builder. iii-init also calls setrlimit(RLIMIT_NOFILE) as its
+        // first act, but KRUN_RLIMITS is applied by init.krun before
+        // iii-init's Rust code runs — belt-and-suspenders for fds opened
+        // during dynamic loader setup and early allocator state.
+        // nofile_limit=0 means "let the guest rlimit::raise_nofile path
+        // own it" and skips the call.
+        if nofile_limit > 0 {
+            e = e.rlimit("RLIMIT_NOFILE", nofile_limit, nofile_limit);
+        }
         e = e.env("III_WORKER_CMD", &worker_cmd);
         e = e.env("III_INIT_DNS", &dns_nameserver);
         e = e.env("III_INIT_IP", &guest_ip);
@@ -744,6 +805,53 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     let vm = builder
         .build()
         .map_err(|e| format!("VM build failed: {}", e))?;
+
+    // Capture an exit handle BEFORE `enter()` moves `vm`. SIGTERM or
+    // SIGINT delivered to this __vm-boot process now triggers the
+    // VMM's clean shutdown path (event-loop reads the exit eventfd,
+    // notifies on_exit observers, `_exit`s with the current exit
+    // code) instead of the process being killed mid-guest-write.
+    // Without this, `stop → SIGTERM` from the host leaves the guest
+    // no chance to fsync, flush stdout logs, or drop pidfiles; the
+    // on_exit closure installed above is what does that cleanup.
+    //
+    // Register the two signal streams SYNCHRONOUSLY before spawning
+    // the awaiter task. Doing registration inside the spawned task
+    // leaves a race window: SIGTERM arriving between `spawn` and the
+    // task's first poll hits the default action (process kill).
+    // Registering via `block_on` here closes that window — once the
+    // block_on returns, the runtime's signal driver is already
+    // listening; the spawned task just awaits the notification.
+    let exit_handle_for_signals = vm.exit_handle();
+    let signals_registered: Result<
+        (
+            tokio::signal::unix::Signal,
+            tokio::signal::unix::Signal,
+        ),
+        std::io::Error,
+    > = tokio_rt.block_on(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let sigterm = signal(SignalKind::terminate())?;
+        let sigint = signal(SignalKind::interrupt())?;
+        Ok((sigterm, sigint))
+    });
+    if let Ok((mut sigterm, mut sigint)) = signals_registered {
+        tokio_rt.spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => {}
+                _ = sigint.recv() => {}
+            }
+            // `trigger` is async-signal-safe and idempotent per
+            // msb_krun's ExitHandle docs — repeat fires after shutdown
+            // has already begun are no-ops.
+            exit_handle_for_signals.trigger();
+        });
+    } else {
+        eprintln!(
+            "  warning: failed to register SIGTERM/SIGINT handlers; \
+             `stop` will fall back to abrupt SIGTERM kills."
+        );
+    }
 
     let vcpu_label = if args.vcpus == 1 { "vCPU" } else { "vCPUs" };
     eprintln!(
