@@ -221,6 +221,24 @@ fn mount_cgroup2() -> Result<(), InitError> {
     // Set memory limit from env var (passed by vm_boot.rs).
     if let Ok(mem_bytes) = std::env::var("III_WORKER_MEM_BYTES") {
         let _ = std::fs::write("/sys/fs/cgroup/worker/memory.max", &mem_bytes);
+        // Soft throttle at 80% of memory.max. Without memory.high, the
+        // cgroup goes from "fine" to SIGKILL with no ramp — the kernel
+        // only swaps out pages under reclaim pressure, and memory.max
+        // alone provides zero early warning. memory.high triggers
+        // reclaim + swap-out at 80%, giving bun's allocator a soft
+        // landing instead of an OOM-kill. This is the piece that makes
+        // the attached swap disk actually useful for memory-hungry
+        // runtimes.
+        if let Ok(b) = mem_bytes.trim().parse::<u64>() {
+            let high = (b * 4 / 5).to_string();
+            if let Err(e) =
+                std::fs::write("/sys/fs/cgroup/worker/memory.high", &high)
+            {
+                eprintln!(
+                    "iii-init: warning: failed to set memory.high: {e}"
+                );
+            }
+        }
         // If the host attached a swap disk, let this cgroup consume
         // all available swap — bounded by whatever size the host
         // provisioned for the swap device. cgroup v2 defaults

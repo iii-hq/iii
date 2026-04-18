@@ -21,12 +21,15 @@ use super::oci::{
 };
 use crate::cli::rootfs::clone_rootfs;
 
-/// Size of the per-worker swap image, in bytes. 2 GiB sparse — the
+/// Size of the per-worker swap image, in bytes. 4 GiB sparse — the
 /// host pays zero bytes until the guest kernel writes swap pages, then
-/// only for the pages actually written. Big enough to keep bun's
-/// allocator from re-OOMing at reasonable workloads; small enough that
-/// a worst-case full image on 16 workers stays under 32 GiB.
-const SWAP_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// only for the pages actually written. Sized for bun's JIT-arena
+/// working set on arm64 (1.5–3 GiB RSS during worker startup isn't
+/// unusual); 2 GiB was too tight and re-OOMed memory-hungry runtimes
+/// once memory.high pushed pages to swap faster than 2 GiB could hold.
+/// A worst-case full image on 16 workers is 64 GiB of host disk, still
+/// zero-cost until actually written.
+const SWAP_IMAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Forward optional VM-boot tuning flags to the `__vm-boot` child
 /// based on opt-in environment variables. Keeps the public API of
