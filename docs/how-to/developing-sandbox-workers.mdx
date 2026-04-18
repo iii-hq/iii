@@ -104,12 +104,31 @@ env:
 | `runtime.language` | No | `typescript` | `typescript`, `javascript`, `python`, or `rust` |
 | `runtime.package_manager` | No | — | `npm`, `yarn`, `pnpm`, or `bun` (Node.js only) |
 | `runtime.entry` | No | — | Entrypoint file |
+| `runtime.base_image` | No | language default | OCI image used as the sandbox rootfs. Overrides the per-language default (e.g. `oven/bun:1` to run TypeScript on bun). See [Custom base images](#custom-base-images) below. |
 | `resources.memory` | No | `2048` | Memory in MiB allocated to the sandbox VM |
 | `resources.cpus` | No | `2` | Number of vCPUs allocated to the sandbox VM |
 | `scripts.setup` | No | inferred | One-time system setup (runs only on first start) |
 | `scripts.install` | No | inferred | Dependency installation command |
 | `scripts.start` | No | inferred | Worker start command |
 | `env.*` | No | — | Custom environment variables injected into the sandbox |
+
+#### Custom base images
+
+By default iii picks a rootfs image per language: `iiidev/node:latest` for TypeScript/JavaScript, `iiidev/python:latest` for Python, `library/rust:slim-bookworm` for Rust. Override with `runtime.base_image` when you need a different runtime — a common case is running TypeScript on bun instead of node:
+
+```yaml title="iii.worker.yaml"
+name: my-worker
+runtime:
+  language: typescript
+  package_manager: bun
+  base_image: oven/bun:1
+  entry: src/index.ts
+scripts:
+  install: "bun install"
+  start: "bun run src/index.ts"
+```
+
+Each distinct `base_image` gets its own cache directory under `~/.iii/rootfs/<slug>/`, so adding a bun-based worker won't clobber the shared node rootfs used by other TypeScript workers. The image is pulled on first start and reused for every subsequent start that names the same image.
 
 <Info title="Reserved environment variables">
   `III_URL` and `III_ENGINE_URL` are set automatically and cannot be overridden through the manifest.

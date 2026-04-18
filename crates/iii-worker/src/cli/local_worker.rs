@@ -700,7 +700,12 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
             );
             return 1;
         }
-        let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
+        let base_rootfs = match super::worker_manager::oci::prepare_rootfs(
+            language,
+            project.base_image.as_deref(),
+        )
+        .await
+        {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("{} {}", "error:".red(), e);
@@ -751,7 +756,12 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     let mut env = build_local_env(&engine_url, &combined_project_env);
 
-    let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
+    let base_rootfs = match super::worker_manager::oci::prepare_rootfs(
+        language,
+        project.base_image.as_deref(),
+    )
+    .await
+    {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -1021,6 +1031,7 @@ mod tests {
             install_cmd: "npm install".to_string(),
             run_cmd: "node server.js".to_string(),
             env: HashMap::new(),
+            base_image: None,
         };
         let script = build_libkrun_local_script(&project, false);
         assert!(script.contains("apt-get install nodejs"));
@@ -1046,6 +1057,7 @@ mod tests {
             install_cmd: "npm install".to_string(),
             run_cmd: "node server.js".to_string(),
             env: HashMap::new(),
+            base_image: None,
         };
         let script = build_libkrun_local_script(&project, true);
         assert!(!script.contains("apt-get install nodejs"));

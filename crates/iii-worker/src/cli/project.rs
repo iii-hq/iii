@@ -21,6 +21,12 @@ pub struct ProjectInfo {
     pub install_cmd: String,
     pub run_cmd: String,
     pub env: HashMap<String, String>,
+    /// Optional override for the base OCI image used as rootfs. When
+    /// `None`, the language default from `oci::oci_image_for_language`
+    /// is used. Set via `runtime.base_image` in `iii.worker.yaml` — e.g.
+    /// `base_image: oven/bun:1` to run a TypeScript worker on bun
+    /// instead of the default node image.
+    pub base_image: Option<String>,
 }
 
 impl ProjectInfo {
@@ -121,6 +127,11 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         .and_then(|r| r.get("entry"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    let base_image = runtime
+        .and_then(|r| r.get("base_image"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string());
 
     let scripts = doc.get("scripts");
     let (setup_cmd, install_cmd, run_cmd) = if scripts.is_some() {
@@ -176,6 +187,7 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         install_cmd,
         run_cmd,
         env,
+        base_image,
     })
 }
 
@@ -189,6 +201,7 @@ pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
                 install_cmd: "$HOME/.bun/bin/bun install".into(),
                 run_cmd: "$HOME/.bun/bin/bun run dev".into(),
                 env: HashMap::new(),
+                base_image: None,
             }
         } else {
             ProjectInfo {
@@ -198,6 +211,7 @@ pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
                 install_cmd: "npm install".into(),
                 run_cmd: "npm run dev".into(),
                 env: HashMap::new(),
+                base_image: None,
             }
         }
     } else if path.join("Cargo.toml").exists() {
@@ -208,6 +222,7 @@ pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
             install_cmd: "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build --release".into(),
             run_cmd: "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo run --release".into(),
             env: HashMap::new(),
+            base_image: None,
         }
     } else if path.join("pyproject.toml").exists() || path.join("requirements.txt").exists() {
         ProjectInfo {
@@ -217,6 +232,7 @@ pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
             install_cmd: "python3 -m pip install -e .".into(),
             run_cmd: "python3 -m iii".into(),
             env: HashMap::new(),
+            base_image: None,
         }
     } else {
         return None;
@@ -271,6 +287,59 @@ runtime:
         assert!(info.setup_cmd.contains("bun.sh/install"));
         assert!(info.install_cmd.contains("bun install"));
         assert!(info.run_cmd.contains("bun src/index.ts"));
+    }
+
+    #[test]
+    fn load_manifest_parses_base_image_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: bun-worker
+runtime:
+  language: typescript
+  package_manager: bun
+  base_image: oven/bun:1
+  entry: src/index.ts
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert_eq!(info.base_image.as_deref(), Some("oven/bun:1"));
+    }
+
+    #[test]
+    fn load_manifest_base_image_absent_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: default-worker
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/index.ts
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert!(info.base_image.is_none());
+    }
+
+    #[test]
+    fn load_manifest_base_image_blank_is_none() {
+        // Empty / whitespace-only values are treated as "not set" so a
+        // stray `base_image: ""` doesn't get slugified into an empty
+        // rootfs dir name downstream.
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: blank-worker
+runtime:
+  language: typescript
+  package_manager: npm
+  base_image: "   "
+  entry: src/index.ts
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert!(info.base_image.is_none());
     }
 
     #[test]
@@ -430,6 +499,7 @@ runtime:
             install_cmd: String::new(),
             run_cmd: String::new(),
             env: HashMap::new(),
+            base_image: None,
         };
         assert!(project.validate().is_err());
     }
@@ -443,6 +513,7 @@ runtime:
             install_cmd: String::new(),
             run_cmd: "node index.js".into(),
             env: HashMap::new(),
+            base_image: None,
         };
         let err = project.validate().unwrap_err();
         assert!(err.contains("unrecognized language"));

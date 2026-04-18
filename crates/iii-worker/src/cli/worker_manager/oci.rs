@@ -48,12 +48,61 @@ pub fn oci_image_for_language(language: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Determine the rootfs path for a given language.
-/// If the rootfs doesn't exist locally, pulls the OCI image and extracts it.
-pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
-    let (oci_image, rootfs_name) = oci_image_for_language(language);
+/// Sanitize an OCI image reference into a cache-dir-safe name so two
+/// workers using different base images don't collide on disk under
+/// `~/.iii/rootfs/<name>/`. Keeps it human-readable for easier
+/// troubleshooting: `oven/bun:1` → `oven-bun-1`,
+/// `ghcr.io/my-org/my-worker:latest` → `ghcr.io-my-org-my-worker-latest`.
+pub fn rootfs_slug_for_image(image: &str) -> String {
+    let mut s: String = image
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' => c.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' | '.' | '-' | '_' => c,
+            _ => '-',
+        })
+        .collect();
+    // Collapse runs of `-` and trim leading/trailing separators so
+    // weird inputs like `::foo::` don't become `--foo--`.
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    s.trim_matches(|c: char| c == '-' || c == '.' || c == '_')
+        .to_string()
+}
 
-    let search_paths = rootfs_search_paths(rootfs_name);
+/// Determine the rootfs path for a given language, optionally overriding
+/// the default base image. If the rootfs doesn't exist locally, pulls
+/// the OCI image and extracts it.
+///
+/// `base_image_override` comes from `runtime.base_image` in
+/// `iii.worker.yaml`. When `Some`, the override's image ref is pulled
+/// into a slug-derived cache dir so it doesn't clobber the language
+/// default rootfs (e.g. a bun-overridden worker gets its own
+/// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
+/// `~/.iii/rootfs/node/` that every default-TS worker uses).
+pub async fn prepare_rootfs(
+    language: &str,
+    base_image_override: Option<&str>,
+) -> Result<PathBuf> {
+    let (oci_image, rootfs_name): (String, String) = match base_image_override {
+        Some(img) if !img.trim().is_empty() => {
+            let slug = rootfs_slug_for_image(img.trim());
+            if slug.is_empty() {
+                anyhow::bail!(
+                    "base_image {:?} produced an empty rootfs slug — use a normal image reference like `oven/bun:1`",
+                    img
+                );
+            }
+            (img.trim().to_string(), slug)
+        }
+        _ => {
+            let (img, name) = oci_image_for_language(language);
+            (img.to_string(), name.to_string())
+        }
+    };
+
+    let search_paths = rootfs_search_paths(&rootfs_name);
     for path in &search_paths {
         if path.exists() && path.join("bin").exists() {
             return Ok(path.clone());
@@ -64,11 +113,11 @@ pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
         .join(".iii")
         .join("rootfs")
-        .join(rootfs_name);
+        .join(&rootfs_name);
 
     eprintln!("  Pulling rootfs {} ({})...", rootfs_name, oci_image);
 
-    pull_and_extract_rootfs(oci_image, &rootfs_dir).await?;
+    pull_and_extract_rootfs(&oci_image, &rootfs_dir).await?;
 
     let workspace = rootfs_dir.join("workspace");
     std::fs::create_dir_all(&workspace).ok();
@@ -525,6 +574,46 @@ mod tests {
             paths
                 .iter()
                 .any(|p| p.to_string_lossy().contains(".iii/rootfs"))
+        );
+    }
+
+    #[test]
+    fn slug_preserves_dots_and_dashes() {
+        assert_eq!(
+            rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest"),
+            "ghcr.io-my-org-my-worker-latest"
+        );
+    }
+
+    #[test]
+    fn slug_converts_simple_image_ref() {
+        assert_eq!(rootfs_slug_for_image("oven/bun:1"), "oven-bun-1");
+    }
+
+    #[test]
+    fn slug_lowercases() {
+        assert_eq!(
+            rootfs_slug_for_image("GHCR.io/Foo/Bar:1.0"),
+            "ghcr.io-foo-bar-1.0"
+        );
+    }
+
+    #[test]
+    fn slug_collapses_consecutive_separators() {
+        // Weird but defensive: double colons and leading/trailing junk
+        // shouldn't produce runs of dashes or empty segments.
+        assert_eq!(rootfs_slug_for_image("::foo::"), "foo");
+        assert_eq!(rootfs_slug_for_image("a//b:c"), "a-b-c");
+    }
+
+    #[test]
+    fn slug_different_images_produce_different_slugs() {
+        // Guards the "two workers with different base images share a
+        // cache dir" collision — the whole point of slugging the full
+        // image ref instead of just the name.
+        assert_ne!(
+            rootfs_slug_for_image("docker.io/iiidev/node:latest"),
+            rootfs_slug_for_image("oven/bun:1")
         );
     }
 
