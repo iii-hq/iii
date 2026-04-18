@@ -130,6 +130,10 @@ scripts:
 
 Each distinct `base_image` gets its own cache directory under `~/.iii/rootfs/<slug>/`, so adding a bun-based worker won't clobber the shared node rootfs used by other TypeScript workers. The image is pulled on first start and reused for every subsequent start that names the same image.
 
+<Info title="Memory-hungry runtimes get real disk-backed swap">
+  Local-path sandboxes automatically attach a sparse 2 GiB swap image (`~/.iii/managed/<worker>/swap.img`) as a virtio-blk device. iii-init runs `mkswap` + `swapon` at boot and widens the worker cgroup's `memory.swap.max` to match `memory.max`. This fixes the "bun OOM-kills inside the microVM" problem — bun's allocator maps ~73 GiB virtual and ignores cgroup v2 RAM limits, so without real disk swap the kernel kills it. The swap file is sparse, so the host pays zero bytes until the guest actually swaps pages out, and swapped pages survive VM reboots (the signature is detected and `mkswap` is skipped on re-start).
+</Info>
+
 <Info title="Reserved environment variables">
   `III_URL` and `III_ENGINE_URL` are set automatically and cannot be overridden through the manifest.
 </Info>
