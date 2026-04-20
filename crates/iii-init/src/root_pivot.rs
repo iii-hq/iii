@@ -376,6 +376,14 @@ fn is_mount_point(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Shared across every test that touches `III_WORKER_WORKDIR`.
+    /// Per-test `static LOCK` inside each function only serializes
+    /// repeat entries into *that* test, not between different tests
+    /// that both mutate the same env var — under `cargo test --jobs>1`
+    /// two tests could still race and flip the var mid-read. One
+    /// module-level mutex fixes that.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Regression for the OCI `/app` boot failure: `/app` must be in
     /// the allowlist so images with `WorkingDir: /app` have that dir
     /// after pivot. Guards against anyone trimming the list back to
@@ -399,10 +407,7 @@ mod tests {
 
     #[test]
     fn workdir_env_extracts_top_level() {
-        // Serialize env mutation across tests in this process to avoid
-        // races with other tests that touch III_WORKER_WORKDIR.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap();
 
         for (val, expected) in [
             ("/app", Some("app")),
@@ -521,8 +526,7 @@ mod tests {
     /// default without being a wall.
     #[test]
     fn bind_entries_picks_up_workdir_env_when_allowlist_misses() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap();
 
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
@@ -545,8 +549,7 @@ mod tests {
     /// allowlist's `app` should yield a single `app` entry.
     #[test]
     fn bind_entries_does_not_duplicate_when_env_overlaps_allowlist() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap();
 
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
@@ -566,8 +569,7 @@ mod tests {
     /// subsequent `mount()` call and abort boot.
     #[test]
     fn bind_entries_drops_env_workdir_when_absent_from_rootfs() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap();
 
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();

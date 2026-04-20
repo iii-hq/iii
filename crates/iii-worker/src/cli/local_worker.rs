@@ -640,7 +640,17 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         return 1;
     }
 
-    let kind = project.kind.as_deref().unwrap_or("typescript");
+    // Treat an empty/whitespace `kind:` field in the manifest the same
+    // as missing — otherwise a YAML typo like `kind: ""` would silently
+    // pass an empty string through the oci/inferred-script lookups and
+    // fall into their `_` defaults, giving the wrong base image instead
+    // of the documented "typescript" default.
+    let kind = project
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .unwrap_or("typescript");
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::download::ensure_libkrunfw().await {

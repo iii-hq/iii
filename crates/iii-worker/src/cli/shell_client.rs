@@ -302,12 +302,25 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
             }
             None => read_one_frame(&mut reader).await?,
         };
-        let (_corr, flags, msg) = match frame_opt {
+        let (got_corr, flags, msg) = match frame_opt {
             Some(v) => v,
             None => {
                 bail!("relay closed without Exited response");
             }
         };
+        // The relay pre-filters frames by this client's id range and
+        // we only have one outstanding command, so every frame should
+        // match our corr_id. If we ever see a stray one (bug in relay,
+        // replayed state, future multiplexed client), drop it on the
+        // floor — ignoring an unknown corr_id is strictly safer than
+        // painting its Stdout onto ours or treating its Exited as our
+        // exit code.
+        if got_corr != corr_id {
+            tracing::warn!(
+                "shell_client: ignoring frame for corr_id={got_corr}, expected {corr_id}"
+            );
+            continue;
+        }
         match msg {
             ShellMessage::Started { .. } => {
                 tracing::debug!("session started");
