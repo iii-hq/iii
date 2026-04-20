@@ -28,4 +28,7 @@ anyhow = "1"
 base64 = "0.22"
 
 [dev-dependencies]
+# Used by root_pivot's unit tests to build a fake rootfs under a
+# tempdir and exercise enumerate_rootfs_entries without Linux mount
+# privileges.
 tempfile = "3"

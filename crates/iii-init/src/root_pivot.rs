@@ -66,16 +66,33 @@ use nix::unistd::{chdir, mkdir, pivot_root};
 
 use crate::error::InitError;
 
-/// Top-level entries we expect in an OCI rootfs plus iii additions.
-/// Each is bind-mounted from the old virtiofs root to the new tmpfs
-/// root. Entries not present in the current rootfs are silently
-/// skipped — we never add to the new root something the image
-/// didn't have.
+/// Top-level entries we bind-mount from the source rootfs into the
+/// new tmpfs root.
 ///
-/// `(name, is_directory)`. `/init.krun` is a regular file shipped by
-/// libkrun; bind-mounting files works the same as directories but
-/// the target must pre-exist as a file, not a directory.
+/// We can NOT enumerate the rootfs root via `readdir`: libkrun's
+/// virtiofs has a getdents64 bug on the share's top-level directory
+/// (see module header) that OOM-kills any process reading it. So we
+/// stat a curated list of well-known paths and bind-mount the ones
+/// that exist. `Path::exists()` on a specific name is a lookup (1 stat
+/// call), not a readdir — it doesn't trip the bug.
+///
+/// Coverage:
+/// - FHS standard dirs (bin, etc, usr, var, …) — every Debian/Alpine
+///   base image ships these.
+/// - `app`, `srv`, `service`, `opt` — the common non-FHS payload
+///   paths OCI images use. `/app` is Docker's dominant convention
+///   (official node, python, ruby image templates all use it);
+///   `/srv` is FHS-standard for service data; `/service` appears in
+///   s6/runit images. `/opt` was already in the FHS block.
+/// - `init.krun` (file, not directory) — libkrun ships this at the
+///   rootfs root. Bind-mounting files works the same as directories,
+///   only the pre-creation target type differs.
+///
+/// `(name, is_directory)`. The dynamic workdir top-level component
+/// from `III_WORKER_WORKDIR` is appended at runtime so images with
+/// bespoke layouts (e.g. `WorkingDir: /service/current`) still boot.
 const ROOTFS_ENTRIES: &[(&str, bool)] = &[
+    ("app", true),
     ("bin", true),
     ("boot", true),
     ("etc", true),
@@ -87,11 +104,18 @@ const ROOTFS_ENTRIES: &[(&str, bool)] = &[
     ("opt", true),
     ("root", true),
     ("sbin", true),
+    ("service", true),
     ("srv", true),
     ("usr", true),
     ("var", true),
     ("init.krun", false),
 ];
+
+/// Env var that carries the worker's working directory from the host
+/// into the guest. Set by `iii-worker __vm-boot` for OCI workers so
+/// we can ensure the workdir's top-level component is bind-mounted
+/// even if it's not in [`ROOTFS_ENTRIES`].
+const III_WORKER_WORKDIR_ENV: &str = "III_WORKER_WORKDIR";
 
 /// Mount points mount_filesystems() will populate after we pivot.
 /// Creating the dirs here (on the tmpfs) keeps mount_filesystems
@@ -145,7 +169,8 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
         source: e,
     })?;
 
-    // Phase 2 — bind-mount rootfs entries into the new root.
+    // Phase 2 — bind-mount rootfs entries from our curated allowlist
+    // (plus the runtime workdir's top-level, if set) into the new root.
     //
     // Each bind creates an independent mount entry that points at
     // the same underlying virtiofs files. After we later umount the
@@ -153,11 +178,20 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
     // the virtiofs superblock pinned — so files are still readable
     // via `/bin`, `/etc`, etc., without the host ever seeing a
     // readdir on the virtiofs root again.
-    for (name, is_dir) in ROOTFS_ENTRIES {
+    //
+    // We deliberately DO NOT readdir the source root — libkrun's
+    // virtiofs has a getdents64 bug there that OOM-kills the caller
+    // (see module header). Stat-by-name via `Path::exists()` is a
+    // single lookup per name, which the bug doesn't reach.
+    //
+    // Missing entries are silently skipped — images that don't ship
+    // e.g. `/service` don't need the bind. Extra entries that exist
+    // in the image but aren't in our list stay inaccessible after
+    // pivot; the runtime workdir injection below handles the one
+    // case that actually matters (image-defined WorkingDir).
+    let entries = rootfs_bind_entries(Path::new("/"));
+    for (name, is_dir) in &entries {
         let source = format!("/{name}");
-        if !Path::new(&source).exists() {
-            continue;
-        }
         let target = format!("{NEW_ROOT}/{name}");
         if *is_dir {
             mkdir_ignore_exists(&target, 0o755)?;
@@ -268,6 +302,63 @@ fn mkdir_ignore_exists(path: &str, mode: u32) -> Result<(), InitError> {
     }
 }
 
+/// Build the list of `(name, is_directory)` entries to bind-mount from
+/// `source_root` into the new tmpfs root. Pure function — no syscalls
+/// beyond `exists()` per candidate name — so unit tests can exercise
+/// every selection rule against a tempdir-based fake rootfs without
+/// needing root privileges or real mounts.
+///
+/// The set is the union of [`ROOTFS_ENTRIES`] and (if set and not
+/// already present) the top-level component of `III_WORKER_WORKDIR`.
+/// Candidates that don't exist under `source_root` are dropped so
+/// images that lack e.g. `/service` don't cause a bind-mount error.
+///
+/// This function MUST NOT call `fs::read_dir` on `source_root` —
+/// libkrun's virtiofs has a getdents64 bug on the shared root dir
+/// (see module header) that OOM-kills the caller. The regression
+/// tests `bind_entries_ignores_non_allowlisted_dirs` and
+/// `bind_entries_does_not_read_source_root_directory` are there to
+/// trip anyone who adds dynamic enumeration back in.
+fn rootfs_bind_entries(source_root: &Path) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = ROOTFS_ENTRIES
+        .iter()
+        .filter(|(name, _)| source_root.join(name).exists())
+        .map(|(n, d)| ((*n).to_string(), *d))
+        .collect();
+    if let Some(extra) = workdir_top_level_from_env()
+        && !out.iter().any(|(n, _)| n == &extra)
+        && source_root.join(&extra).exists()
+    {
+        out.push((extra, true));
+    }
+    out
+}
+
+/// Return the top-level component of `III_WORKER_WORKDIR` so it can
+/// be added to the bind-mount set. `/app/dist` → `"app"`,
+/// `/srv/myservice/current` → `"srv"`, `/` or unset → `None`.
+///
+/// Naming restrictions match the image-layout names we trust: letters,
+/// digits, dot, dash, underscore. Anything else (whitespace, control
+/// bytes, shell metacharacters, `..`) returns None. iii-worker builds
+/// the env value from a trusted OCI config, but a malicious image
+/// could still encode weird names — refusing to act on them is safer
+/// than trying to sanitize.
+fn workdir_top_level_from_env() -> Option<String> {
+    let raw = std::env::var(III_WORKER_WORKDIR_ENV).ok()?;
+    let first = raw.trim_start_matches('/').split('/').next()?;
+    if first.is_empty() {
+        return None;
+    }
+    let ok = first
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+    if !ok || first == ".." || first == "." {
+        return None;
+    }
+    Some(first.to_string())
+}
+
 /// Check whether `path` is the root of a distinct mount. Uses the
 /// classic stat trick: a mount root has a different `st_dev` than
 /// its parent. Returns false for missing paths or stat errors —
@@ -278,5 +369,219 @@ fn is_mount_point(path: &str) -> bool {
     match (nix::sys::stat::stat(p), nix::sys::stat::stat(parent)) {
         (Ok(a), Ok(b)) => a.st_dev != b.st_dev,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for the OCI `/app` boot failure: `/app` must be in
+    /// the allowlist so images with `WorkingDir: /app` have that dir
+    /// after pivot. Guards against anyone trimming the list back to
+    /// strict FHS in the future.
+    #[test]
+    fn allowlist_includes_app_for_oci_images() {
+        let names: Vec<&str> = ROOTFS_ENTRIES.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"app"), "`/app` must be in the allowlist for OCI images");
+    }
+
+    #[test]
+    fn allowlist_skips_kernel_filesystems_and_staging() {
+        let names: Vec<&str> = ROOTFS_ENTRIES.iter().map(|(n, _)| *n).collect();
+        for banned in ["proc", "sys", "dev", "tmp", "run", "new-root", "old-root", "workspace"] {
+            assert!(
+                !names.contains(&banned),
+                "{banned} must not be in the allowlist (handled separately or mounted fresh)"
+            );
+        }
+    }
+
+    #[test]
+    fn workdir_env_extracts_top_level() {
+        // Serialize env mutation across tests in this process to avoid
+        // races with other tests that touch III_WORKER_WORKDIR.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap();
+
+        for (val, expected) in [
+            ("/app", Some("app")),
+            ("/app/dist", Some("app")),
+            ("/srv/myservice/current", Some("srv")),
+            ("/home/node/work", Some("home")),
+            // Leading whitespace or shell chars => reject.
+            (" /app", None),
+            ("/; rm -rf", None),
+            ("/..", None),
+            ("/.", None),
+            // Root or empty => None.
+            ("/", None),
+            ("", None),
+        ] {
+            unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, val) };
+            let got = workdir_top_level_from_env();
+            assert_eq!(
+                got.as_deref(),
+                expected,
+                "workdir_top_level_from_env({val:?}) = {got:?}, expected {expected:?}"
+            );
+        }
+        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        assert_eq!(workdir_top_level_from_env(), None);
+    }
+
+    // Tests below hit `rootfs_bind_entries` against a tempdir-based
+    // fake rootfs. They exist to lock in the behavior that caused the
+    // OCI-worker outage: dynamic `read_dir(source_root)` triggers a
+    // libkrun virtiofs OOM. Each test below would fail if someone
+    // replaces the stat-by-name pass with enumeration of the source
+    // root, so reverting to the broken approach is blocked.
+
+    fn names_of(entries: &[(String, bool)]) -> Vec<&str> {
+        entries.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// End-to-end: an OCI-style rootfs with `/app` present must have
+    /// `/app` in the bind set. This is the exact symptom the outage
+    /// produced — without `/app`, the in-VM supervisor's
+    /// `chdir("/app")` returns ENOENT after pivot.
+    #[test]
+    fn bind_entries_includes_app_when_present_in_rootfs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        for name in ["app", "bin", "etc", "usr", "var"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        let entries = rootfs_bind_entries(root);
+        let names = names_of(&entries);
+        assert!(names.contains(&"app"), "`/app` must be bound for OCI images; got {names:?}");
+        assert!(names.contains(&"bin"));
+    }
+
+    /// Allowlisted names that don't exist in the source rootfs get
+    /// filtered out. Without this filter, `mount(/lib64)` on an
+    /// Alpine image (no lib64) would fail and abort boot.
+    #[test]
+    fn bind_entries_omits_missing_allowlist_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // Only `/bin` exists; every other allowlist entry is absent.
+        fs::create_dir(root.join("bin")).unwrap();
+        let entries = rootfs_bind_entries(root);
+        let names = names_of(&entries);
+        assert_eq!(names, vec!["bin"], "missing allowlist entries must be dropped; got {names:?}");
+    }
+
+    /// Regression for the cherry-picked dynamic-enumeration fix that
+    /// OOM-killed iii-init. A rootfs with non-allowlisted top-level
+    /// directories (`/rogue`, `/secrets`, image-specific junk) must
+    /// NOT pick those up — we are curated-allowlist-only. If this
+    /// test starts failing, someone re-introduced `read_dir(root)`.
+    #[test]
+    fn bind_entries_ignores_non_allowlisted_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        for name in ["bin", "etc", "rogue", "secrets", "xyzzy", ".hidden"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        let entries = rootfs_bind_entries(root);
+        let names = names_of(&entries);
+        for leaked in ["rogue", "secrets", "xyzzy", ".hidden"] {
+            assert!(
+                !names.contains(&leaked),
+                "{leaked} leaked into the bind set — has someone re-added readdir? got {names:?}"
+            );
+        }
+    }
+
+    /// Stronger guard: assert the function does not rely on any
+    /// readdir of the source root at all. We put ONLY non-allowlisted
+    /// entries in the fake rootfs. A readdir-based impl would still
+    /// return them; a stat-by-name impl returns an empty list.
+    #[test]
+    fn bind_entries_does_not_read_source_root_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // ONLY non-allowlisted names present.
+        for name in ["rogue", "image-specific", "weird.payload"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        let entries = rootfs_bind_entries(root);
+        assert!(
+            entries.is_empty(),
+            "stat-by-name must return empty when no allowlist entry exists; \
+             a non-empty result here means readdir snuck back in. got {entries:?}"
+        );
+    }
+
+    /// Runtime escape hatch: an image with a bespoke WorkingDir (e.g.
+    /// `/service/current` from an s6-style image, or something an
+    /// OCI config points at that we don't know about) gets picked up
+    /// via `III_WORKER_WORKDIR`. Makes the static allowlist safe by
+    /// default without being a wall.
+    #[test]
+    fn bind_entries_picks_up_workdir_env_when_allowlist_misses() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("bin")).unwrap();
+        fs::create_dir(root.join("custom-payload")).unwrap();
+
+        unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, "/custom-payload/inner") };
+        let entries = rootfs_bind_entries(root);
+        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        let names = names_of(&entries);
+
+        assert!(
+            names.contains(&"custom-payload"),
+            "workdir-env top-level must be bound even if not in allowlist; got {names:?}"
+        );
+    }
+
+    /// Env injection must not cause duplicates when the workdir
+    /// top-level is already in the allowlist. `/app/dist` + the
+    /// allowlist's `app` should yield a single `app` entry.
+    #[test]
+    fn bind_entries_does_not_duplicate_when_env_overlaps_allowlist() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("app")).unwrap();
+
+        unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, "/app/dist") };
+        let entries = rootfs_bind_entries(root);
+        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        let names = names_of(&entries);
+
+        let app_count = names.iter().filter(|n| **n == "app").count();
+        assert_eq!(app_count, 1, "app must appear exactly once; got {names:?}");
+    }
+
+    /// Env-injected name that doesn't exist in the rootfs gets
+    /// dropped. Without this, a mis-configured image would fail the
+    /// subsequent `mount()` call and abort boot.
+    #[test]
+    fn bind_entries_drops_env_workdir_when_absent_from_rootfs() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("bin")).unwrap();
+        // No "/phantom" in the tempdir.
+
+        unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, "/phantom/here") };
+        let entries = rootfs_bind_entries(root);
+        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        let names = names_of(&entries);
+
+        assert!(
+            !names.contains(&"phantom"),
+            "missing env workdir top-level must be filtered; got {names:?}"
+        );
     }
 }
