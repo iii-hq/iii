@@ -55,6 +55,8 @@ async fn wait_for_route(client: &reqwest::Client, url: &str) {
         }
         sleep(Duration::from_millis(10)).await;
     }
+
+    panic!("HTTP route did not become reachable before timeout: {url}");
 }
 
 #[tokio::test]

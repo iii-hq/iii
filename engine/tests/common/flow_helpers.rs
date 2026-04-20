@@ -4,7 +4,7 @@ use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
-use iii::telemetry::{ExporterType, InMemorySpanExporter, OtelConfig, get_span_storage, init_otel};
+use iii::telemetry::{ExporterType, OtelConfig, get_span_storage, init_otel};
 use iii::workers::observability::otel::StoredSpan;
 use serde::Serialize;
 use serde_json::Value;
@@ -233,7 +233,7 @@ pub fn ensure_flow_test_tracing() {
     if let Some(storage) = get_span_storage() {
         storage.clear();
     } else {
-        let _ = InMemorySpanExporter::new(2048, "iii-flow-test".to_string());
+        panic!("missing span storage: tracing subscriber not installed for flow tests");
     }
 }
 
