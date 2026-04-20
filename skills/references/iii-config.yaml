@@ -344,8 +344,8 @@ workers:
       #   require_https: false
 
   # Exec module - spawns external processes (SDK workers) and watches for file changes.
-  # Useful for setups where workers need to run alongside the engine on the same host.
-  # Also useful from frameworks that support this style of operation such as Motia.
+  # Useful for setups where workers need to run alongside the engine on the same host,
+  # or to keep external framework workers in sync with the engine lifecycle.
   # # Rust worker:
   # - name: iii-exec
   #   config:
@@ -374,15 +374,6 @@ workers:
   #       - src/**/*.js
   #     exec:
   #       - pnpm dev:my-node-worker
-  #
-  # # Motia worker:
-  # - name: iii-exec
-  #   config:
-  #     watch:
-  #       - steps/**/*.ts
-  #       - steps/**/*.py
-  #     exec:
-  #       - npx motia-node
 
   # Bridge Client module - connects this engine to a remote iii instance for cross-instance
   # function invocation. Enables distributed architectures and function federation.

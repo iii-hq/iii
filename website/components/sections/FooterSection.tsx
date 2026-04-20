@@ -1,80 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { GithubIcon } from '../icons';
 import { InstallShButton } from '../InstallShButton';
 import { EmailSignupForm } from '../EmailSignupForm';
 import { Logo } from '../Logo';
 import { TextParticle, drawIiiLogo } from '../ui/text-particle';
-
-// Discord integration
-const DISCORD_GUILD_ID = '1322278831184281721';
-const DISCORD_WIDGET_URL = `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/widget.json`;
-const DISCORD_INVITE_URL = 'https://discord.gg/motia';
-
-interface DiscordMember {
-  id: string;
-  username: string;
-  avatar_url: string;
-  status: string;
-}
-
-interface DiscordStats {
-  onlineCount: number;
-  serverName: string;
-  members: DiscordMember[];
-  isLoading: boolean;
-  error: string | null;
-  inviteUrl: string | null;
-}
-
-const fallbackAvatars = ['👨‍💻', '👩‍💼', '👨‍🔬', '👩‍💻', '👨‍💼', '👩‍🔬'];
-
-function useDiscordWidget(): DiscordStats {
-  const [stats, setStats] = useState<DiscordStats>({
-    onlineCount: 0,
-    serverName: 'iii Community',
-    members: [],
-    isLoading: true,
-    error: null,
-    inviteUrl: DISCORD_INVITE_URL,
-  });
-
-  useEffect(() => {
-    const fetchDiscordData = async () => {
-      try {
-        const response = await fetch(DISCORD_WIDGET_URL);
-        if (!response.ok) {
-          throw new Error(
-            response.status === 403
-              ? 'Widget is disabled for this server'
-              : `Failed to fetch: ${response.status}`,
-          );
-        }
-        const data = await response.json();
-        setStats({
-          onlineCount: data.presence_count,
-          serverName: data.name,
-          members: data.members?.slice(0, 8) || [],
-          isLoading: false,
-          error: null,
-          inviteUrl: data.instant_invite || DISCORD_INVITE_URL,
-        });
-      } catch (err) {
-        setStats((prev) => ({
-          ...prev,
-          isLoading: false,
-          error: err instanceof Error ? err.message : 'Offline',
-          inviteUrl: DISCORD_INVITE_URL,
-        }));
-      }
-    };
-    fetchDiscordData();
-    const interval = setInterval(fetchDiscordData, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  return stats;
-}
 
 // Top 5 FAQ questions as specified in the plan
 const faqItems = [
@@ -106,7 +36,7 @@ const faqItems = [
     id: 5,
     question: 'Is iii production-ready?',
     answer:
-      'Active development. Join Discord for early access and to shape what ships next.',
+      'Active development. Follow GitHub for early access and to shape what ships next.',
   },
 ];
 
@@ -116,7 +46,6 @@ interface FooterSectionProps {
 
 export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
   const [openFaqId, setOpenFaqId] = useState<number | null>(null);
-  const discord = useDiscordWidget();
 
   const textPrimary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
   const textSecondary = isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70';
@@ -145,8 +74,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               Get started!
             </h3>
             <p className={`text-sm ${textSecondary}`}>
-              Install the engine, join the community, check out our code, or
-              subscribe for updates
+              Install the engine, check out our code, or subscribe for updates
             </p>
           </div>
 
@@ -160,12 +88,12 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
           </div>
 
           {/* CTA Buttons */}
-          <div className={ctaGrid}>
+          <div className="flex justify-center w-full max-w-2xl mx-auto px-2 sm:px-0">
             <a
               href="https://github.com/iii-hq/iii"
               target="_blank"
               rel="noopener noreferrer"
-              className={`${ctaButtonBase} ${
+              className={`${ctaButtonBase} sm:max-w-xs ${
                 isDarkMode
                   ? 'bg-iii-dark/50 border-iii-light hover:border-iii-light text-iii-light'
                   : 'bg-white/50 border-iii-dark hover:border-iii-dark text-iii-black'
@@ -174,90 +102,6 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               <GithubIcon size={16} />
               GitHub
             </a>
-            <div className="relative">
-              <button
-                onClick={() =>
-                  window.open(
-                    discord.inviteUrl || DISCORD_INVITE_URL,
-                    '_blank',
-                    'noopener,noreferrer',
-                  )
-                }
-                className={`${ctaButtonBase} bg-[#5865F2] border-[#5865F2] hover:bg-[#4752C4] hover:border-[#4752C4] text-white`}
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="currentColor"
-                  viewBox="0 0 127.14 96.36"
-                >
-                  <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" />
-                </svg>
-                <span>Discord</span>
-                {!discord.error && !discord.isLoading && (
-                  <>
-                    <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
-                    <span className="font-normal opacity-80">
-                      {discord.onlineCount} online
-                    </span>
-                  </>
-                )}
-              </button>
-              {!discord.error && (
-                <div className="absolute left-0 right-0 flex items-center justify-center gap-1 mt-2">
-                  {(discord.members.length > 0
-                    ? discord.members
-                    : fallbackAvatars.map((emoji, i) => ({
-                        id: `fb-${i}`,
-                        username: '',
-                        avatar_url: '',
-                        status: 'online',
-                        emoji,
-                      }))
-                  )
-                    .slice(0, 6)
-                    .map((member, index) => (
-                      <div
-                        key={member.id}
-                        className="relative"
-                        style={{
-                          marginLeft: index > 0 ? '-6px' : '0',
-                          zIndex: 10 - index,
-                        }}
-                      >
-                        {member.avatar_url ? (
-                          <img
-                            src={member.avatar_url}
-                            alt={member.username}
-                            className="w-7 h-7 rounded-full border-2 border-iii-dark object-cover"
-                          />
-                        ) : (
-                          <div
-                            className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs ${isDarkMode ? 'border-iii-dark bg-iii-dark/50' : 'border-white bg-gray-100'}`}
-                          >
-                            {(member as { emoji?: string }).emoji || '👤'}
-                          </div>
-                        )}
-                        <span
-                          className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 ${isDarkMode ? 'border-iii-dark' : 'border-white'} ${
-                            member.status === 'online'
-                              ? 'bg-iii-success'
-                              : member.status === 'idle'
-                                ? 'bg-yellow-500'
-                                : member.status === 'dnd'
-                                  ? 'bg-red-500'
-                                  : 'bg-gray-500'
-                          }`}
-                        />
-                      </div>
-                    ))}
-                  {discord.onlineCount > 6 && (
-                    <span className={`text-xs ml-2 ${textSecondary}`}>
-                      +{discord.onlineCount - 6} more
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
         </div>
 

@@ -655,7 +655,7 @@ Enables HTTP-invoked functions (outbound HTTP calls from the engine). Required f
 
 **Name:** `iii-exec`
 
-Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host, or from frameworks like Motia.
+Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host, or to keep external framework workers in sync with the engine lifecycle.
 
 <ResponseField name="config.watch" type="string[]">
   Directories to watch for file changes. Changes trigger process restart.
@@ -666,21 +666,21 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
 </ResponseField>
 
 ```yaml
-# Example: run Python motia framework worker
+# Example: run a Python worker
 - name: iii-exec
   config:
     watch:
-      - ./steps
+      - ./src
     exec:
-      - uv run motia run --dir steps
+      - uv run python -m my_worker
 
-# Example: run Node.js motia framework worker
+# Example: run a Node.js worker
 - name: iii-exec
   config:
     watch:
-      - ./steps
+      - ./src
     exec:
-      - npx motia dev
+      - pnpm dev:worker
 ```
 
 </Accordion>

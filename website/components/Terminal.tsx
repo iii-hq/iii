@@ -1031,7 +1031,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("", "info");
         addLog("TARGET USERS:", "success");
         addLog("  Framework developers building on iii", "info");
-        addLog("  Motia users won't see iii directly", "info");
+        addLog("  Downstream framework users won't see iii directly", "info");
         addLog("  Core contributors only", "info");
         break;
 
