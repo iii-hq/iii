@@ -332,9 +332,12 @@ describe('RBAC Workers', () => {
     })
 
     try {
-      iiiClient.registerFunction('prefixed-echo', async (data: Record<string, unknown>) => {
-        return { echoed: data }
-      })
+      const handle = iiiClient.registerFunction(
+        'prefixed-echo',
+        async (data: Record<string, unknown>) => {
+          return { echoed: data }
+        },
+      )
 
       await sleep(1000)
 
@@ -345,6 +348,21 @@ describe('RBAC Workers', () => {
       })
 
       expect(result.echoed.msg).toBe('prefix-test')
+
+      // Regression for iii-hq/iii#1508: function.unregister() must honor
+      // function_registration_prefix. Before the fix the engine kept the
+      // prefixed registration even after unregister, so a follow-up
+      // invocation would still succeed.
+      handle.unregister()
+      await sleep(1000)
+
+      await expect(
+        // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+        iii.trigger<any, any>({
+          function_id: 'test-prefix::prefixed-echo',
+          payload: { msg: 'should-fail' },
+        }),
+      ).rejects.toThrow()
     } finally {
       await iiiClient.shutdown()
     }
