@@ -145,7 +145,11 @@ fn extract_layer_strips_setuid_and_setgid_bits() {
 
     assert_eq!(mode("bin/mount") & 0o6000, 0, "setuid bit must be stripped");
     assert_eq!(mode("bin/wall") & 0o6000, 0, "setgid bit must be stripped");
-    assert_eq!(mode("bin/odd") & 0o6000, 0, "setuid+setgid must be stripped");
+    assert_eq!(
+        mode("bin/odd") & 0o6000,
+        0,
+        "setuid+setgid must be stripped"
+    );
     assert_eq!(mode("bin/plain") & 0o777, 0o755, "plain perms survive");
 }
 
@@ -164,19 +168,25 @@ fn extract_layer_does_not_chmod_symlinks() {
 
     let dir = tempfile::tempdir().unwrap();
 
+    // Pre-create the target file with setid bits set on disk. If the
+    // symlink guard breaks, set_permissions("bin/link", ...) would follow
+    // the link and strip setid from this sentinel. Without the setid bits
+    // here, the inner `current & SETID_BITS != 0` gate would short-circuit
+    // before the chmod — so the test would pass even with a broken guard.
+    // The sentinel is NOT in the tarball (extraction would overwrite its
+    // mode with the header's 0o755), so we create it manually first.
+    std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+    std::fs::write(dir.path().join("bin/real"), b"data").unwrap();
+    std::fs::set_permissions(
+        dir.path().join("bin/real"),
+        std::fs::Permissions::from_mode(0o6755),
+    )
+    .unwrap();
+
     let layer = {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         {
             let mut archive = tar::Builder::new(&mut encoder);
-
-            // Target: a regular file, mode 0o755, no setid bits.
-            let mut target_header = tar::Header::new_gnu();
-            target_header.set_path("bin/real").unwrap();
-            target_header.set_size(4);
-            target_header.set_mode(0o755);
-            target_header.set_entry_type(tar::EntryType::Regular);
-            target_header.set_cksum();
-            archive.append(&target_header, &b"data"[..]).unwrap();
 
             // Symlink: header claims setuid+setgid. If the guard breaks,
             // chmod would follow `link` to `real` and strip its perms.
@@ -205,17 +215,20 @@ fn extract_layer_does_not_chmod_symlinks() {
     let link_target = std::fs::read_link(dir.path().join("bin/link")).unwrap();
     assert_eq!(link_target.to_str(), Some("real"));
 
-    // The target regular file must be unchanged. If the symlink guard
-    // broke, set_permissions on `link` would have followed to `real` and
-    // stripped the setid bits from a file whose header had no setid bits
-    // set in the first place — a silent corruption path.
+    // The sentinel target must still have its setid bits. If the symlink
+    // guard broke, set_permissions on `link` would have followed to `real`
+    // and stripped them.
     let target_mode = std::fs::metadata(dir.path().join("bin/real"))
         .unwrap()
         .permissions()
         .mode()
         & 0o7777;
-    assert_eq!(target_mode & 0o777, 0o755, "target perms unchanged");
-    assert_eq!(target_mode & 0o6000, 0, "target has no setid bits");
+    assert_eq!(
+        target_mode & 0o6000,
+        0o6000,
+        "sentinel target must retain setid bits; a broken symlink guard would have stripped them"
+    );
+    assert_eq!(target_mode & 0o777, 0o755, "target base perms unchanged");
 }
 
 #[test]

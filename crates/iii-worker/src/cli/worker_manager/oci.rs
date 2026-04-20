@@ -203,9 +203,17 @@ pub fn extract_layer_with_limits(
         let entry_type = entry.header().entry_type();
         let header_mode = entry.header().mode().unwrap_or(0);
 
-        entry
+        let unpacked = entry
             .unpack_in(dest)
             .with_context(|| format!("Failed to extract: {}", path.display()))?;
+
+        // `unpack_in` returns Ok(false) when it intentionally skips an entry
+        // (e.g. path traversal, no parent). Don't touch the dest path in
+        // that case — the file wasn't written and the resolved path could
+        // point outside the rootfs.
+        if !unpacked {
+            continue;
+        }
 
         // Strip setuid/setgid from regular files. See function doc for why.
         // Symlinks are skipped: chmod on a symlink path follows to the
