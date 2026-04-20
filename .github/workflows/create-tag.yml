@@ -9,7 +9,6 @@ on:
         type: choice
         options:
           - iii
-          - motia
       bump:
         description: 'Version bump type'
         required: true
@@ -77,16 +76,6 @@ jobs:
                      sdk/packages/node/iii-browser/package.json \
                      sdk/packages/python/iii/pyproject.toml \
                      console/packages/console-rust/Cargo.toml; do
-              if [[ ! -f "$f" ]]; then
-                echo "::error::$f not found"
-                exit 1
-              fi
-            done
-          fi
-
-          if [[ "$TARGET" == "motia" ]]; then
-            for f in frameworks/motia/motia-js/packages/motia/package.json \
-                     frameworks/motia/motia-py/packages/motia/pyproject.toml; do
               if [[ ! -f "$f" ]]; then
                 echo "::error::$f not found"
                 exit 1
@@ -212,23 +201,6 @@ jobs:
             echo "::notice::iii: $current -> $new_ver (python: $py_ver)"
           fi
 
-          if [[ "$TARGET" == "motia" ]]; then
-            current=$(read_json_version "frameworks/motia/motia-js/packages/motia/package.json")
-            new_ver=$(bump_version "$current" "motia" "$BUMP")
-
-            if [[ "$DRY_RUN" == "true" ]]; then
-              base_ver="${new_ver%%-*}"
-              new_ver=$(next_dry_run_version "$base_ver" "motia")
-            fi
-
-            py_ver=$(to_pep440 "$new_ver")
-            echo "version=$new_ver" >> "$GITHUB_OUTPUT"
-            echo "python_version=$py_ver" >> "$GITHUB_OUTPUT"
-            echo "tag=motia/v${new_ver}" >> "$GITHUB_OUTPUT"
-            echo "current=$current" >> "$GITHUB_OUTPUT"
-            echo "::notice::Motia: $current -> $new_ver (python: $py_ver)"
-          fi
-
       - name: Update iii manifests
         if: inputs.target == 'iii' && inputs.dry_run != true
         env:
@@ -256,18 +228,6 @@ jobs:
       - name: Sync Cargo.lock
         if: inputs.target == 'iii' && inputs.dry_run != true
         run: cargo update --workspace
-
-      - name: Update motia manifests
-        if: inputs.target == 'motia' && inputs.dry_run != true
-        env:
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
-          PY_VERSION: ${{ steps.versions.outputs.python_version }}
-        run: |
-          jq --arg v "$NEW_VERSION" '.version = $v' frameworks/motia/motia-js/packages/motia/package.json > tmp.json && mv tmp.json frameworks/motia/motia-js/packages/motia/package.json
-          echo "Updated frameworks/motia/motia-js/packages/motia/package.json to $NEW_VERSION"
-
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${PY_VERSION}\"/}" frameworks/motia/motia-py/packages/motia/pyproject.toml
-          echo "Updated frameworks/motia/motia-py/packages/motia/pyproject.toml to $PY_VERSION"
 
       - name: Validate version updates
         if: inputs.dry_run != true
@@ -305,11 +265,6 @@ jobs:
             check_json "sdk/packages/node/iii-browser/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
-          fi
-
-          if [[ "$TARGET" == "motia" ]]; then
-            check_json "frameworks/motia/motia-js/packages/motia/package.json" "$VERSION"
-            check_cargo "frameworks/motia/motia-py/packages/motia/pyproject.toml" "$PY_VERSION"
           fi
 
           echo "All versions validated."
