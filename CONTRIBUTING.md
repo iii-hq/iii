@@ -190,7 +190,7 @@ uv run pytest
 
 ### JavaScript/TypeScript (pnpm workspaces)
 
-The `motia` package depends on `iii-sdk` using the workspace protocol:
+Packages inside the workspace depend on `iii-sdk` using the workspace protocol:
 
 ```json
 "iii-sdk": "workspace:^"
@@ -210,7 +210,7 @@ This resolves to the local `sdk/packages/rust/iii` via the root `Cargo.toml` wor
 
 ### Python (uv editable installs)
 
-Motia Python references the local SDK via `[tool.uv.sources]` in its `pyproject.toml`:
+Local Python packages reference the SDK via `[tool.uv.sources]` in their `pyproject.toml`:
 
 ```toml
 [tool.uv.sources]
@@ -227,13 +227,13 @@ All CI/CD runs from `.github/workflows/`.
 
 Runs on every push/PR to `main`. Change detection determines which jobs to run:
 
-- **Engine changes** trigger: engine tests, all SDK tests, all Motia tests, console build
-- **SDK Node changes** trigger: SDK Node tests, Motia JS tests
-- **SDK Python changes** trigger: SDK Python tests, Motia Python tests
+- **Engine changes** trigger: engine tests, all SDK tests, console build
+- **SDK Node changes** trigger: SDK Node tests
+- **SDK Python changes** trigger: SDK Python tests
 - **SDK Rust changes** trigger: SDK Rust tests, engine tests, console build
-- **Motia/Console/Docs/Website changes** trigger only their own tests/builds
+- **Console/Docs/Website changes** trigger only their own tests/builds
 
-The engine is built from source in CI (not downloaded as a release binary), so SDK and Motia tests always validate against the current engine code.
+The engine is built from source in CI (not downloaded as a release binary), so SDK tests always validate against the current engine code.
 
 ### Release (`release.yml`)
 
@@ -242,9 +242,8 @@ Triggered by pushing a `release/v*` tag. Executes sequentially:
 1. Run all tests
 2. Build and release engine binaries (GitHub Release)
 3. Publish SDKs (npm, PyPI, crates.io)
-4. Publish Motia (npm, PyPI)
-5. Build and release console binaries
-6. Trigger package manager workflows (Homebrew, etc.)
+4. Build and release console binaries
+5. Trigger package manager workflows (Homebrew, etc.)
 
 ### Creating a Release
 
