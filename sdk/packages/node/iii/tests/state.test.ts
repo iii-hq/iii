@@ -108,6 +108,59 @@ describe('State Operations', () => {
     })
   })
 
+  describe('state::list_groups', () => {
+    it('should return available scopes', async () => {
+      // Ported from motia-js integration test: state#listGroups returns available scopes
+      const scope = `list-groups-scope-${Date.now()}`
+      await iii.trigger({
+        function_id: 'state::set',
+        payload: { scope, key: 'anchor', value: { present: true } },
+      })
+
+      const result = await iii.trigger({ function_id: 'state::list_groups', payload: {} })
+      const groups = Array.isArray(result)
+        ? result
+        : ((result as { groups?: string[] })?.groups ?? [])
+
+      expect(Array.isArray(groups)).toBe(true)
+      expect(groups).toContain(scope)
+
+      await iii.trigger({ function_id: 'state::delete', payload: { scope, key: 'anchor' } })
+    })
+  })
+
+  describe('state::update', () => {
+    it('should apply partial updates via ops array', async () => {
+      // Ported from motia-js integration test: state#update applies partial updates
+      const scope = `update-scope-${Date.now()}`
+      const key = `update-key-${Date.now()}`
+
+      await iii.trigger({
+        function_id: 'state::set',
+        payload: { scope, key, value: { count: 0, name: 'initial' } },
+      })
+
+      await iii.trigger({
+        function_id: 'state::update',
+        payload: {
+          scope,
+          key,
+          ops: [{ type: 'set', path: 'count', value: 5 }],
+        },
+      })
+
+      const result = await iii.trigger<unknown, { count?: number; name?: string }>({
+        function_id: 'state::get',
+        payload: { scope, key },
+      })
+
+      expect(result?.count).toBe(5)
+      expect(result?.name).toBe('initial')
+
+      await iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
+    })
+  })
+
   describe('reactive state', () => {
     it('should update the state when the state is updated', async () => {
       const data: TestData = { name: 'Test', value: 100 }
