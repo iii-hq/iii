@@ -2044,7 +2044,10 @@ mod tests {
             .expect("register should succeed");
 
         assert!(
-            engine.functions.get("test-prefix::removable_func").is_some(),
+            engine
+                .functions
+                .get("test-prefix::removable_func")
+                .is_some(),
             "function should be stored under the prefixed id"
         );
         assert!(
@@ -2061,7 +2064,10 @@ mod tests {
             .expect("unregister should succeed");
 
         assert!(
-            engine.functions.get("test-prefix::removable_func").is_none(),
+            engine
+                .functions
+                .get("test-prefix::removable_func")
+                .is_none(),
             "prefixed function must be removed after unregister (iii-hq/iii#1508)"
         );
         let function_ids = worker.get_regular_function_ids().await;
