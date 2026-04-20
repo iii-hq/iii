@@ -10,35 +10,35 @@ type Point = { title: string; body: string };
 const GROUPS: Point[][] = [
   [
     {
-      title: 'Durable orchestration',
-      body: 'Coordinate long-running, failure-tolerant execution across workers, and triggers.',
+      title: 'Function',
+      body: 'Anything callable. A unit of work with a typed input and optional output. Implemented by a worker, fronted by an HTTP endpoint, or wrapped around something that already exists.',
     },
     {
-      title: 'Interoperable execution',
-      body: 'Execute across languages natively as if it were one runtime.',
+      title: 'Trigger',
+      body: 'Anything that runs a Function. HTTP, cron, queues, streams, state changes, or custom event sources contributed by workers.',
     },
     {
-      title: 'Simple primitives',
-      body: 'Collapse distributed backend design into a simple paradigm that humans and agents can reason about.',
+      title: 'Worker',
+      body: 'Anything that hosts Functions or emits Triggers. A service, an agent, a browser tab, a device, a CLI, or a third-party API.',
     },
   ],
   [
     {
-      title: 'Live discovery',
-      body: 'Functions and triggers exposed by one worker become visible and usable across the system in real time.',
+      title: 'Boundaries collapse',
+      body: 'Languages, locations, and trust boundaries stop mattering. Anything that speaks the protocol can call anything else that does.',
     },
     {
-      title: 'Live extensibility',
-      body: 'Add new workers and capabilities to a live iii system without redesigning the architecture.',
+      title: 'Existing things become first-class',
+      body: 'Wrap any HTTP endpoint, queue, agent, or device into the model. No rewrite. They show up in the same registry, the same traces, the same graph.',
     },
     {
-      title: 'Live observability',
-      body: 'Observe operations, traces, and system behavior across the entire connected stack in real time.',
+      title: 'Live, observable, discoverable',
+      body: 'New capabilities appear in real time without redeploys. Every call, retry, and failure flows through one observability pipeline.',
     },
   ],
 ];
 
-const GROUP_LABELS = ['Execution model', 'Live system traits'];
+const GROUP_LABELS = ['The model', 'What this unlocks'];
 
 export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
   const accent = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
@@ -67,10 +67,10 @@ export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
           <p
             className={`mt-3 text-sm md:text-base lg:text-lg leading-relaxed ${secondary}`}
           >
-            iii's primitives result in an execution model and system traits that
-            make it unreasonably good at creating backend software. In iii every
-            capability, every framework, every tool can become a pattern on the
-            same core system.
+            Three primitives close the model. One protocol connects them. Every
+            service, agent, browser, device, and third-party API becomes
+            callable, composable, and observable on the same graph — as if your
+            whole system were one runtime.
           </p>
         </div>
       </div>

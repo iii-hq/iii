@@ -283,15 +283,14 @@ export const cloudLogos = [
 ];
 
 const rotatingDescriptors = [
-  'simple',
-  'scalable',
-  'durable',
-  'extensible',
-  'fast',
-  'composable',
-  'observable',
-  'reliable',
-  'interoperable',
+  'service',
+  'agent',
+  'browser',
+  'device',
+  'API',
+  'workflow',
+  'sandbox',
+  'capability',
 ];
 
 interface HeroSectionProps {
@@ -383,14 +382,14 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                       }}
                       className="block w-max whitespace-nowrap"
                     >
-                      Unreasonably {descriptor}
+                      Any {descriptor}.
                     </span>
                   ))}
                   <span
                     ref={secondLineMeasureRef}
                     className="block w-max whitespace-nowrap"
                   >
-                    backend engineering
+                    Function. Trigger. Worker.
                   </span>
                 </span>
 
@@ -405,7 +404,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                   <span
                     className={`block whitespace-nowrap ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
                   >
-                    <span className="inline-block">Unreasonably</span>{' '}
+                    <span className="inline-block">Any</span>{' '}
                     <span
                       className={`inline-block transition-all duration-500 ease-in-out ${
                         isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
@@ -416,12 +415,13 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                       }`}
                     >
                       {currentDescriptor}
-                    </span>{' '}
+                    </span>
+                    <span className="inline-block">.</span>{' '}
                   </span>
                   <span
                     className={`block whitespace-nowrap ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
                   >
-                    backend engineering
+                    Function. Trigger. Worker.
                   </span>
                 </span>
               </h1>
@@ -432,10 +432,10 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                 isDarkMode ? 'text-iii-light/75' : 'text-iii-black/75'
               }`}
             >
-              iii turns distributed backend complexity into a simple set of
-              real-time, interoperable primitives called Functions, Triggers,
-              and Workers. The result is coordinated execution that behaves as
-              if it were a single runtime.
+              iii is one protocol for anything that does work. Compose your
+              services, agents, browsers, devices, and third-party APIs into
+              one observable, callable system. Three primitives close the
+              model. Any language, anywhere.
             </p>
 
             {/* Install Command & Email Form */}
