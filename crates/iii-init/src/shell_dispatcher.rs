@@ -687,7 +687,53 @@ fn decode_b64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+    use std::sync::OnceLock;
     use std::time::Duration;
+
+    /// Process-wide reap thread for tests.
+    ///
+    /// Production runs PID 1's `waitpid(-1)` loop in `supervisor.rs`, and
+    /// that loop calls `child_exits::dispatch_exit` to unblock session
+    /// waiter threads. The unit tests here bypass `supervisor::run_*`
+    /// and call `handle_frame` directly, so without this helper every
+    /// child becomes a zombie, every waiter thread blocks on
+    /// `exit_rx.recv()`, the terminal `Exited` frame never fires, and
+    /// the host's read times out with `WouldBlock`.
+    ///
+    /// Started lazily via `OnceLock`: the first test to spawn children
+    /// kicks off a single detached reaper thread that lives until the
+    /// test process exits. Repeated calls are no-ops.
+    #[cfg(target_os = "linux")]
+    fn ensure_test_reaper() {
+        static STARTED: OnceLock<()> = OnceLock::new();
+        STARTED.get_or_init(|| {
+            use nix::errno::Errno;
+            use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+            use nix::unistd::Pid;
+            thread::Builder::new()
+                .name("shell-dispatcher-test-reaper".to_string())
+                .spawn(|| loop {
+                    match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::Exited(pid, code)) => {
+                            crate::child_exits::dispatch_exit(pid.as_raw(), code);
+                        }
+                        Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                            crate::child_exits::dispatch_exit(pid.as_raw(), 128 + sig as i32);
+                        }
+                        Ok(WaitStatus::StillAlive) | Err(Errno::ECHILD) => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        // Stopped/Continued/PtraceEvent/PtraceSyscall —
+                        // not terminal, leave the child alone.
+                        Ok(_) => {}
+                        // EINTR or other transient errno; brief pause
+                        // and retry so we don't busy-loop on errors.
+                        Err(_) => thread::sleep(Duration::from_millis(10)),
+                    }
+                })
+                .expect("spawn test reaper");
+        });
+    }
 
     /// Drive the dispatcher over an in-process socketpair and assert
     /// the happy path for a pipe-mode `echo` invocation.
@@ -699,6 +745,7 @@ mod tests {
     /// the full virtio-console path lives in iii-worker's integration
     /// tests.
     fn run_over_socketpair() {
+        ensure_test_reaper();
         let (host, guest) = UnixStream::pair().expect("socketpair");
         host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
@@ -790,6 +837,7 @@ mod tests {
         if !std::path::Path::new("/bin/sh").exists() {
             return;
         }
+        ensure_test_reaper();
         let (host, guest) = UnixStream::pair().expect("socketpair");
         host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
@@ -875,6 +923,7 @@ mod tests {
     /// detached thread for the lifetime of the socketpair.
     #[cfg(target_os = "linux")]
     fn start_dispatcher_over_socketpair() -> (UnixStream, UnixStream) {
+        ensure_test_reaper();
         let (host, guest) = UnixStream::pair().expect("socketpair");
         host.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
 
@@ -1053,6 +1102,7 @@ mod tests {
         if !std::path::Path::new("/bin/sleep").exists() {
             return;
         }
+        ensure_test_reaper();
         let (host, _) = UnixStream::pair().expect("socketpair");
         let (_writer_unused, _) = {
             // Reuse the integration helper but we need one shared
