@@ -59,8 +59,6 @@ jobs:
             os: ubuntu-24.04
           - name: macos-14
             os: macos-14
-          - name: macos-13
-            os: macos-13
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +71,7 @@ jobs:
       - name: Run integration tests
         env:
           CI: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: sh engine/tests/install_sh_integration.sh
 
   alpine-musl:
@@ -87,4 +86,5 @@ jobs:
       - name: Run integration tests in alpine
         env:
           CI: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: sh engine/tests/install_sh_integration.sh

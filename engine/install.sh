@@ -111,17 +111,32 @@ iii_emit_event() {
 # ---------------------------------------------------------------------------
 
 github_api() {
-  curl -fsSL \
-    -H "Accept:application/vnd.github+json" \
-    -H "X-GitHub-Api-Version:2022-11-28" \
-    "$1"
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -fsSL \
+      -H "Accept:application/vnd.github+json" \
+      -H "X-GitHub-Api-Version:2022-11-28" \
+      -H "Authorization:Bearer $GITHUB_TOKEN" \
+      "$1"
+  else
+    curl -fsSL \
+      -H "Accept:application/vnd.github+json" \
+      -H "X-GitHub-Api-Version:2022-11-28" \
+      "$1"
+  fi
 }
 
 # Return 0 if the given URL responds with a GitHub rate-limit status.
 github_rate_limited() {
-  _code=$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "Accept:application/vnd.github+json" \
-    "$1" 2>/dev/null || echo "")
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    _code=$(curl -s -o /dev/null -w '%{http_code}' \
+      -H "Accept:application/vnd.github+json" \
+      -H "Authorization:Bearer $GITHUB_TOKEN" \
+      "$1" 2>/dev/null || echo "")
+  else
+    _code=$(curl -s -o /dev/null -w '%{http_code}' \
+      -H "Accept:application/vnd.github+json" \
+      "$1" 2>/dev/null || echo "")
+  fi
   case "$_code" in
     403|429) return 0 ;;
     *) return 1 ;;
@@ -236,6 +251,9 @@ Environment variables:
                         aarch64-unknown-linux-gnu)
   III_USE_GLIBC         Use glibc build on Linux x86_64 (any non-empty value
                         enables; default: musl)
+  GITHUB_TOKEN          Authenticate GitHub API calls (raises rate limit
+                        from 60/hr to 5000/hr). Any token with public read
+                        access works; no scopes required.
 
 Requires: curl, jq, tar (unzip if installing a .zip asset)
 
