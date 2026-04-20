@@ -12,6 +12,7 @@ import { MachineView } from './components/MachineView';
 import { SectionsPreview } from './pages/SectionsPreview';
 import { ManifestoPage } from './pages/ManifestoPage';
 import { HomeV2 } from './pages/HomeV2';
+import { HomeV3 } from './pages/HomeV3';
 import { CookieConsent } from './components/CookieConsent';
 import { useCookieConsent } from './lib/useCookieConsent';
 import { KeySequence } from './types';
@@ -30,6 +31,9 @@ const AppRouter: React.FC = () => {
   }
   if (pathname === '/v2') {
     return <HomeV2 />;
+  }
+  if (pathname === '/v3') {
+    return <HomeV3 />;
   }
   return <App />;
 };
