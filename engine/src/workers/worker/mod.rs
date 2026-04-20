@@ -112,6 +112,7 @@ impl Worker for WorkerManager {
             // Setup router
             let app = Router::new()
                 .route("/", get(ws_handler))
+                .route("/otel", get(otel_ws_handler))
                 .route("/ws/channels/{channel_id}", get(channel_ws_upgrade))
                 .with_state(state);
 
@@ -193,6 +194,30 @@ async fn ws_handler(
             .await
         {
             tracing::error!(addr = %addr, error = ?err, "worker error");
+        }
+    })
+}
+
+/// WS upgrade handler for the OTEL-only endpoint (`/otel`).
+///
+/// Keeps telemetry traffic off the worker registry. See
+/// `Engine::handle_otel` for the rationale.
+async fn otel_ws_handler(
+    State(state): State<AppState>,
+    ws: WebSocketUpgrade,
+    uri: Uri,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    let engine = state.engine.clone();
+    let config = state.config.clone();
+
+    ws.on_upgrade(move |socket| async move {
+        if let Err(err) = engine
+            .handle_otel(socket, addr, uri, headers, config, state.shutdown_rx)
+            .await
+        {
+            tracing::error!(addr = %addr, error = ?err, "otel connection error");
         }
     })
 }

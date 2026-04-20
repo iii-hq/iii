@@ -1,3 +1,7 @@
+> [!WARNING]
+> **Motia is deprecated.** Active development has moved to [iii.dev](https://iii.dev).
+> [Read the announcement](https://blog.motia.dev/motia-helped-us-build-something-incredible/) · [Migrating from Motia.js](https://iii.dev/docs/changelog/0-11-0/migrating-from-motia-js)
+
 # @motiadev/stream-client-node
 
 Motia Stream Client Package – Responsible for managing real-time [Motia](https://motia.dev) streams of data in node environments. This package provides a simple, type-safe interface for subscribing to item and group streams over WebSockets, handling live updates, and managing stream state in your web applications.

@@ -123,6 +123,7 @@ impl WorkerConnectionRegistry {
         os: Option<String>,
         telemetry: Option<WorkerConnectionTelemetryMeta>,
         pid: Option<u32>,
+        isolation: Option<String>,
     ) {
         if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.runtime = Some(runtime);
@@ -136,6 +137,9 @@ impl WorkerConnectionRegistry {
             worker.telemetry = telemetry;
             if pid.is_some() {
                 worker.pid = pid;
+            }
+            if isolation.is_some() {
+                worker.isolation = isolation;
             }
         }
     }
@@ -208,6 +212,7 @@ pub struct WorkerConnection {
     pub status: WorkerConnectionStatus,
     pub telemetry: Option<WorkerConnectionTelemetryMeta>,
     pub pid: Option<u32>,
+    pub isolation: Option<String>,
     pub session: Option<Arc<Session>>,
 }
 
@@ -228,6 +233,7 @@ impl WorkerConnection {
             status: WorkerConnectionStatus::Connected,
             telemetry: None,
             pid: None,
+            isolation: None,
             session: None,
         }
     }
@@ -248,6 +254,7 @@ impl WorkerConnection {
             status: WorkerConnectionStatus::Connected,
             telemetry: None,
             pid: None,
+            isolation: None,
             session: Some(Arc::new(session)),
         }
     }
@@ -463,6 +470,7 @@ mod tests {
             Some("linux".to_string()),
             Some(telemetry.clone()),
             None,
+            None,
         );
         registry.update_worker_status(&worker_id, WorkerConnectionStatus::Busy);
         registry.update_worker_status(&Uuid::new_v4(), WorkerConnectionStatus::Available);
@@ -474,6 +482,7 @@ mod tests {
         assert_eq!(stored.os.as_deref(), Some("linux"));
         assert_eq!(stored.status, WorkerConnectionStatus::Busy);
         assert!(stored.pid.is_none());
+        assert!(stored.isolation.is_none());
         assert_eq!(
             serde_json::to_value(stored.telemetry).expect("serialize telemetry"),
             json!(telemetry)
@@ -486,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn update_worker_metadata_stores_pid() {
+    fn update_worker_metadata_stores_pid_and_isolation() {
         crate::workers::observability::metrics::ensure_default_meter();
         let registry = WorkerConnectionRegistry::new();
         let worker = make_worker();
@@ -501,9 +510,18 @@ mod tests {
             None,
             None,
             Some(1234u32),
+            Some("libkrun".to_string()),
         );
 
         let stored = registry.get_worker(&worker_id).expect("worker exists");
         assert_eq!(stored.pid, Some(1234u32));
+        assert_eq!(stored.isolation.as_deref(), Some("libkrun"));
+    }
+
+    #[test]
+    fn worker_connection_constructors_default_isolation_to_none() {
+        let (tx, _rx) = mpsc::channel::<Outbound>(1);
+        let worker = WorkerConnection::new(tx);
+        assert!(worker.isolation.is_none());
     }
 }

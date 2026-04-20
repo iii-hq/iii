@@ -9,10 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{
-    EngineBuilder, logging,
-    workers::{config::EngineConfig, worker::DEFAULT_PORT},
-};
+use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -154,19 +151,12 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         logging::init_log_from_config(Some(&cli.config));
     }
 
-    let engine = EngineBuilder::new().with_config(config).build().await?;
-
-    // Start managed workers in background so engine boot is not blocked by image pulls.
-    let engine_url = format!("ws://localhost:{}", DEFAULT_PORT);
-    tokio::spawn(async move {
-        cli::managed_shim::start_managed_workers(&engine_url).await;
-    });
-
+    let mut builder = EngineBuilder::new().with_config(config);
+    if !cli.use_default_config {
+        builder = builder.with_config_path(&cli.config);
+    }
+    let engine = builder.build().await?;
     engine.serve().await?;
-
-    // Engine shutdown complete (modules destroyed). Stop managed worker VMs.
-    cli::managed_shim::stop_managed_workers().await;
-
     Ok(())
 }
 
@@ -215,7 +205,7 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
         Some(Commands::Worker { args }) => {
-            let exit_code = cli::handle_dispatch("worker", &args, cli_args.no_update_check).await;
+            let exit_code = cli::handle_dispatch("worker", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Update { target }) => {

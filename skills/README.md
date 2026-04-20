@@ -6,23 +6,14 @@ Works with Claude Code, Cursor, Gemini CLI, OpenCode, Amp, Goose, Roo Code, GitH
 
 ## Install
 
-### One command
-
 ```bash
-npx skills add iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 ```
 
-### SkillKit
+### Install a single skill
 
 ```bash
-# Install all iii skills
-npx skillkit install iii-hq/iii
-
-# Install a single skill
-npx skillkit install iii-hq/iii --skills=iii-http-endpoints
-
-# Sync skills across all your agents
-npx skillkit sync
+npx skillkit add iii-hq/iii/skills --skills=iii-http-endpoints
 ```
 
 ### Git clone
@@ -43,8 +34,7 @@ git clone https://github.com/iii-hq/iii.git /tmp/iii && cp -r /tmp/iii/skills/ii
 If you use multiple agents, SkillKit keeps skills in sync across all of them:
 
 ```bash
-# Install once, sync to Claude Code + Cursor + Gemini CLI
-npx skillkit install iii-hq/iii
+npx skillkit add iii-hq/iii/skills
 npx skillkit sync --agent claude-code
 npx skillkit sync --agent cursor
 npx skillkit sync --agent gemini-cli
@@ -68,6 +58,7 @@ Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teache
 | --- | --- |
 | [iii-functions-and-triggers](./iii-functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
 | [iii-http-endpoints](./iii-http-endpoints) | Expose functions as REST API endpoints |
+| [iii-http-middleware](./iii-http-middleware) | Engine-level middleware for HTTP triggers |
 | [iii-cron-scheduling](./iii-cron-scheduling) | Schedule recurring tasks with cron expressions |
 | [iii-queue-processing](./iii-queue-processing) | Async job processing with retries, concurrency, and ordering |
 | [iii-state-management](./iii-state-management) | Distributed key-value state across functions |
@@ -100,6 +91,7 @@ Compose multiple iii primitives into common backend architectures. Each includes
 | Skill | What it does |
 | --- | --- |
 | [iii-node-sdk](./iii-node-sdk) | Node.js/TypeScript SDK reference |
+| [iii-browser-sdk](./iii-browser-sdk) | Browser SDK reference |
 | [iii-python-sdk](./iii-python-sdk) | Python SDK reference |
 | [iii-rust-sdk](./iii-rust-sdk) | Rust SDK reference |
 

@@ -1,0 +1,29 @@
+# Terraform working directories
+.terraform/
+.terraform.tfstate.lock.info
+
+# State files — ALL Terraform state lives in the S3 remote backend
+# (bucket: iii-terraform-state-prod-us-east-1). Never commit state to git,
+# even for the bootstrap module. See _bootstrap/README.md for the re-bootstrap
+# procedure if you ever need to temporarily use local state.
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+
+# Plan outputs
+*.tfplan
+*.tfplan.*
+
+# Variable files that may contain secrets
+terraform.tfvars
+*.auto.tfvars
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Local-only docs
+website/README.md
+
+# Kept on purpose (do NOT ignore):
+# - .terraform.lock.hcl  → provider version pinning, must be committed

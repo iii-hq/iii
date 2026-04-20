@@ -1,6 +1,6 @@
 {
   "name": "@motiadev/stream-client-node",
-  "description": "Motia Stream Client Package – Responsible for managing streams of data.",
+  "description": "[DEPRECATED — moved to iii.dev] Motia Stream Client Package – Responsible for managing streams of data.",
   "version": "0.17.11-beta.193",
   "license": "Apache-2.0",
   "type": "module",

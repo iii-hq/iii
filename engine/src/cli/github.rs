@@ -98,14 +98,13 @@ async fn fetch_latest_release_by_prefix(
     // Try /releases/latest first — single API call, GitHub guarantees non-prerelease
     let latest_url = format!("https://api.github.com/repos/{}/releases/latest", spec.repo);
 
-    if let Ok(response) = client.get(&latest_url).send().await {
-        if response.status().is_success() {
-            if let Ok(release) = response.json::<Release>().await {
-                if tag_matches_prefix(&release.tag_name, prefix) && !release.prerelease {
-                    return Ok(release);
-                }
-            }
-        }
+    if let Ok(response) = client.get(&latest_url).send().await
+        && response.status().is_success()
+        && let Ok(release) = response.json::<Release>().await
+        && tag_matches_prefix(&release.tag_name, prefix)
+        && !release.prerelease
+    {
+        return Ok(release);
     }
 
     // Fallback: list releases and filter by prefix (monorepo edge case)

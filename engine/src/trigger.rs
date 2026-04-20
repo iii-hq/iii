@@ -13,6 +13,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
+    ("http", "iii-http"),
+    ("cron", "iii-cron"),
+    ("subscribe", "iii-pubsub"),
+    ("state", "iii-state"),
+    ("durable:subscriber", "iii-queue"),
+    ("stream", "iii-stream"),
+    ("stream:join", "iii-stream"),
+    ("stream:leave", "iii-stream"),
+    ("log", "iii-observability"),
+];
+
+fn worker_name_for_trigger_type(trigger_type_id: &str) -> Option<&'static str> {
+    BUILTIN_TRIGGER_TYPES
+        .iter()
+        .find(|(id, _)| *id == trigger_type_id)
+        .map(|(_, worker)| *worker)
+}
+
 pub struct TriggerType {
     pub id: String,
     pub _description: String,
@@ -62,7 +81,7 @@ impl TriggerType {
         match id {
             "http" => Self::schema_for::<HttpTriggerConfig>(),
             "cron" => Self::schema_for::<CronTriggerConfig>(),
-            "queue" => Self::schema_for::<QueueTriggerConfig>(),
+            "durable:subscriber" => Self::schema_for::<QueueTriggerConfig>(),
             "subscribe" => Self::schema_for::<SubscribeTriggerConfig>(),
             "state" => Self::schema_for::<StateTriggerConfig>(),
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
@@ -215,10 +234,22 @@ impl TriggerRegistry {
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
         let trigger_type_id = trigger.trigger_type.clone();
         let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
-            tracing::error!(
-                trigger_type_id = %trigger_type_id.purple(),
-                "Trigger type not found"
-            );
+            if let Some(worker_name) = worker_name_for_trigger_type(&trigger_type_id) {
+                tracing::error!(
+                    "Trigger type {} requires the {} worker, which is not active in your project.\n\n  To fix this, run:\n\n    {}\n",
+                    trigger_type_id.purple().bold(),
+                    worker_name.cyan().bold(),
+                    format!("iii worker add {}", worker_name).green().bold()
+                );
+                return Err(anyhow::anyhow!(
+                    "Trigger type \"{}\" not found — worker {} is missing. Run: iii worker add {}",
+                    trigger_type_id,
+                    worker_name,
+                    worker_name
+                ));
+            }
+
+            tracing::error!("Trigger type {} not found", trigger_type_id.purple());
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
@@ -449,6 +480,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_trigger_registry_register_trigger_missing_builtin_worker() {
+        let registry = TriggerRegistry::new();
+        let trigger = make_trigger("t1", "http");
+        let result = registry.register_trigger(trigger).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("iii worker add iii-http"),
+            "Expected hint with 'iii worker add iii-http', got: {err_msg}"
+        );
+        assert!(registry.triggers.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_trigger_registry_unregister_trigger() {
         let registry = TriggerRegistry::new();
         registry
@@ -590,12 +635,16 @@ mod tests {
     async fn test_register_trigger_propagates_registrator_error() {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(true, false));
-        let trigger_type =
-            TriggerType::new("queue", "Queue", Box::new(Arc::clone(&registrator)), None);
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue",
+            Box::new(Arc::clone(&registrator)),
+            None,
+        );
         registry.register_trigger_type(trigger_type).await.unwrap();
 
         let err = registry
-            .register_trigger(make_trigger("t-error", "queue"))
+            .register_trigger(make_trigger("t-error", "durable:subscriber"))
             .await
             .expect_err("register should fail when registrator errors");
 
@@ -608,16 +657,23 @@ mod tests {
     async fn test_unregister_trigger_propagates_registrator_error() {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(false, true));
-        let trigger_type =
-            TriggerType::new("queue", "Queue", Box::new(Arc::clone(&registrator)), None);
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue",
+            Box::new(Arc::clone(&registrator)),
+            None,
+        );
         registry.register_trigger_type(trigger_type).await.unwrap();
         registry
-            .register_trigger(make_trigger("t-unregister", "queue"))
+            .register_trigger(make_trigger("t-unregister", "durable:subscriber"))
             .await
             .unwrap();
 
         let err = registry
-            .unregister_trigger("t-unregister".to_string(), Some("queue".to_string()))
+            .unregister_trigger(
+                "t-unregister".to_string(),
+                Some("durable:subscriber".to_string()),
+            )
             .await
             .expect_err("unregister should fail when registrator errors");
 
@@ -632,14 +688,14 @@ mod tests {
         let worker_id = Uuid::new_v4();
         let registrator = Arc::new(ControlledRegistrator::new(false, true));
         let trigger_type = TriggerType::new(
-            "queue",
+            "durable:subscriber",
             "Queue",
             Box::new(Arc::clone(&registrator)),
             Some(worker_id),
         );
         registry.register_trigger_type(trigger_type).await.unwrap();
 
-        let mut trigger = make_trigger("t-owned", "queue");
+        let mut trigger = make_trigger("t-owned", "durable:subscriber");
         trigger.worker_id = Some(worker_id);
         registry.register_trigger(trigger).await.unwrap();
 

@@ -44,7 +44,7 @@ export function StatusPanel({ step, isActive, onNext }: StatusPanelProps) {
     <div
       className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border transition-all duration-300 ${classes} ${
         visible ? "opacity-100 translate-x-0" : "opacity-0 translate-x-4"
-      } ${isActive ? "" : "opacity-80"}`}
+      } ${isActive ? "" : ""}`}
     >
       <span className="text-base shrink-0">{icon}</span>
       <div className="flex-1 min-w-0">

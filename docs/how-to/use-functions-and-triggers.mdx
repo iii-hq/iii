@@ -311,7 +311,7 @@ iii.register_function(reg);
 
 ### Enqueue — `trigger` with `TriggerAction.Enqueue({ queue })`
 
-Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Queues](/how-to/use-queues).
+Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Named Queues](/how-to/use-named-queues).
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -481,7 +481,7 @@ iii.registerFunction('math::aggregation', async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'math::aggregation',
-  config: { expression: '0 */30 * * * *' }, // every 30 minutes
+  config: { expression: '0 */30 * * * * *' }, // every 30 minutes
 });
 ```
 </Tab>
@@ -502,7 +502,7 @@ iii.register_function("math::aggregation", aggregation)
 iii.register_trigger({
     "type": "cron",
     "function_id": "math::aggregation",
-    "config": {"expression": "0 */30 * * * *"},  # every 30 minutes
+    "config": {"expression": "0 */30 * * * * *"},  # every 30 minutes
 })
 ```
 </Tab>
@@ -532,7 +532,7 @@ iii.register_function(reg);
 iii.register_trigger(RegisterTriggerInput {
   trigger_type: "cron".into(),
   function_id: "math::aggregation".into(),
-  config: json!({ "expression": "0 */30 * * * *" }), // every 30 minutes
+  config: json!({ "expression": "0 */30 * * * * *" }), // every 30 minutes
   metadata: None,
 })?;
 ```
@@ -615,15 +615,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-{/* TODO: Update this, enqueue is its entirely own thing */}
-
-{/* <Info title="Queue uses enqueue">
-  Queue messaging uses `enqueue` — a built-in function, no trigger registration needed:
-  Node `trigger({ function_id: 'enqueue', payload: { topic: 'user.created', data: {...} } })`,
-  Python `trigger({'function_id': 'enqueue', 'payload': {'topic': 'user.created', 'data': {...}}})`,
-  Rust `trigger(TriggerRequest::new("enqueue", json!({"topic": "user.created", "data": {...}})))`.
-  See the [Queue module](/modules/module-queue) for details.
-</Info> */}
+<Info title="Queue uses iii::durable::publish">
+  Queue messaging uses `iii::durable::publish` — a built-in function, no trigger registration needed:
+  Node `trigger({ function_id: 'iii::durable::publish', payload: { topic: 'user.created', data: {...} } })`,
+  Python `trigger({'function_id': 'iii::durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
+  Rust `trigger(TriggerRequest::new("iii::durable::publish", json!({"topic": "user.created", "data": {...}})))`.
+  See the [Queue worker](/workers/iii-queue) for details.
+</Info>
 
 ## Trigger Types
 
@@ -631,7 +629,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |------|-----------|---------------|--------|
 | `http` | HTTP request received | `api_path`, `http_method` | HTTP |
 | `cron` | Schedule fires | `expression` | Cron |
-| `queue` | Message published to a topic | `topic` | Queue |
+| `durable:subscriber` | Message published to a topic | `topic` | Queue |
 | `subscribe` | PubSub message on a topic | `topic` | PubSub |
 | `state` | State value changes | `scope`, `key` | State |
 | `stream` | Stream value changes | `stream_name`, `group_id`, `item_id` | Stream |
@@ -826,7 +824,7 @@ Durable message queue for async processing.
 
 | Function | Purpose | Parameters |
 |----------|---------|------------|
-| `enqueue` | Enqueue a message | `topic`, `data` |
+| `iii::durable::publish` | Publish a message | `topic`, `data` |
 
 ### PubSub
 

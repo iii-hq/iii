@@ -55,9 +55,9 @@ async def payments_charge(data):
 iii.register_function("payments::charge", payments_charge)
 
 iii.register_trigger({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "payments::charge",
-    "config": {"queue": "payment"},
+    "config": {"topic": "payment"},
 })
 
 # ---
@@ -180,7 +180,7 @@ iii.register_function("admin::auto-redrive", auto_redrive)
 iii.register_trigger({
     "type": "cron",
     "function_id": "admin::auto-redrive",
-    "config": {"expression": "0 0 * * * *"},
+    "config": {"expression": "0 0 * * * * *"},
 })
 
 

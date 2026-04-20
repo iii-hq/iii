@@ -1,0 +1,342 @@
+---
+title: 'Everything is a Worker'
+description: 'Why we renamed modules to workers and how to migrate.'
+---
+
+## Why this change
+
+iii is built on three primitives: **Workers**, **Functions**, and **Triggers**. Every concept in the system maps to one of these:
+
+- **Workers** are long-running processes that connect to the engine and provide capabilities -- HTTP serving, queue processing, cron scheduling, state management, stream handling, and anything else the engine needs to operate.
+- **Functions** are units of work. A worker registers functions, and any other worker (or the engine itself) can invoke them by ID.
+- **Triggers** are the rules that cause functions to fire -- an HTTP request, a cron schedule, a queue message, a state change.
+
+Before this release, the engine-internal components that provide capabilities (HTTP, queues, cron, etc.) were called "modules". Meanwhile, the remote SDK processes that register functions were called "workers". This created a confusing split: two different names for things that serve the same role -- connecting to the engine and doing work.
+
+Modules **are** workers. They run alongside the engine, register functions, react to triggers, and provide capabilities to the rest of the system. The only difference was the name.
+
+By renaming modules to workers, every component in the system uses the same vocabulary. The engine config lists `workers:`. The SDK connects `workers`. The docs describe `workers`. There is one concept, one name, and one mental model.
+
+The previous `Worker` struct (representing a connected SDK runtime over WebSocket) has been renamed to `WorkerConnection` to avoid collision.
+
+---
+
+## What changed
+
+### Config YAML
+
+The top-level `modules:` key is now `workers:`, and each entry uses `name:` with a short identifier instead of `class:` with a Rust-style path.
+
+```yaml
+# Before
+modules:
+  - class: modules::stream::StreamModule
+    config:
+      port: 3112
+
+# After
+workers:
+  - name: iii-stream
+    config:
+      port: 3112
+```
+
+<Info>The `modules:` key is still accepted for backward compatibility, but `workers:` is the canonical form going forward.</Info>
+
+#### Worker name mapping
+
+| Old `class:` value | New `name:` value |
+|---|---|
+| `modules::worker::WorkerModule` | `iii-worker-manager` |
+| `modules::stream::StreamModule` | `iii-stream` |
+| `modules::state::StateModule` | `iii-state` |
+| `modules::api::RestApiModule` | `iii-http` |
+| `modules::pubsub::PubSubModule` | `iii-pubsub` |
+| `modules::observability::OtelModule` | `iii-observability` |
+| `modules::queue::QueueModule` | `iii-queue` |
+| `modules::http_functions::HttpFunctionsModule` | `iii-http-functions` |
+| `modules::cron::CronModule` | `iii-cron` |
+| `modules::shell::ExecModule` | `iii-exec` |
+| `modules::bridge_client::BridgeClientModule` | `iii-bridge` |
+
+#### Adapter name mapping
+
+Adapter entries inside `config.adapter` also switched from `class:` to `name:` with short identifiers:
+
+| Old adapter `class:` | New adapter `name:` |
+|---|---|
+| `modules::stream::adapters::KvStore` | `kv` |
+| `modules::stream::adapters::RedisAdapter` | `redis` |
+| `modules::stream::adapters::Bridge` | `bridge` |
+| `modules::state::adapters::KvStore` | `kv` |
+| `modules::state::adapters::RedisAdapter` | `redis` |
+| `modules::state::adapters::Bridge` | `bridge` |
+| `modules::pubsub::LocalAdapter` | `local` |
+| `modules::pubsub::RedisAdapter` | `redis` |
+| `modules::queue::BuiltinQueueAdapter` | `builtin` |
+| `modules::queue::RedisAdapter` | `redis` |
+| `modules::queue::RabbitMQAdapter` | `rabbitmq` |
+| `modules::queue::adapters::Bridge` | `bridge` |
+| `modules::cron::KvCronAdapter` | `kv` |
+| `modules::cron::RedisCronAdapter` | `redis` |
+
+#### Full config example
+
+<Tabs>
+<Tab title="Before">
+```yaml
+modules:
+  - class: modules::stream::StreamModule
+    config:
+      port: 3112
+      adapter:
+        class: modules::stream::adapters::KvStore
+        config:
+          store_method: file_based
+          file_path: ./data/stream_store
+
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::KvStore
+        config:
+          store_method: file_based
+          file_path: ./data/state_store.db
+
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+
+  - class: modules::observability::OtelModule
+    config:
+      enabled: true
+
+  - class: modules::queue::QueueModule
+    config:
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
+
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::LocalAdapter
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::KvCronAdapter
+```
+</Tab>
+<Tab title="After">
+```yaml
+workers:
+  - name: iii-stream
+    config:
+      port: 3112
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/stream_store
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store.db
+
+  - name: iii-http
+    config:
+      port: 3111
+
+  - name: iii-observability
+    config:
+      enabled: true
+
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+
+  - name: iii-pubsub
+    config:
+      adapter:
+        name: local
+
+  - name: iii-cron
+    config:
+      adapter:
+        name: kv
+```
+</Tab>
+</Tabs>
+
+---
+
+### Rust API
+
+#### Crate module path
+
+The `modules` Rust module has been renamed to `workers`, and the trait definition file moved from `module.rs` to `traits.rs`.
+
+```rust
+// Before
+use iii::modules::config::EngineBuilder;
+use iii::modules::module::Module;
+use iii::modules::registry::ModuleRegistration;
+
+// After
+use iii::workers::config::EngineBuilder;  // also re-exported as iii::EngineBuilder
+use iii::workers::traits::Worker;
+use iii::workers::registry::WorkerRegistration;
+```
+
+#### Trait renames
+
+| Before | After |
+|---|---|
+| `trait Module` | `trait Worker` |
+| `trait ConfigurableModule` | `trait ConfigurableWorker` |
+| `Module::make_module()` | `Worker::make_worker()` |
+| `Module::create() -> Box<dyn Module>` | `Worker::create() -> Box<dyn Worker>` |
+| `ConfigurableModule::DEFAULT_ADAPTER_CLASS` | `ConfigurableWorker::DEFAULT_ADAPTER_NAME` |
+| `ConfigurableModule::default_adapter_class()` | `ConfigurableWorker::default_adapter_name()` |
+| `ConfigurableModule::adapter_class_from_config()` | `ConfigurableWorker::adapter_name_from_config()` |
+
+#### Type alias and struct renames
+
+| Before | After |
+|---|---|
+| `ModuleFuture` | `WorkerFuture` |
+| `ModuleFactory` | `WorkerFactory` |
+| `ModuleInfo` | `WorkerInfo` |
+| `ModuleRegistry` | `WorkerRegistry` |
+| `ModuleEntry` | `WorkerEntry` |
+| `ModuleRegistration` | `WorkerRegistration` |
+
+#### Macro renames
+
+| Before | After |
+|---|---|
+| `register_module!(class, Type, ...)` | `register_worker!(name, Type, ...)` |
+
+#### EngineBuilder API
+
+| Before | After |
+|---|---|
+| `EngineBuilder::add_module(class, config)` | `EngineBuilder::add_worker(name, config)` |
+| `EngineBuilder::register_module::<M>(class)` | `EngineBuilder::register_worker::<M>(name)` |
+
+#### Implementation struct renames
+
+| Before | After |
+|---|---|
+| `WorkerModule` | `WorkerManager` |
+| `StreamCoreModule` | `StreamWorker` |
+| `StateCoreModule` | `StateWorker` |
+| `RestApiCoreModule` | `HttpWorker` |
+| `PubSubCoreModule` | `PubSubWorker` |
+| `OtelModule` | `ObservabilityWorker` |
+| `QueueCoreModule` | `QueueWorker` |
+| `HttpFunctionsModule` | `HttpFunctionsWorker` |
+| `CronCoreModule` | `CronWorker` |
+| `ExecCoreModule` | `ExecWorker` |
+| `BridgeClientModule` | `BridgeClientWorker` |
+| `TelemetryModule` | `TelemetryWorker` |
+| `EngineFunctionsModule` | `EngineFunctionsWorker` |
+| `ExternalModule` | `ExternalWorker` |
+
+#### WorkerConnection (was Worker)
+
+The `Worker` struct that represented a connected remote SDK runtime has been renamed to `WorkerConnection` and moved to a separate module.
+
+| Before | After |
+|---|---|
+| `crate::workers::Worker` | `crate::worker_connections::WorkerConnection` |
+| `crate::workers::WorkerRegistry` | `crate::worker_connections::WorkerConnectionRegistry` |
+| `crate::workers::WorkerStatus` | `crate::worker_connections::WorkerConnectionStatus` |
+| `crate::workers::WorkerTelemetryMeta` | `crate::worker_connections::WorkerConnectionTelemetryMeta` |
+
+---
+
+## Migration examples
+
+### Custom worker
+
+<Tabs>
+<Tab title="Before">
+```rust
+use iii::modules::module::Module;
+
+pub struct MyModule { /* ... */ }
+
+#[async_trait]
+impl Module for MyModule {
+    fn name(&self) -> &'static str { "MyModule" }
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+        Ok(Box::new(MyModule { /* ... */ }))
+    }
+    async fn initialize(&self) -> anyhow::Result<()> { Ok(()) }
+}
+
+iii::register_module!("my::custom::Module", MyModule, enabled_by_default = true);
+```
+</Tab>
+<Tab title="After">
+```rust
+use iii::workers::traits::Worker;
+
+pub struct MyWorker { /* ... */ }
+
+#[async_trait]
+impl Worker for MyWorker {
+    fn name(&self) -> &'static str { "MyWorker" }
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        Ok(Box::new(MyWorker { /* ... */ }))
+    }
+    async fn initialize(&self) -> anyhow::Result<()> { Ok(()) }
+}
+
+iii::register_worker!("iii-my-custom", MyWorker, enabled_by_default = true);
+```
+</Tab>
+</Tabs>
+
+### Custom adapter
+
+<Tabs>
+<Tab title="Before">
+```rust
+iii::register_adapter!(
+    <MyAdapterRegistration>
+    "modules::my_worker::MyAdapter",
+    make_adapter
+);
+```
+</Tab>
+<Tab title="After">
+```rust
+iii::register_adapter!(
+    <MyAdapterRegistration>
+    name: "my-adapter",
+    make_adapter
+);
+```
+</Tab>
+</Tabs>
+
+---
+
+## Migration checklist
+
+- [ ] Rename `modules:` to `workers:` in all config YAML files
+- [ ] Replace `class:` with `name:` using the new short identifiers (see tables above)
+- [ ] Replace adapter `class:` with `name:` using short identifiers (`kv`, `redis`, `builtin`, etc.)
+- [ ] Update Rust imports from `iii::modules::` to `iii::workers::`
+- [ ] Update `iii::modules::module::Module` to `iii::workers::traits::Worker`
+- [ ] Replace `register_module!` with `register_worker!`
+- [ ] Replace `add_module()` / `register_module()` on `EngineBuilder` with `add_worker()` / `register_worker()`
+- [ ] Rename any `*Module` / `*CoreModule` struct references to the new `*Worker` / `*Manager` names
+- [ ] Update `crate::workers::Worker` references to `crate::worker_connections::WorkerConnection`

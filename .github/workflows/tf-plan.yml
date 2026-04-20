@@ -1,0 +1,93 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/tf-plan.yml'
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: tf-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt-validate-plan:
+    name: fmt / validate / plan (website)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+
+      - name: Terraform fmt (recursive)
+        run: terraform fmt -check -recursive infra/terraform/
+
+      - name: Configure AWS credentials (read-only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_READONLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform init
+        working-directory: infra/terraform/website
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: infra/terraform/website
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        id: plan
+        working-directory: infra/terraform/website
+        env:
+          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
+        run: |
+          set -o pipefail
+          terraform plan -no-color -input=false -lock=false 2>&1 | tee plan.txt
+          {
+            echo 'plan<<TF_PLAN_EOF'
+            cat plan.txt
+            echo 'TF_PLAN_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: ${{ steps.plan.outputs.plan }}
+        with:
+          script: |
+            const plan = process.env.PLAN || '';
+            const truncated = plan.length > 60000
+              ? plan.slice(0, 60000) + '\n... [truncated, see workflow logs for full plan]'
+              : plan;
+            const body = [
+              '## Terraform plan — `infra/terraform/website`',
+              '',
+              '<details><summary>Click to expand</summary>',
+              '',
+              '```',
+              truncated,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

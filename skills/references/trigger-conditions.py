@@ -135,10 +135,10 @@ async def fulfill(data):
 iii.register_function("orders::fulfill", fulfill)
 
 iii.register_trigger({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "orders::on-placed",
     "config": {
-        "queue": "order-events",
+        "topic": "order-events",
         "condition_function_id": "conditions::is-order-placed",
     },
 })
@@ -170,7 +170,7 @@ iii.register_trigger({
     "type": "cron",
     "function_id": "reports::weekday-digest",
     "config": {
-        "expression": "0 8 * * *",
+        "expression": "0 0 8 * * * *",
         "condition_function_id": "conditions::is-weekday",
     },
 })

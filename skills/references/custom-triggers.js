@@ -3,7 +3,7 @@
  * Comparable to: Custom event adapters, webhook connectors, polling integrators
  *
  * Demonstrates how to define entirely new trigger types beyond the built-in
- * http, queue, cron, state, and subscribe triggers. A custom trigger type
+ * http, durable:subscriber, cron, state, and subscribe triggers. A custom trigger type
  * registers handler callbacks that the engine invokes when triggers of that
  * type are created or removed, letting you bridge any external event source
  * (webhooks, file-system watchers, pollers) into the iii function graph.

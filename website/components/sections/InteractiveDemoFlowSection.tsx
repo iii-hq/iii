@@ -31,6 +31,7 @@ export function InteractiveDemoFlowSection({
         <DemoSequencer
           steps={homepageFlow}
           mode="hero"
+          isDarkMode={isDarkMode}
           className="!h-full !min-h-0 w-full max-h-full"
         />
       </div>

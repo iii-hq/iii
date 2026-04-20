@@ -1,3 +1,7 @@
+> [!WARNING]
+> **Motia is deprecated.** Active development has moved to [iii.dev](https://iii.dev).
+> [Read the announcement](https://blog.motia.dev/motia-helped-us-build-something-incredible/) · [Migrating from Motia.js](https://iii.dev/docs/changelog/0-11-0/migrating-from-motia-js)
+
 [![Motia Banner](https://github.com/MotiaDev/motia/raw/main/assets/github-readme-banner.png)](https://motia.dev/)
 
 [![npm version](https://img.shields.io/npm/v/motia?style=flat&logo=npm&logoColor=white&color=CB3837&labelColor=000000)](https://www.npmjs.com/package/motia)

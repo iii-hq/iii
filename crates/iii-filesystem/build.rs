@@ -3,12 +3,6 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(has_init_binary)");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../iii-init/src/main.rs");
-    println!("cargo:rerun-if-changed=../iii-init/src/supervisor.rs");
-    println!("cargo:rerun-if-changed=../iii-init/src/mount.rs");
-    println!("cargo:rerun-if-changed=../iii-init/src/network.rs");
-    println!("cargo:rerun-if-changed=../iii-init/src/rlimit.rs");
-    println!("cargo:rerun-if-changed=../iii-init/src/error.rs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let dest = out_dir.join("iii-init");
@@ -29,6 +23,22 @@ fn main() {
             .join(triple)
             .join("release")
             .join("iii-init");
+
+        // Track the cross-compiled binary itself rather than the iii-init
+        // source tree. iii-init links iii-supervisor as a library, and a
+        // source-tree allowlist silently misses edits to transitive deps
+        // like iii-supervisor — which is exactly how the in-VM
+        // process-group kill fix ended up shipped-but-not-embedded: the
+        // linux-musl iii-init was rebuilt by `make sandbox`, but this
+        // build.rs never re-ran, the OUT_DIR snapshot stayed frozen at
+        // a pre-fix copy, and iii-worker embedded the stale bytes.
+        //
+        // `rerun-if-changed` accepts a path that doesn't exist yet —
+        // cargo tracks the (non-)existence and reruns when the file
+        // appears or its mtime moves. This is exactly the semantics we
+        // want: "re-copy whenever the upstream binary changes, for any
+        // reason, in any dep".
+        println!("cargo:rerun-if-changed={}", binary_path.display());
 
         if !triple.is_empty() && binary_path.is_file() {
             std::fs::copy(&binary_path, &dest).expect("failed to copy iii-init to OUT_DIR");

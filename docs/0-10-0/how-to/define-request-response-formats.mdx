@@ -1,0 +1,181 @@
+---
+title: 'Define Request/Response Formats for Functions'
+description: 'Attach JSON Schema request and response formats when registering functions so tools, agents, and operators can discover payloads and invoke functions safely.'
+---
+
+## Goal
+
+Register functions with **`request_format`** and **`response_format`** (JSON Schema objects) so callers—including AI agents and the CLI know exactly what JSON to send and what to expect back.
+
+## Why this matters
+
+When you register a function, the iii engine stores metadata for discovery. The built-in **`engine::functions::list`** function returns every registered function with its `request_format` and `response_format`.
+
+- **AI and automation** — Agents can read that list and construct valid `payload` objects without guessing field names or types.
+- **CLI and scripts** — The same schemas document how to build `--payload` for [`iii trigger`](trigger-functions-from-cli).
+- **Contracts** — Formats are a machine-readable contract between your implementation and anything that triggers it.
+
+If you omit formats, discovery still lists your function, but **`request_format` / `response_format` may be `null`**, leaving callers without a structured contract.
+
+## Discover functions (and their formats) from the CLI
+
+List everything registered on a running engine:
+
+```bash
+iii trigger --function-id=engine::functions::list
+```
+
+The result includes a `functions` array. Each entry has `function_id`, `description`, **`request_format`**, **`response_format`**, and optional `metadata`. For example, a state helper might look like this (trimmed):
+
+```json
+{
+  "functions": [
+    {
+      "function_id": "state::get",
+      "description": "Get a value from state",
+      "request_format": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "key": { "type": "string" },
+          "scope": { "type": "string" }
+        },
+        "required": ["key", "scope"],
+        "type": "object"
+      },
+      "response_format": null
+    }
+  ]
+}
+```
+
+Use `request_format` to shape the JSON you pass to `trigger()` or `iii trigger --payload='...'`. Use `response_format` when you need to document or validate the return shape (when present).
+
+## Register formats in your SDK
+
+Define schemas in the way that fits each language, then register the function. The engine stores the JSON Schema (or schema-compatible object) you send.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+
+Use **Zod** (or any library that produces JSON Schema) and pass the schema objects on registration. The Node SDK does **not** infer formats from TypeScript types—you set `request_format` and `response_format` explicitly.
+
+```typescript title="hello-world-zod.ts"
+import { z } from 'zod'
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const inputSchema = z.object({
+  scope: z.string(),
+  key: z.string(),
+})
+
+const outputSchema = z.object({
+  value: z.string(),
+})
+
+async function helloWorld(input: z.infer<typeof inputSchema>): Promise<z.infer<typeof outputSchema>> {
+  return { value: `${input.scope}::${input.key}` }
+}
+
+iii.registerFunction(
+  {
+    id: 'example::hello-world',
+    description: 'Resolve a scoped key to a single string value',
+    request_format: z.toJSONSchema(inputSchema),
+    response_format: z.toJSONSchema(outputSchema),
+  },
+  helloWorld,
+)
+```
+
+Keep **one Zod schema per direction** (input / output) so types and JSON Schema stay in sync via `z.infer`.
+
+</Tab>
+<Tab title="Python">
+
+Use **Pydantic `BaseModel`** for the handler parameter and return type. When you use the simplified API—**`register_function("id", handler)`**—the Python SDK **auto-extracts** `request_format` and `response_format` from the handler’s type hints (including full JSON Schema for Pydantic models).
+
+```python title="create_todo.py"
+from iii import register_worker
+from pydantic import BaseModel
+
+iii = register_worker("ws://localhost:49134")
+
+
+class Todo(BaseModel):
+    id: str
+    group_id: str
+    description: str
+    due_date: str | None = None
+    completed_at: str | None = None
+
+
+def create_todo(todo: Todo) -> Todo:
+    return todo
+
+
+iii.register_function("myscope::create_todo", create_todo)
+```
+
+To override or supply formats manually, use the dict form: `register_function({"id": "...", "request_format": {...}, "response_format": {...}}, handler)`.
+
+</Tab>
+<Tab title="Rust">
+
+Derive **`schemars::JsonSchema`** (and **`serde::Deserialize`** for input) on your input type. Use **`RegisterFunction::new`** or **`RegisterFunction::new_async`**—the builder **fills in `request_format` and `response_format`** from the handler signature when the types support schema generation.
+
+```rust title="echo.rs"
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use serde_json::json;
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EchoInput {
+    message: String,
+    repeat: u32,
+    uppercase: bool,
+    prefix: String,
+}
+
+fn echo_message(input: EchoInput) -> Result<serde_json::Value, String> {
+    let mut result = input.message.repeat(input.repeat as usize);
+    if input.uppercase {
+        result = result.to_uppercase();
+    }
+    Ok(json!({ "echo": format!("{}{}", input.prefix, result) }))
+}
+
+// In main, after `let iii = register_worker(...)`:
+iii.register_function(
+    RegisterFunction::new("example::echo", echo_message)
+        .description("Echo a message with repeat and formatting options"),
+);
+```
+
+For handlers typed as `serde_json::Value` only, you won’t get a rich input schema—prefer a dedicated struct with `JsonSchema` for discoverability.
+
+</Tab>
+</Tabs>
+
+## Auto-extraction vs explicit schemas
+
+| SDK | Request/response formats |
+|-----|-------------------------|
+| **Node** | Set explicitly (e.g. `z.toJSONSchema(...)`). No automatic extraction from TypeScript types. |
+| **Python** | With `register_function("id", handler)`, formats are **auto-extracted** from annotations (Pydantic models yield full JSON Schema). |
+| **Rust** | **`RegisterFunction::new` / `new_async`** derives schemas from types that implement **`JsonSchema`** (via `schemars`). |
+
+<Warning title="Keep schemas honest">
+  The engine does not validate every payload against your schema before invoking your handler—that depends on your runtime. Treat `request_format` / `response_format` as the **documented contract** for callers; still validate inside the handler when correctness is critical.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Trigger Functions from the CLI" href="./trigger-functions-from-cli" icon="terminal">
+    Invoke any function with `iii trigger` and a JSON payload
+  </Card>
+  <Card title="Use Functions & Triggers" href="./use-functions-and-triggers" icon="code">
+    Register functions, triggers, and cross-language invocation patterns
+  </Card>
+</CardGroup>

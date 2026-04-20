@@ -5,12 +5,21 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod app;
-pub mod dev;
+pub mod binary_download;
+pub mod builtin_defaults;
+pub mod config_file;
 pub mod firmware;
 pub mod lifecycle;
+pub mod local_worker;
 pub mod managed;
+pub mod pidfile;
 pub mod project;
 pub mod registry;
 pub mod rootfs;
+pub mod source_watcher;
+pub mod status;
+pub mod supervisor_ctl;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod vm_boot;
 pub mod worker_manager;

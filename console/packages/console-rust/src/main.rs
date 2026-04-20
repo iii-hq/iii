@@ -112,9 +112,13 @@ async fn main() -> Result<()> {
     let bridge = iii_sdk::register_worker(
         &bridge_url,
         iii_sdk::InitOptions {
-            metadata: None,
+            metadata: Some(iii_sdk::WorkerMetadata {
+                name: "iii-console".to_string(),
+                ..iii_sdk::WorkerMetadata::default()
+            }),
             otel: otel_config,
             headers: None,
+            ..Default::default()
         },
     );
 

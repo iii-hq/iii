@@ -5,7 +5,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "Motia is a library for building AI-powered applications.",
+  "description": "[DEPRECATED — moved to iii.dev] Motia is a library for building AI-powered applications.",
   "repository": {
     "type": "git",
     "url": "https://github.com/iii-hq/iii.git",

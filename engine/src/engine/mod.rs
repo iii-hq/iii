@@ -11,6 +11,7 @@ use axum::{
     http::{HeaderMap, Uri},
 };
 use chrono::Utc;
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -233,6 +234,23 @@ pub struct Engine {
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
     pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
+    /// Records the current owning WS worker for each registered function id.
+    /// Populated when a worker sends `Message::RegisterFunction`; used by
+    /// `cleanup_worker` and `remove_worker_registrations` to atomically skip
+    /// removal of registrations that have been overwritten by a different,
+    /// still-live worker (the fast-restart race). In-process workers do not
+    /// populate this map, so the absence of an entry means "no WS owner."
+    pub(crate) function_owners: Arc<DashMap<String, Uuid>>,
+    /// HTTP-invocation variant of `function_owners`, separate because external
+    /// functions live in their own per-worker set on `WorkerConnection`.
+    pub(crate) external_function_owners: Arc<DashMap<String, Uuid>>,
+    pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
+    /// Effective `iii-worker-manager` port, resolved from config at build
+    /// time. Set once by `EngineBuilder::build`; subsequent reads see the
+    /// same value for the engine's lifetime. Used by `registry_worker::
+    /// ExternalWorkerProcess::spawn` so externally-spawned workers connect
+    /// back to the actual configured port, not a hardcoded DEFAULT_PORT.
+    worker_manager_port: Arc<std::sync::OnceLock<u16>>,
 }
 
 impl Default for Engine {
@@ -243,19 +261,102 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Self {
+        let active_scope = Arc::new(std::sync::Mutex::new(None));
         Self {
             worker_registry: Arc::new(WorkerConnectionRegistry::new()),
-            functions: Arc::new(FunctionsRegistry::new()),
+            functions: Arc::new(FunctionsRegistry::with_scope(active_scope.clone())),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             queue_module: Arc::new(tokio::sync::RwLock::new(None)),
+            function_owners: Arc::new(DashMap::new()),
+            external_function_owners: Arc::new(DashMap::new()),
+            active_scope,
+            worker_manager_port: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
         *self.queue_module.write().await = Some(module);
+    }
+
+    /// Returns the effective `iii-worker-manager` port. Resolved from config
+    /// by `EngineBuilder::build` (see `set_worker_manager_port`); falls back
+    /// to `workers::worker::DEFAULT_PORT` if never set (direct `Engine::new`
+    /// paths used only by tests).
+    pub fn worker_manager_port(&self) -> u16 {
+        self.worker_manager_port
+            .get()
+            .copied()
+            .unwrap_or(crate::workers::worker::DEFAULT_PORT)
+    }
+
+    /// Records the effective port. Called once by `EngineBuilder::build`
+    /// after scanning the worker list for an `iii-worker-manager` entry.
+    /// Subsequent calls are ignored (OnceLock semantics) so the port cannot
+    /// drift mid-lifetime.
+    pub fn set_worker_manager_port(&self, port: u16) {
+        let _ = self.worker_manager_port.set(port);
+    }
+
+    /// Opens a scope so that registrations made between here and
+    /// [`Self::end_worker_scope`] are attributed to `worker_name`. Panics if a
+    /// scope is already active -- scopes do not nest.
+    ///
+    /// FIXME: `active_scope` is process-wide. During the window between
+    /// `begin_worker_scope` and `end_worker_scope`, a concurrent
+    /// `RegisterFunction` call from an unrelated WebSocket-connected worker
+    /// could be captured into this scope, causing `remove_worker_registrations`
+    /// to later delete a function that doesn't belong to the scoped worker.
+    /// The practical risk is low because `register_functions` is synchronous
+    /// and the window is very short, but for correctness a per-worker
+    /// registrar token (or equivalent isolation) should replace the global
+    /// `Arc<Mutex<Option<ScopeBuilder>>>`.
+    pub fn begin_worker_scope(&self, worker_name: &str) {
+        let mut scope = self.active_scope.lock().expect("scope mutex poisoned");
+        assert!(
+            scope.is_none(),
+            "begin_worker_scope called while a scope was already active"
+        );
+        tracing::trace!(worker = %worker_name, "begin_worker_scope");
+        *scope = Some(crate::workers::reload::ScopeBuilder::new());
+    }
+
+    /// Closes the current scope and returns the registrations captured inside
+    /// it. Panics if no scope is active.
+    pub fn end_worker_scope(&self) -> crate::workers::reload::WorkerRegistrations {
+        let mut scope = self.active_scope.lock().expect("scope mutex poisoned");
+        scope
+            .take()
+            .expect("end_worker_scope called without active scope")
+            .into_registrations()
+    }
+
+    /// Removes every registration recorded in `regs` from the engine's global
+    /// registries. Used during in-process worker destroy and reload.
+    ///
+    /// Skips ids currently owned by a WS worker via `function_owners`
+    /// (non-invocation path) or `external_function_owners` (HTTP-invocation
+    /// path) — without this, destroying an in-process worker that happened
+    /// to share a function id with a connected WS worker would tear out the
+    /// WS worker's live registration (or its `service_registry` entry, in
+    /// the HTTP case). In-process workers themselves do not populate either
+    /// owner map, so the absence of an entry in both is the "no WS owner"
+    /// signal that means we can safely remove.
+    pub fn remove_worker_registrations(&self, regs: &crate::workers::reload::WorkerRegistrations) {
+        for id in &regs.function_ids {
+            if self.function_owners.contains_key(id)
+                || self.external_function_owners.contains_key(id)
+            {
+                tracing::debug!(
+                    function_id = %id,
+                    "Skipping in-process registration removal — a WS worker currently owns this id"
+                );
+                continue;
+            }
+            self.remove_function_from_engine(id);
+        }
     }
 
     async fn send_msg(&self, worker: &WorkerConnection, msg: Message) -> bool {
@@ -291,6 +392,10 @@ impl Engine {
         );
 
         if let Some(function) = self.functions.get(function_id) {
+            if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
+                crate::workers::telemetry::collector::notify_user_function_invoked();
+            }
+
             if let Some(invocation_id) = invocation_id {
                 worker.add_invocation(invocation_id).await;
             }
@@ -695,46 +800,46 @@ impl Engine {
                         return Ok(());
                     }
 
-                    if let Some(middleware_id) = &session.config.middleware_function_id {
-                        if !function_id.starts_with("engine::") {
-                            let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
-                            let middleware_input = serde_json::json!({
-                                "function_id": function_id,
-                                "payload": data,
-                                "action": action,
-                                "context": session.context,
-                            });
-                            let engine = self.clone();
-                            let w = worker.clone();
-                            let middleware_id = middleware_id.clone();
-                            let function_id = function_id.clone();
-                            let traceparent = traceparent.clone();
-                            let baggage = baggage.clone();
+                    if let Some(middleware_id) = &session.config.middleware_function_id
+                        && !function_id.starts_with("engine::")
+                    {
+                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        let middleware_input = serde_json::json!({
+                            "function_id": function_id,
+                            "payload": data,
+                            "action": action,
+                            "context": session.context,
+                        });
+                        let engine = self.clone();
+                        let w = worker.clone();
+                        let middleware_id = middleware_id.clone();
+                        let function_id = function_id.clone();
+                        let traceparent = traceparent.clone();
+                        let baggage = baggage.clone();
 
-                            tokio::spawn(async move {
-                                let response =
-                                    match engine.call(&middleware_id, middleware_input).await {
-                                        Ok(result) => Message::InvocationResult {
-                                            invocation_id: inv_id,
-                                            function_id,
-                                            result,
-                                            error: None,
-                                            traceparent,
-                                            baggage,
-                                        },
-                                        Err(err) => Message::InvocationResult {
-                                            invocation_id: inv_id,
-                                            function_id,
-                                            result: None,
-                                            error: Some(err),
-                                            traceparent,
-                                            baggage,
-                                        },
-                                    };
-                                engine.send_msg(&w, response).await;
-                            });
-                            return Ok(());
-                        }
+                        tokio::spawn(async move {
+                            let response = match engine.call(&middleware_id, middleware_input).await
+                            {
+                                Ok(result) => Message::InvocationResult {
+                                    invocation_id: inv_id,
+                                    function_id,
+                                    result,
+                                    error: None,
+                                    traceparent,
+                                    baggage,
+                                },
+                                Err(err) => Message::InvocationResult {
+                                    invocation_id: inv_id,
+                                    function_id,
+                                    result: None,
+                                    error: Some(err),
+                                    traceparent,
+                                    baggage,
+                                },
+                            };
+                            engine.send_msg(&w, response).await;
+                        });
+                        return Ok(());
                     }
                 }
 
@@ -890,6 +995,20 @@ impl Engine {
                 );
                 if worker.has_external_function_id(id).await {
                     worker.remove_external_function_id(id).await;
+                    // Only tear down the engine-global registration if this
+                    // worker is still the recorded owner. Without the gate,
+                    // an Unregister from a worker whose id was already
+                    // hijacked by a fresher worker would wipe the live
+                    // worker's http_module + service_registry entries — the
+                    // same bug shape `cleanup_worker` guards against.
+                    if !self.release_external_function_if_owner(&worker.id, id) {
+                        tracing::debug!(
+                            worker_id = %worker.id,
+                            function_id = %id,
+                            "Skipping external UnregisterFunction — owner changed"
+                        );
+                        return Ok(());
+                    }
                     if let Some(http_module) = self
                         .service_registry
                         .get_service::<HttpFunctionsWorker>("http_functions")
@@ -917,7 +1036,14 @@ impl Engine {
                     }
                 } else {
                     worker.remove_function_id(id).await;
-                    self.remove_function_from_engine(id);
+                    // Same ownership gate as the external branch above.
+                    if !self.release_function_if_owner(&worker.id, id) {
+                        tracing::debug!(
+                            worker_id = %worker.id,
+                            function_id = %id,
+                            "Skipping UnregisterFunction — owner changed"
+                        );
+                    }
                 }
 
                 Ok(())
@@ -996,6 +1122,18 @@ impl Engine {
                     reg_id = format!("{prefix}::{reg_id}");
                 }
 
+                // Claim ownership BEFORE mutating any engine-global state. An
+                // old worker's `cleanup_worker` running on another task can
+                // see the pre-claim `function_owners` entry, match its own
+                // id, and tear down the registration we're about to write.
+                // Claiming first makes the CAS release in cleanup see the new
+                // owner and bail out for every subsequent step.
+                if invocation.is_some() {
+                    self.claim_external_function(worker.id, &reg_id);
+                } else {
+                    self.claim_function(worker.id, &reg_id);
+                }
+
                 self.service_registry
                     .register_service_from_function_id(&reg_id);
 
@@ -1009,6 +1147,7 @@ impl Engine {
                             function_id = %reg_id,
                             "HTTP functions module not loaded"
                         );
+                        self.release_external_function_if_owner(&worker.id, &reg_id);
                         return Ok(());
                     };
 
@@ -1034,6 +1173,7 @@ impl Engine {
                             error = ?err,
                             "Failed to register HTTP invocation function"
                         );
+                        self.release_external_function_if_owner(&worker.id, &reg_id);
                         return Ok(());
                     }
 
@@ -1250,37 +1390,151 @@ impl Engine {
         Ok(())
     }
 
+    /// Handles OTEL-only WebSocket connections.
+    ///
+    /// SDKs open a second WS exclusively for OpenTelemetry (OTLP/MTRC/LOGS
+    /// binary frames). Routing that traffic through `handle_worker` would
+    /// pollute `worker_registry` with ghost rows that have no metadata, no
+    /// functions, and no pid — doubling the worker count, inflating the
+    /// `workers_active` metric, and adding noise to `Worker registered`
+    /// logs. This handler performs the same RBAC handshake as a normal
+    /// worker connection but skips `worker_registry.register_worker`, and
+    /// only accepts telemetry binary frames on the inbound side.
+    pub async fn handle_otel(
+        &self,
+        socket: WebSocket,
+        peer: SocketAddr,
+        uri: Uri,
+        headers: HeaderMap,
+        config: Arc<WorkerManagerConfig>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        tracing::debug!(peer = %peer, "OTEL connection opened");
+        let (mut ws_tx, mut ws_rx) = socket.split();
+
+        // Reuse the worker RBAC gate so OTEL traffic can't bypass auth.
+        if let Err(err) =
+            rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers).await
+        {
+            let error_msg = serde_json::json!({
+                "type": "error",
+                "error": { "code": err.code, "message": err.message }
+            });
+            let _ = ws_tx
+                .send(WsMessage::Text(error_msg.to_string().into()))
+                .await;
+            let _ = ws_tx.send(WsMessage::Close(None)).await;
+            return Ok(());
+        }
+
+        loop {
+            tokio::select! {
+                frame = ws_rx.next() => {
+                    match frame {
+                        Some(Ok(WsMessage::Binary(bytes))) => {
+                            if !handle_telemetry_frame(&bytes, &peer).await {
+                                tracing::warn!(peer = %peer, "Unrecognized binary frame on /otel (dropping)");
+                            }
+                        }
+                        Some(Ok(WsMessage::Text(_))) => {
+                            // /otel is binary-only. Text frames here are a
+                            // protocol mistake — ignore rather than crash.
+                            tracing::debug!(peer = %peer, "Ignoring text frame on /otel");
+                        }
+                        Some(Ok(WsMessage::Close(_))) => {
+                            tracing::debug!(peer = %peer, "OTEL peer closed");
+                            break;
+                        }
+                        Some(Ok(WsMessage::Ping(payload))) => {
+                            let _ = ws_tx.send(WsMessage::Pong(payload)).await;
+                        }
+                        Some(Ok(WsMessage::Pong(_))) => {}
+                        Some(Err(_)) | None => break,
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::debug!(peer = %peer, "Shutdown signal received, closing OTEL connection");
+                    let _ = ws_tx.send(WsMessage::Close(None)).await;
+                    break;
+                }
+            }
+        }
+
+        tracing::debug!(peer = %peer, "OTEL connection closed");
+        Ok(())
+    }
+
     async fn cleanup_worker(&self, worker: &WorkerConnection) {
         let regular_functions = worker.get_regular_function_ids().await;
         let external_functions = worker.get_external_function_ids().await;
 
         tracing::debug!(worker_id = %worker.id, functions = ?regular_functions, "Worker registered functions");
         for function_id in regular_functions.iter() {
-            self.remove_function_from_engine(function_id);
+            if !self.release_function_if_owner(&worker.id, function_id) {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    function_id = %function_id,
+                    "Skipping function removal — owner changed (another worker registered after)"
+                );
+            }
         }
 
         if !external_functions.is_empty() {
-            if let Some(http_module) = self
+            let http_module = self
                 .service_registry
-                .get_service::<HttpFunctionsWorker>("http_functions")
-            {
-                for function_id in external_functions.iter() {
-                    if let Err(err) = http_module.unregister_http_function(function_id).await {
-                        tracing::error!(
-                            worker_id = %worker.id,
-                            function_id = %function_id,
-                            error = ?err,
-                            "Failed to unregister external function during worker cleanup"
-                        );
-                        self.remove_function(function_id);
+                .get_service::<HttpFunctionsWorker>("http_functions");
+            for function_id in external_functions.iter() {
+                // Snapshot ownership without releasing — releasing first would
+                // open a window where a racing `RegisterFunction` can claim
+                // ownership mid-teardown, and the remaining teardown steps
+                // (service_registry + http_module) would then wipe the new
+                // owner's fresh state. Keep ownership through teardown and
+                // CAS-release at the end so a racing claim reliably aborts
+                // us at the next ownership check.
+                if !self
+                    .external_function_owners
+                    .get(function_id)
+                    .is_some_and(|r| *r == worker.id)
+                {
+                    tracing::debug!(
+                        worker_id = %worker.id,
+                        function_id = %function_id,
+                        "Skipping external function removal — owner changed"
+                    );
+                    continue;
+                }
+                match &http_module {
+                    Some(module) => {
+                        if let Err(err) = module.unregister_http_function(function_id).await {
+                            tracing::error!(
+                                worker_id = %worker.id,
+                                function_id = %function_id,
+                                error = ?err,
+                                "Failed to unregister external function during worker cleanup"
+                            );
+                            self.remove_function(function_id);
+                        }
+                        // Re-check before wiping service_registry: the
+                        // `.await` above is a yield point a racing claim can
+                        // slip through, and service_registry is shared with
+                        // the claimant's setup path (router_msg populates it
+                        // before claim completes).
+                        if self
+                            .external_function_owners
+                            .get(function_id)
+                            .is_some_and(|r| *r == worker.id)
+                        {
+                            self.service_registry
+                                .remove_function_from_services(function_id);
+                        }
                     }
-                    self.service_registry
-                        .remove_function_from_services(function_id);
+                    None => self.remove_function_from_engine(function_id),
                 }
-            } else {
-                for function_id in external_functions.iter() {
-                    self.remove_function_from_engine(function_id);
-                }
+                // CAS-release ownership. A racing claim will have overwritten
+                // the entry with a new owner id; that predicate fails and we
+                // leave their ownership intact.
+                self.external_function_owners
+                    .remove_if(function_id, |_, owner| *owner == worker.id);
             }
         }
 
@@ -1304,9 +1558,80 @@ impl Engine {
 
         tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
     }
+
+    /// Records `worker_id` as the current owner of `function_id`. Logs a warning
+    /// when the previous owner was a different worker still in the registry —
+    /// that is the cross-worker overwrite shape that, post-defensive-cleanup,
+    /// can leave a hijacked entry behind. Operators can grep for this WARN
+    /// to detect potential function-id squatting.
+    fn claim_function(&self, worker_id: Uuid, function_id: &str) {
+        if let Some(previous) = self
+            .function_owners
+            .insert(function_id.to_string(), worker_id)
+            && previous != worker_id
+            && self.worker_registry.workers.contains_key(&previous)
+        {
+            tracing::warn!(
+                new_owner = %worker_id,
+                previous_owner = %previous,
+                function_id = %function_id,
+                "Function ownership transferred between two live workers — possible cross-worker overwrite"
+            );
+        }
+    }
+
+    /// HTTP-invocation variant of `claim_function`.
+    fn claim_external_function(&self, worker_id: Uuid, function_id: &str) {
+        if let Some(previous) = self
+            .external_function_owners
+            .insert(function_id.to_string(), worker_id)
+            && previous != worker_id
+            && self.worker_registry.workers.contains_key(&previous)
+        {
+            tracing::warn!(
+                new_owner = %worker_id,
+                previous_owner = %previous,
+                function_id = %function_id,
+                "External function ownership transferred between two live workers — possible cross-worker overwrite"
+            );
+        }
+    }
+
+    /// Atomically removes `function_id` from the engine ONLY if `worker_id`
+    /// is still the recorded owner. Returns true if the removal occurred.
+    /// `DashMap::remove_if` gives compare-and-swap semantics: no other thread
+    /// can race the predicate against the actual remove, which closes the
+    /// TOCTOU window a check-then-remove pair would leave between reading
+    /// ownership and `remove_function_from_engine`.
+    fn release_function_if_owner(&self, worker_id: &Uuid, function_id: &str) -> bool {
+        let removed = self
+            .function_owners
+            .remove_if(function_id, |_, owner| owner == worker_id);
+        if removed.is_some() {
+            self.remove_function_from_engine(function_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// External-function variant of `release_function_if_owner`. Caller is
+    /// responsible for unregistering from `http_functions` and the service
+    /// registry on success — this helper only releases the owner index.
+    fn release_external_function_if_owner(&self, worker_id: &Uuid, function_id: &str) -> bool {
+        self.external_function_owners
+            .remove_if(function_id, |_, owner| owner == worker_id)
+            .is_some()
+    }
 }
 
 impl EngineTrait for Engine {
+    /// Internal call path used by hooks, middleware, and fire_triggers — not direct
+    /// user invocations over WebSocket. We intentionally skip
+    /// `notify_user_function_invoked` here because this path serves engine
+    /// orchestration; the boot-heartbeat wakeup should only fire for actual
+    /// user-initiated invocations arriving via `remember_invocation` and not
+    /// things the engine can fire itself without user involvement, such as cron.
     async fn call(
         &self,
         function_id: &str,
@@ -2279,6 +2604,10 @@ mod tests {
         worker
             .include_external_function_id("external.cleanup")
             .await;
+        // Ownership gate on UnregisterFunction requires the worker to be the
+        // recorded owner. This test sidesteps `router_msg` to seed state, so
+        // populate the owner map directly to match the production invariant.
+        engine.claim_external_function(worker.id, "external.cleanup");
 
         engine
             .router_msg(
@@ -2832,6 +3161,546 @@ mod tests {
         assert!(engine.functions.get("cleanup_func").is_none());
         // Worker should be unregistered
         assert!(!engine.worker_registry.workers.contains_key(&worker.id));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_worker_preserves_function_owned_by_another_worker() {
+        // Regression guard for the dev-loop reload race: the old worker's
+        // disconnect cleanup used to fire after a new worker had already
+        // re-registered the same function_id, and cleanup_worker would
+        // unconditionally remove the function from the engine's global
+        // registry — deleting the new worker's fresh registration. The
+        // observable symptom was "change a file and endpoints stop
+        // working until the next reload". Post-fix, cleanup_worker walks
+        // worker_registry to see if any other live worker still claims
+        // the function_id and skips the remove in that case.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // OLD worker — connected first, registers `shared_func`.
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(old_worker.clone());
+        let register_msg = Message::RegisterFunction {
+            id: "shared_func".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .router_msg(&old_worker, &register_msg)
+            .await
+            .expect("old worker register should succeed");
+        assert!(engine.functions.get("shared_func").is_some());
+
+        // NEW worker connects, re-registers the same function_id. This
+        // simulates the fast-restart race where the host watcher
+        // spawns a new VM process that races the engine's disconnect
+        // handling for the old process.
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(new_worker.clone());
+        engine
+            .router_msg(&new_worker, &register_msg)
+            .await
+            .expect("new worker register should succeed");
+        assert!(
+            engine.functions.get("shared_func").is_some(),
+            "new worker's registration should be in the function_registry"
+        );
+
+        // Now the OLD worker's cleanup fires — simulating the late
+        // disconnect-detection path. Without the ownership check,
+        // this would remove shared_func out from under the new
+        // worker.
+        engine.cleanup_worker(&old_worker).await;
+
+        // Function must still be registered: the new worker owns it.
+        assert!(
+            engine.functions.get("shared_func").is_some(),
+            "cleanup of old worker must not remove a function owned by a live new worker"
+        );
+        // The old worker itself should be unregistered.
+        assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
+        // And the new worker should still be in the registry.
+        assert!(
+            engine.worker_registry.workers.contains_key(&new_worker.id),
+            "new worker should remain registered after old worker cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_worker_preserves_external_function_owned_by_another_worker() {
+        // HTTP-invocation variant of the regular-function regression: when an
+        // HTTP-invocation function is re-registered by a fresh worker before
+        // the old worker's cleanup fires, cleanup_worker must not unregister
+        // the function from the http_functions module nor from the engine's
+        // global registry. Covers the http_module-present branch of
+        // cleanup_worker's external_functions loop.
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let make_msg = || Message::RegisterFunction {
+            id: "external.shared".to_string(),
+            description: Some("shared external".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: "http://example.com/shared".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(old_worker.clone());
+        engine
+            .router_msg(&old_worker, &make_msg())
+            .await
+            .expect("old worker register should succeed");
+        assert!(engine.functions.get("external.shared").is_some());
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(http_module.http_functions().contains_key("external.shared"));
+
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(new_worker.clone());
+        engine
+            .router_msg(&new_worker, &make_msg())
+            .await
+            .expect("new worker register should succeed");
+
+        engine.cleanup_worker(&old_worker).await;
+
+        assert!(
+            engine.functions.get("external.shared").is_some(),
+            "cleanup of old worker must not remove an external function still owned by a live new worker"
+        );
+        assert!(
+            http_module.http_functions().contains_key("external.shared"),
+            "http_functions module must still have the entry the new worker owns"
+        );
+        assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
+        assert!(engine.worker_registry.workers.contains_key(&new_worker.id));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_worker_preserves_external_function_without_http_module() {
+        // Fallback branch of cleanup_worker's external_functions loop: when
+        // the http_functions service is not registered, the cleanup falls
+        // through to remove_function_from_engine. Verify the ownership
+        // check still skips removal in that path.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // Two workers, both manually placed in the registry with an external
+        // function id present. We set up state directly because RegisterFunction
+        // with `invocation: Some(_)` requires the http_functions service.
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        old_worker
+            .include_external_function_id("external.shared.no_http")
+            .await;
+        engine.worker_registry.register_worker(old_worker.clone());
+
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        new_worker
+            .include_external_function_id("external.shared.no_http")
+            .await;
+        engine.worker_registry.register_worker(new_worker.clone());
+
+        // Seed the global functions registry as if the new worker had
+        // registered it (the http_functions branch is what would normally
+        // populate this; the fallback path's job is to avoid clobbering it).
+        engine
+            .service_registry
+            .register_service_from_function_id("external.shared.no_http");
+
+        engine.cleanup_worker(&old_worker).await;
+
+        // service_registry entries persist across cleanup of old; new owns it.
+        // The key assertion: cleanup did NOT call remove_function_from_engine
+        // for this id. We can't directly observe the call site, but we can
+        // check that cleanup proceeded (old removed) and the new worker's
+        // external_function_ids set is intact.
+        assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
+        let live_new = engine
+            .worker_registry
+            .get_worker(&new_worker.id)
+            .expect("new worker still registered");
+        assert!(
+            live_new
+                .has_external_function_id("external.shared.no_http")
+                .await,
+            "new worker's external function id must survive old worker cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_worker_registrations_skips_ws_owned_ids() {
+        // The in-process reload path calls `remove_worker_registrations`
+        // with a set of function_ids captured during a scope. If a WS
+        // worker is currently the owner of one of those ids (either
+        // non-invocation via `function_owners` or HTTP-invocation via
+        // `external_function_owners`), the removal must be skipped so
+        // the live WS registration survives. This covers the new
+        // ownership-aware branch added at engine/src/engine/mod.rs:347.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // WS worker owns `ws_fn` via the non-invocation path.
+        let (tx_ws, _rx_ws) = mpsc::channel::<Outbound>(8);
+        let ws_worker = WorkerConnection::new(tx_ws);
+        engine.worker_registry.register_worker(ws_worker.clone());
+        engine
+            .router_msg(
+                &ws_worker,
+                &Message::RegisterFunction {
+                    id: "ws_fn".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("WS worker register should succeed");
+        assert!(engine.functions.get("ws_fn").is_some());
+        assert!(engine.function_owners.contains_key("ws_fn"));
+
+        // Also seed an external-owned id directly — we don't run the
+        // HTTP registration path here (it requires the http_functions
+        // service), so we populate `external_function_owners` by hand
+        // to exercise the `|| external_function_owners` leg of the
+        // skip branch.
+        engine
+            .external_function_owners
+            .insert("ext_fn".to_string(), ws_worker.id);
+
+        // Simulate an in-process worker teardown whose scope captured
+        // both ids. Before the ownership check was added, this loop
+        // would unconditionally call `remove_function_from_engine`
+        // and wipe the WS worker's live registrations.
+        let regs = crate::workers::reload::WorkerRegistrations {
+            function_ids: vec!["ws_fn".to_string(), "ext_fn".to_string()],
+        };
+        engine.remove_worker_registrations(&regs);
+
+        assert!(
+            engine.functions.get("ws_fn").is_some(),
+            "WS-owned non-invocation function must survive in-process teardown"
+        );
+        assert!(
+            engine.function_owners.contains_key("ws_fn"),
+            "ownership entry for the WS worker must be intact"
+        );
+        assert!(
+            engine.external_function_owners.contains_key("ext_fn"),
+            "external ownership entry for the WS worker must be intact"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_concurrent_register_and_cleanup_preserves_function() {
+        // Regression guard for the fast-restart race at its actual
+        // interleaving. The sequential tests above verify post-conditions
+        // but never exercise the TOCTOU window that `DashMap::remove_if`
+        // and the claim-before-register ordering were meant to close.
+        // This test runs register-on-new-worker concurrently with
+        // cleanup-of-old-worker across many iterations on fresh Engines,
+        // asserting the new worker's registration survives every time.
+        //
+        // If someone reverted `remove_if` back to `contains_key`+`remove`,
+        // or moved `claim_function` back below `include_function_id.await`,
+        // this test would start failing intermittently under load.
+        ensure_default_meter();
+
+        for _ in 0..50 {
+            let engine = Arc::new(Engine::new());
+
+            let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+            let old_worker = WorkerConnection::new(tx_old);
+            engine.worker_registry.register_worker(old_worker.clone());
+            engine
+                .router_msg(
+                    &old_worker,
+                    &Message::RegisterFunction {
+                        id: "raced_fn".to_string(),
+                        description: None,
+                        request_format: None,
+                        response_format: None,
+                        metadata: None,
+                        invocation: None,
+                    },
+                )
+                .await
+                .expect("old worker register should succeed");
+
+            let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+            let new_worker = WorkerConnection::new(tx_new);
+            engine.worker_registry.register_worker(new_worker.clone());
+
+            let engine_for_register = engine.clone();
+            let new_worker_for_register = new_worker.clone();
+            let register_handle = tokio::spawn(async move {
+                engine_for_register
+                    .router_msg(
+                        &new_worker_for_register,
+                        &Message::RegisterFunction {
+                            id: "raced_fn".to_string(),
+                            description: None,
+                            request_format: None,
+                            response_format: None,
+                            metadata: None,
+                            invocation: None,
+                        },
+                    )
+                    .await
+                    .expect("new worker register should succeed");
+            });
+
+            let engine_for_cleanup = engine.clone();
+            let old_worker_for_cleanup = old_worker.clone();
+            let cleanup_handle = tokio::spawn(async move {
+                engine_for_cleanup
+                    .cleanup_worker(&old_worker_for_cleanup)
+                    .await;
+            });
+
+            register_handle.await.expect("register task");
+            cleanup_handle.await.expect("cleanup task");
+
+            assert!(
+                engine.functions.get("raced_fn").is_some(),
+                "new worker's registration must survive concurrent cleanup of old worker"
+            );
+            let owner = engine
+                .function_owners
+                .get("raced_fn")
+                .expect("function_owners must still have raced_fn");
+            assert_eq!(
+                *owner, new_worker.id,
+                "the new worker should be the recorded owner after the race"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unregister_function_regular_skips_when_owner_hijacked() {
+        // UnregisterFunction on the non-invocation path: if worker A was the
+        // registered owner but worker B has since claimed the id, A's
+        // Unregister must NOT wipe B's live registration. Gate the teardown
+        // on `release_function_if_owner` — when the CAS fails, skip silently.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(tx_a);
+        engine.worker_registry.register_worker(worker_a.clone());
+        engine
+            .router_msg(
+                &worker_a,
+                &Message::RegisterFunction {
+                    id: "reg_hijacked".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("A register should succeed");
+
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(worker_b.clone());
+        engine
+            .router_msg(
+                &worker_b,
+                &Message::RegisterFunction {
+                    id: "reg_hijacked".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("B register should succeed");
+
+        // Ownership has transferred to B even though A still has the id in
+        // its local function_ids set (A's set was not cleared by B's register).
+        assert_eq!(
+            *engine
+                .function_owners
+                .get("reg_hijacked")
+                .expect("owner present"),
+            worker_b.id,
+            "owner should be B after hijacking register"
+        );
+
+        // A sends a stale UnregisterFunction. Before the gate, this would
+        // have called `remove_function_from_engine` and wiped B's live
+        // registration.
+        engine
+            .router_msg(
+                &worker_a,
+                &Message::UnregisterFunction {
+                    id: "reg_hijacked".to_string(),
+                },
+            )
+            .await
+            .expect("A's stale unregister should not error");
+
+        assert!(
+            engine.functions.get("reg_hijacked").is_some(),
+            "B's live registration must survive A's stale UnregisterFunction"
+        );
+        assert_eq!(
+            *engine
+                .function_owners
+                .get("reg_hijacked")
+                .expect("owner still present"),
+            worker_b.id,
+            "owner entry must remain B — gate must not release B's ownership"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unregister_function_external_skips_when_owner_hijacked() {
+        // HTTP-invocation variant of the hijacked-Unregister test. Worker A
+        // registers an external function, worker B claims it, then A sends
+        // UnregisterFunction. The gate on `release_external_function_if_owner`
+        // must abort the teardown before `http_module.unregister_http_function`
+        // and `service_registry.remove_function_from_services` run — either
+        // would otherwise wipe B's live entries.
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let make_msg = || Message::RegisterFunction {
+            id: "ext_hijacked".to_string(),
+            description: Some("hijacked external".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: "http://example.com/hijacked".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(tx_a);
+        engine.worker_registry.register_worker(worker_a.clone());
+        engine
+            .router_msg(&worker_a, &make_msg())
+            .await
+            .expect("A register should succeed");
+
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(worker_b.clone());
+        engine
+            .router_msg(&worker_b, &make_msg())
+            .await
+            .expect("B register should succeed");
+
+        assert_eq!(
+            *engine
+                .external_function_owners
+                .get("ext_hijacked")
+                .expect("external owner present"),
+            worker_b.id,
+            "external owner should be B after hijacking register"
+        );
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(http_module.http_functions().contains_key("ext_hijacked"));
+
+        // A's stale UnregisterFunction — A still has the id in its local
+        // external_function_ids set. Before the gate, the teardown would
+        // have wiped http_module + service_registry entries that now belong
+        // to B.
+        engine
+            .router_msg(
+                &worker_a,
+                &Message::UnregisterFunction {
+                    id: "ext_hijacked".to_string(),
+                },
+            )
+            .await
+            .expect("A's stale external unregister should not error");
+
+        assert!(
+            engine.functions.get("ext_hijacked").is_some(),
+            "B's live engine.functions entry must survive A's stale UnregisterFunction"
+        );
+        assert!(
+            http_module.http_functions().contains_key("ext_hijacked"),
+            "B's http_module entry must survive A's stale UnregisterFunction"
+        );
+        assert_eq!(
+            *engine
+                .external_function_owners
+                .get("ext_hijacked")
+                .expect("external owner still present"),
+            worker_b.id,
+            "external owner entry must remain B"
+        );
     }
 
     #[tokio::test]

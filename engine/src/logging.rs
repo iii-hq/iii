@@ -23,7 +23,9 @@ use tracing_subscriber::{
 use crate::telemetry::{ExporterType, OtelConfig, init_otel};
 use crate::workers::config::EngineConfig;
 use crate::workers::observability::logs_layer::OtelLogsLayer;
-use crate::workers::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
+use crate::workers::observability::otel::{
+    OTEL_PASSTHROUGH_TARGET, get_log_storage, get_otel_config, init_log_storage, logs_enabled,
+};
 
 /// Collected field from tracing event
 #[derive(Debug, Clone)]
@@ -57,14 +59,93 @@ impl FieldCollector {
         self.function.as_deref()
     }
 
-    /// Get fields excluding the "function" field (since it's shown in the header)
-    fn get_display_fields(&self) -> Vec<(&String, &FieldValue)> {
+    /// Get fields excluding the "function" field (always hidden since it's
+    /// shown in the header). When `is_passthrough` is true, also hides the
+    /// "service" and "function_name" fields (rendered as the header) and
+    /// any "data" field whose string value is empty (would otherwise render
+    /// as `""`).
+    fn get_display_fields_filtered(&self, is_passthrough: bool) -> Vec<(&String, &FieldValue)> {
         self.fields
             .iter()
-            .filter(|(name, _)| name != "function")
+            .filter(|(name, value)| {
+                if name == "function" {
+                    return false;
+                }
+                if is_passthrough {
+                    if name == "service" || name == "function_name" {
+                        return false;
+                    }
+                    if name == "data" && matches!(value, FieldValue::String(s) if s.is_empty()) {
+                        return false;
+                    }
+                }
+                true
+            })
             .map(|(name, value)| (name, value))
             .collect()
     }
+
+    /// Look up a field by name and return its value as a plain string.
+    fn field_as_string(&self, key: &str) -> Option<String> {
+        self.fields.iter().find_map(|(name, value)| {
+            if name != key {
+                return None;
+            }
+            Some(match value {
+                FieldValue::String(s) => s.clone(),
+                FieldValue::Debug(s) => s.trim_matches('"').to_string(),
+                FieldValue::I64(n) => n.to_string(),
+                FieldValue::U64(n) => n.to_string(),
+                FieldValue::F64(n) => n.to_string(),
+                FieldValue::Bool(b) => b.to_string(),
+            })
+        })
+    }
+}
+
+/// The worker (service) name and step (service.name) name for an OTEL
+/// passthrough event, each optional. Extracted from tracing fields emitted by
+/// `emit_log_to_console`.
+#[derive(Debug, Default)]
+struct PassthroughNames {
+    /// Worker service name, e.g. `todo-worker-python`.
+    worker: Option<String>,
+    /// Step/function name, e.g. `api.get./todos`. Parsed out of the `data`
+    /// JSON blob under the `service.name` attribute.
+    step: Option<String>,
+}
+
+impl PassthroughNames {
+    fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.step.is_none()
+    }
+}
+
+/// Extract the passthrough worker + step names from the collected fields.
+///
+/// Primary source: the `function_name` field emitted directly by
+/// `emit_log_to_console`. Falls back to parsing `service.name` out of the
+/// `data` JSON blob for events produced before the `function_name` field
+/// was added.
+fn extract_passthrough_names(collector: &FieldCollector) -> PassthroughNames {
+    let worker = collector
+        .field_as_string("service")
+        .filter(|s| !s.is_empty());
+
+    let step = collector
+        .field_as_string("function_name")
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            collector.field_as_string("data").and_then(|data| {
+                let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
+                parsed
+                    .get("service.name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+        });
+
+    PassthroughNames { worker, step }
 }
 
 impl Visit for FieldCollector {
@@ -255,17 +336,41 @@ where
         };
         write!(writer, "[{}] ", level_str)?;
 
-        // Use "function" field if present, otherwise use target (module path)
-        let display_name = collector.get_function().unwrap_or(meta.target());
-        write!(writer, "{} ", display_name.cyan().bold())?;
+        // For OTEL-ingested logs from SDK workers, render two separately-
+        // colored header tokens: worker (blue) and step/service.name
+        // (purple). Falls back gracefully when one or both are missing.
+        let is_passthrough = meta.target() == OTEL_PASSTHROUGH_TARGET;
+        let passthrough = if is_passthrough {
+            extract_passthrough_names(&collector)
+        } else {
+            PassthroughNames::default()
+        };
+
+        if is_passthrough && !passthrough.is_empty() {
+            if let Some(w) = passthrough.worker.as_deref() {
+                write!(writer, "{} ", w.blue().bold())?;
+            }
+            if let Some(s) = passthrough.step.as_deref() {
+                write!(writer, "{} ", s.purple().bold())?;
+            }
+        } else {
+            let display_name = if is_passthrough {
+                OTEL_PASSTHROUGH_TARGET
+            } else {
+                collector.get_function().unwrap_or(meta.target())
+            };
+            write!(writer, "{} ", display_name.cyan().bold())?;
+        }
 
         // Write message if present
         if let Some(msg) = &collector.message {
             write!(writer, "{}", msg.white())?;
         }
 
-        // Render fields as tree (excluding "function" since it's in the header)
-        let display_fields = collector.get_display_fields();
+        // Render fields as tree. Hide "function" always; hide "service" and
+        // empty "data" on passthrough events since they're already in the
+        // header / vestigial after service.name stripping in emit_log_to_console.
+        let display_fields = collector.get_display_fields_filtered(is_passthrough);
         let tree = render_fields_tree(&display_fields);
         write!(writer, "{}", tree)?;
 
@@ -281,7 +386,11 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
     use crate::workers::observability::config::ObservabilityWorkerConfig;
 
     let otel_module_name = "iii-observability";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.name == otel_module_name);
+    let otel_module_cfg = cfg
+        .modules
+        .iter()
+        .chain(cfg.workers.iter())
+        .find(|m| m.name == otel_module_name);
 
     let module_config: ObservabilityWorkerConfig = match otel_module_cfg {
         Some(entry) => match &entry.config {
@@ -322,7 +431,11 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
 pub fn init_log_from_engine_config(cfg: &EngineConfig) {
     let otel_cfg = extract_otel_config(cfg);
     let otel_module_name = "iii-observability";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.name == otel_module_name);
+    let otel_module_cfg = cfg
+        .modules
+        .iter()
+        .chain(cfg.workers.iter())
+        .find(|m| m.name == otel_module_name);
 
     let log_level = otel_module_cfg
         .and_then(|m| m.config.as_ref())
@@ -377,8 +490,29 @@ pub fn init_log_from_config(config_path: Option<&str>) {
     }
 }
 
+/// Disable ANSI color output in the `colored` crate process-wide.
+///
+/// Why: the engine's `tracing::info!(...)` macros interpolate colored
+/// strings (e.g. `"[UNREGISTERED]".red()`) that the `colored` crate
+/// resolves to ANSI escapes at call time. When the JSON formatter then
+/// serializes the `message` field, those escape bytes are preserved
+/// verbatim, producing log lines like `"\u001b[31m[UNREGISTERED]\u001b[0m"`
+/// that break downstream JSON log consumers (MOT-2812).
+///
+/// Setting the `colored` override to `false` makes every subsequent
+/// `.red()` / `.bold()` / etc. a no-op string wrapper, so JSON logs stay
+/// plain ASCII. Local text logging never calls this, so human-readable
+/// logs keep their colors.
+fn disable_ansi_for_json_logs() {
+    colored::control::set_override(false);
+}
+
 fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
     TRACING.get_or_init(|| {
+        // Prevent ANSI escape codes from leaking into JSON-formatted logs.
+        // See `disable_ansi_for_json_logs` for rationale (MOT-2812).
+        disable_ansi_for_json_logs();
+
         let filter = EnvFilter::new(log_level);
 
         // JSON formatting layer
@@ -392,7 +526,7 @@ fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
         let otel_trace_layer = init_otel(otel_cfg);
 
         // Initialize OTEL logs layer if enabled
-        let otel_logs_layer = if otel_cfg.enabled {
+        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config()) {
             // Get max logs from global config (if set) or use default
             let max_logs = get_otel_config()
                 .and_then(|cfg| cfg.logs_max_count)
@@ -428,7 +562,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
         let otel_trace_layer = init_otel(otel_cfg);
 
         // Initialize OTEL logs layer if enabled
-        let otel_logs_layer = if otel_cfg.enabled {
+        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config()) {
             // Get max logs from global config (if set) or use default
             let max_logs = get_otel_config()
                 .and_then(|cfg| cfg.logs_max_count)
@@ -511,6 +645,52 @@ mod tests {
         // Should still init logging even if file doesn't exist —
         // logging init should not crash the process, just fall back
         init_log_from_config(Some("/tmp/iii_no_such_logging_config_98765.yaml"));
+    }
+
+    #[test]
+    #[serial]
+    fn colored_emits_ansi_when_override_true() {
+        // Baseline: when we force the colored override on, ANSI escapes appear in the
+        // output. Regression guard so Task 2's JSON-mode test has something to negate.
+        colored::control::set_override(true);
+        let s = format!("{}", "hello".red());
+        assert!(
+            s.contains('\u{1b}'),
+            "expected ANSI escape in colored output with override=true, got {:?}",
+            s
+        );
+        colored::control::unset_override();
+    }
+
+    #[test]
+    #[serial]
+    fn init_prod_log_disables_ansi_in_colored_crate() {
+        // Arrange: force ANSI on, then sanity-check the precondition.
+        colored::control::set_override(true);
+        assert!(
+            format!("{}", "x".red()).contains('\u{1b}'),
+            "precondition failed: colored should be emitting ANSI when override is true"
+        );
+
+        // Act: apply just the color-override step from the JSON init path.
+        // We cannot call `init_prod_log` directly in a unit test because it
+        // installs a global tracing subscriber via OnceCell — only one process-
+        // wide init is allowed. Instead, we call the small extracted helper.
+        disable_ansi_for_json_logs();
+
+        // Assert: any subsequent `.red()` / `.purple()` produces plain text.
+        let red = format!("{}", "[UNREGISTERED]".red());
+        let purple = format!("{}", "discord::send_message".purple());
+        assert_eq!(red, "[UNREGISTERED]", "red() must not inject ANSI");
+        assert_eq!(
+            purple, "discord::send_message",
+            "purple() must not inject ANSI"
+        );
+        assert!(!red.contains('\u{1b}'));
+        assert!(!purple.contains('\u{1b}'));
+
+        // Cleanup so other #[serial] tests start from a known state.
+        colored::control::unset_override();
     }
 
     // =========================================================================
@@ -606,9 +786,9 @@ mod tests {
         let f_other = fs.field("other").unwrap();
         collector.record_i64(&f_other, 7);
 
-        let display = collector.get_display_fields();
+        let display = collector.get_display_fields_filtered(false);
         // "function" is stored on the dedicated field, not in `fields`,
-        // so get_display_fields() just returns whatever is in `fields`.
+        // so the filtered view just returns whatever is in `fields`.
         assert_eq!(display.len(), 2);
         assert_eq!(display[0].0, "extra");
         assert_eq!(display[1].0, "other");
@@ -858,6 +1038,7 @@ mod tests {
         let cfg = EngineConfig {
             modules: vec![WorkerEntry {
                 name: "iii-observability".to_string(),
+                image: None,
                 config: Some(serde_json::json!({
                     "enabled": true,
                     "service_name": "test-service",
@@ -877,6 +1058,30 @@ mod tests {
         assert_eq!(otel.endpoint, "http://collector:4317");
         assert_eq!(otel.sampling_ratio, 0.25);
         assert_eq!(otel.memory_max_spans, 321);
+    }
+
+    #[test]
+    fn test_extract_otel_config_reads_observability_from_workers_key() {
+        let cfg = EngineConfig {
+            modules: vec![],
+            workers: vec![WorkerEntry {
+                name: "iii-observability".to_string(),
+                image: None,
+                config: Some(serde_json::json!({
+                    "enabled": true,
+                    "service_name": "workers-key-test",
+                    "exporter": "memory",
+                })),
+            }],
+        };
+
+        let otel = extract_otel_config(&cfg);
+        assert!(
+            otel.enabled,
+            "should find observability config under workers key"
+        );
+        assert_eq!(otel.service_name, "workers-key-test");
+        assert!(matches!(otel.exporter, ExporterType::Memory));
     }
 
     #[test]
@@ -938,5 +1143,121 @@ modules:
         let _ = std::fs::remove_file(&path);
 
         assert!(TRACING.get().is_some());
+    }
+
+    // =========================================================================
+    // OTEL passthrough header tests
+    // =========================================================================
+
+    #[test]
+    fn test_extract_passthrough_names_reads_function_name_field_directly() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("service", "function_name", "data");
+
+        collector.record_str(&fs.field("service").unwrap(), "todo-worker-python");
+        collector.record_str(&fs.field("function_name").unwrap(), "api.get./todos");
+        collector.record_str(&fs.field("data").unwrap(), r#"{"log.data":{"count":0}}"#);
+
+        let names = extract_passthrough_names(&collector);
+        assert_eq!(names.worker.as_deref(), Some("todo-worker-python"));
+        assert_eq!(names.step.as_deref(), Some("api.get./todos"));
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn test_extract_passthrough_names_falls_back_to_parsing_data() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("service", "function_name", "data");
+
+        collector.record_str(&fs.field("service").unwrap(), "todo-worker-python");
+        // function_name field present but empty (what emit_log_to_console
+        // emits when the `service.name` attribute isn't set).
+        collector.record_str(&fs.field("function_name").unwrap(), "");
+        // Legacy: function name lives only in the data JSON.
+        collector.record_str(
+            &fs.field("data").unwrap(),
+            r#"{"service.name":"api.legacy"}"#,
+        );
+
+        let names = extract_passthrough_names(&collector);
+        assert_eq!(names.worker.as_deref(), Some("todo-worker-python"));
+        assert_eq!(names.step.as_deref(), Some("api.legacy"));
+    }
+
+    #[test]
+    fn test_extract_passthrough_names_step_only_when_worker_missing() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("data");
+
+        collector.record_str(
+            &fs.field("data").unwrap(),
+            r#"{"service.name":"api.get./todos"}"#,
+        );
+
+        let names = extract_passthrough_names(&collector);
+        assert!(names.worker.is_none());
+        assert_eq!(names.step.as_deref(), Some("api.get./todos"));
+    }
+
+    #[test]
+    fn test_extract_passthrough_names_empty_when_nothing_present() {
+        let collector = FieldCollector::new();
+        let names = extract_passthrough_names(&collector);
+        assert!(names.is_empty());
+        assert!(names.worker.is_none());
+        assert!(names.step.is_none());
+    }
+
+    #[test]
+    fn test_get_display_fields_filtered_hides_header_fields_and_empty_data_on_passthrough() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("service", "function_name", "data", "function", "extra");
+
+        collector.record_str(&fs.field("service").unwrap(), "worker");
+        collector.record_str(&fs.field("function_name").unwrap(), "api.get./todos");
+        // Empty string — mirrors the case where emit_log_to_console stripped
+        // the only attribute (`service.name`) leaving nothing to render.
+        collector.record_str(&fs.field("data").unwrap(), "");
+        collector.record_str(&fs.field("function").unwrap(), "fn-name");
+        collector.record_str(&fs.field("extra").unwrap(), "keep");
+
+        // Non-passthrough case: only "function" is hidden.
+        let visible: Vec<&String> = collector
+            .get_display_fields_filtered(false)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(visible.iter().any(|n| *n == "service"));
+        assert!(visible.iter().any(|n| *n == "function_name"));
+        assert!(visible.iter().any(|n| *n == "data"));
+        assert!(visible.iter().any(|n| *n == "extra"));
+        assert!(!visible.iter().any(|n| *n == "function"));
+
+        // Passthrough case: function, service, function_name, AND empty data hidden.
+        let visible: Vec<&String> = collector
+            .get_display_fields_filtered(true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!visible.iter().any(|n| *n == "service"));
+        assert!(!visible.iter().any(|n| *n == "function_name"));
+        assert!(!visible.iter().any(|n| *n == "function"));
+        assert!(!visible.iter().any(|n| *n == "data"));
+        assert!(visible.iter().any(|n| *n == "extra"));
+    }
+
+    #[test]
+    fn test_get_display_fields_filtered_keeps_nonempty_data_on_passthrough() {
+        let mut collector = FieldCollector::new();
+        let fs = make_fields!("data");
+
+        collector.record_str(&fs.field("data").unwrap(), r#"{"log.data":"x"}"#);
+
+        let visible: Vec<&String> = collector
+            .get_display_fields_filtered(true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(visible.iter().any(|n| *n == "data"));
     }
 }

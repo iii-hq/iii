@@ -15,6 +15,11 @@ on:
         description: 'Git tag for the GitHub Release (e.g., iii/v1.0.0)'
         required: true
         type: string
+      tag_prefix:
+        description: 'Tag prefix used to filter stable tags for release-note diff (e.g., "iii/" or "motia/"). Leave empty to skip previous-stable lookup and fall back to GitHub default.'
+        required: false
+        type: string
+        default: ''
       is_prerelease:
         description: 'Mark as pre-release'
         required: false
@@ -84,6 +89,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
   CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_PKG_CONFIG_ALLOW_CROSS: '1'
+  PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: /usr/aarch64-linux-gnu
+  PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-L/usr/lib/aarch64-linux-gnu'
 
 jobs:
   prepare-matrix:
@@ -145,6 +154,22 @@ jobs:
         if: inputs.skip_create_release != true && inputs.dry_run != true
         with:
           token: ${{ steps.generate_token.outputs.token }}
+          fetch-tags: true
+
+      - name: Compute previous stable tag
+        id: prev
+        if: inputs.skip_create_release != true && inputs.dry_run != true && inputs.tag_prefix != ''
+        env:
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          CURRENT_TAG: ${{ inputs.tag_name }}
+        run: |
+          PREFIX="${TAG_PREFIX}v"
+          PREV_STABLE=$(git tag --list "${PREFIX}*" --sort=-v:refname \
+            | grep -E "^${PREFIX}[0-9]+\.[0-9]+\.[0-9]+\$" \
+            | grep -v "^${CURRENT_TAG}\$" \
+            | head -n 1 || true)
+          echo "previous_tag=${PREV_STABLE}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Previous stable tag for release notes: ${PREV_STABLE:-<none, GitHub default>}"
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
@@ -156,6 +181,7 @@ jobs:
           draft: false
           prerelease: ${{ inputs.is_prerelease }}
           generate_release_notes: true
+          previous_tag: ${{ steps.prev.outputs.previous_tag }}
 
   build:
     name: Build ${{ matrix.target }}
@@ -204,9 +230,25 @@ jobs:
 
       - name: Install additional system dependencies
         if: runner.os == 'Linux' && inputs.system_deps != ''
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ inputs.system_deps }}
+          case "$BUILD_TARGET" in
+            aarch64-unknown-linux-gnu)
+              sudo dpkg --add-architecture arm64
+              sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+              sudo apt-get update
+              for pkg in ${{ inputs.system_deps }}; do
+                sudo apt-get install -y "${pkg}:arm64"
+              done
+              ;;
+            *)
+              sudo apt-get install -y ${{ inputs.system_deps }}
+              ;;
+          esac
 
       - name: Install cross-compilation tools
         if: runner.os == 'Linux'

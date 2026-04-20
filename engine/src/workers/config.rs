@@ -9,12 +9,14 @@ use std::{
     env,
     future::Future,
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::{Arc, LazyLock, RwLock},
 };
 
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
+
+use notify::Watcher;
 
 use super::{registry::WorkerRegistration, traits::Worker};
 use crate::engine::Engine;
@@ -43,7 +45,9 @@ impl EngineConfig {
     }
 
     pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
-        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
+        let re = &*RE;
 
         re.replace_all(yaml_content, |caps: &regex::Captures| {
             let var_name = &caps[1];
@@ -106,15 +110,17 @@ fn default_worker_entries() -> Vec<WorkerEntry> {
         .filter(|registration| registration.is_default)
         .map(|registration| WorkerEntry {
             name: registration.name.to_string(),
+            image: None,
             config: None,
         })
         .collect()
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct WorkerEntry {
     pub name: String,
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default)]
     pub config: Option<Value>,
 }
@@ -184,27 +190,50 @@ impl WorkerRegistry {
             .insert(name.to_string(), info);
     }
 
-    /// Creates a module instance.
-    ///
-    /// First checks the built-in registry. If the name is not found, falls back
-    /// to external worker resolution: checks `iii.toml` for installed workers and
-    /// spawns the corresponding binary from `iii_workers/`.
+    /// Creates a module instance using the resolution chain:
+    /// 1. Validates that built-in workers cannot have an `image` field.
+    /// 2. Tries the built-in registry.
+    /// 3. Falls back to legacy external worker resolution via `iii.toml`.
+    /// 4. Delegates to `iii-worker start` (handles registry lookup, binary
+    ///    download, and OCI spawning autonomously).
     pub async fn create_worker(
         self: &Arc<Self>,
         name: &str,
+        image: Option<&str>,
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Worker>> {
-        let factory = {
-            let factories = self.worker_factories.read().expect("RwLock poisoned");
-            factories.get(name).map(|info| info.factory.clone())
-        };
-
-        if let Some(factory) = factory {
-            return factory(engine, config).await;
+        // 1. Validate: image + built-in = error
+        if image.is_some() {
+            let is_builtin = self
+                .worker_factories
+                .read()
+                .expect("RwLock poisoned")
+                .contains_key(name);
+            if is_builtin {
+                return Err(anyhow::anyhow!(
+                    "Worker '{}' is a built-in worker and cannot have an 'image' field. \
+                     Remove 'image' or use a different name.",
+                    name
+                ));
+            }
         }
 
-        if let Some(info) = super::external::resolve_external_module(name) {
+        // 2. Try built-in registry (skip if image is set — that's always external)
+        if image.is_none() {
+            let factory = {
+                let factories = self.worker_factories.read().expect("RwLock poisoned");
+                factories.get(name).map(|info| info.factory.clone())
+            };
+            if let Some(factory) = factory {
+                return factory(engine, config).await;
+            }
+        }
+
+        // 3. Legacy: external worker (iii.toml + iii_workers/)
+        if image.is_none()
+            && let Some(info) = super::external::resolve_external_module(name)
+        {
             tracing::info!(
                 "Resolved '{}' as external worker '{}' ({})",
                 name,
@@ -215,7 +244,20 @@ impl WorkerRegistry {
             return Ok(Box::new(module));
         }
 
-        Err(anyhow::anyhow!("Unknown worker: {}", name))
+        // 4. Delegate to iii-worker start (handles registry lookup, binary
+        //    download, OCI pull, and spawning autonomously). Pass the
+        //    engine's effective `iii-worker-manager` port so the spawned
+        //    VM-based worker connects back to the right place. `EngineBuilder::build`
+        //    pre-resolves this from config; direct `Engine::new` paths fall
+        //    back to DEFAULT_PORT via `worker_manager_port()`.
+        let port = engine.worker_manager_port();
+        tracing::info!(worker = %name, port = port, "Starting external worker via iii-worker");
+        let process = super::registry_worker::ExternalWorkerProcess::spawn(name, port)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
+        Ok(Box::new(
+            super::registry_worker::ExternalWorkerWrapper::new(process),
+        ))
     }
 
     // =========================================================================
@@ -236,6 +278,13 @@ impl Default for WorkerRegistry {
 }
 
 impl WorkerEntry {
+    /// Returns the worker type name used for factory lookup. For entries with
+    /// instance suffixes like `iii-http#1`, this strips the `#N` and returns
+    /// the base name `iii-http`.
+    pub fn worker_type(&self) -> &str {
+        self.name.split('#').next().unwrap_or(&self.name)
+    }
+
     /// Creates a module instance from this entry
     pub async fn create_worker(
         &self,
@@ -243,9 +292,30 @@ impl WorkerEntry {
         registry: &Arc<WorkerRegistry>,
     ) -> anyhow::Result<Box<dyn Worker>> {
         registry
-            .create_worker(&self.name, engine, self.config.clone())
+            .create_worker(
+                self.worker_type(),
+                self.image.as_deref(),
+                engine,
+                self.config.clone(),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", self.name, e))
+    }
+}
+
+/// Assigns unique instance IDs to entries with duplicate names. The first
+/// occurrence keeps its original name; subsequent occurrences get `#1`,
+/// `#2`, etc. appended. This lets the diff and running-worker tracking
+/// treat each entry independently.
+pub fn assign_instance_ids(entries: &mut Vec<WorkerEntry>) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for entry in entries.iter_mut() {
+        let base = entry.name.clone();
+        let count = counts.entry(base.clone()).or_insert(0);
+        if *count > 0 {
+            entry.name = format!("{}#{}", base, count);
+        }
+        *count += 1;
     }
 }
 
@@ -283,9 +353,10 @@ impl WorkerEntry {
 /// ```
 pub struct EngineBuilder {
     config: Option<EngineConfig>,
+    config_path: Option<String>,
     engine: Arc<Engine>,
     registry: Arc<WorkerRegistry>,
-    modules: Vec<Arc<dyn Worker>>,
+    running: Vec<super::reload::RunningWorker>,
 }
 
 impl EngineBuilder {
@@ -293,16 +364,59 @@ impl EngineBuilder {
     pub fn new() -> Self {
         Self {
             config: None,
+            config_path: None,
             engine: Arc::new(Engine::new()),
             registry: Arc::new(WorkerRegistry::with_inventory()),
-            modules: Vec::new(),
+            running: Vec::new(),
         }
+    }
+
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.engine
+    }
+
+    /// Returns the currently-tracked running workers.
+    pub fn running(&self) -> &[super::reload::RunningWorker] {
+        &self.running
+    }
+
+    /// Mutable access to the running worker set. Intended for reload machinery
+    /// that needs to swap entries in place; avoid calling from other code paths.
+    pub fn running_mut(&mut self) -> &mut Vec<super::reload::RunningWorker> {
+        &mut self.running
+    }
+
+    /// Returns an `Arc` handle to the shared `Engine`. Used by reload plumbing
+    /// that must create workers against the live engine without consuming the
+    /// builder.
+    pub fn engine_handle(&self) -> Arc<Engine> {
+        self.engine.clone()
+    }
+
+    /// Returns an `Arc` handle to the shared worker factory registry.
+    pub fn registry_handle(&self) -> Arc<WorkerRegistry> {
+        self.registry.clone()
     }
 
     /// Loads config strictly from file. Fails if file is missing or unparseable.
     pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = Some(config);
         self
+    }
+
+    /// Records the path of the config file this engine was built from so that
+    /// reload-time code can re-read and re-apply it. When set, `serve()` watches
+    /// this file for changes and reloads automatically. When unset (e.g. running
+    /// with `--use-default-config`), file watching is disabled.
+    pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
+        self.config_path = Some(path.into());
+        self
+    }
+
+    /// Returns the config file path set via [`Self::with_config_path`], or
+    /// `None` if the engine is running without a file-backed config.
+    pub fn config_path(&self) -> Option<&str> {
+        self.config_path.as_deref()
     }
 
     /// Registers a custom module type in the registry
@@ -326,6 +440,7 @@ impl EngineBuilder {
         if let Some(ref mut cfg) = self.config {
             cfg.workers.push(WorkerEntry {
                 name: name.to_string(),
+                image: None,
                 config,
             });
         }
@@ -351,12 +466,33 @@ impl EngineBuilder {
             if registration.mandatory && !worker_names.contains(registration.name) {
                 workers.push(WorkerEntry {
                     name: registration.name.to_string(),
+                    image: None,
                     config: None,
                 });
             }
         }
 
-        for entry in &workers {
+        assign_instance_ids(&mut workers);
+
+        // Resolve the effective `iii-worker-manager` port BEFORE creating
+        // workers so the step-4 delegation path in `WorkerRegistry::create_worker`
+        // can hand it to `ExternalWorkerProcess::spawn`. We pick the first
+        // `iii-worker-manager` entry whose config parses -- fixtures like
+        // `sdk/fixtures/config-test.yaml` sometimes declare two manager
+        // instances on different ports for test isolation, and there's no
+        // unambiguous "primary" beyond declaration order. Fall back to
+        // DEFAULT_PORT if no entry is present or its config is shaped
+        // unexpectedly; that matches the legacy hardcoded behavior.
+        let resolved_port = workers
+            .iter()
+            .find(|e| e.worker_type() == "iii-worker-manager")
+            .and_then(|e| e.config.clone())
+            .and_then(|v| serde_json::from_value::<super::worker::WorkerManagerConfig>(v).ok())
+            .map(|c| c.port)
+            .unwrap_or(super::worker::DEFAULT_PORT);
+        self.engine.set_worker_manager_port(resolved_port);
+
+        for entry in workers {
             tracing::debug!("Creating worker: {}", entry.name);
             let worker = entry
                 .create_worker(self.engine.clone(), &self.registry)
@@ -368,8 +504,20 @@ impl EngineBuilder {
             worker.initialize().await.map_err(|err| {
                 anyhow::anyhow!("failed to initialize worker '{}': {}", entry.name, err)
             })?;
+
+            self.engine.begin_worker_scope(&entry.name);
             worker.register_functions(self.engine.clone());
-            self.modules.push(Arc::from(worker));
+            let registrations = self.engine.end_worker_scope();
+
+            let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+            let worker_arc: Arc<dyn Worker> = Arc::from(worker);
+
+            self.running.push(super::reload::RunningWorker {
+                entry,
+                worker: worker_arc,
+                shutdown_tx,
+                registrations,
+            });
         }
 
         Ok(self)
@@ -377,38 +525,168 @@ impl EngineBuilder {
 
     pub async fn destroy(self) -> anyhow::Result<()> {
         tracing::warn!("Shutting down engine and destroying workers");
-        for w in self.modules.iter() {
-            tracing::debug!("Destroying worker: {}", w.name());
-            w.destroy().await?;
+        for rw in self.running.iter() {
+            tracing::debug!("Destroying worker: {}", rw.worker.name());
+            let _ = rw.shutdown_tx.send(true);
+            rw.worker.destroy().await?;
+            self.engine.remove_worker_registrations(&rw.registrations);
         }
         tracing::warn!("Engine shutdown complete");
         Ok(())
     }
 
     /// Starts the engine server
-    pub async fn serve(self) -> anyhow::Result<()> {
+    pub async fn serve(mut self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let registry = self.registry.clone();
+        let config_path = self.config_path.clone();
 
-        // Start background tasks for all modules
-        for w in self.modules.iter() {
-            let shutdown_rx = shutdown_rx.clone();
-            let shutdown_tx = shutdown_tx.clone();
-            if let Err(e) = w.start_background_tasks(shutdown_rx, shutdown_tx).await {
+        // Lift the running workers out of `self` so we can mutably borrow them
+        // inside the select loop. `self.running` is now empty; the teardown
+        // at the end operates on the local `running` Vec.
+        let mut running: Vec<super::reload::RunningWorker> = std::mem::take(&mut self.running);
+
+        let (global_shutdown_tx, mut global_shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // Start background tasks for each worker. The per-worker `shutdown_rx`
+        // lets the engine stop ONE worker (used by reload). The `shutdown_tx`
+        // passed in is the GLOBAL tx, so when a worker like `WorkerManager`
+        // catches SIGTERM/SIGINT/Ctrl+C and fires it, serve() itself unwinds.
+        for rw in running.iter() {
+            let shutdown_rx = rw.shutdown_tx.subscribe();
+            let shutdown_tx = global_shutdown_tx.clone();
+            if let Err(e) = rw
+                .worker
+                .start_background_tasks(shutdown_rx, shutdown_tx)
+                .await
+            {
                 tracing::warn!(
-                    worker = w.name(),
+                    worker = rw.worker.name(),
                     error = %e,
                     "Failed to start background tasks for worker"
                 );
             }
         }
 
+        // Relay global shutdown into each per-worker shutdown channel so a
+        // global Ctrl+C terminates every worker (including those added via
+        // reload -- those get subscribed to the relay the next time around).
+        let initial_worker_shutdowns: Vec<_> =
+            running.iter().map(|rw| rw.shutdown_tx.clone()).collect();
+        let mut global_rx_for_relay = global_shutdown_rx.clone();
+        tokio::spawn(async move {
+            if global_rx_for_relay.changed().await.is_ok() && *global_rx_for_relay.borrow() {
+                for tx in initial_worker_shutdowns {
+                    let _ = tx.send(true);
+                }
+            }
+        });
+
         // Start channel TTL sweep task
-        engine.channel_manager.start_sweep_task(shutdown_rx.clone());
+        engine
+            .channel_manager
+            .start_sweep_task(global_shutdown_rx.clone());
 
-        shutdown_rx.changed().await?;
+        // Set up config file watcher. When a config path is set, we watch it
+        // for modifications and trigger a reload automatically. Editors often
+        // write a temp file then rename, so we debounce events by 500ms to
+        // coalesce rapid writes into a single reload.
+        let (config_change_tx, mut config_change_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        self.destroy().await?;
+        // Keep the watcher alive for the duration of serve().
+        let _watcher = if let Some(ref path) = config_path {
+            let tx = config_change_tx.clone();
+            let watched_path = std::path::PathBuf::from(path);
+
+            let mut watcher = notify::RecommendedWatcher::new(
+                move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res {
+                        use notify::EventKind;
+                        match event.kind {
+                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                                let _ = tx.try_send(());
+                            }
+                            _ => {}
+                        }
+                    }
+                },
+                notify::Config::default(),
+            )?;
+
+            // Watch the parent directory so we catch rename-based writes
+            // (editors like vim write a temp file then rename it).
+            // For bare filenames like "config.yaml", parent() returns ""
+            // which is not a valid path — fall back to ".".
+            let watch_target = watched_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."));
+            watcher.watch(watch_target, notify::RecursiveMode::NonRecursive)?;
+
+            tracing::info!("reload: watching {} for changes", path);
+            Some(watcher)
+        } else {
+            tracing::info!("reload: no config file to watch (--use-default-config)");
+            None
+        };
+
+        // Drop the sender clone so config_change_rx completes when the
+        // watcher's sender is the only one left (and it's dropped on exit).
+        drop(config_change_tx);
+
+        // Track fatal reload errors so we can exit with non-zero after teardown.
+        let mut reload_error: Option<anyhow::Error> = None;
+
+        loop {
+            tokio::select! {
+                _ = global_shutdown_rx.changed() => {
+                    if *global_shutdown_rx.borrow() { break; }
+                }
+                Some(()) = config_change_rx.recv() => {
+                    // Debounce: drain any queued events and wait 500ms for
+                    // writes to settle before reloading.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    while config_change_rx.try_recv().is_ok() {}
+
+                    if let Err(e) = super::reload::ReloadManager::reload(
+                        config_path.as_deref(),
+                        engine.clone(),
+                        registry.clone(),
+                        &mut running,
+                        global_shutdown_tx.clone(),
+                    ).await {
+                        reload_error = Some(e);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fire global shutdown so the relay task stops all worker background
+        // tasks (needed when the loop broke due to a reload error rather than
+        // a signal-triggered shutdown).
+        let _ = global_shutdown_tx.send(true);
+
+        // Teardown -- inline version of the old `destroy()`. Operates on the
+        // local `running` Vec directly so we don't have to reconstruct `self`.
+        tracing::warn!("Shutting down engine and destroying workers");
+        for rw in running.iter() {
+            tracing::debug!("Destroying worker: {}", rw.worker.name());
+            let _ = rw.shutdown_tx.send(true);
+            rw.worker.destroy().await?;
+            engine.remove_worker_registrations(&rw.registrations);
+        }
+        tracing::warn!("Engine shutdown complete");
+
+        // Drop `global_shutdown_tx` last so the relay task unblocks.
+        drop(global_shutdown_tx);
+
+        // If the shutdown was caused by a reload failure, propagate the error
+        // so the process exits with a non-zero status code.
+        if let Some(e) = reload_error {
+            return Err(e);
+        }
+
         Ok(())
     }
 }
@@ -962,7 +1240,7 @@ config:
     fn test_engine_builder_default() {
         let builder = EngineBuilder::default();
         assert!(builder.config.is_none());
-        assert!(builder.modules.is_empty());
+        assert!(builder.running().is_empty());
     }
 
     #[test]
@@ -999,15 +1277,24 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_create_worker_unknown_worker_fails() {
+    async fn test_create_worker_unknown_worker_delegates() {
+        // Unknown workers are now delegated to `iii-worker start` rather than
+        // returning an immediate error, so the result is Ok (an external worker
+        // process wrapper) or an Err from the spawn itself — not an "Unknown
+        // worker" error.
         let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = registry
-            .create_worker("nonexistent::Module", engine, None)
+            .create_worker("nonexistent::Module", None, engine, None)
             .await;
-        assert!(result.is_err());
-        let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Unknown worker"));
+        // If spawn succeeds we get Ok; if iii-worker binary is absent we may
+        // get an Err, but it must NOT contain "Unknown worker".
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("Unknown worker"),
+                "should not report 'Unknown worker'; got: {e}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1036,7 +1323,9 @@ config:
         registry.register::<TestMod>("test::TestMod");
 
         let engine = Arc::new(Engine::new());
-        let result = registry.create_worker("test::TestMod", engine, None).await;
+        let result = registry
+            .create_worker("test::TestMod", None, engine, None)
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name(), "test_mod");
     }
@@ -1046,17 +1335,25 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_module_entry_create_unknown_fails() {
+    async fn test_module_entry_create_unknown_delegates() {
+        // Unknown workers are now delegated to `iii-worker start`.  If spawn
+        // fails (e.g. binary absent in CI) the error is wrapped with the
+        // worker name, but it is no longer an immediate "Unknown worker" error.
         let entry = WorkerEntry {
             name: "unknown::Module".to_string(),
+            image: None,
             config: None,
         };
         let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = entry.create_worker(engine, &registry).await;
-        assert!(result.is_err());
-        let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Failed to create unknown::Module"));
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("unknown::Module") || msg.contains("Failed to start"),
+                "unexpected error message: {msg}"
+            );
+        }
     }
 
     // =========================================================================
@@ -1222,7 +1519,7 @@ modules:
 
         assert_eq!(INITIALIZED.load(Ordering::SeqCst), 1);
         assert_eq!(REGISTERED.load(Ordering::SeqCst), 1);
-        assert!(!builder.modules.is_empty());
+        assert!(!builder.running().is_empty());
 
         builder.destroy().await.expect("destroy engine");
         assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
@@ -1261,6 +1558,230 @@ modules:
         assert!(
             message.contains("already in use"),
             "unexpected error message: {message}"
+        );
+    }
+
+    #[test]
+    fn test_worker_entry_with_image_field() {
+        let yaml = r#"
+workers:
+  - name: my-worker
+    image: docker.io/org/worker:latest
+    config:
+      port: 8080
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name, "my-worker");
+        assert_eq!(
+            config.workers[0].image.as_deref(),
+            Some("docker.io/org/worker:latest")
+        );
+    }
+
+    #[test]
+    fn test_worker_entry_without_image_field() {
+        let yaml = r#"
+workers:
+  - name: iii-stream
+    config:
+      port: 3112
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers[0].image, None);
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_workers_with_image() {
+        let yaml = r#"
+workers:
+  - name: pdfkit
+    image: ghcr.io/iii-hq/pdfkit:1.0
+    config:
+      timeout: 30
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name, "pdfkit");
+        assert_eq!(
+            config.workers[0].image.as_deref(),
+            Some("ghcr.io/iii-hq/pdfkit:1.0")
+        );
+        assert!(config.workers[0].config.is_some());
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_legacy_modules_key() {
+        let yaml = r#"
+modules:
+  - name: legacy-worker
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].name, "legacy-worker");
+        assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_both_modules_and_workers() {
+        let yaml = r#"
+modules:
+  - name: builtin
+workers:
+  - name: external
+    image: ghcr.io/org/ext:latest
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.workers.len(), 1);
+    }
+
+    #[test]
+    fn test_engine_config_deserialize_empty() {
+        let yaml = "modules: []\nworkers: []\n";
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.modules.is_empty());
+        assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn test_worker_entry_allows_unknown_fields() {
+        // WorkerEntry intentionally omits deny_unknown_fields so that future
+        // CLI-written fields (e.g. `type: binary`) do not break older engine
+        // versions.  EngineConfig itself remains strict.
+        let yaml = r#"
+workers:
+  - name: test
+    unknown_field: ignored
+"#;
+        let result: Result<EngineConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_ok(),
+            "WorkerEntry should accept unknown fields for forward compatibility"
+        );
+        assert_eq!(result.unwrap().workers[0].name, "test");
+    }
+
+    #[test]
+    fn test_engine_config_worker_without_image() {
+        let yaml = r#"
+workers:
+  - name: binary-worker
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 1);
+        assert!(config.workers[0].image.is_none());
+        assert!(config.workers[0].config.is_none());
+    }
+
+    #[test]
+    fn test_engine_config_with_env_var_expansion() {
+        unsafe {
+            env::set_var("TEST_IMAGE_TAG", "2.0.0");
+        }
+        let yaml = "workers:\n  - name: w\n    image: ghcr.io/org/w:${TEST_IMAGE_TAG}\n";
+        let expanded = EngineConfig::expand_env_vars(yaml);
+        let config: EngineConfig = serde_yaml::from_str(&expanded).unwrap();
+        assert_eq!(
+            config.workers[0].image.as_deref(),
+            Some("ghcr.io/org/w:2.0.0")
+        );
+    }
+
+    // =========================================================================
+    // Engine worker_manager_port resolution
+    //
+    // Regression: `ExternalWorkerProcess::spawn` previously hardcoded
+    // DEFAULT_PORT (49134) when invoking `iii-worker start`, silently breaking
+    // auto-spawn for any engine running on a non-default `iii-worker-manager`
+    // port. The fix resolves the effective port at build time and stores it
+    // on `Engine`; these tests pin the resolution behavior.
+    // =========================================================================
+
+    #[test]
+    fn engine_worker_manager_port_defaults_to_default_port() {
+        // Direct `Engine::new` (used by test paths) must report DEFAULT_PORT
+        // until a builder sets it. Anything else would be a silent config
+        // regression masquerading as test isolation.
+        let engine = Engine::new();
+        assert_eq!(
+            engine.worker_manager_port(),
+            super::super::worker::DEFAULT_PORT,
+            "fresh Engine must default to DEFAULT_PORT"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_builder_resolves_custom_worker_manager_port_from_config() {
+        // The key regression: when config.yaml sets a non-default port for
+        // `iii-worker-manager`, `EngineBuilder::build` must surface that port
+        // on the Engine so the step-4 delegation path hands it to
+        // `ExternalWorkerProcess::spawn` instead of the hardcoded default.
+        //
+        // Pick a port no one else binds. 49199 matches the value used in
+        // `sdk/fixtures/config-test.yaml` -- if that fixture's port ever
+        // needs rewording, this test keeps the plumbing honest.
+        let custom_port: u16 = 49199;
+        let builder = EngineBuilder::new()
+            .add_worker(
+                "iii-worker-manager",
+                Some(serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": custom_port,
+                })),
+            )
+            .build()
+            .await
+            .expect("build with custom iii-worker-manager port");
+
+        assert_eq!(
+            builder.engine().worker_manager_port(),
+            custom_port,
+            "builder must resolve iii-worker-manager port from config"
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[tokio::test]
+    async fn engine_builder_falls_back_to_default_when_no_manager_entry() {
+        // Edge: configs that don't declare `iii-worker-manager` still get
+        // one injected via the `mandatory` registration path. That entry
+        // has no custom config, so the port resolution must land on
+        // DEFAULT_PORT. Losing this fallback would regress every existing
+        // deployment that doesn't explicitly pin a port.
+        let builder = EngineBuilder::new()
+            .with_config(EngineConfig {
+                modules: Vec::new(),
+                workers: Vec::new(),
+            })
+            .build()
+            .await
+            .expect("build with no explicit workers");
+
+        assert_eq!(
+            builder.engine().worker_manager_port(),
+            super::super::worker::DEFAULT_PORT,
+            "absent/default iii-worker-manager must resolve to DEFAULT_PORT"
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[test]
+    fn engine_worker_manager_port_is_set_once() {
+        // OnceLock semantics: first set wins. This guards against a future
+        // refactor that might try to mutate the port mid-lifetime (e.g. from
+        // a config hot-reload), which would silently drift external worker
+        // connections. If the port genuinely needs to change, the user
+        // should restart the engine.
+        let engine = Engine::new();
+        engine.set_worker_manager_port(49199);
+        engine.set_worker_manager_port(50000); // ignored
+        assert_eq!(
+            engine.worker_manager_port(),
+            49199,
+            "second set_worker_manager_port must be a no-op"
         );
     }
 }

@@ -44,6 +44,8 @@ fn mount_ignore_busy(
 /// 4. `/dev/pts` as devpts (MS_NOEXEC | MS_NOSUID | MS_RELATIME)
 /// 5. `/dev/shm` as tmpfs (MS_NOEXEC | MS_NOSUID | MS_RELATIME)
 /// 6. `/dev/fd` symlink to `/proc/self/fd` (if not already present)
+/// 7. `/tmp` as tmpfs (MS_NOSUID | MS_NODEV | MS_RELATIME, mode=1777)
+/// 8. `/run` as tmpfs (MS_NOSUID | MS_NODEV | MS_RELATIME, mode=755)
 pub fn mount_filesystems() -> Result<(), InitError> {
     let nodev_noexec_nosuid =
         MsFlags::MS_NODEV | MsFlags::MS_NOEXEC | MsFlags::MS_NOSUID | MsFlags::MS_RELATIME;
@@ -107,10 +109,82 @@ pub fn mount_filesystems() -> Result<(), InitError> {
         })?;
     }
 
-    // 7. /sys/fs/cgroup -- cgroup2 (best-effort, used for worker memory limits)
+    // 7. /tmp -- tmpfs (real kernel tmpfs so Unix domain sockets work;
+    //    the rootfs passthrough filesystem does not implement mknod)
+    mkdir_ignore_exists("/tmp")?;
+    mount_ignore_busy(
+        Some("tmpfs"),
+        "/tmp",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RELATIME,
+        Some("mode=1777"),
+    )?;
+
+    // 8. /run -- tmpfs (runtime scratch space)
+    mkdir_ignore_exists("/run")?;
+    mount_ignore_busy(
+        Some("tmpfs"),
+        "/run",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RELATIME,
+        Some("mode=755"),
+    )?;
+
+    // 9. /sys/fs/cgroup -- cgroup2 (best-effort, used for worker memory limits)
     mount_cgroup2().ok();
 
     Ok(())
+}
+
+/// Recursively `mkdir -p` a guest path, ignoring `EEXIST` at each level.
+fn mkdir_p(path: &str) -> Result<(), InitError> {
+    let mut acc = String::new();
+    for segment in path.trim_start_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        acc.push('/');
+        acc.push_str(segment);
+        mkdir_ignore_exists(&acc)?;
+    }
+    Ok(())
+}
+
+/// Mount virtiofs shares passed via the `III_VIRTIOFS_MOUNTS` env var.
+///
+/// Format: `tag1=/guest/path1;tag2=/guest/path2`. The tag matches the virtiofs
+/// source tag attached in vm_boot. Each guest path is created with `mkdir -p`
+/// before mounting. Failures on individual mounts log a warning and continue
+/// so a bad share cannot wedge worker startup.
+pub fn mount_virtiofs_shares() {
+    let spec = match std::env::var("III_VIRTIOFS_MOUNTS") {
+        Ok(s) if !s.is_empty() => s,
+        _ => return,
+    };
+
+    let pairs = crate::parse::parse_virtiofs_spec(&spec, |entry| {
+        eprintln!("iii-init: warning: malformed virtiofs mount entry: {entry}");
+    });
+
+    for (tag, guest_path) in pairs {
+        if let Err(e) = mkdir_p(&guest_path) {
+            eprintln!("iii-init: warning: mkdir {guest_path} failed: {e}");
+            continue;
+        }
+
+        match mount(
+            Some(tag.as_str()),
+            guest_path.as_str(),
+            Some("virtiofs"),
+            MsFlags::empty(),
+            None::<&str>,
+        ) {
+            Ok(()) | Err(nix::Error::EBUSY) => {}
+            Err(e) => {
+                eprintln!("iii-init: warning: mount virtiofs {tag} -> {guest_path} failed: {e}");
+            }
+        }
+    }
 }
 
 /// Mount cgroup2 and create a memory-limited worker cgroup.
@@ -185,6 +259,27 @@ mod tests {
             sysfs_pos < devpts_pos,
             "sysfs must be mounted before devpts"
         );
+    }
+
+    #[test]
+    fn test_tmpfs_mounts_after_dev_fd() {
+        // /tmp and /run tmpfs must come after /dev/fd symlink.
+        let source = include_str!("mount.rs");
+        let symlink_pos = source
+            .find("// 6. /dev/fd -> /proc/self/fd")
+            .expect("/dev/fd symlink comment not found");
+        let tmp_pos = source
+            .find("// 7. /tmp -- tmpfs")
+            .expect("/tmp mount comment not found");
+        let run_pos = source
+            .find("// 8. /run -- tmpfs")
+            .expect("/run mount comment not found");
+
+        assert!(
+            symlink_pos < tmp_pos,
+            "/dev/fd symlink must precede /tmp mount"
+        );
+        assert!(tmp_pos < run_pos, "/tmp must be mounted before /run");
     }
 
     #[test]

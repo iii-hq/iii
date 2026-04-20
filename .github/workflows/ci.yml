@@ -3,8 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
   workflow_dispatch:
 
 concurrency:
@@ -61,6 +73,9 @@ jobs:
           cargo llvm-cov report \
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
+
+      - name: Check benchmarks compile
+        run: cargo bench --benches --no-run
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -141,6 +156,216 @@ jobs:
 
       - name: Build for target
         run: cargo build -p iii --release --target ${{ matrix.target }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Worker Build Matrix (matches release targets)
+  # ──────────────────────────────────────────────────────────────
+
+  worker-build-matrix:
+    name: Worker Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_PKG_CONFIG_ALLOW_CROSS: '1'
+      PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: /usr/aarch64-linux-gnu
+      PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-L/usr/lib/aarch64-linux-gnu'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-${{ matrix.target }}
+
+      - name: Install system dependencies (x86_64 Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Install cross-compilation tools (aarch64 Linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libcap-ng-dev:arm64
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build iii-worker for target
+        run: cargo build -p iii-worker --target ${{ matrix.target }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Worker Test Matrix (cross-platform integration tests)
+  # ──────────────────────────────────────────────────────────────
+
+  worker-test-matrix:
+    name: Worker Tests - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-test-${{ matrix.os }}
+
+      - uses: taiki-e/install-action@cargo-nextest
+
+      - name: Install system dependencies (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Run iii-worker tests
+        run: cargo nextest run -p iii-worker --profile ci
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-worker-test-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────
+  # Worker Feature-Gated Tests
+  # ──────────────────────────────────────────────────────────────
+
+  worker-test-vm-linux:
+    name: Worker Tests (VM) - linux
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, kvm]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-test-vm-linux
+
+      - uses: taiki-e/install-action@cargo-nextest
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Run VM feature-gated tests
+        run: cargo nextest run -p iii-worker --features integration-vm --profile ci
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-worker-test-vm-linux
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+
+  worker-test-vm-macos:
+    name: Worker Tests (VM) - macos
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-test-vm-macos
+
+      - uses: taiki-e/install-action@cargo-nextest
+
+      - name: Run VM feature-gated tests
+        run: cargo nextest run -p iii-worker --features integration-vm --profile ci
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-worker-test-vm-macos
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+
+  worker-test-oci-linux:
+    name: Worker Tests (OCI) - linux
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-test-oci-linux
+
+      - uses: taiki-e/install-action@cargo-nextest
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Run OCI feature-gated tests
+        run: cargo nextest run -p iii-worker --features integration-oci --profile ci
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-worker-test-oci-linux
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+
+  worker-test-oci-macos:
+    name: Worker Tests (OCI) - macos
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-test-oci-macos
+
+      - uses: taiki-e/install-action@cargo-nextest
+
+      - name: Run OCI feature-gated tests
+        run: cargo nextest run -p iii-worker --features integration-oci --profile ci
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-worker-test-oci-macos
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
 
   # ──────────────────────────────────────────────────────────────
   # SDK Node

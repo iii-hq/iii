@@ -11,6 +11,7 @@
 //! for crash isolation.
 
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -26,6 +27,17 @@ pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
 }
 
+/// Build the VM boot env. Launcher wins: `III_ISOLATION=libkrun` is written
+/// after caller env so an OCI image `ENV III_ISOLATION=docker` cannot override it.
+pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<String, String> {
+    let mut merged = HashMap::with_capacity(caller_env.len() + 1);
+    for (key, value) in caller_env {
+        merged.insert(key, value);
+    }
+    merged.insert("III_ISOLATION".to_string(), "libkrun".to_string());
+    merged
+}
+
 /// Run a dev worker session inside a libkrun VM.
 ///
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
@@ -39,7 +51,12 @@ pub async fn run_dev(
     vcpus: u32,
     ram_mib: u32,
     rootfs: PathBuf,
+    background: bool,
+    worker_name: &str,
+    mounts: &[(String, String)],
 ) -> i32 {
+    let env = build_vm_env(env);
+
     let self_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -65,9 +82,17 @@ pub async fn run_dev(
     cmd.arg("--workdir").arg("/workspace");
     cmd.arg("--vcpus").arg(vcpus.to_string());
     cmd.arg("--ram").arg(ram_mib.to_string());
+    // Control channel for host-driven fast restarts. __vm-boot owns the
+    // proxy thread + socketpair; we just tell it where to put the unix
+    // socket so the watcher (and stop handler) knows where to connect.
+    cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
+    }
+
+    for (host, guest) in mounts {
+        cmd.arg("--mount").arg(format!("{}:{}", host, guest));
     }
 
     for arg in args {
@@ -84,15 +109,72 @@ pub async fn run_dev(
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
-            nix::unistd::setsid().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
     }
 
     cmd.stdin(std::process::Stdio::null());
 
+    if background {
+        let logs_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".iii/logs")
+            .join(worker_name);
+        if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+            eprintln!("{} Failed to create logs dir: {}", "error:".red(), e);
+            return 1;
+        }
+        let stdout_file = match std::fs::File::create(logs_dir.join("stdout.log")) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{} Failed to create stdout log: {}", "error:".red(), e);
+                return 1;
+            }
+        };
+        let stderr_file = match std::fs::File::create(logs_dir.join("stderr.log")) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{} Failed to create stderr log: {}", "error:".red(), e);
+                return 1;
+            }
+        };
+        cmd.arg("--console-output").arg(logs_dir.join("stdout.log"));
+        cmd.stdout(stdout_file).stderr(stderr_file);
+    }
+
     match cmd.spawn() {
         Ok(mut child) => {
+            // Write PID file so is_worker_running / stop / kill_stale_worker can find us.
+            // Use the hardened writer: O_NOFOLLOW + 0o600 on Unix so a
+            // symlink pre-planted at vm.pid can't redirect our write to
+            // a sensitive file. Matches the watch.pid hardening.
+            let pid_file = rootfs.join("vm.pid");
+            let pid = child.id().unwrap_or(0);
+            if pid > 0
+                && let Err(e) = crate::cli::pidfile::write_pid_file_strict(&pid_file, pid)
+            {
+                eprintln!(
+                    "{} Failed to write PID file {}: {}",
+                    "error:".red(),
+                    pid_file.display(),
+                    e
+                );
+                // Kill the child so we don't leave an untracked VM running
+                let _ = child.kill().await;
+                return 1;
+            }
+
+            if background {
+                eprintln!(
+                    "  {} {} started (pid: {})",
+                    "✓".green(),
+                    worker_name.bold(),
+                    pid
+                );
+                return 0;
+            }
+
             let exit_code = tokio::select! {
                 result = child.wait() => {
                     match result {
@@ -112,8 +194,11 @@ pub async fn run_dev(
                 }
             };
 
+            // Clean up PID file on exit
+            let _ = std::fs::remove_file(&pid_file);
+
             #[cfg(unix)]
-            super::super::dev::restore_terminal_cooked_mode();
+            super::super::local_worker::restore_terminal_cooked_mode();
 
             exit_code
         }
@@ -132,12 +217,18 @@ use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
 
 pub struct LibkrunAdapter;
 
+impl Default for LibkrunAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LibkrunAdapter {
     pub fn new() -> Self {
         Self
     }
 
-    fn worker_dir(name: &str) -> PathBuf {
+    pub fn worker_dir(name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".iii")
@@ -145,7 +236,7 @@ impl LibkrunAdapter {
             .join(name)
     }
 
-    fn image_rootfs(image: &str) -> PathBuf {
+    pub fn image_rootfs(image: &str) -> PathBuf {
         let hash = {
             use sha2::Digest;
             let mut hasher = sha2::Sha256::new();
@@ -159,11 +250,11 @@ impl LibkrunAdapter {
             .join(hash)
     }
 
-    fn pid_file(name: &str) -> PathBuf {
+    pub fn pid_file(name: &str) -> PathBuf {
         Self::worker_dir(name).join("vm.pid")
     }
 
-    fn logs_dir(name: &str) -> PathBuf {
+    pub fn logs_dir(name: &str) -> PathBuf {
         Self::worker_dir(name).join("logs")
     }
 
@@ -326,11 +417,14 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             }
         }
 
+        let workdir =
+            super::oci::read_oci_workdir(&worker_rootfs).unwrap_or_else(|| "/".to_string());
+
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
         cmd.arg("--rootfs").arg(&worker_rootfs);
         cmd.arg("--exec").arg(&exec_path);
-        cmd.arg("--workdir").arg("/");
+        cmd.arg("--workdir").arg(&workdir);
         let vcpus = spec
             .cpu_limit
             .as_deref()
@@ -341,7 +435,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         cmd.arg("--ram").arg(
             spec.memory_limit
                 .as_deref()
-                .and_then(|m| k8s_mem_to_mib(m))
+                .and_then(k8s_mem_to_mib)
                 .unwrap_or_else(|| "2048".to_string()),
         );
 
@@ -351,11 +445,21 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         cmd.arg("--console-output")
             .arg(Self::stdout_log(&spec.name));
 
+        // Control channel for host-driven fast restarts. The socket is
+        // colocated with the pid file under ~/.iii/managed/<name>/ so
+        // supervisor_ctl::control_socket_path resolves to the same place
+        // the watcher and stop handler use. Without this, iii-init's
+        // supervisor mode stays dormant and every source edit falls back
+        // to a full VM restart.
+        cmd.arg("--control-sock")
+            .arg(worker_dir.join("control.sock"));
+
         let image_env = read_oci_env(&worker_rootfs);
-        let mut merged_env: HashMap<String, String> = image_env.into_iter().collect();
+        let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
         for (key, value) in &spec.env {
-            merged_env.insert(key.clone(), value.clone());
+            caller_env.insert(key.clone(), value.clone());
         }
+        let merged_env = build_vm_env(caller_env);
 
         for (key, value) in &merged_env {
             cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -378,7 +482,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let child = cmd.spawn().context("failed to spawn VM boot process")?;
 
         let pid = child.id();
-        std::fs::write(Self::pid_file(&spec.name), pid.to_string())?;
+        crate::cli::pidfile::write_pid_file_strict(&Self::pid_file(&spec.name), pid)?;
 
         tracing::info!(name = %spec.name, pid = pid, "started libkrun VM");
 
@@ -386,34 +490,34 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 
     async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<()> {
-        if let Ok(pid) = container_id.parse::<u32>() {
-            if Self::pid_alive(pid) {
-                tracing::info!(pid = pid, "sending SIGTERM to libkrun VM");
+        if let Ok(pid) = container_id.parse::<u32>()
+            && Self::pid_alive(pid)
+        {
+            tracing::info!(pid = pid, "sending SIGTERM to libkrun VM");
+            unsafe {
+                nix::libc::kill(pid as i32, nix::libc::SIGTERM);
+            }
+
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
+            while std::time::Instant::now() < deadline {
                 unsafe {
-                    nix::libc::kill(pid as i32, nix::libc::SIGTERM);
+                    nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
                 }
-
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
-                while std::time::Instant::now() < deadline {
-                    unsafe {
-                        nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
-                    }
-                    if !Self::pid_alive(pid) {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if !Self::pid_alive(pid) {
+                    break;
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
 
-                if Self::pid_alive(pid) {
-                    tracing::warn!(pid = pid, "VM did not exit after SIGTERM, sending SIGKILL");
-                    unsafe {
-                        nix::libc::kill(pid as i32, nix::libc::SIGKILL);
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    unsafe {
-                        nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
-                    }
+            if Self::pid_alive(pid) {
+                tracing::warn!(pid = pid, "VM did not exit after SIGTERM, sending SIGKILL");
+                unsafe {
+                    nix::libc::kill(pid as i32, nix::libc::SIGKILL);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                unsafe {
+                    nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
                 }
             }
         }
@@ -443,12 +547,12 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         if let Ok(entries) = std::fs::read_dir(&managed_dir) {
             for entry in entries.flatten() {
                 let pid_file = entry.path().join("vm.pid");
-                if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-                    if pid_str.trim() == container_id {
-                        let _ = std::fs::remove_dir_all(entry.path());
-                        tracing::info!(container_id = %container_id, "removed libkrun worker directory");
-                        return Ok(());
-                    }
+                if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+                    && pid_str.trim() == container_id
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                    tracing::info!(container_id = %container_id, "removed libkrun worker directory");
+                    return Ok(());
                 }
             }
         }
@@ -456,7 +560,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 }
 
-fn k8s_mem_to_mib(value: &str) -> Option<String> {
+pub fn k8s_mem_to_mib(value: &str) -> Option<String> {
     if let Some(n) = value.strip_suffix("Mi") {
         Some(n.to_string())
     } else if let Some(n) = value.strip_suffix("Gi") {
@@ -504,6 +608,36 @@ mod tests {
     fn test_libkrun_available_returns_bool() {
         let result = libkrun_available();
         let _ = result;
+    }
+
+    #[test]
+    fn build_vm_env_injects_isolation_marker_into_empty_input() {
+        let merged = build_vm_env(HashMap::new());
+        assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn build_vm_env_preserves_caller_vars_and_adds_isolation() {
+        let mut caller = HashMap::new();
+        caller.insert("NODE_ENV".to_string(), "production".to_string());
+        caller.insert("III_URL".to_string(), "ws://127.0.0.1:3111".to_string());
+        let merged = build_vm_env(caller);
+        assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
+        assert_eq!(merged.get("NODE_ENV"), Some(&"production".to_string()));
+        assert_eq!(
+            merged.get("III_URL"),
+            Some(&"ws://127.0.0.1:3111".to_string())
+        );
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn build_vm_env_launcher_overrides_caller_isolation() {
+        let mut caller = HashMap::new();
+        caller.insert("III_ISOLATION".to_string(), "docker".to_string());
+        let merged = build_vm_env(caller);
+        assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
     }
 
     #[test]

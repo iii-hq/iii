@@ -3,8 +3,11 @@
 //! These tests import the real `Cli`, `Commands`, and `VmBootArgs` types from
 //! the crate library, ensuring any CLI changes are caught at compile time.
 
+mod common;
+
 use clap::Parser;
-use iii_worker::{Cli, Commands, DEFAULT_PORT, VmBootArgs};
+use common::isolation::in_temp_dir;
+use iii_worker::{Cli, Commands, VmBootArgs};
 
 /// All 10 subcommands parse without error.
 #[test]
@@ -22,26 +25,11 @@ fn cli_parses_all_subcommands() {
         (&["iii-worker", "stop", "pdfkit"], |c| {
             assert!(matches!(c, Commands::Stop { .. }))
         }),
-        (&["iii-worker", "dev", "."], |c| {
-            assert!(matches!(c, Commands::Dev { .. }))
-        }),
         (&["iii-worker", "list"], |c| {
             assert!(matches!(c, Commands::List))
         }),
         (&["iii-worker", "logs", "my-worker"], |c| {
             assert!(matches!(c, Commands::Logs { .. }))
-        }),
-        (
-            &[
-                "iii-worker",
-                "start-all",
-                "--engine-url",
-                "ws://localhost:49134",
-            ],
-            |c| assert!(matches!(c, Commands::StartAll { .. })),
-        ),
-        (&["iii-worker", "stop-all"], |c| {
-            assert!(matches!(c, Commands::StopAll))
         }),
         (
             &[
@@ -63,61 +51,120 @@ fn cli_parses_all_subcommands() {
     }
 }
 
+/// Engine/CLI IPC contract: the iii engine spawns `iii-worker start <name>
+/// --port <N>` from engine/src/workers/registry_worker.rs::ExternalWorkerProcess::spawn
+/// whenever it encounters a worker in config.yaml that isn't a builtin or a
+/// legacy iii.toml module. The --port flag carries the engine's configured
+/// iii-worker-manager port so spawned workers connect back to the right
+/// place (previously hardcoded DEFAULT_PORT, silently breaking non-default
+/// manager ports). These tests lock both halves of the contract: (a) the
+/// bare-name form still parses for backward compat with direct CLI use, and
+/// (b) the engine's new --port form parses and surfaces the port correctly.
+#[test]
+fn start_subcommand_matches_engine_spawn_args() {
+    // Bare-name form used when a human runs `iii-worker start <name>` from
+    // the terminal. Must still parse cleanly and default port to DEFAULT_PORT.
+    // Humans DO expect the wait-for-ready status panel here; only the engine
+    // auto-spawn path opts out via --no-wait.
+    let cli = Cli::try_parse_from(["iii-worker", "start", "image-resize"])
+        .expect("bare start form must parse");
+    match cli.command {
+        Commands::Start {
+            worker_name,
+            no_wait,
+            port,
+        } => {
+            assert_eq!(worker_name, "image-resize");
+            assert!(!no_wait, "bare human invocation keeps default wait=true");
+            assert_eq!(
+                port,
+                iii_worker::DEFAULT_PORT,
+                "bare form must default to DEFAULT_PORT"
+            );
+        }
+        _ => panic!("expected Start"),
+    }
+}
+
+#[test]
+fn start_subcommand_accepts_port_flag_from_engine_spawn() {
+    // Exact form the engine's ExternalWorkerProcess::spawn emits when a
+    // non-default iii-worker-manager port is configured. If this ever stops
+    // parsing, clap rejects with exit 2 and every auto-spawned external
+    // worker on a non-default port silently fails to connect.
+    //
+    // `--no-wait` is part of that contract now: without it, the child blocks
+    // on the 500ms status-panel redraw loop and floods stderr.log with ANSI
+    // redraw noise that bleeds into `iii worker logs -f`.
+    let cli = Cli::try_parse_from([
+        "iii-worker",
+        "start",
+        "pdfkit",
+        "--port",
+        "49199",
+        "--no-wait",
+    ])
+    .expect("engine's --port --no-wait spawn form must parse");
+    match cli.command {
+        Commands::Start {
+            worker_name,
+            no_wait,
+            port,
+        } => {
+            assert_eq!(worker_name, "pdfkit");
+            assert!(no_wait, "engine auto-spawn must pass --no-wait");
+            assert_eq!(port, 49199, "--port must surface the custom port");
+        }
+        _ => panic!("expected Start"),
+    }
+}
+
+#[test]
+fn restart_subcommand_accepts_port_flag() {
+    // Restart funnels through handle_managed_start too, so a CLI user who
+    // runs `iii-worker restart foo --port 49199` against a non-default
+    // engine must see the port flow through. Otherwise the same silent-fail
+    // pattern returns via the restart path.
+    let cli = Cli::try_parse_from(["iii-worker", "restart", "pdfkit", "--port", "49199"])
+        .expect("restart --port must parse");
+    match cli.command {
+        Commands::Restart {
+            worker_name, port, ..
+        } => {
+            assert_eq!(worker_name, "pdfkit");
+            assert_eq!(port, 49199);
+        }
+        _ => panic!("expected Restart"),
+    }
+}
+
 /// `add` subcommand parses worker name and applies defaults.
 #[test]
 fn add_subcommand_fields() {
     let cli = Cli::parse_from(["iii-worker", "add", "ghcr.io/iii-hq/node:latest"]);
     match cli.command {
-        Commands::Add {
-            worker_name,
-            runtime,
-            address,
-            port,
-        } => {
-            assert_eq!(worker_name, "ghcr.io/iii-hq/node:latest");
-            assert_eq!(runtime, "libkrun");
-            assert_eq!(address, "localhost");
-            assert_eq!(port, DEFAULT_PORT);
+        Commands::Add { args, force, .. } => {
+            assert_eq!(
+                args.worker_names,
+                vec!["ghcr.io/iii-hq/node:latest".to_string()]
+            );
+            assert!(!force);
         }
         _ => panic!("expected Add"),
     }
 }
 
-/// `dev` subcommand requires a path and supports all optional flags.
+/// `add` subcommand accepts multiple worker names as positional args.
 #[test]
-fn dev_subcommand_all_flags() {
-    let cli = Cli::parse_from([
-        "iii-worker",
-        "dev",
-        "/tmp/project",
-        "--rebuild",
-        "--name",
-        "my-worker",
-        "--port",
-        "5000",
-    ]);
+fn add_subcommand_multiple_workers() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "iii-http", "iii-state"]);
     match cli.command {
-        Commands::Dev {
-            path,
-            name,
-            rebuild,
-            port,
-            ..
-        } => {
-            assert_eq!(path, "/tmp/project");
-            assert_eq!(name, Some("my-worker".to_string()));
-            assert!(rebuild);
-            assert_eq!(port, 5000);
+        Commands::Add { args, force, .. } => {
+            assert_eq!(args.worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
+            assert!(!force);
         }
-        _ => panic!("expected Dev"),
+        _ => panic!("Expected Add command"),
     }
-}
-
-/// `dev` without a path argument fails (path is required).
-#[test]
-fn dev_requires_path() {
-    let result = Cli::try_parse_from(["iii-worker", "dev"]);
-    assert!(result.is_err(), "dev without PATH should fail");
 }
 
 /// `logs` subcommand parses worker name and --follow flag.
@@ -135,16 +182,6 @@ fn logs_subcommand_with_follow() {
         }
         _ => panic!("expected Logs"),
     }
-}
-
-/// `start-all` requires --engine-url.
-#[test]
-fn start_all_requires_engine_url() {
-    let result = Cli::try_parse_from(["iii-worker", "start-all"]);
-    assert!(
-        result.is_err(),
-        "start-all without --engine-url should fail"
-    );
 }
 
 /// `VmBootArgs` roundtrip with all fields including `mount`, `pid_file`,
@@ -231,8 +268,9 @@ fn vm_boot_args_defaults() {
 /// Manifest YAML roundtrip (serde pattern test, kept as-is).
 #[test]
 fn manifest_yaml_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
-    let yaml = r#"
+    in_temp_dir(|| {
+        let dir = std::env::current_dir().unwrap();
+        let yaml = r#"
 name: integration-test-worker
 runtime:
   language: typescript
@@ -245,49 +283,194 @@ resources:
   cpus: 4
   memory: 4096
 "#;
-    std::fs::write(dir.path().join("iii.worker.yaml"), yaml).unwrap();
+        std::fs::write(dir.join("iii.worker.yaml"), yaml).unwrap();
 
-    let content = std::fs::read_to_string(dir.path().join("iii.worker.yaml")).unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        let content = std::fs::read_to_string(dir.join("iii.worker.yaml")).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
 
-    assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
-    assert_eq!(parsed["runtime"]["language"].as_str(), Some("typescript"));
-    assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
-    assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
-    assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
-    assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
+        assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
+        assert_eq!(parsed["runtime"]["language"].as_str(), Some("typescript"));
+        assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
+        assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
+        assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
+        assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
+    });
+}
+
+/// `add --force` parses the force flag correctly.
+#[test]
+fn add_force_flag() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force"]);
+    match cli.command {
+        Commands::Add { args, force, .. } => {
+            assert_eq!(args.worker_names, vec!["pdfkit"]);
+            assert!(force);
+            assert!(!args.reset_config);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add --force --reset-config` parses both flags.
+#[test]
+fn add_force_reset_config() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "--force", "--reset-config"]);
+    match cli.command {
+        Commands::Add { args, force, .. } => {
+            assert!(force);
+            assert!(args.reset_config);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add -f` short flag works.
+#[test]
+fn add_force_short_flag() {
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "-f"]);
+    match cli.command {
+        Commands::Add { force, .. } => assert!(force),
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add ./path` accepts relative local paths as worker names.
+#[test]
+fn add_subcommand_accepts_local_path() {
+    let cli = Cli::parse_from(["iii-worker", "add", "./my-worker"]);
+    match cli.command {
+        Commands::Add { args, force, .. } => {
+            assert_eq!(args.worker_names, vec!["./my-worker"]);
+            assert!(!force);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add /absolute/path` accepts absolute local paths.
+#[test]
+fn add_subcommand_accepts_absolute_path() {
+    let cli = Cli::parse_from(["iii-worker", "add", "/tmp/my-worker"]);
+    match cli.command {
+        Commands::Add { args, force, .. } => {
+            assert_eq!(args.worker_names, vec!["/tmp/my-worker"]);
+            assert!(!force);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `add ./path --force` parses both path and force flag.
+#[test]
+fn add_subcommand_local_path_with_force() {
+    let cli = Cli::parse_from(["iii-worker", "add", "./my-worker", "--force"]);
+    match cli.command {
+        Commands::Add { args, force, .. } => {
+            assert_eq!(args.worker_names, vec!["./my-worker"]);
+            assert!(force);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+/// `reinstall` parses as expected and shares AddArgs with Add.
+#[test]
+fn reinstall_subcommand() {
+    let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit@1.2.0"]);
+    match cli.command {
+        Commands::Reinstall { args } => {
+            assert_eq!(args.worker_names, vec!["pdfkit@1.2.0"]);
+            assert!(!args.reset_config);
+        }
+        _ => panic!("expected Reinstall"),
+    }
+}
+
+/// `reinstall --reset-config` parses the flag.
+#[test]
+fn reinstall_reset_config() {
+    let cli = Cli::parse_from(["iii-worker", "reinstall", "pdfkit", "--reset-config"]);
+    match cli.command {
+        Commands::Reinstall { args } => {
+            assert!(args.reset_config);
+        }
+        _ => panic!("expected Reinstall"),
+    }
+}
+
+/// `clear` without args parses as clear-all.
+#[test]
+fn clear_subcommand_no_args() {
+    let cli = Cli::parse_from(["iii-worker", "clear"]);
+    match cli.command {
+        Commands::Clear { worker_name, yes } => {
+            assert!(worker_name.is_none());
+            assert!(!yes);
+        }
+        _ => panic!("expected Clear"),
+    }
+}
+
+/// `clear <name>` parses the worker name.
+#[test]
+fn clear_subcommand_with_name() {
+    let cli = Cli::parse_from(["iii-worker", "clear", "pdfkit"]);
+    match cli.command {
+        Commands::Clear { worker_name, yes } => {
+            assert_eq!(worker_name.as_deref(), Some("pdfkit"));
+            assert!(!yes);
+        }
+        _ => panic!("expected Clear"),
+    }
+}
+
+/// `clear --yes` / `clear -y` skips confirmation.
+#[test]
+fn clear_yes_flag() {
+    let cli = Cli::parse_from(["iii-worker", "clear", "--yes"]);
+    match cli.command {
+        Commands::Clear { yes, .. } => assert!(yes),
+        _ => panic!("expected Clear"),
+    }
+    let cli = Cli::parse_from(["iii-worker", "clear", "-y"]);
+    match cli.command {
+        Commands::Clear { yes, .. } => assert!(yes),
+        _ => panic!("expected Clear"),
+    }
 }
 
 /// OCI config JSON parsing (serde pattern test, kept as-is).
 #[test]
 fn oci_config_json_parsing() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = serde_json::json!({
-        "config": {
-            "Entrypoint": ["/usr/bin/node"],
-            "Cmd": ["server.js", "--port", "8080"],
-            "Env": [
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "NODE_VERSION=20.11.0",
-                "HOME=/root"
-            ]
-        }
+    in_temp_dir(|| {
+        let dir = std::env::current_dir().unwrap();
+        let config = serde_json::json!({
+            "config": {
+                "Entrypoint": ["/usr/bin/node"],
+                "Cmd": ["server.js", "--port", "8080"],
+                "Env": [
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "NODE_VERSION=20.11.0",
+                    "HOME=/root"
+                ]
+            }
+        });
+        std::fs::write(
+            dir.join(".oci-config.json"),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.join(".oci-config.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let entrypoint = parsed["config"]["Entrypoint"].as_array().unwrap();
+        assert_eq!(entrypoint[0].as_str(), Some("/usr/bin/node"));
+
+        let cmd = parsed["config"]["Cmd"].as_array().unwrap();
+        assert_eq!(cmd.len(), 3);
+
+        let env = parsed["config"]["Env"].as_array().unwrap();
+        assert_eq!(env.len(), 3);
     });
-    std::fs::write(
-        dir.path().join(".oci-config.json"),
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .unwrap();
-
-    let content = std::fs::read_to_string(dir.path().join(".oci-config.json")).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-    let entrypoint = parsed["config"]["Entrypoint"].as_array().unwrap();
-    assert_eq!(entrypoint[0].as_str(), Some("/usr/bin/node"));
-
-    let cmd = parsed["config"]["Cmd"].as_array().unwrap();
-    assert_eq!(cmd.len(), 3);
-
-    let env = parsed["config"]["Env"].as_array().unwrap();
-    assert_eq!(env.len(), 3);
 }

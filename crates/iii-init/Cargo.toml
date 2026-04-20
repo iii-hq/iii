@@ -17,3 +17,9 @@ path = "src/main.rs"
 nix = { version = "0.31", features = ["mount", "signal", "process", "fs"] }
 libc = "0.2"
 thiserror = "2"
+# Supervisor library: provides Config/State/Request/Response/control::serve used
+# by the "supervisor mode" path inside exec_worker when III_CONTROL_PORT is set.
+# Sync-only; no tokio. Cross-compiles cleanly to linux-musl (same target as init).
+iii-supervisor = { path = "../iii-supervisor" }
+# Needed for the blocking control loop inside supervisor mode.
+anyhow = "1"

@@ -186,20 +186,17 @@ class III:
         from an async context.
         """
         self._running = True
-        try:
-            from .telemetry import attach_event_loop, init_otel
+        from .telemetry import attach_event_loop, init_otel
 
-            loop = asyncio.get_running_loop()
-            otel_cfg: OtelConfig | None = None
-            if self._options.otel:
-                if isinstance(self._options.otel, OtelConfig):
-                    otel_cfg = self._options.otel
-                else:
-                    otel_cfg = OtelConfig(**self._options.otel)
-            init_otel(config=otel_cfg, loop=loop)
-            attach_event_loop(loop)
-        except ImportError:
-            log.debug("OpenTelemetry not available")
+        loop = asyncio.get_running_loop()
+        otel_cfg: OtelConfig | None = None
+        if self._options.otel:
+            if isinstance(self._options.otel, OtelConfig):
+                otel_cfg = self._options.otel
+            else:
+                otel_cfg = OtelConfig(**self._options.otel)
+        init_otel(config=otel_cfg, loop=loop)
+        attach_event_loop(loop)
         self._set_connection_state("connecting")
         await self._do_connect()
 
@@ -238,12 +235,9 @@ class III:
 
         self._set_connection_state("disconnected")
 
-        try:
-            from .telemetry import shutdown_otel_async
+        from .telemetry import shutdown_otel_async
 
-            await shutdown_otel_async()
-        except ImportError:
-            log.debug("OpenTelemetry not available")
+        await shutdown_otel_async()
 
         # Schedule the event loop to stop on the next iteration so the
         # non-daemon background thread exits and the process can terminate.
@@ -418,26 +412,20 @@ class III:
             future.set_result(result)
 
     def _inject_traceparent(self) -> str | None:
-        try:
-            from opentelemetry import context as otel_context
-            from opentelemetry import propagate
+        from opentelemetry import context as otel_context
+        from opentelemetry import propagate
 
-            carrier: dict[str, str] = {}
-            propagate.inject(carrier, context=otel_context.get_current())
-            return carrier.get("traceparent")
-        except ImportError:
-            return None
+        carrier: dict[str, str] = {}
+        propagate.inject(carrier, context=otel_context.get_current())
+        return carrier.get("traceparent")
 
     def _inject_baggage(self) -> str | None:
-        try:
-            from opentelemetry import context as otel_context
-            from opentelemetry import propagate
+        from opentelemetry import context as otel_context
+        from opentelemetry import propagate
 
-            carrier: dict[str, str] = {}
-            propagate.inject(carrier, context=otel_context.get_current())
-            return carrier.get("baggage")
-        except ImportError:
-            return None
+        carrier: dict[str, str] = {}
+        propagate.inject(carrier, context=otel_context.get_current())
+        return carrier.get("baggage")
 
     async def _invoke_with_otel_context(
         self,
@@ -446,16 +434,8 @@ class III:
         traceparent: str | None,
         baggage: str | None,
     ) -> tuple[Any, str | None]:
-        try:
-            from opentelemetry import context as otel_context
-            from opentelemetry import propagate, trace
-
-            otel_available = True
-        except ImportError:
-            otel_available = False
-
-        if not otel_available:
-            return await handler(data), None
+        from opentelemetry import context as otel_context
+        from opentelemetry import propagate, trace
 
         carrier: dict[str, str] = {}
         if traceparent:
@@ -915,7 +895,19 @@ class III:
             else:
 
                 async def wrapped(input_data: Any) -> Any:
-                    return await self._loop.run_in_executor(None, handler, input_data)
+                    loop = asyncio.get_running_loop()
+                    future: asyncio.Future[Any] = loop.create_future()
+
+                    def _run() -> None:
+                        try:
+                            result = handler(input_data)
+                            loop.call_soon_threadsafe(future.set_result, result)
+                        except BaseException as exc:
+                            loop.call_soon_threadsafe(future.set_exception, exc)
+
+                    t = threading.Thread(target=_run, daemon=True)
+                    t.start()
+                    return await future
 
             self._functions[func.id] = RemoteFunctionData(message=msg, handler=wrapped)
 
@@ -1299,6 +1291,7 @@ class III:
             "name": worker_name,
             "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
             "pid": os.getpid(),
+            "isolation": os.environ.get("III_ISOLATION") or None,
             "telemetry": telemetry,
         }
 

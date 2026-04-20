@@ -11,7 +11,7 @@ graph LR
     WriteHandler -->|"state::set scope=users"| StateStore[(State)]
     Cron -->|"every 5s"| AuditHandler
     AuditHandler -->|"state::list scope=orders"| StateStore
-    AuditHandler -->|"enqueue: notification"| Notify
+    AuditHandler -->|"iii::durable::publish: notification"| Notify
 ```
 
 ## Writing state
@@ -269,7 +269,7 @@ iii.registerFunction(
         logger.warn('Order overdue', { orderId: order.id })
 
         await iii.trigger({
-          function_id: 'enqueue',
+          function_id: 'iii::durable::publish',
           payload: { topic: 'notification', data: { orderId: order.id, templateId: 'order-audit-warning', status: order.status } },
           action: TriggerAction.Void(),
         })
@@ -281,7 +281,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'cron',
   function_id: 'cron.orders_audit',
-  config: { expression: '*/5 * * * *' },
+  config: { expression: '0 */5 * * * * *' },
 })
 ```
 
@@ -309,14 +309,14 @@ def orders_audit(_data) -> None:
             logger.warn("Order overdue", {"orderId": order.get("id")})
 
             iii.trigger({
-                "function_id": "enqueue",
+                "function_id": "iii::durable::publish",
                 "payload": {"topic": "notification", "data": {"orderId": order.get("id"), "templateId": "order-audit-warning"}},
                 "action": TriggerAction.Void(),
             })
 
 
 iii.register_function("cron.orders_audit", orders_audit)
-iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "config": {"expression": "*/5 * * * *"}})
+iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "config": {"expression": "0 */5 * * * * *"}})
 ```
 
   </Tab>
@@ -345,7 +345,7 @@ iii.register_function(
                     logger.warn("Order overdue", Some(json!({ "orderId": order["id"] })));
 
                     iii.trigger(TriggerRequest {
-                        function_id: "enqueue".into(),
+                        function_id: "iii::durable::publish".into(),
                         payload: json!({
                             "topic": "notification",
                             "data": { "orderId": order["id"], "templateId": "order-audit-warning" },
@@ -364,7 +364,7 @@ iii.register_function(
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "cron.orders_audit".into(),
-    config: json!({ "expression": "*/5 * * * *" }),
+    config: json!({ "expression": "0 */5 * * * * *" }),
     metadata: None,
 })?;
 ```

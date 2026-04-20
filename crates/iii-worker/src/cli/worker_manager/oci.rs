@@ -81,7 +81,26 @@ pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
     Ok(rootfs_dir)
 }
 
+/// Setuid + setgid bit mask.
+///
+/// Both bits combined (0o4000 | 0o2000). Applied with a bitwise-NOT to
+/// clear them: `mode & !SETID_BITS`. Stripped during OCI extraction — see
+/// [`extract_layer_with_limits`] for the rationale.
+const SETID_BITS: u32 = 0o6000;
+
 /// Extract a single OCI layer with safety limits.
+///
+/// Setuid and setgid bits are stripped from every regular file as it lands.
+/// The microVM rootfs is served read-only through PassthroughFs with no UID
+/// translation: host ownership surfaces verbatim inside the guest. When the
+/// extracting user is not root (the common case), setuid binaries carry the
+/// host user's UID + setuid bit, and the guest kernel's setuid semantics
+/// *drop* the caller from euid=0 to that non-zero UID on exec — the classic
+/// example being `/bin/mount` refusing to run with "must be superuser".
+/// Stripping setuid/setgid at extraction time lets these binaries inherit
+/// the PID-1 euid (root) on exec, which is what a single-tenant microVM
+/// guest actually wants. There is no privilege boundary *inside* the VM
+/// for setuid to defend, so removing the bit is strictly a fix.
 pub fn extract_layer_with_limits(
     data: &[u8],
     dest: &std::path::Path,
@@ -89,6 +108,8 @@ pub fn extract_layer_with_limits(
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
     let decoder = flate2::read::GzDecoder::new(data);
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
@@ -169,27 +190,88 @@ pub fn extract_layer_with_limits(
             );
         }
 
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with(".wh.") {
-                let target = path.parent().unwrap_or(&path).join(&name[4..]);
-                let full_target = dest.join(&target);
-                let _ = std::fs::remove_file(&full_target);
-                let _ = std::fs::remove_dir_all(&full_target);
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with(".wh.")
+        {
+            let target = path.parent().unwrap_or(&path).join(&name[4..]);
+            let full_target = dest.join(&target);
+            let _ = std::fs::remove_file(&full_target);
+            let _ = std::fs::remove_dir_all(&full_target);
+            continue;
         }
 
-        entry
+        let entry_type = entry.header().entry_type();
+        let header_mode = entry.header().mode().unwrap_or(0);
+
+        let unpacked = entry
             .unpack_in(dest)
             .with_context(|| format!("Failed to extract: {}", path.display()))?;
+
+        // `unpack_in` returns Ok(false) when it intentionally skips an entry
+        // (e.g. path traversal, no parent). Don't touch the dest path in
+        // that case — the file wasn't written and the resolved path could
+        // point outside the rootfs.
+        if !unpacked {
+            continue;
+        }
+
+        // Strip setuid/setgid from regular files. See function doc for why.
+        // Symlinks are skipped: chmod on a symlink path follows to the
+        // target, which may live outside the rootfs.
+        if matches!(
+            entry_type,
+            tar::EntryType::Regular | tar::EntryType::Continuous
+        ) && header_mode & SETID_BITS != 0
+        {
+            let target = dest.join(&path);
+            if let Ok(meta) = std::fs::metadata(&target) {
+                let current = meta.permissions().mode();
+                if current & SETID_BITS != 0 {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(current & !SETID_BITS);
+                    if let Err(e) = std::fs::set_permissions(&target, perms) {
+                        tracing::warn!(
+                            path = %target.display(),
+                            error = %e,
+                            "failed to strip setuid/setgid bits; setuid binaries will drop PID-1 privileges inside the guest",
+                        );
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
 }
 
+/// Collect registry hosts that should use plain HTTP instead of HTTPS.
+/// Reads from the `III_INSECURE_REGISTRIES` env var (comma-separated).
+/// `localhost` and `127.0.0.1` (any port) are always treated as insecure.
+fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
+    let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+
+    let host = reference.registry();
+    if let Some(hostname) = host.split(':').next()
+        && (hostname == "localhost" || hostname == "127.0.0.1")
+        && !registries.contains(&host.to_string())
+    {
+        registries.push(host.to_string());
+    }
+
+    if let Ok(extra) = std::env::var("III_INSECURE_REGISTRIES") {
+        for r in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !registries.contains(&r.to_string()) {
+                registries.push(r.to_string());
+            }
+        }
+    }
+
+    registries
+}
+
 /// Pull an OCI image and extract it as a rootfs directory.
 pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
-    use oci_client::client::ClientConfig;
+    use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
 
@@ -210,7 +292,15 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     let platforms_capture = Arc::clone(&available_platforms);
     let target_arch_str = host_arch.to_string();
 
+    let http_exceptions = insecure_registries(&reference);
+    let protocol = if http_exceptions.is_empty() {
+        ClientProtocol::Https
+    } else {
+        ClientProtocol::HttpsExcept(http_exceptions)
+    };
+
     let config = ClientConfig {
+        protocol,
         platform_resolver: Some(Box::new(move |manifests| {
             let mut platforms = platforms_capture.lock().unwrap();
             for m in manifests {
@@ -226,12 +316,11 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
             };
 
             for m in manifests {
-                if let Some(ref platform) = m.platform {
-                    if platform.os == oci_spec::image::Os::Linux
-                        && platform.architecture == target_arch
-                    {
-                        return Some(m.digest.clone());
-                    }
+                if let Some(ref platform) = m.platform
+                    && platform.os == oci_spec::image::Os::Linux
+                    && platform.architecture == target_arch
+                {
+                    return Some(m.digest.clone());
                 }
             }
             None
@@ -337,10 +426,10 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
 
 pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("rootfs").join(name));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        paths.push(dir.join("rootfs").join(name));
     }
     if let Some(home) = dirs::home_dir() {
         paths.push(home.join(".iii").join("rootfs").join(name));
@@ -379,6 +468,18 @@ pub fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<Stri
     } else {
         None
     }
+}
+
+/// Read WorkingDir from the saved OCI image config.
+pub fn read_oci_workdir(rootfs: &std::path::Path) -> Option<String> {
+    let config_path = rootfs.join(".oci-config.json");
+    let data = std::fs::read_to_string(&config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+    json.get("config")?
+        .get("WorkingDir")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 /// Read environment variables from the saved OCI image config.

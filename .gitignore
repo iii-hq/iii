@@ -36,7 +36,13 @@ htmlcov/
 # IDE / editor
 .vscode/
 .idea/
-.cursor/
+.cursor/**
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
+.cursor/rules/architecture-docs.mdc
+.cursor/rules/sdk-api-consistency.mdc
 *.swp
 *.swo
 *~
@@ -50,6 +56,8 @@ Thumbs.db
 .planning/
 .gstack/
 AGENTS.md
+
+architecture/
 
 # Project-specific
 .shared/

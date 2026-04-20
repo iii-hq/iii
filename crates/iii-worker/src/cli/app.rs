@@ -4,13 +4,30 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// Default engine WebSocket port (must match engine's DEFAULT_PORT).
 pub const DEFAULT_PORT: u16 = 49134;
 
+/// Shared arguments for `add` and `reinstall` commands.
+#[derive(Args, Debug)]
+pub struct AddArgs {
+    /// Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
+    #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
+    pub worker_names: Vec<String>,
+
+    /// Reset config: also remove config.yaml entry before re-adding (requires --force on add)
+    #[arg(long)]
+    pub reset_config: bool,
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "iii-worker", version, about = "iii managed worker runtime")]
+#[command(
+    name = "iii worker",
+    bin_name = "iii worker",
+    version,
+    about = "iii managed worker runtime"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -18,51 +35,66 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Add a worker from the registry or by OCI image reference
+    /// Add one or more workers from the registry or by OCI image reference
     Add {
-        /// Worker name or OCI image reference (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
-        #[arg(value_name = "WORKER[@VERSION]")]
-        worker_name: String,
+        #[command(flatten)]
+        args: AddArgs,
 
-        /// Container runtime
-        #[arg(long, default_value = "libkrun")]
-        runtime: String,
+        /// Force re-download: delete existing artifacts before adding
+        #[arg(long, short = 'f')]
+        force: bool,
 
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Don't block waiting for the engine to finish booting the sandbox.
+        /// By default `add` waits up to 120s for the worker to report ready.
+        #[arg(long)]
+        no_wait: bool,
     },
 
-    /// Remove a worker (stops and removes the container)
+    /// Remove one or more workers from config.yaml. The engine's file watcher
+    /// tears down any running sandbox. Artifacts under ~/.iii/managed/{name}/
+    /// remain; use `iii worker clear {name}` to delete them.
     Remove {
-        /// Worker name to remove (e.g., "pdfkit")
-        #[arg(value_name = "WORKER")]
-        worker_name: String,
+        /// Worker names to remove (e.g., "pdfkit")
+        #[arg(value_name = "WORKER", required = true, num_args = 1..)]
+        worker_names: Vec<String>,
 
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Skip the confirmation prompt when a worker is currently running
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
-    /// Start a previously stopped managed worker container
+    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
+    Reinstall {
+        #[command(flatten)]
+        args: AddArgs,
+    },
+
+    /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
+    Clear {
+        /// Worker name to clear (omit to clear all)
+        #[arg(value_name = "WORKER")]
+        worker_name: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Start a previously stopped managed worker container.
+    /// By default waits up to 120s for the worker to report ready.
     Start {
         /// Worker name to start
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
+        /// Don't block waiting for the worker to report ready.
+        #[arg(long)]
+        no_wait: bool,
 
-        /// Engine WebSocket port
+        /// Engine WebSocket port the spawned worker connects back to. Defaults
+        /// to DEFAULT_PORT; the engine passes its configured
+        /// iii-worker-manager port when auto-spawning external workers so
+        /// non-default manager ports don't silently break connectivity.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
@@ -72,49 +104,41 @@ pub enum Commands {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
         worker_name: String,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
     },
 
-    /// Run a worker project in an isolated environment for development.
-    ///
-    /// Auto-detects the project type (package.json, Cargo.toml, pyproject.toml)
-    /// and runs it inside a VM (libkrun) connected
-    /// to the engine.
-    Dev {
-        /// Path to the worker project directory
-        #[arg(value_name = "PATH")]
-        path: String,
+    /// Restart a managed worker: stop if running, then start. Idempotent --
+    /// running workers get a clean cycle, stopped workers just start.
+    /// By default waits up to 120s for the worker to report ready.
+    Restart {
+        /// Worker name to restart
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
 
-        /// Sandbox name (defaults to directory name)
+        /// Don't block waiting for the worker to report ready.
         #[arg(long)]
-        name: Option<String>,
+        no_wait: bool,
 
-        /// Runtime to use (auto-detected if not set)
-        #[arg(long, value_parser = ["libkrun"])]
-        runtime: Option<String>,
-
-        /// Force rebuild: re-run setup and install scripts (libkrun only)
-        #[arg(long)]
-        rebuild: bool,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
+        /// Engine WebSocket port the spawned worker connects back to. Same
+        /// semantics as `start --port`.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
 
     /// List all workers and their status
     List,
+
+    /// Show detailed status of one worker (config, sandbox, process, logs).
+    /// By default refreshes live in place until the worker reaches a terminal
+    /// phase (ready/missing). Pass --no-watch for a one-shot snapshot.
+    Status {
+        /// Worker name
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
+
+        /// Print a one-shot snapshot and exit immediately (no live refresh)
+        #[arg(long)]
+        no_watch: bool,
+    },
 
     /// Show logs from a managed worker container
     Logs {
@@ -135,19 +159,23 @@ pub enum Commands {
         port: u16,
     },
 
-    /// Start all workers declared in iii.workers.yaml (used by engine lifecycle shim)
-    #[command(name = "start-all")]
-    StartAll {
-        /// Engine WebSocket URL
-        #[arg(long)]
-        engine_url: String,
-    },
-
-    /// Stop all running managed workers (used by engine lifecycle shim)
-    #[command(name = "stop-all")]
-    StopAll,
-
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
+
+    /// Internal: host-side source watcher sidecar for local-path workers
+    #[command(name = "__watch-source", hide = true)]
+    WatchSource(WatchSourceArgs),
+}
+
+/// Arguments for the hidden `__watch-source` subcommand.
+#[derive(Args, Debug)]
+pub struct WatchSourceArgs {
+    /// Worker name to restart when source files change
+    #[arg(long, value_name = "NAME")]
+    pub worker: String,
+
+    /// Absolute project directory to watch recursively
+    #[arg(long, value_name = "PATH")]
+    pub project: String,
 }

@@ -16,6 +16,7 @@ export interface SlackMessageStep extends BaseStep {
   content: string;
   action?: {
     label: string;
+    count?: number;
   };
 }
 
@@ -44,13 +45,57 @@ export interface StatusStep extends BaseStep {
   detail?: string;
 }
 
-export type Step = SlackMessageStep | ReplyStep | CodeEditorStep | StatusStep;
+export interface TraceEntry {
+  operation: string;
+  duration?: string;
+  status: "ok" | "error";
+}
+
+export interface SpanEntry {
+  label: string;
+  duration: string;
+  /** 0–100, proportion of the parent trace duration */
+  widthPercent: number;
+  depth: number;
+  status: "ok" | "error";
+}
+
+export interface SpanDetail {
+  status: string;
+  service: string;
+  error?: string;
+}
+
+export interface ConsoleTraceStep extends BaseStep {
+  type: "console-trace";
+  traces: TraceEntry[];
+  activeTraceIndex: number;
+  spans: SpanEntry[];
+  errorSpanIndex?: number;
+  detail: SpanDetail;
+}
+
+export interface TerminalCommandStep extends BaseStep {
+  type: "terminal-command";
+  command: string;
+  output: string;
+  typingSpeed?: number;
+}
+
+export type Step =
+  | SlackMessageStep
+  | ReplyStep
+  | CodeEditorStep
+  | StatusStep
+  | ConsoleTraceStep
+  | TerminalCommandStep;
 
 export type DemoMode = "hero" | "onboarding";
 
 export interface DemoSequencerProps {
   steps: Step[];
   mode?: DemoMode;
+  isDarkMode?: boolean;
   onComplete?: () => void;
   className?: string;
 }

@@ -20,48 +20,73 @@ async fn main() -> anyhow::Result<()> {
 
     let exit_code = match cli_args.command {
         Commands::Add {
-            worker_name,
-            runtime,
-            address,
-            port,
+            args,
+            force,
+            no_wait,
         } => {
-            iii_worker::cli::managed::handle_managed_add(&worker_name, &runtime, &address, port)
-                .await
+            let wait = !no_wait;
+            if force {
+                // Force mode: process each worker individually with force logic
+                let mut fail_count = 0;
+                for name in &args.worker_names {
+                    let result = iii_worker::cli::managed::handle_managed_add(
+                        name,
+                        false,
+                        force,
+                        args.reset_config,
+                        wait,
+                    )
+                    .await;
+                    if result != 0 {
+                        fail_count += 1;
+                    }
+                }
+                if fail_count == 0 { 0 } else { 1 }
+            } else {
+                iii_worker::cli::managed::handle_managed_add_many(&args.worker_names, wait).await
+            }
         }
-        Commands::Remove {
-            worker_name,
-            address,
-            port,
-        } => iii_worker::cli::managed::handle_managed_remove(&worker_name, &address, port).await,
+        Commands::Remove { worker_names, yes } => {
+            iii_worker::cli::managed::handle_managed_remove_many(&worker_names, yes).await
+        }
+        Commands::Reinstall { args } => {
+            let mut fail_count = 0;
+            for name in &args.worker_names {
+                let result = iii_worker::cli::managed::handle_managed_add(
+                    name,
+                    false,
+                    true,
+                    args.reset_config,
+                    false,
+                )
+                .await;
+                if result != 0 {
+                    fail_count += 1;
+                }
+            }
+            if fail_count == 0 { 0 } else { 1 }
+        }
+        Commands::Clear { worker_name, yes } => {
+            iii_worker::cli::managed::handle_managed_clear(worker_name.as_deref(), yes)
+        }
         Commands::Start {
             worker_name,
-            address,
+            no_wait,
             port,
-        } => iii_worker::cli::managed::handle_managed_start(&worker_name, &address, port).await,
-        Commands::Stop {
-            worker_name,
-            address,
-            port,
-        } => iii_worker::cli::managed::handle_managed_stop(&worker_name, &address, port).await,
-        Commands::Dev {
-            path,
-            name,
-            runtime,
-            rebuild,
-            address,
-            port,
-        } => {
-            iii_worker::cli::managed::handle_worker_dev(
-                &path,
-                name.as_deref(),
-                runtime.as_deref(),
-                rebuild,
-                &address,
-                port,
-            )
-            .await
+        } => iii_worker::cli::managed::handle_managed_start(&worker_name, !no_wait, port).await,
+        Commands::Stop { worker_name } => {
+            iii_worker::cli::managed::handle_managed_stop(&worker_name).await
         }
+        Commands::Restart {
+            worker_name,
+            no_wait,
+            port,
+        } => iii_worker::cli::managed::handle_managed_restart(&worker_name, !no_wait, port).await,
         Commands::List => iii_worker::cli::managed::handle_worker_list().await,
+        Commands::Status {
+            worker_name,
+            no_watch,
+        } => iii_worker::cli::status::handle_worker_status(&worker_name, !no_watch).await,
         Commands::Logs {
             worker_name,
             follow,
@@ -71,16 +96,19 @@ async fn main() -> anyhow::Result<()> {
             iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
                 .await
         }
-        Commands::StartAll { engine_url } => {
-            iii_worker::cli::managed::start_managed_workers(&engine_url).await;
-            0
-        }
-        Commands::StopAll => {
-            iii_worker::cli::managed::stop_managed_workers().await;
-            0
-        }
         Commands::VmBoot(args) => {
             iii_worker::cli::vm_boot::run(&args);
+        }
+        Commands::WatchSource(args) => {
+            let project = std::path::PathBuf::from(&args.project);
+            let worker = args.worker.clone();
+            iii_worker::cli::source_watcher::watch_and_restart(
+                worker,
+                project,
+                iii_worker::cli::source_watcher::restart_via_cli,
+            )
+            .await?;
+            0
         }
     };
 
