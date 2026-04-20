@@ -39,6 +39,13 @@ export BIN_DIR="$TMPROOT/bin"
 mkdir -p "$BIN_DIR"
 trap 'rm -rf "$TMPROOT"' EXIT INT TERM
 
+# Pin to a known-stable release. Using `latest` races against the release
+# workflow: if a new version is publishing while this CI runs, /releases/latest
+# returns a release whose tag_name exists but whose main-binary assets are
+# still uploading. The filter correctly returns empty and the test fails.
+# Pin to a version with all assets fully uploaded.
+PINNED_VERSION="${PINNED_VERSION:-0.11.0}"
+
 # ─────────────────────────────────────────────────────────────
 # Test 1: --help works and prints usage
 # ─────────────────────────────────────────────────────────────
@@ -71,10 +78,10 @@ case "$depr_output" in
 esac
 
 # ─────────────────────────────────────────────────────────────
-# Test 4: actual install of latest release
+# Test 4: actual install of pinned stable release
 # ─────────────────────────────────────────────────────────────
-echo "--- running install.sh against real GitHub release ---"
-sh "$INSTALL_SH" 2>&1
+echo "--- running install.sh against real GitHub release (VERSION=$PINNED_VERSION) ---"
+VERSION="$PINNED_VERSION" sh "$INSTALL_SH" 2>&1
 
 if [ ! -x "$BIN_DIR/iii" ]; then
   fail "iii binary not installed at $BIN_DIR/iii"
@@ -95,7 +102,7 @@ esac
 # REGRESSION RULE: must not re-download if already current
 # ─────────────────────────────────────────────────────────────
 echo "--- re-running install.sh (should be idempotent) ---"
-rerun_output=$(sh "$INSTALL_SH" 2>&1)
+rerun_output=$(VERSION="$PINNED_VERSION" sh "$INSTALL_SH" 2>&1)
 case "$rerun_output" in
   *"already at"*|*"nothing to do"*) pass "idempotent re-run detected" ;;
   *) fail "idempotent re-run did not skip — got: $rerun_output" ;;
@@ -119,7 +126,7 @@ esac
 SHIM
 chmod 755 "$UPGRADE_DIR/iii"
 
-BIN_DIR="$UPGRADE_DIR" sh "$INSTALL_SH" > "$UPGRADE_DIR/out.log" 2>&1 || {
+BIN_DIR="$UPGRADE_DIR" VERSION="$PINNED_VERSION" sh "$INSTALL_SH" > "$UPGRADE_DIR/out.log" 2>&1 || {
   cat "$UPGRADE_DIR/out.log" >&2
   fail "upgrade-path install failed"
 }
