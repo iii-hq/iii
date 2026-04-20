@@ -149,6 +149,75 @@ fn extract_layer_strips_setuid_and_setgid_bits() {
     assert_eq!(mode("bin/plain") & 0o777, 0o755, "plain perms survive");
 }
 
+#[cfg(unix)]
+#[test]
+fn extract_layer_does_not_chmod_symlinks() {
+    // std::fs::set_permissions follows symlinks on Unix. The setid-stripping
+    // guard must exclude symlinks — otherwise a symlink with setid bits in
+    // its header would chase the link and strip perms from the target
+    // (potentially a file outside the rootfs). Build a tar with a symlink
+    // whose header claims setuid+setgid and verify the link's target file
+    // is untouched.
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let layer = {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut archive = tar::Builder::new(&mut encoder);
+
+            // Target: a regular file, mode 0o755, no setid bits.
+            let mut target_header = tar::Header::new_gnu();
+            target_header.set_path("bin/real").unwrap();
+            target_header.set_size(4);
+            target_header.set_mode(0o755);
+            target_header.set_entry_type(tar::EntryType::Regular);
+            target_header.set_cksum();
+            archive.append(&target_header, &b"data"[..]).unwrap();
+
+            // Symlink: header claims setuid+setgid. If the guard breaks,
+            // chmod would follow `link` to `real` and strip its perms.
+            let mut link_header = tar::Header::new_gnu();
+            link_header.set_size(0);
+            link_header.set_mode(0o6755);
+            link_header.set_entry_type(tar::EntryType::Symlink);
+            link_header.set_cksum();
+            archive
+                .append_link(&mut link_header, "bin/link", "real")
+                .unwrap();
+
+            archive.finish().unwrap();
+        }
+        encoder.finish().unwrap()
+    };
+
+    let mut total_size = 0u64;
+    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+
+    let link_meta = std::fs::symlink_metadata(dir.path().join("bin/link")).unwrap();
+    assert!(
+        link_meta.file_type().is_symlink(),
+        "entry must remain a symlink"
+    );
+    let link_target = std::fs::read_link(dir.path().join("bin/link")).unwrap();
+    assert_eq!(link_target.to_str(), Some("real"));
+
+    // The target regular file must be unchanged. If the symlink guard
+    // broke, set_permissions on `link` would have followed to `real` and
+    // stripped the setid bits from a file whose header had no setid bits
+    // set in the first place — a silent corruption path.
+    let target_mode = std::fs::metadata(dir.path().join("bin/real"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(target_mode & 0o777, 0o755, "target perms unchanged");
+    assert_eq!(target_mode & 0o6000, 0, "target has no setid bits");
+}
+
 #[test]
 fn extract_layer_preserves_directory_structure() {
     let dir = tempfile::tempdir().unwrap();

@@ -221,7 +221,13 @@ pub fn extract_layer_with_limits(
                 if current & SETID_BITS != 0 {
                     let mut perms = meta.permissions();
                     perms.set_mode(current & !SETID_BITS);
-                    let _ = std::fs::set_permissions(&target, perms);
+                    if let Err(e) = std::fs::set_permissions(&target, perms) {
+                        tracing::warn!(
+                            path = %target.display(),
+                            error = %e,
+                            "failed to strip setuid/setgid bits; setuid binaries will drop PID-1 privileges inside the guest",
+                        );
+                    }
                 }
             }
         }
