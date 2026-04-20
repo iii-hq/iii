@@ -81,7 +81,26 @@ pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
     Ok(rootfs_dir)
 }
 
+/// Setuid + setgid bit mask.
+///
+/// Both bits combined (0o4000 | 0o2000). Applied with a bitwise-NOT to
+/// clear them: `mode & !SETID_BITS`. Stripped during OCI extraction — see
+/// [`extract_layer_with_limits`] for the rationale.
+const SETID_BITS: u32 = 0o6000;
+
 /// Extract a single OCI layer with safety limits.
+///
+/// Setuid and setgid bits are stripped from every regular file as it lands.
+/// The microVM rootfs is served read-only through PassthroughFs with no UID
+/// translation: host ownership surfaces verbatim inside the guest. When the
+/// extracting user is not root (the common case), setuid binaries carry the
+/// host user's UID + setuid bit, and the guest kernel's setuid semantics
+/// *drop* the caller from euid=0 to that non-zero UID on exec — the classic
+/// example being `/bin/mount` refusing to run with "must be superuser".
+/// Stripping setuid/setgid at extraction time lets these binaries inherit
+/// the PID-1 euid (root) on exec, which is what a single-tenant microVM
+/// guest actually wants. There is no privilege boundary *inside* the VM
+/// for setuid to defend, so removing the bit is strictly a fix.
 pub fn extract_layer_with_limits(
     data: &[u8],
     dest: &std::path::Path,
@@ -89,6 +108,8 @@ pub fn extract_layer_with_limits(
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
     let decoder = flate2::read::GzDecoder::new(data);
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
@@ -179,9 +200,31 @@ pub fn extract_layer_with_limits(
             continue;
         }
 
+        let entry_type = entry.header().entry_type();
+        let header_mode = entry.header().mode().unwrap_or(0);
+
         entry
             .unpack_in(dest)
             .with_context(|| format!("Failed to extract: {}", path.display()))?;
+
+        // Strip setuid/setgid from regular files. See function doc for why.
+        // Symlinks are skipped: chmod on a symlink path follows to the
+        // target, which may live outside the rootfs.
+        if matches!(
+            entry_type,
+            tar::EntryType::Regular | tar::EntryType::Continuous
+        ) && header_mode & SETID_BITS != 0
+        {
+            let target = dest.join(&path);
+            if let Ok(meta) = std::fs::metadata(&target) {
+                let current = meta.permissions().mode();
+                if current & SETID_BITS != 0 {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(current & !SETID_BITS);
+                    let _ = std::fs::set_permissions(&target, perms);
+                }
+            }
+        }
     }
 
     Ok(())

@@ -113,6 +113,42 @@ fn extract_layer_valid_multiple_files() {
     assert_eq!(config_content, "key=value");
 }
 
+#[cfg(unix)]
+#[test]
+fn extract_layer_strips_setuid_and_setgid_bits() {
+    // Host extraction runs as a regular user, so setuid binaries in the
+    // layer end up owned by that user on disk. PassthroughFs surfaces host
+    // ownership verbatim to the guest, so a setuid binary inside the VM
+    // *drops* privileges from PID-1 root to the host user's UID on exec,
+    // which is exactly what broke `mount --bind` during worker startup.
+    // Strip the setid bits at extraction time so the guest inherits the
+    // PID-1 euid.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let layer = make_layer_targz(&[
+        ("bin/mount", b"fake mount binary", 0o4755), // setuid
+        ("bin/wall", b"fake wall binary", 0o2755),   // setgid
+        ("bin/odd", b"suid+sgid", 0o6755),           // setuid + setgid
+        ("bin/plain", b"plain binary", 0o0755),      // control: no setid
+    ]);
+
+    let mut total_size = 0u64;
+    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+
+    let mode = |p: &str| -> u32 {
+        std::fs::metadata(dir.path().join(p))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+
+    assert_eq!(mode("bin/mount") & 0o6000, 0, "setuid bit must be stripped");
+    assert_eq!(mode("bin/wall") & 0o6000, 0, "setgid bit must be stripped");
+    assert_eq!(mode("bin/odd") & 0o6000, 0, "setuid+setgid must be stripped");
+    assert_eq!(mode("bin/plain") & 0o777, 0o755, "plain perms survive");
+}
+
 #[test]
 fn extract_layer_preserves_directory_structure() {
     let dir = tempfile::tempdir().unwrap();
