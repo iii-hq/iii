@@ -177,6 +177,17 @@ pub fn spawn(
     sock_path: PathBuf,
     vm_stream: StdUnixStream,
 ) -> Result<ShellSocketFingerprint, String> {
+    // `UnixListener::from_std` / `UnixStream::from_std` register the fd
+    // with the current tokio reactor, which panics with "there is no
+    // reactor running" if called outside a runtime context. Since
+    // `__vm-boot` dispatches on a dedicated `std::thread` (see
+    // iii-worker/src/main.rs — workaround for msb_krun's nested
+    // tokio::block_on in virtio-blk Drop), we're on a plain OS thread
+    // holding only a `Handle`. Enter the runtime for the duration of
+    // the setup so the reactor is reachable; the spawned tasks already
+    // run inside the runtime and don't need the guard.
+    let _runtime_guard = runtime.enter();
+
     // Narrow umask so the bound socket inode is born with 0o600 mode
     // (same reasoning as `vm_boot::spawn_control_proxy`). Best-effort;
     // `set_permissions` below corrects any platform that ignores

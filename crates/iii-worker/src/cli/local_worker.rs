@@ -380,7 +380,7 @@ pub async fn handle_local_add(
                  Fix: run from inside your worker project, or create iii.worker.yaml:\n      \
                      name: my-worker\n      \
                      runtime:\n        \
-                       language: typescript\n      \
+                       kind: typescript\n      \
                      command: [\"node\", \"src/index.js\"]",
                 "error:".red(),
                 project_path.display()
@@ -640,7 +640,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         return 1;
     }
 
-    let language = project.language.as_deref().unwrap_or("typescript");
+    let kind = project.kind.as_deref().unwrap_or("typescript");
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
@@ -701,7 +701,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
             return 1;
         }
         let base_rootfs = match super::worker_manager::oci::prepare_rootfs(
-            language,
+            kind,
             project.base_image.as_deref(),
         )
         .await
@@ -757,7 +757,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     let mut env = build_local_env(&engine_url, &combined_project_env);
 
     let base_rootfs = match super::worker_manager::oci::prepare_rootfs(
-        language,
+        kind,
         project.base_image.as_deref(),
     )
     .await
@@ -834,7 +834,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     let managed_dir_for_watcher = managed_dir.clone();
     let exit_code = super::worker_manager::libkrun::run_dev(
-        language,
+        kind,
         worker_path,
         exec_path,
         &args,
@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn resolve_worker_name_from_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        let yaml = "name: my-cool-worker\nruntime:\n  language: typescript\n";
+        let yaml = "name: my-cool-worker\nruntime:\n  kind: typescript\n";
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
         let name = resolve_worker_name(dir.path());
         assert_eq!(name, "my-cool-worker");
@@ -1026,7 +1026,7 @@ mod tests {
     fn build_libkrun_local_script_first_run() {
         let project = ProjectInfo {
             name: "test".to_string(),
-            language: Some("typescript".to_string()),
+            kind: Some("typescript".to_string()),
             setup_cmd: "apt-get install nodejs".to_string(),
             install_cmd: "npm install".to_string(),
             run_cmd: "node server.js".to_string(),
@@ -1052,7 +1052,7 @@ mod tests {
     fn build_libkrun_local_script_prepared() {
         let project = ProjectInfo {
             name: "test".to_string(),
-            language: Some("typescript".to_string()),
+            kind: Some("typescript".to_string()),
             setup_cmd: "apt-get install nodejs".to_string(),
             install_cmd: "npm install".to_string(),
             run_cmd: "node server.js".to_string(),

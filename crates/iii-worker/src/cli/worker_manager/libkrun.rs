@@ -132,7 +132,7 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
 /// Uses a separate process for crash isolation.
 pub async fn run_dev(
-    _language: &str,
+    _kind: &str,
     _project_path: &str,
     exec_path: &str,
     args: &[String],

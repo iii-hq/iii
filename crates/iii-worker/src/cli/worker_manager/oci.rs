@@ -38,10 +38,18 @@ pub fn read_cached_rootfs_arch(rootfs_dir: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// OCI image to use as rootfs for each language.
-pub fn oci_image_for_language(language: &str) -> (&'static str, &'static str) {
-    match language {
+/// OCI image to use as rootfs for each `runtime.kind` value.
+///
+/// Returns `(image_ref, cache_dir_name)`. Keep in sync with
+/// `project::SUPPORTED_KINDS` and `project::infer_scripts`.
+pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
+    match kind {
         "typescript" | "javascript" => ("docker.io/iiidev/node:latest", "node"),
+        // `kind: bun` gets the oven image by default — ships bun
+        // preinstalled so no bootstrap is needed and startup is fast.
+        // Users can still override with `runtime.base_image` for a
+        // pinned version (e.g. `oven/bun:1.3`).
+        "bun" => ("docker.io/oven/bun:latest", "bun"),
         "python" => ("docker.io/iiidev/python:latest", "python"),
         "rust" => ("docker.io/library/rust:slim-bookworm", "rust"),
         _ => ("docker.io/iiidev/node:latest", "node"),
@@ -71,18 +79,18 @@ pub fn rootfs_slug_for_image(image: &str) -> String {
         .to_string()
 }
 
-/// Determine the rootfs path for a given language, optionally overriding
-/// the default base image. If the rootfs doesn't exist locally, pulls
-/// the OCI image and extracts it.
+/// Determine the rootfs path for a given `runtime.kind`, optionally
+/// overriding the default base image. If the rootfs doesn't exist
+/// locally, pulls the OCI image and extracts it.
 ///
 /// `base_image_override` comes from `runtime.base_image` in
 /// `iii.worker.yaml`. When `Some`, the override's image ref is pulled
-/// into a slug-derived cache dir so it doesn't clobber the language
-/// default rootfs (e.g. a bun-overridden worker gets its own
+/// into a slug-derived cache dir so it doesn't clobber the kind-default
+/// rootfs (e.g. a `base_image: oven/bun:1` worker gets its own
 /// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
-/// `~/.iii/rootfs/node/` that every default-TS worker uses).
+/// `~/.iii/rootfs/bun/` that every default `kind: bun` worker uses).
 pub async fn prepare_rootfs(
-    language: &str,
+    kind: &str,
     base_image_override: Option<&str>,
 ) -> Result<PathBuf> {
     let (oci_image, rootfs_name): (String, String) = match base_image_override {
@@ -97,7 +105,7 @@ pub async fn prepare_rootfs(
             (img.trim().to_string(), slug)
         }
         _ => {
-            let (img, name) = oci_image_for_language(language);
+            let (img, name) = oci_image_for_kind(kind);
             (img.to_string(), name.to_string())
         }
     };
@@ -618,36 +626,43 @@ mod tests {
     }
 
     #[test]
-    fn test_oci_image_for_language_defaults_to_node() {
-        let (image, name) = oci_image_for_language("unknown_lang");
+    fn test_oci_image_for_kind_defaults_to_node() {
+        let (image, name) = oci_image_for_kind("unknown_kind");
         assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
 
     #[test]
     fn test_oci_image_for_typescript() {
-        let (image, name) = oci_image_for_language("typescript");
+        let (image, name) = oci_image_for_kind("typescript");
         assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
 
     #[test]
+    fn test_oci_image_for_bun() {
+        let (image, name) = oci_image_for_kind("bun");
+        assert_eq!(image, "docker.io/oven/bun:latest");
+        assert_eq!(name, "bun");
+    }
+
+    #[test]
     fn test_oci_image_for_python() {
-        let (image, name) = oci_image_for_language("python");
+        let (image, name) = oci_image_for_kind("python");
         assert_eq!(image, "docker.io/iiidev/python:latest");
         assert_eq!(name, "python");
     }
 
     #[test]
     fn test_oci_image_for_rust() {
-        let (image, name) = oci_image_for_language("rust");
+        let (image, name) = oci_image_for_kind("rust");
         assert_eq!(image, "docker.io/library/rust:slim-bookworm");
         assert_eq!(name, "rust");
     }
 
     #[test]
     fn test_oci_image_for_go() {
-        let (image, name) = oci_image_for_language("go");
+        let (image, name) = oci_image_for_kind("go");
         assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }

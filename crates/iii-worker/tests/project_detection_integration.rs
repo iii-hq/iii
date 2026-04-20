@@ -32,7 +32,7 @@ fn auto_detect_typescript_npm_from_package_json() {
     let result = auto_detect_project(dir.path());
     assert!(result.is_some(), "expected Some for package.json project");
     let info = result.unwrap();
-    assert_eq!(info.language.as_deref(), Some("typescript"));
+    assert_eq!(info.kind.as_deref(), Some("typescript"));
     assert_eq!(info.name, "node (npm)");
     assert!(
         info.install_cmd.contains("npm"),
@@ -44,6 +44,9 @@ fn auto_detect_typescript_npm_from_package_json() {
 /// PROJ-01, PROJ-04: Detects TypeScript/bun project from package.json + bun.lock.
 #[test]
 fn auto_detect_typescript_bun_from_bun_lock() {
+    // A bun lockfile promotes auto-detection to `kind: bun` so the
+    // default rootfs is the bun-native oven/bun:latest image rather
+    // than node-plus-bun-bootstrap.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), "{}").unwrap();
     std::fs::write(dir.path().join("bun.lock"), "").unwrap();
@@ -51,8 +54,8 @@ fn auto_detect_typescript_bun_from_bun_lock() {
     let result = auto_detect_project(dir.path());
     assert!(result.is_some(), "expected Some for bun project");
     let info = result.unwrap();
-    assert_eq!(info.name, "node (bun)");
-    assert_eq!(info.language.as_deref(), Some("typescript"));
+    assert_eq!(info.name, "bun");
+    assert_eq!(info.kind.as_deref(), Some("bun"));
     assert!(
         info.install_cmd.contains("bun") || info.run_cmd.contains("bun"),
         "bun commands should reference 'bun': install={}, run={}",
@@ -71,8 +74,8 @@ fn auto_detect_typescript_bun_from_bun_lockb() {
     let result = auto_detect_project(dir.path());
     assert!(result.is_some(), "expected Some for bun.lockb project");
     let info = result.unwrap();
-    assert_eq!(info.name, "node (bun)");
-    assert_eq!(info.language.as_deref(), Some("typescript"));
+    assert_eq!(info.name, "bun");
+    assert_eq!(info.kind.as_deref(), Some("bun"));
     assert!(
         info.install_cmd.contains("bun") || info.run_cmd.contains("bun"),
         "bun commands should reference 'bun': install={}, run={}",
@@ -91,7 +94,7 @@ fn auto_detect_rust_from_cargo_toml() {
     assert!(result.is_some(), "expected Some for Cargo.toml project");
     let info = result.unwrap();
     assert_eq!(info.name, "rust");
-    assert_eq!(info.language.as_deref(), Some("rust"));
+    assert_eq!(info.kind.as_deref(), Some("rust"));
     assert!(
         info.install_cmd.contains("cargo"),
         "install_cmd should contain 'cargo': {}",
@@ -109,7 +112,7 @@ fn auto_detect_python_from_pyproject_toml() {
     assert!(result.is_some(), "expected Some for pyproject.toml project");
     let info = result.unwrap();
     assert_eq!(info.name, "python");
-    assert_eq!(info.language.as_deref(), Some("python"));
+    assert_eq!(info.kind.as_deref(), Some("python"));
 }
 
 /// PROJ-03: Detects Python project from requirements.txt.
@@ -125,7 +128,7 @@ fn auto_detect_python_from_requirements_txt() {
     );
     let info = result.unwrap();
     assert_eq!(info.name, "python");
-    assert_eq!(info.language.as_deref(), Some("python"));
+    assert_eq!(info.kind.as_deref(), Some("python"));
 }
 
 /// Returns None for an empty directory with no recognizable project markers.
@@ -152,12 +155,14 @@ fn package_manager_detection_bun_vs_npm_default() {
     let npm_info = auto_detect_project(npm_dir.path()).unwrap();
     assert_eq!(npm_info.name, "node (npm)");
 
-    // With bun.lock -> detects bun
+    // With bun.lock -> promotes to `kind: bun` (not `node (bun)`);
+    // auto-detection prefers the native bun runtime when the user
+    // already has a bun lockfile on disk.
     let bun_dir = tempfile::tempdir().unwrap();
     std::fs::write(bun_dir.path().join("package.json"), "{}").unwrap();
     std::fs::write(bun_dir.path().join("bun.lock"), "").unwrap();
     let bun_info = auto_detect_project(bun_dir.path()).unwrap();
-    assert_eq!(bun_info.name, "node (bun)");
+    assert_eq!(bun_info.name, "bun");
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +292,7 @@ fn load_from_manifest_infers_scripts_from_runtime() {
     let yaml = r#"
 name: my-bun-worker
 runtime:
-  language: typescript
+  kind: typescript
   package_manager: bun
   entry: src/index.ts
 "#;
@@ -317,7 +322,7 @@ fn load_project_info_prefers_manifest_over_auto_detect() {
     let yaml = r#"
 name: manifest-worker
 runtime:
-  language: typescript
+  kind: typescript
   package_manager: npm
   entry: src/index.ts
 "#;
