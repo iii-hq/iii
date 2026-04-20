@@ -194,14 +194,13 @@ EOF
 # ─────────────────────────────────────────────────────────────
 
 @test "missing curl produces error with fix hint" {
-  # Run in an environment where curl is not on PATH
-  run env -i PATH="/usr/bin:/bin" HOME="$HOME" sh "$INSTALL_SH"
-  [ "$status" -ne 0 ]
-  if ! command -v curl >/dev/null 2>&1 || ! PATH="/usr/bin:/bin" command -v curl >/dev/null 2>&1; then
-    [[ "$output" == *"curl is required"* ]]
-    # Must reference an install method
-    [[ "$output" == *"install"* ]]
-  else
+  # Can only test this where curl is NOT in a minimal PATH — most systems have
+  # /usr/bin/curl so we skip there rather than running the real installer.
+  if PATH="/usr/bin:/bin" command -v curl >/dev/null 2>&1; then
     skip "curl is in /usr/bin, cannot test the missing-curl path here"
   fi
+  run env -i PATH="/usr/bin:/bin" HOME="$HOME" sh "$INSTALL_SH"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"curl is required"* ]]
+  [[ "$output" == *"install"* ]]
 }
