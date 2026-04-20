@@ -301,23 +301,45 @@ async fn vm_reader_task(mut vm_read: tokio::net::unix::OwnedReadHalf, routes: Ro
             map.get(&corr_id).map(|e| e.sender.clone())
         };
         if let Some(tx) = sender {
-            // `try_send` is critical here: awaiting a full client
-            // channel would stall vm_reader_task for every corr_id,
-            // starving every other session. A misbehaving client must
-            // only lose its own frames, never anyone else's. See
-            // `CLIENT_WRITE_CAPACITY` for sizing rationale.
-            match tx.try_send(frame) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(
-                        "shell_relay: client channel full for corr_id {corr_id}, \
-                         dropping frame (slow client)"
-                    );
+            // Data frames: `try_send` so a slow client only loses its
+            // own frames, never stalls vm_reader_task for every
+            // corr_id. See `CLIENT_WRITE_CAPACITY` for sizing.
+            //
+            // Terminal frames: a dropped Exited leaves the client
+            // waiting forever for a completion signal that never
+            // arrives. Give the send a bounded window (a slow-but-
+            // alive client will drain in milliseconds); if it still
+            // can't land, log and remove the route so the client
+            // gets EOF on its socket instead of a phantom hang.
+            if terminal {
+                match tokio::time::timeout(Duration::from_secs(2), tx.send(frame)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_closed)) => {
+                        // Client disconnected; terminal branch below
+                        // will clean up the route.
+                    }
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            "shell_relay: timed out delivering terminal frame \
+                             for corr_id {corr_id}; dropping route so client \
+                             sees EOF instead of hanging"
+                        );
+                    }
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    // Client disconnected; the route entry is about
-                    // to be pruned by listener cleanup or the
-                    // terminal branch below. Nothing to do.
+            } else {
+                match tx.try_send(frame) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::warn!(
+                            "shell_relay: client channel full for corr_id {corr_id}, \
+                             dropping frame (slow client)"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        // Client disconnected; the route entry is
+                        // about to be pruned by listener cleanup or
+                        // the terminal branch below. Nothing to do.
+                    }
                 }
             }
         } else {

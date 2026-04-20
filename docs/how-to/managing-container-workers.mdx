@@ -106,7 +106,7 @@ iii worker exec image-resize -- sh
   When both stdin and stdout are terminals, `iii worker exec` automatically allocates a pseudo-terminal — line editing, job control, and prompts all work. The moment either stream is redirected or piped (`... -- cmd | tee log`, `... -- cmd > out.txt`, CI), pipe mode kicks back in so output stays byte-exact. Pass `-t` to force TTY, or `--no-tty` to force pipe mode in a terminal.
 </Info>
 
-**Signals and timeouts.** Press `Ctrl-C` once to send `SIGINT` to the guest process; press it again within a second to escalate to `SIGKILL` and exit. `--timeout` accepts `humantime` syntax (`30s`, `5m`, `1500ms`); on expiry the client kills the guest session and exits with code `124`, matching coreutils `timeout(1)`.
+**Signals and timeouts.** Press `Ctrl-C` once to send `SIGINT` to the guest process; press it again in the same session to escalate to `SIGKILL` and exit. `--timeout` accepts `humantime` syntax (`30s`, `5m`, `1500ms`); on expiry the client kills the guest session and exits with code `124`, matching coreutils `timeout(1)`.
 
 **Flags:**
 

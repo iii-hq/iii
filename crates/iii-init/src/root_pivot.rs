@@ -45,12 +45,14 @@
 //!
 //! ## Caveats
 //!
-//! - Any top-level entry in the rootfs not in our hardcoded
-//!   allowlist is unreachable post-pivot. OCI images follow a
-//!   standard FHS layout so the allowlist covers the common case.
-//!   Worker-writable state that needs to persist across restarts
-//!   should live in `/workspace` (which is the virtiofs_0 mount
-//!   used for user code) or under `/var` (bind-mounted).
+//! - Top-level entries are enumerated dynamically from `/` so
+//!   non-FHS paths common in OCI images (e.g. `/app`, `/srv/app`)
+//!   get preserved alongside the standard FHS directories. Only the
+//!   names in [`SKIP_TOP_LEVEL`] (kernel fs mount points, pivot
+//!   staging, and `/workspace`) are skipped. Worker-writable state
+//!   that needs to persist across restarts should live in
+//!   `/workspace` (which is the virtiofs_0 mount used for user code)
+//!   or under `/var` (bind-mounted).
 //! - If pivot fails part-way, we leave the VM in a partially
 //!   constructed state and the `Err` propagates to `main()`, which
 //!   aborts PID 1 — libkrun will then surface a boot failure to the

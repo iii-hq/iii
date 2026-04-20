@@ -496,9 +496,9 @@ fn spawn_pipe_session(
     // stdout/stderr reader threads so the host sees every byte of
     // child output before the route is torn down.
     {
-        let writer = writer.clone();
-        let sessions = sessions.clone();
-        thread::Builder::new()
+        let writer_owned = writer.clone();
+        let sessions_owned = sessions.clone();
+        let spawn_result = thread::Builder::new()
             .name(format!("iii-exec-{corr_id}-wait"))
             .spawn(move || {
                 let code = exit_rx.recv().unwrap_or(-1);
@@ -510,7 +510,7 @@ fn spawn_pipe_session(
                     let _ = h.join();
                 }
                 send_frame(
-                    &writer,
+                    &writer_owned,
                     corr_id,
                     FLAG_TERMINAL,
                     &ShellMessage::Exited { code },
@@ -521,9 +521,15 @@ fn spawn_pipe_session(
                 // entry here belongs to someone else. Clobbering it
                 // would orphan the new session in the registry and
                 // cause Signal/Resize/Stdin frames for it to drop.
-                remove_session_if_owned(&sessions, corr_id, pid);
-            })
-            .ok();
+                remove_session_if_owned(&sessions_owned, corr_id, pid);
+            });
+        if let Err(e) = spawn_result {
+            // No waiter means no Exited frame, no map cleanup, and
+            // a running child nobody is watching. Tear it all down
+            // synchronously rather than leaving the host to time out.
+            abort_session_on_waiter_spawn_failure(writer, sessions, corr_id, pid, &e.to_string());
+            return Ok(());
+        }
     }
 
     Ok(())
@@ -709,9 +715,9 @@ fn spawn_tty_session(
     // Waiter thread: same contract as pipe mode — join the reader so
     // no output frames race past the terminal Exited frame.
     {
-        let writer = writer.clone();
-        let sessions = sessions.clone();
-        thread::Builder::new()
+        let writer_owned = writer.clone();
+        let sessions_owned = sessions.clone();
+        let spawn_result = thread::Builder::new()
             .name(format!("iii-exec-{corr_id}-wait"))
             .spawn(move || {
                 let code = exit_rx.recv().unwrap_or(-1);
@@ -720,16 +726,20 @@ fn spawn_tty_session(
                     let _ = h.join();
                 }
                 send_frame(
-                    &writer,
+                    &writer_owned,
                     corr_id,
                     FLAG_TERMINAL,
                     &ShellMessage::Exited { code },
                 );
                 // See spawn_pipe_session for the ownership-check
                 // rationale.
-                remove_session_if_owned(&sessions, corr_id, pid);
-            })
-            .ok();
+                remove_session_if_owned(&sessions_owned, corr_id, pid);
+            });
+        if let Err(e) = spawn_result {
+            // See spawn_pipe_session for the abort rationale.
+            abort_session_on_waiter_spawn_failure(writer, sessions, corr_id, pid, &e.to_string());
+            return Ok(());
+        }
     }
 
     Ok(())
@@ -746,6 +756,42 @@ fn remove_session_if_owned(sessions: &SessionRegistry, corr_id: u32, expected_pi
     {
         map.remove(&corr_id);
     }
+}
+
+/// Cleanup for the rare case where spawning the per-session waiter
+/// thread fails (EAGAIN on RLIMIT_NPROC, OOM on thread stack alloc).
+/// The child is already running but nothing will observe its exit,
+/// so we SIGKILL it, unregister the pending exit_rx so PID 1's reap
+/// drops the code cleanly, and emit terminal `Error` + `Exited(-1)`
+/// frames so the host doesn't wait forever. The session entry is
+/// removed last, matching the normal waiter-thread teardown order.
+fn abort_session_on_waiter_spawn_failure(
+    writer: &Writer,
+    sessions: &SessionRegistry,
+    corr_id: u32,
+    pid: u32,
+    reason: &str,
+) {
+    // Best-effort SIGKILL; ignore errors (child may already be dead).
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    crate::child_exits::unregister(pid);
+    send_frame(
+        writer,
+        corr_id,
+        0,
+        &ShellMessage::Error {
+            message: format!("waiter thread spawn failed: {reason}"),
+        },
+    );
+    send_frame(
+        writer,
+        corr_id,
+        FLAG_TERMINAL,
+        &ShellMessage::Exited { code: -1 },
+    );
+    remove_session_if_owned(sessions, corr_id, pid);
 }
 
 enum OutputKind {
@@ -780,11 +826,25 @@ fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) {
             return;
         }
     };
-    // `try_send` so a wedged writer (virtio ring full, host relay gone)
-    // never blocks the caller. Dropping a frame is preferable to
-    // deadlocking every session thread on a shared writer mutex —
-    // which is the bug this writer-thread design replaces.
-    if let Err(e) = writer.try_send(frame) {
+    // Terminal frames carry the child's final status — dropping one
+    // leaves the host waiting forever. A fatal `Error` is similarly
+    // load-bearing: it's the only non-terminal signal that the session
+    // failed. Block until the writer drains for these, best-effort
+    // `try_send` for the rest.
+    //
+    // Data frames (Stdout/Stderr) still use `try_send` so a wedged
+    // virtio port or a gone host relay can't deadlock session threads.
+    // Losing a byte of output is preferable to losing the terminal
+    // signal, which is what this split buys us.
+    let is_terminal = flags & FLAG_TERMINAL != 0;
+    let is_error = matches!(msg, ShellMessage::Error { .. });
+    if is_terminal || is_error {
+        if let Err(e) = writer.send(frame) {
+            // `send` only returns Err when the receiver is dropped,
+            // i.e. the writer thread exited. Nothing we can do.
+            let _ = e;
+        }
+    } else if let Err(e) = writer.try_send(frame) {
         use std::sync::mpsc::TrySendError;
         match e {
             TrySendError::Full(_) => {
