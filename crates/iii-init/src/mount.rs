@@ -264,12 +264,15 @@ fn mount_cgroup2() -> Result<(), InitError> {
 /// attached one. Keyed off `III_SWAP_DEV` (e.g. `/dev/vda`) set by
 /// `vm_boot.rs` when `--swap-path` was provided.
 ///
-/// Idempotent: if the device already has a swap signature (previous
-/// boot), skip `mkswap` and go straight to `swapon`. This avoids
-/// wiping the signature on every restart, which matters because the
-/// host's sparse swap file accumulates written pages across boots and
-/// re-formatting would drop them (and make them no longer sparse — the
-/// file stays the size it grew to).
+/// Always runs `mkswap` before `swapon`. `mkswap` only rewrites the
+/// header (~1 page); the swap data area beyond it is left alone. Doing
+/// this unconditionally matters because the host's sparse swap image
+/// can be grown across releases (e.g. 2 GiB → 4 GiB when
+/// `SWAP_IMAGE_BYTES` bumps). A stale header from the previous boot
+/// would cap the kernel at the old geometry, wasting the resized
+/// capacity. Swapped-out pages aren't preserved across VM shutdowns
+/// anyway — the owning processes are gone — so there's nothing to
+/// lose by re-formatting on every boot.
 ///
 /// Errors are warnings, not fatal: a bun worker with a broken swap
 /// path still runs (it just OOM-kills later at the cgroup limit like
@@ -279,26 +282,18 @@ pub fn setup_swap() {
         Ok(d) if !d.is_empty() => d,
         _ => return,
     };
-    // Check for existing swap signature. `blkid` would be cleaner but
-    // isn't in the minimal rootfs; a magic-byte probe at offset 0xff6
-    // is what mkswap writes and what the kernel checks.
-    let has_swap_sig = read_swap_signature(&dev);
-    if !has_swap_sig {
-        // `mkswap` is provided by util-linux, available in every OCI
-        // base image we ship (node, python, rust, bun).
-        let status = std::process::Command::new("mkswap")
-            .arg(&dev)
-            .status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!("iii-init: warning: mkswap {dev} exit {s}; skipping swapon");
-                return;
-            }
-            Err(e) => {
-                eprintln!("iii-init: warning: mkswap {dev} failed: {e}; skipping swapon");
-                return;
-            }
+    // `mkswap` is provided by util-linux, available in every OCI
+    // base image we ship (node, python, rust, bun).
+    let status = std::process::Command::new("mkswap").arg(&dev).status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("iii-init: warning: mkswap {dev} exit {s}; skipping swapon");
+            return;
+        }
+        Err(e) => {
+            eprintln!("iii-init: warning: mkswap {dev} failed: {e}; skipping swapon");
+            return;
         }
     }
     let status = std::process::Command::new("swapon").arg(&dev).status();
@@ -387,25 +382,6 @@ pub fn override_proc_meminfo() {
             eprintln!("iii-init: warning: bind-mount {faux_path} over /proc/meminfo failed: {e}");
         }
     }
-}
-
-/// Read the 10-byte swap signature at offset 0xff6 to tell whether
-/// `mkswap` has already been run on this device. The signature is
-/// "SWAPSPACE2" for mkswap v2 (every currently-in-use format).
-fn read_swap_signature(dev: &str) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = match std::fs::File::open(dev) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    if f.seek(SeekFrom::Start(0xff6)).is_err() {
-        return false;
-    }
-    let mut buf = [0u8; 10];
-    if f.read_exact(&mut buf).is_err() {
-        return false;
-    }
-    &buf == b"SWAPSPACE2"
 }
 
 #[cfg(test)]
@@ -504,46 +480,6 @@ mod tests {
     #[test]
     fn rewrite_meminfo_empty_input_yields_empty_output() {
         assert_eq!(rewrite_meminfo("", 1024), "");
-    }
-
-    #[test]
-    fn read_swap_signature_returns_false_for_missing_path() {
-        assert!(!read_swap_signature("/nonexistent/path/does/not/exist"));
-    }
-
-    #[test]
-    fn read_swap_signature_returns_false_for_empty_file() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        assert!(!read_swap_signature(tmp.path().to_str().unwrap()));
-    }
-
-    #[test]
-    fn read_swap_signature_detects_mkswap_magic_at_offset() {
-        // Reproduce the exact byte layout mkswap v2 writes: zeros,
-        // then "SWAPSPACE2" at offset 0xff6. Any other byte pattern
-        // at that offset must read as "not formatted."
-        use std::io::{Seek, SeekFrom, Write};
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        tmp.as_file_mut().set_len(0x1000).unwrap();
-        tmp.as_file_mut().seek(SeekFrom::Start(0xff6)).unwrap();
-        tmp.as_file_mut().write_all(b"SWAPSPACE2").unwrap();
-        tmp.as_file_mut().sync_all().unwrap();
-        assert!(read_swap_signature(tmp.path().to_str().unwrap()));
-    }
-
-    #[test]
-    fn read_swap_signature_rejects_wrong_magic() {
-        // A sparse file with zeros at the signature offset is a fresh
-        // swap.img the host just created — must NOT claim it's
-        // already formatted, or setup_swap would skip mkswap and
-        // swapon would fail on raw zeros.
-        use std::io::{Seek, SeekFrom, Write};
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        tmp.as_file_mut().set_len(0x1000).unwrap();
-        tmp.as_file_mut().seek(SeekFrom::Start(0xff6)).unwrap();
-        tmp.as_file_mut().write_all(b"GARBAGE\0\0\0").unwrap();
-        tmp.as_file_mut().sync_all().unwrap();
-        assert!(!read_swap_signature(tmp.path().to_str().unwrap()));
     }
 
     #[test]

@@ -82,7 +82,7 @@ pub struct VmBootArgs {
     /// pages are actually swapped out.
     ///
     /// Creator: `local_worker::ensure_swap_image` ensures this file
-    /// exists as a sparse 2 GiB before spawning `__vm-boot`. Cleanup
+    /// exists as a sparse 4 GiB before spawning `__vm-boot`. Cleanup
     /// happens alongside the managed dir in `iii worker clear`.
     #[arg(long)]
     pub swap_path: Option<String>,
@@ -712,11 +712,43 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // Restart/Shutdown/Ping/Status RPCs over that port. Without the env
     // var, iii-init falls back to its legacy single-spawn waitpid path.
     let control_port_env = args.control_sock.is_some();
-    // Analogous to III_CONTROL_PORT: flips iii-init into spawning its
-    // shell dispatcher thread on the named virtio-console port.
-    // Independent of control_port_env — the two channels live on
-    // separate ports and are enabled independently.
-    let shell_port_env = args.shell_sock.is_some();
+    // Set up the shell-exec channel BEFORE constructing the exec
+    // closure so `shell_port_env` reflects whether the host relay
+    // actually started. Otherwise a failed `shell_relay::spawn` still
+    // sets III_SHELL_PORT and the guest dispatcher spins on a port
+    // nobody reads, silently breaking `iii worker exec` for the VM's
+    // lifetime. Fail-closed: on relay spawn failure, skip the env var
+    // and drop the attached fd so the VM boots without the port.
+    let mut shell_port_env = false;
+    let mut guest_shell_fd: Option<i32> = None;
+    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> =
+        None;
+    if let Some(sock_path) = args.shell_sock.clone() {
+        let (host_end, guest_fd) = setup_control_socketpair()?;
+        match crate::cli::shell_relay::spawn(
+            tokio_rt.handle(),
+            std::path::PathBuf::from(sock_path),
+            host_end,
+        ) {
+            Ok(fp) => {
+                shell_sock_fingerprint = Some(fp);
+                guest_shell_fd = Some(guest_fd);
+                shell_port_env = true;
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: shell relay failed to start ({e}). \
+                     `iii worker exec` disabled; VM boots normally."
+                );
+                // `host_end` was moved into `shell_relay::spawn` and is
+                // dropped on its Err path. Close our guest half so we
+                // don't leak the fd for the __vm-boot process lifetime.
+                unsafe {
+                    libc::close(guest_fd);
+                }
+            }
+        }
+    }
     let control_workdir = args.workdir.clone();
     let nofile_limit = args.nofile_limit;
 
@@ -792,35 +824,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         guest_control_fd = Some(guest_fd);
     }
 
-    // Second virtio-console port for the shell-exec channel. Same
-    // socketpair mechanism as the control port above — libkrun owns
-    // the guest fd for the VM's lifetime, and the host end is held
-    // by the async relay that fans it out to connecting clients.
-    //
-    // The relay runs on `tokio_rt` (the same runtime the smoltcp
-    // network is using). It outlives `boot_vm` because tokio keeps
-    // its tasks alive as long as the runtime handle is reachable,
-    // and the runtime is dropped only when __vm-boot exits.
-    let mut guest_shell_fd: Option<i32> = None;
-    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> =
-        None;
-    if let Some(sock_path) = args.shell_sock.clone() {
-        let (host_end, guest_fd) = setup_control_socketpair()?;
-        match crate::cli::shell_relay::spawn(
-            tokio_rt.handle(),
-            std::path::PathBuf::from(sock_path),
-            host_end,
-        ) {
-            Ok(fp) => shell_sock_fingerprint = Some(fp),
-            Err(e) => {
-                eprintln!(
-                    "warning: shell relay failed to start ({e}). \
-                     `iii worker exec` disabled; VM boots normally."
-                );
-            }
-        }
-        guest_shell_fd = Some(guest_fd);
-    }
+    // Shell-exec channel was already set up above (before the exec
+    // closure was built) so `shell_port_env` correctly reflects whether
+    // the relay actually spawned. `guest_shell_fd` is `Some` only when
+    // spawn succeeded; on Err we dropped the guest fd to fail closed.
 
     builder = builder.console(move |mut c| {
         if let Some(path) = console_output_path {
