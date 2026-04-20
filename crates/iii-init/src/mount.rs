@@ -231,12 +231,8 @@ fn mount_cgroup2() -> Result<(), InitError> {
         // runtimes.
         if let Ok(b) = mem_bytes.trim().parse::<u64>() {
             let high = (b * 4 / 5).to_string();
-            if let Err(e) =
-                std::fs::write("/sys/fs/cgroup/worker/memory.high", &high)
-            {
-                eprintln!(
-                    "iii-init: warning: failed to set memory.high: {e}"
-                );
+            if let Err(e) = std::fs::write("/sys/fs/cgroup/worker/memory.high", &high) {
+                eprintln!("iii-init: warning: failed to set memory.high: {e}");
             }
         }
         // If the host attached a swap disk, let this cgroup consume
@@ -247,12 +243,8 @@ fn mount_cgroup2() -> Result<(), InitError> {
         // even with a swap device attached. "max" means "as much as
         // the system has."
         if std::env::var("III_SWAP_DEV").is_ok() {
-            if let Err(e) =
-                std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", "max")
-            {
-                eprintln!(
-                    "iii-init: warning: failed to widen memory.swap.max: {e}"
-                );
+            if let Err(e) = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", "max") {
+                eprintln!("iii-init: warning: failed to widen memory.swap.max: {e}");
             }
         }
     }

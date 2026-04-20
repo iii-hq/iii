@@ -207,10 +207,7 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
             MsFlags::MS_BIND,
             None::<&str>,
         )
-        .map_err(|e| InitError::Mount {
-            target,
-            source: e,
-        })?;
+        .map_err(|e| InitError::Mount { target, source: e })?;
     }
 
     // Phase 3 — relocate the /workspace virtiofs mount so it
@@ -235,10 +232,7 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
             MsFlags::MS_MOVE,
             None::<&str>,
         )
-        .map_err(|e| InitError::Mount {
-            target,
-            source: e,
-        })?;
+        .map_err(|e| InitError::Mount { target, source: e })?;
     }
 
     // Phase 4 — pre-create kernel-filesystem mount points on the
@@ -391,13 +385,25 @@ mod tests {
     #[test]
     fn allowlist_includes_app_for_oci_images() {
         let names: Vec<&str> = ROOTFS_ENTRIES.iter().map(|(n, _)| *n).collect();
-        assert!(names.contains(&"app"), "`/app` must be in the allowlist for OCI images");
+        assert!(
+            names.contains(&"app"),
+            "`/app` must be in the allowlist for OCI images"
+        );
     }
 
     #[test]
     fn allowlist_skips_kernel_filesystems_and_staging() {
         let names: Vec<&str> = ROOTFS_ENTRIES.iter().map(|(n, _)| *n).collect();
-        for banned in ["proc", "sys", "dev", "tmp", "run", "new-root", "old-root", "workspace"] {
+        for banned in [
+            "proc",
+            "sys",
+            "dev",
+            "tmp",
+            "run",
+            "new-root",
+            "old-root",
+            "workspace",
+        ] {
             assert!(
                 !names.contains(&banned),
                 "{banned} must not be in the allowlist (handled separately or mounted fresh)"
@@ -459,7 +465,10 @@ mod tests {
         }
         let entries = rootfs_bind_entries(root);
         let names = names_of(&entries);
-        assert!(names.contains(&"app"), "`/app` must be bound for OCI images; got {names:?}");
+        assert!(
+            names.contains(&"app"),
+            "`/app` must be bound for OCI images; got {names:?}"
+        );
         assert!(names.contains(&"bin"));
     }
 
@@ -474,7 +483,11 @@ mod tests {
         fs::create_dir(root.join("bin")).unwrap();
         let entries = rootfs_bind_entries(root);
         let names = names_of(&entries);
-        assert_eq!(names, vec!["bin"], "missing allowlist entries must be dropped; got {names:?}");
+        assert_eq!(
+            names,
+            vec!["bin"],
+            "missing allowlist entries must be dropped; got {names:?}"
+        );
     }
 
     /// Regression for the cherry-picked dynamic-enumeration fix that

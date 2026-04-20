@@ -65,11 +65,7 @@ impl ProjectInfo {
     }
 }
 
-pub fn infer_scripts(
-    kind: &str,
-    package_manager: &str,
-    entry: &str,
-) -> (String, String, String) {
+pub fn infer_scripts(kind: &str, package_manager: &str, entry: &str) -> (String, String, String) {
     match (kind, package_manager) {
         // `kind: bun` — no package_manager needed; bun IS the package
         // manager. The oven/bun:latest rootfs ships bun preinstalled so
@@ -143,9 +139,7 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     // Prefer `runtime.kind`; fall back to the legacy `runtime.language`
     // so older manifests keep working. When only `language` is set,
     // print a one-line deprecation note so the user knows to migrate.
-    let kind_str = runtime
-        .and_then(|r| r.get("kind"))
-        .and_then(|v| v.as_str());
+    let kind_str = runtime.and_then(|r| r.get("kind")).and_then(|v| v.as_str());
     let legacy_language = runtime
         .and_then(|r| r.get("language"))
         .and_then(|v| v.as_str());

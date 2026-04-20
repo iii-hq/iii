@@ -203,10 +203,8 @@ pub fn spawn(
         match bind_result {
             Ok(listener) => {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &sock_path,
-                    std::fs::Permissions::from_mode(0o600),
-                );
+                let _ =
+                    std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
                 let fp = fingerprint_of(&sock_path)?;
                 listener
                     .set_nonblocking(true)
@@ -227,20 +225,13 @@ pub fn spawn(
                 // stays consistent on the wire. Bounded to apply
                 // backpressure to any one client that outpaces the
                 // virtio-console write speed — see [`VM_WRITE_CAPACITY`].
-                let (vm_write_tx, vm_write_rx) =
-                    mpsc::channel::<FrameBytes>(VM_WRITE_CAPACITY);
+                let (vm_write_tx, vm_write_rx) = mpsc::channel::<FrameBytes>(VM_WRITE_CAPACITY);
                 let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
-                let slots: Slots =
-                    Arc::new(Mutex::new([SlotState::Free; MAX_CLIENTS as usize]));
+                let slots: Slots = Arc::new(Mutex::new([SlotState::Free; MAX_CLIENTS as usize]));
 
                 runtime.spawn(vm_writer_task(vm_write, vm_write_rx));
                 runtime.spawn(vm_reader_task(vm_read, routes.clone()));
-                runtime.spawn(listener_task(
-                    tokio_listener,
-                    vm_write_tx,
-                    routes,
-                    slots,
-                ));
+                runtime.spawn(listener_task(tokio_listener, vm_write_tx, routes, slots));
                 fp
             }
             Err(e) => {
@@ -258,12 +249,8 @@ pub fn spawn(
 fn prepare_sock_dir(sock_path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     if let Some(parent) = sock_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "shell_relay: create_dir_all({}): {e}",
-                parent.display()
-            )
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("shell_relay: create_dir_all({}): {e}", parent.display()))?;
         let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
     }
     // Remove any stale socket inode so bind() doesn't fail with EADDRINUSE.
@@ -316,9 +303,7 @@ async fn vm_reader_task(mut vm_read: tokio::net::unix::OwnedReadHalf, routes: Ro
         };
         // Header: [corr_id: u32 BE][flags: u8]. Already validated by
         // read_frame, so safe to index.
-        let corr_id = u32::from_be_bytes([
-            frame[4], frame[5], frame[6], frame[7],
-        ]);
+        let corr_id = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
         let flags = frame[8];
         let terminal = (flags & iii_supervisor::shell_protocol::flags::FLAG_TERMINAL) != 0;
 
@@ -347,9 +332,7 @@ async fn vm_reader_task(mut vm_read: tokio::net::unix::OwnedReadHalf, routes: Ro
                 }
             }
         } else {
-            tracing::debug!(
-                "shell_relay: dropped frame for unknown corr_id {corr_id}"
-            );
+            tracing::debug!("shell_relay: dropped frame for unknown corr_id {corr_id}");
         }
 
         if terminal {
@@ -507,9 +490,7 @@ async fn client_session(
                 Ok(Some(f)) => f,
                 _ => break,
             };
-            let corr_id = u32::from_be_bytes([
-                frame[4], frame[5], frame[6], frame[7],
-            ]);
+            let corr_id = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
             if corr_id <= id_offset || corr_id >= id_ceil {
                 tracing::warn!(
                     "shell_relay: client sent corr_id {corr_id} outside its range \
@@ -539,9 +520,7 @@ async fn client_session(
                 let mut owned_guard = owned_ids_for_reader
                     .lock()
                     .expect("owned_ids mutex poisoned");
-                let mut map = routes_for_reader
-                    .lock()
-                    .expect("routes mutex poisoned");
+                let mut map = routes_for_reader.lock().expect("routes mutex poisoned");
                 if let Entry::Vacant(slot) = map.entry(corr_id) {
                     if owned_guard.len() >= MAX_OWNED_IDS_PER_CLIENT {
                         drop(map);
@@ -610,9 +589,7 @@ async fn client_session(
         let frame = match encode_frame(id, 0, &ShellMessage::Signal { signal: 9 }) {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!(
-                    "shell_relay: failed to encode SIGKILL frame for corr_id={id}: {e}"
-                );
+                tracing::warn!("shell_relay: failed to encode SIGKILL frame for corr_id={id}: {e}");
                 continue;
             }
         };
@@ -792,9 +769,8 @@ mod tests {
             let mut reader = std::io::BufReader::new(vm_guest_sim);
             let mut writer = guest_clone;
             while let Ok(Some((corr_id, _, _))) = read_frame_blocking(&mut reader) {
-                let reply =
-                    encode_frame(corr_id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 })
-                        .unwrap();
+                let reply = encode_frame(corr_id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 })
+                    .unwrap();
                 use std::io::Write;
                 writer.write_all(&reply).unwrap();
             }
@@ -863,15 +839,8 @@ mod tests {
 
         // Send a frame with an out-of-range corr_id. Relay should
         // drop it without closing the connection.
-        let bogus_id = id_offset
-            .checked_add(ID_RANGE_STEP + 1)
-            .unwrap_or(u32::MAX);
-        let bogus = encode_frame(
-            bogus_id,
-            0,
-            &ShellMessage::Signal { signal: 9 },
-        )
-        .unwrap();
+        let bogus_id = id_offset.checked_add(ID_RANGE_STEP + 1).unwrap_or(u32::MAX);
+        let bogus = encode_frame(bogus_id, 0, &ShellMessage::Signal { signal: 9 }).unwrap();
         client.write_all(&bogus).await.unwrap();
 
         // Follow with a valid frame — the relay should still serve it.
@@ -917,8 +886,7 @@ mod tests {
         // hit EOF.
         let mut s = tokio::net::UnixStream::connect(&sock).await.unwrap();
         let mut buf = [0u8; 4];
-        let res =
-            tokio::time::timeout(Duration::from_millis(500), s.read_exact(&mut buf)).await;
+        let res = tokio::time::timeout(Duration::from_millis(500), s.read_exact(&mut buf)).await;
         match res {
             Ok(Ok(_)) => panic!("17th client got a handshake — expected refusal"),
             Ok(Err(_)) | Err(_) => {
@@ -1170,8 +1138,8 @@ mod tests {
         // different id_offset, or a refused connection, is acceptable.
         let mut client_b = tokio::net::UnixStream::connect(&sock).await.unwrap();
         let mut hs = [0u8; 4];
-        let got = tokio::time::timeout(Duration::from_millis(100), client_b.read_exact(&mut hs))
-            .await;
+        let got =
+            tokio::time::timeout(Duration::from_millis(100), client_b.read_exact(&mut hs)).await;
         match got {
             Ok(Ok(_)) => {
                 let offset_b = u32::from_be_bytes(hs);

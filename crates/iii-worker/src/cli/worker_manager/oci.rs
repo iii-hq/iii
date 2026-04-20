@@ -115,10 +115,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// rootfs (e.g. a `base_image: oven/bun:1` worker gets its own
 /// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
 /// `~/.iii/rootfs/bun/` that every default `kind: bun` worker uses).
-pub async fn prepare_rootfs(
-    kind: &str,
-    base_image_override: Option<&str>,
-) -> Result<PathBuf> {
+pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
     let (oci_image, rootfs_name): (String, String) = match base_image_override {
         Some(img) if !img.trim().is_empty() => {
             let slug = rootfs_slug_for_image(img.trim());

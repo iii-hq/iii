@@ -333,8 +333,7 @@ mod tests {
         let frame = encode_frame(corr_id, flags, msg).expect("encode");
         // Strip length prefix, feed body to decode_frame_body.
         assert!(frame.len() >= 4);
-        let decoded_len =
-            u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        let decoded_len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
         assert_eq!(decoded_len + 4, frame.len(), "frame_len must match body");
         let (got_id, got_flags, got_msg) = decode_frame_body(&frame[4..]).expect("decode");
         assert_eq!(got_id, corr_id);
@@ -416,20 +415,12 @@ mod tests {
 
     #[test]
     fn exited_roundtrip_terminal() {
-        roundtrip(
-            11,
-            flags::FLAG_TERMINAL,
-            &ShellMessage::Exited { code: 0 },
-        );
+        roundtrip(11, flags::FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
     }
 
     #[test]
     fn exited_nonzero_code() {
-        roundtrip(
-            11,
-            flags::FLAG_TERMINAL,
-            &ShellMessage::Exited { code: 42 },
-        );
+        roundtrip(11, flags::FLAG_TERMINAL, &ShellMessage::Exited { code: 42 });
     }
 
     #[test]
@@ -464,8 +455,8 @@ mod tests {
     fn encode_frame_has_expected_layout() {
         // Minimal payload: Started { pid: 0 }
         // serde_json produces exactly {"t":"started","pid":0} (no spaces).
-        let frame = encode_frame(0xCAFEBABE, 0x01, &ShellMessage::Started { pid: 0 })
-            .expect("encode");
+        let frame =
+            encode_frame(0xCAFEBABE, 0x01, &ShellMessage::Started { pid: 0 }).expect("encode");
         // Length prefix = 4 bytes, body follows.
         let frame_len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
         assert_eq!(frame.len(), 4 + frame_len);
@@ -475,10 +466,7 @@ mod tests {
         assert_eq!(frame[8], 0x01);
         // payload is valid JSON
         let payload = std::str::from_utf8(&frame[9..]).unwrap();
-        assert!(
-            payload.starts_with("{\"t\":\"started\""),
-            "got: {payload}"
-        );
+        assert!(payload.starts_with("{\"t\":\"started\""), "got: {payload}");
     }
 
     #[test]

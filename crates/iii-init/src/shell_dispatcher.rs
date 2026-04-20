@@ -98,10 +98,7 @@ const IO_CHUNK_SIZE: usize = 8 * 1024;
 /// (rare — a wedged session produces a per-session `Error` frame and
 /// does not bring the dispatcher down).
 pub fn run(port_path: &Path) -> anyhow::Result<()> {
-    let writer_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(port_path)?;
+    let writer_file = OpenOptions::new().read(true).write(true).open(port_path)?;
     let reader_file = writer_file.try_clone()?;
     let writer = spawn_writer_thread(writer_file);
     let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
@@ -145,9 +142,7 @@ fn spawn_writer_thread(mut file: File) -> Writer {
         .spawn(move || {
             while let Ok(frame) = rx.recv() {
                 if let Err(e) = file.write_all(&frame) {
-                    eprintln!(
-                        "iii-init: shell dispatcher writer failed: {e}"
-                    );
+                    eprintln!("iii-init: shell dispatcher writer failed: {e}");
                     break;
                 }
             }
@@ -340,17 +335,14 @@ fn spawn_pipe_session(
 
     // Register before announcing so a racing Stdin frame finds the
     // entry.
-    sessions
-        .lock()
-        .expect("session map mutex poisoned")
-        .insert(
-            corr_id,
-            SessionHandle {
-                pid,
-                stdin,
-                master: None,
-            },
-        );
+    sessions.lock().expect("session map mutex poisoned").insert(
+        corr_id,
+        SessionHandle {
+            pid,
+            stdin,
+            master: None,
+        },
+    );
 
     send_frame(writer, corr_id, 0, &ShellMessage::Started { pid });
 
@@ -577,17 +569,14 @@ fn spawn_tty_session(
     };
     let master = Arc::new(Mutex::new(master_file));
 
-    sessions
-        .lock()
-        .expect("session map mutex poisoned")
-        .insert(
-            corr_id,
-            SessionHandle {
-                pid,
-                stdin: None,
-                master: Some(master.clone()),
-            },
-        );
+    sessions.lock().expect("session map mutex poisoned").insert(
+        corr_id,
+        SessionHandle {
+            pid,
+            stdin: None,
+            master: Some(master.clone()),
+        },
+    );
 
     send_frame(writer, corr_id, 0, &ShellMessage::Started { pid });
 
@@ -684,9 +673,7 @@ fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) {
         use std::sync::mpsc::TrySendError;
         match e {
             TrySendError::Full(_) => {
-                eprintln!(
-                    "iii-init: shell writer channel full, dropping frame corr_id={corr_id}"
-                );
+                eprintln!("iii-init: shell writer channel full, dropping frame corr_id={corr_id}");
             }
             TrySendError::Disconnected(_) => {
                 // Writer thread exited — further writes are pointless.
@@ -735,23 +722,25 @@ mod tests {
             use nix::unistd::Pid;
             thread::Builder::new()
                 .name("shell-dispatcher-test-reaper".to_string())
-                .spawn(|| loop {
-                    match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
-                        Ok(WaitStatus::Exited(pid, code)) => {
-                            crate::child_exits::dispatch_exit(pid.as_raw(), code);
+                .spawn(|| {
+                    loop {
+                        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+                            Ok(WaitStatus::Exited(pid, code)) => {
+                                crate::child_exits::dispatch_exit(pid.as_raw(), code);
+                            }
+                            Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                                crate::child_exits::dispatch_exit(pid.as_raw(), 128 + sig as i32);
+                            }
+                            Ok(WaitStatus::StillAlive) | Err(Errno::ECHILD) => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            // Stopped/Continued/PtraceEvent/PtraceSyscall —
+                            // not terminal, leave the child alone.
+                            Ok(_) => {}
+                            // EINTR or other transient errno; brief pause
+                            // and retry so we don't busy-loop on errors.
+                            Err(_) => thread::sleep(Duration::from_millis(10)),
                         }
-                        Ok(WaitStatus::Signaled(pid, sig, _)) => {
-                            crate::child_exits::dispatch_exit(pid.as_raw(), 128 + sig as i32);
-                        }
-                        Ok(WaitStatus::StillAlive) | Err(Errno::ECHILD) => {
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                        // Stopped/Continued/PtraceEvent/PtraceSyscall —
-                        // not terminal, leave the child alone.
-                        Ok(_) => {}
-                        // EINTR or other transient errno; brief pause
-                        // and retry so we don't busy-loop on errors.
-                        Err(_) => thread::sleep(Duration::from_millis(10)),
                     }
                 })
                 .expect("spawn test reaper");
@@ -948,7 +937,8 @@ mod tests {
     fn start_dispatcher_over_socketpair() -> (UnixStream, UnixStream) {
         ensure_test_reaper();
         let (host, guest) = UnixStream::pair().expect("socketpair");
-        host.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
 
         let guest_clone = guest.try_clone().unwrap();
         thread::spawn(move || {
@@ -1024,10 +1014,7 @@ mod tests {
                     panic!("guest returned Error: {message}");
                 }
                 ShellMessage::Exited { code } => {
-                    assert!(
-                        flags & FLAG_TERMINAL != 0,
-                        "Exited without terminal flag"
-                    );
+                    assert!(flags & FLAG_TERMINAL != 0, "Exited without terminal flag");
                     exit_code = Some(code);
                 }
                 other => panic!("unexpected inbound: {other:?}"),
@@ -1259,11 +1246,7 @@ mod tests {
             assert_eq!(id, corr_id);
             if let ShellMessage::Exited { code } = msg {
                 assert!(flags & FLAG_TERMINAL != 0);
-                assert_eq!(
-                    code,
-                    128 + 9,
-                    "SIGKILL → 128 + 9 = 137, got {code}"
-                );
+                assert_eq!(code, 128 + 9, "SIGKILL → 128 + 9 = 137, got {code}");
                 break;
             }
         }

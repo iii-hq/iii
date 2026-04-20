@@ -50,7 +50,8 @@ const SWAP_IMAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// same logic, so we take `&mut CommandArgsExt` via the closure
 /// rather than committing to either concrete type.
 fn apply_vm_tuning_env(mut push: impl FnMut(&str, Option<&str>)) {
-    let parse_bool = |v: &str| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
+    let parse_bool =
+        |v: &str| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
 
     if std::env::var("III_VM_HYPERTHREADING")
         .ok()
@@ -575,8 +576,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // Shell-exec channel alongside the control channel. `iii worker
         // exec` connects to shell.sock; the in-VM dispatcher thread
         // handles requests. Absent => exec refuses with a clear error.
-        cmd.arg("--shell-sock")
-            .arg(worker_dir.join("shell.sock"));
+        cmd.arg("--shell-sock").arg(worker_dir.join("shell.sock"));
 
         let image_env = read_oci_env(&worker_rootfs);
         let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
@@ -791,10 +791,7 @@ mod tests {
         // Write a marker byte in the middle so we can tell if the file
         // gets clobbered on the second call.
         use std::io::{Seek, SeekFrom, Write};
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .unwrap();
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         f.seek(SeekFrom::Start(1000)).unwrap();
         f.write_all(&[0x42]).unwrap();
         drop(f);
@@ -805,7 +802,10 @@ mod tests {
         let mut buf = [0u8; 1];
         use std::io::Read;
         f.read_exact(&mut buf).unwrap();
-        assert_eq!(buf[0], 0x42, "ensure_swap_image must preserve existing file contents");
+        assert_eq!(
+            buf[0], 0x42,
+            "ensure_swap_image must preserve existing file contents"
+        );
     }
 
     #[test]

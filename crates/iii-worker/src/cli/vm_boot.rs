@@ -654,8 +654,8 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // Per-mount DAX window. 0 (the CLI default) skips the call so
     // msb_krun's built-in default applies; any positive value is
     // converted to bytes and set on every virtiofs attach.
-    let shm_bytes_per_mount: usize = (args.virtiofs_shm_size_mib as usize)
-        .saturating_mul(1024 * 1024);
+    let shm_bytes_per_mount: usize =
+        (args.virtiofs_shm_size_mib as usize).saturating_mul(1024 * 1024);
     for entry in mount_plan.entries {
         let tag = entry.tag.clone();
         let host_path = entry.host_path.clone();
@@ -721,8 +721,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // and drop the attached fd so the VM boots without the port.
     let mut shell_port_env = false;
     let mut guest_shell_fd: Option<i32> = None;
-    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> =
-        None;
+    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> = None;
     if let Some(sock_path) = args.shell_sock.clone() {
         let (host_end, guest_fd) = setup_control_socketpair()?;
         match crate::cli::shell_relay::spawn(
@@ -902,13 +901,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // listening; the spawned task just awaits the notification.
     let exit_handle_for_signals = vm.exit_handle();
     let signals_registered: Result<
-        (
-            tokio::signal::unix::Signal,
-            tokio::signal::unix::Signal,
-        ),
+        (tokio::signal::unix::Signal, tokio::signal::unix::Signal),
         std::io::Error,
     > = tokio_rt.block_on(async {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let sigterm = signal(SignalKind::terminate())?;
         let sigint = signal(SignalKind::interrupt())?;
         Ok((sigterm, sigint))

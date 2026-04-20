@@ -710,18 +710,16 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
             );
             return 1;
         }
-        let base_rootfs = match super::worker_manager::oci::prepare_rootfs(
-            kind,
-            project.base_image.as_deref(),
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
-        };
+        let base_rootfs =
+            match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref())
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} {}", "error:".red(), e);
+                    return 1;
+                }
+            };
         if let Err(e) = clone_rootfs(&base_rootfs, &managed_dir) {
             eprintln!("{} Failed to create project rootfs: {}", "error:".red(), e);
             return 1;
@@ -766,18 +764,15 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     let mut env = build_local_env(&engine_url, &combined_project_env);
 
-    let base_rootfs = match super::worker_manager::oci::prepare_rootfs(
-        kind,
-        project.base_image.as_deref(),
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
+    let base_rootfs =
+        match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref()).await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
     let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
     for (key, value) in oci_env {
         env.entry(key).or_insert(value);
