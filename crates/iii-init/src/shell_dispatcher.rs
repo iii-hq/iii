@@ -228,8 +228,14 @@ fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, wri
                 // don't care about the result — ESRCH means the
                 // child already died, and the waiter thread will
                 // have emitted Exited or is about to.
+                //
+                // Signal the whole process group (-pid) so pipelines
+                // and other multi-process children inside `sh -c`
+                // receive the signal too. Both spawn paths make the
+                // child a pgroup leader (pipe mode via setpgid(0,0)
+                // in pre_exec, TTY mode via setsid()), so pgid == pid.
                 unsafe {
-                    libc::kill(pid as libc::pid_t, signal as libc::c_int);
+                    libc::kill(-(pid as libc::pid_t), signal as libc::c_int);
                 }
             }
         }
@@ -286,6 +292,20 @@ fn spawn_pipe_session(
         if let Some((k, v)) = kv.split_once('=') {
             command.env(k, v);
         }
+    }
+    // Put the child in its own process group so `Signal` frames can
+    // reach grandchildren. Without this, `/bin/sh -c "a | b"` leaves
+    // `a` and `b` in the dispatcher's pgroup, and `kill(pid, SIGINT)`
+    // hits only the shell, while Ctrl-C from an exec client would
+    // exit the session with pipeline stages still alive in the VM.
+    // TTY mode already gets the same effect via `setsid()`.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
     // Race-free: the `child_exits` registry lock is held across
     // `spawn`, so PID 1's reap loop cannot observe and discard the
@@ -544,8 +564,11 @@ fn spawn_tty_session(
     let master_reader = match master_file.try_clone() {
         Ok(f) => f,
         Err(e) => {
+            // Kill the whole session (setsid() made pid the pgroup
+            // leader, so -pid targets every descendant spawned before
+            // the TTY cleanup raced in).
             unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
             }
             crate::child_exits::unregister(pid);
             let _ = child;
