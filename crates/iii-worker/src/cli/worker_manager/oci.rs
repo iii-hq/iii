@@ -59,10 +59,18 @@ pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
 /// Sanitize an OCI image reference into a cache-dir-safe name so two
 /// workers using different base images don't collide on disk under
 /// `~/.iii/rootfs/<name>/`. Keeps it human-readable for easier
-/// troubleshooting: `oven/bun:1` → `oven-bun-1`,
-/// `ghcr.io/my-org/my-worker:latest` → `ghcr.io-my-org-my-worker-latest`.
+/// troubleshooting: `oven/bun:1` → `oven-bun-1-<hash>`,
+/// `ghcr.io/my-org/my-worker:latest` → `ghcr.io-my-org-my-worker-latest-<hash>`.
+///
+/// The 16-hex-digit FNV-1a suffix is derived from the raw image
+/// reference. It makes the slug injective: inputs like `a/b:c`,
+/// `a-b:c`, and `a/b-c` all sanitize to `a-b-c` but hash to different
+/// suffixes, so their cache dirs never collide. Cost is 17 trailing
+/// characters on every dir name.
 pub fn rootfs_slug_for_image(image: &str) -> String {
-    let mut s: String = image
+    let raw = image.trim();
+    let hash = fnv1a64(raw.as_bytes());
+    let mut s: String = raw
         .chars()
         .map(|c| match c {
             'A'..='Z' => c.to_ascii_lowercase(),
@@ -75,8 +83,26 @@ pub fn rootfs_slug_for_image(image: &str) -> String {
     while s.contains("--") {
         s = s.replace("--", "-");
     }
-    s.trim_matches(|c: char| c == '-' || c == '.' || c == '_')
-        .to_string()
+    let base = s
+        .trim_matches(|c: char| c == '-' || c == '.' || c == '_')
+        .to_string();
+    if base.is_empty() {
+        format!("image-{hash:016x}")
+    } else {
+        format!("{base}-{hash:016x}")
+    }
+}
+
+/// 64-bit FNV-1a. Picked over SHA because a) we only need collision
+/// resistance against accidental slug overlap, not cryptographic
+/// strength, and b) no external dependency — the whole hash is 4 lines.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// Determine the rootfs path for a given `runtime.kind`, optionally
@@ -587,22 +613,25 @@ mod tests {
 
     #[test]
     fn slug_preserves_dots_and_dashes() {
-        assert_eq!(
-            rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest"),
-            "ghcr.io-my-org-my-worker-latest"
+        let slug = rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest");
+        assert!(
+            slug.starts_with("ghcr.io-my-org-my-worker-latest-"),
+            "unexpected slug: {slug}"
         );
     }
 
     #[test]
     fn slug_converts_simple_image_ref() {
-        assert_eq!(rootfs_slug_for_image("oven/bun:1"), "oven-bun-1");
+        let slug = rootfs_slug_for_image("oven/bun:1");
+        assert!(slug.starts_with("oven-bun-1-"), "unexpected slug: {slug}");
     }
 
     #[test]
     fn slug_lowercases() {
-        assert_eq!(
-            rootfs_slug_for_image("GHCR.io/Foo/Bar:1.0"),
-            "ghcr.io-foo-bar-1.0"
+        let slug = rootfs_slug_for_image("GHCR.io/Foo/Bar:1.0");
+        assert!(
+            slug.starts_with("ghcr.io-foo-bar-1.0-"),
+            "unexpected slug: {slug}"
         );
     }
 
@@ -610,8 +639,10 @@ mod tests {
     fn slug_collapses_consecutive_separators() {
         // Weird but defensive: double colons and leading/trailing junk
         // shouldn't produce runs of dashes or empty segments.
-        assert_eq!(rootfs_slug_for_image("::foo::"), "foo");
-        assert_eq!(rootfs_slug_for_image("a//b:c"), "a-b-c");
+        let a = rootfs_slug_for_image("::foo::");
+        assert!(a.starts_with("foo-"), "unexpected slug: {a}");
+        let b = rootfs_slug_for_image("a//b:c");
+        assert!(b.starts_with("a-b-c-"), "unexpected slug: {b}");
     }
 
     #[test]
@@ -621,6 +652,47 @@ mod tests {
         // image ref instead of just the name.
         assert_ne!(
             rootfs_slug_for_image("docker.io/iiidev/node:latest"),
+            rootfs_slug_for_image("oven/bun:1")
+        );
+    }
+
+    /// Regression for the slug-collision hole: refs that sanitize to
+    /// the same human-readable prefix must still get distinct cache
+    /// dirs via the hash suffix. Without the suffix, `a/b:c`, `a-b:c`,
+    /// and `a/b-c` all collapse to `a-b-c` and one worker would clobber
+    /// another's extracted rootfs on disk.
+    #[test]
+    fn slug_hash_prevents_prefix_collision() {
+        let a = rootfs_slug_for_image("a/b:c");
+        let b = rootfs_slug_for_image("a-b:c");
+        let c = rootfs_slug_for_image("a/b-c");
+        // All three share the human prefix.
+        assert!(a.starts_with("a-b-c-"));
+        assert!(b.starts_with("a-b-c-"));
+        assert!(c.starts_with("a-b-c-"));
+        // But none of the full slugs collide.
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn slug_falls_back_to_image_prefix_when_sanitization_empties() {
+        // Pure-separator input produces an empty human base; we still
+        // want a stable deterministic directory, so fall back to
+        // "image-<hash>" instead of the empty string that would make
+        // `prepare_rootfs` bail.
+        let slug = rootfs_slug_for_image(":::");
+        assert!(slug.starts_with("image-"), "unexpected slug: {slug}");
+    }
+
+    #[test]
+    fn slug_is_deterministic() {
+        // Hash must be stable across calls on the same input so cache
+        // dirs survive restarts. FNV-1a is deterministic by definition
+        // but this locks in the guarantee for the combined slug too.
+        assert_eq!(
+            rootfs_slug_for_image("oven/bun:1"),
             rootfs_slug_for_image("oven/bun:1")
         );
     }
