@@ -132,7 +132,7 @@ list changes).
 
 If you have questions about contributing, licensing, or anything else, feel free to open
 an issue for discussion.
-This is a unified monorepo containing the iii Engine, SDKs, Motia Framework, Console, documentation, and website.
+This is a unified monorepo containing the iii Engine, SDKs, Console, documentation, and website.
 
 ## Prerequisites
 
@@ -170,12 +170,10 @@ cargo build --release
 | Command                 | Description                                          |
 | ----------------------- | ---------------------------------------------------- |
 | `pnpm test:sdk-node`    | Test Node.js SDK only                                |
-| `pnpm test:motia-js`    | Test Motia JS only                                   |
 | `pnpm test:engine`      | Test engine (Rust) only                              |
 | `pnpm test:rust`        | Test entire Rust workspace                           |
 | `cargo test -p iii-sdk` | Test Rust SDK only                                   |
 | `pnpm dev:docs`         | Start iii docs dev server from `docs/` with Mintlify |
-| `pnpm dev:motia-docs`   | Start Motia docs dev server                          |
 | `pnpm dev:website`      | Start website dev server                             |
 | `pnpm dev:console`      | Start console frontend dev server                    |
 
@@ -184,11 +182,6 @@ cargo build --release
 ```bash
 # SDK tests
 cd sdk/packages/python/iii
-uv sync --extra dev
-uv run pytest
-
-# Motia Python tests
-cd motia/motia-py/packages/motia
 uv sync --extra dev
 uv run pytest
 ```

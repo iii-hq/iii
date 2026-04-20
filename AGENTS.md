@@ -49,7 +49,6 @@ sdk/packages/node/iii-browser/   Browser SDK (npm: iii-sdk-browser)
 sdk/packages/python/iii/         Python SDK (PyPI: iii-sdk)
 sdk/packages/rust/iii/           Rust SDK (crates.io: iii-sdk)
 console/                         Developer dashboard (React + Rust)
-frameworks/motia/                Higher-level framework on iii-sdk
 skills/                          26 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website

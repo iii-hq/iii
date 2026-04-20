@@ -1,5 +1,0 @@
-{
-  "title": "Advanced Features",
-  "defaultOpen": false,
-  "pages": ["multi-trigger-steps", "conditional-triggers", "reactive-triggers", "step-helper", "atomic-updates", "multi-language"]
-}
