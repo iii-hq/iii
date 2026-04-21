@@ -54,16 +54,24 @@ use iii_supervisor::shell_protocol::{self as sp, ShellMessage, flags::FLAG_TERMI
 /// registry after emitting the terminal frame.
 struct SessionHandle {
     pid: u32,
-    /// Pipe-mode stdin. `None` after the host has sent an empty Stdin
-    /// frame (EOF) or after the child has exited. Writes are silently
-    /// ignored in either case so a misbehaving peer can't panic the
-    /// dispatcher.
-    stdin: Option<ChildStdin>,
+    /// Pipe-mode stdin, shared so writers can drop the outer session
+    /// map lock before calling `write_all`. `None` after the host has
+    /// sent an empty Stdin frame (EOF) or after the child has exited.
+    /// Writes are silently ignored in either case so a misbehaving
+    /// peer can't panic the dispatcher.
+    stdin: Option<Arc<Mutex<ChildStdin>>>,
     /// TTY-mode master fd (wrapped as a `File` so it implements
     /// `Write`). `Some` iff the session was spawned with `tty: true`.
     /// Used for both stdin-forwarding and `TIOCSWINSZ` on Resize.
     /// A session is exactly one of pipe or TTY — never both.
     master: Option<Arc<Mutex<File>>>,
+    /// Set by the waiter thread immediately after `exit_rx.recv()`
+    /// returns, before it joins the reader threads. Signal delivery
+    /// consults this flag under the session-map lock — once it's set,
+    /// the pid has been reaped and the kernel is free to recycle the
+    /// pgid, so `kill(-pid, sig)` could land on an unrelated process
+    /// group spawned by a later `iii worker exec`.
+    terminated: bool,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<u32, SessionHandle>>>;
@@ -183,38 +191,81 @@ fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, wri
                 Ok(d) => d,
                 Err(_) => return, // drop malformed; nothing useful to do
             };
-            let mut map = sessions.lock().expect("session map mutex poisoned");
-            if let Some(session) = map.get_mut(&corr_id) {
-                if let Some(master) = session.master.clone() {
-                    // TTY mode: write to master. Empty frame is a
-                    // no-op — in a TTY, EOF is a line-discipline
-                    // convention (Ctrl-D = 0x04) sent as a byte, not
-                    // a side-channel. Closing the master would hang
-                    // up the child's controlling TTY and deliver
-                    // SIGHUP, which is not what an empty Stdin means.
-                    drop(map);
+            // Snapshot the per-session write handle(s) under the
+            // session-map lock, drop the lock, then write. Without
+            // this the pipe branch would block every other session's
+            // Signal/Resize/Stdin dispatch any time the child's stdin
+            // pipe buffer (default 64 KiB on Linux) filled up — a
+            // single `cat > /dev/null` that backpressured would stall
+            // SIGKILL delivery to a runaway neighbour. The TTY branch
+            // was already written this way; this brings pipe to parity.
+            enum Target {
+                Tty(Arc<Mutex<File>>),
+                Pipe(Arc<Mutex<ChildStdin>>),
+                PipeEof,
+                None,
+            }
+            let target = {
+                let mut map = sessions.lock().expect("session map mutex poisoned");
+                match map.get_mut(&corr_id) {
+                    Some(session) if session.terminated => Target::None,
+                    Some(session) => {
+                        if let Some(master) = session.master.clone() {
+                            Target::Tty(master)
+                        } else if decoded.is_empty() {
+                            // Pipe mode EOF — drop stdin while we
+                            // still hold the lock so the child
+                            // observes it exactly once.
+                            session.stdin.take();
+                            Target::PipeEof
+                        } else if let Some(stdin) = session.stdin.clone() {
+                            Target::Pipe(stdin)
+                        } else {
+                            Target::None
+                        }
+                    }
+                    None => Target::None,
+                }
+            };
+            match target {
+                Target::Tty(master) => {
+                    // Empty frame is a no-op — in a TTY, EOF is a
+                    // line-discipline convention (Ctrl-D = 0x04) sent
+                    // as a byte, not a side-channel. Closing the
+                    // master would hang up the child's controlling
+                    // TTY and deliver SIGHUP, which is not what an
+                    // empty Stdin means.
                     if !decoded.is_empty() {
                         let mut file = master.lock().expect("master mutex poisoned");
                         let _ = file.write_all(&decoded);
                     }
-                } else if decoded.is_empty() {
-                    // Pipe mode EOF — drop stdin so the child
-                    // observes it.
-                    session.stdin.take();
-                } else if let Some(stdin) = session.stdin.as_mut() {
+                }
+                Target::Pipe(stdin_mu) => {
                     // Best-effort: if the child has closed stdin we
                     // silently drop the bytes. A broken stdin is not
                     // worth a wire-level error frame; the child will
                     // exit on its own and the Exited frame carries
                     // the status.
+                    let mut stdin = stdin_mu.lock().expect("stdin mutex poisoned");
                     let _ = stdin.write_all(&decoded);
                 }
+                Target::PipeEof | Target::None => {}
             }
         }
         ShellMessage::Signal { signal } => {
+            // Read pid AND terminated under the lock. If the waiter
+            // thread has already received `exit_rx.recv()` and set
+            // `terminated = true`, PID 1 has reaped the child and the
+            // kernel is free to recycle the pgid for a later
+            // `iii worker exec`. Sending `kill(-pid, sig)` in that
+            // window would land on an unrelated process group. Once
+            // terminated is set the session is a dead letter; Signal
+            // frames for it are silently dropped.
             let pid = {
                 let map = sessions.lock().expect("session map mutex poisoned");
-                map.get(&corr_id).map(|s| s.pid)
+                map.get(&corr_id)
+                    .filter(|s| !s.terminated)
+                    .map(|s| s.pid)
             };
             if let Some(pid) = pid
                 && signal > 0
@@ -237,7 +288,9 @@ fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, wri
         ShellMessage::Resize { rows, cols } => {
             let master = {
                 let map = sessions.lock().expect("session map mutex poisoned");
-                map.get(&corr_id).and_then(|s| s.master.clone())
+                map.get(&corr_id)
+                    .filter(|s| !s.terminated)
+                    .and_then(|s| s.master.clone())
             };
             if let Some(master) = master {
                 let ws = libc::winsize {
@@ -331,7 +384,7 @@ fn spawn_pipe_session(
     let mut child = maybe_child.expect("register_spawn returned pid without child");
     let stdout = child.stdout.take().expect("stdout requested");
     let stderr = child.stderr.take().expect("stderr requested");
-    let stdin = child.stdin.take();
+    let stdin = child.stdin.take().map(|s| Arc::new(Mutex::new(s)));
 
     // Register before announcing so a racing Stdin frame finds the
     // entry.
@@ -341,6 +394,7 @@ fn spawn_pipe_session(
             pid,
             stdin,
             master: None,
+            terminated: false,
         },
     );
 
@@ -389,6 +443,16 @@ fn spawn_pipe_session(
             .name(format!("iii-exec-{corr_id}-wait"))
             .spawn(move || {
                 let code = exit_rx.recv().unwrap_or(-1);
+                // Mark terminated BEFORE joining readers: PID 1 has
+                // already reaped the child and the kernel can recycle
+                // the pgid at any instant. Every frame handler that
+                // might deliver a signal (Signal/Resize/Stdin) checks
+                // this flag under the session-map lock, so setting it
+                // now shuts the window between reap and
+                // remove_session_if_owned (which only runs after the
+                // reader-thread joins below and can take real time if
+                // the guest is still draining output).
+                mark_terminated(&sessions, corr_id, pid);
                 drop(child);
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
@@ -575,6 +639,7 @@ fn spawn_tty_session(
             pid,
             stdin: None,
             master: Some(master.clone()),
+            terminated: false,
         },
     );
 
@@ -600,6 +665,12 @@ fn spawn_tty_session(
             .name(format!("iii-exec-{corr_id}-wait"))
             .spawn(move || {
                 let code = exit_rx.recv().unwrap_or(-1);
+                // Same rationale as pipe mode: mark terminated
+                // immediately after reap so Resize/Signal/Stdin
+                // frames arriving in the window before the PTY
+                // reader drains + the session is removed cannot
+                // deliver to a recycled pgid.
+                mark_terminated(&sessions, corr_id, pid);
                 drop(child);
                 if let Some(h) = output_handle {
                     let _ = h.join();
@@ -618,6 +689,23 @@ fn spawn_tty_session(
     }
 
     Ok(())
+}
+
+/// Mark a session terminated iff the entry still belongs to
+/// `expected_pid`. Companion to [`remove_session_if_owned`]: once the
+/// waiter thread observes `exit_rx`, the kernel has reaped and may
+/// recycle the pgid at any moment, so every inbound-frame handler
+/// that might still deliver a signal consults the flag under the
+/// session-map lock. The pid check protects against a host-side
+/// reclaim that gave the same `corr_id` to a freshly spawned session
+/// while this waiter was still joining its reader threads.
+fn mark_terminated(sessions: &SessionRegistry, corr_id: u32, expected_pid: u32) {
+    let mut map = sessions.lock().expect("session map mutex poisoned");
+    if let Some(entry) = map.get_mut(&corr_id)
+        && entry.pid == expected_pid
+    {
+        entry.terminated = true;
+    }
 }
 
 /// Remove `corr_id` from the session registry iff the entry still
@@ -699,6 +787,35 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::OnceLock;
     use std::time::Duration;
+
+    /// Skip the current test with a visible log line rather than a
+    /// silent `return`. A silent skip reports a green test with zero
+    /// assertions, which hid coverage gaps in prior refactors — a
+    /// missing `/bin/sh` on a distroless CI image would "pass" every
+    /// dispatcher test while actually exercising nothing.
+    fn skip_if_missing(binary: &str) -> bool {
+        if !std::path::Path::new(binary).exists() {
+            eprintln!(
+                "[skip] shell_dispatcher test: {binary} not present on this host — \
+                 no coverage from this run"
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Serialize tests that spawn real child processes through the
+    /// shared OnceLock reaper. The reaper calls `waitpid(-1, WNOHANG)`
+    /// process-wide, so two tests running in parallel can observe each
+    /// other's children and race on `child_exits::dispatch_exit`. All
+    /// spawning tests acquire this mutex for their duration; non-
+    /// spawning tests (codec round-trips, etc.) don't need it.
+    fn serial_spawn_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 
     /// Process-wide reap thread for tests.
     ///
@@ -832,9 +949,10 @@ mod tests {
     fn echo_pipe_session_happy_path() {
         // Some CI environments don't have /bin/sh; guard with a
         // pre-check so the test skips cleanly rather than flakes.
-        if !std::path::Path::new("/bin/sh").exists() {
+        if skip_if_missing("/bin/sh") {
             return;
         }
+        let _g = serial_spawn_guard();
         run_over_socketpair();
     }
 
@@ -846,9 +964,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn tty_session_happy_path() {
-        if !std::path::Path::new("/bin/sh").exists() {
+        if skip_if_missing("/bin/sh") {
             return;
         }
+        let _g = serial_spawn_guard();
         ensure_test_reaper();
         let (host, guest) = UnixStream::pair().expect("socketpair");
         host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -1026,9 +1145,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn plan_exit_code_propagates() {
-        if !std::path::Path::new("/bin/sh").exists() {
+        if skip_if_missing("/bin/sh") {
             return;
         }
+        let _g = serial_spawn_guard();
         let (host_read, mut host_write) = start_dispatcher_over_socketpair();
         let (_out, _err, code) = drive_pipe_session(
             host_read,
@@ -1051,9 +1171,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn plan_stderr_is_separated_from_stdout() {
-        if !std::path::Path::new("/bin/sh").exists() {
+        if skip_if_missing("/bin/sh") {
             return;
         }
+        let _g = serial_spawn_guard();
         let (host_read, mut host_write) = start_dispatcher_over_socketpair();
         let (out, err, code) = drive_pipe_session(
             host_read,
@@ -1078,9 +1199,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn plan_stdin_pipe_round_trip() {
-        if !std::path::Path::new("/bin/cat").exists() {
+        if skip_if_missing("/bin/cat") {
             return;
         }
+        let _g = serial_spawn_guard();
         let (host_read, mut host_write) = start_dispatcher_over_socketpair();
         let payload = b"roundtrip payload\n";
         let (out, _err, code) = drive_pipe_session(
@@ -1109,9 +1231,18 @@ mod tests {
         // on one dispatcher. Each must emit Started + Exited without
         // cross-talk between ids. Uses 0.1s so the wall-clock test
         // stays snappy but overlap is still real.
-        if !std::path::Path::new("/bin/sleep").exists() {
+        //
+        // Serialized via `serial_spawn_guard`: this test spawns four
+        // concurrent children through the shared OnceLock reaper, and
+        // letting any other spawning test run alongside makes
+        // `dispatch_exit` keyed on pid fight for a pid space that
+        // could (rarely, but plausibly under cargo test's threaded
+        // runner) recycle an observed value before the original
+        // waiter consumes it.
+        if skip_if_missing("/bin/sleep") {
             return;
         }
+        let _g = serial_spawn_guard();
         ensure_test_reaper();
         let (host, _) = UnixStream::pair().expect("socketpair");
         let (_writer_unused, _) = {
@@ -1198,9 +1329,10 @@ mod tests {
     fn plan_sigkill_signal_terminates_child() {
         // Send `Signal { signal: 9 }` at a sleeping child. Exit code
         // follows the shell convention `128 + signal`.
-        if !std::path::Path::new("/bin/sleep").exists() {
+        if skip_if_missing("/bin/sleep") {
             return;
         }
+        let _g = serial_spawn_guard();
         let (host_read, mut host_write) = start_dispatcher_over_socketpair();
         let corr_id = 42u32;
         sp::write_frame_blocking(
