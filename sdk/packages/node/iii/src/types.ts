@@ -63,6 +63,12 @@ export type Invocation<TOutput = any> = {
   resolve: (data: TOutput) => void
   // biome-ignore lint/suspicious/noExplicitAny: error can be any type
   reject: (error: any) => void
+  /**
+   * Target function_id for the pending invocation, preserved so timeout and
+   * error-wrapping paths can name the function that tripped without needing
+   * to plumb it through every call site.
+   */
+  function_id?: string
 }
 
 /** Internal handler type that includes traceparent and baggage for distributed tracing */

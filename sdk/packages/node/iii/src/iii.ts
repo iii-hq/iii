@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import { type Data, WebSocket } from 'ws'
 import { ChannelReader, ChannelWriter } from './channels'
+import { IIIInvocationError, isErrorBody } from './errors'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
@@ -455,7 +456,13 @@ class Sdk implements ISdk {
         const invocation = this.invocations.get(invocation_id)
         if (invocation) {
           this.invocations.delete(invocation_id)
-          reject(new Error(`Invocation timeout after ${effectiveTimeout}ms: ${function_id}`))
+          reject(
+            new IIIInvocationError({
+              code: 'TIMEOUT',
+              message: `invocation timed out after ${effectiveTimeout}ms`,
+              function_id,
+            }),
+          )
         }
       }, effectiveTimeout)
 
@@ -468,6 +475,7 @@ class Sdk implements ISdk {
           clearTimeout(timeout)
           reject(error)
         },
+        function_id,
         timeout,
       })
 
@@ -880,10 +888,40 @@ class Sdk implements ISdk {
       if (invocation.timeout) {
         clearTimeout(invocation.timeout)
       }
-      error ? invocation.reject(error) : invocation.resolve(result)
+      if (error) {
+        invocation.reject(this.toInvocationError(error, invocation.function_id))
+      } else {
+        invocation.resolve(result)
+      }
     }
 
     this.invocations.delete(invocation_id)
+  }
+
+  /**
+   * Wrap a wire-format `ErrorBody` in {@link IIIInvocationError} so callers get
+   * a real `Error` with a readable `.message` and a typed `.code`. Pass-through
+   * for values that are already `Error` subclasses. Everything else is wrapped
+   * under an `UNKNOWN` code so `String(err) !== '[object Object]'` holds for
+   * every rejection path.
+   */
+  private toInvocationError(error: unknown, function_id?: string): Error {
+    if (error instanceof Error) {
+      return error
+    }
+    if (isErrorBody(error)) {
+      return new IIIInvocationError({
+        code: error.code,
+        message: error.message,
+        function_id,
+        stacktrace: error.stacktrace,
+      })
+    }
+    return new IIIInvocationError({
+      code: 'UNKNOWN',
+      message: typeof error === 'string' ? error : JSON.stringify(error),
+      function_id,
+    })
   }
 
   private resolveChannelValue(value: unknown): unknown {
