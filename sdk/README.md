@@ -15,6 +15,16 @@ These are iii official SDKs for Node, Python, and Rust. See the [engine README](
 | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | Python               | `pip install iii-sdk` | [README](./packages/python/iii/README.md) |
 | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Rust                 | Add to `Cargo.toml`   | [README](./packages/rust/iii/README.md)   |
 
+## Prerequisites
+
+All three SDKs connect to a running iii engine over WebSocket. Before running
+any snippet below:
+
+1. Install the engine: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`
+2. Start the engine: `iii --config config.yaml` (default URL: `ws://localhost:49134`)
+
+See the [quickstart](https://iii.dev/docs/quickstart) to scaffold a full project.
+
 ## Hello World
 
 ### Node.js
@@ -47,12 +57,12 @@ iii = register_worker("ws://localhost:49134")
 def greet(data):
     return {"message": f"Hello, {data['name']}!"}
 
-iii.register_function({"id": "greet"}, greet)
+iii.register_function("greet", greet)
 
 iii.register_trigger({
     "type": "http",
     "function_id": "greet",
-    "config": {"api_path": "/greet", "http_method": "POST"}
+    "config": {"api_path": "/greet", "http_method": "POST"},
 })
 
 result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
@@ -60,45 +70,54 @@ result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
 
 ### Rust
 
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput};
-use serde_json::json;
+```rust,no_run
+use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
+use iii_sdk::{IIITrigger, InitOptions, RegisterFunction, TriggerRequest, register_worker};
+use serde_json::{Value, json};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    iii.register_function(RegisterFunctionMessage::with_id("greet".into()), |input| async move {
+    iii.register_function(RegisterFunction::new_async("greet", |input: Value| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
-        Ok(json!({ "message": format!("Hello, {name}!") }))
-    });
+        Ok::<Value, iii_sdk::IIIError>(json!({ "message": format!("Hello, {name}!") }))
+    }));
 
-    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "greet".into(), config: json!({
-        "api_path": "/greet",
-        "http_method": "POST"
-    }) })?;
+    iii.register_trigger(
+        IIITrigger::Http(HttpTriggerConfig::new("/greet").method(HttpMethod::Post))
+            .for_function("greet"),
+    )?;
 
-    let result: serde_json::Value = iii
+    let result: Value = iii
         .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
         .await?;
 
+    iii.shutdown();
     Ok(())
 }
 ```
 
+The Rust snippet is kept in sync with `sdk/packages/rust/iii/examples/readme_hello.rs`
+and verified by CI.
+
 ## API
 
-| Operation                | Node.js                                              | Python                                      | Rust                                         | Description                                            |
-| ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
-| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |
+| Operation                | Node.js                                                       | Python                                                                           | Rust                                                                                           | Description                                            |
+| ------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Initialize               | `registerWorker(url)`                                         | `register_worker(url, options?)`                                                 | `register_worker(url, options)`                                                                | Create an SDK instance and auto-connect                |
+| Register function        | `iii.registerFunction(id, handler, options?)`                 | `iii.register_function(id, handler)`                                             | `iii.register_function(RegisterFunction::new_async(id, handler))`                              | Register a function that can be invoked by name        |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })`          | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})`         | `iii.register_trigger(IIITrigger::Http(...).for_function(id))?`                                | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await)           | `await iii.trigger({ function_id, payload })`                 | `await iii.trigger({"function_id": id, "payload": data})`                        | `iii.trigger(TriggerRequest::new(id, payload)).await?`                                         | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | `iii.trigger({"function_id": id, "payload": data, "action": TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new(id, payload).with_action(TriggerAction::Void)).await?` | Invoke without waiting                                 |
 
-`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
+`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects
+to the engine. It handles WebSocket communication, automatic reconnection, and
+OpenTelemetry instrumentation. Rust's `register_worker` returns `III` directly
+(not `Result`); Node/Python mirror this. All three SDKs expose the same concept
+surface — register functions and triggers, then invoke them.
 
-> `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
+> `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })` (Node/Python) or `TriggerRequest::new(id, payload).with_action(TriggerAction::Void)` (Rust).
 
 For language-specific details (modules, streams, OpenTelemetry), see the per-SDK READMEs linked in the table above.
 
