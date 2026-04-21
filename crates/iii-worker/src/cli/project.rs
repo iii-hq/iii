@@ -11,6 +11,26 @@ use std::collections::HashMap;
 
 pub const WORKER_MANIFEST: &str = "iii.worker.yaml";
 
+/// Cheap sanity check on a user-supplied `runtime.base_image` value
+/// before we hand it to `oci_client::Reference::parse()` and the
+/// image-pull path. The OCI reference grammar is
+/// `[registry/]repository[:tag|@digest]` — in practice every
+/// character that matters is alphanumeric or one of `._-/:@`.
+///
+/// This rejects shell metacharacters, whitespace, NUL, and other
+/// surprises that could slip through `Reference::parse` or confuse
+/// logs/display even though they'd technically parse as part of a
+/// tag. It does NOT replace `Reference::parse`'s own grammar check —
+/// it's a first gate that keeps obvious garbage out of the pull path.
+fn is_plausible_image_ref(s: &str) -> bool {
+    if s.is_empty() || s.len() > 512 {
+        return false;
+    }
+    s.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@' | '+')
+    })
+}
+
 /// Supported values for `runtime.kind` in `iii.worker.yaml`.
 ///
 /// - `typescript` / `javascript`: node-based (needs `package_manager: npm|yarn|pnpm|bun`)
@@ -146,11 +166,21 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     let kind = match (kind_str, legacy_language) {
         (Some(k), _) => k,
         (None, Some(l)) => {
-            eprintln!(
-                "{} {}: `runtime.language` is deprecated; rename to `runtime.kind` (still works, will warn).",
-                "warning:".yellow(),
-                manifest_path.display()
-            );
+            // Soft-silence: CI pipelines that dogfood `iii worker
+            // dev` for release checks can set `III_NO_DEPRECATION_WARN=1`
+            // once they've done the rename in their test matrix,
+            // keeping build logs clean. Left as opt-in so the
+            // default experience still prompts migration for humans.
+            if std::env::var_os("III_NO_DEPRECATION_WARN").is_none() {
+                eprintln!(
+                    "{} {}: `runtime.language` is deprecated; rename to \
+                     `runtime.kind`. Still accepted in v0.11.x; scheduled \
+                     for removal in v0.13 (set III_NO_DEPRECATION_WARN=1 \
+                     to silence).",
+                    "warning:".yellow(),
+                    manifest_path.display()
+                );
+            }
             l
         }
         (None, None) => "",
@@ -167,7 +197,22 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         .and_then(|r| r.get("base_image"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string());
+        .and_then(|s| {
+            let trimmed = s.trim();
+            if !is_plausible_image_ref(trimmed) {
+                eprintln!(
+                    "{} {}: `runtime.base_image: {:?}` contains characters that don't \
+                     belong in an OCI image reference (allowed: alphanumerics, `._-/:@`). \
+                     Ignoring the override and falling back to the `kind` default.",
+                    "warning:".yellow(),
+                    manifest_path.display(),
+                    trimmed
+                );
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
 
     let scripts = doc.get("scripts");
     let (setup_cmd, install_cmd, run_cmd) = if scripts.is_some() {

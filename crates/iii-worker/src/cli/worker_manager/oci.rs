@@ -70,18 +70,23 @@ pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
 pub fn rootfs_slug_for_image(image: &str) -> String {
     let raw = image.trim();
     let hash = fnv1a64(raw.as_bytes());
-    let mut s: String = raw
-        .chars()
-        .map(|c| match c {
+    // Single-pass: emit each input char as-is (lowercased letters,
+    // kept digits/dots/dashes/underscores) or as a `-`, but coalesce
+    // any run of `-` into a single character. Old implementation did
+    // `.collect::<String>()` then repeated `.replace("--", "-")`
+    // which is O(n²) on runs of separators (`a!!!!!b` triggers the
+    // worst case). One scan keeps it O(n).
+    let mut s = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        let out = match c {
             'A'..='Z' => c.to_ascii_lowercase(),
             'a'..='z' | '0'..='9' | '.' | '-' | '_' => c,
             _ => '-',
-        })
-        .collect();
-    // Collapse runs of `-` and trim leading/trailing separators so
-    // weird inputs like `::foo::` don't become `--foo--`.
-    while s.contains("--") {
-        s = s.replace("--", "-");
+        };
+        if out == '-' && s.ends_with('-') {
+            continue;
+        }
+        s.push(out);
     }
     let base = s
         .trim_matches(|c: char| c == '-' || c == '.' || c == '_')
@@ -327,6 +332,14 @@ pub fn extract_layer_with_limits(
 /// Collect registry hosts that should use plain HTTP instead of HTTPS.
 /// Reads from the `III_INSECURE_REGISTRIES` env var (comma-separated).
 /// `localhost` and `127.0.0.1` (any port) are always treated as insecure.
+///
+/// When the env var expands the allowlist (i.e. it names a registry
+/// other than the implicit loopback pair) we emit a conspicuous
+/// one-shot warning so a user who forgot `III_INSECURE_REGISTRIES` is
+/// still in their shell cannot get a base-image pull silently MITM'd
+/// on the LAN without any indication. The warning fires per-pull;
+/// that's still noisy enough to notice without being disruptive
+/// across the lifetime of a dev session.
 fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
     let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 
@@ -339,7 +352,21 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
     }
 
     if let Ok(extra) = std::env::var("III_INSECURE_REGISTRIES") {
-        for r in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let extras: Vec<&str> = extra
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "localhost" && *s != "127.0.0.1")
+            .collect();
+        if !extras.is_empty() {
+            eprintln!(
+                "  {} III_INSECURE_REGISTRIES is active — plain-HTTP pulls permitted for: {}. \
+                 MITM on the LAN can serve poisoned images. Unset the env var if this is not \
+                 intentional.",
+                "warning:".yellow(),
+                extras.join(", ")
+            );
+        }
+        for r in extras {
             if !registries.contains(&r.to_string()) {
                 registries.push(r.to_string());
             }
