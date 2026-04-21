@@ -153,11 +153,19 @@ class III:
         if self._connection_state == "connected":
             return
         if self._connection_state == "failed":
-            raise ConnectionError(f"Connection to {self._address} failed")
+            raise ConnectionError(
+                f"iii is not connected: engine unreachable at {self._address}. "
+                "Verify the engine is running (`iii --config config.yaml`) and that "
+                "the WebSocket URL passed to register_worker matches "
+                "(default: ws://localhost:49134). "
+                "See https://iii.dev/docs/install"
+            )
         self._connected_event.wait(timeout=30)
         if cast(IIIConnectionState, self._connection_state) == "failed":
             raise ConnectionError(
-                f"Connection to {self._address} failed after max retries"
+                f"iii is not connected: engine unreachable at {self._address} after max retries. "
+                "Verify the engine is running (`iii --config config.yaml`) and reachable. "
+                "See https://iii.dev/docs/install"
             )
 
     def shutdown(self) -> None:

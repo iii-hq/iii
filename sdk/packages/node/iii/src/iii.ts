@@ -718,7 +718,12 @@ class Sdk implements ISdk {
 
     if (maxRetries !== -1 && this.reconnectAttempt >= maxRetries) {
       this.setConnectionState('failed')
-      this.logError(`Max reconnection retries (${maxRetries}) reached, giving up`)
+      this.logError(
+        `iii is not connected: engine unreachable at ${this.address} after ${maxRetries} retries. ` +
+          `Verify the engine is running (\`iii --config config.yaml\`) and that the WebSocket URL ` +
+          `passed to registerWorker matches (default: ws://localhost:49134). ` +
+          `See https://iii.dev/docs/install`,
+      )
       return
     }
 
