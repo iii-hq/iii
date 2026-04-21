@@ -235,15 +235,28 @@ fn mount_cgroup2() -> Result<(), InitError> {
                 eprintln!("iii-init: warning: failed to set memory.high: {e}");
             }
         }
-        // If the host attached a swap disk, let this cgroup consume
-        // all available swap — bounded by whatever size the host
-        // provisioned for the swap device. cgroup v2 defaults
-        // `memory.swap.max` to 0, which prevents ANY swap usage and
-        // re-OOM-kills memory-hungry runtimes (bun) at memory.max
-        // even with a swap device attached. "max" means "as much as
-        // the system has."
+        // If the host attached a swap disk, cap `memory.swap.max` to
+        // the advertised swap capacity instead of the literal `"max"`.
+        // cgroup v2 defaults `memory.swap.max` to 0, which prevents
+        // ANY swap usage and re-OOM-kills memory-hungry runtimes
+        // (bun) at memory.max even with a swap device attached.
+        //
+        // Why a byte cap rather than `"max"`: the swap device is a
+        // sparse file of bounded size; once it fills, the kernel
+        // thrashes between RAM and the block device trying to
+        // reclaim pages that aren't on disk. A matching byte cap
+        // lets the kernel OOM-kill cleanly instead of spinning. If
+        // the size isn't advertised (older host, env var missing),
+        // fall back to `"max"` to preserve the old permissive
+        // behaviour — a thrash is still better than a hard re-OOM.
         if std::env::var("III_SWAP_DEV").is_ok() {
-            if let Err(e) = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", "max") {
+            let value = std::env::var("III_SWAP_MAX_BYTES")
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .filter(|&b| b > 0)
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "max".to_string());
+            if let Err(e) = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", &value) {
                 eprintln!("iii-init: warning: failed to widen memory.swap.max: {e}");
             }
         }
@@ -266,6 +279,15 @@ fn mount_cgroup2() -> Result<(), InitError> {
 /// anyway — the owning processes are gone — so there's nothing to
 /// lose by re-formatting on every boot.
 ///
+/// `mkswap` and `swapon` are invoked via absolute paths (`/sbin/*`,
+/// fallback `/usr/sbin/*`) rather than unqualified names so that a
+/// user-supplied `runtime.base_image` cannot ship an earlier
+/// `mkswap`/`swapon` on `PATH` and hijack PID-1 root execution inside
+/// the guest before the worker's own code runs. Both paths ship with
+/// util-linux in every OCI base image we support (node, python, rust,
+/// bun). If neither is present we skip with a warning rather than fall
+/// back to `PATH` lookup.
+///
 /// Errors are warnings, not fatal: a bun worker with a broken swap
 /// path still runs (it just OOM-kills later at the cgroup limit like
 /// before). Node/Python workers don't need swap at all.
@@ -274,9 +296,11 @@ pub fn setup_swap() {
         Ok(d) if !d.is_empty() => d,
         _ => return,
     };
-    // `mkswap` is provided by util-linux, available in every OCI
-    // base image we ship (node, python, rust, bun).
-    let status = std::process::Command::new("mkswap").arg(&dev).status();
+    let Some(mkswap) = resolve_util_linux_bin("mkswap") else {
+        eprintln!("iii-init: warning: mkswap not found in /sbin or /usr/sbin; skipping swapon");
+        return;
+    };
+    let status = std::process::Command::new(&mkswap).arg(&dev).status();
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => {
@@ -288,11 +312,44 @@ pub fn setup_swap() {
             return;
         }
     }
-    let status = std::process::Command::new("swapon").arg(&dev).status();
+    let Some(swapon) = resolve_util_linux_bin("swapon") else {
+        eprintln!("iii-init: warning: swapon not found in /sbin or /usr/sbin");
+        return;
+    };
+    let status = std::process::Command::new(&swapon).arg(&dev).status();
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => eprintln!("iii-init: warning: swapon {dev} exit {s}"),
         Err(e) => eprintln!("iii-init: warning: swapon {dev} failed: {e}"),
+    }
+}
+
+/// Locate a util-linux tool by absolute path so PATH hijack cannot
+/// redirect the call. Checks `/sbin` first (Debian/Ubuntu/bun), then
+/// `/usr/sbin` (Fedora/merged-usr). Returns `None` if neither exists,
+/// in which case the caller should skip the action with a warning
+/// rather than fall back to unqualified `Command::new("mkswap")`.
+fn resolve_util_linux_bin(name: &str) -> Option<&'static str> {
+    match name {
+        "mkswap" => {
+            if std::path::Path::new("/sbin/mkswap").exists() {
+                Some("/sbin/mkswap")
+            } else if std::path::Path::new("/usr/sbin/mkswap").exists() {
+                Some("/usr/sbin/mkswap")
+            } else {
+                None
+            }
+        }
+        "swapon" => {
+            if std::path::Path::new("/sbin/swapon").exists() {
+                Some("/sbin/swapon")
+            } else if std::path::Path::new("/usr/sbin/swapon").exists() {
+                Some("/usr/sbin/swapon")
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
