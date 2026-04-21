@@ -95,25 +95,73 @@ pub fn libkrun_available() -> bool {
 /// the file already exists at the right size — idempotent across
 /// restarts so the guest's written swap pages survive VM reboots.
 ///
-/// Returns Err on creation failure; the caller treats that as
-/// "continue without swap" (warning, not fatal) — a non-bun worker
-/// never needs this file.
+/// Symlink-attack defense (Unix): opens with `O_NOFOLLOW` + `0o600`
+/// and verifies via `fstat` after open that the fd points at a
+/// regular file owned by the current euid. Without this, a co-
+/// resident same-UID process could plant a symlink at
+/// `<rootfs>/swap.img` pointing at an ssh key, shell history, or
+/// another worker's `vm.pid`, and the subsequent `set_len(4 GiB)`
+/// would truncate/extend the target. Mirrors the
+/// `pidfile::write_pid_file_strict` hardening used elsewhere on
+/// paths under `~/.iii/managed`.
+///
+/// Returns Err on creation failure (including refusing a symlink);
+/// the caller treats that as "continue without swap" (warning, not
+/// fatal) — a non-bun worker never needs this file.
 fn ensure_swap_image(path: &Path, size_bytes: u64) -> std::io::Result<()> {
-    if let Ok(meta) = std::fs::metadata(path)
-        && meta.is_file()
-        && meta.len() == size_bytes
-    {
-        return Ok(());
-    }
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
-    f.set_len(size_bytes)?;
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).read(true).truncate(false);
+    #[cfg(unix)]
+    {
+        opts.custom_flags(nix::libc::O_NOFOLLOW);
+        opts.mode(0o600);
+    }
+    let f = opts.open(path)?;
+
+    // Post-open fstat: refuse symlinks (O_NOFOLLOW catches the final
+    // path component; this catches TOCTOU races and non-regular-file
+    // weirdness like someone pointing a socket or device at the path),
+    // and require ownership by the current euid so a same-UID attacker
+    // who plants a directory-path trap gets nothing useful.
+    let meta = f.metadata()?;
+    if !meta.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "swap image path {} is not a regular file (type: {:?})",
+                path.display(),
+                meta.file_type()
+            ),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let our_uid = unsafe { nix::libc::geteuid() };
+        if meta.uid() != our_uid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "swap image path {} is owned by uid {} (expected {})",
+                    path.display(),
+                    meta.uid(),
+                    our_uid
+                ),
+            ));
+        }
+    }
+
+    // Only grow (or no-op when already-correct). Idempotent across
+    // restarts so the guest's written swap pages survive VM reboots.
+    if meta.len() != size_bytes {
+        f.set_len(size_bytes)?;
+    }
     Ok(())
 }
 
@@ -356,6 +404,67 @@ impl LibkrunAdapter {
             .join(name)
     }
 
+    /// Ensure `~/.iii/managed` exists and is mode 0o700 before the
+    /// caller drops worker-specific sockets + pidfiles into it.
+    ///
+    /// Without this, a local attacker with the same UID who got a
+    /// process onto the host before iii-worker started could leave
+    /// the `managed` dir group/world-readable (default umask 0o022
+    /// yields 0o755) and then race `connect()` against the shell or
+    /// control socket before the per-worker dir's 0o700 mode lands.
+    /// Tightening the parent narrows that window to zero: unless the
+    /// dir *starts* permissive and stays permissive through
+    /// iii-worker startup, there's no TOCTOU surface left.
+    ///
+    /// We only tighten — if the dir is already 0o700 we don't rewrite
+    /// the mode, so a bind-mount or filesystem that rejects chmod
+    /// doesn't fail the whole flow.
+    fn ensure_managed_parent_restricted() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let parent = dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".iii")
+                .join("managed");
+            if let Err(e) = std::fs::create_dir_all(&parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "failed to create ~/.iii/managed parent dir"
+                );
+                return;
+            }
+            match std::fs::metadata(&parent) {
+                Ok(meta) => {
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode != 0o700 {
+                        if let Err(e) = std::fs::set_permissions(
+                            &parent,
+                            std::fs::Permissions::from_mode(0o700),
+                        ) {
+                            tracing::warn!(
+                                path = %parent.display(),
+                                current_mode = format!("{mode:o}"),
+                                error = %e,
+                                "could not tighten ~/.iii/managed to 0o700; \
+                                 per-worker dirs still land 0o700 but TOCTOU \
+                                 window remains on socket create",
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %parent.display(),
+                        error = %e,
+                        "stat ~/.iii/managed failed; skipping permission tighten"
+                    );
+                }
+            }
+        }
+    }
+
     pub fn image_rootfs(image: &str) -> PathBuf {
         let hash = {
             use sha2::Digest;
@@ -460,8 +569,20 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 
     async fn start(&self, spec: &ContainerSpec) -> Result<String> {
+        // Harden the shared parent dir before we drop per-worker
+        // sockets/pidfiles into it (see `ensure_managed_parent_restricted`
+        // for the full rationale).
+        Self::ensure_managed_parent_restricted();
         let worker_dir = Self::worker_dir(&spec.name);
         std::fs::create_dir_all(&worker_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &worker_dir,
+                std::fs::Permissions::from_mode(0o700),
+            );
+        }
 
         let rootfs_dir = Self::image_rootfs(&spec.image);
         if !rootfs_dir.exists() {
@@ -814,6 +935,50 @@ mod tests {
         let path = tmp.path().join("deeper/nested/swap.img");
         ensure_swap_image(&path, 1024).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_swap_image_refuses_symlinked_path() {
+        // Regression for H1: a co-resident same-UID process that
+        // plants a symlink at <rootfs>/swap.img pointing at a
+        // sensitive file must not trick us into truncating/extending
+        // the target. O_NOFOLLOW rejects the symlink on open and
+        // fstat catches non-regular paths if an attacker swaps after.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("victim");
+        std::fs::write(&target, b"important contents").unwrap();
+        let swap = tmp.path().join("swap.img");
+        std::os::unix::fs::symlink(&target, &swap).unwrap();
+
+        let result = ensure_swap_image(&swap, 16 * 1024);
+        assert!(
+            result.is_err(),
+            "O_NOFOLLOW must refuse to follow a symlink at the swap path"
+        );
+        // Target must be untouched.
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"important contents",
+            "victim file was truncated despite symlink refusal"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_swap_image_creates_with_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("swap.img");
+        ensure_swap_image(&path, 4096).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        // Umask may clear bits; assert at minimum that group/other
+        // write bits are off and owner read+write is on.
+        assert!(
+            mode & 0o022 == 0 && mode & 0o600 == 0o600,
+            "swap image must be owner-only-writable, got {mode:o}"
+        );
     }
 
     #[test]
