@@ -175,6 +175,11 @@ async fn discovery_function_denied_under_restricted_expose() {
         err.message
     );
     assert!(
+        err.message.contains("rbac.expose_functions"),
+        "FORBIDDEN message must include a remediation phrase pointing at rbac.expose_functions; got: {}",
+        err.message
+    );
+    assert!(
         result.is_none(),
         "no result should be returned for a FORBIDDEN invocation"
     );

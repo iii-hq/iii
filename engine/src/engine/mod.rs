@@ -810,7 +810,10 @@ impl Engine {
                                 result: None,
                                 error: Some(ErrorBody::new(
                                     "FORBIDDEN",
-                                    format!("function '{}' not allowed", function_id),
+                                    format!(
+                                        "function '{}' not allowed (add to rbac.expose_functions)",
+                                        function_id
+                                    ),
                                 )),
                                 traceparent: traceparent.clone(),
                                 baggage: baggage.clone(),
