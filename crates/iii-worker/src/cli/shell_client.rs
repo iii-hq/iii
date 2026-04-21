@@ -79,6 +79,60 @@ const EXIT_INTERRUPTED: i32 = 130;
 /// (TTY mode keystrokes) still feel responsive.
 const STDIN_CHUNK: usize = 8 * 1024;
 
+/// Stat+check the shell socket before/after `connect()` to detect a
+/// symlink-swap or permission-loosening between iii-worker's relay
+/// binding the path and our client connecting. Returns a (dev, ino,
+/// mode) triple the caller compares before/after `connect()`.
+///
+/// Enforces: the path is a socket (not a symlink, regular file, or
+/// dir), owned by our euid, and mode 0o600 or stricter. A legitimate
+/// relay always lands the socket at exactly these attributes; any
+/// deviation is evidence of tampering.
+#[cfg(unix)]
+fn verify_shell_socket_ownership(sock: &Path) -> anyhow::Result<(u64, u64, u32)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    // symlink_metadata so a planted symlink doesn't get followed to
+    // an unrelated file that happens to be a socket.
+    let meta = std::fs::symlink_metadata(sock).with_context(|| {
+        format!(
+            "shell socket {} not present — start the worker first",
+            sock.display()
+        )
+    })?;
+    if !meta.file_type().is_socket() {
+        bail!(
+            "refusing to connect to {}: not a Unix socket (type: {:?})",
+            sock.display(),
+            meta.file_type()
+        );
+    }
+    let our_uid = unsafe { libc::geteuid() };
+    if meta.uid() != our_uid {
+        bail!(
+            "refusing to connect to {}: socket is owned by uid {} (expected {})",
+            sock.display(),
+            meta.uid(),
+            our_uid
+        );
+    }
+    let mode = meta.mode() & 0o777;
+    if mode & 0o077 != 0 {
+        bail!(
+            "refusing to connect to {}: mode {:o} is group/world-accessible \
+             (expected 0o600 or stricter)",
+            sock.display(),
+            mode
+        );
+    }
+    Ok((meta.dev(), meta.ino(), mode))
+}
+
+#[cfg(not(unix))]
+fn verify_shell_socket_ownership(_sock: &Path) -> anyhow::Result<(u64, u64, u32)> {
+    // Non-Unix hosts don't support this attack surface (no AF_UNIX).
+    Ok((0, 0, 0))
+}
+
 /// Resolve the shell-channel socket path for a named worker with the
 /// same validation `supervisor_ctl::control_socket_path` applies to
 /// the control socket — no absolute paths, no `..`, no interior
@@ -184,6 +238,14 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
     };
 
     let sock = shell_socket_path(&args.name)?;
+    // Pre-connect ownership/mode check on the socket inode. Narrows
+    // the symlink-swap / relaxed-perm window between the relay's
+    // `set_permissions(0o600)` and our `connect()`. The parent dir
+    // should already be 0o700 (see `ensure_managed_parent_restricted`
+    // in libkrun.rs), which eliminates the TOCTOU surface entirely
+    // unless a malicious same-UID process ran after iii-worker
+    // started but before the client connects.
+    let pre_fingerprint = verify_shell_socket_ownership(&sock)?;
     let mut stream = UnixStream::connect(&sock).await.with_context(|| {
         format!(
             "connect({}): is worker '{}' running? \
@@ -193,6 +255,17 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
             args.name
         )
     })?;
+    // Post-connect re-stat: if the inode changed between the pre-
+    // check and connect (attacker swapped the socket), refuse. A
+    // legitimate relay never rebinds mid-session.
+    let post_fingerprint = verify_shell_socket_ownership(&sock)?;
+    if pre_fingerprint != post_fingerprint {
+        bail!(
+            "refusing to talk to {}: socket inode changed between \
+             pre-check and connect (swap attack?)",
+            sock.display()
+        );
+    }
 
     // Handshake: relay sends 4 BE bytes = id_offset.
     let mut handshake = [0u8; 4];
@@ -319,32 +392,9 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
             );
             continue;
         }
-        match msg {
-            ShellMessage::Started { .. } => {
-                tracing::debug!("session started");
-            }
-            ShellMessage::Stdout { data_b64 } => {
-                let bytes = decode_b64(&data_b64)?;
-                stdout.write_all(&bytes).await.ok();
-                stdout.flush().await.ok();
-            }
-            ShellMessage::Stderr { data_b64 } => {
-                let bytes = decode_b64(&data_b64)?;
-                stderr.write_all(&bytes).await.ok();
-                stderr.flush().await.ok();
-            }
-            ShellMessage::Error { message } => {
-                eprintln!("error: {message}");
-                if flags & FLAG_TERMINAL != 0 {
-                    break 1;
-                }
-            }
-            ShellMessage::Exited { code } => {
-                break code;
-            }
-            _ => {
-                // Guest-originated message we don't care about. Ignore.
-            }
+        match handle_response_frame(msg, flags, &mut stdout, &mut stderr).await? {
+            ResponseOutcome::Continue => {}
+            ResponseOutcome::Exited(code) => break code,
         }
     };
 
@@ -370,6 +420,13 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
         eprintln!("error: timed out after {label}");
     }
 
+    // Belt-and-suspenders flush at session end: every Stdout/Stderr
+    // frame above already flushed, but the timeout branch skips the
+    // match arm entirely and could have partial bytes stuck in the
+    // buffer. Flushing here makes sure nothing is dropped on exit.
+    stdout.flush().await.ok();
+    stderr.flush().await.ok();
+
     stdin_task.abort();
     let _ = stdin_task.await;
     if let Some(w) = winch_task {
@@ -382,6 +439,72 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
     }
 
     Ok(exit_code)
+}
+
+/// What the response loop should do after consuming one frame.
+enum ResponseOutcome {
+    /// Keep reading the next frame.
+    Continue,
+    /// Session is over; break with this exit code.
+    Exited(i32),
+}
+
+/// Dispatch one decoded response frame from the guest dispatcher.
+/// Extracted from the `run()` response loop so it can be driven
+/// directly from unit tests against injectable stdout/stderr sinks —
+/// the only way to regression-test the per-frame flush contract
+/// without a live VM. See `tests::stdout_frame_flushes_each_write`
+/// for the reason the flush here is load-bearing for TTY echo.
+async fn handle_response_frame<W1, W2>(
+    msg: ShellMessage,
+    flags: u8,
+    stdout: &mut W1,
+    stderr: &mut W2,
+) -> anyhow::Result<ResponseOutcome>
+where
+    W1: tokio::io::AsyncWrite + Unpin,
+    W2: tokio::io::AsyncWrite + Unpin,
+{
+    match msg {
+        ShellMessage::Started { .. } => {
+            tracing::debug!("session started");
+            Ok(ResponseOutcome::Continue)
+        }
+        ShellMessage::Stdout { data_b64 } => {
+            let bytes = decode_b64(&data_b64)?;
+            stdout.write_all(&bytes).await.ok();
+            // Flush per frame: in TTY mode the guest PTY echoes each
+            // typed character back as a single-byte Stdout frame
+            // with no newline, and `tokio::io::stdout()` is
+            // line-buffered on a TTY. Without the flush the echo
+            // bytes stay in the buffer until the guest emits a
+            // newline, and the user types blind until they press
+            // Enter. The flush is required for correctness in TTY
+            // mode; the tiny extra syscall cost in pipe mode is the
+            // price of a single code path.
+            stdout.flush().await.ok();
+            Ok(ResponseOutcome::Continue)
+        }
+        ShellMessage::Stderr { data_b64 } => {
+            let bytes = decode_b64(&data_b64)?;
+            stderr.write_all(&bytes).await.ok();
+            stderr.flush().await.ok();
+            Ok(ResponseOutcome::Continue)
+        }
+        ShellMessage::Error { message } => {
+            eprintln!("error: {message}");
+            if flags & FLAG_TERMINAL != 0 {
+                Ok(ResponseOutcome::Exited(1))
+            } else {
+                Ok(ResponseOutcome::Continue)
+            }
+        }
+        ShellMessage::Exited { code } => Ok(ResponseOutcome::Exited(code)),
+        _ => {
+            // Guest-originated message we don't care about. Ignore.
+            Ok(ResponseOutcome::Continue)
+        }
+    }
 }
 
 /// Read one complete frame from the socket. Returns `Ok(None)` on
@@ -397,11 +520,23 @@ async fn read_one_frame(
     if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {
         bail!("frame length {frame_len} out of range");
     }
-    let mut body = vec![0u8; frame_len];
-    reader
+    // Skip the zero-fill: every byte of `body` is immediately
+    // overwritten by `read_exact`. See `shell_relay::read_frame` for
+    // the full SAFETY rationale (identical pattern).
+    let mut body: Vec<u8> = Vec::with_capacity(frame_len);
+    // SAFETY: `u8` has no invalid bit patterns, and `read_exact`
+    // below either fills the entire allocation or returns an error
+    // — in the error branch `body` is dropped without the uninit
+    // tail being observed by any reader.
+    unsafe { body.set_len(frame_len) };
+    if let Err(e) = reader
         .read_exact(&mut body)
         .await
-        .context("short read on frame body")?;
+        .context("short read on frame body")
+    {
+        body.truncate(0);
+        return Err(e);
+    }
     let corr_id = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
     let flags = body[4];
     let msg: ShellMessage =
@@ -750,5 +885,190 @@ mod tests {
     #[test]
     fn no_tty_flag_blocks_auto_detection() {
         assert!(!should_auto_enable_tty(false, true, true, true));
+    }
+
+    /// In-memory stdout/stderr substitute for response-loop tests.
+    /// Records writes AND flushes with a tagged event log so
+    /// assertions can distinguish "bytes written" from "bytes
+    /// delivered to the underlying fd". The latter is what TTY echo
+    /// relies on.
+    #[derive(Default)]
+    struct RecordingWriter {
+        events: std::sync::Arc<std::sync::Mutex<Vec<WriteEvent>>>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum WriteEvent {
+        Write(Vec<u8>),
+        Flush,
+    }
+
+    impl RecordingWriter {
+        fn new() -> Self {
+            Self {
+                events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl tokio::io::AsyncWrite for RecordingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(WriteEvent::Write(buf.to_vec()));
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.events.lock().unwrap().push(WriteEvent::Flush);
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Regression for the TTY-echo bug: each `ShellMessage::Stdout`
+    /// frame must be followed by a `flush()` call on the host's
+    /// stdout. Without the flush, `tokio::io::stdout()` buffers
+    /// single-byte raw-mode echoes (no newline → never auto-flushes
+    /// on the line-buffered TTY path), so the user types blind in
+    /// an interactive `iii worker exec <w> -- sh` session until
+    /// they press Enter and the guest emits a newline that flushes
+    /// the whole buffered echo at once. Observed live as
+    /// "characters only visible after pressing Enter."
+    ///
+    /// This test fails if a future change drops the per-frame flush
+    /// without switching the write sink to one that flushes on
+    /// every `write`.
+    #[tokio::test]
+    async fn stdout_frame_flushes_after_write() {
+        let mut stdout = RecordingWriter::new();
+        let mut stderr = RecordingWriter::new();
+        let stdout_events = stdout.events.clone();
+
+        // Single non-newline byte — matches the raw-mode echo shape
+        // (every typed character round-trips as its own Stdout
+        // frame, no trailing \n).
+        let msg = ShellMessage::Stdout {
+            data_b64: encode_b64(b"x"),
+        };
+
+        let outcome = handle_response_frame(msg, 0, &mut stdout, &mut stderr)
+            .await
+            .expect("Stdout dispatch must succeed");
+        assert!(matches!(outcome, ResponseOutcome::Continue));
+
+        let events = stdout_events.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![WriteEvent::Write(b"x".to_vec()), WriteEvent::Flush],
+            "Stdout frame must be followed by a Flush so raw-mode \
+             TTY echo appears without waiting for a newline; got {events:?}"
+        );
+    }
+
+    /// Same contract for stderr: the guest can emit single-byte
+    /// stderr frames (e.g. a bash warning that doesn't end in \n
+    /// before a prompt resumes), and they need to surface without
+    /// waiting for a newline.
+    #[tokio::test]
+    async fn stderr_frame_flushes_after_write() {
+        let mut stdout = RecordingWriter::new();
+        let mut stderr = RecordingWriter::new();
+        let stderr_events = stderr.events.clone();
+
+        let msg = ShellMessage::Stderr {
+            data_b64: encode_b64(b"e"),
+        };
+
+        let outcome = handle_response_frame(msg, 0, &mut stdout, &mut stderr)
+            .await
+            .expect("Stderr dispatch must succeed");
+        assert!(matches!(outcome, ResponseOutcome::Continue));
+
+        let events = stderr_events.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![WriteEvent::Write(b"e".to_vec()), WriteEvent::Flush],
+            "Stderr frame must be followed by a Flush; got {events:?}"
+        );
+    }
+
+    /// `Exited { code }` terminates the response loop with that code.
+    /// Pins the break/exit contract so the main loop can lean on it
+    /// without reading the dispatch arms.
+    #[tokio::test]
+    async fn exited_frame_returns_exit_code() {
+        let mut stdout = RecordingWriter::new();
+        let mut stderr = RecordingWriter::new();
+        let outcome = handle_response_frame(
+            ShellMessage::Exited { code: 42 },
+            FLAG_TERMINAL,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .unwrap();
+        match outcome {
+            ResponseOutcome::Exited(code) => assert_eq!(code, 42),
+            other => panic!("expected Exited(42), got {other:?}"),
+        }
+    }
+
+    /// Non-terminal `Error { message }` keeps the session alive so a
+    /// subsequent Exited can carry the real exit code. Only
+    /// `Error { message, flags: FLAG_TERMINAL }` forces an exit.
+    #[tokio::test]
+    async fn non_terminal_error_continues_loop() {
+        let mut stdout = RecordingWriter::new();
+        let mut stderr = RecordingWriter::new();
+        let outcome =
+            handle_response_frame(ShellMessage::Error { message: "soft".into() }, 0, &mut stdout, &mut stderr)
+                .await
+                .unwrap();
+        assert!(matches!(outcome, ResponseOutcome::Continue));
+    }
+
+    #[tokio::test]
+    async fn terminal_error_exits_with_code_1() {
+        let mut stdout = RecordingWriter::new();
+        let mut stderr = RecordingWriter::new();
+        let outcome = handle_response_frame(
+            ShellMessage::Error {
+                message: "hard".into(),
+            },
+            FLAG_TERMINAL,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .unwrap();
+        match outcome {
+            ResponseOutcome::Exited(code) => assert_eq!(code, 1),
+            other => panic!("expected Exited(1), got {other:?}"),
+        }
+    }
+
+    // Debug impl for ResponseOutcome so panic messages above format
+    // legibly. `#[derive(Debug)]` on the enum would bloat the
+    // production build; a test-only impl keeps the derive out.
+    impl std::fmt::Debug for ResponseOutcome {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                ResponseOutcome::Continue => write!(f, "Continue"),
+                ResponseOutcome::Exited(code) => write!(f, "Exited({code})"),
+            }
+        }
     }
 }
