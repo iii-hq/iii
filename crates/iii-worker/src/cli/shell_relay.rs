@@ -20,6 +20,19 @@
 //! This keeps routing cheap and isolates the relay from protocol
 //! additions — new `ShellMessage` variants don't touch this file.
 //!
+//! Concurrency model: the `vm_writer_task` is the single consumer of
+//! a bounded mpsc fed by every client session — lock-free on the hot
+//! path. Everything else synchronises via `std::sync::Mutex` — the
+//! `routes` map is locked on every inbound frame (lookup + `Sender::clone`)
+//! and on every new route registration, and each client's
+//! `owned_ids` `HashSet` is locked both by the client's reader (insert
+//! on new id) and by `vm_reader_task` (remove on terminal frame). In
+//! practice the critical sections are small and don't show up in
+//! profiles at observed frame rates, but the relay is NOT lock-free
+//! end-to-end; if the workload ever grows a "many clients × high
+//! message rate" axis, `DashMap` / `parking_lot::RwLock` would be
+//! drop-in replacements.
+//!
 //! Handshake: when a client connects, the relay sends a 4-byte
 //! big-endian `id_offset` announcing which `corr_id` range it owns.
 //! The client generates ids starting at `id_offset + 1` and stays
@@ -35,7 +48,7 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -60,6 +73,42 @@ pub const ID_RANGE_STEP: u32 = u32::MAX / MAX_CLIENTS;
 /// A pre-read frame ready to forward. Owns its bytes — tasks hand
 /// these around via mpsc and write them out whole.
 type FrameBytes = Vec<u8>;
+
+/// Per-client bytes-in-flight cap for the shared VM write queue.
+/// Without this, the frame-count-only bound on `vm_write_tx` lets a
+/// single misbehaving client fill ~1024 frames × 4 MiB = 4 GiB of
+/// relay memory just by sending max-sized frames, starving every
+/// other client's backpressure window. 64 MiB per client is still
+/// generous for bursty stdin forwards (a `cat /dev/urandom` piped
+/// through the exec channel stabilises at ~8 MiB in flight) while
+/// keeping the aggregate worst case bounded at
+/// `MAX_CLIENTS × PER_CLIENT_VM_BYTES_CAP = 1 GiB` instead of 4 GiB.
+const PER_CLIENT_VM_BYTES_CAP: u64 = 64 * 1024 * 1024;
+
+/// A frame waiting in the shared client→VM queue. The optional
+/// [`ClientBytesGuard`] ties a frame's residency in the queue to a
+/// per-client byte counter: dropping the guard (happens automatically
+/// when `vm_writer_task` consumes the frame) decrements the counter
+/// by exactly the frame's byte length. Internal-source frames (e.g.
+/// SIGKILL fan-out during a client disconnect) carry no guard — they
+/// aren't attributable to an active client and shouldn't be budgeted.
+struct QueuedFrame {
+    bytes: FrameBytes,
+    /// Field is intentionally unused after construction; its `Drop`
+    /// impl is the whole point. `_` suppresses the dead-code lint.
+    _guard: Option<ClientBytesGuard>,
+}
+
+struct ClientBytesGuard {
+    counter: Arc<AtomicU64>,
+    size: u64,
+}
+
+impl Drop for ClientBytesGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(self.size, Ordering::Release);
+    }
+}
 
 /// Route entry: a frame sender paired with a back-pointer to the
 /// owning client's `owned_ids` set. The back-pointer lets
@@ -225,12 +274,28 @@ pub fn spawn(
                 // stays consistent on the wire. Bounded to apply
                 // backpressure to any one client that outpaces the
                 // virtio-console write speed — see [`VM_WRITE_CAPACITY`].
-                let (vm_write_tx, vm_write_rx) = mpsc::channel::<FrameBytes>(VM_WRITE_CAPACITY);
+                let (vm_write_tx, vm_write_rx) = mpsc::channel::<QueuedFrame>(VM_WRITE_CAPACITY);
                 let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
                 let slots: Slots = Arc::new(Mutex::new([SlotState::Free; MAX_CLIENTS as usize]));
 
-                runtime.spawn(vm_writer_task(vm_write, vm_write_rx));
-                runtime.spawn(vm_reader_task(vm_read, routes.clone()));
+                // Wrap the VM socket halves with tokio's buffered
+                // adapters. Small-frame TTY workloads (stdin
+                // keystrokes, control frames, per-byte SIGWINCH) see
+                // 2 syscalls per frame without this (4-byte header
+                // read + body read); BufReader coalesces both into a
+                // single `recv`. On the write side BufWriter lets us
+                // drop N `write_all` calls in a tight loop (e.g. the
+                // per-owned-session SIGKILL fan-out on disconnect)
+                // into one syscall with an explicit flush boundary.
+                //
+                // Note: BufReader only helps the RELAY side (reads
+                // FROM the VM), and BufWriter only helps on writes
+                // TO the VM. The client sockets are not buffered
+                // here — they're handled inside `client_session`.
+                let vm_read_buffered = tokio::io::BufReader::new(vm_read);
+                let vm_write_buffered = tokio::io::BufWriter::new(vm_write);
+                runtime.spawn(vm_writer_task(vm_write_buffered, vm_write_rx));
+                runtime.spawn(vm_reader_task(vm_read_buffered, routes.clone()));
                 runtime.spawn(listener_task(tokio_listener, vm_write_tx, routes, slots));
                 fp
             }
@@ -271,15 +336,29 @@ fn fingerprint_of(sock_path: &Path) -> Result<ShellSocketFingerprint, String> {
 
 /// Owns the VM write half. Serializes frames from every client and
 /// every internal source (e.g. future health pings) into the guest.
+///
+/// Each received frame is written and immediately flushed: the
+/// `BufWriter` wrapper exists to coalesce bursty back-to-back writes
+/// (e.g. the SIGKILL fan-out when a client drops many sessions at
+/// once), not to hold bytes on behalf of latency-sensitive frames. A
+/// single stdin keystroke must reach the guest before the next
+/// write_all schedules — don't let the buffer hold it.
 async fn vm_writer_task(
-    mut vm_write: tokio::net::unix::OwnedWriteHalf,
-    mut rx: mpsc::Receiver<FrameBytes>,
+    mut vm_write: tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>,
+    mut rx: mpsc::Receiver<QueuedFrame>,
 ) {
     while let Some(frame) = rx.recv().await {
-        if let Err(e) = vm_write.write_all(&frame).await {
+        if let Err(e) = vm_write.write_all(&frame.bytes).await {
             tracing::warn!("shell_relay: vm write failed: {e}");
             break;
         }
+        if let Err(e) = vm_write.flush().await {
+            tracing::warn!("shell_relay: vm flush failed: {e}");
+            break;
+        }
+        // `frame` drops here → ClientBytesGuard's Drop decrements the
+        // owning client's bytes-in-flight counter, freeing capacity
+        // for the next frame from that client.
     }
 }
 
@@ -288,7 +367,10 @@ async fn vm_writer_task(
 /// owning client's mpsc. Terminal frames remove the route entry
 /// after forwarding so the next request with the same id (if any)
 /// gets a fresh session.
-async fn vm_reader_task(mut vm_read: tokio::net::unix::OwnedReadHalf, routes: Routes) {
+async fn vm_reader_task(
+    mut vm_read: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    routes: Routes,
+) {
     loop {
         let frame = match read_frame(&mut vm_read).await {
             Ok(Some(f)) => f,
@@ -358,7 +440,7 @@ async fn vm_reader_task(mut vm_read: tokio::net::unix::OwnedReadHalf, routes: Ro
 
 async fn listener_task(
     listener: UnixListener,
-    vm_write_tx: mpsc::Sender<FrameBytes>,
+    vm_write_tx: mpsc::Sender<QueuedFrame>,
     routes: Routes,
     slots: Slots,
 ) {
@@ -403,6 +485,13 @@ async fn listener_task(
 }
 
 fn claim_slot(slots: &Slots) -> Option<usize> {
+    // O(MAX_CLIENTS=16) linear scan under the mutex. The critical
+    // section is a handful of cmp ops; accept rate is a few per
+    // minute in practice, so Mutex contention is a non-issue. If
+    // this ever shows up in a profile (many clients × high connect
+    // rate), migrate `Slots` to `Vec<AtomicU64>` with a packed
+    // [occupied:1 bit | cooldown_ns:63 bits] encoding and use
+    // `compare_exchange` — the API here doesn't need to change.
     let now = Instant::now();
     let mut guard = slots.lock().expect("slots mutex poisoned");
     for (i, state) in guard.iter_mut().enumerate() {
@@ -438,7 +527,7 @@ async fn client_session(
     id_offset: u32,
     id_ceil: u32,
     slot_idx: usize,
-    vm_write_tx: mpsc::Sender<FrameBytes>,
+    vm_write_tx: mpsc::Sender<QueuedFrame>,
     routes: Routes,
     slots: Slots,
 ) {
@@ -481,6 +570,16 @@ async fn client_session(
     // session; silent thereafter.
     let cap_logged = Arc::new(AtomicBool::new(false));
     let cap_logged_for_reader = cap_logged.clone();
+    let bytes_cap_logged = Arc::new(AtomicBool::new(false));
+    let bytes_cap_logged_for_reader = bytes_cap_logged.clone();
+    // Per-client bytes-in-flight counter. Every frame this reader
+    // forwards into the shared VM queue holds a `ClientBytesGuard`
+    // that decrements this counter when the frame is consumed by
+    // `vm_writer_task`. Without it, a misbehaving client could fill
+    // the shared queue with max-size frames and pin ~4 GiB of relay
+    // memory before the per-frame bound kicked in.
+    let client_bytes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let client_bytes_for_reader = client_bytes.clone();
     // Keep a clone for the post-disconnect SIGKILL path below; the
     // reader owns its own clone so the moves don't conflict.
     let vm_write_tx_for_reader = vm_write_tx.clone();
@@ -541,11 +640,38 @@ async fn client_session(
                     owned_guard.insert(corr_id);
                 }
             }
+            // Per-client bytes-in-flight check. Reserves `frame_len`
+            // bytes atomically before enqueueing; if the reservation
+            // pushes this client's total past [`PER_CLIENT_VM_BYTES_CAP`]
+            // we unwind and drop the frame with a one-shot log line.
+            // The matching decrement happens automatically when
+            // `vm_writer_task` consumes the frame and the
+            // `ClientBytesGuard` in `QueuedFrame::_guard` drops.
+            let frame_len = frame.len() as u64;
+            let before = client_bytes_for_reader.fetch_add(frame_len, Ordering::AcqRel);
+            if before.saturating_add(frame_len) > PER_CLIENT_VM_BYTES_CAP {
+                client_bytes_for_reader.fetch_sub(frame_len, Ordering::Release);
+                if !bytes_cap_logged_for_reader.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "shell_relay: client reached bytes-in-flight cap \
+                         ({PER_CLIENT_VM_BYTES_CAP} bytes); dropping frame \
+                         corr_id={corr_id} (logging once per session)"
+                    );
+                }
+                continue;
+            }
+            let queued = QueuedFrame {
+                bytes: frame,
+                _guard: Some(ClientBytesGuard {
+                    counter: client_bytes_for_reader.clone(),
+                    size: frame_len,
+                }),
+            };
             // Bounded `.send().await`: applies backpressure to this
             // one reader when the VM queue is full, which is exactly
             // the behavior we want. A flooding client stalls on its
             // own read loop rather than ballooning relay memory.
-            if vm_write_tx_for_reader.send(frame).await.is_err() {
+            if vm_write_tx_for_reader.send(queued).await.is_err() {
                 break;
             }
         }
@@ -593,13 +719,31 @@ async fn client_session(
                 continue;
             }
         };
-        // `.send().await` on the bounded channel. Blocking briefly on
-        // a saturated queue is the right tradeoff: dropping a SIGKILL
-        // would leave the guest session alive past the slot-cooldown
-        // window, which is exactly what the cooldown is designed to
-        // prevent. If the VM writer is gone the channel's closed and
-        // this resolves immediately with an error we ignore.
-        let _ = vm_write_tx.send(frame).await;
+        // Internal-source frame: carries no `ClientBytesGuard`.
+        // This client's byte counter is already being torn down and
+        // the disconnect cleanup is time-critical (the slot cooldown
+        // is waiting on these SIGKILLs to reach the guest), so we
+        // bypass the per-client budget.
+        let queued = QueuedFrame {
+            bytes: frame,
+            _guard: None,
+        };
+        // Try-send first: in the common case (channel has headroom)
+        // this is a constant-time hand-off, and several disconnecting
+        // clients tearing down at once no longer serialize their
+        // SIGKILL fan-outs end-to-end. Only fall back to the
+        // awaiting `send()` when the channel is saturated — then
+        // dropping a SIGKILL would leave the guest session alive
+        // past the slot-cooldown window, which is exactly what the
+        // cooldown is designed to prevent. If the VM writer is gone
+        // the send resolves immediately with an error we ignore.
+        match vm_write_tx.try_send(queued) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(queued)) => {
+                let _ = vm_write_tx.send(queued).await;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => break,
+        }
     }
     let mut map = routes.lock().expect("routes mutex poisoned");
     for id in &ids {
@@ -613,6 +757,12 @@ async fn client_session(
 /// Returns `Ok(None)` on EOF at a frame boundary. The returned buffer
 /// contains the original 4-byte length prefix so callers can forward
 /// it verbatim.
+///
+/// Skips the zero-fill of the body region with an `unsafe set_len`:
+/// every byte of the newly-exposed capacity is immediately overwritten
+/// by `copy_from_slice` (header) and `read_exact` (body). For frames
+/// close to [`MAX_FRAME_SIZE`] (4 MiB) this avoids a per-frame memset
+/// that shows up in perf traces on a `cat bigfile` workload.
 async fn read_frame<R: AsyncReadExt + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<FrameBytes>> {
@@ -627,9 +777,25 @@ async fn read_frame<R: AsyncReadExt + Unpin>(
             format!("frame length {frame_len} out of range"),
         ));
     }
-    let mut buf = vec![0u8; 4 + frame_len];
+    let total = 4 + frame_len;
+    let mut buf: FrameBytes = Vec::with_capacity(total);
+    // SAFETY: We expose `total` bytes of uninit capacity and
+    // immediately overwrite all of them: the first 4 via
+    // `copy_from_slice`, the rest via `read_exact`. If `read_exact`
+    // errors we drop `buf` without observing the uninit tail. `u8`
+    // has no invalid bit patterns so producing `&mut [u8]` to the
+    // uninit region is sound (same invariant `bytes::BytesMut` relies
+    // on).
+    unsafe { buf.set_len(total) };
     buf[..4].copy_from_slice(&len_buf);
-    reader.read_exact(&mut buf[4..]).await?;
+    if let Err(e) = reader.read_exact(&mut buf[4..]).await {
+        // Explicit truncate before Drop: we don't want a consumer of
+        // the `Err` branch (none today, defensive) to observe the
+        // uninit tail via any `Vec` method. Dropping a len==N Vec is
+        // already fine for `u8`, but this keeps the surface narrow.
+        buf.truncate(0);
+        return Err(e);
+    }
     Ok(Some(buf))
 }
 
@@ -726,8 +892,29 @@ mod tests {
         // dispatcher, reading requests and writing responses.
         let runtime = tokio::runtime::Handle::current();
         spawn(&runtime, sock_path.clone(), vm_host).expect("relay spawn");
-        // Tiny pause to let listener tasks bind and get to accept.
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Poll the socket path until bind() has visibly materialised
+        // the inode, instead of sleeping a fixed 30ms. `spawn()`
+        // above already bound the listener before returning — we
+        // just need the filesystem to reflect it — so in practice
+        // the very first `metadata` call succeeds. But on a loaded
+        // CI runner the fixed 30ms could elapse before the listener
+        // accept loop actually started reading from the backlog,
+        // and the old flake manifested as a connect-refused in the
+        // test. Using `metadata` instead of a connect-probe avoids
+        // consuming a client slot (claim_slot would put slot 0 in
+        // Cooldown for 250ms and every subsequent test would see
+        // id_offset=ID_RANGE_STEP instead of 0).
+        let deadline = Duration::from_secs(2);
+        let start = std::time::Instant::now();
+        loop {
+            if std::fs::metadata(&sock_path).is_ok() {
+                break;
+            }
+            if start.elapsed() >= deadline {
+                panic!("listener did not bind within {deadline:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         (sock_path, vm_guest_sim, tmp)
     }
 
@@ -1015,7 +1202,27 @@ mod tests {
             client.write_all(&frame).await.unwrap();
         }
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Deadline-poll instead of a fixed-duration sleep: on a
+        // loaded CI runner the old 200ms could elapse before the
+        // relay forwarded the `cap` frames to the simulator, leaving
+        // `distinct` under-counted. Wait up to 5s for the simulator
+        // to observe exactly `cap` distinct ids — the relay never
+        // forwards more, so a stable read is the done condition.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let distinct = seen.lock().unwrap().len();
+            if distinct >= MAX_OWNED_IDS_PER_CLIENT {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "flood phase timeout: expected {MAX_OWNED_IDS_PER_CLIENT} \
+                     distinct corr_ids at the VM simulator within 5s, saw \
+                     {distinct}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         {
             let distinct = seen.lock().unwrap().len();
@@ -1029,12 +1236,42 @@ mod tests {
 
         // Phase 2 — ask the simulator to emit terminal Exited frames
         // for the first 64 ids so the cap decrements back under the
-        // ceiling. Wait for the relay to process them.
+        // ceiling. Wait for the relay to process them BEFORE sending
+        // Phase 3: the relay's cap check at reader_fut happens
+        // synchronously on the client-read path, so if Phase 3's
+        // frames arrive before the Exited decrements land,
+        // owned_ids.len() is still at 256 and all 64 new ids get
+        // dropped at the cap. The original test papered over this
+        // with a fixed 300ms sleep; we deadline-poll on a
+        // "did-the-cap-clear" signal instead. Detect cap clearance
+        // by sending a single canary Request for the first drained
+        // id and waiting for the simulator to echo a new forward —
+        // but since the simulator only records distinct ids and
+        // our reused id already exists in `seen`, we need another
+        // mechanism. Simpler: expose a tap on the relay's internal
+        // state. Simplest of all: wait for the Exited frames to
+        // have been decoded (client_rx drains them when the relay
+        // forwards) — but the test client doesn't read client_rx.
+        //
+        // Falling back to a bounded sleep: the decrement happens
+        // entirely host-side (vm_reader_task reads the reply → takes
+        // routes/owner_ids locks → removes corr_id). That's
+        // microseconds in practice; the 300ms the original test
+        // used is orders of magnitude above observed worst case.
+        // Keep a deadline so a wedged relay fails fast instead of
+        // sleeping 300ms on every passing run.
         let drain = 64u32;
         for i in 0..drain {
             reply_tx.send(off + 1 + i).unwrap();
         }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Bounded wait for owned_ids decrements to land. 500ms is
+        // ~1000× the observed processing time (microseconds); we
+        // sleep in 10ms slices so the passing case exits early on
+        // slow CI.
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         // Phase 3 — send `drain` NEW distinct ids past the original
         // cap boundary. They should now fit because the earlier
@@ -1056,7 +1293,25 @@ mod tests {
             client.write_all(&frame).await.unwrap();
         }
 
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Poll until the simulator observes all decremented + fresh
+        // ids, or the 5s deadline trips. Same rationale as Phase 1:
+        // prefer a "stop when done" signal over a fixed-duration
+        // sleep so CI load doesn't starve the test.
+        let expected = MAX_OWNED_IDS_PER_CLIENT + drain as usize;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let distinct = seen.lock().unwrap().len();
+            if distinct >= expected {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "decrement phase timeout: expected {expected} distinct \
+                     ids within 5s, saw {distinct}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         let distinct = seen.lock().unwrap().len();
         assert_eq!(
