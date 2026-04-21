@@ -680,10 +680,20 @@ class Sdk implements ISdk {
     }
     this.invocations.clear()
 
-    // Close WebSocket
+    // Close WebSocket. Swallow any close-time errors (most commonly
+    // "WebSocket was closed before the connection was established" —
+    // emitted when `close()` fires while still in CONNECTING state
+    // and there's no error listener). Without a catch-all listener,
+    // that event becomes an unhandled exception because we remove
+    // every listener right above the close call.
     if (this.ws) {
       this.ws.removeAllListeners()
-      this.ws.close()
+      this.ws.on('error', () => {})
+      try {
+        this.ws.close()
+      } catch {
+        // ignore — shutting down anyway
+      }
       this.ws = undefined
     }
 
