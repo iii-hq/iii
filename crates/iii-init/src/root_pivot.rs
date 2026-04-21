@@ -378,6 +378,32 @@ mod tests {
     /// module-level mutex fixes that.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Run `f` with `III_WORKER_WORKDIR` set to `value` (or unset when
+    /// `value` is `None`), holding [`ENV_LOCK`] for the duration so
+    /// concurrent tests can't race on the single global process env.
+    /// Always unsets the var on exit, even if `f` panics, so a
+    /// failing test doesn't poison later ones.
+    ///
+    /// This helper exists so new tests cannot forget the lock dance:
+    /// taking the mutex + set_var + run + remove_var is three lines
+    /// to get right every time; a future contributor who copy-pastes
+    /// only the `set_var` call reintroduces the race.
+    fn with_workdir_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+            }
+        }
+        let _cleanup = Guard;
+        match value {
+            Some(v) => unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, v) },
+            None => unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) },
+        }
+        f()
+    }
+
     /// Regression for the OCI `/app` boot failure: `/app` must be in
     /// the allowlist so images with `WorkingDir: /app` have that dir
     /// after pivot. Guards against anyone trimming the list back to
@@ -413,8 +439,6 @@ mod tests {
 
     #[test]
     fn workdir_env_extracts_top_level() {
-        let _g = ENV_LOCK.lock().unwrap();
-
         for (val, expected) in [
             ("/app", Some("app")),
             ("/app/dist", Some("app")),
@@ -429,16 +453,17 @@ mod tests {
             ("/", None),
             ("", None),
         ] {
-            unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, val) };
-            let got = workdir_top_level_from_env();
+            let got = with_workdir_env(Some(val), workdir_top_level_from_env);
             assert_eq!(
                 got.as_deref(),
                 expected,
                 "workdir_top_level_from_env({val:?}) = {got:?}, expected {expected:?}"
             );
         }
-        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
-        assert_eq!(workdir_top_level_from_env(), None);
+        assert_eq!(
+            with_workdir_env(None, workdir_top_level_from_env),
+            None
+        );
     }
 
     // Tests below hit `rootfs_bind_entries` against a tempdir-based
@@ -539,16 +564,14 @@ mod tests {
     /// default without being a wall.
     #[test]
     fn bind_entries_picks_up_workdir_env_when_allowlist_misses() {
-        let _g = ENV_LOCK.lock().unwrap();
-
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         fs::create_dir(root.join("bin")).unwrap();
         fs::create_dir(root.join("custom-payload")).unwrap();
 
-        unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, "/custom-payload/inner") };
-        let entries = rootfs_bind_entries(root);
-        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        let entries = with_workdir_env(Some("/custom-payload/inner"), || {
+            rootfs_bind_entries(root)
+        });
         let names = names_of(&entries);
 
         assert!(
@@ -562,15 +585,11 @@ mod tests {
     /// allowlist's `app` should yield a single `app` entry.
     #[test]
     fn bind_entries_does_not_duplicate_when_env_overlaps_allowlist() {
-        let _g = ENV_LOCK.lock().unwrap();
-
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         fs::create_dir(root.join("app")).unwrap();
 
-        unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, "/app/dist") };
-        let entries = rootfs_bind_entries(root);
-        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        let entries = with_workdir_env(Some("/app/dist"), || rootfs_bind_entries(root));
         let names = names_of(&entries);
 
         let app_count = names.iter().filter(|n| **n == "app").count();
@@ -582,16 +601,12 @@ mod tests {
     /// subsequent `mount()` call and abort boot.
     #[test]
     fn bind_entries_drops_env_workdir_when_absent_from_rootfs() {
-        let _g = ENV_LOCK.lock().unwrap();
-
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         fs::create_dir(root.join("bin")).unwrap();
         // No "/phantom" in the tempdir.
 
-        unsafe { std::env::set_var(III_WORKER_WORKDIR_ENV, "/phantom/here") };
-        let entries = rootfs_bind_entries(root);
-        unsafe { std::env::remove_var(III_WORKER_WORKDIR_ENV) };
+        let entries = with_workdir_env(Some("/phantom/here"), || rootfs_bind_entries(root));
         let names = names_of(&entries);
 
         assert!(
