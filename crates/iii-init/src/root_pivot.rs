@@ -454,10 +454,7 @@ mod tests {
                 "workdir_top_level_from_env({val:?}) = {got:?}, expected {expected:?}"
             );
         }
-        assert_eq!(
-            with_workdir_env(None, workdir_top_level_from_env),
-            None
-        );
+        assert_eq!(with_workdir_env(None, workdir_top_level_from_env), None);
     }
 
     // Tests below hit `rootfs_bind_entries` against a tempdir-based
@@ -563,9 +560,7 @@ mod tests {
         fs::create_dir(root.join("bin")).unwrap();
         fs::create_dir(root.join("custom-payload")).unwrap();
 
-        let entries = with_workdir_env(Some("/custom-payload/inner"), || {
-            rootfs_bind_entries(root)
-        });
+        let entries = with_workdir_env(Some("/custom-payload/inner"), || rootfs_bind_entries(root));
         let names = names_of(&entries);
 
         assert!(

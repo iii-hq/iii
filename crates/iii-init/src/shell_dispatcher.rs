@@ -233,9 +233,7 @@ fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, wri
             // unrelated process group.
             let pid = {
                 let map = sessions.lock().expect("session map mutex poisoned");
-                map.get(&corr_id)
-                    .filter(|s| !s.terminated)
-                    .map(|s| s.pid)
+                map.get(&corr_id).filter(|s| !s.terminated).map(|s| s.pid)
             };
             if let Some(pid) = pid
                 && signal > 0

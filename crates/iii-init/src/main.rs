@@ -25,12 +25,6 @@ fn run() -> Result<(), iii_init::InitError> {
     iii_init::root_pivot::pivot_to_tmpfs_root()?;
     iii_init::mount::mount_filesystems()?;
     iii_init::mount::mount_virtiofs_shares();
-    // Must run AFTER mount_filesystems (needs /sys/fs/cgroup for the
-    // memory.swap.max side of setup_cgroup) and AFTER virtiofs (no
-    // dependency but fine either way). Must run BEFORE exec_worker so
-    // the cgroup has swap headroom before the worker child gets moved
-    // into it.
-    iii_init::mount::setup_swap();
     // Fakes `/proc/meminfo::MemTotal` to the per-worker cap so Bun's
     // Zig allocator — which reads MemTotal directly and ignores
     // cgroup v2 `memory.max` — sees the right budget. Must run AFTER

@@ -18,9 +18,8 @@ fn is_plausible_image_ref(s: &str) -> bool {
     if s.is_empty() || s.len() > 512 {
         return false;
     }
-    s.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@' | '+')
-    })
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@' | '+'))
 }
 
 /// Supported values for `runtime.kind` in `iii.worker.yaml`.

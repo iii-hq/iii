@@ -146,10 +146,6 @@ scripts:
 
 Each distinct `base_image` gets its own cache directory under `~/.iii/rootfs/<slug>/`, so pinning a specific bun version won't clobber the default `oven/bun:latest` rootfs used by other `kind: bun` workers. The image is pulled on first start and reused for every subsequent start that names the same image.
 
-<Info title="Memory-hungry runtimes get real disk-backed swap">
-  Local-path sandboxes automatically attach a sparse 4 GiB swap image (`~/.iii/managed/<worker>/swap.img`) as a virtio-blk device. iii-init runs `mkswap` + `swapon` at boot, sets the worker cgroup's `memory.high` to 80% of `memory.max` (soft throttle so the kernel starts reclaiming + swapping before the hard limit fires), and widens `memory.swap.max` to let the cgroup actually use the attached swap. This fixes the "bun OOM-kills inside the microVM" problem — bun allocates aggressively and without `memory.high` the cgroup goes from "fine" to SIGKILL with no ramp. The swap file is sparse, so the host pays zero bytes until the guest actually swaps pages out, and swapped pages survive VM reboots (`mkswap` skips re-format when it detects an existing swap signature).
-</Info>
-
 <Info title="Reserved environment variables">
   `III_URL` and `III_ENGINE_URL` are set automatically and cannot be overridden through the manifest.
 </Info>

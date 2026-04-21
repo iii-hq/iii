@@ -190,11 +190,6 @@ pub fn mount_virtiofs_shares() {
 /// Mount cgroup2 and create a memory-limited worker cgroup.
 ///
 /// Reads `III_WORKER_MEM_BYTES` to set `memory.max` on the worker cgroup.
-/// When swap is attached (`III_SWAP_DEV` set), also sets
-/// `memory.swap.max = memory.max` so memory-hungry workers (bun,
-/// large JVMs) can page to real disk-backed swap instead of hitting
-/// the cgroup's hard OOM-kill limit.
-///
 /// The supervisor moves the worker process into this cgroup after spawn.
 /// Fails gracefully if the kernel lacks cgroup v2 or memory controller support.
 fn mount_cgroup2() -> Result<(), InitError> {
@@ -221,115 +216,9 @@ fn mount_cgroup2() -> Result<(), InitError> {
     // Set memory limit from env var (passed by vm_boot.rs).
     if let Ok(mem_bytes) = std::env::var("III_WORKER_MEM_BYTES") {
         let _ = std::fs::write("/sys/fs/cgroup/worker/memory.max", &mem_bytes);
-        // Soft throttle at 80% of memory.max. Without memory.high, the
-        // cgroup goes from "fine" to SIGKILL with no ramp — the kernel
-        // only swaps out pages under reclaim pressure, and memory.max
-        // alone provides zero early warning. memory.high triggers
-        // reclaim + swap-out at 80%, giving bun's allocator a soft
-        // landing instead of an OOM-kill. This is the piece that makes
-        // the attached swap disk actually useful for memory-hungry
-        // runtimes.
-        if let Ok(b) = mem_bytes.trim().parse::<u64>() {
-            let high = (b * 4 / 5).to_string();
-            if let Err(e) = std::fs::write("/sys/fs/cgroup/worker/memory.high", &high) {
-                eprintln!("iii-init: warning: failed to set memory.high: {e}");
-            }
-        }
-        // Cap memory.swap.max to the advertised swap size. cgroup v2
-        // defaults to 0 (re-OOMs at memory.max even with swap).
-        // Literal "max" would let the kernel thrash once the sparse
-        // swap file fills; a byte cap lets it OOM-kill cleanly.
-        // Fall back to "max" when the host didn't advertise the size.
-        if std::env::var("III_SWAP_DEV").is_ok() {
-            let value = std::env::var("III_SWAP_MAX_BYTES")
-                .ok()
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .filter(|&b| b > 0)
-                .map(|b| b.to_string())
-                .unwrap_or_else(|| "max".to_string());
-            if let Err(e) = std::fs::write("/sys/fs/cgroup/worker/memory.swap.max", &value) {
-                eprintln!("iii-init: warning: failed to widen memory.swap.max: {e}");
-            }
-        }
     }
 
     Ok(())
-}
-
-/// Format and enable a block-device-backed swap partition, if the host
-/// attached one (keyed off `III_SWAP_DEV`).
-///
-/// `mkswap` runs on every boot — the header is ~1 page; the data
-/// area beyond it is untouched. Makes growing the host's sparse
-/// image across releases safe (old header would cap the kernel at
-/// the old geometry, wasting the new space). Swapped-out pages
-/// don't survive VM shutdown anyway.
-///
-/// `mkswap` / `swapon` invoked via absolute paths (`/sbin/*`,
-/// fallback `/usr/sbin/*`) so a user-supplied `runtime.base_image`
-/// can't ship an earlier binary on PATH and hijack PID-1 root.
-///
-/// Errors are warnings, not fatal: a worker with broken swap still
-/// runs (OOM-kills at memory.max like before). Node/Python workers
-/// don't need swap at all.
-pub fn setup_swap() {
-    let dev = match std::env::var("III_SWAP_DEV") {
-        Ok(d) if !d.is_empty() => d,
-        _ => return,
-    };
-    let Some(mkswap) = resolve_util_linux_bin("mkswap") else {
-        eprintln!("iii-init: warning: mkswap not found in /sbin or /usr/sbin; skipping swapon");
-        return;
-    };
-    let status = std::process::Command::new(&mkswap).arg(&dev).status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!("iii-init: warning: mkswap {dev} exit {s}; skipping swapon");
-            return;
-        }
-        Err(e) => {
-            eprintln!("iii-init: warning: mkswap {dev} failed: {e}; skipping swapon");
-            return;
-        }
-    }
-    let Some(swapon) = resolve_util_linux_bin("swapon") else {
-        eprintln!("iii-init: warning: swapon not found in /sbin or /usr/sbin");
-        return;
-    };
-    let status = std::process::Command::new(&swapon).arg(&dev).status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => eprintln!("iii-init: warning: swapon {dev} exit {s}"),
-        Err(e) => eprintln!("iii-init: warning: swapon {dev} failed: {e}"),
-    }
-}
-
-/// Locate a util-linux tool by absolute path. `/sbin` first, then
-/// `/usr/sbin`. `None` means skip — caller must not fall back to
-/// `Command::new(unqualified)`.
-fn resolve_util_linux_bin(name: &str) -> Option<&'static str> {
-    match name {
-        "mkswap" => {
-            if std::path::Path::new("/sbin/mkswap").exists() {
-                Some("/sbin/mkswap")
-            } else if std::path::Path::new("/usr/sbin/mkswap").exists() {
-                Some("/usr/sbin/mkswap")
-            } else {
-                None
-            }
-        }
-        "swapon" => {
-            if std::path::Path::new("/sbin/swapon").exists() {
-                Some("/sbin/swapon")
-            } else if std::path::Path::new("/usr/sbin/swapon").exists() {
-                Some("/usr/sbin/swapon")
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 /// Rewrite `MemTotal`, `MemAvailable`, and `MemFree` lines in a

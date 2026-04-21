@@ -13,23 +13,13 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::oci::{
     expected_oci_arch, pull_and_extract_rootfs, read_cached_rootfs_arch, read_oci_entrypoint,
     read_oci_env,
 };
 use crate::cli::rootfs::clone_rootfs;
-
-/// Size of the per-worker swap image, in bytes. 4 GiB sparse — the
-/// host pays zero bytes until the guest kernel writes swap pages, then
-/// only for the pages actually written. Sized for bun's JIT-arena
-/// working set on arm64 (1.5–3 GiB RSS during worker startup isn't
-/// unusual); 2 GiB was too tight and re-OOMed memory-hungry runtimes
-/// once memory.high pushed pages to swap faster than 2 GiB could hold.
-/// A worst-case full image on 16 workers is 64 GiB of host disk, still
-/// zero-cost until actually written.
-const SWAP_IMAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Forward optional VM-boot tuning flags to the `__vm-boot` child
 /// based on opt-in environment variables. Keeps the public API of
@@ -87,69 +77,6 @@ fn apply_vm_tuning_env(mut push: impl FnMut(&str, Option<&str>)) {
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.
 pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
-}
-
-/// Create (or grow) a sparse file of `size_bytes` at `path`. No-op
-/// when the file already exists at the right size — idempotent so
-/// written swap pages survive VM reboots.
-///
-/// Symlink-attack defense (Unix): `O_NOFOLLOW` + mode 0o600 +
-/// post-open `fstat` (regular file + owned by euid). Without this, a
-/// same-UID attacker planting a symlink could redirect our
-/// `set_len` onto an ssh key or another worker's state file.
-/// Mirrors `pidfile::write_pid_file_strict`.
-///
-/// Err on failure (including refused symlink) — caller continues
-/// without swap.
-fn ensure_swap_image(path: &Path, size_bytes: u64) -> std::io::Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).write(true).read(true).truncate(false);
-    #[cfg(unix)]
-    {
-        opts.custom_flags(nix::libc::O_NOFOLLOW);
-        opts.mode(0o600);
-    }
-    let f = opts.open(path)?;
-
-    // Post-open fstat: refuse non-regular files and non-euid owners.
-    let meta = f.metadata()?;
-    if !meta.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "swap image path {} is not a regular file (type: {:?})",
-                path.display(),
-                meta.file_type()
-            ),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        let our_uid = unsafe { nix::libc::geteuid() };
-        if meta.uid() != our_uid {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "swap image path {} is owned by uid {} (expected {})",
-                    path.display(),
-                    meta.uid(),
-                    our_uid
-                ),
-            ));
-        }
-    }
-
-    if meta.len() != size_bytes {
-        f.set_len(size_bytes)?;
-    }
-    Ok(())
 }
 
 /// Build the VM boot env. Launcher wins: `III_ISOLATION=libkrun` is written
@@ -215,24 +142,6 @@ pub async fn run_dev(
     // control socket so a single managed dir holds every endpoint for
     // this VM. __vm-boot spawns the async relay if the path is given.
     cmd.arg("--shell-sock").arg(rootfs.join("shell.sock"));
-
-    // Block-device-backed swap. Always attach for local-path workers —
-    // the backing file is sparse so the cost is zero bytes until the
-    // guest actually swaps pages out. Solves the bun-inside-microVM
-    // OOM (bun's allocator ignores cgroup v2 and fills physical RAM;
-    // with real disk swap the kernel can page cold bytes out instead
-    // of OOM-killing). Safe for non-bun workers — they just never use
-    // it. Errors here are non-fatal: a worker without swap runs the
-    // same way it did before this feature.
-    let swap_path = rootfs.join("swap.img");
-    if let Err(e) = ensure_swap_image(&swap_path, SWAP_IMAGE_BYTES) {
-        eprintln!(
-            "warning: could not create swap image at {}: {e}; continuing without swap",
-            swap_path.display()
-        );
-    } else {
-        cmd.arg("--swap-path").arg(&swap_path);
-    }
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -550,10 +459,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &worker_dir,
-                std::fs::Permissions::from_mode(0o700),
-            );
+            let _ = std::fs::set_permissions(&worker_dir, std::fs::Permissions::from_mode(0o700));
         }
 
         let rootfs_dir = Self::image_rootfs(&spec.image);
@@ -865,103 +771,6 @@ mod tests {
         caller.insert("III_ISOLATION".to_string(), "docker".to_string());
         let merged = build_vm_env(caller);
         assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
-    }
-
-    #[test]
-    fn ensure_swap_image_creates_sparse_file_at_requested_size() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("swap.img");
-        ensure_swap_image(&path, 4096).unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
-        assert_eq!(meta.len(), 4096);
-    }
-
-    #[test]
-    fn ensure_swap_image_is_idempotent_when_correct_size() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("swap.img");
-        ensure_swap_image(&path, 8192).unwrap();
-        // Write a marker byte in the middle so we can tell if the file
-        // gets clobbered on the second call.
-        use std::io::{Seek, SeekFrom, Write};
-        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        f.seek(SeekFrom::Start(1000)).unwrap();
-        f.write_all(&[0x42]).unwrap();
-        drop(f);
-        // Second call with same size: must not truncate or overwrite.
-        ensure_swap_image(&path, 8192).unwrap();
-        let mut f = std::fs::File::open(&path).unwrap();
-        f.seek(SeekFrom::Start(1000)).unwrap();
-        let mut buf = [0u8; 1];
-        use std::io::Read;
-        f.read_exact(&mut buf).unwrap();
-        assert_eq!(
-            buf[0], 0x42,
-            "ensure_swap_image must preserve existing file contents"
-        );
-    }
-
-    #[test]
-    fn ensure_swap_image_creates_parent_dir_if_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("deeper/nested/swap.img");
-        ensure_swap_image(&path, 1024).unwrap();
-        assert!(path.exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn ensure_swap_image_refuses_symlinked_path() {
-        // Symlink at swap.img pointing at a victim file must not
-        // let set_len truncate the target.
-        let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path().join("victim");
-        std::fs::write(&target, b"important contents").unwrap();
-        let swap = tmp.path().join("swap.img");
-        std::os::unix::fs::symlink(&target, &swap).unwrap();
-
-        let result = ensure_swap_image(&swap, 16 * 1024);
-        assert!(
-            result.is_err(),
-            "O_NOFOLLOW must refuse to follow a symlink at the swap path"
-        );
-        // Target must be untouched.
-        assert_eq!(
-            std::fs::read(&target).unwrap(),
-            b"important contents",
-            "victim file was truncated despite symlink refusal"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn ensure_swap_image_creates_with_owner_only_mode() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("swap.img");
-        ensure_swap_image(&path, 4096).unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
-        let mode = meta.permissions().mode() & 0o777;
-        // Umask may clear bits; assert at minimum that group/other
-        // write bits are off and owner read+write is on.
-        assert!(
-            mode & 0o022 == 0 && mode & 0o600 == 0o600,
-            "swap image must be owner-only-writable, got {mode:o}"
-        );
-    }
-
-    #[test]
-    fn ensure_swap_image_grows_file_when_size_mismatches() {
-        // If a previous run used a smaller size and we've since bumped
-        // SWAP_IMAGE_BYTES, grow to the new size. Does NOT shrink —
-        // set_len with the same-or-larger size is the only case the
-        // current impl targets; shrinking would drop written swap
-        // pages, and we don't expect to ever reduce the const.
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("swap.img");
-        ensure_swap_image(&path, 4096).unwrap();
-        ensure_swap_image(&path, 8192).unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), 8192);
     }
 
     #[test]

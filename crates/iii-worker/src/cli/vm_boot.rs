@@ -73,20 +73,6 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub control_sock: Option<String>,
 
-    /// Path to a raw disk image to attach as a virtio-blk device. The
-    /// guest sees it as `/dev/vda` and iii-init runs `mkswap + swapon`
-    /// on it. Fixes bun OOM in memory-hungry local workers: bun's
-    /// allocator maps ~73 GiB virtual and ignores cgroup v2 limits, so
-    /// without real swap the kernel OOM-kills the process. A
-    /// sparse-file backing keeps the host cost at zero bytes until
-    /// pages are actually swapped out.
-    ///
-    /// Creator: `local_worker::ensure_swap_image` ensures this file
-    /// exists as a sparse 4 GiB before spawning `__vm-boot`. Cleanup
-    /// happens alongside the managed dir in `iii worker clear`.
-    #[arg(long)]
-    pub swap_path: Option<String>,
-
     /// Enable SMT / hyperthreading in the guest. Default off — matches
     /// Firecracker's conservative default and avoids noisy-neighbour
     /// effects between co-tenant workers. Flip on to squeeze more
@@ -668,25 +654,6 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         });
     }
 
-    // Attach swap BEFORE the network so it lands as /dev/vda. Raw
-    // format, host-side sparse file. `swap_max_bytes` is statted from
-    // the file so iii-init can cap memory.swap.max to the real size
-    // instead of literal "max" (would thrash once the sparse file
-    // fills).
-    let mut swap_max_bytes: Option<u64> = None;
-    let swap_dev_env = if let Some(ref swap) = args.swap_path {
-        let swap_path = swap.clone();
-        swap_max_bytes = std::fs::metadata(&swap_path).ok().map(|m| m.len());
-        builder = builder.disk(move |d| {
-            d.path(&swap_path)
-                .format(msb_krun::DiskImageFormat::Raw)
-                .read_only(false)
-        });
-        Some("/dev/vda".to_string())
-    } else {
-        None
-    };
-
     // 2 workers when the shell relay is active (benefits from
     // parallel read/write task scheduling); 1 otherwise (network +
     // control proxy run fine on a single worker).
@@ -776,13 +743,6 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_INIT_GW", &gateway_ip);
         e = e.env("III_INIT_CIDR", "30");
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
-        if let Some(ref dev) = swap_dev_env {
-            e = e.env("III_SWAP_DEV", dev);
-            if let Some(bytes) = swap_max_bytes {
-                let s = bytes.to_string();
-                e = e.env("III_SWAP_MAX_BYTES", &s);
-            }
-        }
         if control_port_env {
             e = e.env(
                 "III_CONTROL_PORT",

@@ -976,10 +976,16 @@ mod tests {
     async fn non_terminal_error_continues_loop() {
         let mut stdout = RecordingWriter::new();
         let mut stderr = RecordingWriter::new();
-        let outcome =
-            handle_response_frame(ShellMessage::Error { message: "soft".into() }, 0, &mut stdout, &mut stderr)
-                .await
-                .unwrap();
+        let outcome = handle_response_frame(
+            ShellMessage::Error {
+                message: "soft".into(),
+            },
+            0,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .unwrap();
         assert!(matches!(outcome, ResponseOutcome::Continue));
     }
 
