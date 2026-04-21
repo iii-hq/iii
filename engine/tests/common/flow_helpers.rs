@@ -8,10 +8,16 @@ use iii::telemetry::{ExporterType, OtelConfig, get_span_storage, init_otel};
 use iii::workers::observability::otel::StoredSpan;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::sleep;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 static FLOW_TRACING_INIT: Once = Once::new();
+static FLOW_TRACING_LOCK: Mutex<()> = Mutex::const_new(());
+
+pub struct FlowTracingGuard {
+    _guard: MutexGuard<'static, ()>,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FlowGraphNode {
@@ -209,7 +215,9 @@ impl HttpQueueStatePathSpec {
     }
 }
 
-pub fn ensure_flow_test_tracing() {
+pub async fn ensure_flow_test_tracing() -> FlowTracingGuard {
+    let guard = FLOW_TRACING_LOCK.lock().await;
+
     iii::workers::observability::metrics::ensure_default_meter();
 
     FLOW_TRACING_INIT.call_once(|| {
@@ -235,6 +243,8 @@ pub fn ensure_flow_test_tracing() {
     } else {
         panic!("missing span storage: tracing subscriber not installed for flow tests");
     }
+
+    FlowTracingGuard { _guard: guard }
 }
 
 fn validate_state_event(

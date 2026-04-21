@@ -62,7 +62,7 @@ async fn wait_for_route(client: &reqwest::Client, url: &str) {
 #[tokio::test]
 #[serial]
 async fn validated_flow_helper_builds_graph_asset_from_real_http_queue_state_path() {
-    ensure_flow_test_tracing();
+    let _flow_tracing = ensure_flow_test_tracing().await;
 
     let engine = Arc::new(Engine::new());
 
