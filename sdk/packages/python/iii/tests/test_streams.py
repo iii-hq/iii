@@ -1,17 +1,26 @@
 """Integration tests for stream operations."""
 
 import asyncio
-import builtins
 import time
 from typing import Any
 
 import pytest
 
 from iii.iii import III
-from iii.stream import IStream
-from iii.stream import StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput, StreamSetInput, StreamSetResult, StreamUpdateInput, StreamUpdateResult
+from iii.stream import (
+    IStream,
+    StreamDeleteInput,
+    StreamDeleteResult,
+    StreamGetInput,
+    StreamListGroupsInput,
+    StreamListInput,
+    StreamSetInput,
+    StreamSetResult,
+    StreamUpdateInput,
+    StreamUpdateResult,
+)
 
-_list = list 
+_list = list
 
 STREAM_NAME = "test-stream-py"
 GROUP_ID = "test-group"
@@ -130,7 +139,7 @@ async def test_stream_delete_non_existent_item(iii_client: III):
 @pytest.mark.asyncio
 async def test_stream_list_items_in_group(iii_client: III):
     """Listing stream items in a group returns all items set."""
-    group_id = f"stream-py-{int(time.time())}"
+    group_id = f"stream-py-{int(time.time() * 1000)}"
     items = [
         {"id": "stream-item1", "value": 1},
         {"id": "stream-item2", "value": 2},
@@ -153,6 +162,105 @@ async def test_stream_list_items_in_group(iii_client: III):
     sorted_result = sorted(result, key=lambda x: x["id"])
     sorted_items = sorted(items, key=lambda x: x["id"])
     assert sorted_result == sorted_items
+
+
+@pytest.mark.asyncio
+async def test_stream_list_groups_returns_available_groups(iii_client: III):
+    """Listing stream groups returns groups that have stored items."""
+    group_id = f"list-groups-py-{int(time.time() * 1000)}"
+
+    iii_client.trigger(
+        {
+            "function_id": "stream::set",
+            "payload": {
+                "stream_name": STREAM_NAME,
+                "group_id": group_id,
+                "item_id": "anchor",
+                "data": {"value": 0},
+            },
+        }
+    )
+
+    try:
+        result = iii_client.trigger(
+            {
+                "function_id": "stream::list_groups",
+                "payload": {"stream_name": STREAM_NAME},
+            }
+        )
+        groups = result if isinstance(result, list) else result.get("groups", [])
+
+        assert isinstance(groups, list)
+        assert group_id in groups
+    finally:
+        iii_client.trigger(
+            {
+                "function_id": "stream::delete",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": "anchor",
+                },
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_update_applies_partial_updates_via_ops(iii_client: III):
+    """Updating a stream item with an ops array preserves untouched fields."""
+    ts = int(time.time() * 1000)
+    group_id = f"update-group-py-{ts}"
+    item_id = f"update-item-py-{ts}"
+
+    iii_client.trigger(
+        {
+            "function_id": "stream::set",
+            "payload": {
+                "stream_name": STREAM_NAME,
+                "group_id": group_id,
+                "item_id": item_id,
+                "data": {"count": 0, "name": "initial"},
+            },
+        }
+    )
+
+    try:
+        iii_client.trigger(
+            {
+                "function_id": "stream::update",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": item_id,
+                    "ops": [{"type": "set", "path": "count", "value": 5}],
+                },
+            }
+        )
+
+        result = iii_client.trigger(
+            {
+                "function_id": "stream::get",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": item_id,
+                },
+            }
+        )
+
+        assert result["count"] == 5
+        assert result["name"] == "initial"
+    finally:
+        iii_client.trigger(
+            {
+                "function_id": "stream::delete",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": item_id,
+                },
+            }
+        )
 
 
 @pytest.mark.asyncio
