@@ -1,3 +1,5 @@
+<!-- iii-pr-template-marker: do not remove (required by .github/workflows/checklist-checker.yml) -->
+
 ## What
 
 <!-- Brief description of the change -->

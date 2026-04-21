@@ -19,6 +19,14 @@ jobs:
         if: steps.perm-check.outputs.level != 'admin'
         run: |
           BODY=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH")
+          # Require the hidden template marker. This catches PRs (often
+          # AI-generated) that replace the body wholesale and drop the
+          # template structure. Humans never see the marker; anyone who
+          # starts from the template inherits it for free.
+          if ! echo "$BODY" | grep -qF 'iii-pr-template-marker'; then
+            echo "::error::PR description does not use the repository template. Copy the contents of .github/pull_request_template.md into the PR description (edit the PR, click the Edit pencil at the top), fill in each section, and tick the license checkbox."
+            exit 1
+          fi
           TOTAL=$(echo "$BODY" | grep -cE '^\s*- \[[ xX]\]' || true)
           if [ "$TOTAL" -eq 0 ]; then
             echo "::error::PR has no checklist items. The template checklist was removed — restore it from .github/pull_request_template.md."
