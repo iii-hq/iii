@@ -565,7 +565,12 @@ impl Engine {
         );
     }
 
-    async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
+    #[doc(hidden)]
+    pub async fn router_msg(
+        &self,
+        worker: &WorkerConnection,
+        msg: &Message,
+    ) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
                 id,
@@ -803,7 +808,10 @@ impl Engine {
                                 invocation_id: inv_id,
                                 function_id: function_id.clone(),
                                 result: None,
-                                error: Some(ErrorBody::new("FORBIDDEN", "function not allowed")),
+                                error: Some(ErrorBody::new(
+                                    "FORBIDDEN",
+                                    format!("function '{}' not allowed", function_id),
+                                )),
                                 traceparent: traceparent.clone(),
                                 baggage: baggage.clone(),
                             },

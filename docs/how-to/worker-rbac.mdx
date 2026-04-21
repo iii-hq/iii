@@ -5,6 +5,47 @@ description: 'Configure the iii-worker-manager to enable role-based access contr
 
 This guide walks you through enabling RBAC on your iii instance using the **iii-worker-manager**. Workers connect via WebSocket to a dedicated RBAC port, separate from the internal engine bridge.
 
+## Quick start: RBAC in 2 minutes
+
+Drop these two files side-by-side, start the engine with the config, run the worker, and curl the endpoint. If you see `hello from the handler` in the worker's terminal, RBAC is working.
+
+```yaml title="iii-config.yaml"
+workers:
+  - name: iii-http
+    config: { port: 3111, host: 127.0.0.1 }
+  - name: iii-worker-manager
+    config:
+      port: 49135
+      rbac:
+        expose_functions:
+          - match("api::*")
+```
+
+```typescript title="worker.ts"
+import { Logger, registerWorker } from 'iii-sdk'
+
+const iii = registerWorker('ws://localhost:49135')
+const logger = new Logger()
+
+iii.registerFunction('api::hello', async () => {
+  logger.info('hello from the handler')
+  return { ok: true }
+})
+```
+
+```bash title="run it"
+# In one terminal: start the engine with the config above
+iii-worker start --config iii-config.yaml
+
+# In another: run the worker
+bun worker.ts
+
+# In a third: hit the function over HTTP
+curl http://127.0.0.1:3111/api/hello
+```
+
+The worker's terminal prints `hello from the handler`. That's it — the worker's `expose_functions` only lists `api::*`, but logger dispatch, worker registration, and other SDK-internal engine calls still work because infrastructure functions are auto-allowed (see [Infrastructure functions](#infrastructure-functions-auto-allowed) below).
+
 ## 1. Add RBAC Config to the Worker Manager
 
 Add an `iii-worker-manager` entry with RBAC config to your engine config file. At minimum you need a port and an `expose_functions` list inside `rbac`:
@@ -22,6 +63,39 @@ workers:
 ```
 
 This exposes all functions whose ID starts with `api::` on port 49135 with no authentication.
+
+### Infrastructure functions (auto-allowed)
+
+Your `expose_functions` list only needs to cover the **business** functions you intend to expose. A small set of **infrastructure** `engine::*` IDs that the SDK invokes on your behalf (worker connection setup, structured logging, baggage/context propagation, channel primitives) are auto-allowed regardless of `expose_functions`:
+
+| Function ID | Purpose |
+|---|---|
+| `engine::channels::create` | Data channels (streams, pubsub). |
+| `engine::workers::register` | Fired at worker connect to publish runtime metadata. |
+| `engine::log::info` / `warn` / `error` / `debug` / `trace` | Structured logger dispatch. |
+| `engine::baggage::get` / `set` / `get_all` | Cross-cutting context propagation. |
+
+These are part of iii's public contract and follow an **additive-only stability policy**: within a major version, IDs are never removed from the carve-out except for a documented security fix, which would be called out in release notes.
+
+`forbidden_functions` returned by your auth function still wins — if you genuinely want to block an infrastructure ID for a session, you can, but the worker's behavior becomes unpredictable (connection setup, logging, or context propagation may fail silently). iii logs a `tracing::warn` when this happens.
+
+### Discovery and admin functions (stay gated)
+
+Everything else under `engine::*` — discovery (`engine::functions::list`, `engine::workers::list`, `engine::triggers::list`, `engine::queue::*`), tracing (`engine::traces::*`), alerts (`engine::alerts::*`), health (`engine::health::check`), log storage (`engine::logs::*`), etc. — stays gated by `expose_functions`. A handler that calls `iii.listFunctions()` on a session that only exposes `api::*` will get:
+
+```
+IIIInvocationError: FORBIDDEN: function 'engine::functions::list' not allowed
+```
+
+If you want those discovery calls to work, add them to `expose_functions` explicitly:
+
+```yaml title="iii-config.yaml"
+rbac:
+  expose_functions:
+    - match("api::*")
+    - match("engine::functions::*")   # enable iii.listFunctions()
+    - match("engine::workers::list")
+```
 
 ## 2. Write an Auth Function
 

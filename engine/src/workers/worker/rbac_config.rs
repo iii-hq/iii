@@ -206,7 +206,49 @@ impl<'de> Deserialize<'de> for FunctionFilter {
     }
 }
 
-const CHANNEL_CREATE_FUNCTION: &str = "engine::channels::create";
+// RBAC decision flow (post-fix):
+//
+//     InvokeFunction with session.config.rbac
+//     │
+//     ▼
+//  1. function_id in forbidden_functions?   ── yes ──► DENY
+//                       │ no
+//                       ▼
+//  2. function_id in allowed_functions?     ── yes ──► ALLOW
+//                       │ no
+//                       ▼
+//  3. function_id in INFRASTRUCTURE_FUNCTIONS? ─ yes ─► ALLOW
+//                       │ no
+//                       ▼
+//  4. any(expose_functions filter matches)? ── yes ──► ALLOW
+//                       │ no
+//                       ▼
+//                     DENY (FORBIDDEN)
+//
+// Two independent rules define "infrastructure": the RBAC carve-out (this
+// slice, specific IDs) and the middleware bypass (prefix match on
+// `engine::*`, broader — see engine/src/engine/mod.rs). They diverge on
+// purpose: the threat models differ, so do NOT unify them.
+//
+// INFRASTRUCTURE_FUNCTIONS is part of iii's public contract. Within a
+// major version, it is additive-only: IDs are never removed from the
+// carve-out except for a documented security fix, which MUST be called
+// out in release notes and landed alongside a deprecation/migration
+// note. Renames keep both old and new IDs in the slice through at least
+// one major version. Security-driven removal is the only narrow
+// exception to additive-only.
+const INFRASTRUCTURE_FUNCTIONS: &[&str] = &[
+    "engine::channels::create",
+    "engine::workers::register",
+    "engine::log::info",
+    "engine::log::warn",
+    "engine::log::error",
+    "engine::log::debug",
+    "engine::log::trace",
+    "engine::baggage::get",
+    "engine::baggage::set",
+    "engine::baggage::get_all",
+];
 
 pub fn is_function_allowed(
     function_id: &str,
@@ -216,6 +258,13 @@ pub fn is_function_allowed(
     function: Option<&Function>,
 ) -> bool {
     if forbidden_functions.iter().any(|f| f == function_id) {
+        if INFRASTRUCTURE_FUNCTIONS.contains(&function_id) {
+            tracing::warn!(
+                function_id = %function_id,
+                "auth function forbids infrastructure function '{}' — worker may behave unpredictably (connection setup, logging, or context propagation may be blocked)",
+                function_id
+            );
+        }
         return false;
     }
 
@@ -223,7 +272,7 @@ pub fn is_function_allowed(
         return true;
     }
 
-    if function_id == CHANNEL_CREATE_FUNCTION {
+    if INFRASTRUCTURE_FUNCTIONS.contains(&function_id) {
         return true;
     }
 
@@ -463,5 +512,135 @@ mod tests {
             &[],
             None
         ));
+    }
+
+    fn rbac_config_with_expose(patterns: &[&str]) -> RbacConfig {
+        RbacConfig {
+            auth_function_id: None,
+            expose_functions: patterns
+                .iter()
+                .map(|p| FunctionFilter::Match(WildcardPattern::new(p)))
+                .collect(),
+            on_trigger_registration_function_id: None,
+            on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
+        }
+    }
+
+    // Locks the exact membership of the INFRASTRUCTURE_FUNCTIONS carve-out.
+    // Per the slice's stability policy (additive-only), changes to this
+    // list must add IDs, never remove them (except for documented security
+    // fixes). If this test fails because an ID was removed, verify the
+    // removal is security-justified and release-noted.
+    const ALL_INFRASTRUCTURE_IDS: &[&str] = &[
+        "engine::channels::create",
+        "engine::workers::register",
+        "engine::log::info",
+        "engine::log::warn",
+        "engine::log::error",
+        "engine::log::debug",
+        "engine::log::trace",
+        "engine::baggage::get",
+        "engine::baggage::set",
+        "engine::baggage::get_all",
+    ];
+
+    #[test]
+    fn infrastructure_functions_always_allowed() {
+        for id in ALL_INFRASTRUCTURE_IDS {
+            // Empty expose_functions
+            let config = rbac_config_with_expose(&[]);
+            assert!(
+                is_function_allowed(id, Some(config), &[], &[], None),
+                "expected {} to be allowed with empty expose_functions",
+                id
+            );
+
+            // Unrelated expose pattern
+            let config = rbac_config_with_expose(&["api::*"]);
+            assert!(
+                is_function_allowed(id, Some(config), &[], &[], None),
+                "expected {} to be allowed when only api::* exposed",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn infrastructure_functions_respect_forbidden_list() {
+        for id in ALL_INFRASTRUCTURE_IDS {
+            let config = rbac_config_with_expose(&[]);
+            let forbidden = vec![id.to_string()];
+            assert!(
+                !is_function_allowed(id, Some(config), &[], &forbidden, None),
+                "expected {} to be denied when present in forbidden_functions",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn infrastructure_functions_respect_allowed_list() {
+        for id in ALL_INFRASTRUCTURE_IDS {
+            let config = rbac_config_with_expose(&[]);
+            let allowed = vec![id.to_string()];
+            assert!(
+                is_function_allowed(id, Some(config), &allowed, &[], None),
+                "expected {} to remain allowed when also in allowed_functions",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_functions_still_gated() {
+        let discovery_ids = [
+            "engine::functions::list",
+            "engine::workers::list",
+            "engine::triggers::list",
+            "engine::trigger-types::list",
+            "engine::traces::list",
+            "engine::queue::list_topics",
+            "engine::health::check",
+            "engine::alerts::list",
+        ];
+        for id in discovery_ids {
+            let config = rbac_config_with_expose(&[]);
+            assert!(
+                !is_function_allowed(id, Some(config), &[], &[], None),
+                "expected discovery id {} to be denied with empty expose_functions",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_functions_allowed_via_expose() {
+        let config = rbac_config_with_expose(&["engine::functions::*"]);
+        assert!(is_function_allowed(
+            "engine::functions::list",
+            Some(config),
+            &[],
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn no_rbac_config_still_allows_everything() {
+        for id in ALL_INFRASTRUCTURE_IDS.iter().chain([
+            "engine::functions::list",
+            "engine::workers::list",
+            "api::anything",
+            "internal::private",
+        ]
+        .iter())
+        {
+            assert!(
+                is_function_allowed(id, None, &[], &[], None),
+                "expected {} to be allowed when config is None",
+                id
+            );
+        }
     }
 }
