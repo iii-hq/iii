@@ -25,7 +25,7 @@ integration-oci = []
 iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
 iii-supervisor = { path = "../iii-supervisor" }
-msb_krun = { version = "0.1.9", features = ["net"] }
+msb_krun = { version = "0.1.9", features = ["net", "blk"] }
 oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
@@ -49,6 +49,15 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
 indicatif = "0.17"
 notify = "8.2.0"
+# `iii worker exec` stdout/stderr/stdin frames encode binary payloads
+# as base64 strings inside JSON. `0.22` matches the engine's version.
+base64 = "0.22"
+# The shell relay needs direct libc access for `SO_PEERCRED` /
+# `getpeereid` peer-uid checks on the exec unix socket.
+libc = "0.2"
+# `iii worker exec --timeout 30s` uses humantime's canonical duration
+# grammar (`30s`, `5m`, `1h`, `500ms`).
+humantime = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

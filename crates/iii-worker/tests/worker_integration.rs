@@ -273,7 +273,7 @@ fn manifest_yaml_roundtrip() {
         let yaml = r#"
 name: integration-test-worker
 runtime:
-  language: typescript
+  kind: typescript
   package_manager: npm
   entry: src/index.ts
 env:
@@ -289,7 +289,7 @@ resources:
         let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
 
         assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
-        assert_eq!(parsed["runtime"]["language"].as_str(), Some("typescript"));
+        assert_eq!(parsed["runtime"]["kind"].as_str(), Some("typescript"));
         assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
         assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
         assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));

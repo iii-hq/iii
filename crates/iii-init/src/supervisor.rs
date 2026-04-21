@@ -51,6 +51,14 @@ const III_CONTROL_PORT_ENV: &str = "III_CONTROL_PORT";
 /// worker inherits whatever cwd libkrun's Exec config picked.
 const III_WORKER_WORKDIR_ENV: &str = "III_WORKER_WORKDIR";
 
+/// Virtio-console port name carrying the host↔guest shell-exec channel
+/// (`iii worker exec`). Independent of `III_CONTROL_PORT`: the shell
+/// dispatcher always runs on a dedicated thread alongside the worker
+/// child and the optional control thread. If the env var is unset, or
+/// the named port can't be found in sysfs, exec is simply unavailable
+/// for this VM — the worker child keeps running normally.
+const III_SHELL_PORT_ENV: &str = "III_SHELL_PORT";
+
 /// Stores the current child worker PID for async-signal-safe signal
 /// forwarding. 0 means no child has been spawned yet. Updated both on
 /// initial spawn and after every respawn inside supervisor mode.
@@ -104,6 +112,13 @@ pub fn exec_worker() -> Result<(), InitError> {
     // _exit fallback.
     install_signal_handlers();
 
+    // Spawn the shell-exec dispatcher thread if wired. Independent of
+    // legacy/supervisor mode — exec sessions are separate children, not
+    // substitutes for the worker child. If the named port isn't in
+    // sysfs (host forgot `--shell-sock`, or sysfs not mounted), we
+    // log and continue without exec; the worker still runs normally.
+    maybe_spawn_shell_dispatcher();
+
     if let Ok(port_name) = std::env::var(III_CONTROL_PORT_ENV) {
         let workdir =
             std::env::var(III_WORKER_WORKDIR_ENV).unwrap_or_else(|_| "/workspace".to_string());
@@ -111,6 +126,40 @@ pub fn exec_worker() -> Result<(), InitError> {
     }
 
     run_legacy(cmd)
+}
+
+/// Look up `III_SHELL_PORT`, resolve the named virtio-console port via
+/// sysfs, and spawn the dispatcher thread on it. Silently returns if
+/// the env var is unset (feature not enabled for this VM) and logs a
+/// warning if it's set but the port can't be found.
+///
+/// The spawned thread runs for the lifetime of the VM. It does not
+/// block or join back with PID 1 — its death (port closed, read
+/// error) simply disables future exec sessions; the worker and any
+/// in-flight exec children keep running.
+fn maybe_spawn_shell_dispatcher() {
+    let port_name = match std::env::var(III_SHELL_PORT_ENV) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    match iii_supervisor::control::find_virtio_port_by_name(&port_name) {
+        Some(port_path) => {
+            std::thread::Builder::new()
+                .name("iii-init-shell".to_string())
+                .spawn(move || {
+                    if let Err(e) = crate::shell_dispatcher::run(&port_path) {
+                        eprintln!("iii-init: shell dispatcher error: {e}");
+                    }
+                })
+                .expect("spawn shell dispatcher thread");
+        }
+        None => {
+            eprintln!(
+                "iii-init: warning: III_SHELL_PORT={port_name} but no matching port \
+                 in /sys/class/virtio-ports. `iii worker exec` disabled for this VM."
+            );
+        }
+    }
 }
 
 /// Legacy path: spawn worker, reap zombies, exit with child's code.
@@ -128,15 +177,29 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
     attach_to_worker_cgroup(child_pid);
 
     // PID 1 supervisor loop: wait for children, reap orphans (INIT-07).
+    // Before applying our own termination logic, consult the shell
+    // dispatcher's exit registry — exits belonging to `iii worker
+    // exec` children must be forwarded to the dispatcher's waiter
+    // thread, not silently discarded as "orphans".
     let status = loop {
         match waitpid(Pid::from_raw(-1), None) {
-            Ok(WaitStatus::Exited(pid, code)) if pid.as_raw() == child_pid => {
-                break code;
+            Ok(WaitStatus::Exited(pid, code)) => {
+                if crate::child_exits::dispatch_exit(pid.as_raw(), code) {
+                    continue;
+                }
+                if pid.as_raw() == child_pid {
+                    break code;
+                }
             }
-            Ok(WaitStatus::Signaled(pid, sig, _)) if pid.as_raw() == child_pid => {
-                break 128 + sig as i32;
+            Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                if crate::child_exits::dispatch_exit(pid.as_raw(), 128 + sig as i32) {
+                    continue;
+                }
+                if pid.as_raw() == child_pid {
+                    break 128 + sig as i32;
+                }
             }
-            Ok(_) => continue,                  // reaped an orphan, keep waiting
+            Ok(_) => continue,                  // stop/continue/etc, keep waiting
             Err(nix::Error::ECHILD) => break 0, // no more children
             Err(_) => break 1,                  // unexpected error
         }
@@ -194,14 +257,26 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
     // PID-1 reap loop. Distinguishes our child (state.pid()) from orphans
     // and tolerates restart-driven child replacements. See
     // `exit_is_terminal` for the coordination contract.
+    //
+    // Dispatcher-owned children (`iii worker exec`) are peeled off via
+    // the shared `child_exits` registry before we check
+    // `exit_is_terminal` — otherwise an exec child's exit code would
+    // look like an orphan and the dispatcher's waiter thread would
+    // wait forever.
     let status = loop {
         match waitpid(Pid::from_raw(-1), None) {
             Ok(WaitStatus::Exited(pid, code)) => {
+                if crate::child_exits::dispatch_exit(pid.as_raw(), code) {
+                    continue;
+                }
                 if exit_is_terminal(&state, pid.as_raw()) {
                     break code;
                 }
             }
             Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                if crate::child_exits::dispatch_exit(pid.as_raw(), 128 + sig as i32) {
+                    continue;
+                }
                 if exit_is_terminal(&state, pid.as_raw()) {
                     break 128 + sig as i32;
                 }

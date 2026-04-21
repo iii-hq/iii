@@ -8,12 +8,12 @@
 //! Covers requirements OCI-01 through OCI-05.
 //!
 //! Tests are split into ungated (pure/filesystem) and gated (network-dependent):
-//! - Ungated: extract_layer_with_limits safety, expected_oci_arch, oci_image_for_language,
+//! - Ungated: extract_layer_with_limits safety, expected_oci_arch, oci_image_for_kind,
 //!   OCI config reading (entrypoint, workdir, env), rootfs_search_paths, read_cached_rootfs_arch
 //! - Gated (#[cfg(feature = "integration-oci")]): pull_and_extract_rootfs end-to-end
 
 use iii_worker::cli::worker_manager::oci::{
-    expected_oci_arch, extract_layer_with_limits, oci_image_for_language, read_cached_rootfs_arch,
+    expected_oci_arch, extract_layer_with_limits, oci_image_for_kind, read_cached_rootfs_arch,
     read_oci_entrypoint, read_oci_env, read_oci_workdir, rootfs_search_paths,
 };
 
@@ -339,39 +339,39 @@ fn expected_oci_arch_returns_known_value() {
 
 #[test]
 fn oci_image_for_typescript() {
-    let (image, name) = oci_image_for_language("typescript");
+    let (image, name) = oci_image_for_kind("typescript");
     assert_eq!(image, "docker.io/iiidev/node:latest");
     assert_eq!(name, "node");
 }
 
 #[test]
 fn oci_image_for_javascript() {
-    let (image, name) = oci_image_for_language("javascript");
+    let (image, name) = oci_image_for_kind("javascript");
     assert_eq!(image, "docker.io/iiidev/node:latest");
     assert_eq!(name, "node");
 }
 
 #[test]
 fn oci_image_for_python() {
-    let (image, name) = oci_image_for_language("python");
+    let (image, name) = oci_image_for_kind("python");
     assert_eq!(image, "docker.io/iiidev/python:latest");
     assert_eq!(name, "python");
 }
 
 #[test]
 fn oci_image_for_rust() {
-    let (image, name) = oci_image_for_language("rust");
+    let (image, name) = oci_image_for_kind("rust");
     assert_eq!(image, "docker.io/library/rust:slim-bookworm");
     assert_eq!(name, "rust");
 }
 
 #[test]
 fn oci_image_for_unknown_defaults_to_node() {
-    let (image, name) = oci_image_for_language("go");
+    let (image, name) = oci_image_for_kind("go");
     assert_eq!(image, "docker.io/iiidev/node:latest");
     assert_eq!(name, "node");
 
-    let (image2, name2) = oci_image_for_language("unknown_lang");
+    let (image2, name2) = oci_image_for_kind("unknown_lang");
     assert_eq!(image2, "docker.io/iiidev/node:latest");
     assert_eq!(name2, "node");
 }
@@ -500,18 +500,6 @@ fn rootfs_search_paths_includes_standard_locations() {
 // =============================================================================
 // Group 7: Feature-gated network tests (OCI-01)
 // =============================================================================
-
-#[cfg(feature = "integration-oci")]
-mod gated {
-    use super::*;
-
-    #[tokio::test]
-    async fn pull_and_extract_rootfs_placeholder() {
-        // This test requires network access and a running OCI registry.
-        // It is intentionally feature-gated behind integration-oci.
-        // Full implementation depends on registry availability.
-        // For now, verify the import compiles under the feature gate.
-        use iii_worker::cli::worker_manager::oci::pull_and_extract_rootfs;
-        let _ = pull_and_extract_rootfs; // type-check only
-    }
-}
+// Previous pull_and_extract_rootfs_placeholder was a type-check-only
+// stub — removed. Type checking is handled by
+// `cargo check --features integration-oci`.

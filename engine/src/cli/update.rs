@@ -484,17 +484,48 @@ mod tests {
 
     // ── run_version_check tests ─────────────────────────────────────
 
+    /// Serializes the shebang-exec tests in this module. Without it, a
+    /// classic multi-thread fork/exec race surfaces on Linux CI under
+    /// `cargo llvm-cov`:
+    ///
+    /// - Thread A writes `fake-binary-A`, drops the File (closing the
+    ///   write fd), then spawns it via `Command::output()`.
+    /// - Thread B is concurrently inside `File::create("fake-binary-B")`
+    ///   so its write fd is *open*.
+    /// - A's spawn fork inherits B's open write fd on `fake-binary-B`.
+    /// - When B later tries to exec `fake-binary-B`, the kernel sees
+    ///   "file currently open for writing in some process" and returns
+    ///   ETXTBSY (os error 26).
+    ///
+    /// Rust's `File::create` sets `O_CLOEXEC`, which should prevent
+    /// this, but `posix_spawn` under some libc+coverage combinations
+    /// still races. Rather than chase the interaction, serialize the
+    /// four exec-based tests below. Parse-only tests don't need the
+    /// lock and run in parallel as before. Costs ~0ms in the common
+    /// path since the lock is uncontended once tests go serial.
+    #[cfg(unix)]
+    static EXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // Without sync_all(), close-then-exec races on some Linux CI filesystems:
+    // writeln! flushes to the Rust File buffer, File drop closes the fd, but
+    // neither fsyncs, so exec can observe an empty or not-yet-executable file.
+    #[cfg(unix)]
+    fn write_exec_script(path: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn run_version_check_parses_bare_version() {
+        let _guard = EXEC_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-binary");
-        {
-            let mut f = std::fs::File::create(&script).unwrap();
-            writeln!(f, "#!/bin/sh\necho '1.2.3'").unwrap();
-        }
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_exec_script(&script, "#!/bin/sh\necho '1.2.3'\n");
         let v = run_version_check(&script).unwrap();
         assert_eq!(v, Version::new(1, 2, 3));
     }
@@ -502,14 +533,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_version_check_parses_prefixed_version() {
+        let _guard = EXEC_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-binary");
-        {
-            let mut f = std::fs::File::create(&script).unwrap();
-            writeln!(f, "#!/bin/sh\necho 'iii 0.9.0'").unwrap();
-        }
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_exec_script(&script, "#!/bin/sh\necho 'iii 0.9.0'\n");
         let v = run_version_check(&script).unwrap();
         assert_eq!(v, Version::new(0, 9, 0));
     }
@@ -523,28 +550,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_version_check_returns_none_for_invalid_output() {
+        let _guard = EXEC_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-binary");
-        {
-            let mut f = std::fs::File::create(&script).unwrap();
-            writeln!(f, "#!/bin/sh\necho 'not-a-version'").unwrap();
-        }
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_exec_script(&script, "#!/bin/sh\necho 'not-a-version'\n");
         assert!(run_version_check(&script).is_none());
     }
 
     #[cfg(unix)]
     #[test]
     fn run_version_check_handles_trailing_whitespace() {
+        let _guard = EXEC_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-binary");
-        {
-            let mut f = std::fs::File::create(&script).unwrap();
-            writeln!(f, "#!/bin/sh\nprintf '2.0.0\\n  '").unwrap();
-        }
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_exec_script(&script, "#!/bin/sh\nprintf '2.0.0\\n  '\n");
         let v = run_version_check(&script).unwrap();
         assert_eq!(v, Version::new(2, 0, 0));
     }

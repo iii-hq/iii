@@ -380,7 +380,7 @@ pub async fn handle_local_add(
                  Fix: run from inside your worker project, or create iii.worker.yaml:\n      \
                      name: my-worker\n      \
                      runtime:\n        \
-                       language: typescript\n      \
+                       kind: typescript\n      \
                      command: [\"node\", \"src/index.js\"]",
                 "error:".red(),
                 project_path.display()
@@ -640,7 +640,17 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         return 1;
     }
 
-    let language = project.language.as_deref().unwrap_or("typescript");
+    // Treat an empty/whitespace `kind:` field in the manifest the same
+    // as missing — otherwise a YAML typo like `kind: ""` would silently
+    // pass an empty string through the oci/inferred-script lookups and
+    // fall into their `_` defaults, giving the wrong base image instead
+    // of the documented "typescript" default.
+    let kind = project
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .unwrap_or("typescript");
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
@@ -700,13 +710,16 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
             );
             return 1;
         }
-        let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
-        };
+        let base_rootfs =
+            match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref())
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} {}", "error:".red(), e);
+                    return 1;
+                }
+            };
         if let Err(e) = clone_rootfs(&base_rootfs, &managed_dir) {
             eprintln!("{} Failed to create project rootfs: {}", "error:".red(), e);
             return 1;
@@ -751,13 +764,15 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     let mut env = build_local_env(&engine_url, &combined_project_env);
 
-    let base_rootfs = match super::worker_manager::oci::prepare_rootfs(language).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
+    let base_rootfs =
+        match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref()).await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
     let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
     for (key, value) in oci_env {
         env.entry(key).or_insert(value);
@@ -824,7 +839,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     let managed_dir_for_watcher = managed_dir.clone();
     let exit_code = super::worker_manager::libkrun::run_dev(
-        language,
+        kind,
         worker_path,
         exec_path,
         &args,
@@ -991,7 +1006,7 @@ mod tests {
     #[test]
     fn resolve_worker_name_from_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        let yaml = "name: my-cool-worker\nruntime:\n  language: typescript\n";
+        let yaml = "name: my-cool-worker\nruntime:\n  kind: typescript\n";
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
         let name = resolve_worker_name(dir.path());
         assert_eq!(name, "my-cool-worker");
@@ -1016,11 +1031,12 @@ mod tests {
     fn build_libkrun_local_script_first_run() {
         let project = ProjectInfo {
             name: "test".to_string(),
-            language: Some("typescript".to_string()),
+            kind: Some("typescript".to_string()),
             setup_cmd: "apt-get install nodejs".to_string(),
             install_cmd: "npm install".to_string(),
             run_cmd: "node server.js".to_string(),
             env: HashMap::new(),
+            base_image: None,
         };
         let script = build_libkrun_local_script(&project, false);
         assert!(script.contains("apt-get install nodejs"));
@@ -1041,11 +1057,12 @@ mod tests {
     fn build_libkrun_local_script_prepared() {
         let project = ProjectInfo {
             name: "test".to_string(),
-            language: Some("typescript".to_string()),
+            kind: Some("typescript".to_string()),
             setup_cmd: "apt-get install nodejs".to_string(),
             install_cmd: "npm install".to_string(),
             run_cmd: "node server.js".to_string(),
             env: HashMap::new(),
+            base_image: None,
         };
         let script = build_libkrun_local_script(&project, true);
         assert!(!script.contains("apt-get install nodejs"));

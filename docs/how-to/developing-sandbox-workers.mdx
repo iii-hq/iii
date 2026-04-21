@@ -44,7 +44,7 @@ Create an `iii.worker.yaml` at the root of your worker folder to configure the s
 ```yaml title="iii.worker.yaml"
 name: my-worker
 runtime:
-  language: typescript
+  kind: typescript
   package_manager: npm
   entry: src/index.ts
 resources:
@@ -59,11 +59,28 @@ env:
   LOG_LEVEL: debug
 ```
 </Tab>
+<Tab title="Bun">
+```yaml title="iii.worker.yaml"
+name: my-worker
+runtime:
+  kind: bun
+  entry: src/index.ts
+resources:
+  memory: 2048
+  cpus: 2
+scripts:
+  install: "bun install"
+  start: "bun run src/index.ts"
+env:
+  MY_API_KEY: sk-abc123
+  LOG_LEVEL: debug
+```
+</Tab>
 <Tab title="Python">
 ```yaml title="iii.worker.yaml"
 name: my-worker
 runtime:
-  language: python
+  kind: python
   entry: worker.py
 resources:
   memory: 2048
@@ -81,7 +98,7 @@ env:
 ```yaml title="iii.worker.yaml"
 name: my-worker
 runtime:
-  language: rust
+  kind: rust
 resources:
   memory: 2048
   cpus: 2
@@ -101,9 +118,10 @@ env:
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `name` | Yes | — | Worker name (used as the identifier in `config.yaml`) |
-| `runtime.language` | No | `typescript` | `typescript`, `javascript`, `python`, or `rust` |
-| `runtime.package_manager` | No | — | `npm`, `yarn`, `pnpm`, or `bun` (Node.js only) |
+| `runtime.kind` | No | `typescript` | `typescript`, `javascript`, `bun`, `python`, or `rust`. Older manifests with `runtime.language` still parse (with a deprecation warning) — rename to `kind`. |
+| `runtime.package_manager` | No | — | `npm`, `yarn`, `pnpm`, or `bun` (only for `kind: typescript`/`javascript`; `kind: bun` doesn't need this) |
 | `runtime.entry` | No | — | Entrypoint file |
+| `runtime.base_image` | No | kind default | OCI image used as the sandbox rootfs. Overrides the per-kind default. Defaults: `kind: typescript/javascript` → `iiidev/node:latest`; `kind: bun` → `oven/bun:latest`; `kind: python` → `iiidev/python:latest`; `kind: rust` → `library/rust:slim-bookworm`. See [Custom base images](#custom-base-images) below. |
 | `resources.memory` | No | `2048` | Memory in MiB allocated to the sandbox VM |
 | `resources.cpus` | No | `2` | Number of vCPUs allocated to the sandbox VM |
 | `scripts.setup` | No | inferred | One-time system setup (runs only on first start) |
@@ -111,11 +129,28 @@ env:
 | `scripts.start` | No | inferred | Worker start command |
 | `env.*` | No | — | Custom environment variables injected into the sandbox |
 
+#### Custom base images
+
+By default iii picks a rootfs image per `runtime.kind`: `iiidev/node:latest` for `typescript`/`javascript`, `oven/bun:latest` for `bun`, `iiidev/python:latest` for `python`, `library/rust:slim-bookworm` for `rust`. Most of the time you won't need `base_image` — just pick the right `kind`. Use `base_image` when you need a specific version (e.g. pin `oven/bun:1.3.12`) or a custom image with your team's deps pre-baked:
+
+```yaml title="iii.worker.yaml"
+name: my-worker
+runtime:
+  kind: bun
+  base_image: oven/bun:1    # pin a specific bun version
+  entry: src/index.ts
+scripts:
+  install: "bun install"
+  start: "bun run src/index.ts"
+```
+
+Each distinct `base_image` gets its own cache directory under `~/.iii/rootfs/<slug>/`, so pinning a specific bun version won't clobber the default `oven/bun:latest` rootfs used by other `kind: bun` workers. The image is pulled on first start and reused for every subsequent start that names the same image.
+
 <Info title="Reserved environment variables">
   `III_URL` and `III_ENGINE_URL` are set automatically and cannot be overridden through the manifest.
 </Info>
 
-If the `scripts` block is omitted entirely, commands are inferred from `runtime.language`, `runtime.package_manager`, and `runtime.entry`. For example, a TypeScript project using npm with entry `src/index.ts` infers `npm install` for install and `npx tsx src/index.ts` for start.
+If the `scripts` block is omitted entirely, commands are inferred from `runtime.kind`, `runtime.package_manager`, and `runtime.entry`. For example, `kind: typescript` + `package_manager: npm` + `entry: src/index.ts` infers `npm install` for install and `npx tsx src/index.ts` for start. `kind: bun` + `entry: src/index.ts` infers `bun install` + `bun run src/index.ts` (no `package_manager` needed).
 
 ### 3. Add the Worker
 

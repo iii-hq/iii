@@ -38,22 +38,103 @@ pub fn read_cached_rootfs_arch(rootfs_dir: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// OCI image to use as rootfs for each language.
-pub fn oci_image_for_language(language: &str) -> (&'static str, &'static str) {
-    match language {
+/// OCI image to use as rootfs for each `runtime.kind` value.
+///
+/// Returns `(image_ref, cache_dir_name)`. Keep in sync with
+/// `project::SUPPORTED_KINDS` and `project::infer_scripts`.
+pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
+    match kind {
         "typescript" | "javascript" => ("docker.io/iiidev/node:latest", "node"),
+        // `kind: bun` gets the oven image by default — ships bun
+        // preinstalled so no bootstrap is needed and startup is fast.
+        // Users can still override with `runtime.base_image` for a
+        // pinned version (e.g. `oven/bun:1.3`).
+        "bun" => ("docker.io/oven/bun:latest", "bun"),
         "python" => ("docker.io/iiidev/python:latest", "python"),
         "rust" => ("docker.io/library/rust:slim-bookworm", "rust"),
         _ => ("docker.io/iiidev/node:latest", "node"),
     }
 }
 
-/// Determine the rootfs path for a given language.
-/// If the rootfs doesn't exist locally, pulls the OCI image and extracts it.
-pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
-    let (oci_image, rootfs_name) = oci_image_for_language(language);
+/// Sanitize an OCI image reference into a cache-dir-safe name so two
+/// workers using different base images don't collide on disk under
+/// `~/.iii/rootfs/<name>/`. Keeps it human-readable for easier
+/// troubleshooting: `oven/bun:1` → `oven-bun-1-<hash>`,
+/// `ghcr.io/my-org/my-worker:latest` → `ghcr.io-my-org-my-worker-latest-<hash>`.
+///
+/// The 16-hex-digit FNV-1a suffix is derived from the raw image
+/// reference. It makes the slug injective: inputs like `a/b:c`,
+/// `a-b:c`, and `a/b-c` all sanitize to `a-b-c` but hash to different
+/// suffixes, so their cache dirs never collide. Cost is 17 trailing
+/// characters on every dir name.
+pub fn rootfs_slug_for_image(image: &str) -> String {
+    let raw = image.trim();
+    let hash = fnv1a64(raw.as_bytes());
+    // Single-pass emit + coalesce runs of `-`; O(n) vs the previous
+    // `while contains("--") { replace("--","-") }` O(n²) loop.
+    let mut s = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        let out = match c {
+            'A'..='Z' => c.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' | '.' | '-' | '_' => c,
+            _ => '-',
+        };
+        if out == '-' && s.ends_with('-') {
+            continue;
+        }
+        s.push(out);
+    }
+    let base = s
+        .trim_matches(|c: char| c == '-' || c == '.' || c == '_')
+        .to_string();
+    if base.is_empty() {
+        format!("image-{hash:016x}")
+    } else {
+        format!("{base}-{hash:016x}")
+    }
+}
 
-    let search_paths = rootfs_search_paths(rootfs_name);
+/// 64-bit FNV-1a. Picked over SHA because a) we only need collision
+/// resistance against accidental slug overlap, not cryptographic
+/// strength, and b) no external dependency — the whole hash is 4 lines.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Determine the rootfs path for a given `runtime.kind`, optionally
+/// overriding the default base image. If the rootfs doesn't exist
+/// locally, pulls the OCI image and extracts it.
+///
+/// `base_image_override` comes from `runtime.base_image` in
+/// `iii.worker.yaml`. When `Some`, the override's image ref is pulled
+/// into a slug-derived cache dir so it doesn't clobber the kind-default
+/// rootfs (e.g. a `base_image: oven/bun:1` worker gets its own
+/// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
+/// `~/.iii/rootfs/bun/` that every default `kind: bun` worker uses).
+pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
+    let (oci_image, rootfs_name): (String, String) = match base_image_override {
+        Some(img) if !img.trim().is_empty() => {
+            let slug = rootfs_slug_for_image(img.trim());
+            if slug.is_empty() {
+                anyhow::bail!(
+                    "base_image {:?} produced an empty rootfs slug — use a normal image reference like `oven/bun:1`",
+                    img
+                );
+            }
+            (img.trim().to_string(), slug)
+        }
+        _ => {
+            let (img, name) = oci_image_for_kind(kind);
+            (img.to_string(), name.to_string())
+        }
+    };
+
+    let search_paths = rootfs_search_paths(&rootfs_name);
     for path in &search_paths {
         if path.exists() && path.join("bin").exists() {
             return Ok(path.clone());
@@ -64,11 +145,11 @@ pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
         .join(".iii")
         .join("rootfs")
-        .join(rootfs_name);
+        .join(&rootfs_name);
 
     eprintln!("  Pulling rootfs {} ({})...", rootfs_name, oci_image);
 
-    pull_and_extract_rootfs(oci_image, &rootfs_dir).await?;
+    pull_and_extract_rootfs(&oci_image, &rootfs_dir).await?;
 
     let workspace = rootfs_dir.join("workspace");
     std::fs::create_dir_all(&workspace).ok();
@@ -244,9 +325,10 @@ pub fn extract_layer_with_limits(
     Ok(())
 }
 
-/// Collect registry hosts that should use plain HTTP instead of HTTPS.
-/// Reads from the `III_INSECURE_REGISTRIES` env var (comma-separated).
-/// `localhost` and `127.0.0.1` (any port) are always treated as insecure.
+/// Collect registries that should use HTTP instead of HTTPS.
+/// `localhost`/`127.0.0.1` (any port) always; anything else only via
+/// `III_INSECURE_REGISTRIES` — which emits a per-pull warning so a
+/// forgotten env var can't silently enable LAN MITM.
 fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
     let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 
@@ -259,7 +341,21 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
     }
 
     if let Ok(extra) = std::env::var("III_INSECURE_REGISTRIES") {
-        for r in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let extras: Vec<&str> = extra
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "localhost" && *s != "127.0.0.1")
+            .collect();
+        if !extras.is_empty() {
+            eprintln!(
+                "  {} III_INSECURE_REGISTRIES is active — plain-HTTP pulls permitted for: {}. \
+                 MITM on the LAN can serve poisoned images. Unset the env var if this is not \
+                 intentional.",
+                "warning:".yellow(),
+                extras.join(", ")
+            );
+        }
+        for r in extras {
             if !registries.contains(&r.to_string()) {
                 registries.push(r.to_string());
             }
@@ -529,36 +625,129 @@ mod tests {
     }
 
     #[test]
-    fn test_oci_image_for_language_defaults_to_node() {
-        let (image, name) = oci_image_for_language("unknown_lang");
+    fn slug_preserves_dots_and_dashes() {
+        let slug = rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest");
+        assert!(
+            slug.starts_with("ghcr.io-my-org-my-worker-latest-"),
+            "unexpected slug: {slug}"
+        );
+    }
+
+    #[test]
+    fn slug_converts_simple_image_ref() {
+        let slug = rootfs_slug_for_image("oven/bun:1");
+        assert!(slug.starts_with("oven-bun-1-"), "unexpected slug: {slug}");
+    }
+
+    #[test]
+    fn slug_lowercases() {
+        let slug = rootfs_slug_for_image("GHCR.io/Foo/Bar:1.0");
+        assert!(
+            slug.starts_with("ghcr.io-foo-bar-1.0-"),
+            "unexpected slug: {slug}"
+        );
+    }
+
+    #[test]
+    fn slug_collapses_consecutive_separators() {
+        // Weird but defensive: double colons and leading/trailing junk
+        // shouldn't produce runs of dashes or empty segments.
+        let a = rootfs_slug_for_image("::foo::");
+        assert!(a.starts_with("foo-"), "unexpected slug: {a}");
+        let b = rootfs_slug_for_image("a//b:c");
+        assert!(b.starts_with("a-b-c-"), "unexpected slug: {b}");
+    }
+
+    #[test]
+    fn slug_different_images_produce_different_slugs() {
+        // Guards the "two workers with different base images share a
+        // cache dir" collision — the whole point of slugging the full
+        // image ref instead of just the name.
+        assert_ne!(
+            rootfs_slug_for_image("docker.io/iiidev/node:latest"),
+            rootfs_slug_for_image("oven/bun:1")
+        );
+    }
+
+    /// Regression for the slug-collision hole: refs that sanitize to
+    /// the same human-readable prefix must still get distinct cache
+    /// dirs via the hash suffix. Without the suffix, `a/b:c`, `a-b:c`,
+    /// and `a/b-c` all collapse to `a-b-c` and one worker would clobber
+    /// another's extracted rootfs on disk.
+    #[test]
+    fn slug_hash_prevents_prefix_collision() {
+        let a = rootfs_slug_for_image("a/b:c");
+        let b = rootfs_slug_for_image("a-b:c");
+        let c = rootfs_slug_for_image("a/b-c");
+        // All three share the human prefix.
+        assert!(a.starts_with("a-b-c-"));
+        assert!(b.starts_with("a-b-c-"));
+        assert!(c.starts_with("a-b-c-"));
+        // But none of the full slugs collide.
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn slug_falls_back_to_image_prefix_when_sanitization_empties() {
+        // Pure-separator input produces an empty human base; we still
+        // want a stable deterministic directory, so fall back to
+        // "image-<hash>" instead of the empty string that would make
+        // `prepare_rootfs` bail.
+        let slug = rootfs_slug_for_image(":::");
+        assert!(slug.starts_with("image-"), "unexpected slug: {slug}");
+    }
+
+    #[test]
+    fn slug_is_deterministic() {
+        // Hash must be stable across calls on the same input so cache
+        // dirs survive restarts. FNV-1a is deterministic by definition
+        // but this locks in the guarantee for the combined slug too.
+        assert_eq!(
+            rootfs_slug_for_image("oven/bun:1"),
+            rootfs_slug_for_image("oven/bun:1")
+        );
+    }
+
+    #[test]
+    fn test_oci_image_for_kind_defaults_to_node() {
+        let (image, name) = oci_image_for_kind("unknown_kind");
         assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
 
     #[test]
     fn test_oci_image_for_typescript() {
-        let (image, name) = oci_image_for_language("typescript");
+        let (image, name) = oci_image_for_kind("typescript");
         assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
 
     #[test]
+    fn test_oci_image_for_bun() {
+        let (image, name) = oci_image_for_kind("bun");
+        assert_eq!(image, "docker.io/oven/bun:latest");
+        assert_eq!(name, "bun");
+    }
+
+    #[test]
     fn test_oci_image_for_python() {
-        let (image, name) = oci_image_for_language("python");
+        let (image, name) = oci_image_for_kind("python");
         assert_eq!(image, "docker.io/iiidev/python:latest");
         assert_eq!(name, "python");
     }
 
     #[test]
     fn test_oci_image_for_rust() {
-        let (image, name) = oci_image_for_language("rust");
+        let (image, name) = oci_image_for_kind("rust");
         assert_eq!(image, "docker.io/library/rust:slim-bookworm");
         assert_eq!(name, "rust");
     }
 
     #[test]
     fn test_oci_image_for_go() {
-        let (image, name) = oci_image_for_language("go");
+        let (image, name) = oci_image_for_kind("go");
         assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
