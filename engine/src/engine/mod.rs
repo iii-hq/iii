@@ -566,11 +566,7 @@ impl Engine {
     }
 
     #[doc(hidden)]
-    pub async fn router_msg(
-        &self,
-        worker: &WorkerConnection,
-        msg: &Message,
-    ) -> anyhow::Result<()> {
+    pub async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
                 id,

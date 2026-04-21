@@ -47,7 +47,9 @@ fn register_echo_handler(engine: &Engine, function_id: &str) {
             response_format: None,
             metadata: None,
         },
-        Handler::new(|input| async move { FunctionResult::Success(Some(json!({ "echo": input }))) }),
+        Handler::new(
+            |input| async move { FunctionResult::Success(Some(json!({ "echo": input }))) },
+        ),
     );
 }
 
@@ -167,7 +169,8 @@ async fn discovery_function_denied_under_restricted_expose() {
         expect_result(&engine, &worker, &mut rx, "engine::functions::list").await;
 
     assert_eq!(function_id, "engine::functions::list");
-    let err = error.expect("expected FORBIDDEN for engine::functions::list under restricted expose");
+    let err =
+        error.expect("expected FORBIDDEN for engine::functions::list under restricted expose");
     assert_eq!(err.code, "FORBIDDEN");
     assert!(
         err.message.contains("engine::functions::list"),

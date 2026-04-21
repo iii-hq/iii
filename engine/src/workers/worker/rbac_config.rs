@@ -628,14 +628,15 @@ mod tests {
 
     #[test]
     fn no_rbac_config_still_allows_everything() {
-        for id in ALL_INFRASTRUCTURE_IDS.iter().chain([
-            "engine::functions::list",
-            "engine::workers::list",
-            "api::anything",
-            "internal::private",
-        ]
-        .iter())
-        {
+        for id in ALL_INFRASTRUCTURE_IDS.iter().chain(
+            [
+                "engine::functions::list",
+                "engine::workers::list",
+                "api::anything",
+                "internal::private",
+            ]
+            .iter(),
+        ) {
             assert!(
                 is_function_allowed(id, None, &[], &[], None),
                 "expected {} to be allowed when config is None",
