@@ -5,6 +5,16 @@ Node.js / TypeScript SDK for the [iii engine](https://github.com/iii-hq/iii).
 [![npm](https://img.shields.io/npm/v/iii-sdk)](https://www.npmjs.com/package/iii-sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../../../LICENSE)
 
+## Prerequisites
+
+The SDK connects to a running iii engine over WebSocket. Before running the snippets below:
+
+1. Install the engine: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`
+2. Start the engine in a separate terminal: `iii --config config.yaml`
+   (default WebSocket URL: `ws://localhost:49134`)
+
+See the [iii quickstart](https://iii.dev/docs/quickstart) for scaffolding a full project.
+
 ## Install
 
 ```bash
