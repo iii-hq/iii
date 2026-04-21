@@ -253,6 +253,18 @@ pub struct Engine {
     worker_manager_port: Arc<std::sync::OnceLock<u16>>,
 }
 
+fn resolve_registration_id(worker: &WorkerConnection, id: &str) -> String {
+    if let Some(prefix) = worker
+        .session
+        .as_ref()
+        .and_then(|s| s.function_registration_prefix.as_ref())
+    {
+        format!("{prefix}::{id}")
+    } else {
+        id.to_string()
+    }
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
@@ -993,15 +1005,17 @@ impl Engine {
                     function_id = %id,
                     "UnregisterFunction"
                 );
-                if worker.has_external_function_id(id).await {
-                    worker.remove_external_function_id(id).await;
+
+                let resolved_id = resolve_registration_id(worker, id);
+                if worker.has_external_function_id(&resolved_id).await {
+                    worker.remove_external_function_id(&resolved_id).await;
                     // Only tear down the engine-global registration if this
                     // worker is still the recorded owner. Without the gate,
                     // an Unregister from a worker whose id was already
                     // hijacked by a fresher worker would wipe the live
                     // worker's http_module + service_registry entries — the
                     // same bug shape `cleanup_worker` guards against.
-                    if !self.release_external_function_if_owner(&worker.id, id) {
+                    if !self.release_external_function_if_owner(&worker.id, &resolved_id) {
                         tracing::debug!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -1013,7 +1027,7 @@ impl Engine {
                         .service_registry
                         .get_service::<HttpFunctionsWorker>("http_functions")
                     {
-                        match http_module.unregister_http_function(id).await {
+                        match http_module.unregister_http_function(&resolved_id).await {
                             Ok(()) => {
                                 tracing::debug!(
                                     worker_id = %worker.id,
@@ -1030,14 +1044,15 @@ impl Engine {
                                 );
                             }
                         }
-                        self.service_registry.remove_function_from_services(id);
+                        self.service_registry
+                            .remove_function_from_services(&resolved_id);
                     } else {
-                        self.remove_function_from_engine(id);
+                        self.remove_function_from_engine(&resolved_id);
                     }
                 } else {
-                    worker.remove_function_id(id).await;
+                    worker.remove_function_id(&resolved_id).await;
                     // Same ownership gate as the external branch above.
-                    if !self.release_function_if_owner(&worker.id, id) {
+                    if !self.release_function_if_owner(&worker.id, &resolved_id) {
                         tracing::debug!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -1114,13 +1129,7 @@ impl Engine {
                     }
                 }
 
-                if let Some(prefix) = worker
-                    .session
-                    .as_ref()
-                    .and_then(|s| s.function_registration_prefix.as_ref())
-                {
-                    reg_id = format!("{prefix}::{reg_id}");
-                }
+                reg_id = resolve_registration_id(worker, &reg_id);
 
                 // Claim ownership BEFORE mutating any engine-global state. An
                 // old worker's `cleanup_worker` running on another task can
@@ -1986,6 +1995,175 @@ mod tests {
         assert!(
             !function_ids.contains(&"removable_func".to_string()),
             "worker should no longer track the function id"
+        );
+    }
+
+    /// Builds a session whose `function_registration_prefix` is set, with
+    /// the rest of the fields at sensible defaults for register/unregister
+    /// tests. Used by the prefix regression tests for iii-hq/iii#1508.
+    fn session_with_prefix(prefix: &str) -> crate::workers::worker::rbac_session::Session {
+        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
+        use uuid::Uuid;
+        Session {
+            engine: Arc::new(Engine::new()),
+            config: Arc::new(WorkerManagerConfig::default()),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: Uuid::new_v4(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![],
+            allowed_trigger_types: None,
+            allow_function_registration: true,
+            allow_trigger_type_registration: true,
+            context: serde_json::json!({}),
+            function_registration_prefix: Some(prefix.to_string()),
+        }
+    }
+
+    /// Regression: `function.unregister()` must honor
+    /// `function_registration_prefix`. Before the fix, register prepended the
+    /// prefix but unregister looked up the raw id, so the entry stayed in
+    /// `engine.functions` forever (iii-hq/iii#1508).
+    #[tokio::test]
+    async fn test_router_msg_unregister_function_with_prefix() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(tx, session_with_prefix("test-prefix"));
+
+        let register_msg = Message::RegisterFunction {
+            id: "removable_func".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register should succeed");
+
+        assert!(
+            engine
+                .functions
+                .get("test-prefix::removable_func")
+                .is_some(),
+            "function should be stored under the prefixed id"
+        );
+        assert!(
+            engine.functions.get("removable_func").is_none(),
+            "raw (unprefixed) id must not be used as the storage key"
+        );
+
+        let unregister_msg = Message::UnregisterFunction {
+            id: "removable_func".to_string(),
+        };
+        engine
+            .router_msg(&worker, &unregister_msg)
+            .await
+            .expect("unregister should succeed");
+
+        assert!(
+            engine
+                .functions
+                .get("test-prefix::removable_func")
+                .is_none(),
+            "prefixed function must be removed after unregister (iii-hq/iii#1508)"
+        );
+        let function_ids = worker.get_regular_function_ids().await;
+        assert!(
+            !function_ids.contains(&"test-prefix::removable_func".to_string()),
+            "worker should no longer track the prefixed function id"
+        );
+    }
+
+    /// Regression: the external-function branch of `UnregisterFunction`
+    /// touches `http_module.unregister_http_function` and
+    /// `service_registry.remove_function_from_services`, which are distinct
+    /// call-sites from the regular branch. Verify the prefix is applied
+    /// there too (iii-hq/iii#1508).
+    #[tokio::test]
+    async fn test_router_msg_unregister_external_function_with_prefix() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(tx, session_with_prefix("test-prefix"));
+
+        let register_msg = Message::RegisterFunction {
+            id: "my_lambda".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: "http://example.com/lambda".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register external function should succeed");
+
+        assert!(engine.functions.get("test-prefix::my_lambda").is_some());
+        assert!(
+            worker
+                .has_external_function_id("test-prefix::my_lambda")
+                .await,
+            "worker should track the prefixed external id"
+        );
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key("test-prefix::my_lambda"),
+            "http module should have the prefixed registration"
+        );
+
+        let unregister_msg = Message::UnregisterFunction {
+            id: "my_lambda".to_string(),
+        };
+        engine
+            .router_msg(&worker, &unregister_msg)
+            .await
+            .expect("unregister external function should succeed");
+
+        assert!(
+            !worker
+                .has_external_function_id("test-prefix::my_lambda")
+                .await,
+            "worker must no longer track the prefixed external id"
+        );
+        assert!(
+            !http_module
+                .http_functions()
+                .contains_key("test-prefix::my_lambda"),
+            "http module must drop the prefixed registration on unregister (iii-hq/iii#1508)"
         );
     }
 
