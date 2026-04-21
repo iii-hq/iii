@@ -57,6 +57,7 @@ from .stream import (
     StreamListGroupsInput,
     StreamListInput,
     StreamSetInput,
+    StreamUpdateInput,
 )
 from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
@@ -1415,6 +1416,10 @@ class III:
             )
             return await stream.list_groups(input_data)
 
+        async def update_handler(data: Any) -> list[Any]:
+            input_data = StreamUpdateInput(**data) if isinstance(data, dict) else data
+            return await stream.update(input_data)
+
         self.register_function({"id": f"stream::get({stream_name})"}, get_handler)
         self.register_function({"id": f"stream::set({stream_name})"}, set_handler)
         self.register_function({"id": f"stream::delete({stream_name})"}, delete_handler)
@@ -1422,6 +1427,7 @@ class III:
         self.register_function(
             {"id": f"stream::list_groups({stream_name})"}, list_groups_handler
         )
+        self.register_function({"id": f"stream::update({stream_name})"}, update_handler)
 
 
 class TriggerAction:
