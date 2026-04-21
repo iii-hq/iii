@@ -500,18 +500,11 @@ fn rootfs_search_paths_includes_standard_locations() {
 // =============================================================================
 // Group 7: Feature-gated network tests (OCI-01)
 // =============================================================================
-
-#[cfg(feature = "integration-oci")]
-mod gated {
-    use super::*;
-
-    #[tokio::test]
-    async fn pull_and_extract_rootfs_placeholder() {
-        // This test requires network access and a running OCI registry.
-        // It is intentionally feature-gated behind integration-oci.
-        // Full implementation depends on registry availability.
-        // For now, verify the import compiles under the feature gate.
-        use iii_worker::cli::worker_manager::oci::pull_and_extract_rootfs;
-        let _ = pull_and_extract_rootfs; // type-check only
-    }
-}
+//
+// The previous `pull_and_extract_rootfs_placeholder` test was a
+// type-check-only stub (`let _ = pull_and_extract_rootfs;`) that would
+// still pass if the function panicked on every input — it's a false
+// signal of coverage. Removed until a real test that drives the
+// function against a local registry fixture can be written. Type
+// checking is already handled by `cargo check --features integration-oci`;
+// no reason to dress that up as a test.
