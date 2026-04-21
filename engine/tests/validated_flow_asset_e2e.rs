@@ -114,7 +114,7 @@ async fn validated_flow_helper_builds_graph_asset_from_real_http_queue_state_pat
 
                 match engine
                     .call(
-                        "enqueue",
+                        "iii::durable::publish",
                         json!({
                             "topic": queue_topic,
                             "data": {
@@ -217,7 +217,7 @@ async fn validated_flow_helper_builds_graph_asset_from_real_http_queue_state_pat
         .trigger_registry
         .register_trigger(Trigger {
             id: "validated-flow-queue".to_string(),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "flow_poc::queue_consumer".to_string(),
             config: json!({
                 "topic": queue_topic,

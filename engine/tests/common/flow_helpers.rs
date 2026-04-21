@@ -96,7 +96,7 @@ impl HttpQueueStatePathSpec {
         let enqueue_call = find_child_span(
             &spans,
             entry_call,
-            "call enqueue",
+            "call iii::durable::publish",
             Some(("messaging.destination.name", self.queue_topic.as_str())),
         )?;
         let queue_job = find_child_span(
