@@ -84,7 +84,41 @@ iii worker logs image-resize
 iii worker logs image-resize --follow
 ```
 
-### 5. Build and Publish Your Own Image
+### 5. Exec into a Running Worker
+
+Run a command inside a running worker's microVM — useful for debugging crashed handlers, inspecting guest filesystem state, running ad-hoc scripts, or opening an interactive shell. Behaves like `docker exec`: stdin/stdout/stderr flow through, the child's exit code becomes the CLI's exit code.
+
+```bash
+# Run a one-shot command
+iii worker exec image-resize -- ls -la /workspace
+
+# Set environment variables and a working directory
+iii worker exec image-resize -e LOG_LEVEL=debug -w /tmp -- ./probe
+
+# Kill the command after 30 seconds (exits with code 124 on timeout)
+iii worker exec image-resize --timeout 30s -- ./long-task
+
+# Interactive shell (TTY auto-detected when run in a terminal)
+iii worker exec image-resize -- sh
+```
+
+<Info title="TTY auto-detection">
+  When both stdin and stdout are terminals, `iii worker exec` automatically allocates a pseudo-terminal — line editing, job control, and prompts all work. The moment either stream is redirected or piped (`... -- cmd | tee log`, `... -- cmd > out.txt`, CI), pipe mode kicks back in so output stays byte-exact. Pass `-t` to force TTY, or `--no-tty` to force pipe mode in a terminal.
+</Info>
+
+**Signals and timeouts.** Press `Ctrl-C` once to send `SIGINT` to the guest process; press it again within a second to escalate to `SIGKILL` and exit. `--timeout` accepts `humantime` syntax (`30s`, `5m`, `1500ms`); on expiry the client kills the guest session and exits with code `124`, matching coreutils `timeout(1)`.
+
+**Flags:**
+
+| Flag | Purpose |
+|---|---|
+| `-e KEY=VALUE` | Set an env var in the spawned process. Repeatable. |
+| `-w PATH` | Working directory inside the guest. Defaults to `/workspace`. |
+| `-t`, `--tty` | Force TTY mode (required if stdin isn't a terminal and you want one anyway). |
+| `--no-tty` | Force pipe mode, disabling auto-detection. |
+| `--timeout DURATION` | SIGKILL the child after `DURATION`; exit `124`. |
+
+### 6. Build and Publish Your Own Image
 
 To distribute a custom worker as an OCI image, create a project that uses an iii SDK, package it with a Dockerfile, and push it to a registry.
 

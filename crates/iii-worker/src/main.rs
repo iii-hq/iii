@@ -96,8 +96,46 @@ async fn main() -> anyhow::Result<()> {
             iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
                 .await
         }
+        Commands::Exec(args) => {
+            let handler = iii_worker::cli::shell_client::handle_managed_exec;
+            handler(args).await
+        }
         Commands::VmBoot(args) => {
-            iii_worker::cli::vm_boot::run(&args);
+            // Run the VM on a dedicated OS thread. `msb_krun`'s virtio-blk
+            // devices (imago-backed) call `tokio::Runtime::block_on` in
+            // their Drop impl to finalize async storage shutdown. Nested
+            // block_on inside our outer `#[tokio::main]` runtime panics
+            // with "Cannot start a runtime from within a runtime" — only
+            // observable once a `.disk()` attach is wired in. Spawning
+            // on a std::thread gives the Drop impl a runtime-free
+            // context so it can construct its own ephemeral runtime
+            // without tripping tokio's nested-runtime detector.
+            //
+            // `vm_boot::run` has return type `-> !` so the thread only
+            // returns on panic; normal exit happens via
+            // `std::process::exit`. If we ever see the join below
+            // return cleanly, something has returned from `run` that
+            // was supposed to diverge — treat it as a bug, exit 1.
+            //
+            // TODO(msb_krun upstream): remove this std::thread dispatch
+            // once virtio-blk Drop uses `Handle::try_current()` instead
+            // of unconditional `block_on`. Draft issue at
+            // ~/.claude/plans/msb_krun-upstream-issue-draft.md — file via
+            // `gh issue create` against microsandbox/microsandbox.
+            let handle = std::thread::Builder::new()
+                .name("iii-worker-vm-boot".to_string())
+                .spawn(move || iii_worker::cli::vm_boot::run(&args))
+                .expect("failed to spawn vm-boot thread");
+            match handle.join() {
+                Err(_) => {
+                    eprintln!("error: vm-boot thread panicked");
+                    std::process::exit(1);
+                }
+                Ok(_never) => {
+                    eprintln!("error: vm-boot returned without std::process::exit");
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::WatchSource(args) => {
             let project = std::path::PathBuf::from(&args.project);

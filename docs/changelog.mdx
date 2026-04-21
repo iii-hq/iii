@@ -34,6 +34,12 @@ description: "Product updates and announcements for iii."
 
   [Managing Container Workers &rarr;](/how-to/managing-container-workers) &middot; [Developing Sandbox Workers &rarr;](/how-to/developing-sandbox-workers)
 
+  ## `iii worker exec`
+
+  A new `iii worker exec <name> -- <cmd>` command runs arbitrary commands inside a running worker's microVM — think `docker exec` for iii workers. stdin/stdout/stderr flow through, exit codes pass back, Ctrl-C delivers SIGINT (twice for SIGKILL). TTY mode auto-detects when both stdin and stdout are terminals, so `iii worker exec my-worker -- sh` in a terminal gives you a real interactive shell with line editing and job control. Pass `--timeout 30s` to bound runaway commands (exit 124 matches coreutils).
+
+  [Exec into a running worker &rarr;](/how-to/managing-container-workers#5-exec-into-a-running-worker)
+
   ## Topic-based fan-out queues
 
   **Breaking.** The topic-based queue API has been renamed. The trigger type changes from `queue` to `durable:subscriber`, and the publish function changes from `enqueue` to `iii::durable::publish`:

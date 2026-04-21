@@ -72,6 +72,57 @@ pub struct VmBootArgs {
     /// restarts fall back to the full `iii-worker start` path.
     #[arg(long)]
     pub control_sock: Option<String>,
+
+    /// Enable SMT / hyperthreading in the guest. Default off — matches
+    /// Firecracker's conservative default and avoids noisy-neighbour
+    /// effects between co-tenant workers. Flip on to squeeze more
+    /// throughput on Intel hosts where the perf delta is measurable.
+    #[arg(long, default_value = "false")]
+    pub hyperthreading: bool,
+
+    /// Enable nested virtualization. Default off — a microworker VM has
+    /// no need to run its own hypervisor, and enabling nested-KVM is a
+    /// measurable perf hit. Flip on only for CI/test scenarios that
+    /// explicitly boot a VM inside the worker.
+    #[arg(long, default_value = "false")]
+    pub nested_virt: bool,
+
+    /// DAX window size (MiB) for every virtiofs mount. 0 means
+    /// "take the msb_krun default". Larger windows cut syscall
+    /// roundtrips on read-heavy mounts (node_modules, .venv,
+    /// site-packages); cost is guest virtual address space and a
+    /// small amount of host RAM per mount. Safe starting point:
+    /// 256 for dev workflows with large dep trees.
+    #[arg(long, default_value = "0")]
+    pub virtiofs_shm_size_mib: u32,
+
+    /// Soft / hard limit for `RLIMIT_NOFILE` applied to the guest
+    /// worker process via libkrun's `KRUN_RLIMITS`. Complements the
+    /// guest-side raise in `iii-init::rlimit::raise_nofile` — setting
+    /// it here means every fd opened by `init.krun` BEFORE iii-init
+    /// runs (dynamic loader, early allocations) also sees the raised
+    /// limit. 0 means "don't set" (fall back to iii-init's raise).
+    #[arg(long, default_value = "65536")]
+    pub nofile_limit: u64,
+
+    /// Unix socket path where this `__vm-boot` process will listen for
+    /// `iii worker exec` clients. Separate from `--control-sock`
+    /// because exec-style sessions are multiplexed (many concurrent
+    /// requests on one virtio-console port), which the single-request
+    /// control proxy doesn't support.
+    ///
+    /// When set, `__vm-boot` creates a second `socketpair(AF_UNIX)`,
+    /// wires one end into the VM as a named virtio-console port
+    /// (`iii.exec`), and spawns the async [`crate::cli::shell_relay`]
+    /// task on the existing tokio runtime to route frames between
+    /// connecting clients and the VM. The in-VM `iii-init` shell
+    /// dispatcher reads/writes the other end.
+    ///
+    /// When absent, the VM boots without an exec port and
+    /// `iii worker exec <name>` refuses with a clear "unavailable"
+    /// error rather than silently hanging on a missing socket.
+    #[arg(long)]
+    pub shell_sock: Option<String>,
 }
 
 /// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
@@ -566,8 +617,15 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
 
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
 
+    let hyperthreading = args.hyperthreading;
+    let nested_virt = args.nested_virt;
     let mut builder = VmBuilder::new()
-        .machine(|m| m.vcpus(args.vcpus as u8).memory_mib(args.ram as usize))
+        .machine(|m| {
+            m.vcpus(args.vcpus as u8)
+                .memory_mib(args.ram as usize)
+                .hyperthreading(hyperthreading)
+                .nested_virt(nested_virt)
+        })
         .kernel(|k| {
             let k = match resolve_krunfw_file_path() {
                 Some(path) => k.krunfw_path(&path),
@@ -579,14 +637,29 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
 
     let mount_plan = build_virtiofs_mount_plan(&args.mount)?;
     let virtiofs_mount_env = mount_plan.env_var.clone();
+    // Per-mount DAX window. 0 (the CLI default) skips the call so
+    // msb_krun's built-in default applies; any positive value is
+    // converted to bytes and set on every virtiofs attach.
+    let shm_bytes_per_mount: usize =
+        (args.virtiofs_shm_size_mib as usize).saturating_mul(1024 * 1024);
     for entry in mount_plan.entries {
         let tag = entry.tag.clone();
         let host_path = entry.host_path.clone();
-        builder = builder.fs(move |fs| fs.tag(&tag).path(&host_path));
+        builder = builder.fs(move |fs| {
+            let mut fs = fs.tag(&tag);
+            if shm_bytes_per_mount > 0 {
+                fs = fs.shm_size(shm_bytes_per_mount);
+            }
+            fs.path(&host_path)
+        });
     }
 
+    // 2 workers when the shell relay is active (benefits from
+    // parallel read/write task scheduling); 1 otherwise (network +
+    // control proxy run fine on a single worker).
+    let worker_threads = if args.shell_sock.is_some() { 2 } else { 1 };
     let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(worker_threads)
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime failed: {}", e))?;
@@ -613,10 +686,57 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // Restart/Shutdown/Ping/Status RPCs over that port. Without the env
     // var, iii-init falls back to its legacy single-spawn waitpid path.
     let control_port_env = args.control_sock.is_some();
+    // Set up the shell-exec channel BEFORE constructing the exec
+    // closure so `shell_port_env` reflects whether the host relay
+    // actually started. Otherwise a failed `shell_relay::spawn` still
+    // sets III_SHELL_PORT and the guest dispatcher spins on a port
+    // nobody reads, silently breaking `iii worker exec` for the VM's
+    // lifetime. Fail-closed: on relay spawn failure, skip the env var
+    // and drop the attached fd so the VM boots without the port.
+    let mut shell_port_env = false;
+    let mut guest_shell_fd: Option<i32> = None;
+    let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> = None;
+    if let Some(sock_path) = args.shell_sock.clone() {
+        let (host_end, guest_fd) = setup_control_socketpair()?;
+        match crate::cli::shell_relay::spawn(
+            tokio_rt.handle(),
+            std::path::PathBuf::from(sock_path),
+            host_end,
+        ) {
+            Ok(fp) => {
+                shell_sock_fingerprint = Some(fp);
+                guest_shell_fd = Some(guest_fd);
+                shell_port_env = true;
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: shell relay failed to start ({e}). \
+                     `iii worker exec` disabled; VM boots normally."
+                );
+                // `host_end` was moved into `shell_relay::spawn` and is
+                // dropped on its Err path. Close our guest half so we
+                // don't leak the fd for the __vm-boot process lifetime.
+                unsafe {
+                    libc::close(guest_fd);
+                }
+            }
+        }
+    }
     let control_workdir = args.workdir.clone();
+    let nofile_limit = args.nofile_limit;
 
     builder = builder.exec(|mut e| {
         e = e.path("/init.krun").workdir(&args.workdir);
+        // Bound the open-file table for the guest worker from the host
+        // builder. iii-init also calls setrlimit(RLIMIT_NOFILE) as its
+        // first act, but KRUN_RLIMITS is applied by init.krun before
+        // iii-init's Rust code runs — belt-and-suspenders for fds opened
+        // during dynamic loader setup and early allocator state.
+        // nofile_limit=0 means "let the guest rlimit::raise_nofile path
+        // own it" and skips the call.
+        if nofile_limit > 0 {
+            e = e.rlimit("RLIMIT_NOFILE", nofile_limit, nofile_limit);
+        }
         e = e.env("III_WORKER_CMD", &worker_cmd);
         e = e.env("III_INIT_DNS", &dns_nameserver);
         e = e.env("III_INIT_IP", &guest_ip);
@@ -629,6 +749,12 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
                 iii_supervisor::protocol::CONTROL_PORT_NAME,
             );
             e = e.env("III_WORKER_WORKDIR", &control_workdir);
+        }
+        if shell_port_env {
+            e = e.env(
+                "III_SHELL_PORT",
+                iii_supervisor::shell_protocol::SHELL_PORT_NAME,
+            );
         }
         if !virtiofs_mount_env.is_empty() {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
@@ -668,12 +794,20 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         guest_control_fd = Some(guest_fd);
     }
 
+    // Shell-exec channel was already set up above (before the exec
+    // closure was built) so `shell_port_env` correctly reflects whether
+    // the relay actually spawned. `guest_shell_fd` is `Some` only when
+    // spawn succeeded; on Err we dropped the guest fd to fail closed.
+
     builder = builder.console(move |mut c| {
         if let Some(path) = console_output_path {
             c = c.output(path);
         }
         if let Some(fd) = guest_control_fd {
             c = c.port(iii_supervisor::protocol::CONTROL_PORT_NAME, fd, fd);
+        }
+        if let Some(fd) = guest_shell_fd {
+            c = c.port(iii_supervisor::shell_protocol::SHELL_PORT_NAME, fd, fd);
         }
         c
     });
@@ -690,7 +824,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // independently.
     let pid_path_for_exit = args.pid_file.clone();
     let sock_fingerprint_for_exit = control_sock_fingerprint.clone();
-    if pid_path_for_exit.is_some() || sock_fingerprint_for_exit.is_some() {
+    let shell_fingerprint_for_exit = shell_sock_fingerprint.clone();
+    if pid_path_for_exit.is_some()
+        || sock_fingerprint_for_exit.is_some()
+        || shell_fingerprint_for_exit.is_some()
+    {
         builder = builder.on_exit(move |exit_code| {
             if let Some(ref p) = pid_path_for_exit {
                 let _ = std::fs::remove_file(p);
@@ -702,6 +840,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             if let Some(ref fp) = sock_fingerprint_for_exit {
                 fp.remove_if_unchanged();
             }
+            // Same fingerprint-guarded cleanup for the shell socket.
+            if let Some(ref fp) = shell_fingerprint_for_exit {
+                fp.remove_if_unchanged();
+            }
             if exit_code != 0 {
                 eprintln!("  VM exited with code {}", exit_code);
             }
@@ -711,6 +853,50 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     let vm = builder
         .build()
         .map_err(|e| format!("VM build failed: {}", e))?;
+
+    // Capture an exit handle BEFORE `enter()` moves `vm`. SIGTERM or
+    // SIGINT delivered to this __vm-boot process now triggers the
+    // VMM's clean shutdown path (event-loop reads the exit eventfd,
+    // notifies on_exit observers, `_exit`s with the current exit
+    // code) instead of the process being killed mid-guest-write.
+    // Without this, `stop → SIGTERM` from the host leaves the guest
+    // no chance to fsync, flush stdout logs, or drop pidfiles; the
+    // on_exit closure installed above is what does that cleanup.
+    //
+    // Register the two signal streams SYNCHRONOUSLY before spawning
+    // the awaiter task. Doing registration inside the spawned task
+    // leaves a race window: SIGTERM arriving between `spawn` and the
+    // task's first poll hits the default action (process kill).
+    // Registering via `block_on` here closes that window — once the
+    // block_on returns, the runtime's signal driver is already
+    // listening; the spawned task just awaits the notification.
+    let exit_handle_for_signals = vm.exit_handle();
+    let signals_registered: Result<
+        (tokio::signal::unix::Signal, tokio::signal::unix::Signal),
+        std::io::Error,
+    > = tokio_rt.block_on(async {
+        use tokio::signal::unix::{SignalKind, signal};
+        let sigterm = signal(SignalKind::terminate())?;
+        let sigint = signal(SignalKind::interrupt())?;
+        Ok((sigterm, sigint))
+    });
+    if let Ok((mut sigterm, mut sigint)) = signals_registered {
+        tokio_rt.spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => {}
+                _ = sigint.recv() => {}
+            }
+            // `trigger` is async-signal-safe and idempotent per
+            // msb_krun's ExitHandle docs — repeat fires after shutdown
+            // has already begun are no-ops.
+            exit_handle_for_signals.trigger();
+        });
+    } else {
+        eprintln!(
+            "  warning: failed to register SIGTERM/SIGINT handlers; \
+             `stop` will fall back to abrupt SIGTERM kills."
+        );
+    }
 
     let vcpu_label = if args.vcpus == 1 { "vCPU" } else { "vCPUs" };
     eprintln!(

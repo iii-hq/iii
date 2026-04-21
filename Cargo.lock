@@ -2156,6 +2156,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humantime"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
 name = "hyper"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,9 +2530,11 @@ name = "iii-init"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "iii-supervisor",
  "libc",
  "nix 0.31.2",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -2580,6 +2588,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2589,16 +2598,19 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "clap",
  "colored",
  "dirs",
  "flate2",
  "futures",
  "hex",
+ "humantime",
  "iii-filesystem",
  "iii-network",
  "iii-supervisor",
  "indicatif",
+ "libc",
  "msb_krun",
  "nix 0.30.1",
  "notify",
