@@ -84,7 +84,7 @@ These are part of iii's public contract and follow an **additive-only stability 
 Everything else under `engine::*` — discovery (`engine::functions::list`, `engine::workers::list`, `engine::triggers::list`, `engine::queue::*`), tracing (`engine::traces::*`), alerts (`engine::alerts::*`), health (`engine::health::check`), log storage (`engine::logs::*`), etc. — stays gated by `expose_functions`. A handler that calls `iii.listFunctions()` on a session that only exposes `api::*` will get:
 
 ```
-IIIInvocationError: FORBIDDEN: function 'engine::functions::list' not allowed
+IIIInvocationError: FORBIDDEN: function 'engine::functions::list' not allowed (add to rbac.expose_functions)
 ```
 
 If you want those discovery calls to work, add them to `expose_functions` explicitly:
@@ -96,6 +96,69 @@ rbac:
     - match("engine::functions::*")   # enable iii.listFunctions()
     - match("engine::workers::list")
 ```
+
+### Catching typed errors
+
+Engine rejections surface as typed errors in each SDK. Catch by category, or catch the base class to handle every rejection.
+
+<Tabs>
+<Tab title="Python">
+```python
+from iii import IIIForbiddenError, IIIInvocationError, IIITimeoutError
+
+try:
+    result = await iii.trigger(function_id='api::process', payload={...})
+except IIIForbiddenError as err:
+    # RBAC denied the call. err.function_id names the blocked target.
+    logger.warn(f'RBAC blocked {err.function_id}: {err.message}')
+except IIITimeoutError as err:
+    logger.warn(f'Timed out: {err.function_id}')
+except IIIInvocationError as err:
+    # Catch-all for any other engine rejection
+    logger.error(f'Engine error {err.code}: {err.message}')
+```
+
+Each error carries `.code`, `.message`, `.function_id`, `.stacktrace`, and `.invocation_id`. Existing `except Exception:` handlers continue to work — the new classes inherit from `Exception`.
+</Tab>
+<Tab title="Node / TypeScript">
+```typescript
+import { IIIInvocationError } from 'iii-sdk'
+
+try {
+  const result = await iii.trigger({ function_id: 'api::process', payload: {...} })
+} catch (err) {
+  if (err instanceof IIIInvocationError) {
+    if (err.code === 'FORBIDDEN') {
+      logger.warn(`RBAC blocked ${err.function_id}: ${err.message}`)
+    } else if (err.code === 'TIMEOUT') {
+      logger.warn(`Timed out: ${err.function_id}`)
+    }
+  }
+  throw err
+}
+```
+
+The Node SDK uses a single `IIIInvocationError` class — disambiguate by checking `err.code`.
+</Tab>
+<Tab title="Rust">
+```rust
+match iii.trigger("api::process", payload).await {
+    Ok(result) => { /* ... */ }
+    Err(iii_sdk::IIIError::Remote { code, message, .. }) if code == "FORBIDDEN" => {
+        tracing::warn!(%message, "RBAC blocked");
+    }
+    Err(iii_sdk::IIIError::Timeout) => {
+        tracing::warn!("invocation timed out");
+    }
+    Err(err) => return Err(err.into()),
+}
+```
+
+The Rust SDK currently returns `IIIError::Remote { code, message, stacktrace }` for engine rejections. Typed category variants are planned for a future release.
+</Tab>
+</Tabs>
+
+Errors are idiomatic per language: Python has a class hierarchy, Node has a single class plus `.code`, Rust uses enum variants. Fields are consistent across all three.
 
 ## 2. Write an Auth Function
 

@@ -1,6 +1,7 @@
 """III SDK for Python."""
 
 from .channels import ChannelReader, ChannelWriter
+from .errors import IIIForbiddenError, IIIInvocationError, IIITimeoutError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
 from .iii_constants import FunctionRef, InitOptions, ReconnectionConfig, TelemetryOptions
@@ -62,6 +63,10 @@ __all__ = [
     # Channels
     "ChannelReader",
     "ChannelWriter",
+    # Errors
+    "IIIForbiddenError",
+    "IIIInvocationError",
+    "IIITimeoutError",
     # Core
     "FunctionRef",
     "InitOptions",

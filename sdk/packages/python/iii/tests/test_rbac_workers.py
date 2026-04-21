@@ -8,6 +8,8 @@ import pytest
 from iii import (
     AuthInput,
     AuthResult,
+    IIIForbiddenError,
+    IIIInvocationError,
     InitOptions,
     MiddlewareFunctionInput,
     OnFunctionRegistrationInput,
@@ -337,5 +339,60 @@ class TestRbacWorkers:
             })
 
             assert result["echoed"]["msg"] == "prefix-test"
+        finally:
+            iii_client.shutdown()
+
+    def test_forbidden_wrapped_as_typed_error(self, iii_server):
+        """FORBIDDEN rejections surface as IIIForbiddenError with function_id set
+        and the engine's remediation phrase in the message."""
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            with pytest.raises(IIIForbiddenError) as excinfo:
+                iii_client.trigger({
+                    "function_id": "test::ew::private",
+                    "payload": {},
+                })
+
+            err = excinfo.value
+            assert isinstance(err, IIIInvocationError)  # base class
+            assert err.code == "FORBIDDEN"
+            assert err.function_id == "test::ew::private"
+            assert "FORBIDDEN" in str(err)
+            assert "test::ew::private" in str(err)
+            # Remediation phrase from engine/src/engine/mod.rs:806
+            assert "rbac.expose_functions" in str(err)
+            # Guards against raw-dict regression (the Python equivalent of
+            # Node's `[object Object]`).
+            assert str(err) != repr({"code": "FORBIDDEN"})
+        finally:
+            iii_client.shutdown()
+
+    def test_restricted_handler_happy_path_under_infra_carveout(self, iii_server):
+        """Regression guard for the engine-side infrastructure carve-out.
+
+        A worker whose `expose_functions` only lists `test::ew::*` must still
+        be able to complete registration (engine::workers::register) and run
+        SDK-transparent engine calls (engine::log::*, engine::baggage::*).
+        If the carve-out ever regresses, connection setup FORBIDDENs here.
+        """
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            # Successful invocation proves handshake completed without tripping
+            # FORBIDDEN on engine::workers::register (the transparent startup
+            # trigger) — otherwise the worker would not be reachable.
+            result = iii_client.trigger({
+                "function_id": "test::ew::valid-token-echo",
+                "payload": {"msg": "carveout-regression"},
+            })
+            assert result["valid_token"] is True
+            assert result["echoed"]["msg"] == "carveout-regression"
         finally:
             iii_client.shutdown()
