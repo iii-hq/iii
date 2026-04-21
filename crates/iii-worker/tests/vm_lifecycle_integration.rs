@@ -32,10 +32,7 @@
 
 use std::path::PathBuf;
 
-/// Return the rootfs path for integration tests, or skip the current
-/// test with a visible message. Matches the dispatcher test pattern
-/// so a missing prerequisite reports "skipped: X not set" instead of
-/// silently passing or panicking with `todo!()`.
+/// Return the rootfs path, or emit a visible [skip] and return None.
 fn integration_rootfs(env_var: &str) -> Option<PathBuf> {
     match std::env::var(env_var) {
         Ok(s) if !s.is_empty() => {
@@ -43,18 +40,12 @@ fn integration_rootfs(env_var: &str) -> Option<PathBuf> {
             if path.exists() {
                 Some(path)
             } else {
-                eprintln!(
-                    "[skip] vm_lifecycle_integration: {env_var}={s} points at a \
-                     path that does not exist — no coverage from this run"
-                );
+                eprintln!("[skip] vm_lifecycle_integration: {env_var}={s} missing");
                 None
             }
         }
         _ => {
-            eprintln!(
-                "[skip] vm_lifecycle_integration: {env_var} not set — no coverage \
-                 from this run. Track the gap as {env_var} unavailable."
-            );
+            eprintln!("[skip] vm_lifecycle_integration: {env_var} not set");
             None
         }
     }

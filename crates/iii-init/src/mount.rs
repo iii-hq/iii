@@ -235,20 +235,11 @@ fn mount_cgroup2() -> Result<(), InitError> {
                 eprintln!("iii-init: warning: failed to set memory.high: {e}");
             }
         }
-        // If the host attached a swap disk, cap `memory.swap.max` to
-        // the advertised swap capacity instead of the literal `"max"`.
-        // cgroup v2 defaults `memory.swap.max` to 0, which prevents
-        // ANY swap usage and re-OOM-kills memory-hungry runtimes
-        // (bun) at memory.max even with a swap device attached.
-        //
-        // Why a byte cap rather than `"max"`: the swap device is a
-        // sparse file of bounded size; once it fills, the kernel
-        // thrashes between RAM and the block device trying to
-        // reclaim pages that aren't on disk. A matching byte cap
-        // lets the kernel OOM-kill cleanly instead of spinning. If
-        // the size isn't advertised (older host, env var missing),
-        // fall back to `"max"` to preserve the old permissive
-        // behaviour — a thrash is still better than a hard re-OOM.
+        // Cap memory.swap.max to the advertised swap size. cgroup v2
+        // defaults to 0 (re-OOMs at memory.max even with swap).
+        // Literal "max" would let the kernel thrash once the sparse
+        // swap file fills; a byte cap lets it OOM-kill cleanly.
+        // Fall back to "max" when the host didn't advertise the size.
         if std::env::var("III_SWAP_DEV").is_ok() {
             let value = std::env::var("III_SWAP_MAX_BYTES")
                 .ok()
@@ -266,31 +257,21 @@ fn mount_cgroup2() -> Result<(), InitError> {
 }
 
 /// Format and enable a block-device-backed swap partition, if the host
-/// attached one. Keyed off `III_SWAP_DEV` (e.g. `/dev/vda`) set by
-/// `vm_boot.rs` when `--swap-path` was provided.
+/// attached one (keyed off `III_SWAP_DEV`).
 ///
-/// Always runs `mkswap` before `swapon`. `mkswap` only rewrites the
-/// header (~1 page); the swap data area beyond it is left alone. Doing
-/// this unconditionally matters because the host's sparse swap image
-/// can be grown across releases (e.g. 2 GiB → 4 GiB when
-/// `SWAP_IMAGE_BYTES` bumps). A stale header from the previous boot
-/// would cap the kernel at the old geometry, wasting the resized
-/// capacity. Swapped-out pages aren't preserved across VM shutdowns
-/// anyway — the owning processes are gone — so there's nothing to
-/// lose by re-formatting on every boot.
+/// `mkswap` runs on every boot — the header is ~1 page; the data
+/// area beyond it is untouched. Makes growing the host's sparse
+/// image across releases safe (old header would cap the kernel at
+/// the old geometry, wasting the new space). Swapped-out pages
+/// don't survive VM shutdown anyway.
 ///
-/// `mkswap` and `swapon` are invoked via absolute paths (`/sbin/*`,
-/// fallback `/usr/sbin/*`) rather than unqualified names so that a
-/// user-supplied `runtime.base_image` cannot ship an earlier
-/// `mkswap`/`swapon` on `PATH` and hijack PID-1 root execution inside
-/// the guest before the worker's own code runs. Both paths ship with
-/// util-linux in every OCI base image we support (node, python, rust,
-/// bun). If neither is present we skip with a warning rather than fall
-/// back to `PATH` lookup.
+/// `mkswap` / `swapon` invoked via absolute paths (`/sbin/*`,
+/// fallback `/usr/sbin/*`) so a user-supplied `runtime.base_image`
+/// can't ship an earlier binary on PATH and hijack PID-1 root.
 ///
-/// Errors are warnings, not fatal: a bun worker with a broken swap
-/// path still runs (it just OOM-kills later at the cgroup limit like
-/// before). Node/Python workers don't need swap at all.
+/// Errors are warnings, not fatal: a worker with broken swap still
+/// runs (OOM-kills at memory.max like before). Node/Python workers
+/// don't need swap at all.
 pub fn setup_swap() {
     let dev = match std::env::var("III_SWAP_DEV") {
         Ok(d) if !d.is_empty() => d,
@@ -324,11 +305,9 @@ pub fn setup_swap() {
     }
 }
 
-/// Locate a util-linux tool by absolute path so PATH hijack cannot
-/// redirect the call. Checks `/sbin` first (Debian/Ubuntu/bun), then
-/// `/usr/sbin` (Fedora/merged-usr). Returns `None` if neither exists,
-/// in which case the caller should skip the action with a warning
-/// rather than fall back to unqualified `Command::new("mkswap")`.
+/// Locate a util-linux tool by absolute path. `/sbin` first, then
+/// `/usr/sbin`. `None` means skip — caller must not fall back to
+/// `Command::new(unqualified)`.
 fn resolve_util_linux_bin(name: &str) -> Option<&'static str> {
     match name {
         "mkswap" => {

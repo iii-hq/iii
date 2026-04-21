@@ -11,17 +11,9 @@ use std::collections::HashMap;
 
 pub const WORKER_MANIFEST: &str = "iii.worker.yaml";
 
-/// Cheap sanity check on a user-supplied `runtime.base_image` value
-/// before we hand it to `oci_client::Reference::parse()` and the
-/// image-pull path. The OCI reference grammar is
-/// `[registry/]repository[:tag|@digest]` — in practice every
-/// character that matters is alphanumeric or one of `._-/:@`.
-///
-/// This rejects shell metacharacters, whitespace, NUL, and other
-/// surprises that could slip through `Reference::parse` or confuse
-/// logs/display even though they'd technically parse as part of a
-/// tag. It does NOT replace `Reference::parse`'s own grammar check —
-/// it's a first gate that keeps obvious garbage out of the pull path.
+/// First-gate check on `runtime.base_image` — rejects shell
+/// metacharacters, whitespace, NUL, etc. Does not replace
+/// `Reference::parse`'s own grammar check.
 fn is_plausible_image_ref(s: &str) -> bool {
     if s.is_empty() || s.len() > 512 {
         return false;
@@ -166,11 +158,6 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     let kind = match (kind_str, legacy_language) {
         (Some(k), _) => k,
         (None, Some(l)) => {
-            // Soft-silence: CI pipelines that dogfood `iii worker
-            // dev` for release checks can set `III_NO_DEPRECATION_WARN=1`
-            // once they've done the rename in their test matrix,
-            // keeping build logs clean. Left as opt-in so the
-            // default experience still prompts migration for humans.
             if std::env::var_os("III_NO_DEPRECATION_WARN").is_none() {
                 eprintln!(
                     "{} {}: `runtime.language` is deprecated; rename to \

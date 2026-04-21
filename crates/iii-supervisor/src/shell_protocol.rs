@@ -275,15 +275,9 @@ pub fn read_frame_blocking<R: std::io::Read>(
     let frame_len = validate_frame_len(frame_len)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // Skip the memset: `read_exact` fills every byte we expose via
-    // `set_len` (or errors, in which case we drop the Vec). Matches
-    // the pattern in `shell_relay::read_frame` / `shell_client::
-    // read_one_frame`.
-    //
-    // SAFETY: `u8` has no invalid bit patterns; `read_exact` is the
-    // only observer of the uninit tail before we either propagate
-    // the filled slice into `decode_frame_body` or drop `body` on
-    // error without reading it.
+    // SAFETY: read_exact fills every byte of the uninit body before
+    // decode_frame_body sees it; on error we truncate + drop. u8 has
+    // no invalid bit patterns. Matches shell_relay::read_frame.
     let mut body: Vec<u8> = Vec::with_capacity(frame_len);
     unsafe { body.set_len(frame_len) };
     if let Err(e) = reader.read_exact(&mut body) {

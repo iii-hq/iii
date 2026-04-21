@@ -70,12 +70,8 @@ pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
 pub fn rootfs_slug_for_image(image: &str) -> String {
     let raw = image.trim();
     let hash = fnv1a64(raw.as_bytes());
-    // Single-pass: emit each input char as-is (lowercased letters,
-    // kept digits/dots/dashes/underscores) or as a `-`, but coalesce
-    // any run of `-` into a single character. Old implementation did
-    // `.collect::<String>()` then repeated `.replace("--", "-")`
-    // which is O(n²) on runs of separators (`a!!!!!b` triggers the
-    // worst case). One scan keeps it O(n).
+    // Single-pass emit + coalesce runs of `-`; O(n) vs the previous
+    // `while contains("--") { replace("--","-") }` O(n²) loop.
     let mut s = String::with_capacity(raw.len());
     for c in raw.chars() {
         let out = match c {
@@ -329,17 +325,10 @@ pub fn extract_layer_with_limits(
     Ok(())
 }
 
-/// Collect registry hosts that should use plain HTTP instead of HTTPS.
-/// Reads from the `III_INSECURE_REGISTRIES` env var (comma-separated).
-/// `localhost` and `127.0.0.1` (any port) are always treated as insecure.
-///
-/// When the env var expands the allowlist (i.e. it names a registry
-/// other than the implicit loopback pair) we emit a conspicuous
-/// one-shot warning so a user who forgot `III_INSECURE_REGISTRIES` is
-/// still in their shell cannot get a base-image pull silently MITM'd
-/// on the LAN without any indication. The warning fires per-pull;
-/// that's still noisy enough to notice without being disruptive
-/// across the lifetime of a dev session.
+/// Collect registries that should use HTTP instead of HTTPS.
+/// `localhost`/`127.0.0.1` (any port) always; anything else only via
+/// `III_INSECURE_REGISTRIES` — which emits a per-pull warning so a
+/// forgotten env var can't silently enable LAN MITM.
 fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
     let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 

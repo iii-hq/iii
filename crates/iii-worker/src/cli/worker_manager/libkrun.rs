@@ -89,25 +89,18 @@ pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
 }
 
-/// Create a sparse file of `size_bytes` at `path` if it doesn't
-/// already exist. Uses `File::set_len` which produces a sparse file on
-/// every filesystem we care about (APFS, ext4, xfs, btrfs). No-op if
-/// the file already exists at the right size — idempotent across
-/// restarts so the guest's written swap pages survive VM reboots.
+/// Create (or grow) a sparse file of `size_bytes` at `path`. No-op
+/// when the file already exists at the right size — idempotent so
+/// written swap pages survive VM reboots.
 ///
-/// Symlink-attack defense (Unix): opens with `O_NOFOLLOW` + `0o600`
-/// and verifies via `fstat` after open that the fd points at a
-/// regular file owned by the current euid. Without this, a co-
-/// resident same-UID process could plant a symlink at
-/// `<rootfs>/swap.img` pointing at an ssh key, shell history, or
-/// another worker's `vm.pid`, and the subsequent `set_len(4 GiB)`
-/// would truncate/extend the target. Mirrors the
-/// `pidfile::write_pid_file_strict` hardening used elsewhere on
-/// paths under `~/.iii/managed`.
+/// Symlink-attack defense (Unix): `O_NOFOLLOW` + mode 0o600 +
+/// post-open `fstat` (regular file + owned by euid). Without this, a
+/// same-UID attacker planting a symlink could redirect our
+/// `set_len` onto an ssh key or another worker's state file.
+/// Mirrors `pidfile::write_pid_file_strict`.
 ///
-/// Returns Err on creation failure (including refusing a symlink);
-/// the caller treats that as "continue without swap" (warning, not
-/// fatal) — a non-bun worker never needs this file.
+/// Err on failure (including refused symlink) — caller continues
+/// without swap.
 fn ensure_swap_image(path: &Path, size_bytes: u64) -> std::io::Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -125,11 +118,7 @@ fn ensure_swap_image(path: &Path, size_bytes: u64) -> std::io::Result<()> {
     }
     let f = opts.open(path)?;
 
-    // Post-open fstat: refuse symlinks (O_NOFOLLOW catches the final
-    // path component; this catches TOCTOU races and non-regular-file
-    // weirdness like someone pointing a socket or device at the path),
-    // and require ownership by the current euid so a same-UID attacker
-    // who plants a directory-path trap gets nothing useful.
+    // Post-open fstat: refuse non-regular files and non-euid owners.
     let meta = f.metadata()?;
     if !meta.file_type().is_file() {
         return Err(std::io::Error::new(
@@ -157,8 +146,6 @@ fn ensure_swap_image(path: &Path, size_bytes: u64) -> std::io::Result<()> {
         }
     }
 
-    // Only grow (or no-op when already-correct). Idempotent across
-    // restarts so the guest's written swap pages survive VM reboots.
     if meta.len() != size_bytes {
         f.set_len(size_bytes)?;
     }
@@ -404,21 +391,9 @@ impl LibkrunAdapter {
             .join(name)
     }
 
-    /// Ensure `~/.iii/managed` exists and is mode 0o700 before the
-    /// caller drops worker-specific sockets + pidfiles into it.
-    ///
-    /// Without this, a local attacker with the same UID who got a
-    /// process onto the host before iii-worker started could leave
-    /// the `managed` dir group/world-readable (default umask 0o022
-    /// yields 0o755) and then race `connect()` against the shell or
-    /// control socket before the per-worker dir's 0o700 mode lands.
-    /// Tightening the parent narrows that window to zero: unless the
-    /// dir *starts* permissive and stays permissive through
-    /// iii-worker startup, there's no TOCTOU surface left.
-    ///
-    /// We only tighten — if the dir is already 0o700 we don't rewrite
-    /// the mode, so a bind-mount or filesystem that rejects chmod
-    /// doesn't fail the whole flow.
+    /// Tighten `~/.iii/managed` to 0o700 so a same-UID attacker
+    /// can't race `connect()` on per-worker sockets before
+    /// per-worker dir permissions land.
     fn ensure_managed_parent_restricted() {
         #[cfg(unix)]
         {
@@ -569,9 +544,6 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 
     async fn start(&self, spec: &ContainerSpec) -> Result<String> {
-        // Harden the shared parent dir before we drop per-worker
-        // sockets/pidfiles into it (see `ensure_managed_parent_restricted`
-        // for the full rationale).
         Self::ensure_managed_parent_restricted();
         let worker_dir = Self::worker_dir(&spec.name);
         std::fs::create_dir_all(&worker_dir)?;
@@ -940,11 +912,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn ensure_swap_image_refuses_symlinked_path() {
-        // Regression for H1: a co-resident same-UID process that
-        // plants a symlink at <rootfs>/swap.img pointing at a
-        // sensitive file must not trick us into truncating/extending
-        // the target. O_NOFOLLOW rejects the symlink on open and
-        // fstat catches non-regular paths if an attacker swaps after.
+        // Symlink at swap.img pointing at a victim file must not
+        // let set_len truncate the target.
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("victim");
         std::fs::write(&target, b"important contents").unwrap();

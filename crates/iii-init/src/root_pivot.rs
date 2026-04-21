@@ -378,16 +378,10 @@ mod tests {
     /// module-level mutex fixes that.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Run `f` with `III_WORKER_WORKDIR` set to `value` (or unset when
-    /// `value` is `None`), holding [`ENV_LOCK`] for the duration so
-    /// concurrent tests can't race on the single global process env.
-    /// Always unsets the var on exit, even if `f` panics, so a
-    /// failing test doesn't poison later ones.
-    ///
-    /// This helper exists so new tests cannot forget the lock dance:
-    /// taking the mutex + set_var + run + remove_var is three lines
-    /// to get right every time; a future contributor who copy-pastes
-    /// only the `set_var` call reintroduces the race.
+    /// Run `f` with `III_WORKER_WORKDIR` set (or unset) under
+    /// [`ENV_LOCK`]. Always unsets on exit, even on panic, so a
+    /// failing test doesn't poison later ones. Exists so new tests
+    /// can't forget the lock dance.
     fn with_workdir_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         struct Guard;

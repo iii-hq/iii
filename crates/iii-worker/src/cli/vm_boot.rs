@@ -668,18 +668,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         });
     }
 
-    // Attach the swap disk (if configured) BEFORE the network so it
-    // lands as /dev/vda in the guest. iii-init's `setup_swap` mkswap's
-    // and swapon's it. Raw format = no qcow2 overhead; the host file
-    // is sparse so unused blocks stay at zero bytes on disk.
-    //
-    // `swap_max_bytes` is advertised to the guest via III_SWAP_MAX_BYTES
-    // so `mount_cgroup2` can cap memory.swap.max to the actual disk
-    // capacity instead of the literal "max". With "max" the kernel
-    // thrashes once the sparse file fills because it keeps trying to
-    // reclaim pages that aren't on disk; the byte cap lets it OOM-kill
-    // cleanly. Stat-before-env avoids threading a new constant from
-    // libkrun.rs into vm_boot's args.
+    // Attach swap BEFORE the network so it lands as /dev/vda. Raw
+    // format, host-side sparse file. `swap_max_bytes` is statted from
+    // the file so iii-init can cap memory.swap.max to the real size
+    // instead of literal "max" (would thrash once the sparse file
+    // fills).
     let mut swap_max_bytes: Option<u64> = None;
     let swap_dev_env = if let Some(ref swap) = args.swap_path {
         let swap_path = swap.clone();
@@ -694,14 +687,9 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         None
     };
 
-    // Scale the runtime worker count to the actual workload. Without
-    // `--shell-sock` the only tokio consumers are `iii_network` (one
-    // polling task) and the optional control proxy (single-request
-    // RPC). One worker is plenty. `--shell-sock` adds the multiplex
-    // relay which benefits from parallel read/write task scheduling,
-    // so we keep 2 there. This shaves one kernel thread + its ~8 MiB
-    // of address-space reservation per idle worker VM — 16 managed
-    // workers drop from 32 reserved threads to 16.
+    // 2 workers when the shell relay is active (benefits from
+    // parallel read/write task scheduling); 1 otherwise (network +
+    // control proxy run fine on a single worker).
     let worker_threads = if args.shell_sock.is_some() { 2 } else { 1 };
     let tokio_rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
@@ -790,10 +778,6 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
         if let Some(ref dev) = swap_dev_env {
             e = e.env("III_SWAP_DEV", dev);
-            // Let iii-init cap memory.swap.max to the advertised size
-            // rather than the literal "max" so the kernel can OOM-kill
-            // cleanly once the sparse file fills instead of thrashing
-            // (see mount.rs::mount_cgroup2).
             if let Some(bytes) = swap_max_bytes {
                 let s = bytes.to_string();
                 e = e.env("III_SWAP_MAX_BYTES", &s);

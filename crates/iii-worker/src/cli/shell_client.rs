@@ -79,20 +79,13 @@ const EXIT_INTERRUPTED: i32 = 130;
 /// (TTY mode keystrokes) still feel responsive.
 const STDIN_CHUNK: usize = 8 * 1024;
 
-/// Stat+check the shell socket before/after `connect()` to detect a
-/// symlink-swap or permission-loosening between iii-worker's relay
-/// binding the path and our client connecting. Returns a (dev, ino,
-/// mode) triple the caller compares before/after `connect()`.
-///
-/// Enforces: the path is a socket (not a symlink, regular file, or
-/// dir), owned by our euid, and mode 0o600 or stricter. A legitimate
-/// relay always lands the socket at exactly these attributes; any
-/// deviation is evidence of tampering.
+/// Verify the shell socket belongs to us before/after `connect()`.
+/// Returns (dev, ino, mode) so the caller can compare the two stats.
+/// Refuses non-sockets, non-euid owners, group/world-accessible modes.
 #[cfg(unix)]
 fn verify_shell_socket_ownership(sock: &Path) -> anyhow::Result<(u64, u64, u32)> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    // symlink_metadata so a planted symlink doesn't get followed to
-    // an unrelated file that happens to be a socket.
+    // symlink_metadata so a planted symlink isn't followed.
     let meta = std::fs::symlink_metadata(sock).with_context(|| {
         format!(
             "shell socket {} not present — start the worker first",
@@ -238,13 +231,6 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
     };
 
     let sock = shell_socket_path(&args.name)?;
-    // Pre-connect ownership/mode check on the socket inode. Narrows
-    // the symlink-swap / relaxed-perm window between the relay's
-    // `set_permissions(0o600)` and our `connect()`. The parent dir
-    // should already be 0o700 (see `ensure_managed_parent_restricted`
-    // in libkrun.rs), which eliminates the TOCTOU surface entirely
-    // unless a malicious same-UID process ran after iii-worker
-    // started but before the client connects.
     let pre_fingerprint = verify_shell_socket_ownership(&sock)?;
     let mut stream = UnixStream::connect(&sock).await.with_context(|| {
         format!(
@@ -255,9 +241,7 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
             args.name
         )
     })?;
-    // Post-connect re-stat: if the inode changed between the pre-
-    // check and connect (attacker swapped the socket), refuse. A
-    // legitimate relay never rebinds mid-session.
+    // Inode mismatch across connect = socket swapped mid-session.
     let post_fingerprint = verify_shell_socket_ownership(&sock)?;
     if pre_fingerprint != post_fingerprint {
         bail!(
@@ -420,10 +404,8 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
         eprintln!("error: timed out after {label}");
     }
 
-    // Belt-and-suspenders flush at session end: every Stdout/Stderr
-    // frame above already flushed, but the timeout branch skips the
-    // match arm entirely and could have partial bytes stuck in the
-    // buffer. Flushing here makes sure nothing is dropped on exit.
+    // Belt-and-suspenders flush for the timeout branch (which skips
+    // the response-arm flushes).
     stdout.flush().await.ok();
     stderr.flush().await.ok();
 
@@ -441,20 +423,15 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
     Ok(exit_code)
 }
 
-/// What the response loop should do after consuming one frame.
 enum ResponseOutcome {
-    /// Keep reading the next frame.
     Continue,
-    /// Session is over; break with this exit code.
     Exited(i32),
 }
 
-/// Dispatch one decoded response frame from the guest dispatcher.
-/// Extracted from the `run()` response loop so it can be driven
-/// directly from unit tests against injectable stdout/stderr sinks —
-/// the only way to regression-test the per-frame flush contract
-/// without a live VM. See `tests::stdout_frame_flushes_each_write`
-/// for the reason the flush here is load-bearing for TTY echo.
+/// Dispatch one decoded response frame. Extracted from `run()` so
+/// unit tests can drive it against injectable stdout/stderr sinks
+/// (the only way to regression-test the TTY-echo flush contract
+/// without a live VM — see `tests::stdout_frame_flushes_after_write`).
 async fn handle_response_frame<W1, W2>(
     msg: ShellMessage,
     flags: u8,
@@ -473,15 +450,10 @@ where
         ShellMessage::Stdout { data_b64 } => {
             let bytes = decode_b64(&data_b64)?;
             stdout.write_all(&bytes).await.ok();
-            // Flush per frame: in TTY mode the guest PTY echoes each
-            // typed character back as a single-byte Stdout frame
-            // with no newline, and `tokio::io::stdout()` is
-            // line-buffered on a TTY. Without the flush the echo
-            // bytes stay in the buffer until the guest emits a
-            // newline, and the user types blind until they press
-            // Enter. The flush is required for correctness in TTY
-            // mode; the tiny extra syscall cost in pipe mode is the
-            // price of a single code path.
+            // Flush per frame: line-buffered tokio::io::stdout() on a
+            // TTY would otherwise hold single-byte raw-mode echoes
+            // until the guest emits a newline — typing appears blind
+            // until Enter.
             stdout.flush().await.ok();
             Ok(ResponseOutcome::Continue)
         }
@@ -520,14 +492,9 @@ async fn read_one_frame(
     if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {
         bail!("frame length {frame_len} out of range");
     }
-    // Skip the zero-fill: every byte of `body` is immediately
-    // overwritten by `read_exact`. See `shell_relay::read_frame` for
-    // the full SAFETY rationale (identical pattern).
+    // Skip zero-fill; read_exact overwrites every byte. See
+    // shell_relay::read_frame for the SAFETY rationale.
     let mut body: Vec<u8> = Vec::with_capacity(frame_len);
-    // SAFETY: `u8` has no invalid bit patterns, and `read_exact`
-    // below either fills the entire allocation or returns an error
-    // — in the error branch `body` is dropped without the uninit
-    // tail being observed by any reader.
     unsafe { body.set_len(frame_len) };
     if let Err(e) = reader
         .read_exact(&mut body)
@@ -887,11 +854,9 @@ mod tests {
         assert!(!should_auto_enable_tty(false, true, true, true));
     }
 
-    /// In-memory stdout/stderr substitute for response-loop tests.
-    /// Records writes AND flushes with a tagged event log so
-    /// assertions can distinguish "bytes written" from "bytes
-    /// delivered to the underlying fd". The latter is what TTY echo
-    /// relies on.
+    /// AsyncWrite substitute that records Write/Flush events
+    /// separately so tests can assert the flush happened, not just
+    /// the write.
     #[derive(Default)]
     struct RecordingWriter {
         events: std::sync::Arc<std::sync::Mutex<Vec<WriteEvent>>>,
@@ -938,28 +903,16 @@ mod tests {
         }
     }
 
-    /// Regression for the TTY-echo bug: each `ShellMessage::Stdout`
-    /// frame must be followed by a `flush()` call on the host's
-    /// stdout. Without the flush, `tokio::io::stdout()` buffers
-    /// single-byte raw-mode echoes (no newline → never auto-flushes
-    /// on the line-buffered TTY path), so the user types blind in
-    /// an interactive `iii worker exec <w> -- sh` session until
-    /// they press Enter and the guest emits a newline that flushes
-    /// the whole buffered echo at once. Observed live as
-    /// "characters only visible after pressing Enter."
-    ///
-    /// This test fails if a future change drops the per-frame flush
-    /// without switching the write sink to one that flushes on
-    /// every `write`.
+    /// Regression for the TTY-echo bug: each Stdout frame must be
+    /// followed by flush(). Without it, single-byte raw-mode echoes
+    /// stay in the line-buffered tokio stdout until the guest emits
+    /// a newline — user types blind until Enter.
     #[tokio::test]
     async fn stdout_frame_flushes_after_write() {
         let mut stdout = RecordingWriter::new();
         let mut stderr = RecordingWriter::new();
         let stdout_events = stdout.events.clone();
 
-        // Single non-newline byte — matches the raw-mode echo shape
-        // (every typed character round-trips as its own Stdout
-        // frame, no trailing \n).
         let msg = ShellMessage::Stdout {
             data_b64: encode_b64(b"x"),
         };
@@ -978,10 +931,6 @@ mod tests {
         );
     }
 
-    /// Same contract for stderr: the guest can emit single-byte
-    /// stderr frames (e.g. a bash warning that doesn't end in \n
-    /// before a prompt resumes), and they need to surface without
-    /// waiting for a newline.
     #[tokio::test]
     async fn stderr_frame_flushes_after_write() {
         let mut stdout = RecordingWriter::new();
@@ -1005,9 +954,6 @@ mod tests {
         );
     }
 
-    /// `Exited { code }` terminates the response loop with that code.
-    /// Pins the break/exit contract so the main loop can lean on it
-    /// without reading the dispatch arms.
     #[tokio::test]
     async fn exited_frame_returns_exit_code() {
         let mut stdout = RecordingWriter::new();
@@ -1026,9 +972,6 @@ mod tests {
         }
     }
 
-    /// Non-terminal `Error { message }` keeps the session alive so a
-    /// subsequent Exited can carry the real exit code. Only
-    /// `Error { message, flags: FLAG_TERMINAL }` forces an exit.
     #[tokio::test]
     async fn non_terminal_error_continues_loop() {
         let mut stdout = RecordingWriter::new();
@@ -1060,9 +1003,7 @@ mod tests {
         }
     }
 
-    // Debug impl for ResponseOutcome so panic messages above format
-    // legibly. `#[derive(Debug)]` on the enum would bloat the
-    // production build; a test-only impl keeps the derive out.
+    // Test-only Debug impl — keeps the derive out of production.
     impl std::fmt::Debug for ResponseOutcome {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
