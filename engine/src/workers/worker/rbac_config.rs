@@ -626,6 +626,39 @@ mod tests {
         ));
     }
 
+    /// BUG REPRODUCTION INVERTED: on this branch (with the carve-out), the
+    /// reporter's config must ALLOW the infrastructure IDs that main DENIES.
+    /// Run the SAME assertion block here but expect the opposite outcome.
+    /// This test passing here is proof the fix works end-to-end.
+    #[test]
+    fn bug_repro_infra_calls_allowed_under_reporter_config_post_fix() {
+        let config = RbacConfig {
+            auth_function_id: None,
+            expose_functions: vec![
+                FunctionFilter::Match(WildcardPattern::new("api::*")),
+                FunctionFilter::Match(WildcardPattern::new("session::*")),
+                FunctionFilter::Match(WildcardPattern::new("stream::*")),
+                FunctionFilter::Match(WildcardPattern::new("state::*")),
+            ],
+            on_trigger_registration_function_id: None,
+            on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
+        };
+
+        for id in [
+            "engine::log::info",
+            "engine::workers::register",
+            "engine::baggage::get",
+            "engine::baggage::set",
+        ] {
+            assert!(
+                is_function_allowed(id, Some(config.clone()), &[], &[], None),
+                "FIX REGRESSION: expected {} to be ALLOWED on the fix branch with reporter's config",
+                id
+            );
+        }
+    }
+
     #[test]
     fn no_rbac_config_still_allows_everything() {
         for id in ALL_INFRASTRUCTURE_IDS.iter().chain(
