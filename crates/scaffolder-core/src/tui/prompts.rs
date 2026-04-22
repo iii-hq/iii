@@ -441,12 +441,10 @@ fn select_languages(
                 .collect();
             selected_languages.extend(to_add);
         } else {
-            let prompt = if included_languages.is_empty() && optional_languages.is_empty() {
-                "Select languages"
-            } else {
-                "Select additional languages (optional)"
-            };
-            let mut multi = cliclack::multiselect(prompt);
+            // We only reach this arm when `selectable` (= optional_languages)
+            // is non-empty, so the prompt is always offering optional additions
+            // on top of any required/included languages already selected.
+            let mut multi = cliclack::multiselect("Select additional languages (optional)");
 
             for lang in &selectable {
                 multi = multi.item(*lang, lang.display_name(), "");
