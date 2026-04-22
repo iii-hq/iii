@@ -118,14 +118,17 @@ async fn expect_result(
             .expect("worker channel closed");
         match outbound {
             Outbound::Protocol(Message::InvocationResult {
+                invocation_id: got_invocation_id,
                 function_id: got_id,
                 result,
                 error,
                 ..
-            }) => {
+            }) if got_invocation_id == invocation_id => {
                 return (got_id, result, error);
             }
-            // Other outbound messages (e.g. telemetry) can appear — skip them.
+            // Unrelated protocol or telemetry messages (or results from other
+            // invocations in a shared engine) can appear — skip them and keep
+            // waiting for the one we dispatched.
             _ => continue,
         }
     }
@@ -209,6 +212,16 @@ async fn forbidden_list_still_wins_over_infrastructure_carve_out() {
     let err = error.expect("forbidden_functions must still deny even infrastructure IDs");
     assert_eq!(err.code, "FORBIDDEN");
     assert!(err.message.contains("engine::log::error"));
+    assert!(
+        err.message.contains("rbac.forbidden_functions"),
+        "explicit-forbid remediation must point at rbac.forbidden_functions, not rbac.expose_functions; got: {}",
+        err.message
+    );
+    assert!(
+        !err.message.contains("rbac.expose_functions"),
+        "must not mislead the operator toward expose_functions when the cause is an explicit forbid; got: {}",
+        err.message
+    );
     assert!(result.is_none());
 }
 

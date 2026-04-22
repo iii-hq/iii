@@ -62,7 +62,7 @@ def _wrap_wire_error(
         code = raw_code if isinstance(raw_code, str) else "UNKNOWN"
 
         raw_message = error.get("message")
-        message = raw_message if isinstance(raw_message, str) else str(error)
+        message = raw_message if isinstance(raw_message, str) else "<no message>"
 
         raw_stacktrace = error.get("stacktrace")
         stacktrace = raw_stacktrace if isinstance(raw_stacktrace, str) else None

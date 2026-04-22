@@ -156,6 +156,8 @@ class TestWrapWireError:
         err = _wrap_wire_error(bad_error, function_id="fn", invocation_id=None)
         assert isinstance(err, IIIInvocationError)
         assert str(err).startswith(("UNKNOWN:", "X:", "123:"))
+        assert "{'" not in str(err), f"dict repr leaked into message: {err!s}"
+        assert "': " not in str(err), f"dict repr leaked into message: {err!s}"
 
     def test_non_string_stacktrace_ignored(self) -> None:
         err = _wrap_wire_error(
