@@ -396,3 +396,75 @@ class TestRbacWorkers:
             assert result["echoed"]["msg"] == "carveout-regression"
         finally:
             iii_client.shutdown()
+
+    # --- Infrastructure carve-out regression guards ---
+    #
+    # Lock in the engine-side INFRASTRUCTURE_FUNCTIONS carve-out end-to-end over
+    # a real WebSocket. Previously a worker whose allowed_functions /
+    # expose_functions did not cover `engine::*` IDs tripped FORBIDDEN the
+    # moment a handler used the SDK logger — the reporter's original bug.
+    # Paired with identical scenarios in
+    # sdk/packages/node/iii/tests/rbac-workers.test.ts and
+    # sdk/packages/rust/iii/tests/rbac_workers.rs.
+
+    def test_infrastructure_logger_callable_from_user_handler(self, iii_server):
+        """Real usage case: restricted worker's user handler calls the SDK
+        logger during invocation.
+
+        Handler runs under `allowed_functions: ['test::ew::valid-token-echo']`
+        and internally hits `engine::log::info` — allowed only via the
+        carve-out, not the allow-list. If the carve-out regresses, the nested
+        invocation FORBIDDENs and the handler raises instead of returning
+        ``{"logged": True}``.
+        """
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            def handler(data: dict) -> dict:
+                # If the carve-out regresses, this nested trigger surfaces
+                # IIIForbiddenError and the handler propagates it as a failure.
+                iii_client.trigger({
+                    "function_id": "engine::log::info",
+                    "payload": {
+                        "message": "carve-out regression guard: handler reached logger",
+                        "data": {"input": data},
+                    },
+                })
+                return {"logged": True, "echoed": data}
+
+            iii_client.register_function("test::ew::valid-token-echo", handler)
+            time.sleep(0.5)
+
+            result = iii_server.trigger({
+                "function_id": "test::ew::valid-token-echo",
+                "payload": {"msg": "real-usage-case"},
+            })
+            assert result["logged"] is True
+        finally:
+            iii_client.shutdown()
+
+    def test_infrastructure_logger_directly_callable(self, iii_server):
+        """Direct variant: restricted worker invokes ``engine::log::info``
+        straight from its client — mirrors a bootstrap script / CLI.
+
+        ``engine::log::info`` is NOT in valid-token's allowed_functions, so
+        a successful trigger here proves the carve-out path is reachable from
+        the worker client's own ``trigger()`` method.
+        """
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            # No exception == carve-out is working. If this raises
+            # IIIForbiddenError, the carve-out regressed.
+            iii_client.trigger({
+                "function_id": "engine::log::info",
+                "payload": {"message": "carve-out direct invocation"},
+            })
+        finally:
+            iii_client.shutdown()
