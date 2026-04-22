@@ -643,3 +643,153 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
 
     iii_client.shutdown_async().await;
 }
+
+// --- Infrastructure carve-out regression guards ---
+//
+// These tests lock in the engine-side `INFRASTRUCTURE_FUNCTIONS` carve-out
+// (engine/src/workers/worker/rbac_config.rs) end-to-end over a real WebSocket.
+// Previously, a worker whose `allowed_functions` / `expose_functions` did not
+// cover `engine::*` IDs tripped FORBIDDEN the moment a handler used the SDK
+// logger or baggage — the reporter's original bug. The engine now auto-allows
+// a curated set of SDK-transparent infrastructure IDs; these tests prove the
+// guarantee is reachable from real SDK code paths, not just the engine's
+// router_msg unit tests.
+//
+// Paired with identical scenarios in
+// `sdk/packages/node/iii/tests/rbac-workers.test.ts` and
+// `sdk/packages/python/iii/tests/test_rbac_workers.py` so the three SDKs share
+// the same behavioral contract.
+
+/// Real usage case: a restricted worker's user handler calls the SDK logger
+/// during invocation. This is exactly the scenario that tripped the reporter
+/// — a handler running under `allowed_functions: ["test::ew::valid-token-echo"]`
+/// that internally hits `engine::log::info`.
+///
+/// The handler is registered on the worker client (so it runs under the
+/// restricted session) and invokes `engine::log::info` through its own client.
+/// If the carve-out regresses, the nested invocation FORBIDDENs and the
+/// handler surfaces that as a trigger-level error instead of returning
+/// `{ logged: true }`.
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn infrastructure_logger_callable_from_user_handler_under_restricted_expose() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "valid-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        iii_client.get_connection_state(),
+        IIIConnectionState::Connected,
+        "worker with restricted expose must connect — carve-out allows engine::workers::register"
+    );
+
+    // Register a handler whose body calls engine::log::info. If the carve-out
+    // regresses, this inner trigger returns FORBIDDEN and the outer trigger
+    // propagates the error.
+    let inner_client = iii_client.clone();
+    let _handle = iii_client.register_function(RegisterFunction::new_async(
+        "test::ew::valid-token-echo",
+        move |input: Value| {
+            let client = inner_client.clone();
+            async move {
+                client
+                    .trigger(TriggerRequest {
+                        function_id: "engine::log::info".to_string(),
+                        payload: json!({
+                            "message": "carve-out regression guard: handler reached logger",
+                            "data": { "input": input },
+                        }),
+                        action: None,
+                        timeout_ms: None,
+                    })
+                    .await
+                    .map_err(|e| {
+                        iii_sdk::IIIError::Handler(format!(
+                            "engine::log::info must be allowed via \
+                             INFRASTRUCTURE_FUNCTIONS carve-out under a \
+                             restricted expose; got: {e}"
+                        ))
+                    })?;
+                Ok::<_, iii_sdk::IIIError>(json!({ "logged": true }))
+            }
+        },
+    ));
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let result = common::shared_iii()
+        .trigger(TriggerRequest {
+            function_id: "test::ew::valid-token-echo".to_string(),
+            payload: json!({ "msg": "real-usage-case" }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("handler that calls engine::log::info must complete under carve-out");
+
+    assert_eq!(
+        result["logged"], true,
+        "handler must return after the nested engine::log::info call succeeds; \
+         if this fails with FORBIDDEN, the INFRASTRUCTURE_FUNCTIONS carve-out regressed"
+    );
+
+    iii_client.shutdown_async().await;
+}
+
+/// Direct variant: a restricted worker client invokes `engine::log::info`
+/// without going through a registered handler — mirrors what a bootstrap
+/// script or CLI does. Proves the carve-out is reachable via the client's
+/// own `trigger()` method, not only from inside a handler invocation context.
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn infrastructure_logger_directly_callable_under_restricted_expose() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "valid-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // engine::log::info is NOT in valid-token's allowed_functions
+    // (["test::ew::valid-token-echo"]). It's allowed *only* because the
+    // carve-out recognizes it as SDK infrastructure. A FORBIDDEN here is
+    // exactly the bug this PR fixes.
+    let result = iii_client
+        .trigger(TriggerRequest {
+            function_id: "engine::log::info".to_string(),
+            payload: json!({ "message": "carve-out direct invocation" }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "engine::log::info must be allowed under restricted expose via the \
+         INFRASTRUCTURE_FUNCTIONS carve-out; got: {result:?}"
+    );
+
+    iii_client.shutdown_async().await;
+}

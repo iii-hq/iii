@@ -10,7 +10,7 @@ import type {
   OnTriggerTypeRegistrationInput,
   OnTriggerTypeRegistrationResult,
 } from '../src/index'
-import { registerWorker } from '../src/index'
+import { IIIInvocationError, registerWorker } from '../src/index'
 import { iii, sleep } from './utils'
 
 const EW_URL = process.env.III_RBAC_WORKER_URL ?? 'ws://localhost:49135'
@@ -320,6 +320,139 @@ describe('RBAC Workers', () => {
       expect(functionIds).not.toContain('test::ew::valid-token-echo')
       expect(functionIds).not.toContain('test::ew::private')
       expect(functionIds).not.toContain('test::rbac-worker::auth')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  // REGRESSION — the bug that motivated the infrastructure carve-out.
+  // A worker whose expose_functions does not cover `engine::*` used to fail
+  // on any SDK-transparent engine call (logger dispatch, worker registration
+  // metadata, etc.) with a FORBIDDEN that surfaced as `[object Object]`.
+  // This test exists so any future refactor that re-breaks the RBAC carve-out
+  // fails CI immediately.
+  it('infrastructure calls (logger, worker::register) succeed under restricted expose', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'valid-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      // If the carve-out ever regressed, the startup `engine::workers::register`
+      // trigger would FORBIDDEN-reject and connection setup would hang or fail.
+      // A successful invocation of the exposed handler proves the worker
+      // completed the handshake without tripping RBAC on infra IDs.
+      // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+      const result = await iiiClient.trigger<any, any>({
+        function_id: 'test::ew::valid-token-echo',
+        payload: { msg: 'hello' },
+      })
+      expect(result.echoed.msg).toBe('hello')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  it('wraps FORBIDDEN rejection in IIIInvocationError with function_id', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'valid-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      let caught: unknown
+      try {
+        // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+        await iiiClient.trigger<any, any>({
+          function_id: 'test::ew::private',
+          payload: {},
+        })
+      } catch (err) {
+        caught = err
+      }
+
+      expect(caught).toBeInstanceOf(Error)
+      expect(caught).toBeInstanceOf(IIIInvocationError)
+      const err = caught as IIIInvocationError
+      expect(err.code).toBe('FORBIDDEN')
+      expect(err.function_id).toBe('test::ew::private')
+      expect(err.message).toContain('FORBIDDEN')
+      expect(err.message).toContain('test::ew::private')
+      // The original bug: plain ErrorBody printed as `[object Object]`.
+      expect(String(err)).not.toBe('[object Object]')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  // --- Infrastructure carve-out regression guards ---
+  //
+  // Lock in the engine-side INFRASTRUCTURE_FUNCTIONS carve-out
+  // (engine/src/workers/worker/rbac_config.rs) end-to-end over a real
+  // WebSocket. Previously a worker whose allowed_functions / expose_functions
+  // did not cover `engine::*` IDs tripped FORBIDDEN the moment a handler used
+  // the SDK logger — the reporter's original bug. Paired with identical
+  // scenarios in sdk/packages/rust/iii/tests/rbac_workers.rs and
+  // sdk/packages/python/iii/tests/test_rbac_workers.py.
+
+  // Real usage case: a restricted worker's user handler calls the SDK logger
+  // during invocation. Handler runs under allowed_functions:
+  // ['test::ew::valid-token-echo'] and internally hits engine::log::info —
+  // allowed only via the carve-out, not the allow-list.
+  it('allows engine::log::info from a user handler under restricted expose', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'valid-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      iiiClient.registerFunction(
+        'test::ew::valid-token-echo',
+        async (data: Record<string, unknown>) => {
+          // If the carve-out regresses, this inner trigger returns FORBIDDEN
+          // and the handler throws instead of returning { logged: true }.
+          await iiiClient.trigger({
+            function_id: 'engine::log::info',
+            payload: {
+              message: 'carve-out regression guard: handler reached logger',
+              data: { input: data },
+            },
+          })
+          return { logged: true, echoed: data }
+        },
+      )
+
+      await sleep(500)
+
+      // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+      const result = await iii.trigger<any, any>({
+        function_id: 'test::ew::valid-token-echo',
+        payload: { msg: 'real-usage-case' },
+      })
+      expect(result.logged).toBe(true)
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  // Direct variant: a restricted worker invokes engine::log::info straight
+  // from its client (no handler wrapping) — mirrors a bootstrap script / CLI.
+  // `engine::log::info` is NOT in valid-token's allowed_functions — it's
+  // only reachable via the carve-out.
+  it('allows direct engine::log::info invocation under restricted expose', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'valid-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      await expect(
+        // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+        iiiClient.trigger<any, any>({
+          function_id: 'engine::log::info',
+          payload: { message: 'carve-out direct invocation' },
+        }),
+      ).resolves.not.toThrow()
     } finally {
       await iiiClient.shutdown()
     }

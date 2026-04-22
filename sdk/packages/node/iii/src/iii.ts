@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import { type Data, WebSocket } from 'ws'
 import { ChannelReader, ChannelWriter } from './channels'
+import { IIIInvocationError, isErrorBody } from './errors'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
@@ -455,7 +456,13 @@ class Sdk implements ISdk {
         const invocation = this.invocations.get(invocation_id)
         if (invocation) {
           this.invocations.delete(invocation_id)
-          reject(new Error(`Invocation timeout after ${effectiveTimeout}ms: ${function_id}`))
+          reject(
+            new IIIInvocationError({
+              code: 'TIMEOUT',
+              message: `invocation timed out after ${effectiveTimeout}ms`,
+              function_id,
+            }),
+          )
         }
       }, effectiveTimeout)
 
@@ -468,6 +475,7 @@ class Sdk implements ISdk {
           clearTimeout(timeout)
           reject(error)
         },
+        function_id,
         timeout,
       })
 
@@ -672,10 +680,20 @@ class Sdk implements ISdk {
     }
     this.invocations.clear()
 
-    // Close WebSocket
+    // Close WebSocket. Swallow any close-time errors (most commonly
+    // "WebSocket was closed before the connection was established" —
+    // emitted when `close()` fires while still in CONNECTING state
+    // and there's no error listener). Without a catch-all listener,
+    // that event becomes an unhandled exception because we remove
+    // every listener right above the close call.
     if (this.ws) {
       this.ws.removeAllListeners()
-      this.ws.close()
+      this.ws.on('error', () => {})
+      try {
+        this.ws.close()
+      } catch {
+        // ignore — shutting down anyway
+      }
       this.ws = undefined
     }
 
@@ -880,10 +898,48 @@ class Sdk implements ISdk {
       if (invocation.timeout) {
         clearTimeout(invocation.timeout)
       }
-      error ? invocation.reject(error) : invocation.resolve(result)
+      if (error) {
+        invocation.reject(this.toInvocationError(error, invocation.function_id))
+      } else {
+        invocation.resolve(result)
+      }
     }
 
     this.invocations.delete(invocation_id)
+  }
+
+  /**
+   * Wrap a wire-format `ErrorBody` in {@link IIIInvocationError} so callers get
+   * a real `Error` with a readable `.message` and a typed `.code`. Pass-through
+   * for values that are already `Error` subclasses. Everything else is wrapped
+   * under an `UNKNOWN` code so `String(err) !== '[object Object]'` holds for
+   * every rejection path.
+   */
+  private toInvocationError(error: unknown, function_id?: string): Error {
+    if (error instanceof Error) {
+      return error
+    }
+    if (isErrorBody(error)) {
+      return new IIIInvocationError({
+        code: error.code,
+        message: error.message,
+        function_id,
+        stacktrace: error.stacktrace,
+      })
+    }
+    // JSON.stringify(undefined) returns undefined (not "undefined"), which
+    // would set message to the literal string "undefined" after type coercion
+    // and leak an uninformative rejection. Fall back through String(error)
+    // so every path produces a concrete, readable string.
+    const message =
+      typeof error === 'string'
+        ? error
+        : (JSON.stringify(error) ?? String(error))
+    return new IIIInvocationError({
+      code: 'UNKNOWN',
+      message,
+      function_id,
+    })
   }
 
   private resolveChannelValue(value: unknown): unknown {

@@ -9,6 +9,7 @@ import random
 import threading
 import traceback
 import uuid
+from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
@@ -16,6 +17,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
+from .errors import IIIInvocationError, IIITimeoutError, _wrap_wire_error
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_RECONNECTION_CONFIG,
@@ -86,6 +88,18 @@ class _TraceContextError(Exception):
         self.traceparent = traceparent
 
 
+@dataclass(frozen=True)
+class _PendingInvocation:
+    """Pending invocation record kept on the SDK until the engine responds.
+
+    ``function_id`` is preserved so the timeout and error-wrapping paths
+    can name the target without plumbing it through every call site.
+    """
+
+    future: asyncio.Future[Any]
+    function_id: str
+
+
 class III:
     """WebSocket client for communication with the III Engine.
 
@@ -107,7 +121,7 @@ class III:
         self._ws: ClientConnection | None = None
         self._functions: dict[str, RemoteFunctionData] = {}
         self._services: dict[str, RegisterServiceMessage] = {}
-        self._pending: dict[str, asyncio.Future[Any]] = {}
+        self._pending: dict[str, _PendingInvocation] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
         self._queue: list[dict[str, Any]] = []
@@ -224,9 +238,16 @@ class III:
                     pass
 
         # Reject all pending invocations
-        for invocation_id, future in list(self._pending.items()):
-            if not future.done():
-                future.set_exception(Exception("iii is shutting down"))
+        for invocation_id, pending in list(self._pending.items()):
+            if not pending.future.done():
+                pending.future.set_exception(
+                    IIIInvocationError(
+                        code="SHUTDOWN",
+                        message="iii is shutting down",
+                        function_id=pending.function_id,
+                        invocation_id=invocation_id,
+                    )
+                )
         self._pending.clear()
 
         if self._ws:
@@ -401,15 +422,21 @@ class III:
             log.debug(f"Worker registered with ID: {worker_id}")
 
     def _handle_result(self, invocation_id: str, result: Any, error: Any) -> None:
-        future = self._pending.pop(invocation_id, None)
-        if not future:
+        pending = self._pending.pop(invocation_id, None)
+        if not pending:
             log.debug(f"No pending invocation: {invocation_id}")
             return
 
         if error:
-            future.set_exception(Exception(str(error)))
+            pending.future.set_exception(
+                _wrap_wire_error(
+                    error,
+                    function_id=pending.function_id,
+                    invocation_id=invocation_id,
+                )
+            )
         else:
-            future.set_result(result)
+            pending.future.set_result(result)
 
     def _inject_traceparent(self) -> str | None:
         from opentelemetry import context as otel_context
@@ -972,7 +999,9 @@ class III:
             actions.
 
         Raises:
-            TimeoutError: If the invocation times out.
+            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
+            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
+            IIIInvocationError: For any other engine rejection.
 
         Examples:
             >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -997,7 +1026,9 @@ class III:
             The result of the function invocation, or ``None`` for void calls.
 
         Raises:
-            TimeoutError: If the invocation times out.
+            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
+            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
+            IIIInvocationError: For any other engine rejection.
 
         Examples:
             >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -1035,7 +1066,9 @@ class III:
         invocation_id = str(uuid.uuid4())
         future: asyncio.Future[Any] = self._loop.create_future()
 
-        self._pending[invocation_id] = future
+        self._pending[invocation_id] = _PendingInvocation(
+            future=future, function_id=function_id
+        )
 
         enqueue_action: TriggerActionEnqueue | None = (
             action if isinstance(action, TriggerActionEnqueue) else None
@@ -1056,8 +1089,11 @@ class III:
             return await asyncio.wait_for(future, timeout=timeout_secs)
         except asyncio.TimeoutError:
             self._pending.pop(invocation_id, None)
-            raise TimeoutError(
-                f"Invocation of '{function_id}' timed out after {timeout_ms}ms"
+            raise IIITimeoutError(
+                code="TIMEOUT",
+                message=f"invocation timed out after {timeout_ms}ms",
+                function_id=function_id,
+                invocation_id=invocation_id,
             )
 
     def list_functions(self) -> list[FunctionInfo]:
