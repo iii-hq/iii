@@ -527,27 +527,9 @@ mod tests {
         }
     }
 
-    // Locks the exact membership of the INFRASTRUCTURE_FUNCTIONS carve-out.
-    // Per the slice's stability policy (additive-only), changes to this
-    // list must add IDs, never remove them (except for documented security
-    // fixes). If this test fails because an ID was removed, verify the
-    // removal is security-justified and release-noted.
-    const ALL_INFRASTRUCTURE_IDS: &[&str] = &[
-        "engine::channels::create",
-        "engine::workers::register",
-        "engine::log::info",
-        "engine::log::warn",
-        "engine::log::error",
-        "engine::log::debug",
-        "engine::log::trace",
-        "engine::baggage::get",
-        "engine::baggage::set",
-        "engine::baggage::get_all",
-    ];
-
     #[test]
     fn infrastructure_functions_always_allowed() {
-        for id in ALL_INFRASTRUCTURE_IDS {
+        for id in INFRASTRUCTURE_FUNCTIONS {
             // Empty expose_functions
             let config = rbac_config_with_expose(&[]);
             assert!(
@@ -568,7 +550,7 @@ mod tests {
 
     #[test]
     fn infrastructure_functions_respect_forbidden_list() {
-        for id in ALL_INFRASTRUCTURE_IDS {
+        for id in INFRASTRUCTURE_FUNCTIONS {
             let config = rbac_config_with_expose(&[]);
             let forbidden = vec![id.to_string()];
             assert!(
@@ -581,7 +563,7 @@ mod tests {
 
     #[test]
     fn infrastructure_functions_respect_allowed_list() {
-        for id in ALL_INFRASTRUCTURE_IDS {
+        for id in INFRASTRUCTURE_FUNCTIONS {
             let config = rbac_config_with_expose(&[]);
             let allowed = vec![id.to_string()];
             assert!(
@@ -661,7 +643,7 @@ mod tests {
 
     #[test]
     fn no_rbac_config_still_allows_everything() {
-        for id in ALL_INFRASTRUCTURE_IDS.iter().chain(
+        for id in INFRASTRUCTURE_FUNCTIONS.iter().chain(
             [
                 "engine::functions::list",
                 "engine::workers::list",
