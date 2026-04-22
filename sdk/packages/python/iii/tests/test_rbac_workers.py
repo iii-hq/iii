@@ -435,11 +435,16 @@ class TestRbacWorkers:
                 })
                 return {"logged": True, "echoed": data}
 
-            iii_client.register_function("test::ew::valid-token-echo", handler)
+            # Use a test-unique function_id so this test doesn't clobber shared
+            # registrations — a worker-client registration supersedes the
+            # shared one, and the implicit unregister when the worker shuts
+            # down would break every subsequent test that expects the shared
+            # function to exist.
+            iii_client.register_function("test::ew::carveout-logger-handler", handler)
             time.sleep(0.5)
 
             result = iii_server.trigger({
-                "function_id": "test::ew::valid-token-echo",
+                "function_id": "test::ew::carveout-logger-handler",
                 "payload": {"msg": "real-usage-case"},
             })
             assert result["logged"] is True

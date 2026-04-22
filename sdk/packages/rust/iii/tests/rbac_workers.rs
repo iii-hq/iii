@@ -698,9 +698,15 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
     // Register a handler whose body calls engine::log::info. If the carve-out
     // regresses, this inner trigger returns FORBIDDEN and the outer trigger
     // propagates the error.
+    //
+    // Use a test-unique function_id (not an id from ensure_functions_registered())
+    // so this test doesn't clobber shared registrations: a worker-client
+    // registration would supersede the shared one, and dropping _handle at the
+    // end of the test would unregister the function entirely, breaking every
+    // subsequent serial test that expects `test::ew::valid-token-echo` to exist.
     let inner_client = iii_client.clone();
     let _handle = iii_client.register_function(RegisterFunction::new_async(
-        "test::ew::valid-token-echo",
+        "test::ew::carveout-logger-handler",
         move |input: Value| {
             let client = inner_client.clone();
             async move {
@@ -731,7 +737,7 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
 
     let result = common::shared_iii()
         .trigger(TriggerRequest {
-            function_id: "test::ew::valid-token-echo".to_string(),
+            function_id: "test::ew::carveout-logger-handler".to_string(),
             payload: json!({ "msg": "real-usage-case" }),
             action: None,
             timeout_ms: None,
