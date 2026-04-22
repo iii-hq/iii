@@ -366,9 +366,7 @@ mod tests {
         });
         let resp = HttpResponse::from_function_return(value).into_axum_response();
         assert_eq!(
-            resp.headers()
-                .get("x-custom")
-                .and_then(|v| v.to_str().ok()),
+            resp.headers().get("x-custom").and_then(|v| v.to_str().ok()),
             Some("abc"),
         );
         assert_eq!(
