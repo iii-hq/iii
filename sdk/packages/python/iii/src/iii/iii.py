@@ -999,7 +999,9 @@ class III:
             actions.
 
         Raises:
-            TimeoutError: If the invocation times out.
+            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
+            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
+            IIIInvocationError: For any other engine rejection.
 
         Examples:
             >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -1024,7 +1026,9 @@ class III:
             The result of the function invocation, or ``None`` for void calls.
 
         Raises:
-            TimeoutError: If the invocation times out.
+            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
+            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
+            IIIInvocationError: For any other engine rejection.
 
         Examples:
             >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})

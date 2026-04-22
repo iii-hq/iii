@@ -43,10 +43,11 @@ export function isErrorBody(value: unknown): value is {
   message: string
   stacktrace?: string
 } {
+  if (typeof value !== 'object' || value === null) return false
+  const v = value as { code?: unknown; message?: unknown; stacktrace?: unknown }
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { code?: unknown }).code === 'string' &&
-    typeof (value as { message?: unknown }).message === 'string'
+    typeof v.code === 'string' &&
+    typeof v.message === 'string' &&
+    (v.stacktrace === undefined || typeof v.stacktrace === 'string')
   )
 }

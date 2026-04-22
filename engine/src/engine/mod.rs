@@ -798,6 +798,13 @@ impl Engine {
                         function.as_ref(),
                     ) {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        let explicitly_forbidden =
+                            session.forbidden_functions.iter().any(|f| f == function_id);
+                        let remediation = if explicitly_forbidden {
+                            "remove from rbac.forbidden_functions"
+                        } else {
+                            "add to rbac.expose_functions"
+                        };
                         self.send_msg(
                             worker,
                             Message::InvocationResult {
@@ -807,8 +814,8 @@ impl Engine {
                                 error: Some(ErrorBody::new(
                                     "FORBIDDEN",
                                     format!(
-                                        "function '{}' not allowed (add to rbac.expose_functions)",
-                                        function_id
+                                        "function '{}' not allowed ({})",
+                                        function_id, remediation
                                     ),
                                 )),
                                 traceparent: traceparent.clone(),

@@ -927,9 +927,17 @@ class Sdk implements ISdk {
         stacktrace: error.stacktrace,
       })
     }
+    // JSON.stringify(undefined) returns undefined (not "undefined"), which
+    // would set message to the literal string "undefined" after type coercion
+    // and leak an uninformative rejection. Fall back through String(error)
+    // so every path produces a concrete, readable string.
+    const message =
+      typeof error === 'string'
+        ? error
+        : (JSON.stringify(error) ?? String(error))
     return new IIIInvocationError({
       code: 'UNKNOWN',
-      message: typeof error === 'string' ? error : JSON.stringify(error),
+      message,
       function_id,
     })
   }
