@@ -406,8 +406,12 @@ describe('RBAC Workers', () => {
     })
 
     try {
+      // Use a test-unique function_id so this test doesn't clobber shared
+      // registrations — a worker-client registration supersedes the shared
+      // one, and the implicit unregister when the worker shuts down would
+      // break every subsequent test that expects the shared function to exist.
       iiiClient.registerFunction(
-        'test::ew::valid-token-echo',
+        'test::ew::carveout-logger-handler',
         async (data: Record<string, unknown>) => {
           // If the carve-out regresses, this inner trigger returns FORBIDDEN
           // and the handler throws instead of returning { logged: true }.
@@ -426,7 +430,7 @@ describe('RBAC Workers', () => {
 
       // biome-ignore lint/suspicious/noExplicitAny: any is fine here
       const result = await iii.trigger<any, any>({
-        function_id: 'test::ew::valid-token-echo',
+        function_id: 'test::ew::carveout-logger-handler',
         payload: { msg: 'real-usage-case' },
       })
       expect(result.logged).toBe(true)
