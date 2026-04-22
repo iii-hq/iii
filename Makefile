@@ -13,7 +13,7 @@ MOTIA_PY_DIR        := frameworks/motia/motia-py/packages/motia
 
 export III_TELEMETRY_ENABLED := false
 
-.PHONY: install install-node install-python install-motia-py \
+.PHONY: install install-node install-python install-motia-py install-hooks \
         engine-build engine-test engine-fmt-check \
         engine-up engine-up-bridges engine-down \
         init-build-x86 init-build-aarch64 init-build-all \
@@ -37,6 +37,10 @@ install-node:
 
 install-python:
 	cd $(PYTHON_SDK_DIR) && uv sync --extra dev
+
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "[hooks] pre-commit installed (core.hooksPath=.githooks)"
 
 install-motia-py:
 	cd $(MOTIA_PY_DIR) && uv sync --extra dev

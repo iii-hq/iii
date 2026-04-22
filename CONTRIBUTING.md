@@ -151,6 +151,10 @@ pnpm build
 
 # Build Rust workspace (engine + SDK + console)
 cargo build --release
+
+# Install the pre-commit hook (runs `cargo fmt --check` before each commit
+# so that CI's format gate never bites mid-PR). Optional but recommended.
+make install-hooks
 ```
 
 ## Development Commands
