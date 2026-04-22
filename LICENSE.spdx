@@ -1,19 +1,22 @@
-SPDXVersion: SPDX-2.1
+SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: iii
+DocumentNamespace: https://iii.dev/spdx/iii
 PackageName: iii
-DataFormat: SPDXRef-1
+SPDXID: SPDXRef-Package
 PackageSupplier: Organization: Motia LLC
 PackageHomePage: https://iii.dev
-PackageLicenseDeclared: Elastic-2.0
-PackageLicenseDeclared: Apache-2.0
+PackageLicenseDeclared: Apache-2.0 AND Elastic-2.0
+PackageLicenseConcluded: Apache-2.0 AND Elastic-2.0
 PackageCopyrightText: 2024-present, Motia LLC
-PackageSummary: <text>iii is a single engine with three primitives (Function, Trigger, Discovery)
-that replaces API frameworks, task queues, cron schedulers, pub/sub, state stores,
-and observability pipelines.
+PackageSummary: <text>iii turns distributed backend complexity into a
+simple set of real-time, interoperable primitives called Workers,
+Triggers, and Functions. The result is coordinated execution
+that behaves as if it were a single runtime.
                 </text>
-PackageComment: <text>The engine runtime (engine/) is licensed under Elastic License 2.0.
-All other components (sdk/, cli/, console/, frameworks/, docs/, website/)
-are licensed under Apache License 2.0.
+PackageComment: <text>Inbound contributions from external
+contributors are accepted under Apache-2.0 only; see CONTRIBUTING.md.
                 </text>
 Created: 2024-01-01T00:00:00Z
 PackageDownloadLocation: git://github.com/iii-hq/iii

@@ -1,0 +1,90 @@
+name: install.sh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'engine/install.sh'
+      - 'engine/tests/install_sh_unit.bats'
+      - 'engine/tests/install_sh_integration.sh'
+      - '.github/workflows/install-sh.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'engine/install.sh'
+      - 'engine/tests/install_sh_unit.bats'
+      - 'engine/tests/install_sh_integration.sh'
+      - '.github/workflows/install-sh.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: install-sh-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  III_TELEMETRY_ENABLED: "false"
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck on install.sh
+        run: shellcheck -s sh engine/install.sh
+
+  unit-tests:
+    name: Unit tests (bats)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats-core and jq
+        run: sudo apt-get update && sudo apt-get install -y bats jq
+      - name: Run bats unit tests
+        env:
+          RUN_NETWORK_TESTS: "1"
+        run: bats engine/tests/install_sh_unit.bats
+
+  integration:
+    name: Integration (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-22.04
+            os: ubuntu-22.04
+          - name: ubuntu-24.04
+            os: ubuntu-24.04
+          - name: macos-14
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install jq || true
+      - name: Install jq (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Run integration tests
+        env:
+          CI: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sh engine/tests/install_sh_integration.sh
+
+  alpine-musl:
+    name: Integration (alpine musl)
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.20
+    steps:
+      - name: Install dependencies
+        run: apk add --no-cache bash curl jq tar git
+      - uses: actions/checkout@v4
+      - name: Run integration tests in alpine
+        env:
+          CI: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sh engine/tests/install_sh_integration.sh

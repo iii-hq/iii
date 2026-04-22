@@ -134,11 +134,12 @@ fn build_local_env_merges_and_excludes() {
 fn build_libkrun_local_script_not_prepared() {
     let project = ProjectInfo {
         name: "test".to_string(),
-        language: Some("typescript".to_string()),
+        kind: Some("typescript".to_string()),
         setup_cmd: "apt-get update".to_string(),
         install_cmd: "npm install".to_string(),
         run_cmd: "npm start".to_string(),
         env: HashMap::new(),
+        base_image: None,
     };
     let script = build_libkrun_local_script(&project, false);
     assert!(
@@ -158,11 +159,12 @@ fn build_libkrun_local_script_not_prepared() {
 fn build_libkrun_local_script_prepared() {
     let project = ProjectInfo {
         name: "test".to_string(),
-        language: Some("typescript".to_string()),
+        kind: Some("typescript".to_string()),
         setup_cmd: "apt-get update".to_string(),
         install_cmd: "npm install".to_string(),
         run_cmd: "npm start".to_string(),
         env: HashMap::new(),
+        base_image: None,
     };
     let script = build_libkrun_local_script(&project, true);
     assert!(
@@ -184,7 +186,7 @@ fn build_libkrun_local_script_prepared() {
 #[test]
 fn resolve_worker_name_from_manifest() {
     let dir = tempfile::tempdir().unwrap();
-    let yaml = "name: my-custom-worker\nruntime:\n  language: typescript\n";
+    let yaml = "name: my-custom-worker\nruntime:\n  kind: typescript\n";
     std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
     let name = resolve_worker_name(dir.path());
     assert_eq!(name, "my-custom-worker");
@@ -367,7 +369,7 @@ async fn handle_local_add_rejects_duplicate_without_force() {
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
         std::fs::write(
             project_dir.join(WORKER_MANIFEST),
-            "name: my-worker\nruntime:\n  language: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
+            "name: my-worker\nruntime:\n  kind: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
         )
         .unwrap();
 
@@ -398,7 +400,7 @@ async fn handle_local_add_force_replaces_existing() {
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
         std::fs::write(
             project_dir.join(WORKER_MANIFEST),
-            "name: my-worker\nruntime:\n  language: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
+            "name: my-worker\nruntime:\n  kind: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
         )
         .unwrap();
 

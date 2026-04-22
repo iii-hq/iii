@@ -21,15 +21,17 @@ jobs:
           BODY=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH")
           TOTAL=$(echo "$BODY" | grep -cE '^\s*- \[[ xX]\]' || true)
           if [ "$TOTAL" -eq 0 ]; then
-            echo "::error::PR has no checklist items — do not remove the template checklist"
+            echo "::error::PR has no checklist items. The template checklist was removed — restore it from .github/pull_request_template.md."
             exit 1
           fi
-          if ! echo "$BODY" | grep -qE '^\s*- \[[xX]\] I am licensing the entirety of this PR under Apache 2 and have all necessary rights to the code I am contributing\.$'; then
-            echo "::error::The Apache 2 licensing checkbox must be checked"
+          # Match a checked box that mentions both "licens" and "Apache" so the
+          # check survives minor rewordings of the template copy.
+          if ! echo "$BODY" | grep -qiE '^\s*- \[[xX]\].*licens.*Apache'; then
+            echo "::error::Apache 2.0 license checkbox is unchecked. Edit this PR's description (click the Edit pencil at the top of the PR) and tick the box that starts with 'I am licensing...'. This confirmation is required before the PR can be merged."
             exit 1
           fi
           UNCHECKED=$(echo "$BODY" | grep -cE '^\s*- \[ \]' || true)
           if [ "$UNCHECKED" -gt 0 ]; then
-            echo "::error::PR has $UNCHECKED unchecked task(s)"
+            echo "::error::PR has $UNCHECKED unchecked task(s). Edit the PR description and tick each remaining checkbox."
             exit 1
           fi

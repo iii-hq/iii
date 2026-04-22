@@ -12,7 +12,7 @@ PYTHON_SDK_DIR      := sdk/packages/python/iii
 
 export III_TELEMETRY_ENABLED := false
 
-.PHONY: install install-node install-python \
+.PHONY: install install-node install-python install-hooks \
         engine-build engine-test engine-fmt-check \
         engine-up engine-up-bridges engine-down \
         init-build-x86 init-build-aarch64 init-build-all \
@@ -35,6 +35,11 @@ install-node:
 
 install-python:
 	cd $(PYTHON_SDK_DIR) && uv sync --extra dev
+
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "[hooks] pre-commit installed (core.hooksPath=.githooks)"
+
 
 # ── Engine ────────────────────────────────────────────────────────────────────
 

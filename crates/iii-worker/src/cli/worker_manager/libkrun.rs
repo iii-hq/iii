@@ -21,6 +21,58 @@ use super::oci::{
 };
 use crate::cli::rootfs::clone_rootfs;
 
+/// Forward optional VM-boot tuning flags to the `__vm-boot` child
+/// based on opt-in environment variables. Keeps the public API of
+/// `run_dev` / `LibkrunAdapter::start` unchanged while giving
+/// operators a single place to enable hyperthreading, nested
+/// virtualization, virtiofs DAX window tuning, and the worker-side
+/// NOFILE rlimit for perf experiments.
+///
+/// Variables read (all optional; omit to take each CLI default):
+///   - `III_VM_HYPERTHREADING=1|true|on|yes` → `--hyperthreading`
+///   - `III_VM_NESTED_VIRT=1|true|on|yes`   → `--nested-virt`
+///   - `III_VM_VIRTIOFS_SHM_SIZE_MIB=<int>` → `--virtiofs-shm-size-mib <n>` (0 = skip)
+///   - `III_VM_NOFILE_LIMIT=<int>`     → `--nofile-limit <n>` (0 = let iii-init own it)
+///
+/// Bad values are ignored silently (a typo in an opt-in perf flag
+/// should never fail a worker boot). Appending args to both
+/// `std::process::Command` and `tokio::process::Command` needs the
+/// same logic, so we take `&mut CommandArgsExt` via the closure
+/// rather than committing to either concrete type.
+fn apply_vm_tuning_env(mut push: impl FnMut(&str, Option<&str>)) {
+    let parse_bool =
+        |v: &str| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
+
+    if std::env::var("III_VM_HYPERTHREADING")
+        .ok()
+        .filter(|v| parse_bool(v))
+        .is_some()
+    {
+        push("--hyperthreading", None);
+    }
+    if std::env::var("III_VM_NESTED_VIRT")
+        .ok()
+        .filter(|v| parse_bool(v))
+        .is_some()
+    {
+        push("--nested-virt", None);
+    }
+    if let Some(n) = std::env::var("III_VM_VIRTIOFS_SHM_SIZE_MIB")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        let owned = n.to_string();
+        push("--virtiofs-shm-size-mib", Some(&owned));
+    }
+    if let Some(n) = std::env::var("III_VM_NOFILE_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        let owned = n.to_string();
+        push("--nofile-limit", Some(&owned));
+    }
+}
+
 /// Check if libkrun runtime is available on this system.
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.
 pub fn libkrun_available() -> bool {
@@ -43,7 +95,7 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
 /// Uses a separate process for crash isolation.
 pub async fn run_dev(
-    _language: &str,
+    _kind: &str,
     _project_path: &str,
     exec_path: &str,
     args: &[String],
@@ -86,6 +138,10 @@ pub async fn run_dev(
     // proxy thread + socketpair; we just tell it where to put the unix
     // socket so the watcher (and stop handler) knows where to connect.
     cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
+    // Shell-exec channel for `iii worker exec`. Colocated with the
+    // control socket so a single managed dir holds every endpoint for
+    // this VM. __vm-boot spawns the async relay if the path is given.
+    cmd.arg("--shell-sock").arg(rootfs.join("shell.sock"));
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -98,6 +154,14 @@ pub async fn run_dev(
     for arg in args {
         cmd.arg("--arg").arg(arg);
     }
+
+    // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
+    apply_vm_tuning_env(|flag, val| {
+        cmd.arg(flag);
+        if let Some(v) = val {
+            cmd.arg(v);
+        }
+    });
 
     if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
         cmd.env(
@@ -236,6 +300,55 @@ impl LibkrunAdapter {
             .join(name)
     }
 
+    /// Tighten `~/.iii/managed` to 0o700 so a same-UID attacker
+    /// can't race `connect()` on per-worker sockets before
+    /// per-worker dir permissions land.
+    fn ensure_managed_parent_restricted() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let parent = dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".iii")
+                .join("managed");
+            if let Err(e) = std::fs::create_dir_all(&parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "failed to create ~/.iii/managed parent dir"
+                );
+                return;
+            }
+            match std::fs::metadata(&parent) {
+                Ok(meta) => {
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode != 0o700 {
+                        if let Err(e) = std::fs::set_permissions(
+                            &parent,
+                            std::fs::Permissions::from_mode(0o700),
+                        ) {
+                            tracing::warn!(
+                                path = %parent.display(),
+                                current_mode = format!("{mode:o}"),
+                                error = %e,
+                                "could not tighten ~/.iii/managed to 0o700; \
+                                 per-worker dirs still land 0o700 but TOCTOU \
+                                 window remains on socket create",
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %parent.display(),
+                        error = %e,
+                        "stat ~/.iii/managed failed; skipping permission tighten"
+                    );
+                }
+            }
+        }
+    }
+
     pub fn image_rootfs(image: &str) -> PathBuf {
         let hash = {
             use sha2::Digest;
@@ -340,8 +453,14 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 
     async fn start(&self, spec: &ContainerSpec) -> Result<String> {
+        Self::ensure_managed_parent_restricted();
         let worker_dir = Self::worker_dir(&spec.name);
         std::fs::create_dir_all(&worker_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&worker_dir, std::fs::Permissions::from_mode(0o700));
+        }
 
         let rootfs_dir = Self::image_rootfs(&spec.image);
         if !rootfs_dir.exists() {
@@ -453,6 +572,10 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // to a full VM restart.
         cmd.arg("--control-sock")
             .arg(worker_dir.join("control.sock"));
+        // Shell-exec channel alongside the control channel. `iii worker
+        // exec` connects to shell.sock; the in-VM dispatcher thread
+        // handles requests. Absent => exec refuses with a clear error.
+        cmd.arg("--shell-sock").arg(worker_dir.join("shell.sock"));
 
         let image_env = read_oci_env(&worker_rootfs);
         let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
@@ -467,6 +590,16 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         for arg in &exec_args {
             cmd.arg("--arg").arg(arg);
         }
+
+        // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
+        // Same opt-in model as `run_dev` — unset vars keep defaults
+        // so this is strictly additive.
+        apply_vm_tuning_env(|flag, val| {
+            cmd.arg(flag);
+            if let Some(v) = val {
+                cmd.arg(v);
+            }
+        });
 
         if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
             cmd.env(

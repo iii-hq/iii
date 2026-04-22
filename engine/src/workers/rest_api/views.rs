@@ -568,7 +568,7 @@ pub async fn dynamic_handler(
 
                                     channel_mgr.remove_channel(&res_ch_id);
                                     channel_mgr.remove_channel(&req_ch_id);
-                                    return (StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK), Json(http_response.body)).into_response();
+                                    return http_response.into_axum_response();
                                 }
                                 Ok(Ok(_)) => {
                                     // Invocation done, no direct body — break out of
@@ -694,12 +694,12 @@ pub async fn dynamic_handler(
             return match func_result {
                 Ok(Ok(result)) => {
                     let result = result.unwrap_or(json!({}));
-                    let sc = result.get("status_code").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+                    let http_response = HttpResponse::from_function_return(result);
+                    let sc = http_response.status_code;
                     tracing::Span::current().record("http.response.status_code", sc);
                     let otel = if (200..300).contains(&sc) { "OK" } else { "ERROR" };
                     tracing::Span::current().record("otel.status_code", otel);
-                    let body = result.get("body").cloned().unwrap_or(json!({}));
-                    (StatusCode::from_u16(sc).unwrap_or(StatusCode::OK), Json(body)).into_response()
+                    http_response.into_axum_response()
                 }
                 Ok(Err(err)) => {
                     let error_id = generate_error_id();

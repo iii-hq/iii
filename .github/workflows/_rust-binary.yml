@@ -15,6 +15,11 @@ on:
         description: 'Git tag for the GitHub Release (e.g., iii/v1.0.0)'
         required: true
         type: string
+      tag_prefix:
+        description: 'Tag prefix used to filter stable tags for release-note diff (e.g., "iii/" or "motia/"). Leave empty to skip previous-stable lookup and fall back to GitHub default.'
+        required: false
+        type: string
+        default: ''
       is_prerelease:
         description: 'Mark as pre-release'
         required: false
@@ -149,6 +154,22 @@ jobs:
         if: inputs.skip_create_release != true && inputs.dry_run != true
         with:
           token: ${{ steps.generate_token.outputs.token }}
+          fetch-tags: true
+
+      - name: Compute previous stable tag
+        id: prev
+        if: inputs.skip_create_release != true && inputs.dry_run != true && inputs.tag_prefix != ''
+        env:
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          CURRENT_TAG: ${{ inputs.tag_name }}
+        run: |
+          PREFIX="${TAG_PREFIX}v"
+          PREV_STABLE=$(git tag --list "${PREFIX}*" --sort=-v:refname \
+            | grep -E "^${PREFIX}[0-9]+\.[0-9]+\.[0-9]+\$" \
+            | grep -v "^${CURRENT_TAG}\$" \
+            | head -n 1 || true)
+          echo "previous_tag=${PREV_STABLE}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Previous stable tag for release notes: ${PREV_STABLE:-<none, GitHub default>}"
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
@@ -160,6 +181,7 @@ jobs:
           draft: false
           prerelease: ${{ inputs.is_prerelease }}
           generate_release_notes: true
+          previous_tag: ${{ steps.prev.outputs.previous_tag }}
 
   build:
     name: Build ${{ matrix.target }}

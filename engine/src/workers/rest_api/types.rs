@@ -6,6 +6,11 @@
 
 use std::collections::HashMap;
 
+use axum::{
+    body::Body,
+    http::{HeaderName, HeaderValue, Response, StatusCode},
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -39,7 +44,7 @@ pub struct HttpRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpResponse {
     pub status_code: u16,
-    pub headers: Vec<String>,
+    pub headers: Vec<(String, String)>,
     pub body: Value,
 }
 
@@ -49,15 +54,18 @@ impl HttpResponse {
             .get("status_code")
             .and_then(|v| v.as_u64())
             .unwrap_or(200) as u16;
-        let headers = value
-            .get("headers")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<String>>()
-            })
-            .unwrap_or_default();
+        let headers = match value.get("headers") {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(parse_header_line)
+                .collect(),
+            Some(Value::Object(map)) => map
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect(),
+            _ => Vec::new(),
+        };
         let body = value.get("body").cloned().unwrap_or(json!({}));
         HttpResponse {
             status_code,
@@ -65,6 +73,71 @@ impl HttpResponse {
             body,
         }
     }
+
+    /// Returns the value of the first header matching `name` case-insensitively.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Build an axum response, honoring user-set headers and choosing a body
+    /// serialization based on Content-Type (string/bytes for non-JSON types,
+    /// JSON otherwise).
+    pub fn into_axum_response(self) -> Response<Body> {
+        let status = StatusCode::from_u16(self.status_code).unwrap_or(StatusCode::OK);
+        let user_content_type = self.header("content-type").map(|s| s.to_string());
+
+        let (body_bytes, default_content_type) = match (&user_content_type, &self.body) {
+            (Some(_), Value::String(s)) => (s.clone().into_bytes(), None),
+            (Some(_), Value::Null) => (Vec::new(), None),
+            (Some(ct), other) if !ct.to_ascii_lowercase().contains("application/json") => {
+                (other.to_string().into_bytes(), None)
+            }
+            (_, body) => (
+                serde_json::to_vec(body).unwrap_or_else(|_| b"null".to_vec()),
+                Some("application/json"),
+            ),
+        };
+
+        let mut builder = Response::builder().status(status);
+        let mut content_type_set = false;
+        for (k, v) in &self.headers {
+            match (
+                HeaderName::try_from(k.as_str()),
+                HeaderValue::try_from(v.as_str()),
+            ) {
+                (Ok(name), Ok(value)) => {
+                    if name.as_str().eq_ignore_ascii_case("content-type") {
+                        content_type_set = true;
+                    }
+                    builder = builder.header(name, value);
+                }
+                _ => {
+                    tracing::warn!(header_name = %k, "Skipping invalid response header");
+                }
+            }
+        }
+        if !content_type_set {
+            if let Some(ct) = default_content_type {
+                builder = builder.header("content-type", ct);
+            }
+        }
+
+        builder
+            .body(Body::from(body_bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    }
+}
+
+fn parse_header_line(line: &str) -> Option<(String, String)> {
+    let (name, value) = line.split_once(':')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), value.trim().to_string()))
 }
 
 #[cfg(test)]
@@ -136,11 +209,26 @@ mod tests {
         assert_eq!(
             resp.headers,
             vec![
-                "Content-Type: application/json".to_string(),
-                "X-Custom: value".to_string(),
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("X-Custom".to_string(), "value".to_string()),
             ]
         );
         assert_eq!(resp.body, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn http_response_headers_from_object() {
+        let value = json!({
+            "status_code": 200,
+            "headers": { "Content-Type": "text/xml" },
+            "body": "<Response/>"
+        });
+        let resp = HttpResponse::from_function_return(value);
+        assert_eq!(
+            resp.header("content-type"),
+            Some("text/xml"),
+            "headers given as object form should parse case-insensitively"
+        );
     }
 
     #[test]
@@ -165,13 +253,19 @@ mod tests {
     }
 
     #[test]
-    fn http_response_headers_filters_non_strings() {
+    fn http_response_headers_filters_invalid() {
         let value = json!({
-            "headers": ["valid-header", 123, null, "another-header"]
+            "headers": ["X-A: one", 123, null, "no-colon", "X-B: two"]
         });
         let resp = HttpResponse::from_function_return(value);
-        // Only string values should be kept
-        assert_eq!(resp.headers, vec!["valid-header", "another-header"]);
+        // Non-strings and entries without a colon are dropped.
+        assert_eq!(
+            resp.headers,
+            vec![
+                ("X-A".to_string(), "one".to_string()),
+                ("X-B".to_string(), "two".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -217,14 +311,70 @@ mod tests {
     fn http_response_serialize_deserialize() {
         let resp = HttpResponse {
             status_code: 200,
-            headers: vec!["Content-Type: text/html".to_string()],
+            headers: vec![("Content-Type".to_string(), "text/html".to_string())],
             body: json!({"message": "ok"}),
         };
         let json_str = serde_json::to_string(&resp).unwrap();
         let deserialized: HttpResponse = serde_json::from_str(&json_str).unwrap();
         assert_eq!(deserialized.status_code, 200);
-        assert_eq!(deserialized.headers, vec!["Content-Type: text/html"]);
+        assert_eq!(
+            deserialized.headers,
+            vec![("Content-Type".to_string(), "text/html".to_string())]
+        );
         assert_eq!(deserialized.body, json!({"message": "ok"}));
+    }
+
+    #[test]
+    fn into_axum_response_applies_user_content_type_for_string_body() {
+        let value = json!({
+            "status_code": 200,
+            "headers": ["Content-Type: text/xml"],
+            "body": "<Response><Say>hi</Say></Response>",
+        });
+        let resp = HttpResponse::from_function_return(value).into_axum_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/xml"),
+        );
+    }
+
+    #[test]
+    fn into_axum_response_defaults_to_json_when_no_content_type() {
+        let value = json!({
+            "status_code": 201,
+            "body": { "ok": true },
+        });
+        let resp = HttpResponse::from_function_return(value).into_axum_response();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
+    }
+
+    #[test]
+    fn into_axum_response_preserves_custom_headers() {
+        let value = json!({
+            "status_code": 200,
+            "headers": { "X-Custom": "abc", "Content-Type": "text/plain" },
+            "body": "hello",
+        });
+        let resp = HttpResponse::from_function_return(value).into_axum_response();
+        assert_eq!(
+            resp.headers().get("x-custom").and_then(|v| v.to_str().ok()),
+            Some("abc"),
+        );
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain"),
+        );
     }
 
     // =========================================================================

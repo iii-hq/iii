@@ -167,6 +167,37 @@ describe('API Triggers', () => {
     trigger.unregister()
   })
 
+  it('should honor Content-Type header when returning ApiResponse with string body', async () => {
+    const xmlBody = '<?xml version="1.0" encoding="UTF-8"?><note><to>user</to><body>hello</body></note>'
+    const fn = iii.registerFunction(
+      'test.api.xml.return',
+      async (_req: HttpRequest): Promise<ApiResponse> => ({
+        status_code: 200,
+        headers: { 'Content-Type': 'text/xml' },
+        body: xmlBody,
+      }),
+    )
+
+    const trigger = iii.registerTrigger({
+      type: 'http',
+      function_id: fn.id,
+      config: {
+        api_path: 'test/xml-return',
+        http_method: 'POST',
+      },
+    })
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/xml-return`, { method: 'POST' })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/xml')
+    expect(await response.text()).toBe(xmlBody)
+
+    fn.unregister()
+    trigger.unregister()
+  })
+
   it('should download a PDF file via streaming response', async () => {
     const originalPdf = fs.readFileSync(pdfPath)
     const fn = iii.registerFunction(

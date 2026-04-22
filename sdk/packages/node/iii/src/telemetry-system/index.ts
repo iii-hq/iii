@@ -46,6 +46,19 @@ import { parseIntegerEnv, parseNumberEnv } from './utils'
 export * from './types'
 export * from './context'
 
+/**
+ * Normalize an engine WebSocket URL into the dedicated OTEL endpoint.
+ * The engine exposes `/otel` for telemetry-only WS connections; routing
+ * there keeps this socket out of the worker registry (otherwise it shows
+ * up as a ghost null-metadata worker).
+ */
+function appendOtelPath(base: string): string {
+  const url = new URL(base)
+  const path = url.pathname.replace(/\/+$/, '')
+  url.pathname = path.endsWith('/otel') ? path : `${path}/otel`
+  return url.toString()
+}
+
 // Module-level state
 let sharedConnection: SharedEngineConnection | null = null
 let tracerProvider: NodeTracerProvider | null = null
@@ -88,8 +101,11 @@ export function initOtel(config: OtelConfig = {}): void {
   }
   const resource = new Resource(resourceAttributes)
 
-  // Create shared WebSocket connection
-  sharedConnection = new SharedEngineConnection(engineWsUrl, config.reconnectionConfig)
+  // Create shared WebSocket connection.
+  // OTEL always connects to the engine's dedicated `/otel` endpoint so
+  // the telemetry socket doesn't get registered in `worker_registry` as
+  // a ghost null-metadata worker alongside the real worker.
+  sharedConnection = new SharedEngineConnection(appendOtelPath(engineWsUrl), config.reconnectionConfig)
 
   // Initialize tracer
   const spanExporter = new EngineSpanExporter(sharedConnection)

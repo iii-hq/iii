@@ -26,6 +26,23 @@ _fetch_patched: bool = False
 _DEFAULT_SERVICE_NAME = "iii-python-sdk"
 
 
+def _append_otel_path(base: str) -> str:
+    """Normalize an engine WS URL into the dedicated ``/otel`` endpoint.
+
+    The engine exposes ``/otel`` for telemetry-only WS connections; routing
+    there keeps this socket out of ``worker_registry`` (otherwise it shows
+    up as a ghost null-metadata worker alongside the real worker). Query
+    strings and fragments are preserved.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(base)
+    path = parts.path.rstrip("/")
+    if not path.endswith("/otel"):
+        path = f"{path}/otel"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
 def init_otel(
     config: OtelConfig | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
@@ -81,7 +98,10 @@ def init_otel(
     from .telemetry_exporters import EngineSpanExporter, SharedEngineConnection
 
     ws_url = cfg.engine_ws_url or os.environ.get("III_URL") or "ws://localhost:49134"
-    _connection = SharedEngineConnection(ws_url)
+    # Route OTEL to the engine's dedicated `/otel` endpoint so the
+    # telemetry socket doesn't get registered in `worker_registry` as a
+    # ghost null-metadata worker alongside every real worker.
+    _connection = SharedEngineConnection(_append_otel_path(ws_url))
     if loop is not None:
         _connection.start(loop)
 

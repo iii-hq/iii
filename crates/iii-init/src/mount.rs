@@ -221,6 +221,86 @@ fn mount_cgroup2() -> Result<(), InitError> {
     Ok(())
 }
 
+/// Rewrite `MemTotal`, `MemAvailable`, and `MemFree` lines in a
+/// snapshot of `/proc/meminfo` so they report `mem_total_kb` instead
+/// of the host/VM total. Every other line is copied verbatim.
+///
+/// Pure string transform — tested in isolation. Format matches what
+/// the kernel writes: left-aligned label ending in colon, value
+/// right-justified to column 15, trailing " kB".
+pub fn rewrite_meminfo(src: &str, mem_total_kb: u64) -> String {
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        if line.starts_with("MemTotal:") {
+            out.push_str(&format!("MemTotal:       {:>8} kB", mem_total_kb));
+        } else if line.starts_with("MemAvailable:") {
+            out.push_str(&format!("MemAvailable:   {:>8} kB", mem_total_kb));
+        } else if line.starts_with("MemFree:") {
+            out.push_str(&format!("MemFree:        {:>8} kB", mem_total_kb));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Bind-mount a rewritten `/proc/meminfo` over the real one so guest
+/// runtimes that read MemTotal directly (notably Bun's Zig allocator,
+/// which ignores cgroup v2 `memory.max`) see the per-worker cap
+/// instead of the whole VM's RAM.
+///
+/// LXCFS-lite: a single snapshot written at boot, then bind-mounted.
+/// Values don't update live the way LXCFS's FUSE does; for Bun that's
+/// fine because it reads MemTotal once at startup.
+///
+/// No-op when `III_WORKER_MEM_BYTES` is unset, zero, or parse-fails —
+/// the override is purely additive; uncapped VMs keep the real
+/// /proc/meminfo. Errors at any step become warnings so a bad bind
+/// can't wedge worker startup.
+pub fn override_proc_meminfo() {
+    let mem_bytes: u64 = match std::env::var("III_WORKER_MEM_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        Some(b) if b > 0 => b,
+        _ => return,
+    };
+    let mem_kb = mem_bytes / 1024;
+
+    let existing = match std::fs::read_to_string("/proc/meminfo") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("iii-init: warning: read /proc/meminfo failed: {e}");
+            return;
+        }
+    };
+    let rewritten = rewrite_meminfo(&existing, mem_kb);
+
+    // /run is tmpfs (mounted in step 8 above) so the faux file has no
+    // on-disk footprint. Name is distinctive enough that a curious
+    // operator can `cat /run/iii-meminfo` to confirm what the worker
+    // is seeing.
+    let faux_path = "/run/iii-meminfo";
+    if let Err(e) = std::fs::write(faux_path, rewritten.as_bytes()) {
+        eprintln!("iii-init: warning: write {faux_path} failed: {e}");
+        return;
+    }
+
+    match mount(
+        Some(faux_path),
+        "/proc/meminfo",
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    ) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("iii-init: warning: bind-mount {faux_path} over /proc/meminfo failed: {e}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +360,43 @@ mod tests {
             "/dev/fd symlink must precede /tmp mount"
         );
         assert!(tmp_pos < run_pos, "/tmp must be mounted before /run");
+    }
+
+    #[test]
+    fn rewrite_meminfo_caps_memtotal_memfree_memavailable() {
+        // Realistic host snippet (abbreviated). Important: preserves
+        // every non-capped line verbatim, and the cap value appears in
+        // the three lines Bun/node care about.
+        let src = "MemTotal:       16384000 kB\n\
+                   MemFree:         8000000 kB\n\
+                   MemAvailable:   12000000 kB\n\
+                   Buffers:          100000 kB\n\
+                   SwapTotal:       2097152 kB\n";
+        let out = rewrite_meminfo(src, 524288);
+        assert!(out.contains("MemTotal:"));
+        assert!(out.contains("524288 kB"));
+        assert!(out.contains("MemFree:"));
+        assert!(out.contains("MemAvailable:"));
+        // Untouched lines must survive verbatim.
+        assert!(out.contains("Buffers:          100000 kB"));
+        assert!(out.contains("SwapTotal:       2097152 kB"));
+        // Exactly one MemTotal line after rewrite.
+        assert_eq!(out.matches("MemTotal:").count(), 1);
+    }
+
+    #[test]
+    fn rewrite_meminfo_preserves_line_count() {
+        let src = "MemTotal:       16384000 kB\n\
+                   MemFree:         8000000 kB\n\
+                   MemAvailable:   12000000 kB\n\
+                   Buffers:          100000 kB\n";
+        let out = rewrite_meminfo(src, 1024);
+        assert_eq!(out.lines().count(), 4);
+    }
+
+    #[test]
+    fn rewrite_meminfo_empty_input_yields_empty_output() {
+        assert_eq!(rewrite_meminfo("", 1024), "");
     }
 
     #[test]

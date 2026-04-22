@@ -159,6 +159,11 @@ pub enum Commands {
         port: u16,
     },
 
+    /// Run a command inside a running worker's VM. Pipes stdin/stdout/
+    /// stderr through and returns the child's exit code. Pass `-t` for
+    /// an interactive PTY.
+    Exec(ExecArgs),
+
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
@@ -166,6 +171,53 @@ pub enum Commands {
     /// Internal: host-side source watcher sidecar for local-path workers
     #[command(name = "__watch-source", hide = true)]
     WatchSource(WatchSourceArgs),
+}
+
+/// Arguments for `iii worker exec`. Mirrors `msb exec`'s shape so
+/// users moving between microsandbox and iii have muscle memory.
+#[derive(Args, Debug)]
+pub struct ExecArgs {
+    /// Worker name whose VM to run the command in.
+    #[arg(value_name = "WORKER")]
+    pub name: String,
+
+    /// Set an environment variable inside the spawned process (repeatable).
+    /// `KEY=VALUE` form; anything without `=` is silently skipped.
+    #[arg(short, long)]
+    pub env: Vec<String>,
+
+    /// Working directory inside the guest. Defaults to the dispatcher's
+    /// cwd (typically `/workspace`).
+    #[arg(short, long)]
+    pub workdir: Option<String>,
+
+    /// Allocate a pseudo-terminal. Required for interactive shells
+    /// and TUI programs; merges stdout/stderr through the PTY master
+    /// and puts the host terminal in raw mode for the session. Auto-
+    /// enabled when both stdin and stdout are TTYs (ssh-style); pass
+    /// `--no-tty` to force pipe mode in that case.
+    #[arg(short = 't', long)]
+    pub tty: bool,
+
+    /// Disable TTY auto-detection and force pipe mode. Use when you
+    /// want byte-exact output in a terminal session (e.g. capturing
+    /// structured output from an otherwise-interactive tool).
+    #[arg(long, conflicts_with = "tty")]
+    pub no_tty: bool,
+
+    /// Kill the child after this long (e.g. `30s`, `5m`, `500ms`).
+    /// Parsed by the standard `humantime` syntax. On expiry the client
+    /// sends SIGKILL to the guest session and exits with code 124
+    /// (matches coreutils `timeout(1)`), so shell scripts can
+    /// distinguish a timeout from an ordinary nonzero exit.
+    #[arg(long)]
+    pub timeout: Option<String>,
+
+    /// Program and arguments. Comes after `--`:
+    /// `iii worker exec pdfkit -- /bin/ls -la /workspace`.
+    /// First element is the executable; the rest are its argv.
+    #[arg(last = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
 }
 
 /// Arguments for the hidden `__watch-source` subcommand.

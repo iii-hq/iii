@@ -1,5 +1,7 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
+export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
+
 export { type InitOptions, registerWorker, TriggerAction } from './iii'
 
 export type {
