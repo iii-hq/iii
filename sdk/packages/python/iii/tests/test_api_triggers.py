@@ -195,6 +195,42 @@ async def test_custom_status_code(engine_http_url, iii_client: III):
 
 
 @pytest.mark.asyncio
+async def test_content_type_on_api_response_return(engine_http_url, iii_client: III):
+    """Returning an ApiResponse dict with headers should set the response Content-Type."""
+    xml_body = '<?xml version="1.0" encoding="UTF-8"?><note><to>user</to><body>hello</body></note>'
+
+    def handler(_input_data):
+        return {
+            "status_code": 200,
+            "headers": {"Content-Type": "text/xml"},
+            "body": xml_body,
+        }
+
+    fn_ref = iii_client.register_function({"id": "test.api.xml.return.py"}, handler)
+    trigger = iii_client.register_trigger(
+        {
+            "type": "http",
+            "function_id": "test.api.xml.return.py",
+            "config": {
+                "api_path": "test/py/xml-return",
+                "http_method": "POST",
+            },
+        }
+    )
+
+    time.sleep(0.3)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{engine_http_url}/test/py/xml-return") as resp:
+            assert resp.status == 200
+            assert resp.headers.get("content-type") == "text/xml"
+            assert await resp.text() == xml_body
+
+    fn_ref.unregister()
+    trigger.unregister()
+
+
+@pytest.mark.asyncio
 async def test_download_pdf_streaming(engine_http_url, iii_client: III):
     """Stream a PDF file as a download response."""
     if not TEST_FILE.exists():
