@@ -5,11 +5,11 @@
 
 mod common;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use common::isolation::in_temp_dir;
 use iii_worker::{Cli, Commands, VmBootArgs};
 
-/// All 10 subcommands parse without error.
+/// Representative subcommands parse without error.
 #[test]
 fn cli_parses_all_subcommands() {
     let cases: Vec<(&[&str], fn(Commands))> = vec![
@@ -183,6 +183,14 @@ fn sync_subcommand_accepts_frozen_flag() {
         Commands::Sync { frozen } => assert!(frozen),
         _ => panic!("expected Sync"),
     }
+}
+
+#[test]
+fn sync_help_matches_current_read_only_behavior() {
+    let help = Cli::command().render_long_help().to_string();
+
+    assert!(help.contains("Read iii.lock and report pinned workers"));
+    assert!(!help.contains("Install workers exactly from iii.lock"));
 }
 
 #[test]

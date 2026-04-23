@@ -220,6 +220,7 @@ pub async fn handle_worker_verify() -> i32 {
     };
 
     let names = super::config_file::list_worker_names();
+    let names = lockfile_relevant_config_worker_names(&lockfile, &names);
     match lockfile.verify_config_workers(&names) {
         Ok(()) => {
             eprintln!("  {} config.yaml matches iii.lock", "✓".green());
@@ -229,6 +230,32 @@ pub async fn handle_worker_verify() -> i32 {
             eprintln!("{} {}", "error:".red(), e);
             1
         }
+    }
+}
+
+fn lockfile_relevant_config_worker_names(
+    lockfile: &super::lockfile::WorkerLockfile,
+    names: &[String],
+) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| should_verify_config_worker(lockfile, name))
+        .cloned()
+        .collect()
+}
+
+fn should_verify_config_worker(lockfile: &super::lockfile::WorkerLockfile, name: &str) -> bool {
+    if lockfile.workers.contains_key(name) {
+        return true;
+    }
+
+    if get_builtin_default(name).is_some() {
+        return false;
+    }
+
+    match super::config_file::resolve_worker_type(name) {
+        ResolvedWorkerType::Local { .. } | ResolvedWorkerType::Oci { .. } => false,
+        ResolvedWorkerType::Binary { .. } | ResolvedWorkerType::Config => true,
     }
 }
 
@@ -257,7 +284,7 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
             }
             vec![name.to_string()]
         }
-        None => lockfile.workers.keys().cloned().collect(),
+        None => locked_root_worker_names(&lockfile),
     };
 
     let mut fail_count = 0;
@@ -284,6 +311,27 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
     }
 
     if fail_count == 0 { 0 } else { 1 }
+}
+
+fn locked_root_worker_names(lockfile: &super::lockfile::WorkerLockfile) -> Vec<String> {
+    let dependency_names: std::collections::BTreeSet<&str> = lockfile
+        .workers
+        .values()
+        .flat_map(|worker| worker.dependencies.keys().map(String::as_str))
+        .collect();
+
+    let roots: Vec<String> = lockfile
+        .workers
+        .keys()
+        .filter(|name| !dependency_names.contains(name.as_str()))
+        .cloned()
+        .collect();
+
+    if roots.is_empty() {
+        lockfile.workers.keys().cloned().collect()
+    } else {
+        roots
+    }
 }
 
 fn lockfile_from_graph(
@@ -595,7 +643,7 @@ pub async fn handle_managed_add(
             let rc = handle_resolved_graph_add(&graph, brief).await;
             return finish_add(&name, rc, wait, brief).await;
         }
-        Err(e) if e.starts_with("Failed to parse worker graph:") => {
+        Err(e) if should_fallback_to_legacy_registry_error(&name, &e) => {
             tracing::debug!("falling back to single-worker registry response: {}", e);
         }
         Err(e) => {
@@ -622,6 +670,13 @@ pub async fn handle_managed_add(
         }
     };
     finish_add(&name, rc, wait, brief).await
+}
+
+fn should_fallback_to_legacy_registry_error(name: &str, error: &str) -> bool {
+    error.starts_with("Failed to parse worker graph:")
+        || error == format!("Worker '{}' not found", name)
+        || error.starts_with("Failed to resolve worker graph: HTTP 404")
+        || error.starts_with("Failed to resolve worker graph: HTTP 405")
 }
 
 /// Shared tail for every non-local `handle_managed_add` exit path.
@@ -2427,6 +2482,26 @@ mod tests {
         f(dir_path).await;
     }
 
+    fn in_temp_dir<F>(f: F)
+    where
+        F: FnOnce(std::path::PathBuf),
+    {
+        struct CwdGuard(std::path::PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        std::env::set_current_dir(&dir_path).unwrap();
+        let _cwd_guard = CwdGuard(original);
+        f(dir_path);
+    }
+
     #[test]
     fn binary_config_yaml_omits_empty_registry_config() {
         assert_eq!(binary_config_yaml(&serde_json::json!({})), None);
@@ -2446,6 +2521,120 @@ mod tests {
     use crate::cli::lockfile as cli_lockfile;
     use crate::cli::registry as cli_registry;
     use std::collections::HashMap as StdHashMap;
+
+    #[derive(Clone)]
+    struct TestResponse {
+        status: u16,
+        content_type: &'static str,
+        body: Vec<u8>,
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.old {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn set_env_var_for_test(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> EnvVarGuard {
+        let old = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        EnvVarGuard { key, old }
+    }
+
+    fn binary_archive(binary_name: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let contents = format!("#!/bin/sh\necho {binary_name}\n");
+        let mut header = tar::Header::new_gnu();
+        header.set_path(binary_name).unwrap();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append(&header, contents.as_bytes())
+            .expect("append test binary");
+        let encoder = archive.into_inner().expect("finish tar archive");
+        encoder.finish().expect("finish gzip archive")
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    async fn spawn_static_http_server(
+        routes: StdHashMap<String, TestResponse>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        spawn_static_http_server_with_routes(|_| routes).await
+    }
+
+    async fn spawn_static_http_server_with_routes<F>(
+        build_routes: F,
+    ) -> (String, tokio::task::JoinHandle<()>)
+    where
+        F: FnOnce(&str) -> StdHashMap<String, TestResponse>,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("test server local addr");
+        let base_url = format!("http://{addr}");
+        let routes = build_routes(&base_url);
+        let handle = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let routes = routes.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0_u8; 4096];
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    let mut parts = request
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .split_whitespace();
+                    let method = parts.next().unwrap_or_default();
+                    let path = parts.next().unwrap_or("/");
+                    let keyed = format!("{method} {path}");
+                    let response = routes.get(&keyed).or_else(|| routes.get(path));
+
+                    let (status, content_type, body) = match response {
+                        Some(response) => (
+                            response.status,
+                            response.content_type,
+                            response.body.as_slice(),
+                        ),
+                        None => (404, "text/plain", b"not found".as_slice()),
+                    };
+                    let reason = if status == 200 { "OK" } else { "ERROR" };
+                    let headers = format!(
+                        "HTTP/1.1 {status} {reason}\r\ncontent-length: {}\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(headers.as_bytes()).await;
+                    let _ = stream.write_all(body).await;
+                });
+            }
+        });
+
+        (base_url, handle)
+    }
 
     fn resolved_binary_worker(
         name: &str,
@@ -2603,6 +2792,348 @@ mod tests {
             entry.worker_type,
             cli_lockfile::LockedWorkerType::Image
         ));
+    }
+
+    #[test]
+    fn frozen_verify_filters_unmanaged_config_workers() {
+        in_temp_dir(|_| {
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            lock.workers.insert(
+                "image-resize".to_string(),
+                cli_lockfile::LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: cli_lockfile::LockedWorkerType::Binary,
+                    dependencies: Default::default(),
+                    source: cli_lockfile::LockedSource::Binary {
+                        target: "aarch64-apple-darwin".to_string(),
+                        url: "https://example.com/image-resize.tar.gz".to_string(),
+                        sha256: "a".repeat(64),
+                    },
+                },
+            );
+
+            let names = vec![
+                "image-resize".to_string(),
+                "iii-http".to_string(),
+                "local-dev".to_string(),
+                "external-image".to_string(),
+            ];
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: image-resize
+  - name: iii-http
+    config:
+      port: 3111
+  - name: local-dev
+    worker_path: ./worker
+  - name: external-image
+    image: ghcr.io/acme/external:1
+",
+            )
+            .unwrap();
+
+            let relevant = lockfile_relevant_config_worker_names(&lock, &names);
+
+            assert_eq!(relevant, vec!["image-resize".to_string()]);
+        });
+    }
+
+    #[test]
+    fn frozen_verify_still_flags_registry_like_config_worker_missing_from_lock() {
+        in_temp_dir(|_| {
+            let lock = cli_lockfile::WorkerLockfile::default();
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: image-resize
+    config:
+      width: 200
+",
+            )
+            .unwrap();
+
+            let relevant =
+                lockfile_relevant_config_worker_names(&lock, &["image-resize".to_string()]);
+
+            assert_eq!(relevant, vec!["image-resize".to_string()]);
+            assert!(lock.verify_config_workers(&relevant).is_err());
+        });
+    }
+
+    #[tokio::test]
+    async fn handle_worker_verify_allows_mixed_locked_and_unmanaged_workers() {
+        in_temp_dir_async(|_| async move {
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            lock.workers.insert(
+                "image-resize".to_string(),
+                cli_lockfile::LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: cli_lockfile::LockedWorkerType::Binary,
+                    dependencies: Default::default(),
+                    source: cli_lockfile::LockedSource::Binary {
+                        target: binary_download::current_target().to_string(),
+                        url: "https://example.com/image-resize.tar.gz".to_string(),
+                        sha256: "a".repeat(64),
+                    },
+                },
+            );
+            lock.write_to(cli_lockfile::lockfile_path()).unwrap();
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: image-resize
+  - name: iii-http
+    config:
+      port: 3111
+  - name: local-dev
+    worker_path: ./worker
+  - name: external-image
+    image: ghcr.io/acme/external:1
+",
+            )
+            .unwrap();
+
+            let rc = handle_worker_verify().await;
+
+            assert_eq!(rc, 0);
+        })
+        .await;
+    }
+
+    #[test]
+    fn worker_update_without_name_selects_roots_not_dependency_entries() {
+        let mut lock = cli_lockfile::WorkerLockfile::default();
+        lock.workers.insert(
+            "root-worker".to_string(),
+            cli_lockfile::LockedWorker {
+                version: "1.0.0".to_string(),
+                worker_type: cli_lockfile::LockedWorkerType::Binary,
+                dependencies: [("helper".to_string(), "^1.0.0".to_string())].into(),
+                source: cli_lockfile::LockedSource::Binary {
+                    target: "aarch64-apple-darwin".to_string(),
+                    url: "https://example.com/root.tar.gz".to_string(),
+                    sha256: "a".repeat(64),
+                },
+            },
+        );
+        lock.workers.insert(
+            "helper".to_string(),
+            cli_lockfile::LockedWorker {
+                version: "1.0.0".to_string(),
+                worker_type: cli_lockfile::LockedWorkerType::Binary,
+                dependencies: Default::default(),
+                source: cli_lockfile::LockedSource::Binary {
+                    target: "aarch64-apple-darwin".to_string(),
+                    url: "https://example.com/helper.tar.gz".to_string(),
+                    sha256: "b".repeat(64),
+                },
+            },
+        );
+
+        assert_eq!(
+            locked_root_worker_names(&lock),
+            vec!["root-worker".to_string()]
+        );
+    }
+
+    #[test]
+    fn legacy_registry_fallback_is_limited_to_compatibility_failures() {
+        assert!(should_fallback_to_legacy_registry_error(
+            "pdfkit",
+            "Failed to parse worker graph: missing field `root`"
+        ));
+        assert!(should_fallback_to_legacy_registry_error(
+            "pdfkit",
+            "Worker 'pdfkit' not found"
+        ));
+        assert!(should_fallback_to_legacy_registry_error(
+            "pdfkit",
+            "Failed to resolve worker graph: HTTP 405 method not allowed"
+        ));
+        assert!(!should_fallback_to_legacy_registry_error(
+            "pdfkit",
+            "Failed to resolve worker graph: HTTP 500 internal error"
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_resolved_graph_add_installs_root_and_dependency_graph() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let names = ["root-worker", "dep-one", "dep-two", "dep-three"];
+            let mut routes = StdHashMap::new();
+            let mut archives = StdHashMap::new();
+            for name in names {
+                let archive = binary_archive(name);
+                routes.insert(
+                    format!("GET /{name}.tar.gz"),
+                    TestResponse {
+                        status: 200,
+                        content_type: "application/gzip",
+                        body: archive.clone(),
+                    },
+                );
+                archives.insert(name.to_string(), archive);
+            }
+            let (base_url, server) = spawn_static_http_server(routes).await;
+
+            let target = binary_download::current_target();
+            let mut graph_nodes = Vec::new();
+            for name in names {
+                let mut binaries = StdHashMap::new();
+                binaries.insert(
+                    target.to_string(),
+                    cli_registry::BinaryInfo {
+                        url: format!("{base_url}/{name}.tar.gz"),
+                        sha256: sha256_hex(archives.get(name).unwrap()),
+                    },
+                );
+                let mut worker = resolved_binary_worker(name, "1.0.0", binaries);
+                if name == "root-worker" {
+                    worker.dependencies = [
+                        ("dep-one".to_string(), "^1.0.0".to_string()),
+                        ("dep-two".to_string(), "^1.0.0".to_string()),
+                        ("dep-three".to_string(), "^1.0.0".to_string()),
+                    ]
+                    .into();
+                }
+                graph_nodes.push(worker);
+            }
+
+            let graph = cli_registry::ResolvedWorkerGraph {
+                root: cli_registry::ResolvedRoot {
+                    name: "root-worker".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                target: Some(target.to_string()),
+                graph: graph_nodes,
+                edges: vec![
+                    cli_registry::ResolvedEdge {
+                        from: "root-worker".to_string(),
+                        to: "dep-one".to_string(),
+                        range: "^1.0.0".to_string(),
+                    },
+                    cli_registry::ResolvedEdge {
+                        from: "root-worker".to_string(),
+                        to: "dep-two".to_string(),
+                        range: "^1.0.0".to_string(),
+                    },
+                    cli_registry::ResolvedEdge {
+                        from: "root-worker".to_string(),
+                        to: "dep-three".to_string(),
+                        range: "^1.0.0".to_string(),
+                    },
+                ],
+            };
+
+            let rc = handle_resolved_graph_add(&graph, true).await;
+
+            assert_eq!(rc, 0);
+            let config = std::fs::read_to_string("config.yaml").unwrap();
+            let lockfile = cli_lockfile::WorkerLockfile::read_from(cli_lockfile::lockfile_path())
+                .expect("lockfile written");
+            for name in names {
+                assert!(
+                    home.join(".iii/workers").join(name).exists(),
+                    "{name} binary should be installed"
+                );
+                assert!(
+                    config.contains(&format!("- name: {name}")),
+                    "{name} should be added to config.yaml"
+                );
+                assert!(
+                    lockfile.workers.contains_key(name),
+                    "{name} should be pinned in iii.lock"
+                );
+            }
+            server.abort();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_add_falls_back_to_legacy_download_when_resolve_is_unavailable() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let worker_name = "legacy-worker";
+            let archive = binary_archive(worker_name);
+            let target = binary_download::current_target();
+            let archive_sha = sha256_hex(&archive);
+            let (base_url, server) = spawn_static_http_server_with_routes(|base_url| {
+                let legacy_response = serde_json::json!({
+                    "name": worker_name,
+                    "type": "binary",
+                    "version": "1.0.0",
+                    "binaries": {
+                        target: {
+                            "url": format!("{base_url}/{worker_name}.tar.gz"),
+                            "sha256": archive_sha
+                        }
+                    },
+                    "config": {}
+                });
+                let mut routes = StdHashMap::new();
+                routes.insert(
+                    "POST /resolve".to_string(),
+                    TestResponse {
+                        status: 405,
+                        content_type: "text/plain",
+                        body: b"method not allowed".to_vec(),
+                    },
+                );
+                routes.insert(
+                    format!("GET /download/{worker_name}"),
+                    TestResponse {
+                        status: 200,
+                        content_type: "application/json",
+                        body: serde_json::to_vec(&legacy_response).unwrap(),
+                    },
+                );
+                routes.insert(
+                    format!("GET /{worker_name}.tar.gz"),
+                    TestResponse {
+                        status: 200,
+                        content_type: "application/gzip",
+                        body: archive,
+                    },
+                );
+                routes
+            })
+            .await;
+            let _api_guard = set_env_var_for_test("III_API_URL", &base_url);
+
+            let rc = handle_managed_add(worker_name, true, false, false, false).await;
+
+            assert_eq!(rc, 0);
+            assert!(home.join(".iii/workers").join(worker_name).exists());
+            assert!(
+                std::fs::read_to_string("config.yaml")
+                    .unwrap()
+                    .contains("- name: legacy-worker")
+            );
+            assert!(
+                !cli_lockfile::lockfile_path().exists(),
+                "legacy /download fallback should preserve the old no-lockfile behavior"
+            );
+            server.abort();
+        })
+        .await;
     }
 
     #[tokio::test]

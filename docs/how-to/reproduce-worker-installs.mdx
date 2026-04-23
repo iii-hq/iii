@@ -58,13 +58,13 @@ git add config.yaml iii.lock
 
 ### 3. Verify the Lockfile in CI
 
-Run `iii worker verify` anywhere you need to confirm that `config.yaml` is represented in `iii.lock`.
+Run `iii worker verify` anywhere you need to confirm that registry-managed workers in `config.yaml` are represented in `iii.lock`.
 
 ```bash
 iii worker verify
 ```
 
-The command succeeds when every worker listed in `config.yaml` has an entry in `iii.lock`. Extra entries in `iii.lock` are allowed.
+The command succeeds when every lockfile-managed worker listed in `config.yaml` has an entry in `iii.lock`. Built-in workers, direct OCI image references, and local-path sandbox workers are ignored by this check because they are outside the current lockfile flow. Extra entries in `iii.lock` are allowed.
 
 You can use `sync --frozen` for the same non-mutating check:
 
@@ -90,13 +90,13 @@ Update one locked worker by name:
 iii worker update image-resize
 ```
 
-Or update every worker currently listed in `iii.lock`:
+Or update every locked root worker:
 
 ```bash
 iii worker update
 ```
 
-`update` re-resolves `latest` for the selected locked workers and rewrites `iii.lock` with the new resolved graph.
+`update` re-resolves `latest` for the selected locked worker, or for each inferred root worker when no name is provided, and rewrites `iii.lock` with the new resolved graph. Dependency-only lockfile entries are refreshed through their root graph instead of being updated as independent roots.
 
 ## Result
 

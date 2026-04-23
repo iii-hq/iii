@@ -231,10 +231,6 @@ pub async fn fetch_resolved_worker_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize tests that mutate env vars to prevent races.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[tokio::test]
     async fn fetch_worker_info_binary_via_file() {
@@ -259,7 +255,9 @@ mod tests {
 
         let url = format!("file://{}", response_path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("image-resize", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -290,7 +288,9 @@ mod tests {
 
         let url = format!("file://{}", response_path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("todo-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -350,7 +350,9 @@ mod tests {
 
         let url = format!("file://{}", response_path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_resolved_worker_graph(
                 "hello-worker",
@@ -684,7 +686,9 @@ mod tests {
     async fn fetch_worker_info_file_not_found() {
         let url = "file:///tmp/nonexistent-iii-test-fixture-12345.json";
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -706,7 +710,9 @@ mod tests {
 
         let url = format!("file://{}", path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -724,7 +730,9 @@ mod tests {
 
         let url = format!("file://{}", path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -742,7 +750,9 @@ mod tests {
 
         let url = format!("file://{}", path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };

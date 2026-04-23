@@ -74,10 +74,10 @@ workers:
 | Command | Mutates files | Description |
 | --- | --- | --- |
 | `iii worker add <worker[@version]>` | Yes | Adds a registry-managed worker. When the registry returns a resolved graph, writes or merges `iii.lock` entries for the graph. |
-| `iii worker update [worker]` | Yes | Re-resolves `latest` for one locked worker, or all locked workers when no name is provided, then rewrites `iii.lock`. |
+| `iii worker update [worker]` | Yes | Re-resolves `latest` for one locked worker, or inferred root workers when no name is provided, then rewrites `iii.lock`. |
 | `iii worker sync` | No | Reads `iii.lock` and reports the number of pinned workers. Current behavior does not install artifacts from the lockfile. |
 | `iii worker sync --frozen` | No | Delegates to `iii worker verify`. |
-| `iii worker verify` | No | Checks that every worker in `config.yaml` has an entry in `iii.lock`. Extra lockfile entries are allowed. |
+| `iii worker verify` | No | Checks that every lockfile-managed worker in `config.yaml` has an entry in `iii.lock`. Built-ins, direct OCI refs, and local-path sandbox workers are skipped. Extra lockfile entries are allowed. |
 
 <Info title="Workflow guide">
   For a task-oriented workflow, see [Reproduce Worker Installs](/how-to/reproduce-worker-installs).

@@ -134,7 +134,7 @@ pub enum Commands {
     /// List all workers and their status
     List,
 
-    /// Install workers exactly from iii.lock.
+    /// Read iii.lock and report pinned workers.
     /// Pass --frozen in CI to fail if config.yaml and iii.lock disagree.
     Sync {
         /// Verify the lockfile without mutating local files.
