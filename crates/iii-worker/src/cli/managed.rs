@@ -219,7 +219,13 @@ pub async fn handle_worker_verify() -> i32 {
         }
     };
 
-    let names = super::config_file::list_worker_names();
+    let names = match super::config_file::list_worker_names_result() {
+        Ok(names) => names,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
     let names = lockfile_relevant_config_worker_names(&lockfile, &names);
     match lockfile.verify_config_workers_for_target(&names, binary_download::current_target()) {
         Ok(()) => {
@@ -414,6 +420,18 @@ fn print_resolved_tree(graph: &ResolvedWorkerGraph) {
 }
 
 async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> i32 {
+    for node in &graph.graph {
+        if let Err(e) = super::registry::validate_worker_name(&node.name) {
+            eprintln!(
+                "{} invalid resolved worker '{}': {}",
+                "error:".red(),
+                node.name,
+                e
+            );
+            return 1;
+        }
+    }
+
     for node in &graph.graph {
         let rc = match node.worker_type.as_str() {
             "binary" => {
@@ -2923,6 +2941,25 @@ workers:
     }
 
     #[tokio::test]
+    async fn handle_worker_verify_fails_when_config_yaml_is_invalid() {
+        in_temp_dir_async(|_| async move {
+            cli_lockfile::WorkerLockfile::default()
+                .write_to(cli_lockfile::lockfile_path())
+                .unwrap();
+            std::fs::write(
+                "config.yaml",
+                "workers:\n  - name: image-resize\n    config: [",
+            )
+            .unwrap();
+
+            let rc = handle_worker_verify().await;
+
+            assert_eq!(rc, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn handle_worker_verify_rejects_binary_lock_missing_current_target_artifact() {
         in_temp_dir_async(|_| async move {
             let current_target = binary_download::current_target();
@@ -3016,6 +3053,38 @@ workers:
             "pdfkit",
             "Failed to resolve worker graph: HTTP 500 internal error"
         ));
+    }
+
+    #[tokio::test]
+    async fn handle_resolved_graph_add_rejects_invalid_worker_names_before_side_effects() {
+        in_temp_dir_async(|_| async move {
+            let target = binary_download::current_target();
+            let mut binaries = StdHashMap::new();
+            binaries.insert(
+                target.to_string(),
+                cli_registry::BinaryInfo {
+                    url: "https://example.com/evil.tar.gz".to_string(),
+                    sha256: "a".repeat(64),
+                },
+            );
+
+            let graph = cli_registry::ResolvedWorkerGraph {
+                root: cli_registry::ResolvedRoot {
+                    name: "../evil".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                target: None,
+                graph: vec![resolved_binary_worker("../evil", "1.0.0", binaries)],
+                edges: Vec::new(),
+            };
+
+            let rc = handle_resolved_graph_add(&graph, true).await;
+
+            assert_eq!(rc, 1);
+            assert!(!std::path::Path::new("config.yaml").exists());
+            assert!(!cli_lockfile::lockfile_path().exists());
+        })
+        .await;
     }
 
     #[tokio::test]

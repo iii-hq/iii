@@ -114,10 +114,14 @@ impl Default for WorkerLockfile {
 
 impl WorkerLockfile {
     pub fn from_yaml(input: &str) -> Result<Self, String> {
-        serde_yaml::from_str(input).map_err(|e| format!("failed to parse {LOCKFILE_NAME}: {e}"))
+        let lockfile: Self = serde_yaml::from_str(input)
+            .map_err(|e| format!("failed to parse {LOCKFILE_NAME}: {e}"))?;
+        lockfile.validate()?;
+        Ok(lockfile)
     }
 
     pub fn to_yaml(&self) -> Result<String, String> {
+        self.validate()?;
         serde_yaml::to_string(self)
             .map(|yaml| yaml.strip_prefix("---\n").unwrap_or(&yaml).to_string())
             .map_err(|e| format!("failed to serialize {LOCKFILE_NAME}: {e}"))
@@ -132,6 +136,68 @@ impl WorkerLockfile {
     pub fn write_to(&self, path: &Path) -> Result<(), String> {
         let yaml = self.to_yaml()?;
         std::fs::write(path, yaml).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.version != LOCKFILE_VERSION {
+            return Err(format!(
+                "unsupported {LOCKFILE_NAME} version {} (expected {})",
+                self.version, LOCKFILE_VERSION
+            ));
+        }
+
+        for (name, worker) in &self.workers {
+            super::registry::validate_worker_name(name)
+                .map_err(|e| format!("{LOCKFILE_NAME} worker {name} has invalid name: {e}"))?;
+            for dependency in worker.dependencies.keys() {
+                super::registry::validate_worker_name(dependency).map_err(|e| {
+                    format!(
+                        "{LOCKFILE_NAME} worker {name} has invalid dependency {dependency}: {e}"
+                    )
+                })?;
+            }
+
+            match (&worker.worker_type, &worker.source) {
+                (LockedWorkerType::Binary, LockedSource::Binary { artifacts }) => {
+                    if artifacts.is_empty() {
+                        return Err(format!(
+                            "{LOCKFILE_NAME} worker {name} has no binary artifacts"
+                        ));
+                    }
+                    for (target, artifact) in artifacts {
+                        if target.trim().is_empty() {
+                            return Err(format!(
+                                "{LOCKFILE_NAME} worker {name} has an empty binary target"
+                            ));
+                        }
+                        if artifact.url.trim().is_empty() {
+                            return Err(format!(
+                                "{LOCKFILE_NAME} worker {name} artifact {target} has an empty url"
+                            ));
+                        }
+                        if !is_sha256_hex(&artifact.sha256) {
+                            return Err(format!(
+                                "{LOCKFILE_NAME} worker {name} artifact {target} has invalid binary sha256"
+                            ));
+                        }
+                    }
+                }
+                (LockedWorkerType::Image, LockedSource::Image { image }) => {
+                    if !image.contains("@sha256:") {
+                        return Err(format!(
+                            "{LOCKFILE_NAME} worker {name} image must be pinned by digest"
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "{LOCKFILE_NAME} worker {name} has mismatched type and source kind"
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn verify_config_workers(&self, worker_names: &[String]) -> Result<(), String> {
@@ -189,6 +255,10 @@ impl WorkerLockfile {
     }
 }
 
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 pub fn lockfile_path() -> &'static Path {
     Path::new(LOCKFILE_NAME)
 }
@@ -222,7 +292,7 @@ mod tests {
                 source: binary_source(
                     "aarch64-apple-darwin",
                     "https://example.com/z.tar.gz",
-                    "z".repeat(64),
+                    "f".repeat(64),
                 ),
             },
         );
@@ -409,6 +479,82 @@ mod tests {
     fn from_yaml_rejects_garbage_input() {
         let err = WorkerLockfile::from_yaml("this is not yaml: : :").unwrap_err();
         assert!(err.contains("iii.lock"));
+    }
+
+    #[test]
+    fn from_yaml_rejects_unsupported_lockfile_version() {
+        let err = WorkerLockfile::from_yaml("version: 2\nworkers: {}\n").unwrap_err();
+
+        assert!(err.contains("unsupported iii.lock version 2"));
+    }
+
+    #[test]
+    fn from_yaml_rejects_invalid_binary_sha256() {
+        let err = WorkerLockfile::from_yaml(
+            r#"
+version: 1
+workers:
+  hello:
+    version: 1.0.0
+    type: binary
+    dependencies: {}
+    source:
+      kind: binary
+      artifacts:
+        aarch64-apple-darwin:
+          url: https://example.com/h.tar.gz
+          sha256: nope
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("hello"));
+        assert!(err.contains("invalid binary sha256"));
+    }
+
+    #[test]
+    fn from_yaml_rejects_unpinned_image_source() {
+        let err = WorkerLockfile::from_yaml(
+            r#"
+version: 1
+workers:
+  image-worker:
+    version: 1.0.0
+    type: image
+    dependencies: {}
+    source:
+      kind: image
+      image: ghcr.io/iii-hq/image-worker:latest
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("image-worker"));
+        assert!(err.contains("pinned by digest"));
+    }
+
+    #[test]
+    fn from_yaml_rejects_mismatched_worker_type_and_source_kind() {
+        let err = WorkerLockfile::from_yaml(
+            r#"
+version: 1
+workers:
+  image-worker:
+    version: 1.0.0
+    type: image
+    dependencies: {}
+    source:
+      kind: binary
+      artifacts:
+        aarch64-apple-darwin:
+          url: https://example.com/h.tar.gz
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("image-worker"));
+        assert!(err.contains("mismatched type"));
     }
 
     #[test]
