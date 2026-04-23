@@ -18,6 +18,10 @@ services:
     image: iiidev/iii:latest
     volumes:
       - ./config.prod.yaml:/app/config.yaml:ro
+      # Persist anonymous telemetry device_id across container restarts so
+      # the engine is not counted as a new "user" on every boot. The
+      # distroless image runs as the `nonroot` user (HOME=/home/nonroot).
+      - iii_telemetry:/home/nonroot/.iii
     environment:
       - III_EXECUTION_CONTEXT=docker
     healthcheck:
@@ -31,3 +35,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  iii_telemetry:

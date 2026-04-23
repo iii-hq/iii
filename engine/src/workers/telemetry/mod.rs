@@ -364,8 +364,10 @@ impl DeltaAccumulator {
         // cumulative deltas (the counters reflect activity since process start) but
         // keep the state-change deltas at zero so session start does not masquerade
         // as a development event in Amplitude cohorts.
-        let delta = if !self.initialized {
+        let first_snapshot = !self.initialized;
+        let delta = if first_snapshot {
             DeltaSnapshot {
+                first_snapshot: true,
                 invocations_total: cur_invocations_total,
                 invocations_success: cur_invocations_success,
                 invocations_error: cur_invocations_error,
@@ -406,6 +408,7 @@ impl DeltaAccumulator {
                 .collect();
 
             DeltaSnapshot {
+                first_snapshot: false,
                 invocations_total: cur_invocations_total.saturating_sub(self.invocations_total),
                 invocations_success: cur_invocations_success
                     .saturating_sub(self.invocations_success),
@@ -453,6 +456,12 @@ impl DeltaAccumulator {
 }
 
 struct DeltaSnapshot {
+    // True when this snapshot is the first one taken after process start.
+    // `is_active_developer` returns false in this case so the session_start
+    // heartbeat never masquerades as a development event — even when the
+    // accumulator has already observed non-zero function_registrations
+    // between boot and the first snapshot call.
+    first_snapshot: bool,
     invocations_total: u64,
     invocations_success: u64,
     invocations_error: u64,
@@ -484,7 +493,15 @@ impl DeltaSnapshot {
     /// registered function set changed (add/remove) or a function was
     /// re-registered (hot reload / code edit cycle). Intentionally excludes
     /// pure worker churn so SDK reconnects without code changes don't flip it.
+    ///
+    /// The first snapshot after process start always returns false: the
+    /// state-change deltas are zeroed (nothing to diff against) but the
+    /// cumulative `function_registrations` counter reflects boot-time
+    /// registrations, which would otherwise masquerade as code edits.
     fn is_active_developer(&self) -> bool {
+        if self.first_snapshot {
+            return false;
+        }
         !self.functions_added.is_empty()
             || !self.functions_removed.is_empty()
             || self.function_registrations > 0
@@ -2731,6 +2748,7 @@ mod tests {
 
         // First snapshot: state-change deltas must be zero so session start is
         // not mistaken for active development.
+        assert!(d.first_snapshot);
         assert_eq!(d.delta_function_count, 0);
         assert_eq!(d.delta_trigger_count, 0);
         assert_eq!(d.delta_worker_count, 0);
@@ -2739,6 +2757,50 @@ mod tests {
         assert!(d.workers_added.is_empty());
         assert!(d.workers_removed.is_empty());
         assert!(!d.is_active_developer());
+    }
+
+    #[test]
+    #[serial]
+    fn test_delta_accumulator_first_snapshot_not_active_dev_even_with_boot_registrations() {
+        // CodeRabbit scenario: workers register functions during startup BEFORE
+        // the first telemetry snapshot fires. The cumulative
+        // function_registrations counter is non-zero by the time snapshot()
+        // runs. is_active_developer must still return false on that first
+        // snapshot — otherwise the session_start heartbeat masquerades as a
+        // code-edit cycle.
+        reset_telemetry_globals();
+        collector::track_function_registered();
+        collector::track_function_registered();
+        collector::track_function_registered();
+
+        let mut acc = DeltaAccumulator::new();
+        let snap = make_engine_snapshot(vec!["fn::a", "fn::b", "fn::c"], vec![], vec!["node"]);
+        let d = acc.snapshot(&snap);
+
+        // Cumulative counter is carried through (reported as-is on first
+        // snapshot since there's no prior value to diff against).
+        assert_eq!(d.function_registrations, 3);
+        // ...but the session-start heartbeat must not be flagged as active
+        // development regardless.
+        assert!(d.first_snapshot);
+        assert!(
+            !d.is_active_developer(),
+            "first snapshot must gate is_active_developer to false even when registrations > 0"
+        );
+
+        // Subsequent snapshot with no new activity should also stay false.
+        let snap2 = make_engine_snapshot(vec!["fn::a", "fn::b", "fn::c"], vec![], vec!["node"]);
+        let d2 = acc.snapshot(&snap2);
+        assert!(!d2.first_snapshot);
+        assert_eq!(d2.function_registrations, 0);
+        assert!(!d2.is_active_developer());
+
+        // A new registration in the next window does flip the flag.
+        collector::track_function_registered();
+        let snap3 = make_engine_snapshot(vec!["fn::a", "fn::b", "fn::c"], vec![], vec!["node"]);
+        let d3 = acc.snapshot(&snap3);
+        assert_eq!(d3.function_registrations, 1);
+        assert!(d3.is_active_developer());
     }
 
     #[test]

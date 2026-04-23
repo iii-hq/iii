@@ -189,20 +189,21 @@ fn salted_sha256(input: &str) -> String {
 }
 
 fn generate_container_device_id() -> String {
-    if let Some(host_device_id) = find_project_ini_device_id() {
-        let hostname = container_hostname();
-        return salted_sha256(&format!("{host_device_id}-{hostname}"));
-    }
-
-    if let Some(host_id) = std::env::var("III_HOST_USER_ID")
+    // With $HOME/.iii mounted into the container, this id gets minted once
+    // and persisted in ~/.iii/telemetry.yaml across restarts. The
+    // `container-` prefix lets us distinguish container-origin ids from
+    // host-origin ones in Amplitude.
+    let base = if let Some(host_device_id) = find_project_ini_device_id() {
+        format!("{host_device_id}-{}", container_hostname())
+    } else if let Some(host_id) = std::env::var("III_HOST_USER_ID")
         .ok()
         .filter(|s| !s.is_empty())
     {
-        let hostname = container_hostname();
-        return salted_sha256(&format!("{host_id}-{hostname}"));
-    }
-
-    "unknown".to_string()
+        format!("{host_id}-{}", container_hostname())
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
+    format!("container-{}", salted_sha256(&base))
 }
 
 fn generate_new_device_id() -> String {
@@ -1017,14 +1018,19 @@ state:
 
     #[test]
     #[serial]
-    fn test_container_device_id_unknown_without_host_identity() {
+    fn test_container_device_id_is_container_prefixed_without_host_identity() {
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             env::set_var("III_PROJECT_ROOT", dir.path());
             env::remove_var("III_HOST_USER_ID");
         }
-        // No .iii/project.ini device_id and no III_HOST_USER_ID.
-        assert_eq!(generate_container_device_id(), "unknown");
+        let id = generate_container_device_id();
+        assert!(
+            id.starts_with("container-"),
+            "expected container- prefix, got {id}"
+        );
+        // Hex hash after the prefix — not the old literal "unknown".
+        assert!(id.len() > "container-".len());
         unsafe {
             env::remove_var("III_PROJECT_ROOT");
         }
@@ -1042,10 +1048,30 @@ state:
             env::remove_var("III_HOST_USER_ID");
         }
         let id = generate_container_device_id();
-        assert_ne!(id, "unknown");
-        assert!(!id.is_empty());
+        assert!(id.starts_with("container-"));
         unsafe {
             env::remove_var("III_PROJECT_ROOT");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_container_device_id_with_project_ini_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let iii = dir.path().join(".iii");
+        std::fs::create_dir_all(&iii).unwrap();
+        std::fs::write(iii.join("project.ini"), "device_id=host-dev-xyz\n").unwrap();
+        unsafe {
+            env::set_var("III_PROJECT_ROOT", dir.path());
+            env::set_var("HOSTNAME", "stable-hostname");
+            env::remove_var("III_HOST_USER_ID");
+        }
+        let a = generate_container_device_id();
+        let b = generate_container_device_id();
+        assert_eq!(a, b, "same host_device_id + hostname must be stable");
+        unsafe {
+            env::remove_var("III_PROJECT_ROOT");
+            env::remove_var("HOSTNAME");
         }
     }
 
@@ -1058,8 +1084,7 @@ state:
             env::set_var("III_HOST_USER_ID", "uid-1000");
         }
         let id = generate_container_device_id();
-        assert_ne!(id, "unknown");
-        assert!(!id.is_empty());
+        assert!(id.starts_with("container-"));
         unsafe {
             env::remove_var("III_PROJECT_ROOT");
             env::remove_var("III_HOST_USER_ID");
