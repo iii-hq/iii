@@ -48,7 +48,7 @@ impl ProductConfig for IiiConfig {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-tools")]
+#[command(name = "iii", bin_name = "iii")]
 #[command(about = "CLI for scaffolding iii projects")]
 #[command(version)]
 pub struct Args {
