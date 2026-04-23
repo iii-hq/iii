@@ -182,27 +182,41 @@ pub fn find_host_device_id() -> Option<String> {
         .or_else(find_project_ini_device_id)
 }
 
-fn generate_container_device_id() -> String {
+const UNKNOWN_CONTAINER_DEVICE_ID: &str = "unknown-container";
+const UNKNOWN_HOST_DEVICE_ID: &str = "unknown-host";
+
+fn container_device_id_for(host_device_id: Option<String>) -> String {
     // Hash the host device_id (from III_HOST_DEVICE_ID or a mounted
     // .iii/project.ini) so every container launched from the same host
     // collapses into a single Amplitude device. The `container-` prefix
     // lets queries split host-origin ids from container-origin ones.
     //
-    // Fallback: random UUID per container boot. This churns without a
-    // persisted telemetry.yaml, but keeps the prefix stable so at least
-    // the "container vs host" split stays correct in Amplitude.
-    let base = find_host_device_id().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    format!("container-{}", salted_sha256(&base))
+    // When no host identity is available we intentionally collapse all
+    // such containers onto a single `unknown-container` device rather
+    // than minting a fresh UUID per boot, so Amplitude doesn't see a
+    // flood of one-off devices that churn on every restart.
+    match host_device_id {
+        Some(base) => format!("container-{}", salted_sha256(&base)),
+        None => UNKNOWN_CONTAINER_DEVICE_ID.to_string(),
+    }
+}
+
+fn host_device_id_for(machine_id: Option<String>) -> String {
+    // Same rationale as `container_device_id_for`: when machineid-rs
+    // can't produce a stable hardware id, collapse to a single
+    // `unknown-host` bucket instead of generating a fresh UUID.
+    machine_id.unwrap_or_else(|| UNKNOWN_HOST_DEVICE_ID.to_string())
+}
+
+fn generate_container_device_id() -> String {
+    container_device_id_for(find_host_device_id())
 }
 
 fn generate_new_device_id() -> String {
     if is_container_environment() {
         return generate_container_device_id();
     }
-    if let Some(machine_id) = machine_id_from_machineid_rs() {
-        return machine_id;
-    }
-    format!("fallback-{}", uuid::Uuid::new_v4())
+    host_device_id_for(machine_id_from_machineid_rs())
 }
 
 fn build_fresh_v2_yaml() -> TelemetryYaml {
@@ -1004,21 +1018,42 @@ state:
 
     #[test]
     #[serial]
-    fn test_container_device_id_is_container_prefixed_without_host_identity() {
+    fn test_container_device_id_is_unknown_when_host_identity_missing() {
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             env::set_var("III_PROJECT_ROOT", dir.path());
             env::remove_var("III_HOST_DEVICE_ID");
         }
         let id = generate_container_device_id();
-        assert!(
-            id.starts_with("container-"),
-            "expected container- prefix, got {id}"
-        );
-        assert!(id.len() > "container-".len());
+        assert_eq!(id, "unknown-container");
         unsafe {
             env::remove_var("III_PROJECT_ROOT");
         }
+    }
+
+    #[test]
+    fn test_container_device_id_for_hashes_host_when_present() {
+        let id = container_device_id_for(Some("host-abc".to_string()));
+        assert!(id.starts_with("container-"), "got {id}");
+        assert!(id.len() > "container-".len());
+    }
+
+    #[test]
+    fn test_container_device_id_for_returns_unknown_container_when_missing() {
+        assert_eq!(container_device_id_for(None), "unknown-container");
+    }
+
+    #[test]
+    fn test_host_device_id_for_returns_machine_id_when_present() {
+        assert_eq!(
+            host_device_id_for(Some("machine-xyz".to_string())),
+            "machine-xyz"
+        );
+    }
+
+    #[test]
+    fn test_host_device_id_for_returns_unknown_host_when_missing() {
+        assert_eq!(host_device_id_for(None), "unknown-host");
     }
 
     #[test]
