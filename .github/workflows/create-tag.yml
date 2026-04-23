@@ -75,7 +75,10 @@ jobs:
                      sdk/packages/node/iii/package.json \
                      sdk/packages/node/iii-browser/package.json \
                      sdk/packages/python/iii/pyproject.toml \
-                     console/packages/console-rust/Cargo.toml; do
+                     console/packages/console-rust/Cargo.toml \
+                     crates/scaffolder-core/Cargo.toml \
+                     crates/iii-tools/Cargo.toml \
+                     crates/motia-tools/Cargo.toml; do
               if [[ ! -f "$f" ]]; then
                 echo "::error::$f not found"
                 exit 1
@@ -225,6 +228,9 @@ jobs:
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" console/packages/console-rust/Cargo.toml
           echo "Updated console/packages/console-rust/Cargo.toml to $NEW_VERSION"
 
+          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" Cargo.toml
+          echo "Updated Cargo.toml workspace version to $NEW_VERSION"
+
       - name: Sync Cargo.lock
         if: inputs.target == 'iii' && inputs.dry_run != true
         run: cargo update --workspace
@@ -265,6 +271,7 @@ jobs:
             check_json "sdk/packages/node/iii-browser/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
+            check_cargo "Cargo.toml" "$VERSION"
           fi
 
           echo "All versions validated."

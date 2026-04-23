@@ -1,0 +1,32 @@
+[package]
+name = "scaffolder-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core library for project scaffolding with template support"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+semver = { workspace = true }
+walkdir = { workspace = true }
+open = { workspace = true }
+colored = { workspace = true }
+dirs = { workspace = true }
+uuid = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+cliclack = { workspace = true }
+console = { workspace = true }
+ctrlc = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+serial_test = { workspace = true }

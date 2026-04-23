@@ -1,0 +1,18 @@
+[package]
+name = "motia-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "CLI for managing Motia projects with iii integration"
+
+[[bin]]
+name = "motia"
+path = "src/main.rs"
+
+[dependencies]
+scaffolder-core = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+console = { workspace = true }
+ctrlc = { workspace = true }
