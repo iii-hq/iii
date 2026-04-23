@@ -1,54 +1,69 @@
 # iii for AI Agents
 
-iii is an open-source runtime engine. This file describes iii's capabilities for AI agents evaluating or integrating with the platform.
+## What iii is, to an agent
 
-## What iii provides to agents
+An engine and a single open protocol (JSON over WebSocket) with three primitives: Function, Trigger, Worker. An agent is a worker. Its tools are functions. Its memory is state. Its orchestration is triggers.
 
-- **Self-describing functions**: every function registers with a schema. Agents discover available capabilities at runtime via `iii` protocol introspection, not static docs.
-- **Runtime registration**: new workers (and their functions) join a live system without restart, config edits, or gateway rules. An agent can spawn a worker and immediately invoke its functions.
-- **Cross-language execution**: invoke a Python function from a Rust worker, trigger a Node function from a cron schedule. Agents do not need to know which runtime hosts which function.
-- **Durable execution**: retries, state, and observability are built in. Agent-spawned workflows survive worker restarts.
-- **Live observability**: traces across the entire connected stack. Agents can read their own operation traces for self-correction.
+No harness separate from the backend. No tool layer wired by hand. No memory system you integrate. One system, one trace, one set of primitives. The harness IS the system.
 
-## Primitives (API-level)
+## The claim
+
+MCP gives an agent a fixed tool menu prepared in advance. iii gives an agent a live registry of workers. When a worker connects, every function on it becomes discoverable and callable. When it disconnects, it unregisters. The agent does not browse a static catalog. It queries a live system that only contains what is actually connected right now.
+
+An agent that hits a task outside its current capabilities can install a worker at runtime and use its functions immediately. Workers can create workers. For autonomous systems, this is the difference between scripted LLM calls and actual autonomy.
+
+## Primitives (wire-level)
 
 | Primitive | What it is | How an agent uses it |
-|-----------|------------|---------------------|
-| Function | Unit of work, input → output | Call via `iii.trigger(functionName, input)` |
-| Trigger | Event source: HTTP, cron, queue, state change, stream | Register via SDK or introspect existing triggers |
-| Worker | Runtime hosting functions + triggers | Spawn via SDK; registers automatically |
+|-----------|------------|----------------------|
+| Worker | A process that speaks the iii protocol and registers functions and triggers | Spawn via SDK; self-registers on connect |
+| Trigger | What causes a function to run: direct call, HTTP, cron, queue subscription, state change, stream event | Declare on your worker; the engine handles routing and delivery |
+| Function | Stable identifier (e.g. `orders::validate`) wrapping input → output | Call via `iii.trigger(name, input)` from anywhere else on the engine |
 
-## Quickstart for agents
+## Quickstart
 
 ```bash
-# Install engine
-curl -fsSL install.iii.dev/iii/main/install.sh | sh
-
-# Run engine
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 iii run
 ```
 
-Install one of the SDKs:
+Install an SDK:
 
-- **Rust**: `cargo add iii-sdk`
-- **Node**: `npm install iii-sdk` (backend) or `iii-browser-sdk` (browser, port 49135 with RBAC)
-- **Python**: `pip install iii-sdk`
+- Rust: `cargo add iii-sdk`
+- Node (backend): `npm install iii-sdk`
+- Node (browser, port 49135, RBAC-scoped): `npm install iii-browser-sdk`
+- Python: `pip install iii-sdk`
 
-SDK docs, API surface, and discovery protocol: https://iii.dev/docs
+Full docs: https://iii.dev/docs
 
 ## Ports
 
-- `49134` — engine WebSocket (SDK connections, backend)
+- `49134` — engine WebSocket (backend SDK connections)
 - `49135` — browser WebSocket (RBAC-scoped, `iii-browser-sdk`)
-- `3111` — REST API (when `iii-http` worker loaded)
-- `3113` — console UI (when `iii-console` loaded)
+- `3111` — REST API when the `iii-http` worker is loaded
+- `3113` — console UI when `iii-console` is loaded
 
-## Capabilities relevant to agent frameworks
+## Harness composition as a shape, not a product
 
-- **Tool calling**: register agent tools as iii functions. They become discoverable to any other agent on the same engine.
-- **Multi-agent orchestration**: spawn sub-agents as workers. Each has its own function namespace, shared discovery.
-- **Human-in-the-loop**: pause an agent workflow via a state trigger. Resume when a human signs off.
-- **State persistence**: iii state store replaces Redis/DynamoDB for session memory.
+The thin-vs-thick harness debate is a composition choice in iii. A thin harness is a worker with a few functions that lets the model decide what to trigger next. A thick harness is a worker with more functions, approval gates, and conditional logic before enqueuing the next step. Same primitives, different shape. Change the shape by adding or removing functions, not by rearchitecting.
+
+## Process isolation
+
+iii ships a sandbox worker that runs arbitrary ephemeral code on demand. Compose it with the RBAC worker to let agents run untrusted code without risk to the base system. The CLI uses the same sandbox functions when you run `iii worker add` with a sandbox target. An agent that needs to execute generated or installed code calls those same functions, gated by the same RBAC.
+
+## Discovery and extensibility
+
+The engine is the registry. It is always correct because it only reflects what is actually connected. No Consul, no service mesh, no OpenAPI specs drifting, no stale internal docs.
+
+`iii worker add <name>` is the npm moment for connected systems. What gets installed is a running participant, not a library to integrate.
+
+## Observability as protocol
+
+OpenTelemetry traces, metrics, and structured logs come from the engine itself. A trace that starts at a browser click, flows through an agent, hits a Python ML worker, writes state, and renders back in the browser is one trace. Forward it to Datadog, Grafana, or Honeycomb. Stop writing instrumentation. Stop debugging across disconnected log streams.
+
+## Memory and portability
+
+Agent memory, traces, and function catalogs live wherever you run the engine. File-based for dev. Redis or Postgres for prod. Swap with a config change. No vendor has a copy.
 
 ## Licensing
 
@@ -57,9 +72,10 @@ Elastic-2.0. Source available. Free for direct use; restrictions on offering iii
 ## Links
 
 - Homepage: https://iii.dev/
+- Manifesto: https://iii.dev/manifesto
 - Docs: https://iii.dev/docs
 - GitHub: https://github.com/iii-hq/iii
-- llms.txt: https://iii.dev/llms.txt (shorter context summary)
+- llms.txt: https://iii.dev/llms.txt
 - Machine-readable homepage: https://iii.dev/ai
 
 Last updated: 2026-04-23
