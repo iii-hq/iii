@@ -3,11 +3,32 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "redirects": [
+    { "source": "/index", "destination": "/docs", "permanent": true },
+    { "source": "/console", "destination": "/docs/console", "permanent": true },
+    { "source": "/changelog/:path*", "destination": "/docs/changelog/:path*", "permanent": true },
+    { "source": "/api-reference/:path*", "destination": "/docs/api-reference/:path*", "permanent": true },
+    { "source": "/advanced/:path*", "destination": "/docs/advanced/:path*", "permanent": true },
+    { "source": "/modules/:path*", "destination": "/docs/modules/:path*", "permanent": true },
+    { "source": "/examples/:path*", "destination": "/docs/examples/:path*", "permanent": true },
+    { "source": "/how-to/:path*", "destination": "/docs/how-to/:path*", "permanent": true },
+    { "source": "/architecture/:path*", "destination": "/docs/architecture/:path*", "permanent": true }
+  ],
   "rewrites": [
     { "source": "/api/search", "destination": "https://iii-docs.vercel.app/api/search" },
     { "source": "/docs", "destination": "https://iii-docs.vercel.app/docs" },
-    { "source": "/docs/:path*", "destination": "https://iii-docs.vercel.app/docs/:path*" },
-    { "source": "/ai", "destination": "/ai/index.html" },
-    { "source": "/(.*)", "destination": "/" }
+    { "source": "/docs/:path*", "destination": "https://iii-docs.vercel.app/docs/:path*" }
+  ],
+  "headers": [
+    {
+      "source": "/preview",
+      "headers": [{ "key": "X-Robots-Tag", "value": "noindex, nofollow" }]
+    },
+    {
+      "source": "/sitemap.xml",
+      "headers": [{ "key": "Content-Type", "value": "application/xml; charset=utf-8" }]
+    }
   ]
 }

@@ -5,9 +5,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run build:ai && vite",
+    "dev": "npm run build:ai && npm run build:sitemap && vite",
     "build:ai": "node --import tsx scripts/generate-machine-markdown.tsx",
-    "build": "npm run build:ai && vite build",
+    "build:sitemap": "node --import tsx scripts/generate-sitemap.ts",
+    "build:prerender": "node --import tsx scripts/prerender-routes.ts",
+    "build": "npm run build:ai && npm run build:sitemap && vite build && npm run build:prerender",
     "preview": "vite preview"
   },
   "dependencies": {
