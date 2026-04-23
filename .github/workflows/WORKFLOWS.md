@@ -47,12 +47,17 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 
 | Job | Depends On | What it does |
 |-----|-----------|--------------|
-| `build-engine` | — | Fmt check, tests, release build. Uploads `iii-binary` artifact |
+| `changes` | — | Detects changed paths (engine/crates/Cargo) for scoping downstream jobs |
+| `engine-build` | — | Builds debug `iii` with all features, uploads `iii-binary` artifact (critical path) |
+| `engine-test` | — | Tests `iii-worker`, `iii-filesystem`, `iii-network`, `iii-init`, and `iii --all-features` |
+| `engine-coverage` | `changes` | `cargo llvm-cov` on `iii --all-features`. PRs: only when engine paths change. Push/dispatch: always |
+| `engine-benches` | — | `cargo bench --benches --no-run` to verify benches compile |
+| `engine-fmt` | — | `cargo fmt --all -- --check` |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
-| `sdk-node-ci` | `build-engine` | Type check, build, start engine, run SDK tests |
-| `sdk-python-ci` | `build-engine` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `build-engine` | Fmt, clippy, start engine, run cargo tests |
-| `console-ci` | `build-engine` | Lint + build frontend (Node 22), build console Rust binary |
+| `sdk-node-ci` | `engine-build` | Type check, build, start engine, run SDK tests |
+| `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
+| `sdk-rust-ci` | `engine-build` | Fmt, clippy, start engine, run cargo tests |
+| `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
 
 All SDK tests download the engine binary artifact and start a live engine instance before running.
 

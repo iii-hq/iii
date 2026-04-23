@@ -29,65 +29,184 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Engine (test + build + upload artifact for downstream jobs)
+  # Change detection (used to scope expensive jobs like coverage)
   # ──────────────────────────────────────────────────────────────
 
-  build-engine:
-    name: Build Engine
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      engine: ${{ steps.filter.outputs.engine }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            engine:
+              - 'engine/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine Build — critical path, produces iii binary for downstream
+  # ──────────────────────────────────────────────────────────────
+
+  engine-build:
+    name: Engine Build (artifact)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine-build
 
-      - uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install system dependencies for iii-worker
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libcap-ng-dev
 
-      - name: Build and test iii-worker
-        run: |
-          cargo build -p iii-worker
-          cargo test -p iii-worker
-          cargo test -p iii-filesystem
-          cargo test -p iii-network
-          cargo test -p iii-init
-
-      - name: Install iii-worker for integration tests
-        run: |
-          mkdir -p ~/.local/bin
-          cp target/debug/iii-worker ~/.local/bin/iii-worker
-          chmod +x ~/.local/bin/iii-worker
-
-      - name: Build and run coverage
-        run: |
-          eval "$(cargo llvm-cov show-env --export-prefix)"
-          cargo build -p iii --all-features
-          cargo test -p iii --all-features
-          cargo llvm-cov report \
-            --ignore-filename-regex \
-            "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
-
-      - name: Check benchmarks compile
-        run: cargo bench --benches --no-run
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      # - name: Run clippy
-      #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
+      - name: Build iii (debug, all-features)
+        run: cargo build -p iii --all-features
 
       - uses: actions/upload-artifact@v4
         with:
           name: iii-binary
           path: target/debug/iii
           retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine Tests — parallel; does not gate downstream jobs.
+  # ──────────────────────────────────────────────────────────────
+
+  engine-test:
+    name: Engine Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine-test
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Build and install iii-worker (needed by iii integration tests)
+        run: |
+          cargo build -p iii-worker
+          mkdir -p ~/.local/bin
+          cp target/debug/iii-worker ~/.local/bin/iii-worker
+          chmod +x ~/.local/bin/iii-worker
+
+      - name: Run crate tests
+        run: |
+          cargo test -p iii-worker
+          cargo test -p iii-filesystem
+          cargo test -p iii-network
+          cargo test -p iii-init
+
+      - name: Run engine tests
+        run: cargo test -p iii --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine Coverage — scoped: runs on push/dispatch, and on PRs
+  # only when engine/crates/Cargo paths change. Parallel, does not
+  # gate downstream.
+  # ──────────────────────────────────────────────────────────────
+
+  engine-coverage:
+    name: Engine Coverage
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.engine == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine-coverage
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Build and install iii-worker (needed by iii integration tests)
+        run: |
+          cargo build -p iii-worker
+          mkdir -p ~/.local/bin
+          cp target/debug/iii-worker ~/.local/bin/iii-worker
+          chmod +x ~/.local/bin/iii-worker
+
+      - name: Run coverage
+        run: |
+          eval "$(cargo llvm-cov show-env --export-prefix)"
+          cargo test -p iii --all-features
+          cargo llvm-cov report \
+            --ignore-filename-regex \
+            "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine Benches — compile-only check, parallel, does not gate.
+  # ──────────────────────────────────────────────────────────────
+
+  engine-benches:
+    name: Engine Benches Compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine-benches
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Check benches compile
+        run: cargo bench --benches --no-run
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine Formatting — fast, parallel
+  # ──────────────────────────────────────────────────────────────
+
+  engine-fmt:
+    name: Engine Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # - name: Run clippy
+      #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
   # Engine RabbitMQ Integration Tests
@@ -373,7 +492,7 @@ jobs:
 
   sdk-node-ci:
     name: SDK Node Tests
-    needs: build-engine
+    needs: engine-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -437,7 +556,7 @@ jobs:
 
   sdk-node-browser-ci:
     name: SDK Browser Tests
-    needs: build-engine
+    needs: engine-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -491,7 +610,7 @@ jobs:
 
   sdk-python-ci:
     name: SDK Python (${{ matrix.python-version }})
-    needs: build-engine
+    needs: engine-build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -551,7 +670,7 @@ jobs:
 
   sdk-rust-ci:
     name: SDK Rust Tests
-    needs: build-engine
+    needs: engine-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
