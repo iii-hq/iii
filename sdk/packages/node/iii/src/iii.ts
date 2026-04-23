@@ -8,12 +8,10 @@ import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
   EngineFunctions,
-  EngineTriggers,
   type IIIConnectionState,
   type IIIReconnectionConfig,
 } from './iii-constants'
 import {
-  type FunctionInfo,
   type HttpInvocationConfig,
   type IIIMessage,
   type InvocationResultMessage,
@@ -25,11 +23,8 @@ import {
   type RegisterTriggerTypeMessage,
   type StreamChannelRef,
   type TriggerAction as TriggerActionType,
-  type TriggerInfo,
   type TriggerRegistrationResultMessage,
   type TriggerRequest,
-  type TriggerTypeInfo,
-  type WorkerInfo,
   type WorkerRegisteredMessage,
 } from './iii-types'
 import { registerWorkerGauges, stopWorkerGauges } from './otel-worker-gauges'
@@ -51,7 +46,6 @@ import {
 import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,
-  FunctionsAvailableCallback,
   Invocation,
   ISdk,
   RegisterFunctionOptions,
@@ -126,9 +120,6 @@ class Sdk implements ISdk {
   private invocations = new Map<string, Invocation & { timeout?: NodeJS.Timeout }>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
-  private functionsAvailableCallbacks = new Set<FunctionsAvailableCallback>()
-  private functionsAvailableTrigger?: Trigger
-  private functionsAvailableFunctionPath?: string
   private messagesToSend: Record<string, unknown>[] = []
   private workerName: string
   private workerId?: string
@@ -490,66 +481,6 @@ class Sdk implements ISdk {
     })
   }
 
-  /**
-   * Lists all functions registered with the engine across all connected workers.
-   *
-   * @returns An array of {@link FunctionInfo} objects.
-   *
-   * @example
-   * ```typescript
-   * const functions = await iii.listFunctions()
-   * functions.forEach(fn => console.log(fn.function_id))
-   * ```
-   */
-  listFunctions = async (): Promise<FunctionInfo[]> => {
-    const result = await this.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
-      function_id: EngineFunctions.LIST_FUNCTIONS,
-      payload: {},
-    })
-    return result.functions
-  }
-
-  /**
-   * Lists all connected workers.
-   *
-   * @returns An array of {@link WorkerInfo} objects.
-   */
-  listWorkers = async (): Promise<WorkerInfo[]> => {
-    const result = await this.trigger<Record<string, never>, { workers: WorkerInfo[] }>({
-      function_id: EngineFunctions.LIST_WORKERS,
-      payload: {},
-    })
-    return result.workers
-  }
-
-  listTriggers = async (includeInternal = false): Promise<TriggerInfo[]> => {
-    const result = await this.trigger<{ include_internal: boolean }, { triggers: TriggerInfo[] }>({
-      function_id: EngineFunctions.LIST_TRIGGERS,
-      payload: { include_internal: includeInternal },
-    })
-    return result.triggers
-  }
-
-  /**
-   * Lists all trigger types registered with the engine.
-   *
-   * @param includeInternal - Whether to include internal trigger types (default: false).
-   * @returns An array of {@link TriggerTypeInfo} objects.
-   *
-   * @example
-   * ```typescript
-   * const triggerTypes = await iii.listTriggerTypes()
-   * triggerTypes.forEach(tt => console.log(`${tt.id}: ${tt.description}`))
-   * ```
-   */
-  listTriggerTypes = async (includeInternal = false): Promise<TriggerTypeInfo[]> => {
-    const result = await this.trigger<{ include_internal: boolean }, { trigger_types: TriggerTypeInfo[] }>({
-      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
-      payload: { include_internal: includeInternal },
-    })
-    return result.trigger_types
-  }
-
   private registerWorkerMetadata(): void {
     const telemetryOpts = this.options?.telemetry
     const language =
@@ -604,57 +535,6 @@ class Sdk implements ISdk {
     this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))
     this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
     this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
-  }
-
-  /**
-   * Subscribes to function availability events from the engine. The callback
-   * fires whenever the set of available functions changes.
-   *
-   * @param callback - Receives the current list of {@link FunctionInfo} objects.
-   * @returns An unsubscribe function.
-   *
-   * @example
-   * ```typescript
-   * const unsub = iii.onFunctionsAvailable((functions) => {
-   *   console.log('Available:', functions.map(f => f.function_id))
-   * })
-   *
-   * // Later...
-   * unsub()
-   * ```
-   */
-  onFunctionsAvailable = (callback: FunctionsAvailableCallback): (() => void) => {
-    this.functionsAvailableCallbacks.add(callback)
-
-    if (!this.functionsAvailableTrigger) {
-      if (!this.functionsAvailableFunctionPath) {
-        this.functionsAvailableFunctionPath = `engine.on_functions_available.${crypto.randomUUID()}`
-      }
-
-      const function_id = this.functionsAvailableFunctionPath
-      if (!this.functions.has(function_id)) {
-        this.registerFunction(function_id, async ({ functions }: { functions: FunctionInfo[] }) => {
-          this.functionsAvailableCallbacks.forEach((handler) => {
-            handler(functions)
-          })
-          return null
-        })
-      }
-
-      this.functionsAvailableTrigger = this.registerTrigger({
-        type: EngineTriggers.FUNCTIONS_AVAILABLE,
-        function_id,
-        config: {},
-      })
-    }
-
-    return () => {
-      this.functionsAvailableCallbacks.delete(callback)
-      if (this.functionsAvailableCallbacks.size === 0 && this.functionsAvailableTrigger) {
-        this.functionsAvailableTrigger.unregister()
-        this.functionsAvailableTrigger = undefined
-      }
-    }
   }
 
   /**

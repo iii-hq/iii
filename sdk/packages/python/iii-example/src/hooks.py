@@ -1,3 +1,4 @@
+import uuid
 from typing import Any, Awaitable, Callable
 
 from iii import ApiRequest, ApiResponse, IIIClient, Logger
@@ -35,4 +36,23 @@ def use_api(
 
 
 def use_functions_available(iii: IIIClient, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
-    return iii.on_functions_available(callback)
+    handler_fn_id = f"iii_example.functions_available_listener.{uuid.uuid4()}"
+
+    async def handler(data: dict[str, Any]) -> None:
+        functions = [FunctionInfo(**f) for f in data.get("functions", [])]
+        callback(functions)
+
+    fn_ref = iii.register_function({"id": handler_fn_id}, handler)
+    trigger_guard = iii.register_trigger(
+        {
+            "type": "engine::functions-available",
+            "function_id": handler_fn_id,
+            "config": {},
+        }
+    )
+
+    def unsubscribe() -> None:
+        trigger_guard.unregister()
+        fn_ref.unregister()
+
+    return unsubscribe

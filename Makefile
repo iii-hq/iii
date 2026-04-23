@@ -9,28 +9,26 @@ STOP_SCRIPT         := bash scripts/stop-iii.sh
 III_URL             := ws://localhost:49199
 III_HTTP_URL        := http://localhost:3199
 PYTHON_SDK_DIR      := sdk/packages/python/iii
-MOTIA_PY_DIR        := frameworks/motia/motia-py/packages/motia
 
 export III_TELEMETRY_ENABLED := false
 
-.PHONY: install install-node install-python install-motia-py install-hooks \
+.PHONY: install install-node install-python install-hooks \
         engine-build engine-test engine-fmt-check \
         engine-up engine-up-bridges engine-down \
         init-build-x86 init-build-aarch64 init-build-all \
         sandbox sandbox-debug \
         test-sdk-node test-sdk-python test-sdk-rust test-sdk-all \
-        test-motia-js test-motia-py \
         lint-python lint-rust lint-console lint \
         fmt-check fmt-check-rust fmt-check-all \
-        typecheck-node typecheck-python typecheck-motia-py typecheck \
-        build-node build-sdk-node build-motia-js build-console build \
+        typecheck-node typecheck-python typecheck \
+        build-node build-sdk-node build-console build \
         fix fix-lint fix-fmt \
         check ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust \
-        ci-motia-js ci-motia-py ci-console ci-local
+        ci-console ci-local
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
-install: install-node install-python install-motia-py
+install: install-node install-python
 
 install-node:
 	pnpm install --frozen-lockfile
@@ -42,8 +40,6 @@ install-hooks:
 	git config core.hooksPath .githooks
 	@echo "[hooks] pre-commit installed (core.hooksPath=.githooks)"
 
-install-motia-py:
-	cd $(MOTIA_PY_DIR) && uv sync --extra dev
 
 # ── Engine ────────────────────────────────────────────────────────────────────
 
@@ -136,23 +132,10 @@ test-sdk-rust:
 
 test-sdk-all: test-sdk-node test-sdk-python test-sdk-rust
 
-# ── Framework Tests ───────────────────────────────────────────────────────────
-
-test-motia-js:
-	III_URL=$(III_URL) pnpm --filter motia test:ci
-
-test-motia-py:
-	cd $(MOTIA_PY_DIR) && \
-		III_URL=$(III_URL) III_HTTP_URL=$(III_HTTP_URL) \
-		uv run pytest --cov=src --cov-report=term-missing
-
 # ── Lint ──────────────────────────────────────────────────────────────────────
 
 lint-python:
 	cd $(PYTHON_SDK_DIR) && uv run ruff check src
-
-lint-motia-py:
-	cd $(MOTIA_PY_DIR) && uv run ruff check src
 
 lint-rust:
 	cargo clippy -p iii-sdk --all-targets --all-features -- -D warnings
@@ -160,7 +143,7 @@ lint-rust:
 lint-console:
 	pnpm --filter console-frontend lint
 
-lint: lint-python lint-motia-py lint-rust lint-console
+lint: lint-python lint-rust lint-console
 
 # ── Format Check ──────────────────────────────────────────────────────────────
 
@@ -177,24 +160,18 @@ typecheck-node:
 typecheck-python:
 	cd $(PYTHON_SDK_DIR) && uv run mypy src
 
-typecheck-motia-py:
-	cd $(MOTIA_PY_DIR) && uv run mypy src
-
-typecheck: typecheck-node typecheck-python typecheck-motia-py
+typecheck: typecheck-node typecheck-python
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 build-sdk-node:
 	pnpm --filter iii-sdk build
 
-build-motia-js: build-sdk-node
-	pnpm --filter motia build
-
 build-console:
 	pnpm --filter console-frontend build
 	cargo build -p iii-console --release
 
-build: build-motia-js build-console
+build: build-sdk-node build-console
 
 # ── CI Jobs (mirror ci.yml) ──────────────────────────────────────────────────
 
@@ -212,14 +189,6 @@ ci-sdk-rust: engine-up
 	@trap '$(MAKE) engine-down' EXIT; \
 	$(MAKE) fmt-check-rust lint-rust test-sdk-rust
 
-ci-motia-js: engine-up
-	@trap '$(MAKE) engine-down' EXIT; \
-	$(MAKE) build-motia-js test-motia-js
-
-ci-motia-py: engine-up
-	@trap '$(MAKE) engine-down' EXIT; \
-	$(MAKE) install-motia-py lint-motia-py typecheck-motia-py test-motia-py
-
 ci-console:
 	$(MAKE) lint-console build-console
 
@@ -232,10 +201,9 @@ fix-fmt:
 
 fix-lint:
 	cd $(PYTHON_SDK_DIR) && uv run ruff check --fix --unsafe-fixes src && uv run ruff format src
-	cd $(MOTIA_PY_DIR) && uv run ruff check --fix --unsafe-fixes src && uv run ruff format src
 	cargo clippy -p iii-sdk --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings
 	pnpm --filter console-frontend run lint:fix
 
 check: lint fmt-check-all typecheck build
 
-ci-local: ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust ci-motia-js ci-motia-py ci-console
+ci-local: ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust ci-console

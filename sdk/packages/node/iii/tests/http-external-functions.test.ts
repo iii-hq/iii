@@ -1,6 +1,8 @@
 import { createServer, type IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { describe, expect, it } from 'vitest'
+import { EngineFunctions } from '../src/iii-constants'
+import type { FunctionInfo } from '../src/iii-types'
 import { execute, iii, sleep } from './utils'
 
 type CapturedWebhook = {
@@ -130,7 +132,12 @@ function uniqueTopic(prefix: string): string {
 
 describe('HTTP external functions', () => {
   it('delivers queue events to an externally registered HTTP function', async () => {
-    await execute(async () => iii.listFunctions())
+    await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
 
     const webhookProbe = new WebhookProbe()
     await webhookProbe.start()
@@ -177,7 +184,12 @@ describe('HTTP external functions', () => {
   })
 
   it('registers and unregisters an HTTP function', async () => {
-    await execute(async () => iii.listFunctions())
+    await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
 
     const webhookProbe = new WebhookProbe()
     await webhookProbe.start()
@@ -196,16 +208,26 @@ describe('HTTP external functions', () => {
       )
       await sleep(300)
 
-      const functionsAfterRegister = await execute(async () => iii.listFunctions())
-      const registered = functionsAfterRegister.find(f => f.function_id === functionId)
+      const afterRegister = await execute(async () =>
+        iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+          function_id: EngineFunctions.LIST_FUNCTIONS,
+          payload: {},
+        }),
+      )
+      const registered = afterRegister.functions.find(f => f.function_id === functionId)
       expect(registered).toBeDefined()
 
       httpFn.unregister()
       httpFn = undefined
       await sleep(300)
 
-      const functionsAfterUnregister = await execute(async () => iii.listFunctions())
-      const unregistered = functionsAfterUnregister.find(f => f.function_id === functionId)
+      const afterUnregister = await execute(async () =>
+        iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+          function_id: EngineFunctions.LIST_FUNCTIONS,
+          payload: {},
+        }),
+      )
+      const unregistered = afterUnregister.functions.find(f => f.function_id === functionId)
       expect(unregistered).toBeUndefined()
     } finally {
       httpFn?.unregister()
@@ -214,7 +236,12 @@ describe('HTTP external functions', () => {
   })
 
   it('delivers events with custom headers to the webhook', async () => {
-    await execute(async () => iii.listFunctions())
+    await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
 
     const webhookProbe = new WebhookProbe()
     await webhookProbe.start()
@@ -266,7 +293,12 @@ describe('HTTP external functions', () => {
   })
 
   it('delivers events to multiple external functions on different topics', async () => {
-    await execute(async () => iii.listFunctions())
+    await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
 
     const webhookProbeA = new WebhookProbe()
     const webhookProbeB = new WebhookProbe()
@@ -343,7 +375,12 @@ describe('HTTP external functions', () => {
   })
 
   it('stops delivering events after unregister', async () => {
-    await execute(async () => iii.listFunctions())
+    await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
 
     const webhookProbe = new WebhookProbe()
     await webhookProbe.start()
@@ -406,7 +443,12 @@ describe('HTTP external functions', () => {
   })
 
   it('delivers events using PUT method', async () => {
-    await execute(async () => iii.listFunctions())
+    await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
 
     const webhookProbe = new WebhookProbe()
     await webhookProbe.start()

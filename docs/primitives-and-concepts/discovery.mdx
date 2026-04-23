@@ -3,12 +3,14 @@ title: 'Concepts: Discovery'
 description: 'Every worker sees every function in the system — and gets notified when functions appear or disappear as workers connect and disconnect.'
 ---
 
-When a worker connects to the engine, it receives the full list of functions registered across
-every other worker. When a new worker connects and registers functions, every existing worker gets notified.
-When a worker disconnects, its functions disappear and everyone is notified again.
-Functions can also unregister themselves.
+Discovery in iii is part of the runtime itself, not a sidecar service or an SDK-only convenience feature.
 
-The engine maintains a live registry and pushes changes to every connected worker in real time.
+When a worker connects, the engine adds its functions and triggers to a live registry. When a worker disconnects or unregisters a function, the registry changes immediately. That same registry powers two different capabilities:
+
+- read access through built-in engine functions such as `engine::functions::list`, `engine::workers::list`, `engine::triggers::list`, and `engine::trigger-types::list`
+- change notifications through built-in trigger types such as `engine::functions-available`
+
+That split is deliberate. A worker can read the current topology on demand, or subscribe to topology changes, using the same primitives it already uses everywhere else: `trigger()` for request/response and `register_trigger` for event delivery.
 
 ## Architecture
 
@@ -16,8 +18,8 @@ The engine maintains a live registry and pushes changes to every connected worke
 graph LR
     WA["Worker A<br/><small>orders::create</small>"] -->|registers| E["Engine<br/><small>Live Registry</small>"]
     WB["Worker B<br/><small>payments::charge</small>"] -->|registers| E
-    E -->|"functionsAvailable"| WA
-    E -->|"functionsAvailable"| WB
+    E -->|"engine::functions-available"| WA
+    E -->|"engine::functions-available"| WB
     WA -.->|"trigger payments::charge"| E
     WB -.->|"trigger orders::create"| E
 ```
@@ -33,13 +35,13 @@ In traditional distributed systems, services need to know where other services l
 
 Each approach trades off complexity, latency, and operational burden. Most require explicit registration, health checking, and some form of polling or TTL-based invalidation.
 
-iii takes a different approach: the engine itself is the registry, and it pushes changes to workers rather than waiting for them to poll.
+iii takes a different approach: the engine itself is the registry, and it exposes that registry directly through the same invocation model the rest of the platform uses.
 
 ## What This Enables
 
 Traditional architectures require coordination when the system topology changes. Adding a new service means updating every service that needs to call it — changing config files, updating client libraries, or waiting for DNS to propagate.
 
-With a central registry topology changes are automatic:
+With a central registry inside the engine, topology changes are automatic:
 
 - **Workers scale independently** — Scale horizontally and vertically only where you need it
 - **New functionality is immediately available** — Connect a new worker with new functions and they're immediately available to the entire system
@@ -48,8 +50,5 @@ With a central registry topology changes are automatic:
 <CardGroup cols={2}>
   <Card title="How to use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="book-open">
     Learn how to register functions, trigger them, and bind them to events.
-  </Card>
-  <Card title="Quickstart" href="/quickstart" icon="terminal">
-    Follow the Quickstart and explore a live iii application.
   </Card>
 </CardGroup>

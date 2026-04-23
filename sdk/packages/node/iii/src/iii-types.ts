@@ -368,7 +368,7 @@ export type InvocationResultMessage = {
 }
 
 /**
- * Metadata about a registered function, returned by `ISdk.listFunctions`.
+ * Metadata about a registered function, returned by the `engine::functions::list` trigger.
  */
 export type FunctionInfo = {
   /** Unique function identifier. */
@@ -400,7 +400,7 @@ export type TriggerInfo = {
 }
 
 /**
- * Information about a registered trigger type, returned by `ISdk.listTriggerTypes`.
+ * Information about a registered trigger type, returned by the `engine::trigger-types::list` trigger.
  */
 export type TriggerTypeInfo = {
   /** Trigger type identifier (e.g. `http`, `cron`, `queue`). */
@@ -417,7 +417,7 @@ export type TriggerTypeInfo = {
 export type WorkerStatus = 'connected' | 'available' | 'busy' | 'disconnected'
 
 /**
- * Metadata about a connected worker, returned by `ISdk.listWorkers`.
+ * Metadata about a connected worker, returned by the `engine::workers::list` trigger.
  */
 export type WorkerInfo = {
   /** Unique worker identifier assigned by the engine. */

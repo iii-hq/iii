@@ -95,10 +95,6 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Manage SDKs powered by Motia
-    #[command(subcommand)]
-    Sdk(SdkCommands),
-
     /// Manage workers (add, remove, list, info)
     #[command(
         trailing_var_arg = true,
@@ -117,20 +113,6 @@ enum Commands {
         /// If omitted, updates iii and all installed binaries.
         #[arg(name = "command")]
         target: Option<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum SdkCommands {
-    /// Motia SDK tools
-    #[command(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Motia {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
     },
 }
 
@@ -198,10 +180,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Cloud { args }) => {
             let exit_code = cli::handle_dispatch("cloud", args, cli_args.no_update_check).await;
-            std::process::exit(exit_code);
-        }
-        Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-            let exit_code = cli::handle_dispatch("motia", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Worker { args }) => {
@@ -355,30 +333,6 @@ mod tests {
                 assert_eq!(args, vec!["deploy", "--project", "abc", "--tag", "v1"]);
             }
             _ => panic!("expected Cloud subcommand"),
-        }
-    }
-
-    #[test]
-    fn sdk_motia_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "sdk", "motia", "init", "--lang", "typescript"])
-            .expect("should parse sdk motia with args");
-        match cli.command {
-            Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-                assert_eq!(args, vec!["init", "--lang", "typescript"]);
-            }
-            _ => panic!("expected Sdk Motia subcommand"),
-        }
-    }
-
-    #[test]
-    fn sdk_motia_parses_with_no_args() {
-        let cli = Cli::try_parse_from(["iii", "sdk", "motia"])
-            .expect("should parse sdk motia with no args");
-        match cli.command {
-            Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Sdk Motia subcommand"),
         }
     }
 

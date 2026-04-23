@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { TriggerAction } from '../src/index'
 import { execute, iii, sleep } from './utils'
 
+function uniqueTopic(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 describe('Queue Integration', () => {
   it('enqueue delivers message to registered function', async () => {
     // biome-ignore lint/suspicious/noExplicitAny: test code
@@ -204,6 +208,265 @@ describe('Queue Integration', () => {
       expect(groupB).toEqual([0, 1, 2, 3, 4])
     } finally {
       consumer.unregister()
+    }
+  })
+
+  it('durable subscriber receives published message', async () => {
+    // Ported from motia-js integration test: queue#enqueue delivers message to subscribed handler
+    const topic = uniqueTopic('test-durable-basic')
+    const functionId = `test.queue.durable.basic.${Date.now()}`
+    let received: Record<string, unknown> | null = null
+    let resolveReceived: () => void
+    const receivedPromise = new Promise<void>(r => {
+      resolveReceived = r
+    })
+
+    const fn = iii.registerFunction(functionId, async (data: Record<string, unknown>) => {
+      received = data
+      resolveReceived?.()
+      return { ok: true }
+    })
+    const trigger = iii.registerTrigger({
+      type: 'durable:subscriber',
+      function_id: fn.id,
+      config: { topic },
+    })
+
+    await sleep(300)
+
+    try {
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: { order: 'abc' } },
+      })
+
+      await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout waiting for durable subscriber')), 5000),
+        ),
+      ])
+
+      expect(received).toEqual({ order: 'abc' })
+    } finally {
+      trigger.unregister()
+      fn.unregister()
+    }
+  })
+
+  it('durable subscriber receives exact nested payload', async () => {
+    // Ported from motia-js integration test: queue#handler receives exact data payload from enqueue
+    const topic = uniqueTopic('test-durable-payload')
+    const functionId = `test.queue.durable.payload.${Date.now()}`
+    const payload = { id: 'x1', count: 42, nested: { a: 1 } }
+    let received: unknown = null
+    let resolveReceived: () => void
+    const receivedPromise = new Promise<void>(r => {
+      resolveReceived = r
+    })
+
+    const fn = iii.registerFunction(functionId, async (data: Record<string, unknown>) => {
+      received = data
+      resolveReceived?.()
+      return { ok: true }
+    })
+    const trigger = iii.registerTrigger({
+      type: 'durable:subscriber',
+      function_id: fn.id,
+      config: { topic },
+    })
+
+    await sleep(300)
+
+    try {
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: payload },
+      })
+
+      await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout waiting for durable subscriber payload')), 5000),
+        ),
+      ])
+
+      expect(received).toEqual(payload)
+    } finally {
+      trigger.unregister()
+      fn.unregister()
+    }
+  })
+
+  it('durable subscriber with queue_config receives messages', async () => {
+    // Ported from motia-js integration test: queue#subscription with infrastructure config receives messages
+    const topic = uniqueTopic('test-durable-infra')
+    const functionId = `test.queue.durable.infra.${Date.now()}`
+    let received: Record<string, unknown> | null = null
+    let resolveReceived: () => void
+    const receivedPromise = new Promise<void>(r => {
+      resolveReceived = r
+    })
+
+    const fn = iii.registerFunction(functionId, async (data: Record<string, unknown>) => {
+      received = data
+      resolveReceived?.()
+      return { ok: true }
+    })
+    const trigger = iii.registerTrigger({
+      type: 'durable:subscriber',
+      function_id: fn.id,
+      config: {
+        topic,
+        queue_config: {
+          maxRetries: 5,
+          type: 'standard',
+          concurrency: 2,
+        },
+      },
+    })
+
+    await sleep(300)
+
+    try {
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: { infra: true } },
+      })
+
+      await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout waiting for durable subscriber (infra)')), 5000),
+        ),
+      ])
+
+      expect(received).toEqual({ infra: true })
+    } finally {
+      trigger.unregister()
+      fn.unregister()
+    }
+  })
+
+  it('multiple durable subscribers on same topic each receive every message (fan-out)', async () => {
+    // Ported from motia-js integration test: queue#multiple subscribers on same topic - each function receives every message (fan-out)
+    const topic = uniqueTopic('test-durable-fanout')
+    const functionId1 = `test.queue.durable.multi1.${Date.now()}`
+    const functionId2 = `test.queue.durable.multi2.${Date.now()}`
+    const received1: Record<string, unknown>[] = []
+    const received2: Record<string, unknown>[] = []
+
+    const fn1 = iii.registerFunction(functionId1, async (data: Record<string, unknown>) => {
+      received1.push(data)
+      return { ok: true }
+    })
+    const fn2 = iii.registerFunction(functionId2, async (data: Record<string, unknown>) => {
+      received2.push(data)
+      return { ok: true }
+    })
+    const trigger1 = iii.registerTrigger({
+      type: 'durable:subscriber',
+      function_id: fn1.id,
+      config: { topic },
+    })
+    const trigger2 = iii.registerTrigger({
+      type: 'durable:subscriber',
+      function_id: fn2.id,
+      config: { topic },
+    })
+
+    await sleep(500)
+
+    try {
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: { msg: 1 } },
+      })
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: { msg: 2 } },
+      })
+
+      await execute(async () => {
+        if (received1.length < 2 || received2.length < 2) {
+          throw new Error(
+            `fan-out incomplete: fn1=${received1.length}/2 fn2=${received2.length}/2`,
+          )
+        }
+      })
+
+      expect(received1).toHaveLength(2)
+      expect(received2).toHaveLength(2)
+      expect(received1).toContainEqual({ msg: 1 })
+      expect(received1).toContainEqual({ msg: 2 })
+      expect(received2).toContainEqual({ msg: 1 })
+      expect(received2).toContainEqual({ msg: 2 })
+    } finally {
+      trigger1.unregister()
+      trigger2.unregister()
+      fn1.unregister()
+      fn2.unregister()
+    }
+  })
+
+  it('durable subscriber condition function filters messages', async () => {
+    // Ported from motia-js integration test: queue#condition function filters messages
+    const topic = uniqueTopic('test-durable-cond')
+    const functionId = `test.queue.durable.cond.${Date.now()}`
+    const conditionFunctionId = `${functionId}::conditions::0`
+    let handlerCalls = 0
+    let resolveFirstCall: () => void
+    const firstCall = new Promise<void>(r => {
+      resolveFirstCall = r
+    })
+
+    const fn = iii.registerFunction(functionId, async (_data: Record<string, unknown>) => {
+      handlerCalls += 1
+      resolveFirstCall?.()
+      return { ok: true }
+    })
+    const conditionFn = iii.registerFunction(
+      conditionFunctionId,
+      async (input: Record<string, unknown>) => {
+        return input?.accept === true
+      },
+    )
+    const trigger = iii.registerTrigger({
+      type: 'durable:subscriber',
+      function_id: fn.id,
+      config: {
+        topic,
+        condition_function_id: conditionFn.id,
+      },
+    })
+
+    await sleep(500)
+
+    try {
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: { accept: false } },
+      })
+      await iii.trigger({
+        function_id: 'iii::durable::publish',
+        payload: { topic, data: { accept: true } },
+      })
+
+      await Promise.race([
+        firstCall,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout waiting for accepted message')), 5000),
+        ),
+      ])
+
+      // Wait a bit extra to ensure the rejected message isn't still in flight.
+      await sleep(500)
+
+      expect(handlerCalls).toBe(1)
+    } finally {
+      trigger.unregister()
+      fn.unregister()
+      conditionFn.unregister()
     }
   })
 

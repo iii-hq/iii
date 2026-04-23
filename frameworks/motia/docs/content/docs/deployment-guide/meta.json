@@ -1,5 +1,0 @@
-{
-  "title": "Deployment Guide",
-  "defaultOpen": false,
-  "pages": ["getting-started", "docker", "self-hosted", "railway", "fly"]
-}

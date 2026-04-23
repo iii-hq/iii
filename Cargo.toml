@@ -11,12 +11,43 @@ members = [
   "crates/iii-network",
   "crates/iii-supervisor",
   "crates/iii-worker",
+  "crates/scaffolder-core",
+  "crates/iii-tools",
+  "crates/motia-tools",
 ]
 
 [workspace.package]
+version = "0.11.0"
+edition = "2024"
 authors = ["Motia LLC"]
 repository = "https://github.com/iii-hq/iii"
 homepage = "https://iii.dev"
 
 [workspace.dependencies]
 iii-sdk = { path = "sdk/packages/rust/iii" }
+scaffolder-core = { path = "crates/scaffolder-core" }
+
+# Shared dependencies used by tooling crates
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "process", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"
+thiserror = "2"
+semver = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+colored = "3"
+dirs = "6"
+url = "2"
+walkdir = "2"
+open = "5"
+cliclack = "0.3"
+console = "0.15"
+ctrlc = "3"
+
+# Shared dev-dependencies
+wiremock = "0.6"
+tempfile = "3"
+serial_test = "3"

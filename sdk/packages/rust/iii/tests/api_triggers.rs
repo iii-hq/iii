@@ -236,6 +236,55 @@ async fn custom_status_code() {
 }
 
 #[tokio::test]
+async fn content_type_on_api_response_return() {
+    let iii = common::shared_iii();
+
+    let xml_body =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><note><to>user</to><body>hello</body></note>";
+
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::api::xml::return::rs".to_string()),
+        move |_input: Value| async move {
+            Ok(json!({
+                "status_code": 200,
+                "headers": { "Content-Type": "text/xml" },
+                "body": xml_body,
+            }))
+        },
+    ));
+
+    let _trigger = iii
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: "test::api::xml::return::rs".to_string(),
+            config: json!({
+                "api_path": "test/rs/xml-return",
+                "http_method": "POST",
+            }),
+            metadata: None,
+        })
+        .expect("register trigger");
+
+    common::settle().await;
+    sleep(Duration::from_millis(500)).await;
+
+    let resp = common::http_client()
+        .post(format!("{}/test/rs/xml-return", common::engine_http_url()))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/xml"),
+    );
+    assert_eq!(resp.text().await.expect("body"), xml_body);
+}
+
+#[tokio::test]
 async fn download_pdf_streaming() {
     let pdf_path = test_pdf_path();
 

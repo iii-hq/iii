@@ -276,7 +276,7 @@ const businessLogicKeywords = [
   'append',
   'extend',
 
-  // iii/Motia specific patterns
+  // iii specific patterns
   'emit(',
   'getcontext',
   'registerfunction',

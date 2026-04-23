@@ -49,11 +49,14 @@ const capabilities = [
   {
     name: "AI Agent with Tools",
     code: {
-      typescript: `import { registerWorker, Logger } from "iii-sdk"
+      typescript: `import { EngineFunctions, registerWorker, Logger } from "iii-sdk"
 const iii = registerWorker(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
 const logger = new Logger()
 
-const tools = await iii.listFunctions()
+const { functions: tools } = await iii.trigger({
+  function_id: EngineFunctions.LIST_FUNCTIONS,
+  payload: {}
+})
 
 iii.registerFunction("agent::research", async ({ query }) => {
     const response = await callLLM(query, { tools })
@@ -75,7 +78,8 @@ iii = register_worker(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
 
 async def research_handler(input):
     logger = Logger()
-    tools = await iii.list_functions()
+    tools_result = await iii.trigger({"function_id": "engine::functions::list", "payload": {}})
+    tools = tools_result.get("functions", [])
     response = await call_llm(input["query"], tools=tools)
 
     while response.get("tool_call"):
@@ -87,10 +91,19 @@ async def research_handler(input):
 
 iii.register_function("agent::research", research_handler)`,
       rust: `use iii_sdk::{register_worker, RegisterFunction, InitOptions, Logger, TriggerRequest};
+use serde_json::{json, Value};
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
 let logger = Logger::new();
-let tools = iii.list_functions().await?;
+let tools_result = iii.trigger(TriggerRequest {
+    function_id: "engine::functions::list".to_string(),
+    payload: json!({}),
+    action: None,
+    timeout_ms: None,
+}).await?;
+let tools = serde_json::from_value::<Vec<Value>>(
+    tools_result.get("functions").cloned().unwrap_or(Value::Array(vec![]))
+)?;
 
 iii.register_function(
     RegisterFunctionOptions { id: "agent::research".into(), ..Default::default() },
@@ -345,8 +358,17 @@ iii.register_function(
   logger.info("Message sent", { roomId, messages: history.length })
 })
 
-iii.onFunctionsAvailable((fns) => {
-  logger.info("System topology changed", { count: fns.length })
+const topologyHandlerId = \`chat::topology.\${crypto.randomUUID()}\`
+
+iii.registerFunction(topologyHandlerId, async ({ functions }) => {
+  logger.info("System topology changed", { count: functions.length })
+  return null
+})
+
+await iii.registerTrigger({
+  type: "engine::functions-available",
+  function_id: topologyHandlerId,
+  config: {}
 })`,
       python: `async def send_message(input):
     logger = Logger()
@@ -369,9 +391,17 @@ iii.onFunctionsAvailable((fns) => {
 
 iii.register_function("chat::send", send_message)
 
-iii.on_functions_available(
-    lambda fns: Logger().info("Topology changed", count=len(fns))
-)`,
+topology_handler_id = f"chat::topology.{uuid4()}"
+
+async def on_topology_change(data):
+    Logger().info("Topology changed", count=len(data.get("functions", [])))
+
+iii.register_function(topology_handler_id, on_topology_change)
+iii.register_trigger({
+    "type": "engine::functions-available",
+    "function_id": topology_handler_id,
+    "config": {},
+})`,
       rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
 
 iii.register_function(
@@ -399,8 +429,21 @@ iii.register_function(
     },
 )?;
 
-iii.on_functions_available(|fns| {
-    logger.info("Topology changed", fns.len());
+let topology_handler_id = format!("chat::topology.{}", Uuid::new_v4());
+
+iii.register_function(RegisterFunction::new(
+    topology_handler_id.clone(),
+    move |input: serde_json::Value| {
+        let log = Logger::new();
+        log.info("Topology changed", &format!("{}", input["functions"].as_array().map(|f| f.len()).unwrap_or(0)));
+        Ok(json!(null))
+    },
+));
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "engine::functions-available".to_string(),
+    function_id: topology_handler_id,
+    config: json!({}),
 });`,
     },
   },

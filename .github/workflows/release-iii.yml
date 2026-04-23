@@ -388,6 +388,31 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
+  # CLI Tools Binary (downloaded on first use of `iii create`)
+  # ──────────────────────────────────────────────────────────────
+
+  cli-tools-release:
+    name: CLI Tools Binary Release
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: iii-tools
+      manifest_path: crates/iii-tools/Cargo.toml
+      tag_name: ${{ needs.setup.outputs.tag }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      skip_create_release: true
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      targets: '["aarch64-apple-darwin","x86_64-apple-darwin","x86_64-unknown-linux-gnu","x86_64-unknown-linux-musl","aarch64-unknown-linux-gnu"]'
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: CLI Tools Binary
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  # ──────────────────────────────────────────────────────────────
   # SDK Publish
   # ──────────────────────────────────────────────────────────────
 
@@ -535,6 +560,7 @@ jobs:
       - engine-release
       - worker-release
       - console-release
+      - cli-tools-release
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -556,6 +582,7 @@ jobs:
           ENGINE_RESULT: ${{ needs.engine-release.result }}
           WORKER_RESULT: ${{ needs.worker-release.result }}
           CONSOLE_RESULT: ${{ needs.console-release.result }}
+          CLI_TOOLS_RESULT: ${{ needs.cli-tools-release.result }}
           SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
           SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
           SDK_PY_RESULT: ${{ needs.sdk-py.result }}
@@ -580,6 +607,7 @@ jobs:
           LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
           LINES="$LINES$(icon "$WORKER_RESULT") Worker Binary\n"
           LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
+          LINES="$LINES$(icon "$CLI_TOOLS_RESULT") CLI Tools Binary\n"
           LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
@@ -591,7 +619,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$CLI_TOOLS_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

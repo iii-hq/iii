@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -321,9 +321,6 @@ pub enum IIIConnectionState {
     Reconnecting,
     Failed,
 }
-
-/// Callback function type for functions available events
-pub type FunctionsAvailableCallback = Arc<dyn Fn(Vec<FunctionInfo>) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct FunctionRef {
@@ -666,10 +663,6 @@ struct IIIInner {
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
     connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
-    functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
-    functions_available_callback_counter: AtomicUsize,
-    functions_available_function_id: Mutex<Option<String>>,
-    functions_available_trigger: Mutex<Option<Trigger>>,
     headers: Mutex<Option<HashMap<String, String>>>,
     otel_config: Mutex<Option<OtelConfig>>,
 }
@@ -680,30 +673,6 @@ struct IIIInner {
 #[derive(Clone)]
 pub struct III {
     inner: Arc<IIIInner>,
-}
-
-/// Guard that unsubscribes from functions available events when dropped
-pub struct FunctionsAvailableGuard {
-    iii: III,
-    callback_id: usize,
-}
-
-impl Drop for FunctionsAvailableGuard {
-    fn drop(&mut self) {
-        let mut callbacks = self
-            .iii
-            .inner
-            .functions_available_callbacks
-            .lock_or_recover();
-        callbacks.remove(&self.callback_id);
-
-        if callbacks.is_empty() {
-            let mut trigger = self.iii.inner.functions_available_trigger.lock_or_recover();
-            if let Some(trigger) = trigger.take() {
-                trigger.unregister();
-            }
-        }
-    }
 }
 
 impl III {
@@ -729,10 +698,6 @@ impl III {
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
             connection_thread: Mutex::new(None),
-            functions_available_callbacks: Mutex::new(HashMap::new()),
-            functions_available_callback_counter: AtomicUsize::new(0),
-            functions_available_function_id: Mutex::new(None),
-            functions_available_trigger: Mutex::new(None),
             headers: Mutex::new(None),
             otel_config: Mutex::new(None),
         };
@@ -1168,180 +1133,6 @@ impl III {
             return;
         }
         *current = state;
-    }
-
-    /// List all registered functions from the engine
-    pub async fn list_functions(&self) -> Result<Vec<FunctionInfo>, IIIError> {
-        let result = self
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::list".to_string(),
-                payload: serde_json::json!({}),
-                action: None,
-                timeout_ms: None,
-            })
-            .await?;
-
-        let functions = result
-            .get("functions")
-            .and_then(|v| serde_json::from_value::<Vec<FunctionInfo>>(v.clone()).ok())
-            .unwrap_or_default();
-
-        Ok(functions)
-    }
-
-    /// Subscribe to function availability events
-    /// Returns a guard that will unsubscribe when dropped
-    pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableGuard
-    where
-        F: Fn(Vec<FunctionInfo>) + Send + Sync + 'static,
-    {
-        let callback = Arc::new(callback);
-        let callback_id = self
-            .inner
-            .functions_available_callback_counter
-            .fetch_add(1, Ordering::Relaxed);
-
-        self.inner
-            .functions_available_callbacks
-            .lock_or_recover()
-            .insert(callback_id, callback);
-
-        // Set up trigger if not already done
-        let mut trigger_guard = self.inner.functions_available_trigger.lock_or_recover();
-        if trigger_guard.is_none() {
-            // Get or create function path (reuse existing if trigger registration previously failed)
-            let function_id = {
-                let mut path_guard = self.inner.functions_available_function_id.lock_or_recover();
-                if path_guard.is_none() {
-                    let path = format!("iii.on_functions_available.{}", Uuid::new_v4());
-                    *path_guard = Some(path.clone());
-                    path
-                } else {
-                    path_guard.clone().unwrap()
-                }
-            };
-
-            // Register handler function only if it doesn't already exist
-            let function_exists = self
-                .inner
-                .functions
-                .lock_or_recover()
-                .contains_key(&function_id);
-            if !function_exists {
-                let iii = self.clone();
-                self.register_function_with(
-                    RegisterFunctionMessage {
-                        id: function_id.clone(),
-                        description: None,
-                        request_format: None,
-                        response_format: None,
-                        metadata: None,
-                        invocation: None,
-                    },
-                    move |input: Value| {
-                        let iii = iii.clone();
-                        async move {
-                            let functions = input
-                                .get("functions")
-                                .and_then(|v| {
-                                    serde_json::from_value::<Vec<FunctionInfo>>(v.clone()).ok()
-                                })
-                                .unwrap_or_default();
-
-                            let callbacks =
-                                iii.inner.functions_available_callbacks.lock_or_recover();
-                            for cb in callbacks.values() {
-                                cb(functions.clone());
-                            }
-                            Ok(Value::Null)
-                        }
-                    },
-                );
-            }
-
-            match self.register_trigger(RegisterTriggerInput {
-                trigger_type: "engine::functions-available".to_string(),
-                function_id,
-                config: serde_json::json!({}),
-                metadata: None,
-            }) {
-                Ok(trigger) => {
-                    *trigger_guard = Some(trigger);
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "Failed to register functions_available trigger");
-                }
-            }
-        }
-
-        FunctionsAvailableGuard {
-            iii: self.clone(),
-            callback_id,
-        }
-    }
-
-    /// List all connected workers from the engine
-    pub async fn list_workers(&self) -> Result<Vec<WorkerInfo>, IIIError> {
-        let result = self
-            .trigger(TriggerRequest {
-                function_id: "engine::workers::list".to_string(),
-                payload: serde_json::json!({}),
-                action: None,
-                timeout_ms: None,
-            })
-            .await?;
-
-        let workers = result
-            .get("workers")
-            .and_then(|v| serde_json::from_value::<Vec<WorkerInfo>>(v.clone()).ok())
-            .unwrap_or_default();
-
-        Ok(workers)
-    }
-
-    /// List all registered triggers from the engine
-    pub async fn list_triggers(
-        &self,
-        include_internal: bool,
-    ) -> Result<Vec<TriggerInfo>, IIIError> {
-        let result = self
-            .trigger(TriggerRequest {
-                function_id: "engine::triggers::list".to_string(),
-                payload: serde_json::json!({ "include_internal": include_internal }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await?;
-
-        let triggers = result
-            .get("triggers")
-            .and_then(|v| serde_json::from_value::<Vec<TriggerInfo>>(v.clone()).ok())
-            .unwrap_or_default();
-
-        Ok(triggers)
-    }
-
-    /// List all registered trigger types from the engine with their
-    /// `trigger_request_format` and `call_request_format` schemas.
-    pub async fn list_trigger_types(
-        &self,
-        include_internal: bool,
-    ) -> Result<Vec<TriggerTypeInfo>, IIIError> {
-        let result = self
-            .trigger(TriggerRequest {
-                function_id: "engine::trigger-types::list".to_string(),
-                payload: serde_json::json!({ "include_internal": include_internal }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await?;
-
-        let trigger_types = result
-            .get("trigger_types")
-            .and_then(|v| serde_json::from_value::<Vec<TriggerTypeInfo>>(v.clone()).ok())
-            .unwrap_or_default();
-
-        Ok(trigger_types)
     }
 
     /// Create a streaming channel pair for worker-to-worker data transfer.

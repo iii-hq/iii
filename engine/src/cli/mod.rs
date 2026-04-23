@@ -201,13 +201,8 @@ pub async fn handle_update(target: Option<&str>) -> i32 {
             vec![update::self_update(&client, &mut app_state).await]
         }
         Some(cmd) => {
-            // Normalize SDK-namespaced commands to registry keys
-            let registry_key = match cmd {
-                "sdk" => "motia-cli",
-                other => other,
-            };
             // Update specific binary
-            let spec = match registry::resolve_binary_for_update(registry_key) {
+            let spec = match registry::resolve_binary_for_update(cmd) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{} {}", "error:".red(), e);

@@ -450,7 +450,7 @@ fn spawn_control_proxy(
                     Err(_) => return, // poisoned — give up
                 };
 
-                if !proxy_one_round_trip(client, &mut *guard, MAX_LINE) {
+                if !proxy_one_round_trip(client, &mut guard, MAX_LINE) {
                     // VM-end failure (EOF, IO error, timeout). Drop the
                     // listener so future fast-restarts fall back to the
                     // full path instead of accepting doomed connections.

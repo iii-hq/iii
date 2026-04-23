@@ -15,11 +15,6 @@
   "navbar": {
     "links": [
       {
-        "label": "Discord",
-        "href": "https://discord.gg/motia",
-        "icon": "discord"
-      },
-      {
         "type": "github",
         "href": "https://github.com/iii-hq/iii"
       }

@@ -105,97 +105,6 @@ const redisStream: IStream<UserSession> = {
 iii.createStream('sessions', redisStream)
 ```
 
-### listFunctions
-
-Lists all registered functions.
-
-**Signature**
-
-```typescript
-listFunctions() => Promise<FunctionInfo[]>
-```
-
-#### Example
-
-```typescript
-const functions = await iii.listFunctions()
-for (const fn of functions) {
-  console.log(`${fn.function_id}: ${fn.description}`)
-}
-```
-
-### listTriggers
-
-Lists all registered triggers.
-
-**Signature**
-
-```typescript
-listTriggers(includeInternal: boolean) => Promise<TriggerInfo[]>
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `includeInternal` | `boolean` | Yes | Whether to include internal triggers (default: false) |
-
-### listTriggerTypes
-
-Lists all trigger types registered with the engine.
-
-**Signature**
-
-```typescript
-listTriggerTypes(includeInternal: boolean) => Promise<TriggerTypeInfo[]>
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `includeInternal` | `boolean` | Yes | Whether to include internal trigger types (default: false) |
-
-#### Example
-
-```typescript
-const triggerTypes = await iii.listTriggerTypes()
-for (const tt of triggerTypes) {
-  console.log(`${tt.id}: ${tt.description}`)
-}
-```
-
-### onFunctionsAvailable
-
-Registers a callback to receive the current functions list
-when the engine announces changes.
-
-**Signature**
-
-```typescript
-onFunctionsAvailable(callback: FunctionsAvailableCallback) => () => void
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `callback` | [`FunctionsAvailableCallback`](#functionsavailablecallback) | Yes | - |
-
-#### Example
-
-```typescript
-const unsubscribe = iii.onFunctionsAvailable((functions) => {
-  console.log(`${functions.length} functions available:`)
-  for (const fn of functions) {
-    console.log(`  - ${fn.function_id}`)
-  }
-})
-
-// Later, stop listening
-unsubscribe()
-```
-
 ### registerFunction
 
 Registers a new function with a local handler or an HTTP invocation config.
@@ -411,10 +320,10 @@ The `iii-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-sdk` | `MessageType`, `ChannelReader`, `ChannelWriter`, `Logger`, `ISdk`, `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, etc. |
+| `iii-sdk` | `MessageType`, `ChannelReader`, `ChannelWriter`, `IIIInvocationError`, `Logger`, `ISdk`, `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, etc. |
 | `iii-sdk/stream` | `IStream`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamJoinLeaveEvent`, `StreamJoinLeaveTriggerConfig`, `StreamJoinResult`, `StreamTriggerConfig`, `DeleteResult`, `StreamContext`, etc. |
 | `iii-sdk/state` | `StateEventType`, `IState`, `StateEventData`, `DeleteResult`, `StateDeleteInput`, `StateDeleteResult`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, etc. |
-| `iii-sdk/telemetry` | `WorkerMetricsCollector`, `IIIReconnectionConfig`, `OtelConfig`, `ReconnectionConfig`, `WorkerGaugesOptions`, `WorkerMetricsCollectorOptions`, `FunctionInfo`, `FunctionsAvailableCallback`, `IIIConnectionState`, `OtelLogEvent`, etc. |
+| `iii-sdk/telemetry` | `WorkerMetricsCollector`, `IIIReconnectionConfig`, `OtelConfig`, `ReconnectionConfig`, `WorkerGaugesOptions`, `WorkerMetricsCollectorOptions`, `IIIConnectionState`, `OtelLogEvent`, `RegisterFunctionFormat`, `WorkerMetrics`, etc. |
 
 ## Logger
 
@@ -522,7 +431,7 @@ logger.warn('Retry attempt', { attempt: 3, maxRetries: 5, endpoint: '/api/charge
 
 ## Types
 
-[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`FunctionInfo`](#functioninfo) · [`FunctionsAvailableCallback`](#functionsavailablecallback) · [`RegisterFunctionFormat`](#registerfunctionformat)
+[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`RegisterFunctionFormat`](#registerfunctionformat)
 
 ### MessageType
 
@@ -712,18 +621,6 @@ Handler interface for custom trigger types. Passed to
 | `registerTrigger` | `Promise<void>` | Yes | Called when a trigger instance is registered. |
 | `unregisterTrigger` | `Promise<void>` | Yes | Called when a trigger instance is unregistered. |
 
-### TriggerInfo
-
-Information about a registered trigger.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `unknown` | No | Trigger-specific configuration. |
-| `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
-| `id` | `string` | Yes | Unique trigger identifier. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger. |
-| `trigger_type` | `string` | Yes | Type of the trigger (e.g. `http`, `cron`, `durable:subscriber`). |
-
 ### TriggerRequest
 
 Request object passed to ISdk.trigger.
@@ -734,17 +631,6 @@ Request object passed to ISdk.trigger.
 | `function_id` | `string` | Yes | ID of the function to invoke. |
 | `payload` | `TInput` | Yes | Payload to pass to the function. |
 | `timeoutMs` | `number` | No | Override the default invocation timeout in milliseconds. |
-
-### TriggerTypeInfo
-
-Information about a registered trigger type, returned by `ISdk.listTriggerTypes`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `call_request_format` | `unknown` | No | JSON Schema for the call request payload. |
-| `description` | `string` | Yes | Human-readable description of the trigger type. |
-| `id` | `string` | Yes | Trigger type identifier (e.g. `http`, `cron`, `durable:subscriber`). |
-| `trigger_request_format` | `unknown` | No | JSON Schema for the trigger configuration. |
 
 ### TriggerTypeRef
 
@@ -852,31 +738,13 @@ Configuration for WebSocket reconnection behavior
 | `maxDelayMs` | `number` | Yes | Maximum delay cap in milliseconds (default: 30000ms) |
 | `maxRetries` | `number` | Yes | Maximum retry attempts, -1 for infinite (default: -1) |
 
-### FunctionInfo
-
-Metadata about a registered function, returned by `ISdk.listFunctions`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `string` | No | Human-readable description. |
-| `function_id` | `string` | Yes | Unique function identifier. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | Schema describing expected request format. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | Schema describing expected response format. |
-
-### FunctionsAvailableCallback
-
-```typescript
-type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
-```
-
 ### RegisterFunctionFormat
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | `string` | No | The description of the parameter |
-| `items` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The items of the parameter |
+| `items` | `unknown` | No | The items of the parameter (for arrays) |
 | `name` | `string` | No | The name of the parameter |
-| `properties` | Record&lt;string, [`RegisterFunctionFormat`](#registerfunctionformat)&gt; | No | The body of the parameter |
+| `properties` | `Record<string, unknown>` | No | The body of the parameter (for objects) |
 | `required` | `string[]` | No | Whether the parameter is required |
-| `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map"` | Yes | The type of the parameter |
+| `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map" \| "integer"` | No | The type of the parameter |

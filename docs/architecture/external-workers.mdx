@@ -68,7 +68,7 @@ The second argument to `registerWorker()` configures the Worker's behavior:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `workerName` | `string` | `${hostname}:${pid}` | Name shown in the iii Console and `listWorkers()` |
+| `workerName` | `string` | `${hostname}:${pid}` | Name shown in the iii Console and in results from `engine::workers::list` |
 | `invocationTimeoutMs` | `number` | `30000` | Default timeout for `trigger()` calls in milliseconds |
 | `enableMetricsReporting` | `boolean` | `true` | Report CPU, memory, and event loop metrics to the Engine |
 | `reconnectionConfig` | `object` | see below | WebSocket reconnection behavior |
@@ -126,13 +126,20 @@ On disconnect — clean or crash — the Engine automatically removes all the Wo
 You can inspect all connected Workers at runtime:
 
 ```typescript
-const workers = await iii.listWorkers()
-// returns WorkerInfo[] with: id, name, runtime, version, os,
+const { workers } = await iii.trigger({
+  function_id: 'engine::workers::list',
+  payload: {},
+})
+// workers: WorkerInfo[] with id, name, runtime, version, os,
 // status, connected_at_ms, function_count, functions[], active_invocations
 ```
 
 ```python
-workers = iii.list_workers()
+result = iii.trigger({
+    "function_id": "engine::workers::list",
+    "payload": {},
+})
+workers = result.get("workers", [])
 ```
 
 <Info title="See also">

@@ -64,7 +64,6 @@ The [iii-console](console/) is a developer and operations dashboard for inspecti
 | `engine/`     | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
 | `sdk/`        | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)         |
 | `console/`    | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md) |
-| `frameworks/` | Higher-level frameworks built on the SDK                | [frameworks/motia/](frameworks/motia/) |
 | `skills/`     | Agent skills for AI coding agents                       | [skills/README.md](skills/README.md)   |
 | `website/`    | iii website                                             | [website/](website/)                   |
 | `docs/`       | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
@@ -93,10 +92,9 @@ The iii is licensed as such:
 | `sdk/`        | [Apache License 2.0](sdk/LICENSE)              |
 | `cli/`        | [Apache License 2.0](cli/LICENSE)              |
 | `console/`    | [Apache License 2.0](console/LICENSE)          |
-| `frameworks/` | [Apache License 2.0](frameworks/motia/LICENSE) |
 | `docs/`       | [Apache License 2.0](docs/LICENSE)             |
 | `website/`    | [Apache License 2.0](website/LICENSE)          |
 
-The engine runtime is licensed under the Elastic License 2.0 (ELv2). All SDKs, frameworks, CLI, console, documentation, and the website are licensed under the Apache License 2.0.
+The engine runtime is licensed under the Elastic License 2.0 (ELv2). All SDKs, CLI, console, documentation, and the website are licensed under the Apache License 2.0.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for additional details.

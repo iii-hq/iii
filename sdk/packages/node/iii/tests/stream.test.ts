@@ -165,6 +165,91 @@ describe('Stream Operations', () => {
     })
   })
 
+  describe('stream::list_groups', () => {
+    it('should return available groups', async () => {
+      // Ported from motia-js integration test: stream#listGroups returns available groups
+      const groupId = `list-groups-${Date.now()}`
+      await iii.trigger({
+        function_id: 'stream::set',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: 'anchor',
+          data: { value: 0 },
+        },
+      })
+
+      const result = await iii.trigger({
+        function_id: 'stream::list_groups',
+        payload: { stream_name: testStreamName },
+      })
+      const groups = Array.isArray(result)
+        ? result
+        : ((result as { groups?: string[] })?.groups ?? [])
+
+      expect(Array.isArray(groups)).toBe(true)
+      expect(groups).toContain(groupId)
+
+      await iii.trigger({
+        function_id: 'stream::delete',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: 'anchor',
+        },
+      })
+    })
+  })
+
+  describe('stream::update', () => {
+    it('should apply partial updates via ops array', async () => {
+      // Ported from motia-js integration test: stream#update applies partial updates
+      const groupId = `update-group-${Date.now()}`
+      const itemId = `update-item-${Date.now()}`
+
+      await iii.trigger({
+        function_id: 'stream::set',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+          data: { count: 0, name: 'initial' },
+        },
+      })
+
+      await iii.trigger({
+        function_id: 'stream::update',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+          ops: [{ type: 'set', path: 'count', value: 5 }],
+        },
+      })
+
+      const result = await iii.trigger<unknown, { count?: number; name?: string }>({
+        function_id: 'stream::get',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+        },
+      })
+
+      expect(result?.count).toBe(5)
+      expect(result?.name).toBe('initial')
+
+      await iii.trigger({
+        function_id: 'stream::delete',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+        },
+      })
+    })
+  })
+
   describe('stream custom operations', () => {
     it('should perform a custom operation on a stream item', async () => {
       const testStreamName = `test-stream-${Date.now()}`

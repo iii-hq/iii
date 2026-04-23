@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { TriggerAction } from '../src/iii'
+import { EngineFunctions } from '../src/iii-constants'
+import type { FunctionInfo } from '../src/iii-types'
 import { execute, iii, sleep } from './utils'
 
 describe('Bridge Operations', () => {
   it('should connect successfully', async () => {
     expect(iii).toBeDefined()
-    const functions = await execute(async () => iii.listFunctions())
-    expect(Array.isArray(functions)).toBe(true)
+    const result = await execute(async () =>
+      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      }),
+    )
+    expect(Array.isArray(result.functions)).toBe(true)
   })
 
   it('should register and invoke a function', async () => {
@@ -69,8 +76,11 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const functions = await iii.listFunctions()
-    const functionIds = functions.map(f => f.function_id)
+    const result = await iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      function_id: EngineFunctions.LIST_FUNCTIONS,
+      payload: {},
+    })
+    const functionIds = result.functions.map(f => f.function_id)
 
     expect(functionIds).toContain('test.list.func1')
     expect(functionIds).toContain('test.list.func2')

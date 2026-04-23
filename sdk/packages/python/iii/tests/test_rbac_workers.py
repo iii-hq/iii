@@ -8,6 +8,7 @@ import pytest
 from iii import (
     AuthInput,
     AuthResult,
+    FunctionInfo,
     IIIForbiddenError,
     IIIInvocationError,
     InitOptions,
@@ -277,7 +278,7 @@ class TestRbacWorkers:
         finally:
             iii_client.shutdown()
 
-    def test_list_functions_only_returns_allowed_for_valid_token(self, iii_server):
+    def test_function_discovery_only_returns_allowed_for_valid_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
             InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
@@ -286,7 +287,10 @@ class TestRbacWorkers:
         try:
             time.sleep(1.0)
 
-            functions = iii_client.list_functions()
+            result = iii_client.trigger(
+                {"function_id": "engine::functions::list", "payload": {}}
+            )
+            functions = [FunctionInfo(**f) for f in result.get("functions", [])]
             function_ids = [f.function_id for f in functions]
 
             assert "test::ew::valid-token-echo" in function_ids
@@ -298,7 +302,7 @@ class TestRbacWorkers:
         finally:
             iii_client.shutdown()
 
-    def test_list_functions_only_returns_exposed_for_restricted_token(self, iii_server):
+    def test_function_discovery_only_returns_exposed_for_restricted_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
             InitOptions(otel={"enabled": False}, headers={"x-test-token": "restricted-token"}),
@@ -307,7 +311,10 @@ class TestRbacWorkers:
         try:
             time.sleep(1.0)
 
-            functions = iii_client.list_functions()
+            result = iii_client.trigger(
+                {"function_id": "engine::functions::list", "payload": {}}
+            )
+            functions = [FunctionInfo(**f) for f in result.get("functions", [])]
             function_ids = [f.function_id for f in functions]
 
             assert "test::ew::public::echo" in function_ids

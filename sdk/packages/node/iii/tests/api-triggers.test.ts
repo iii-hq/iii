@@ -235,7 +235,7 @@ describe('API Triggers', () => {
     trigger.unregister()
   })
 
-  it.skip('should upload a PDF file via streaming request', async () => {
+  it('should upload a PDF file via streaming request', async () => {
     const originalPdf = fs.readFileSync(pdfPath)
 
     let receivedBuffer: Buffer = null as never

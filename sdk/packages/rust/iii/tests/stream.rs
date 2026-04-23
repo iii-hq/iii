@@ -227,3 +227,138 @@ async fn stream_list_items_in_group() {
 
     assert_eq!(result_sorted, items_sorted);
 }
+
+#[tokio::test]
+async fn stream_list_groups_returns_available_groups() {
+    // Ported from motia stream integration suite: stream#listGroups returns
+    // available groups. JS counterpart: sdk/packages/node/iii/tests/stream.test.ts
+    // describe('stream::list_groups').
+    let iii = common::shared_iii();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let group_id = format!("list-groups-rs-{ts}");
+
+    iii.trigger(TriggerRequest {
+        function_id: "stream::set".to_string(),
+        payload: json!({
+            "stream_name": STREAM_NAME,
+            "group_id": group_id,
+            "item_id": "anchor",
+            "data": {"value": 0},
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("stream::set anchor");
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::list_groups".to_string(),
+            payload: json!({"stream_name": STREAM_NAME}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("stream::list_groups");
+
+    let groups: Vec<Value> = if let Some(arr) = result.as_array() {
+        arr.clone()
+    } else if let Some(arr) = result.get("groups").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else {
+        panic!("expected array or {{ groups: [] }}, got {result:?}");
+    };
+
+    assert!(
+        groups.iter().any(|g| g.as_str() == Some(group_id.as_str())),
+        "expected groups to contain {group_id}, got {groups:?}"
+    );
+
+    iii.trigger(TriggerRequest {
+        function_id: "stream::delete".to_string(),
+        payload: json!({
+            "stream_name": STREAM_NAME,
+            "group_id": group_id,
+            "item_id": "anchor",
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("stream::delete anchor");
+}
+
+#[tokio::test]
+async fn stream_update_applies_partial_updates_via_ops() {
+    // Ported from motia stream integration suite: stream#update applies
+    // partial updates. JS counterpart: sdk/packages/node/iii/tests/stream.test.ts
+    // describe('stream::update').
+    let iii = common::shared_iii();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let group_id = format!("update-group-rs-{ts}");
+    let item_id = format!("update-item-rs-{ts}");
+
+    iii.trigger(TriggerRequest {
+        function_id: "stream::set".to_string(),
+        payload: json!({
+            "stream_name": STREAM_NAME,
+            "group_id": group_id,
+            "item_id": item_id,
+            "data": {"count": 0, "name": "initial"},
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("stream::set initial");
+
+    iii.trigger(TriggerRequest {
+        function_id: "stream::update".to_string(),
+        payload: json!({
+            "stream_name": STREAM_NAME,
+            "group_id": group_id,
+            "item_id": item_id,
+            "ops": [{"type": "set", "path": "count", "value": 5}],
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("stream::update");
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::get".to_string(),
+            payload: json!({
+                "stream_name": STREAM_NAME,
+                "group_id": group_id,
+                "item_id": item_id,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("stream::get after update");
+
+    assert_eq!(result["count"], json!(5));
+    assert_eq!(result["name"], json!("initial"));
+
+    iii.trigger(TriggerRequest {
+        function_id: "stream::delete".to_string(),
+        payload: json!({
+            "stream_name": STREAM_NAME,
+            "group_id": group_id,
+            "item_id": item_id,
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("stream::delete");
+}
