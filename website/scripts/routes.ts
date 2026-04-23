@@ -9,19 +9,19 @@ export interface RouteMeta {
 export const ROUTES: RouteMeta[] = [
   {
     path: "/",
-    title: "iii — one engine, three primitives for backend execution",
+    title: "iii — Functions, Triggers, Workers. One engine, one protocol.",
     description:
-      "iii replaces the six-tool backend (API framework, queue, cron, pub/sub, state store, observability) with one engine and three primitives: Function, Trigger, Worker. A single model for backend execution.",
+      "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Functions, Triggers, and Workers. The result is coordinated execution that behaves as if it were a single runtime.",
     indexable: true,
-    ogTitle: "iii — one engine, three primitives",
+    ogTitle: "iii — Functions, Triggers, Workers",
   },
   {
     path: "/manifesto",
-    title: "Manifesto | iii",
+    title: "Manifesto | iii — Everything is a worker",
     description:
-      "Why iii exists: polyglot by design, small primitive surface area, live discovery, live extensibility, live observability. How distributed backends should work.",
+      "Unix made everything a file. React made everything a component. iii makes everything a worker. Three primitives, one engine, one protocol — and an integration cost that scales linearly instead of quadratically as your system grows.",
     indexable: true,
-    ogTitle: "iii Manifesto",
+    ogTitle: "iii Manifesto — Everything is a worker",
   },
   {
     path: "/ai",
