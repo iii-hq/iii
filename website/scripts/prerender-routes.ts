@@ -14,49 +14,86 @@ interface InjectArgs {
   indexable: boolean;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function replaceOrThrow(source: string, pattern: RegExp, replacement: string, label: string): string {
+  if (!pattern.test(source)) {
+    throw new Error(
+      `prerender: pattern for "${label}" did not match index.html. Template format may have shifted. Regex: ${pattern}`,
+    );
+  }
+  return source.replace(pattern, replacement);
+}
+
 function injectSeo({ template, title, description, canonical, ogTitle, indexable }: InjectArgs): string {
-  let out = template;
-
-  out = out.replace(/<title>[^<]*<\/title>/, `<title>${title}</title>`);
-
-  out = out.replace(
-    /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/,
-    `<meta name="description" content="${description}" />`,
-  );
-
-  out = out.replace(
-    /<meta\s+property="og:url"\s+content="[^"]*"\s*\/?>/,
-    `<meta property="og:url" content="${canonical}" />`,
-  );
-  out = out.replace(
-    /<meta\s+property="og:title"\s+content="[^"]*"\s*\/?>/,
-    `<meta property="og:title" content="${ogTitle}" />`,
-  );
-  out = out.replace(
-    /<meta\s+property="og:description"\s+content="[^"]*"\s*\/?>/,
-    `<meta property="og:description" content="${description}" />`,
-  );
-  out = out.replace(
-    /<meta\s+name="twitter:url"\s+content="[^"]*"\s*\/?>/,
-    `<meta name="twitter:url" content="${canonical}" />`,
-  );
-  out = out.replace(
-    /<meta\s+name="twitter:title"\s+content="[^"]*"\s*\/?>/,
-    `<meta name="twitter:title" content="${ogTitle}" />`,
-  );
-  out = out.replace(
-    /<meta\s+name="twitter:description"\s+content="[^"]*"\s*\/?>/,
-    `<meta name="twitter:description" content="${description}" />`,
-  );
-
+  const safeTitle = escapeHtml(title);
+  const safeDescription = escapeHtml(description);
+  const safeCanonical = escapeHtml(canonical);
+  const safeOgTitle = escapeHtml(ogTitle);
   const robots = indexable ? "index,follow" : "noindex,follow";
-  out = out.replace(
-    /<link\s+rel="canonical"\s+href="[^"]*"\s*\/?>/,
-    `<link rel="canonical" href="${canonical}" />`,
+
+  let out = template;
+  out = replaceOrThrow(out, /<title>[^<]*<\/title>/, `<title>${safeTitle}</title>`, "title");
+  out = replaceOrThrow(
+    out,
+    /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/,
+    `<meta name="description" content="${safeDescription}" />`,
+    "meta description",
   );
-  out = out.replace(
+  out = replaceOrThrow(
+    out,
+    /<meta\s+property="og:url"\s+content="[^"]*"\s*\/?>/,
+    `<meta property="og:url" content="${safeCanonical}" />`,
+    "og:url",
+  );
+  out = replaceOrThrow(
+    out,
+    /<meta\s+property="og:title"\s+content="[^"]*"\s*\/?>/,
+    `<meta property="og:title" content="${safeOgTitle}" />`,
+    "og:title",
+  );
+  out = replaceOrThrow(
+    out,
+    /<meta\s+property="og:description"\s+content="[^"]*"\s*\/?>/,
+    `<meta property="og:description" content="${safeDescription}" />`,
+    "og:description",
+  );
+  out = replaceOrThrow(
+    out,
+    /<meta\s+name="twitter:url"\s+content="[^"]*"\s*\/?>/,
+    `<meta name="twitter:url" content="${safeCanonical}" />`,
+    "twitter:url",
+  );
+  out = replaceOrThrow(
+    out,
+    /<meta\s+name="twitter:title"\s+content="[^"]*"\s*\/?>/,
+    `<meta name="twitter:title" content="${safeOgTitle}" />`,
+    "twitter:title",
+  );
+  out = replaceOrThrow(
+    out,
+    /<meta\s+name="twitter:description"\s+content="[^"]*"\s*\/?>/,
+    `<meta name="twitter:description" content="${safeDescription}" />`,
+    "twitter:description",
+  );
+  out = replaceOrThrow(
+    out,
+    /<link\s+rel="canonical"\s+href="[^"]*"\s*\/?>/,
+    `<link rel="canonical" href="${safeCanonical}" />`,
+    "canonical",
+  );
+  out = replaceOrThrow(
+    out,
     /<meta\s+name="robots"\s+content="[^"]*"\s*\/?>/,
     `<meta name="robots" content="${robots}" />`,
+    "robots",
   );
 
   return out;
