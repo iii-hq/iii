@@ -56,6 +56,49 @@
     <!-- Global Styles -->
     <link rel="stylesheet" href="/globals.css" />
 
+    <!-- JSON-LD: Organization -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "iii",
+        "legalName": "III, Inc.",
+        "url": "https://iii.dev/",
+        "logo": "https://iii.dev/favicon.svg",
+        "description": "iii replaces the six-tool backend (API framework, queue, cron, pub/sub, state store, observability) with one engine and three primitives: Function, Trigger, Worker.",
+        "sameAs": [
+          "https://github.com/iii-hq/iii"
+        ]
+      }
+    </script>
+
+    <!-- JSON-LD: SoftwareApplication -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "iii",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "description": "One engine, three primitives (Function, Trigger, Worker). A single model for backend execution across languages and runtimes.",
+        "url": "https://iii.dev/",
+        "downloadUrl": "https://github.com/iii-hq/iii",
+        "softwareVersion": "0.11.3",
+        "license": "https://www.elastic.co/licensing/elastic-license",
+        "programmingLanguage": ["Rust", "TypeScript", "Python"],
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "author": {
+          "@type": "Organization",
+          "name": "III, Inc.",
+          "url": "https://iii.dev/"
+        }
+      }
+    </script>
+
     <!-- Fonts: ChivoMono (local brand font) -->
 
     <script>

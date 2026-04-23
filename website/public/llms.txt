@@ -1,0 +1,41 @@
+# iii
+
+> iii replaces the six-tool backend (API framework, queue, cron, pub/sub, state store, observability) with one engine and three primitives: Function, Trigger, Worker. A single model for backend execution.
+
+iii is an open-source runtime engine (Rust core, Node/Python/Rust SDKs) that collapses the typical distributed backend stack into one engine and three primitives.
+
+- **Function**: a unit of work. Receives input, optionally returns output. Exists anywhere: local, cloud, serverless, or third-party HTTP.
+- **Trigger**: what causes a function to run. HTTP request, cron schedule, queue message, state change, stream event.
+- **Worker**: the runtime that connects functions and triggers to the engine. Self-registers without configuration.
+
+Design parallel: React gave frontend a single model for UI. iii gives backend a single model for execution.
+
+Live system traits: live discovery (functions exposed by one worker are usable across the system in real time), live extensibility (add workers without redesigning), live observability (traces and operations across the connected stack).
+
+## Core pages
+
+- [Homepage](https://iii.dev/): one engine, three primitives positioning
+- [Manifesto](https://iii.dev/manifesto): polyglot, small primitive surface, composability — the architectural shifts iii is built on
+- [AI-readable homepage](https://iii.dev/ai): plain-text markdown snapshot for LLM ingestion
+
+## Documentation
+
+- [Docs](https://iii.dev/docs): full documentation (hosted on Mintlify)
+- [How-to guides](https://iii.dev/docs/how-to/): task-oriented recipes
+- [API reference](https://iii.dev/docs/api-reference/): SDK signatures for Rust, Node, Python
+- [Architecture](https://iii.dev/docs/architecture/): engine, channels, workers, triggers
+
+## Source and community
+
+- [GitHub](https://github.com/iii-hq/iii): engine + SDKs, Elastic-2.0 license
+- [Releases](https://github.com/iii-hq/iii/releases): current version 0.11.3
+
+## Positioning vs adjacent tools
+
+- vs Temporal / Inngest: iii is durable execution + live discovery in one binary. No external broker required.
+- vs BullMQ / Celery: iii includes queue, cron, and API triggers as first-class primitives, not separate tools.
+- vs gRPC: iii uses runtime registration, not compile-time IDL. Functions are available the moment a worker connects.
+- vs service meshes: no sidecars. Workers connect via WebSocket.
+- vs Dapr: fewer moving parts. Three primitives instead of building blocks.
+
+iii succeeds motia (deprecated April 2026). The motia framework is being removed from the repository in favor of iii proper.
