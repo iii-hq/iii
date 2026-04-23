@@ -1,0 +1,84 @@
+---
+title: 'Managed Worker Lockfile'
+description: 'Reference for iii.lock and the managed-worker lockfile commands.'
+---
+
+`iii.lock` is a YAML lockfile in the project root. It records the resolved source pins for registry-managed workers so worker installs can be reproduced across environments.
+
+## Location
+
+```text
+iii.lock
+```
+
+## Format
+
+Top-level fields:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | `number` | Yes | Lockfile format version. Current value: `1`. |
+| `workers` | `Record<string, LockedWorker>` | Yes | Worker entries keyed by worker name. Entries are serialized in sorted key order. |
+
+### LockedWorker
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | `string` | Yes | Resolved worker version. |
+| `type` | `binary` or `image` | Yes | Resolved worker artifact type. |
+| `dependencies` | `Record<string, string>` | No | Dependency name to version range. Defaults to `{}`. |
+| `source` | `LockedSource` | Yes | Pinned binary or image source. |
+
+### Binary Source
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `binary` | Yes | Source discriminator. |
+| `target` | `string` | Yes | Binary target triple resolved for the current platform. |
+| `url` | `string` | Yes | Download URL for the binary artifact. |
+| `sha256` | `string` | Yes | Expected SHA-256 digest for the binary artifact. |
+
+### Image Source
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `image` | Yes | Source discriminator. |
+| `image` | `string` | Yes | Pinned OCI image reference. |
+
+## Example
+
+```yaml title="iii.lock"
+version: 1
+workers:
+  helper:
+    version: 1.0.0
+    type: binary
+    dependencies: {}
+    source:
+      kind: binary
+      target: aarch64-apple-darwin
+      url: https://workers.iii.dev/helper/aarch64-apple-darwin.tar.gz
+      sha256: 2f1c4d5e6a7b8c9d0e1f2233445566778899aabbccddeeff0011223344556677
+  image-resize:
+    version: 1.0.0
+    type: image
+    dependencies:
+      helper: ^1.0.0
+    source:
+      kind: image
+      image: ghcr.io/iii-hq/image-resize@sha256:abc123
+```
+
+## Commands
+
+| Command | Mutates files | Description |
+| --- | --- | --- |
+| `iii worker add <worker[@version]>` | Yes | Adds a registry-managed worker. When the registry returns a resolved graph, writes or merges `iii.lock` entries for the graph. |
+| `iii worker update [worker]` | Yes | Re-resolves `latest` for one locked worker, or all locked workers when no name is provided, then rewrites `iii.lock`. |
+| `iii worker sync` | No | Reads `iii.lock` and reports the number of pinned workers. Current behavior does not install artifacts from the lockfile. |
+| `iii worker sync --frozen` | No | Delegates to `iii worker verify`. |
+| `iii worker verify` | No | Checks that every worker in `config.yaml` has an entry in `iii.lock`. Extra lockfile entries are allowed. |
+
+<Info title="Workflow guide">
+  For a task-oriented workflow, see [Reproduce Worker Installs](/how-to/reproduce-worker-installs).
+</Info>
