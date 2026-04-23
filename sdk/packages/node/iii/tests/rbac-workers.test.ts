@@ -11,6 +11,8 @@ import type {
   OnTriggerTypeRegistrationResult,
 } from '../src/index'
 import { IIIInvocationError, registerWorker } from '../src/index'
+import { EngineFunctions } from '../src/iii-constants'
+import type { FunctionInfo } from '../src/iii-types'
 import { iii, sleep } from './utils'
 
 const EW_URL = process.env.III_RBAC_WORKER_URL ?? 'ws://localhost:49135'
@@ -288,8 +290,11 @@ describe('RBAC Workers', () => {
     try {
       await sleep(1000)
 
-      const functions = await iiiClient.listFunctions()
-      const functionIds = functions.map((f) => f.function_id)
+      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      })
+      const functionIds = result.functions.map((f) => f.function_id)
 
       expect(functionIds).toContain('test::ew::valid-token-echo')
       expect(functionIds).toContain('test::ew::public::echo')
@@ -311,8 +316,11 @@ describe('RBAC Workers', () => {
     try {
       await sleep(1000)
 
-      const functions = await iiiClient.listFunctions()
-      const functionIds = functions.map((f) => f.function_id)
+      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        function_id: EngineFunctions.LIST_FUNCTIONS,
+        payload: {},
+      })
+      const functionIds = result.functions.map((f) => f.function_id)
 
       expect(functionIds).toContain('test::ew::public::echo')
       expect(functionIds).toContain('test::ew::meta-public')

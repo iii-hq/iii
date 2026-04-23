@@ -199,14 +199,13 @@ def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: p
 
 
 def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """list_functions, list_triggers, create_channel should be sync."""
+    """trigger and create_channel should be sync."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
 
     import inspect
-    assert not inspect.iscoroutinefunction(client.list_functions)
-    assert not inspect.iscoroutinefunction(client.list_triggers)
+    assert not inspect.iscoroutinefunction(client.trigger)
     assert not inspect.iscoroutinefunction(client.create_channel)
 
     client.shutdown()

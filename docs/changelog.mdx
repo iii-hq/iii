@@ -10,6 +10,18 @@ description: "Product updates and announcements for iii."
 
   [Node / TypeScript migration guide &rarr;](/changelog/0-11-0/migrating-from-motia-js) &middot; [Python migration guide &rarr;](/changelog/0-11-0/migrating-from-motia-py)
 
+  ## SDK discovery wrappers removed
+
+  **Breaking.** The convenience discovery wrappers were removed from the Node, browser, Rust, and Python SDKs:
+
+  - `listFunctions` / `list_functions` / `list_functions_async`
+  - `listWorkers` / `list_workers` / `list_workers_async`
+  - `listTriggers` / `list_triggers` / `list_triggers_async`
+  - `listTriggerTypes` / `list_trigger_types` / `list_trigger_types_async`
+  - `onFunctionsAvailable` / `on_functions_available`
+
+  Discovery now goes through the core primitives directly: call `trigger()` against the built-in engine functions and register `engine::functions-available` like any other trigger type. This keeps the SDK surfaces aligned with the engine's "use the primitives directly" design.
+
   ## Worker RBAC
 
   The **iii-worker-manager** now supports role-based access control. Configure auth functions that validate WebSocket upgrade requests, attach per-session allow/deny lists for functions, control trigger registration, and auto-prefix function IDs for namespace isolation. An optional middleware function lets you intercept every invocation for audit logging, rate limiting, or payload enrichment.
@@ -24,7 +36,7 @@ description: "Product updates and announcements for iii."
 
   ## Browser SDK
 
-  Your browser is now a first-class iii worker. The new `iii-browser-sdk` package connects to the engine over a single WebSocket and exposes the same `ISdk` interface as the Node SDK — `registerFunction`, `trigger`, `registerTrigger`, and `onFunctionsAvailable` all work identically. Build real-time dashboards, collaborative apps, and bi-directional frontends without REST endpoints or polling.
+  Your browser is now a first-class iii worker. The new `iii-browser-sdk` package connects to the engine over a single WebSocket and exposes the same core primitives as the Node SDK — `registerFunction`, `trigger`, `registerTrigger`, and `createChannel` all work identically. Build real-time dashboards, collaborative apps, and bi-directional frontends without REST endpoints or polling.
 
   [Use iii in the browser &rarr;](/how-to/use-iii-in-the-browser)
 

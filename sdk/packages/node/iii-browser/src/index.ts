@@ -1,11 +1,14 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
+export { EngineFunctions, EngineTriggers } from './iii-constants'
+
 export { type InitOptions, registerWorker, TriggerAction } from './iii'
 
 export type {
   AuthInput,
   AuthResult,
   EnqueueResult,
+  FunctionInfo,
   MessageType,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,

@@ -27,7 +27,6 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
-    FunctionInfo,
     HttpInvocationConfig,
     InvocationResultMessage,
     InvokeFunctionMessage,
@@ -44,13 +43,10 @@ from .iii_types import (
     StreamChannelRef,
     TriggerActionEnqueue,
     TriggerActionVoid,
-    TriggerInfo,
     TriggerRequest,
-    TriggerTypeInfo,
     UnregisterFunctionMessage,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
-    WorkerInfo,
 )
 from .stream import (
     IStream,
@@ -128,11 +124,6 @@ class III:
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
         self._receiver_task: asyncio.Task[None] | None = None
-        self._functions_available_callbacks: set[
-            Callable[[list[FunctionInfo]], None]
-        ] = set()
-        self._functions_available_trigger: Trigger | None = None
-        self._functions_available_function_id: str | None = None
         self._reconnection_config = (
             self._options.reconnection_config or DEFAULT_RECONNECTION_CONFIG
         )
@@ -1096,148 +1087,6 @@ class III:
                 invocation_id=invocation_id,
             )
 
-    def list_functions(self) -> list[FunctionInfo]:
-        """List all functions registered with the engine across all workers.
-
-        Returns:
-            A list of ``FunctionInfo`` objects describing each function.
-
-        Examples:
-            >>> for fn in iii.list_functions():
-            ...     print(fn.function_id, fn.description)
-        """
-        return self._run_on_loop(self.list_functions_async())
-
-    async def list_functions_async(self) -> list[FunctionInfo]:
-        """List all functions registered with the engine across all workers.
-
-        Returns:
-            A list of ``FunctionInfo`` objects describing each function.
-
-        Examples:
-            >>> for fn in await iii.list_functions_async():
-            ...     print(fn.function_id, fn.description)
-        """
-        result = await self.trigger_async(
-            {"function_id": "engine::functions::list", "payload": {}}
-        )
-        functions_data = result.get("functions", [])
-        return [FunctionInfo(**f) for f in functions_data]
-
-    def list_workers(self) -> list[WorkerInfo]:
-        """List all workers currently connected to the engine.
-
-        Returns:
-            A list of ``WorkerInfo`` objects with worker metadata.
-
-        Examples:
-            >>> for w in iii.list_workers():
-            ...     print(w.name, w.worker_id)
-        """
-        return self._run_on_loop(self.list_workers_async())
-
-    async def list_workers_async(self) -> list[WorkerInfo]:
-        """List all workers currently connected to the engine.
-
-        Returns:
-            A list of ``WorkerInfo`` objects with worker metadata.
-
-        Examples:
-            >>> for w in await iii.list_workers_async():
-            ...     print(w.name, w.worker_id)
-        """
-        result = await self.trigger_async(
-            {"function_id": "engine::workers::list", "payload": {}}
-        )
-        workers_data = result.get("workers", [])
-        return [WorkerInfo(**w) for w in workers_data]
-
-    def list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]:
-        """List all triggers registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal triggers
-                (e.g. ``functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerInfo`` objects.
-
-        Examples:
-            >>> triggers = iii.list_triggers()
-            >>> internal = iii.list_triggers(include_internal=True)
-        """
-        return self._run_on_loop(self.list_triggers_async(include_internal))
-
-    async def list_triggers_async(
-        self, include_internal: bool = False
-    ) -> list[TriggerInfo]:
-        """List all triggers registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal triggers
-                (e.g. ``functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerInfo`` objects.
-
-        Examples:
-            >>> triggers = await iii.list_triggers_async()
-            >>> internal = await iii.list_triggers_async(include_internal=True)
-        """
-        result = await self.trigger_async(
-            {
-                "function_id": "engine::triggers::list",
-                "payload": {"include_internal": include_internal},
-            }
-        )
-        triggers_data = result.get("triggers", [])
-        return [TriggerInfo(**t) for t in triggers_data]
-
-    def list_trigger_types(
-        self, include_internal: bool = False
-    ) -> list[TriggerTypeInfo]:
-        """List all trigger types registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal trigger
-                types (e.g. ``engine::functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
-            and ``call_request_format`` schemas.
-
-        Examples:
-            >>> trigger_types = iii.list_trigger_types()
-            >>> for tt in trigger_types:
-            ...     print(tt.id, tt.trigger_request_format)
-        """
-        return self._run_on_loop(self.list_trigger_types_async(include_internal))
-
-    async def list_trigger_types_async(
-        self, include_internal: bool = False
-    ) -> list[TriggerTypeInfo]:
-        """List all trigger types registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal trigger
-                types (e.g. ``engine::functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
-            and ``call_request_format`` schemas.
-
-        Examples:
-            >>> trigger_types = await iii.list_trigger_types_async()
-        """
-        result = await self.trigger_async(
-            {
-                "function_id": "engine::trigger-types::list",
-                "payload": {"include_internal": include_internal},
-            }
-        )
-        types_data = result.get("trigger_types", [])
-        return [TriggerTypeInfo(**t) for t in types_data]
-
     def create_channel(self, buffer_size: int | None = None) -> Channel:
         """Create a streaming channel pair for worker-to-worker data transfer.
 
@@ -1340,69 +1189,6 @@ class III:
             action=TriggerActionVoid(),
         )
         asyncio.run_coroutine_threadsafe(self._send(msg), self._loop)
-
-    def on_functions_available(
-        self, callback: Callable[[list[FunctionInfo]], None]
-    ) -> Callable[[], None]:
-        """Subscribe to function-availability events from the engine.
-
-        The callback fires whenever the set of available functions changes
-        (e.g. a new worker connects or a function is unregistered).
-
-        Args:
-            callback (Callable[[list[FunctionInfo]], None]): Receives the
-                current list of ``FunctionInfo`` objects each time
-                availability changes.
-
-        Returns:
-            A callable that unsubscribes when called.  Calling the
-            returned function removes the callback and, if no callbacks
-            remain, tears down the internal trigger.
-
-        Examples:
-            >>> def on_change(functions):
-            ...     print("Available:", [f.function_id for f in functions])
-            >>> unsub = iii.on_functions_available(on_change)
-            >>> # later ...
-            >>> unsub()
-        """
-        self._functions_available_callbacks.add(callback)
-
-        if not self._functions_available_trigger:
-            if not self._functions_available_function_id:
-                self._functions_available_function_id = (
-                    f"iii.on_functions_available.{uuid.uuid4()}"
-                )
-
-            function_id = self._functions_available_function_id
-            if function_id not in self._functions:
-
-                async def handler(data: dict[str, Any]) -> None:
-                    functions_data = data.get("functions", [])
-                    functions = [FunctionInfo(**f) for f in functions_data]
-                    for cb in list(self._functions_available_callbacks):
-                        cb(functions)
-
-                self.register_function({"id": function_id}, handler)
-
-            self._functions_available_trigger = self.register_trigger(
-                {
-                    "type": "engine::functions-available",
-                    "function_id": function_id,
-                    "config": {},
-                }
-            )
-
-        def unsubscribe() -> None:
-            self._functions_available_callbacks.discard(callback)
-            if (
-                len(self._functions_available_callbacks) == 0
-                and self._functions_available_trigger
-            ):
-                self._functions_available_trigger.unregister()
-                self._functions_available_trigger = None
-
-        return unsubscribe
 
     def create_stream(self, stream_name: str, stream: IStream[Any]) -> None:
         """Register a custom stream implementation, overriding the engine default.

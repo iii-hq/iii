@@ -90,12 +90,16 @@ The Engine exposes built-in functions for querying the current system state:
 
 ```typescript
 // All registered functions across all workers
-const functions = await iii.listFunctions()
-// or: await iii.trigger({ function_id: 'engine::functions::list', payload: {} })
+const { functions } = await iii.trigger({
+  function_id: 'engine::functions::list',
+  payload: {},
+})
 
 // All connected workers and their status
-const workers = await iii.listWorkers()
-// or: await iii.trigger({ function_id: 'engine::workers::list', payload: {} })
+const { workers } = await iii.trigger({
+  function_id: 'engine::workers::list',
+  payload: {},
+})
 ```
 
 ## Worker Disconnect Cleanup

@@ -8,7 +8,13 @@ Shows three patterns:
 
 from typing import Any
 
-from iii import IIIClient, RegisterTriggerTypeInput, TriggerConfig, TriggerHandler
+from iii import (
+    IIIClient,
+    RegisterTriggerTypeInput,
+    TriggerConfig,
+    TriggerHandler,
+    TriggerTypeInfo,
+)
 from pydantic import BaseModel, Field
 
 # ── Webhook trigger type ─────────────────────────────────────────────────
@@ -166,11 +172,17 @@ def setup(iii: IIIClient) -> None:
 # ── List trigger types ───────────────────────────────────────────────────
 
 
-def list_trigger_types_example(iii: IIIClient) -> None:
+def print_trigger_type_catalog(iii: IIIClient) -> None:
     """List all trigger types and print their schemas."""
     print("\n--- Listing all trigger types ---")
 
-    trigger_types = iii.list_trigger_types()
+    result = iii.trigger(
+        {
+            "function_id": "engine::trigger-types::list",
+            "payload": {"include_internal": False},
+        }
+    )
+    trigger_types = [TriggerTypeInfo(**t) for t in result.get("trigger_types", [])]
 
     print(f"Found {len(trigger_types)} trigger types:\n")
     for tt in trigger_types:

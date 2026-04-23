@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use serial_test::serial;
 
 use iii_sdk::{
-    AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
+    AuthInput, AuthResult, FunctionInfo, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
     OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
     OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
     RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
@@ -562,10 +562,22 @@ async fn should_only_list_allowed_functions_for_valid_token() {
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
-    let functions = iii_client
-        .list_functions()
+    let list_result = iii_client
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        })
         .await
-        .expect("list_functions should succeed");
+        .expect("function discovery request should succeed");
+    let functions: Vec<FunctionInfo> = serde_json::from_value(
+        list_result
+            .get("functions")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )
+    .expect("deserialize functions");
     let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
 
     assert!(
@@ -613,10 +625,22 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
-    let functions = iii_client
-        .list_functions()
+    let list_result = iii_client
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        })
         .await
-        .expect("list_functions should succeed");
+        .expect("function discovery request should succeed");
+    let functions: Vec<FunctionInfo> = serde_json::from_value(
+        list_result
+            .get("functions")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )
+    .expect("deserialize functions");
     let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
 
     assert!(

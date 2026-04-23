@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import type { TriggerTypeInfo } from '../../src/iii-types'
 import { iii, sleep } from './utils'
 
 describe('Trigger Types', () => {
   it('should list trigger types', async () => {
-    const triggerTypes = await iii.listTriggerTypes()
+    const { trigger_types: triggerTypes } = await iii.trigger<
+      { include_internal: boolean },
+      { trigger_types: TriggerTypeInfo[] }
+    >({
+      function_id: 'engine::trigger-types::list',
+      payload: { include_internal: false },
+    })
     expect(Array.isArray(triggerTypes)).toBe(true)
 
     const httpType = triggerTypes.find((tt) => tt.id === 'http')
@@ -91,9 +98,21 @@ describe('Trigger Types', () => {
     expect(() => ref.unregister()).not.toThrow()
   })
 
-  it('should accept includeInternal parameter for listTriggerTypes', async () => {
-    const publicTypes = await iii.listTriggerTypes(false)
-    const allTypes = await iii.listTriggerTypes(true)
+  it('should accept include_internal parameter for engine::trigger-types::list', async () => {
+    const { trigger_types: publicTypes } = await iii.trigger<
+      { include_internal: boolean },
+      { trigger_types: TriggerTypeInfo[] }
+    >({
+      function_id: 'engine::trigger-types::list',
+      payload: { include_internal: false },
+    })
+    const { trigger_types: allTypes } = await iii.trigger<
+      { include_internal: boolean },
+      { trigger_types: TriggerTypeInfo[] }
+    >({
+      function_id: 'engine::trigger-types::list',
+      payload: { include_internal: true },
+    })
 
     expect(Array.isArray(publicTypes)).toBe(true)
     expect(Array.isArray(allTypes)).toBe(true)

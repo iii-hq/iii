@@ -15,7 +15,7 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 
 - **Persistent connection** — one WebSocket replaces many HTTP round-trips.
 - **Bi-directional** — the engine can invoke functions registered in the browser. Backend workers push data to the frontend with `trigger()`, enabling real-time patterns without polling.
-- **Same API** — `registerFunction`, `trigger`, `registerTrigger`, `onFunctionsAvailable` — all the primitives you use server-side work identically in the browser.
+- **Same API** — `registerFunction`, `trigger`, `registerTrigger` — all the primitives you use server-side work identically in the browser.
 - **Zero Node.js dependencies** — runs in any browser environment with native `WebSocket`.
 
 ## Install
@@ -55,8 +55,9 @@ const users = await iii.trigger({
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`                         | Invoke a function and wait for the result                    |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Invoke without waiting                                       |
 | Create channel           | `iii.createChannel()`                                                 | Create a streaming channel pair (writer + reader)            |
-| Functions available      | `iii.onFunctionsAvailable(fn)`                                        | Subscribe to function availability changes                   |
 | Shutdown                 | `iii.shutdown()`                                                      | Gracefully disconnect from the engine                        |
+
+For listing workers, functions, triggers, or subscribing to function availability events, see the [discovery concepts](https://iii.dev/docs/primitives-and-concepts/discovery).
 
 ### Registering Functions
 

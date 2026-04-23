@@ -63,7 +63,7 @@ create_channel(buffer_size: int | None = None)
 
 ```python
 ch = iii.create_channel()
-fn = iii.register_function("producer", producer_handler)
+fn = iii.register_function({"id": "producer"}, producer_handler)
 iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
 ```
 
@@ -91,7 +91,7 @@ async (buffer_size: int | None = None)
 
 ```python
 ch = await iii.create_channel_async()
-fn = iii.register_function("producer", producer_handler)
+fn = iii.register_function({"id": "producer"}, producer_handler)
 await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
 ```
 
@@ -140,195 +140,6 @@ Return the current WebSocket connection state.
 get_connection_state()
 ```
 
-### list_functions
-
-List all functions registered with the engine across all workers.
-
-**Signature**
-
-```python
-list_functions()
-```
-
-#### Example
-
-```python
-for fn in iii.list_functions():
-    print(fn.function_id, fn.description)
-```
-
-### list_functions_async
-
-List all functions registered with the engine across all workers.
-
-**Signature**
-
-```python
-async ()
-```
-
-#### Example
-
-```python
-for fn in await iii.list_functions_async():
-    print(fn.function_id, fn.description)
-```
-
-### list_trigger_types
-
-List all trigger types registered with the engine.
-
-**Signature**
-
-```python
-list_trigger_types(include_internal: bool = False)
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `include_internal` | `bool` | No | If ``True``, include engine-internal trigger types (e.g. ``engine::functions-available``). Defaults to ``False``. |
-
-#### Example
-
-```python
-trigger_types = iii.list_trigger_types()
-for tt in trigger_types:
-    print(tt.id, tt.trigger_request_format)
-```
-
-### list_trigger_types_async
-
-List all trigger types registered with the engine.
-
-**Signature**
-
-```python
-async (include_internal: bool = False)
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `include_internal` | `bool` | No | If ``True``, include engine-internal trigger types (e.g. ``engine::functions-available``). Defaults to ``False``. |
-
-#### Example
-
-```python
-trigger_types = await iii.list_trigger_types_async()
-```
-
-### list_triggers
-
-List all triggers registered with the engine.
-
-**Signature**
-
-```python
-list_triggers(include_internal: bool = False)
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `include_internal` | `bool` | No | If ``True``, include engine-internal triggers (e.g. ``functions-available``). Defaults to ``False``. |
-
-#### Example
-
-```python
-triggers = iii.list_triggers()
-internal = iii.list_triggers(include_internal=True)
-```
-
-### list_triggers_async
-
-List all triggers registered with the engine.
-
-**Signature**
-
-```python
-async (include_internal: bool = False)
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `include_internal` | `bool` | No | If ``True``, include engine-internal triggers (e.g. ``functions-available``). Defaults to ``False``. |
-
-#### Example
-
-```python
-triggers = await iii.list_triggers_async()
-internal = await iii.list_triggers_async(include_internal=True)
-```
-
-### list_workers
-
-List all workers currently connected to the engine.
-
-**Signature**
-
-```python
-list_workers()
-```
-
-#### Example
-
-```python
-for w in iii.list_workers():
-    print(w.name, w.worker_id)
-```
-
-### list_workers_async
-
-List all workers currently connected to the engine.
-
-**Signature**
-
-```python
-async ()
-```
-
-#### Example
-
-```python
-for w in await iii.list_workers_async():
-    print(w.name, w.worker_id)
-```
-
-### on_functions_available
-
-Subscribe to function-availability events from the engine.
-
-The callback fires whenever the set of available functions changes
-(e.g. a new worker connects or a function is unregistered).
-
-**Signature**
-
-```python
-on_functions_available(callback: Callable[None])
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `callback` | `Callable[None]` | Yes | - |
-
-#### Example
-
-```python
-def on_change(functions):
-    print("Available:", [f.function_id for f in functions])
-unsub = iii.on_functions_available(on_change)
-# later ...
-unsub()
-```
-
 ### register_function
 
 Register a function with the engine.
@@ -348,26 +159,26 @@ from the handler's type hints when not explicitly provided.
 **Signature**
 
 ```python
-register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None)
+register_function(func_or_id: RegisterFunctionInput | dict[str, Any] | str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None)
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `function_id` | `str` | Yes | The unique function identifier (use `::` for namespacing, e.g. `external::my_lambda`). |
+| `func_or_id` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] \| str | Yes | A ``RegisterFunctionInput``, dict with ``id``, or a plain string function ID.  When a string is passed, use keyword arguments for ``description``, ``metadata``, ``request_format``, and ``response_format``. |
 | `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A callable handler or ``HttpInvocationConfig``.  Callable handlers receive one positional argument (``data`` -- the trigger payload) and may return a value. |
-| `description` | `str \| None` | No | Human-readable description. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input.  Auto-extracted from handler type hints when omitted. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output.  Auto-extracted from handler type hints when omitted. |
+| `description` | `str \| None` | No | Human-readable description (only with string ID). |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata (only with string ID). |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input (only with string ID).  Auto-extracted from handler type hints when omitted. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output (only with string ID).  Auto-extracted from handler type hints when omitted. |
 
 #### Example
 
 ```python
 def greet(data):
     return {'message': f"Hello, {data['name']}!"}
-fn = iii.register_function("greet", greet, description="Greets a user")
+fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
 fn.unregister()
 from pydantic import BaseModel
 class GreetInput(BaseModel):
@@ -715,7 +526,7 @@ logger.warn('Retry attempt', {'attempt': 3, 'max_retries': 5, 'endpoint': '/api/
 
 ## Types
 
-[`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`OtelConfig`](#otelconfig) · [`TriggerHandler`](#triggerhandler)
+[`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`OtelConfig`](#otelconfig) · [`TriggerHandler`](#triggerhandler)
 
 ### InitOptions
 
@@ -779,16 +590,18 @@ Format definition for function parameters.
 | `required` | `bool` | No | Whether the parameter is required. |
 | `type` | `str` | Yes | Type string (``string``, ``number``, ``boolean``, ``object``, ``array``, ``null``, ``map``). |
 
-### RegisterFunctionOptions
+### RegisterFunctionInput
 
-Optional configuration passed as keyword arguments when using the string ID form of `register_function`.
+Input for registering a function — matches Node.js RegisterFunctionInput.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | `str \| None` | No | Human-readable description. |
+| `id` | `str` | No | Unique function identifier. |
+| `invocation` | [`HttpInvocationConfig`](#httpinvocationconfig) \| None | No | HTTP invocation config for externally hosted functions. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. Auto-extracted from handler type hints when omitted. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. Auto-extracted from handler type hints when omitted. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. |
 
 ### RegisterServiceInput
 
@@ -810,7 +623,7 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | `config` | `Any` | No | Trigger-type-specific configuration. |
 | `function_id` | `str` | No | ID of the function this trigger invokes. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
-| `type` | `str` | No | Trigger type identifier (e.g. ``http``, ``durable:subscriber``, ``cron``). |
+| `type` | `str` | No | Trigger type identifier (e.g. ``http``, ``queue``, ``cron``). |
 
 ### RegisterTriggerTypeInput
 

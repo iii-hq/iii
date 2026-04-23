@@ -45,10 +45,7 @@ export {
   shutdownOtel,
   withSpan,
 } from './telemetry-system'
-export type {
-  FunctionsAvailableCallback,
-  OtelLogEvent,
-} from './types'
+export type { OtelLogEvent } from './types'
 export { safeStringify } from './utils'
 export type { WorkerMetrics, WorkerMetricsCollectorOptions } from './worker-metrics'
 export { WorkerMetricsCollector } from './worker-metrics'

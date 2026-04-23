@@ -10,21 +10,6 @@ def test_trigger_async_is_coroutine_function():
     assert inspect.iscoroutinefunction(III.trigger_async)
 
 
-def test_list_functions_async_is_coroutine_function():
-    assert hasattr(III, "list_functions_async")
-    assert inspect.iscoroutinefunction(III.list_functions_async)
-
-
-def test_list_workers_async_is_coroutine_function():
-    assert hasattr(III, "list_workers_async")
-    assert inspect.iscoroutinefunction(III.list_workers_async)
-
-
-def test_list_triggers_async_is_coroutine_function():
-    assert hasattr(III, "list_triggers_async")
-    assert inspect.iscoroutinefunction(III.list_triggers_async)
-
-
 def test_create_channel_async_is_coroutine_function():
     assert hasattr(III, "create_channel_async")
     assert inspect.iscoroutinefunction(III.create_channel_async)
@@ -44,9 +29,6 @@ def test_async_methods_have_docstrings():
     """All public async methods must have docstrings."""
     async_methods = [
         "trigger_async",
-        "list_functions_async",
-        "list_workers_async",
-        "list_triggers_async",
         "create_channel_async",
         "connect_async",
         "shutdown_async",
