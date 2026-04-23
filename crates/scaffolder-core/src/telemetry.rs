@@ -119,7 +119,7 @@ fn build_user_properties(tools_version: &str, device_id: &str) -> serde_json::Va
         "env": std::env::var("III_ENV").unwrap_or_else(|_| "unknown".to_string()),
         "install_method": detect_install_method(),
         "cli_version": tools_version,
-        "host_user_id": std::env::var("III_HOST_USER_ID").ok(),
+        "host_device_id": std::env::var("III_HOST_DEVICE_ID").ok(),
     })
 }
 

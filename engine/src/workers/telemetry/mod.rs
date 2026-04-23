@@ -724,13 +724,8 @@ impl TelemetryContext {
             "iii_version": env!("CARGO_PKG_VERSION"),
         });
 
-        let host_user_id = std::env::var("III_HOST_USER_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(environment::find_project_ini_device_id);
-
-        if let Some(id) = host_user_id {
-            props["host_user_id"] = serde_json::Value::String(id);
+        if let Some(id) = environment::find_host_device_id() {
+            props["host_device_id"] = serde_json::Value::String(id);
         }
 
         if let Some(project_id) = project.project_id {
@@ -1212,7 +1207,7 @@ mod tests {
             cpu_cores: 4,
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
-            host_user_id: None,
+            host_device_id: None,
         }
     }
 
@@ -1669,7 +1664,7 @@ mod tests {
                 cpu_cores: 4,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
-                host_user_id: None,
+                host_device_id: None,
             },
         };
 
@@ -1770,7 +1765,7 @@ mod tests {
                 cpu_cores: 4,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
-                host_user_id: None,
+                host_device_id: None,
             },
         };
 
@@ -1798,7 +1793,7 @@ mod tests {
                 cpu_cores: 2,
                 os: "macos".to_string(),
                 arch: "aarch64".to_string(),
-                host_user_id: None,
+                host_device_id: None,
             },
         };
 
@@ -1925,7 +1920,7 @@ mod tests {
                 cpu_cores: 16,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
-                host_user_id: None,
+                host_device_id: None,
             },
         };
 

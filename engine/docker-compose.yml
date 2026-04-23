@@ -10,13 +10,16 @@ services:
       - "9464:9464"    # Prometheus metrics
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      # Persist anonymous telemetry device_id across container restarts so
-      # the engine is not counted as a new "user" on every boot. The
-      # distroless image runs as the `nonroot` user (HOME=/home/nonroot).
-      - ${HOME}/.iii:/home/nonroot/.iii
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker
+      # Pass the host's anonymous telemetry device_id into the container.
+      # Amplitude reports it as `host_device_id` (not `device_id`) so
+      # container sessions can be attributed back to the host that
+      # launched them without requiring a bind-mount (which breaks on the
+      # distroless nonroot uid). Populate from your shell, e.g.:
+      #   export III_HOST_DEVICE_ID=$(iii telemetry device-id)
+      - III_HOST_DEVICE_ID=${III_HOST_DEVICE_ID:-}
     depends_on:
       redis:
         condition: service_healthy

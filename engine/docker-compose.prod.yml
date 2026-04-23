@@ -18,12 +18,14 @@ services:
     image: iiidev/iii:latest
     volumes:
       - ./config.prod.yaml:/app/config.yaml:ro
-      # Persist anonymous telemetry device_id across container restarts so
-      # the engine is not counted as a new "user" on every boot. The
-      # distroless image runs as the `nonroot` user (HOME=/home/nonroot).
-      - iii_telemetry:/home/nonroot/.iii
     environment:
       - III_EXECUTION_CONTEXT=docker
+      # Pass the host's anonymous telemetry device_id into the container.
+      # Reported to Amplitude as `host_device_id` so container sessions can
+      # be attributed back to the host without requiring a mount (which
+      # breaks on the distroless nonroot uid). Populate from your shell or
+      # a .env file alongside this compose file.
+      - III_HOST_DEVICE_ID=${III_HOST_DEVICE_ID:-}
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 3111 || exit 1"]
       interval: 10s
@@ -35,4 +37,3 @@ services:
 volumes:
   caddy_data:
   caddy_config:
-  iii_telemetry:
