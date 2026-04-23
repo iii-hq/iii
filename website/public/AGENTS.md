@@ -23,9 +23,14 @@ An agent that hits a task outside its current capabilities can install a worker 
 ## Quickstart
 
 ```bash
+# Install engine
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii run
+
+# Start engine (reads ./config.yaml by default)
+iii
 ```
+
+Other useful subcommands: `iii worker add <name>` (install a worker from the registry), `iii trigger <function> <payload>` (invoke a function against the running engine), `iii console` (launch web console), `iii update` (update iii and managed binaries).
 
 Install an SDK:
 

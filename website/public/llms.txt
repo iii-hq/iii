@@ -54,8 +54,11 @@ iii succeeds motia (deprecated April 2026). Motia is being removed from the repo
 ## Quickstart
 
 ```bash
+# Install engine
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii run
+
+# Start engine (reads ./config.yaml by default)
+iii
 ```
 
 SDKs:
