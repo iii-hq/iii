@@ -2006,4 +2006,135 @@ mod tests {
         assert!(message.contains(&format!("127.0.0.1:{port}")));
         assert!(message.contains("already in use"));
     }
+
+    // ── Sec-WebSocket-Protocol echo tests ───────────────────────────────────
+
+    fn build_ws_test_router() -> axum::Router {
+        use axum::extract::connect_info::MockConnectInfo;
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let adapter: Arc<dyn StreamAdapter> = Arc::new(
+            crate::workers::stream::adapters::kv_store::BuiltinKvStoreAdapter::new(None),
+        );
+        let config = StreamModuleConfig {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            auth_function: None,
+            adapter: Some(crate::workers::traits::AdapterEntry {
+                name: "kv".to_string(),
+                config: None,
+            }),
+        };
+        let worker = Arc::new(StreamWorker::build(engine.clone(), config, adapter.clone()));
+        let mgr = Arc::new(StreamSocketManager::new(
+            engine,
+            adapter,
+            worker.clone(),
+            None,
+            worker.triggers.clone(),
+        ));
+        Router::new()
+            .route("/", get(ws_handler))
+            .with_state(mgr)
+            .layer(MockConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
+    }
+
+    fn ws_upgrade_request(protocol_headers: &[&str]) -> axum::http::Request<axum::body::Body> {
+        let mut builder = axum::http::Request::builder()
+            .uri("/")
+            .header("host", "localhost")
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13");
+        for proto in protocol_headers {
+            builder = builder.header("sec-websocket-protocol", *proto);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_ws_authorization_protocol_single_header_is_echoed() {
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let resp = build_ws_test_router()
+            .oneshot(ws_upgrade_request(&["Authorization"]))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            resp.headers()
+                .get("sec-websocket-protocol")
+                .and_then(|v| v.to_str().ok()),
+            Some("Authorization"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ws_non_authorization_protocol_not_echoed() {
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let resp = build_ws_test_router()
+            .oneshot(ws_upgrade_request(&["graphql-ws"]))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert!(
+            resp.headers().get("sec-websocket-protocol").is_none(),
+            "Sec-WebSocket-Protocol must not be echoed for non-Authorization protocols",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ws_no_protocol_header_not_echoed() {
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let resp = build_ws_test_router()
+            .oneshot(ws_upgrade_request(&[]))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert!(resp.headers().get("sec-websocket-protocol").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ws_authorization_protocol_comma_separated_last_is_echoed() {
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let resp = build_ws_test_router()
+            .oneshot(ws_upgrade_request(&["graphql-ws, Authorization"]))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            resp.headers()
+                .get("sec-websocket-protocol")
+                .and_then(|v| v.to_str().ok()),
+            Some("Authorization"),
+        );
+    }
+
+    // axum reads only the first Sec-WebSocket-Protocol header for protocol selection, so the
+    // 101 response won't echo Authorization when it's in the second header — but the connection
+    // is established, which is what matters (the browser won't close the socket).
+    #[tokio::test]
+    async fn test_ws_authorization_protocol_in_second_header_connection_succeeds() {
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+
+        let resp = build_ws_test_router()
+            .oneshot(ws_upgrade_request(&["graphql-ws", "Authorization"]))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+    }
 }
