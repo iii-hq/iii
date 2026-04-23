@@ -31,6 +31,8 @@ Top-level fields:
 
 ### Binary Source
 
+Binary source entries are target-specific. `iii worker verify` and `iii worker sync --frozen` fail when the current platform target does not match the locked `target`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kind` | `binary` | Yes | Source discriminator. |
@@ -77,7 +79,7 @@ workers:
 | `iii worker update [worker]` | Yes | Re-resolves `latest` for one locked worker, or inferred root workers when no name is provided, then rewrites `iii.lock`. |
 | `iii worker sync` | No | Reads `iii.lock` and reports the number of pinned workers. Current behavior does not install artifacts from the lockfile. |
 | `iii worker sync --frozen` | No | Delegates to `iii worker verify`. |
-| `iii worker verify` | No | Checks that every lockfile-managed worker in `config.yaml` has an entry in `iii.lock`. Built-ins, direct OCI refs, and local-path sandbox workers are skipped. Extra lockfile entries are allowed. |
+| `iii worker verify` | No | Checks that every lockfile-managed worker in `config.yaml` has an entry in `iii.lock` and that binary entries match the current target. Built-ins, direct OCI refs, and local-path sandbox workers are skipped. Extra lockfile entries are allowed. |
 
 <Info title="Workflow guide">
   For a task-oriented workflow, see [Reproduce Worker Installs](/how-to/reproduce-worker-installs).

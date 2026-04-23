@@ -221,7 +221,7 @@ pub async fn handle_worker_verify() -> i32 {
 
     let names = super::config_file::list_worker_names();
     let names = lockfile_relevant_config_worker_names(&lockfile, &names);
-    match lockfile.verify_config_workers(&names) {
+    match lockfile.verify_config_workers_for_target(&names, binary_download::current_target()) {
         Ok(()) => {
             eprintln!("  {} config.yaml matches iii.lock", "✓".green());
             0
@@ -2900,6 +2900,46 @@ workers:
             let rc = handle_worker_verify().await;
 
             assert_eq!(rc, 0);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_verify_rejects_binary_lock_for_different_target() {
+        in_temp_dir_async(|_| async move {
+            let current_target = binary_download::current_target();
+            let other_target = if current_target == "aarch64-apple-darwin" {
+                "x86_64-unknown-linux-gnu"
+            } else {
+                "aarch64-apple-darwin"
+            };
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            lock.workers.insert(
+                "image-resize".to_string(),
+                cli_lockfile::LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: cli_lockfile::LockedWorkerType::Binary,
+                    dependencies: Default::default(),
+                    source: cli_lockfile::LockedSource::Binary {
+                        target: other_target.to_string(),
+                        url: "https://example.com/image-resize.tar.gz".to_string(),
+                        sha256: "a".repeat(64),
+                    },
+                },
+            );
+            lock.write_to(cli_lockfile::lockfile_path()).unwrap();
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: image-resize
+",
+            )
+            .unwrap();
+
+            let rc = handle_worker_verify().await;
+
+            assert_eq!(rc, 1);
         })
         .await;
     }

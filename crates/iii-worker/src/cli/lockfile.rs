@@ -99,6 +99,36 @@ impl WorkerLockfile {
             ))
         }
     }
+
+    pub fn verify_config_workers_for_target(
+        &self,
+        worker_names: &[String],
+        current_target: &str,
+    ) -> Result<(), String> {
+        self.verify_config_workers(worker_names)?;
+
+        let mismatched: Vec<String> = worker_names
+            .iter()
+            .filter_map(|name| {
+                let worker = self.workers.get(name)?;
+                match &worker.source {
+                    LockedSource::Binary { target, .. } if target != current_target => {
+                        Some(format!("{name} locked for {target}"))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+
+        if mismatched.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{LOCKFILE_NAME} has binary worker(s) for a different target: {}. Current target: {current_target}",
+                mismatched.join(", ")
+            ))
+        }
+    }
 }
 
 pub fn lockfile_path() -> &'static Path {
@@ -176,6 +206,84 @@ mod tests {
         assert!(
             lock.verify_config_workers(&["hello-worker".to_string()])
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_config_workers_for_target_rejects_binary_target_mismatch() {
+        let mut lock = WorkerLockfile::default();
+        lock.workers.insert(
+            "hello-worker".to_string(),
+            LockedWorker {
+                version: "1.0.0".to_string(),
+                worker_type: LockedWorkerType::Binary,
+                dependencies: BTreeMap::new(),
+                source: LockedSource::Binary {
+                    target: "aarch64-apple-darwin".to_string(),
+                    url: "https://example.com/h.tar.gz".to_string(),
+                    sha256: "a".repeat(64),
+                },
+            },
+        );
+
+        let err = lock
+            .verify_config_workers_for_target(
+                &["hello-worker".to_string()],
+                "x86_64-unknown-linux-gnu",
+            )
+            .unwrap_err();
+
+        assert!(err.contains("hello-worker locked for aarch64-apple-darwin"));
+        assert!(err.contains("x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn verify_config_workers_for_target_accepts_matching_binary_target() {
+        let mut lock = WorkerLockfile::default();
+        lock.workers.insert(
+            "hello-worker".to_string(),
+            LockedWorker {
+                version: "1.0.0".to_string(),
+                worker_type: LockedWorkerType::Binary,
+                dependencies: BTreeMap::new(),
+                source: LockedSource::Binary {
+                    target: "aarch64-apple-darwin".to_string(),
+                    url: "https://example.com/h.tar.gz".to_string(),
+                    sha256: "a".repeat(64),
+                },
+            },
+        );
+
+        assert!(
+            lock.verify_config_workers_for_target(
+                &["hello-worker".to_string()],
+                "aarch64-apple-darwin"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_config_workers_for_target_ignores_image_workers() {
+        let mut lock = WorkerLockfile::default();
+        lock.workers.insert(
+            "image-worker".to_string(),
+            LockedWorker {
+                version: "1.0.0".to_string(),
+                worker_type: LockedWorkerType::Image,
+                dependencies: BTreeMap::new(),
+                source: LockedSource::Image {
+                    image: "ghcr.io/iii-hq/image@sha256:abc".to_string(),
+                },
+            },
+        );
+
+        assert!(
+            lock.verify_config_workers_for_target(
+                &["image-worker".to_string()],
+                "x86_64-unknown-linux-gnu"
+            )
+            .is_ok()
         );
     }
 

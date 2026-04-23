@@ -66,6 +66,8 @@ iii worker verify
 
 The command succeeds when every lockfile-managed worker listed in `config.yaml` has an entry in `iii.lock`. Built-in workers, direct OCI image references, and local-path sandbox workers are ignored by this check because they are outside the current lockfile flow. Extra entries in `iii.lock` are allowed.
 
+For binary workers, the command also checks the lockfile target triple. A lockfile generated on macOS with an `aarch64-apple-darwin` binary pin will fail verification on Linux CI until the worker is resolved for the Linux target.
+
 You can use `sync --frozen` for the same non-mutating check:
 
 ```bash
