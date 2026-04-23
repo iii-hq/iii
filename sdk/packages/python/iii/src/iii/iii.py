@@ -810,9 +810,9 @@ class III:
         from the handler's type hints when not explicitly provided.
 
         Args:
-            func_or_id: A ``RegisterFunctionInput``, dict with ``id``, or
-                a plain string function ID.  When a string is passed, use
-                keyword arguments for ``description``, ``metadata``,
+            func_or_id: A ``RegisterFunctionInput`` or a plain string
+                function ID.  When a string is passed, use keyword
+                arguments for ``description``, ``metadata``,
                 ``request_format``, and ``response_format``.
             handler_or_invocation: A callable handler or
                 ``HttpInvocationConfig``.  Callable handlers receive one
@@ -840,7 +840,7 @@ class III:
         Examples:
             >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
-            >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
+            >>> fn = iii.register_function("greet", greet, description="Greets a user")
             >>> fn.unregister()
 
             >>> from pydantic import BaseModel
@@ -1107,7 +1107,7 @@ class III:
 
         Examples:
             >>> ch = iii.create_channel()
-            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> fn = iii.register_function("producer", producer_handler)
             >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
         return self._run_on_loop(self.create_channel_async(buffer_size))
@@ -1128,7 +1128,7 @@ class III:
 
         Examples:
             >>> ch = await iii.create_channel_async()
-            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> fn = iii.register_function("producer", producer_handler)
             >>> await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
         result = await self.trigger_async(
@@ -1237,12 +1237,12 @@ class III:
             )
             return await stream.list_groups(input_data)
 
-        self.register_function({"id": f"stream::get({stream_name})"}, get_handler)
-        self.register_function({"id": f"stream::set({stream_name})"}, set_handler)
-        self.register_function({"id": f"stream::delete({stream_name})"}, delete_handler)
-        self.register_function({"id": f"stream::list({stream_name})"}, list_handler)
+        self.register_function(f"stream::get({stream_name})", get_handler)
+        self.register_function(f"stream::set({stream_name})", set_handler)
+        self.register_function(f"stream::delete({stream_name})", delete_handler)
+        self.register_function(f"stream::list({stream_name})", list_handler)
         self.register_function(
-            {"id": f"stream::list_groups({stream_name})"}, list_groups_handler
+            f"stream::list_groups({stream_name})", list_groups_handler
         )
 
 
