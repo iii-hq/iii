@@ -289,13 +289,7 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
 
     let mut fail_count = 0;
     for name in &names {
-        let graph = match fetch_resolved_worker_graph(
-            name,
-            Some("latest"),
-            Some(binary_download::current_target()),
-        )
-        .await
-        {
+        let graph = match fetch_resolved_worker_graph(name, Some("latest"), None).await {
             Ok(graph) => graph,
             Err(e) => {
                 eprintln!("{} {}", "error:".red(), e);
@@ -336,7 +330,6 @@ fn locked_root_worker_names(lockfile: &super::lockfile::WorkerLockfile) -> Vec<S
 
 fn lockfile_from_graph(
     graph: &ResolvedWorkerGraph,
-    target: &str,
 ) -> Result<super::lockfile::WorkerLockfile, String> {
     let mut lock = super::lockfile::WorkerLockfile::default();
 
@@ -346,17 +339,25 @@ fn lockfile_from_graph(
                 let binaries = node.binaries.as_ref().ok_or_else(|| {
                     format!("resolved binary worker '{}' has no binaries", node.name)
                 })?;
-                let binary = binaries.get(target).ok_or_else(|| {
-                    format!(
-                        "resolved binary worker '{}' has no artifact for {}",
-                        node.name, target
-                    )
-                })?;
-                super::lockfile::LockedSource::Binary {
-                    target: target.to_string(),
-                    url: binary.url.clone(),
-                    sha256: binary.sha256.clone(),
+                if binaries.is_empty() {
+                    return Err(format!(
+                        "resolved binary worker '{}' has no binary artifacts",
+                        node.name
+                    ));
                 }
+                let artifacts = binaries
+                    .iter()
+                    .map(|(target, binary)| {
+                        (
+                            target.clone(),
+                            super::lockfile::LockedBinaryArtifact {
+                                url: binary.url.clone(),
+                                sha256: binary.sha256.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                super::lockfile::LockedSource::Binary { artifacts }
             }
             "image" => super::lockfile::LockedSource::Image {
                 image: node
@@ -413,11 +414,6 @@ fn print_resolved_tree(graph: &ResolvedWorkerGraph) {
 }
 
 async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> i32 {
-    let target = graph
-        .target
-        .clone()
-        .unwrap_or_else(|| binary_download::current_target().to_string());
-
     for node in &graph.graph {
         let rc = match node.worker_type.as_str() {
             "binary" => {
@@ -456,7 +452,7 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
         }
     }
 
-    let graph_lockfile = match lockfile_from_graph(graph, &target) {
+    let graph_lockfile = match lockfile_from_graph(graph) {
         Ok(lockfile) => lockfile,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -632,13 +628,7 @@ pub async fn handle_managed_add(
         eprintln!("  Resolving {}...", name.bold());
     }
 
-    match fetch_resolved_worker_graph(
-        &name,
-        version.as_deref(),
-        Some(binary_download::current_target()),
-    )
-    .await
-    {
+    match fetch_resolved_worker_graph(&name, version.as_deref(), None).await {
         Ok(graph) => {
             let rc = handle_resolved_graph_add(&graph, brief).await;
             return finish_add(&name, rc, wait, brief).await;
@@ -2575,6 +2565,18 @@ mod tests {
         format!("{:x}", hasher.finalize())
     }
 
+    fn locked_binary_source(target: &str, url: &str, sha256: String) -> cli_lockfile::LockedSource {
+        cli_lockfile::LockedSource::Binary {
+            artifacts: std::collections::BTreeMap::from([(
+                target.to_string(),
+                cli_lockfile::LockedBinaryArtifact {
+                    url: url.to_string(),
+                    sha256,
+                },
+            )]),
+        }
+    }
+
     async fn spawn_static_http_server(
         routes: StdHashMap<String, TestResponse>,
     ) -> (String, tokio::task::JoinHandle<()>) {
@@ -2690,14 +2692,14 @@ mod tests {
         let mut worker = resolved_binary_worker("hello-worker", "1.0.0", StdHashMap::new());
         worker.binaries = None;
 
-        let err = lockfile_from_graph(&graph_with(worker), "aarch64-apple-darwin").unwrap_err();
+        let err = lockfile_from_graph(&graph_with(worker)).unwrap_err();
 
         assert!(err.contains("hello-worker"));
         assert!(err.contains("no binaries"));
     }
 
     #[test]
-    fn lockfile_from_graph_errors_when_binary_worker_lacks_current_target_artifact() {
+    fn lockfile_from_graph_records_all_binary_artifacts() {
         let mut binaries = StdHashMap::new();
         binaries.insert(
             "x86_64-unknown-linux-gnu".to_string(),
@@ -2706,19 +2708,39 @@ mod tests {
                 sha256: "b".repeat(64),
             },
         );
+        binaries.insert(
+            "aarch64-apple-darwin".to_string(),
+            cli_registry::BinaryInfo {
+                url: "https://example.com/darwin.tar.gz".to_string(),
+                sha256: "a".repeat(64),
+            },
+        );
         let worker = resolved_binary_worker("hello-worker", "1.0.0", binaries);
 
-        let err = lockfile_from_graph(&graph_with(worker), "aarch64-apple-darwin").unwrap_err();
+        let lock = lockfile_from_graph(&graph_with(worker)).unwrap();
+        let entry = lock.workers.get("hello-worker").expect("entry present");
 
-        assert!(err.contains("hello-worker"));
-        assert!(err.contains("aarch64-apple-darwin"));
+        match &entry.source {
+            cli_lockfile::LockedSource::Binary { artifacts } => {
+                assert_eq!(artifacts.len(), 2);
+                assert_eq!(
+                    artifacts.get("aarch64-apple-darwin").unwrap().url,
+                    "https://example.com/darwin.tar.gz"
+                );
+                assert_eq!(
+                    artifacts.get("x86_64-unknown-linux-gnu").unwrap().url,
+                    "https://example.com/linux.tar.gz"
+                );
+            }
+            other => panic!("expected binary source, got {:?}", other),
+        }
     }
 
     #[test]
     fn lockfile_from_graph_errors_when_image_worker_missing_image_ref() {
         let worker = resolved_image_worker("image-worker", "1.0.0", None);
 
-        let err = lockfile_from_graph(&graph_with(worker), "aarch64-apple-darwin").unwrap_err();
+        let err = lockfile_from_graph(&graph_with(worker)).unwrap_err();
 
         assert!(err.contains("image-worker"));
         assert!(err.contains("no image"));
@@ -2733,14 +2755,14 @@ mod tests {
         );
         worker.worker_type = "wasm".to_string();
 
-        let err = lockfile_from_graph(&graph_with(worker), "aarch64-apple-darwin").unwrap_err();
+        let err = lockfile_from_graph(&graph_with(worker)).unwrap_err();
 
         assert!(err.contains("wasm-worker"));
         assert!(err.contains("wasm"));
     }
 
     #[test]
-    fn lockfile_from_graph_builds_entry_for_binary_worker_with_matching_target() {
+    fn lockfile_from_graph_builds_entry_for_binary_worker() {
         let mut binaries = StdHashMap::new();
         binaries.insert(
             "aarch64-apple-darwin".to_string(),
@@ -2754,7 +2776,7 @@ mod tests {
             .dependencies
             .insert("helper".to_string(), "^1.0.0".to_string());
 
-        let lock = lockfile_from_graph(&graph_with(worker), "aarch64-apple-darwin").unwrap();
+        let lock = lockfile_from_graph(&graph_with(worker)).unwrap();
 
         let entry = lock.workers.get("hello-worker").expect("entry present");
         assert_eq!(entry.version, "1.0.0");
@@ -2764,14 +2786,10 @@ mod tests {
             cli_lockfile::LockedWorkerType::Binary
         ));
         match &entry.source {
-            cli_lockfile::LockedSource::Binary {
-                target,
-                url,
-                sha256,
-            } => {
-                assert_eq!(target, "aarch64-apple-darwin");
-                assert_eq!(url, "https://example.com/h.tar.gz");
-                assert_eq!(sha256.len(), 64);
+            cli_lockfile::LockedSource::Binary { artifacts } => {
+                let artifact = artifacts.get("aarch64-apple-darwin").unwrap();
+                assert_eq!(artifact.url, "https://example.com/h.tar.gz");
+                assert_eq!(artifact.sha256.len(), 64);
             }
             other => panic!("expected binary source, got {:?}", other),
         }
@@ -2785,7 +2803,7 @@ mod tests {
             Some("ghcr.io/iii-hq/image@sha256:abc".to_string()),
         );
 
-        let lock = lockfile_from_graph(&graph_with(worker), "aarch64-apple-darwin").unwrap();
+        let lock = lockfile_from_graph(&graph_with(worker)).unwrap();
 
         let entry = lock.workers.get("image-worker").expect("entry present");
         assert!(matches!(
@@ -2804,11 +2822,11 @@ mod tests {
                     version: "1.0.0".to_string(),
                     worker_type: cli_lockfile::LockedWorkerType::Binary,
                     dependencies: Default::default(),
-                    source: cli_lockfile::LockedSource::Binary {
-                        target: "aarch64-apple-darwin".to_string(),
-                        url: "https://example.com/image-resize.tar.gz".to_string(),
-                        sha256: "a".repeat(64),
-                    },
+                    source: locked_binary_source(
+                        "aarch64-apple-darwin",
+                        "https://example.com/image-resize.tar.gz",
+                        "a".repeat(64),
+                    ),
                 },
             );
 
@@ -2873,11 +2891,11 @@ workers:
                     version: "1.0.0".to_string(),
                     worker_type: cli_lockfile::LockedWorkerType::Binary,
                     dependencies: Default::default(),
-                    source: cli_lockfile::LockedSource::Binary {
-                        target: binary_download::current_target().to_string(),
-                        url: "https://example.com/image-resize.tar.gz".to_string(),
-                        sha256: "a".repeat(64),
-                    },
+                    source: locked_binary_source(
+                        binary_download::current_target(),
+                        "https://example.com/image-resize.tar.gz",
+                        "a".repeat(64),
+                    ),
                 },
             );
             lock.write_to(cli_lockfile::lockfile_path()).unwrap();
@@ -2905,7 +2923,7 @@ workers:
     }
 
     #[tokio::test]
-    async fn handle_worker_verify_rejects_binary_lock_for_different_target() {
+    async fn handle_worker_verify_rejects_binary_lock_missing_current_target_artifact() {
         in_temp_dir_async(|_| async move {
             let current_target = binary_download::current_target();
             let other_target = if current_target == "aarch64-apple-darwin" {
@@ -2920,11 +2938,11 @@ workers:
                     version: "1.0.0".to_string(),
                     worker_type: cli_lockfile::LockedWorkerType::Binary,
                     dependencies: Default::default(),
-                    source: cli_lockfile::LockedSource::Binary {
-                        target: other_target.to_string(),
-                        url: "https://example.com/image-resize.tar.gz".to_string(),
-                        sha256: "a".repeat(64),
-                    },
+                    source: locked_binary_source(
+                        other_target,
+                        "https://example.com/image-resize.tar.gz",
+                        "a".repeat(64),
+                    ),
                 },
             );
             lock.write_to(cli_lockfile::lockfile_path()).unwrap();
@@ -2953,11 +2971,11 @@ workers:
                 version: "1.0.0".to_string(),
                 worker_type: cli_lockfile::LockedWorkerType::Binary,
                 dependencies: [("helper".to_string(), "^1.0.0".to_string())].into(),
-                source: cli_lockfile::LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/root.tar.gz".to_string(),
-                    sha256: "a".repeat(64),
-                },
+                source: locked_binary_source(
+                    "aarch64-apple-darwin",
+                    "https://example.com/root.tar.gz",
+                    "a".repeat(64),
+                ),
             },
         );
         lock.workers.insert(
@@ -2966,11 +2984,11 @@ workers:
                 version: "1.0.0".to_string(),
                 worker_type: cli_lockfile::LockedWorkerType::Binary,
                 dependencies: Default::default(),
-                source: cli_lockfile::LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/helper.tar.gz".to_string(),
-                    sha256: "b".repeat(64),
-                },
+                source: locked_binary_source(
+                    "aarch64-apple-darwin",
+                    "https://example.com/helper.tar.gz",
+                    "b".repeat(64),
+                ),
             },
         );
 
@@ -3028,6 +3046,11 @@ workers:
             let (base_url, server) = spawn_static_http_server(routes).await;
 
             let target = binary_download::current_target();
+            let other_target = if target == "aarch64-apple-darwin" {
+                "x86_64-unknown-linux-gnu"
+            } else {
+                "aarch64-apple-darwin"
+            };
             let mut graph_nodes = Vec::new();
             for name in names {
                 let mut binaries = StdHashMap::new();
@@ -3036,6 +3059,13 @@ workers:
                     cli_registry::BinaryInfo {
                         url: format!("{base_url}/{name}.tar.gz"),
                         sha256: sha256_hex(archives.get(name).unwrap()),
+                    },
+                );
+                binaries.insert(
+                    other_target.to_string(),
+                    cli_registry::BinaryInfo {
+                        url: format!("https://example.com/{name}-{other_target}.tar.gz"),
+                        sha256: "f".repeat(64),
                     },
                 );
                 let mut worker = resolved_binary_worker(name, "1.0.0", binaries);
@@ -3095,6 +3125,13 @@ workers:
                     lockfile.workers.contains_key(name),
                     "{name} should be pinned in iii.lock"
                 );
+                match &lockfile.workers[name].source {
+                    cli_lockfile::LockedSource::Binary { artifacts } => {
+                        assert!(artifacts.contains_key(target));
+                        assert!(artifacts.contains_key(other_target));
+                    }
+                    other => panic!("expected binary source for {name}, got {:?}", other),
+                }
             }
             server.abort();
         })

@@ -6,7 +6,7 @@
 
 //! Read and write `iii.lock` for reproducible managed worker installs.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -37,16 +37,70 @@ pub enum LockedWorkerType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedBinaryArtifact {
+    pub url: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum LockedSource {
     Binary {
-        target: String,
-        url: String,
-        sha256: String,
+        artifacts: BTreeMap<String, LockedBinaryArtifact>,
     },
     Image {
         image: String,
     },
+}
+
+impl<'de> Deserialize<'de> for LockedSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "lowercase")]
+        enum RawLockedSource {
+            Binary {
+                #[serde(default)]
+                artifacts: BTreeMap<String, LockedBinaryArtifact>,
+                #[serde(default)]
+                target: Option<String>,
+                #[serde(default)]
+                url: Option<String>,
+                #[serde(default)]
+                sha256: Option<String>,
+            },
+            Image {
+                image: String,
+            },
+        }
+
+        match RawLockedSource::deserialize(deserializer)? {
+            RawLockedSource::Binary {
+                mut artifacts,
+                target,
+                url,
+                sha256,
+            } => {
+                if artifacts.is_empty() {
+                    match (target, url, sha256) {
+                        (Some(target), Some(url), Some(sha256)) => {
+                            artifacts.insert(target, LockedBinaryArtifact { url, sha256 });
+                        }
+                        _ => {
+                            return Err(de::Error::custom(
+                                "binary source must include artifacts or legacy target/url/sha256 fields",
+                            ));
+                        }
+                    }
+                }
+
+                Ok(LockedSource::Binary { artifacts })
+            }
+            RawLockedSource::Image { image } => Ok(LockedSource::Image { image }),
+        }
+    }
 }
 
 impl Default for WorkerLockfile {
@@ -107,25 +161,29 @@ impl WorkerLockfile {
     ) -> Result<(), String> {
         self.verify_config_workers(worker_names)?;
 
-        let mismatched: Vec<String> = worker_names
+        let missing_artifacts: Vec<String> = worker_names
             .iter()
             .filter_map(|name| {
                 let worker = self.workers.get(name)?;
                 match &worker.source {
-                    LockedSource::Binary { target, .. } if target != current_target => {
-                        Some(format!("{name} locked for {target}"))
+                    LockedSource::Binary { artifacts } => {
+                        if artifacts.contains_key(current_target) {
+                            return None;
+                        }
+                        let available = artifacts.keys().cloned().collect::<Vec<_>>().join(", ");
+                        Some(format!("{name} (available: {available})"))
                     }
                     _ => None,
                 }
             })
             .collect();
 
-        if mismatched.is_empty() {
+        if missing_artifacts.is_empty() {
             Ok(())
         } else {
             Err(format!(
-                "{LOCKFILE_NAME} has binary worker(s) for a different target: {}. Current target: {current_target}",
-                mismatched.join(", ")
+                "{LOCKFILE_NAME} is missing binary artifact(s) for target {current_target}: {}",
+                missing_artifacts.join(", ")
             ))
         }
     }
@@ -140,6 +198,18 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    fn binary_source(target: &str, url: &str, sha256: String) -> LockedSource {
+        LockedSource::Binary {
+            artifacts: BTreeMap::from([(
+                target.to_string(),
+                LockedBinaryArtifact {
+                    url: url.to_string(),
+                    sha256,
+                },
+            )]),
+        }
+    }
+
     #[test]
     fn lockfile_round_trips_with_sorted_workers() {
         let mut lock = WorkerLockfile::default();
@@ -149,11 +219,11 @@ mod tests {
                 version: "1.0.0".to_string(),
                 worker_type: LockedWorkerType::Binary,
                 dependencies: BTreeMap::new(),
-                source: LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/z.tar.gz".to_string(),
-                    sha256: "z".repeat(64),
-                },
+                source: binary_source(
+                    "aarch64-apple-darwin",
+                    "https://example.com/z.tar.gz",
+                    "z".repeat(64),
+                ),
             },
         );
         lock.workers.insert(
@@ -195,11 +265,11 @@ mod tests {
                 version: "1.0.0".to_string(),
                 worker_type: LockedWorkerType::Binary,
                 dependencies: BTreeMap::new(),
-                source: LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/h.tar.gz".to_string(),
-                    sha256: "a".repeat(64),
-                },
+                source: binary_source(
+                    "aarch64-apple-darwin",
+                    "https://example.com/h.tar.gz",
+                    "a".repeat(64),
+                ),
             },
         );
 
@@ -210,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_config_workers_for_target_rejects_binary_target_mismatch() {
+    fn verify_config_workers_for_target_rejects_missing_binary_artifact() {
         let mut lock = WorkerLockfile::default();
         lock.workers.insert(
             "hello-worker".to_string(),
@@ -218,11 +288,11 @@ mod tests {
                 version: "1.0.0".to_string(),
                 worker_type: LockedWorkerType::Binary,
                 dependencies: BTreeMap::new(),
-                source: LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/h.tar.gz".to_string(),
-                    sha256: "a".repeat(64),
-                },
+                source: binary_source(
+                    "aarch64-apple-darwin",
+                    "https://example.com/h.tar.gz",
+                    "a".repeat(64),
+                ),
             },
         );
 
@@ -233,7 +303,8 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(err.contains("hello-worker locked for aarch64-apple-darwin"));
+        assert!(err.contains("hello-worker"));
+        assert!(err.contains("aarch64-apple-darwin"));
         assert!(err.contains("x86_64-unknown-linux-gnu"));
     }
 
@@ -247,9 +318,22 @@ mod tests {
                 worker_type: LockedWorkerType::Binary,
                 dependencies: BTreeMap::new(),
                 source: LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/h.tar.gz".to_string(),
-                    sha256: "a".repeat(64),
+                    artifacts: BTreeMap::from([
+                        (
+                            "aarch64-apple-darwin".to_string(),
+                            LockedBinaryArtifact {
+                                url: "https://example.com/h-darwin.tar.gz".to_string(),
+                                sha256: "a".repeat(64),
+                            },
+                        ),
+                        (
+                            "x86_64-unknown-linux-gnu".to_string(),
+                            LockedBinaryArtifact {
+                                url: "https://example.com/h-linux.tar.gz".to_string(),
+                                sha256: "b".repeat(64),
+                            },
+                        ),
+                    ]),
                 },
             },
         );
@@ -257,7 +341,7 @@ mod tests {
         assert!(
             lock.verify_config_workers_for_target(
                 &["hello-worker".to_string()],
-                "aarch64-apple-darwin"
+                "x86_64-unknown-linux-gnu"
             )
             .is_ok()
         );
@@ -351,16 +435,46 @@ mod tests {
                 version: "1.0.0".to_string(),
                 worker_type: LockedWorkerType::Binary,
                 dependencies: BTreeMap::new(),
-                source: LockedSource::Binary {
-                    target: "aarch64-apple-darwin".to_string(),
-                    url: "https://example.com/h.tar.gz".to_string(),
-                    sha256: "a".repeat(64),
-                },
+                source: binary_source(
+                    "aarch64-apple-darwin",
+                    "https://example.com/h.tar.gz",
+                    "a".repeat(64),
+                ),
             },
         );
         lock.write_to(&path).unwrap();
 
         let parsed = WorkerLockfile::read_from(&path).unwrap();
         assert_eq!(parsed, lock);
+    }
+
+    #[test]
+    fn from_yaml_accepts_legacy_single_target_binary_source() {
+        let parsed = WorkerLockfile::from_yaml(
+            r#"
+version: 1
+workers:
+  hello:
+    version: 1.0.0
+    type: binary
+    dependencies: {}
+    source:
+      kind: binary
+      target: aarch64-apple-darwin
+      url: https://example.com/h.tar.gz
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"#,
+        )
+        .unwrap();
+
+        let worker = parsed.workers.get("hello").unwrap();
+        match &worker.source {
+            LockedSource::Binary { artifacts } => {
+                let artifact = artifacts.get("aarch64-apple-darwin").unwrap();
+                assert_eq!(artifact.url, "https://example.com/h.tar.gz");
+                assert_eq!(artifact.sha256, "a".repeat(64));
+            }
+            other => panic!("expected binary source, got {:?}", other),
+        }
     }
 }

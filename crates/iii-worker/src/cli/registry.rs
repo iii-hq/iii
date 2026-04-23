@@ -195,11 +195,13 @@ pub async fn fetch_resolved_worker_graph(
         }
     } else {
         let url = format!("{}/resolve", base_or_file);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "worker": name,
             "version": version.unwrap_or("latest"),
-            "target": target,
         });
+        if let Some(target) = target {
+            body["target"] = serde_json::Value::String(target.to_string());
+        }
 
         let resp = HTTP_CLIENT
             .post(&url)
