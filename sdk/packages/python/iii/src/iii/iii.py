@@ -787,7 +787,7 @@ class III:
 
     def register_function(
         self,
-        func_or_id: RegisterFunctionInput | str,
+        function_id: str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
         *,
         description: str | None = None,
@@ -805,27 +805,21 @@ class III:
         block the event loop.  Each handler receives a single ``data``
         argument containing the trigger payload.
 
-        When ``func_or_id`` is a ``str``, the simplified API is used:
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when not explicitly provided.
 
         Args:
-            func_or_id: A ``RegisterFunctionInput`` or a plain string
-                function ID.  When a string is passed, use keyword
-                arguments for ``description``, ``metadata``,
-                ``request_format``, and ``response_format``.
+            function_id: Unique string identifier for the function.
             handler_or_invocation: A callable handler or
                 ``HttpInvocationConfig``.  Callable handlers receive one
                 positional argument (``data`` -- the trigger payload) and
                 may return a value.
-            description: Human-readable description (only with string ID).
-            metadata: Arbitrary metadata (only with string ID).
-            request_format: Schema describing expected input (only with
-                string ID).  Auto-extracted from handler type hints when
-                omitted.
-            response_format: Schema describing expected output (only with
-                string ID).  Auto-extracted from handler type hints when
-                omitted.
+            description: Human-readable description.
+            metadata: Arbitrary metadata.
+            request_format: Schema describing expected input.
+                Auto-extracted from handler type hints when omitted.
+            response_format: Schema describing expected output.
+                Auto-extracted from handler type hints when omitted.
 
         Returns:
             A ``FunctionRef`` with an ``id`` attribute and an
@@ -833,9 +827,10 @@ class III:
             the function from the engine.
 
         Raises:
-            ValueError: If ``id`` is empty or already registered.
-            TypeError: If ``handler_or_invocation`` is not callable or
+            TypeError: If ``function_id`` is not a string, or if
+                ``handler_or_invocation`` is not callable or
                 ``HttpInvocationConfig``.
+            ValueError: If ``function_id`` is empty or already registered.
 
         Examples:
             >>> def greet(data):
@@ -852,28 +847,25 @@ class III:
             ...     return GreetOutput(message=f"Hello, {data.name}!")
             >>> fn = iii.register_function("greet", greet, description="Greets a user")
         """
-        if isinstance(func_or_id, str):
-            # Simplified API: auto-extract formats from handler type hints
-            handler_for_extraction = (
-                handler_or_invocation if callable(handler_or_invocation) else None
-            )
-            if request_format is None and handler_for_extraction is not None:
-                request_format = extract_request_format(handler_for_extraction)
-            if response_format is None and handler_for_extraction is not None:
-                response_format = extract_response_format(handler_for_extraction)
-            func = RegisterFunctionInput(
-                id=func_or_id,
-                description=description,
-                metadata=metadata,
-                request_format=request_format,
-                response_format=response_format,
-            )
-        elif isinstance(func_or_id, RegisterFunctionInput):
-            func = func_or_id
-        else:
+        if not isinstance(function_id, str):
             raise TypeError(
-                f"func_or_id must be str or RegisterFunctionInput, got {type(func_or_id).__name__}"
+                f"function_id must be str, got {type(function_id).__name__}"
             )
+
+        handler_for_extraction = (
+            handler_or_invocation if callable(handler_or_invocation) else None
+        )
+        if request_format is None and handler_for_extraction is not None:
+            request_format = extract_request_format(handler_for_extraction)
+        if response_format is None and handler_for_extraction is not None:
+            response_format = extract_response_format(handler_for_extraction)
+        func = RegisterFunctionInput(
+            id=function_id,
+            description=description,
+            metadata=metadata,
+            request_format=request_format,
+            response_format=response_format,
+        )
 
         if not func.id or not func.id.strip():
             raise ValueError("id is required")

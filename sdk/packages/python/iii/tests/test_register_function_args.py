@@ -1,4 +1,4 @@
-"""Tests for the two-arg register_function() pattern with RegisterFunctionInput."""
+"""Tests for the string-id register_function() public API."""
 
 import json
 import time
@@ -11,35 +11,7 @@ from pydantic import BaseModel, Field
 import iii.iii as iii_module
 from iii import InitOptions
 from iii.iii import III
-from iii.iii_types import RegisterFunctionFormat, RegisterFunctionInput
-
-
-def test_register_function_input_model() -> None:
-    """RegisterFunctionInput should be constructible with just an id."""
-    inp = RegisterFunctionInput(id="demo.fn")
-    assert inp.id == "demo.fn"
-    assert inp.description is None
-    assert inp.request_format is None
-    assert inp.response_format is None
-    assert inp.metadata is None
-
-
-def test_register_function_input_with_all_fields() -> None:
-    """RegisterFunctionInput should accept all optional fields."""
-    req_fmt = RegisterFunctionFormat(name="input", type="object")
-    res_fmt = RegisterFunctionFormat(name="output", type="string")
-    inp = RegisterFunctionInput(
-        id="demo.fn",
-        description="A demo function",
-        request_format=req_fmt,
-        response_format=res_fmt,
-        metadata={"version": "1.0"},
-    )
-    assert inp.id == "demo.fn"
-    assert inp.description == "A demo function"
-    assert inp.request_format is not None
-    assert inp.response_format is not None
-    assert inp.metadata == {"version": "1.0"}
+from iii.iii_types import RegisterFunctionFormat
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +95,8 @@ def test_register_function_str_with_request_format(monkeypatch: pytest.MonkeyPat
     client.shutdown()
 
 
-def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function accepts a RegisterFunctionInput model."""
+def test_register_function_str_with_both_formats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function accepts explicit request_format and response_format kwargs."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
@@ -148,14 +120,14 @@ def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPat
     async def handler(data: Any) -> Any:
         return {"items": []}
 
-    func_input = RegisterFunctionInput(
-        id="demo.both_formats",
+    client.register_function(
+        "demo.both_formats",
+        handler,
         description="A search function",
         request_format=req_fmt,
         response_format=res_fmt,
         metadata={"version": "1"},
     )
-    client.register_function(func_input, handler)
     time.sleep(0.02)
 
     reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.both_formats"]
@@ -219,16 +191,19 @@ def test_register_function_str_with_http_invocation_and_format(monkeypatch: pyte
     client.shutdown()
 
 
-def test_register_function_input_importable_from_top_level() -> None:
-    """RegisterFunctionInput and RegisterFunctionFormat should be importable from iii."""
-    from iii import RegisterFunctionFormat, RegisterFunctionInput
+def test_register_function_format_importable_from_top_level() -> None:
+    """RegisterFunctionFormat should remain importable from iii."""
+    from iii import RegisterFunctionFormat
 
     fmt = RegisterFunctionFormat(name="test", type="string")
     assert fmt.name == "test"
 
-    inp = RegisterFunctionInput(id="test.fn", request_format=fmt)
-    assert inp.id == "test.fn"
-    assert inp.request_format is not None
+
+def test_register_function_input_not_exported() -> None:
+    """RegisterFunctionInput is no longer part of the public iii surface."""
+    import iii
+
+    assert not hasattr(iii, "RegisterFunctionInput")
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +374,24 @@ def test_register_function_dict_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     async def handler(data: Any) -> Any:
         return data
 
-    with pytest.raises(TypeError, match="must be str or RegisterFunctionInput"):
+    with pytest.raises(TypeError, match="function_id must be str"):
         client.register_function({"id": "demo.dict_removed"}, handler)
+
+    client.shutdown()
+
+
+def test_register_function_input_model_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RegisterFunctionInput as first arg is no longer supported — must raise TypeError."""
+    _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: Any) -> Any:
+        return data
+
+    # RegisterFunctionInput used to be public; keep an import path for this negative test.
+    from iii.iii_types import RegisterFunctionInput as _LegacyInput
+
+    with pytest.raises(TypeError, match="function_id must be str"):
+        client.register_function(_LegacyInput(id="demo.model_removed"), handler)
 
     client.shutdown()
