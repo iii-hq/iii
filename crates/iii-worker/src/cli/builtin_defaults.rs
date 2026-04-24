@@ -45,86 +45,46 @@ pub fn resolve_builtin_version(requested: Option<&str>) -> &str {
         .unwrap_or(ENGINE_BUILTIN_VERSION)
 }
 
-const HTTP_DEFAULT: &str = "\
-port: 3111
-host: 127.0.0.1
-default_timeout: 30000
-concurrency_request_limit: 1024
-cors:
-  allowed_origins:
-    - '*'
-  allowed_methods:
-    - GET
-    - POST
-    - PUT
-    - DELETE
-    - OPTIONS
-";
+const HTTP_MANIFEST: &str = include_str!("../../../../engine/src/workers/rest_api/iii.worker.yaml");
+const STREAM_MANIFEST: &str = include_str!("../../../../engine/src/workers/stream/iii.worker.yaml");
+const STATE_MANIFEST: &str = include_str!("../../../../engine/src/workers/state/iii.worker.yaml");
+const QUEUE_MANIFEST: &str = include_str!("../../../../engine/src/workers/queue/iii.worker.yaml");
+const PUBSUB_MANIFEST: &str = include_str!("../../../../engine/src/workers/pubsub/iii.worker.yaml");
+const CRON_MANIFEST: &str = include_str!("../../../../engine/src/workers/cron/iii.worker.yaml");
+const OBSERVABILITY_MANIFEST: &str =
+    include_str!("../../../../engine/src/workers/observability/iii.worker.yaml");
 
-const STREAM_DEFAULT: &str = "\
-port: 3112
-host: 127.0.0.1
-adapter:
-  name: kv
-  config:
-    store_method: file_based
-    file_path: ./data/stream_store
-";
+fn manifest_for_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "iii-http" => Some(HTTP_MANIFEST),
+        "iii-stream" => Some(STREAM_MANIFEST),
+        "iii-state" => Some(STATE_MANIFEST),
+        "iii-queue" => Some(QUEUE_MANIFEST),
+        "iii-pubsub" => Some(PUBSUB_MANIFEST),
+        "iii-cron" => Some(CRON_MANIFEST),
+        "iii-observability" => Some(OBSERVABILITY_MANIFEST),
+        _ => None,
+    }
+}
 
-const STATE_DEFAULT: &str = "\
-adapter:
-  name: kv
-  config:
-    store_method: file_based
-    file_path: ./data/state_store.db
-";
+fn extract_manifest_config_yaml(manifest: &str) -> Option<String> {
+    let manifest: serde_yaml::Value = serde_yaml::from_str(manifest).ok()?;
+    let config_key = serde_yaml::Value::String("config".into());
+    let config = manifest.as_mapping()?.get(&config_key)?;
+    let yaml = serde_yaml::to_string(config).ok()?;
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml).trim_end();
 
-const QUEUE_DEFAULT: &str = "\
-adapter:
-  name: builtin
-";
-
-const PUBSUB_DEFAULT: &str = "\
-adapter:
-  name: local
-";
-
-const CRON_DEFAULT: &str = "\
-adapter:
-  name: kv
-";
-
-const OBSERVABILITY_DEFAULT: &str = "\
-enabled: true
-service_name: iii
-service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}
-exporter: memory
-memory_max_spans: 10000
-metrics_enabled: true
-metrics_exporter: memory
-metrics_retention_seconds: 3600
-metrics_max_count: 10000
-logs_enabled: true
-logs_exporter: memory
-logs_max_count: 1000
-logs_retention_seconds: 3600
-logs_console_output: true
-sampling_ratio: 1.0
-";
+    if yaml.is_empty() || yaml == "null" {
+        None
+    } else {
+        Some(yaml.to_string())
+    }
+}
 
 /// Return the default YAML configuration for a builtin worker, or `None` if the
 /// name is not a recognised builtin.
-pub fn get_builtin_default(name: &str) -> Option<&'static str> {
-    match name {
-        "iii-http" => Some(HTTP_DEFAULT),
-        "iii-stream" => Some(STREAM_DEFAULT),
-        "iii-state" => Some(STATE_DEFAULT),
-        "iii-queue" => Some(QUEUE_DEFAULT),
-        "iii-pubsub" => Some(PUBSUB_DEFAULT),
-        "iii-cron" => Some(CRON_DEFAULT),
-        "iii-observability" => Some(OBSERVABILITY_DEFAULT),
-        _ => None,
-    }
+pub fn get_builtin_default(name: &str) -> Option<String> {
+    manifest_for_builtin(name).and_then(extract_manifest_config_yaml)
 }
 
 #[cfg(test)]
@@ -153,7 +113,7 @@ mod tests {
     fn all_defaults_are_valid_yaml() {
         for name in &BUILTIN_NAMES {
             let yaml = get_builtin_default(name).unwrap();
-            let result: Result<Value, _> = serde_yaml::from_str(yaml);
+            let result: Result<Value, _> = serde_yaml::from_str(&yaml);
             assert!(
                 result.is_ok(),
                 "invalid YAML for '{name}': {:?}",
@@ -192,7 +152,7 @@ mod tests {
     #[test]
     fn http_default_has_expected_fields() {
         let yaml = get_builtin_default("iii-http").unwrap();
-        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        let val: Value = serde_yaml::from_str(&yaml).unwrap();
         let map = val.as_mapping().expect("expected mapping");
 
         assert_eq!(
@@ -222,7 +182,7 @@ mod tests {
     #[test]
     fn stream_default_uses_kv_adapter() {
         let yaml = get_builtin_default("iii-stream").unwrap();
-        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        let val: Value = serde_yaml::from_str(&yaml).unwrap();
         let map = val.as_mapping().unwrap();
 
         assert_eq!(
@@ -250,7 +210,7 @@ mod tests {
     #[test]
     fn state_default_uses_kv_adapter() {
         let yaml = get_builtin_default("iii-state").unwrap();
-        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        let val: Value = serde_yaml::from_str(&yaml).unwrap();
         let map = val.as_mapping().unwrap();
 
         let adapter = map[&Value::String("adapter".into())]
@@ -273,7 +233,7 @@ mod tests {
     #[test]
     fn pubsub_default_uses_local_adapter() {
         let yaml = get_builtin_default("iii-pubsub").unwrap();
-        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        let val: Value = serde_yaml::from_str(&yaml).unwrap();
         let map = val.as_mapping().unwrap();
 
         let adapter = map[&Value::String("adapter".into())]
@@ -288,7 +248,7 @@ mod tests {
     #[test]
     fn observability_default_uses_memory_exporter() {
         let yaml = get_builtin_default("iii-observability").unwrap();
-        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        let val: Value = serde_yaml::from_str(&yaml).unwrap();
         let map = val.as_mapping().unwrap();
 
         assert_eq!(map[&Value::String("enabled".into())], Value::Bool(true));

@@ -241,7 +241,8 @@ fn append_builtin_worker_creates_entry_with_defaults() {
     in_temp_dir(|| {
         let default_yaml =
             iii_worker::cli::builtin_defaults::get_builtin_default("iii-http").unwrap();
-        iii_worker::cli::config_file::append_worker("iii-http", Some(default_yaml)).unwrap();
+        iii_worker::cli::config_file::append_worker("iii-http", Some(default_yaml.as_str()))
+            .unwrap();
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
@@ -265,7 +266,8 @@ fn append_builtin_worker_merges_with_existing_user_config() {
 
         let default_yaml =
             iii_worker::cli::builtin_defaults::get_builtin_default("iii-http").unwrap();
-        iii_worker::cli::config_file::append_worker("iii-http", Some(default_yaml)).unwrap();
+        iii_worker::cli::config_file::append_worker("iii-http", Some(default_yaml.as_str()))
+            .unwrap();
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
         // User's port override is preserved
@@ -286,7 +288,7 @@ fn all_builtins_produce_valid_config_entries() {
 
             let default_yaml =
                 iii_worker::cli::builtin_defaults::get_builtin_default(name).unwrap();
-            iii_worker::cli::config_file::append_worker(name, Some(default_yaml)).unwrap();
+            iii_worker::cli::config_file::append_worker(name, Some(default_yaml.as_str())).unwrap();
 
             let content = std::fs::read_to_string("config.yaml").unwrap();
             assert!(

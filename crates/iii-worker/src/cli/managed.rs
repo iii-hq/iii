@@ -820,7 +820,7 @@ pub async fn handle_managed_add(
     if let Some(default_yaml) = get_builtin_default(&name) {
         let builtin_version = resolve_builtin_version(version.as_deref());
         let already_exists = super::config_file::worker_exists(&name);
-        if let Err(e) = super::config_file::append_worker(&name, Some(default_yaml)) {
+        if let Err(e) = super::config_file::append_worker(&name, Some(default_yaml.as_str())) {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
