@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 /// All builtin worker names recognised by the CLI.
-pub const BUILTIN_NAMES: [&str; 7] = [
+pub const BUILTIN_NAMES: [&str; 8] = [
     "iii-http",
     "iii-stream",
     "iii-state",
@@ -13,6 +13,7 @@ pub const BUILTIN_NAMES: [&str; 7] = [
     "iii-pubsub",
     "iii-cron",
     "iii-observability",
+    "iii-sandbox",
 ];
 
 const HTTP_DEFAULT: &str = "\
@@ -82,6 +83,26 @@ logs_console_output: true
 sampling_ratio: 1.0
 ";
 
+// Flat SandboxConfig shape — parsed directly by the daemon's config
+// loader. Renders in config.yaml as a clean `config:` block without a
+// redundant `sandbox:` key nested under an entry already named
+// `iii-sandbox`.
+//
+// `image_allowlist` ships with `python` and `node` because those cover
+// ~95% of AI-agent use cases. `bash` and `alpine` are still catalog
+// presets (see sandbox_daemon/catalog.rs::PRESETS) — users opt in by
+// adding them to this list. An empty allowlist means nothing boots.
+const SANDBOX_DEFAULT: &str = "\
+auto_install: true
+image_allowlist:
+  - python
+  - node
+default_idle_timeout_secs: 300
+max_concurrent_sandboxes: 32
+default_cpus: 1
+default_memory_mb: 512
+";
+
 /// Return the default YAML configuration for a builtin worker, or `None` if the
 /// name is not a recognised builtin.
 pub fn get_builtin_default(name: &str) -> Option<&'static str> {
@@ -93,6 +114,7 @@ pub fn get_builtin_default(name: &str) -> Option<&'static str> {
         "iii-pubsub" => Some(PUBSUB_DEFAULT),
         "iii-cron" => Some(CRON_DEFAULT),
         "iii-observability" => Some(OBSERVABILITY_DEFAULT),
+        "iii-sandbox" => Some(SANDBOX_DEFAULT),
         _ => None,
     }
 }
@@ -250,8 +272,49 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_default_allowlist_is_python_and_node_only() {
+        // The "just works" defaults ship with python + node only. bash
+        // and alpine are still catalog presets but opt-in — users who
+        // want them edit config.yaml by hand. Pinning the exact contents
+        // here makes any future change to the default a conscious PR,
+        // not a silent addition that changes the security surface.
+        let yaml = get_builtin_default("iii-sandbox").unwrap();
+        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        let allowlist: Vec<&str> = val
+            .as_mapping()
+            .and_then(|m| m.get(&Value::String("image_allowlist".into())))
+            .and_then(|v| v.as_sequence())
+            .expect("image_allowlist must be a top-level sequence")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            allowlist,
+            vec!["python", "node"],
+            "sandbox default allowlist changed — confirm this is intentional \
+             and update engine/config.yaml + docs/api-reference/sandbox.mdx"
+        );
+    }
+
+    #[test]
+    fn sandbox_default_has_no_wrapping_sandbox_key() {
+        // Guard against regressions to the wrapped shape. The flat shape
+        // is what renders cleanly under `config:` in config.yaml; adding
+        // a wrapping `sandbox:` key back would produce
+        // `iii-sandbox.config.sandbox.image_allowlist` — double-nested
+        // and ugly.
+        let yaml = get_builtin_default("iii-sandbox").unwrap();
+        let val: Value = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            val.as_mapping()
+                .map(|m| !m.contains_key(&Value::String("sandbox".into())))
+                .unwrap_or(false),
+            "iii-sandbox default must use flat shape (no wrapping `sandbox:` key)"
+        );
+    }
+
+    #[test]
     fn builtin_names_matches_function() {
-        // Every name in BUILTIN_NAMES must be recognised by get_builtin_default.
         for name in &BUILTIN_NAMES {
             assert!(
                 get_builtin_default(name).is_some(),
@@ -259,9 +322,7 @@ mod tests {
             );
         }
 
-        // Conversely, the function should not recognise anything outside the array.
         let known: std::collections::HashSet<&str> = BUILTIN_NAMES.iter().copied().collect();
-        // Spot-check a few names that should NOT be in the set.
         for extra in &["iii-unknown", "iii-foo", "redis", ""] {
             assert!(
                 !known.contains(extra),

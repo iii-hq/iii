@@ -15,10 +15,7 @@ use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::oci::{
-    expected_oci_arch, pull_and_extract_rootfs, read_cached_rootfs_arch, read_oci_entrypoint,
-    read_oci_env,
-};
+use super::oci::{expected_oci_arch, read_cached_rootfs_arch, read_oci_entrypoint, read_oci_env};
 use crate::cli::rootfs::clone_rootfs;
 
 /// Forward optional VM-boot tuning flags to the `__vm-boot` child
@@ -73,7 +70,6 @@ fn apply_vm_tuning_env(mut push: impl FnMut(&str, Option<&str>)) {
     }
 }
 
-/// Check if libkrun runtime is available on this system.
 /// msb_krun (the VMM) is compiled into the binary; this checks for libkrunfw.
 pub fn libkrun_available() -> bool {
     crate::cli::firmware::resolve::resolve_libkrunfw_dir().is_some()
@@ -90,8 +86,6 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
     merged
 }
 
-/// Run a dev worker session inside a libkrun VM.
-///
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
 /// Uses a separate process for crash isolation.
 pub async fn run_dev(
@@ -134,13 +128,7 @@ pub async fn run_dev(
     cmd.arg("--workdir").arg("/workspace");
     cmd.arg("--vcpus").arg(vcpus.to_string());
     cmd.arg("--ram").arg(ram_mib.to_string());
-    // Control channel for host-driven fast restarts. __vm-boot owns the
-    // proxy thread + socketpair; we just tell it where to put the unix
-    // socket so the watcher (and stop handler) knows where to connect.
     cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
-    // Shell-exec channel for `iii worker exec`. Colocated with the
-    // control socket so a single managed dir holds every endpoint for
-    // this VM. __vm-boot spawns the async relay if the path is given.
     cmd.arg("--shell-sock").arg(rootfs.join("shell.sock"));
 
     for (key, value) in &env {
@@ -155,7 +143,6 @@ pub async fn run_dev(
         cmd.arg("--arg").arg(arg);
     }
 
-    // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
     apply_vm_tuning_env(|flag, val| {
         cmd.arg(flag);
         if let Some(v) = val {
@@ -209,10 +196,9 @@ pub async fn run_dev(
 
     match cmd.spawn() {
         Ok(mut child) => {
-            // Write PID file so is_worker_running / stop / kill_stale_worker can find us.
-            // Use the hardened writer: O_NOFOLLOW + 0o600 on Unix so a
-            // symlink pre-planted at vm.pid can't redirect our write to
-            // a sensitive file. Matches the watch.pid hardening.
+            // Hardened writer: O_NOFOLLOW + 0o600 on Unix so a symlink
+            // pre-planted at vm.pid can't redirect our write to a
+            // sensitive file. Matches the watch.pid hardening.
             let pid_file = rootfs.join("vm.pid");
             let pid = child.id().unwrap_or(0);
             if pid > 0
@@ -258,7 +244,6 @@ pub async fn run_dev(
                 }
             };
 
-            // Clean up PID file on exit
             let _ = std::fs::remove_file(&pid_file);
 
             #[cfg(unix)]
@@ -272,10 +257,6 @@ pub async fn run_dev(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// LibkrunAdapter — RuntimeAdapter implementation for managed workers
-// ---------------------------------------------------------------------------
 
 use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
 
@@ -349,46 +330,15 @@ impl LibkrunAdapter {
         }
     }
 
-    /// Directory containing the image cache entry: `<home>/.iii/images/<hash>/`.
-    /// Hash input is the CANONICAL form of the image ref (any trailing
-    /// `@sha256:...` stripped via [`oci_ref::canonical_cache_key`]) so pinned
-    /// and unpinned variants of the same image share one cache dir. This
-    /// matters because the engine at worker-start time may resolve the image
-    /// ref from `config.yaml` (pinned) while `iii worker add` pulled it
-    /// originally from `/resolve` (unpinned) — both must hit the same dir or
-    /// we re-pull gigabytes for no reason.
-    ///
-    /// The cache dir wraps two children:
-    /// - `rootfs/` — the extracted image contents (what used to live
-    ///   directly under `<hash>/` in the pre-fix layout). `clone_rootfs`
-    ///   copies this into per-worker rootfs at VM start.
-    /// - `digest.txt` — sidecar metadata (Task 5). Lives OUTSIDE `rootfs/`
-    ///   so it does NOT end up inside worker filesystems.
-    pub fn image_cache_dir(image: &str) -> PathBuf {
-        use crate::cli::oci_ref;
-        let hash = {
-            use sha2::Digest;
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(oci_ref::canonical_cache_key(image).as_bytes());
-            hex::encode(&hasher.finalize()[..8])
-        };
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".iii")
-            .join("images")
-            .join(hash)
-    }
-
-    /// Path to the extracted rootfs inside the image cache dir.
-    /// Callers mount / clone / read files from this dir.
-    ///
-    /// Layout changed from the pre-fix version: the rootfs used to live
-    /// directly at `<hash>/`; it now lives at `<hash>/rootfs/`. This
-    /// naturally invalidates old caches (the cache-hit check looks for
-    /// `<hash>/rootfs/bin/` which old layouts don't have, forcing a
-    /// re-pull). Orphaned old dirs waste disk but don't break anything.
+    /// Canonical on-disk location for the image's rootfs. Delegates to
+    /// the unified `rootfs_cache` so libkrun shares its cache with the
+    /// sandbox daemon and `prepare_rootfs` — pulling the same OCI ref
+    /// twice across those flows now hits one directory, not three.
+    /// Pinned (`foo:tag@sha256:...`) and unpinned variants of the same
+    /// image collapse to one dir inside `rootfs_cache`, preserving the
+    /// #1540 cache-reuse invariant across the unified path.
     pub fn image_rootfs(image: &str) -> PathBuf {
-        Self::image_cache_dir(image).join("rootfs")
+        crate::cli::rootfs_cache::canonical_path(image)
     }
 
     pub fn pid_file(name: &str) -> PathBuf {
@@ -415,39 +365,55 @@ impl LibkrunAdapter {
 #[async_trait::async_trait]
 impl RuntimeAdapter for LibkrunAdapter {
     async fn pull(&self, image: &str) -> Result<ImageInfo> {
-        let rootfs_dir = Self::image_rootfs(image);
         let expected_arch = expected_oci_arch().to_string();
+        let hints = crate::cli::rootfs_cache::CacheHints {
+            consult_images_cache: true,
+            ..Default::default()
+        };
 
-        if rootfs_dir.exists() && rootfs_dir.join("bin").exists() {
-            let cached_arch = read_cached_rootfs_arch(&rootfs_dir);
+        // Cache hit: verify arch before short-circuiting. Legacy paths
+        // can be arch-mismatched if the user switched host architectures.
+        if let Some(cached) = crate::cli::rootfs_cache::resolve_cached(image, &hints) {
+            let cached_arch = read_cached_rootfs_arch(&cached);
             let arch_match = cached_arch
                 .as_deref()
                 .map(|a| a == expected_arch)
                 .unwrap_or(false);
             if arch_match {
-                tracing::info!(image = %image, "image rootfs cached, skipping pull");
-            } else {
-                tracing::warn!(
-                    image = %image,
-                    expected_arch = %expected_arch,
-                    cached_arch = ?cached_arch,
-                    "cached rootfs architecture mismatch, rebuilding cache"
-                );
-                let _ = std::fs::remove_dir_all(&rootfs_dir);
-                tracing::info!(image = %image, "pulling OCI image via libkrun");
-                pull_and_extract_rootfs(image, &rootfs_dir).await?;
-                let hosts_path = rootfs_dir.join("etc/hosts");
-                if !hosts_path.exists() {
-                    let _ = std::fs::write(&hosts_path, "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n");
-                }
+                tracing::info!(image = %image, path = %cached.display(), "image rootfs cached, skipping pull");
+                let size_bytes = fs_dir_size(&cached).ok();
+                return Ok(ImageInfo {
+                    image: image.to_string(),
+                    size_bytes,
+                });
             }
-        } else {
-            tracing::info!(image = %image, "pulling OCI image via libkrun");
-            pull_and_extract_rootfs(image, &rootfs_dir).await?;
-            let hosts_path = rootfs_dir.join("etc/hosts");
-            if !hosts_path.exists() {
-                let _ = std::fs::write(&hosts_path, "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n");
-            }
+            tracing::warn!(
+                image = %image,
+                expected_arch = %expected_arch,
+                cached_arch = ?cached_arch,
+                path = %cached.display(),
+                "cached rootfs architecture mismatch, rebuilding cache"
+            );
+            // Wipe the mismatched copy (could be canonical or legacy —
+            // either way its bytes are wrong for this host) and fall
+            // through to pull.
+            let _ = std::fs::remove_dir_all(&cached);
+        }
+
+        tracing::info!(image = %image, "pulling OCI image via libkrun");
+        let image_for_log = image.to_string();
+        let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(
+            image,
+            &crate::cli::rootfs_cache::CacheHints::default(),
+            move || {
+                tracing::info!(image = %image_for_log, "pulling OCI image via libkrun");
+            },
+        )
+        .await?;
+
+        let hosts_path = rootfs_dir.join("etc/hosts");
+        if !hosts_path.exists() {
+            let _ = std::fs::write(&hosts_path, "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n");
         }
 
         let final_arch = read_cached_rootfs_arch(&rootfs_dir);
@@ -474,7 +440,14 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
     }
 
     async fn extract_file(&self, image: &str, path: &str) -> Result<Vec<u8>> {
-        let rootfs_dir = Self::image_rootfs(image);
+        // Resolve through the unified cache so we read from wherever
+        // the rootfs actually lives (canonical or legacy).
+        let hints = crate::cli::rootfs_cache::CacheHints {
+            consult_images_cache: true,
+            ..Default::default()
+        };
+        let rootfs_dir = crate::cli::rootfs_cache::resolve_cached(image, &hints)
+            .unwrap_or_else(|| Self::image_rootfs(image));
         let file_path = rootfs_dir.join(path.trim_start_matches('/'));
         std::fs::read(&file_path)
             .with_context(|| format!("failed to read {} from rootfs", file_path.display()))
@@ -490,12 +463,24 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             let _ = std::fs::set_permissions(&worker_dir, std::fs::Permissions::from_mode(0o700));
         }
 
-        let rootfs_dir = Self::image_rootfs(&spec.image);
-        if !rootfs_dir.exists() {
-            tracing::info!(image = %spec.image, "rootfs not found, pulling automatically");
-            eprintln!("  Pulling rootfs ({})...", spec.image);
-            self.pull(&spec.image).await?;
-        }
+        // Prefer a populated cache hit (canonical or legacy); only pull
+        // if neither location has the image.
+        let rootfs_hints = crate::cli::rootfs_cache::CacheHints {
+            consult_images_cache: true,
+            ..Default::default()
+        };
+        let rootfs_dir = match crate::cli::rootfs_cache::resolve_cached(&spec.image, &rootfs_hints)
+        {
+            Some(p) => p,
+            None => {
+                tracing::info!(image = %spec.image, "rootfs not found, pulling automatically");
+                eprintln!("  Pulling rootfs ({})...", spec.image);
+                self.pull(&spec.image).await?;
+                // pull() wrote to canonical_path; resolve_cached will find it.
+                crate::cli::rootfs_cache::resolve_cached(&spec.image, &rootfs_hints)
+                    .unwrap_or_else(|| Self::image_rootfs(&spec.image))
+            }
+        };
 
         let worker_rootfs = worker_dir.join("rootfs");
         let expected_arch = expected_oci_arch().to_string();

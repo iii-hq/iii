@@ -29,10 +29,6 @@ struct TestCli {
     args: VmBootArgs,
 }
 
-// ===========================================================================
-// Group 1: VmBootArgs parsing (VM-01, per D-06)
-// ===========================================================================
-
 #[test]
 fn vm_boot_args_all_fields() {
     let cli = TestCli::parse_from([
@@ -139,10 +135,6 @@ fn vm_boot_args_multiple_mounts() {
     assert_eq!(cli.args.mount[2], "/cache:/tmp/cache");
 }
 
-// ===========================================================================
-// Group 2: shell_quote (VM-01, per D-04)
-// ===========================================================================
-
 #[test]
 fn shell_quote_safe_chars_passthrough() {
     assert_eq!(shell_quote("simple"), "simple");
@@ -174,10 +166,6 @@ fn shell_quote_empty_string() {
     // Empty string has no unsafe chars, passes through unchanged.
     assert_eq!(shell_quote(""), "");
 }
-
-// ===========================================================================
-// Group 3: build_worker_cmd (VM-01, per D-04)
-// ===========================================================================
 
 #[test]
 fn build_worker_cmd_no_args() {
@@ -218,10 +206,6 @@ fn build_worker_cmd_with_special_arg() {
     );
 }
 
-// ===========================================================================
-// Group 4: k8s_mem_to_mib (VM-01, per D-04)
-// ===========================================================================
-
 #[test]
 fn k8s_mem_to_mib_mi() {
     assert_eq!(k8s_mem_to_mib("512Mi"), Some("512".into()));
@@ -251,10 +235,6 @@ fn k8s_mem_to_mib_invalid() {
 fn k8s_mem_to_mib_zero() {
     assert_eq!(k8s_mem_to_mib("0"), Some("0".into()));
 }
-
-// ===========================================================================
-// Group 5: Mount format via VmBootArgs (VM-02, per D-08)
-// ===========================================================================
 
 #[test]
 fn vm_boot_args_mount_valid_format() {
@@ -292,10 +272,6 @@ fn vm_boot_args_mount_empty_guest() {
     ]);
     assert_eq!(cli.args.mount[0], "/host:");
 }
-
-// ===========================================================================
-// Group 6: rewrite_localhost (VM-03, per D-09)
-// ===========================================================================
 
 #[test]
 fn rewrite_localhost_replaces_localhost() {
@@ -345,10 +321,6 @@ fn rewrite_localhost_no_port_unchanged() {
     );
 }
 
-// ===========================================================================
-// Group 7: build_container_spec (VM-01, per D-06)
-// ===========================================================================
-
 #[test]
 fn build_container_spec_managed_with_resources() {
     let mut env = HashMap::new();
@@ -397,10 +369,6 @@ fn build_container_spec_binary_has_no_spec_fields() {
     assert!(spec.memory_limit.is_none());
 }
 
-// ===========================================================================
-// Group 8: Signal handling via LibkrunAdapter (VM-04, per D-10, D-11, D-12)
-// ===========================================================================
-
 #[tokio::test]
 async fn stop_terminates_sleeping_process() {
     let mut child = std::process::Command::new("sleep")
@@ -430,7 +398,6 @@ async fn stop_terminates_sleeping_process() {
         elapsed
     );
 
-    // Verify the process is dead.
     let alive = unsafe { nix::libc::kill(pid as i32, 0) == 0 };
     assert!(!alive, "process {} should be dead after stop()", pid);
 }
@@ -468,13 +435,11 @@ async fn stop_escalates_to_sigkill_when_sigterm_ignored() {
 
 #[tokio::test]
 async fn stop_handles_already_dead_process() {
-    // Spawn a process that exits immediately.
     let child = std::process::Command::new("sleep")
         .arg("0")
         .spawn()
         .expect("failed to spawn sleep 0");
     let pid = child.id();
-    // Wait a bit for it to exit.
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let adapter = LibkrunAdapter::new();
@@ -482,10 +447,6 @@ async fn stop_handles_already_dead_process() {
     let result = adapter.stop(&pid_str, 1).await;
     assert!(result.is_ok(), "stop on dead process should not error");
 }
-
-// ===========================================================================
-// Group 9: PID alive and status (VM-04, per D-15, D-16)
-// ===========================================================================
 
 #[tokio::test]
 async fn status_running_process_detected() {
@@ -520,10 +481,6 @@ async fn status_invalid_pid_zero() {
     assert!(!status.running, "PID 0 should not be reported as running");
 }
 
-// ===========================================================================
-// Group 10: PID file roundtrip (VM-04, per D-14)
-// ===========================================================================
-
 #[test]
 fn pid_file_write_and_read_roundtrip() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
@@ -532,10 +489,6 @@ fn pid_file_write_and_read_roundtrip() {
     let content = std::fs::read_to_string(&pid_path).expect("failed to read PID file");
     assert_eq!(content, "12345");
 }
-
-// ===========================================================================
-// Group 11: LibkrunAdapter path helpers (VM-01, VM-04, per D-04)
-// ===========================================================================
 
 #[test]
 fn worker_dir_constructs_path_under_managed() {
@@ -546,7 +499,6 @@ fn worker_dir_constructs_path_under_managed() {
         "worker_dir should contain .iii/managed/my-worker, got: {}",
         path_str
     );
-    // Verify the path ends with the expected segments.
     let components: Vec<_> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
@@ -591,38 +543,35 @@ fn logs_dir_is_under_worker_dir() {
 }
 
 #[test]
-fn image_rootfs_uses_sha256_hash_prefix() {
+fn image_rootfs_uses_unified_cache_path() {
+    // After the rootfs-cache unification, `image_rootfs` delegates to
+    // `rootfs_cache::canonical_path`, which lands at
+    // `~/.iii/cache/<slug>/` instead of the old `~/.iii/images/<sha>/`.
+    // Different images still resolve to different slugs.
     let path_a = LibkrunAdapter::image_rootfs("ghcr.io/iii-hq/worker:latest");
     let path_a_str = path_a.to_string_lossy();
     assert!(
-        path_a_str.contains(".iii/images/"),
-        "image_rootfs should contain .iii/images/, got: {}",
+        path_a_str.contains(".iii/cache/"),
+        "image_rootfs should land under .iii/cache/, got: {}",
         path_a_str
     );
 
-    // Post-refactor layout: image_rootfs returns `<home>/.iii/images/<hash>/rootfs`.
-    // The hash directory is the parent of the `rootfs/` leaf.
-    assert_eq!(
-        path_a.file_name().and_then(|s| s.to_str()),
-        Some("rootfs"),
-        "image_rootfs should end with /rootfs, got: {}",
-        path_a_str
-    );
-
-    // Different image strings should produce different hash directories
-    // (the parent of `rootfs/`).
+    // Different image strings should produce different slugs.
     let path_b = LibkrunAdapter::image_rootfs("docker.io/library/nginx:alpine");
-    let hash_a = path_a.parent().and_then(|p| p.file_name());
-    let hash_b = path_b.parent().and_then(|p| p.file_name());
-    assert!(
-        hash_a.is_some() && hash_b.is_some(),
-        "image_rootfs paths should have a hash parent dir; got a={:?}, b={:?}",
-        path_a,
-        path_b
-    );
     assert_ne!(
-        hash_a, hash_b,
-        "different images should have different hash directories"
+        path_a.file_name(),
+        path_b.file_name(),
+        "different images should have different cache directories"
+    );
+
+    // #1540 invariant: pinned (`@sha256:...`) and unpinned variants
+    // of the same ref collapse to the same cache dir, so resolving a
+    // pin at engine start doesn't trigger a re-pull of an image the
+    // user already added.
+    let pinned = LibkrunAdapter::image_rootfs("ghcr.io/iii-hq/worker:latest@sha256:deadbeef");
+    assert_eq!(
+        path_a, pinned,
+        "pinned and unpinned refs must share a cache dir"
     );
 }
 
@@ -639,10 +588,6 @@ fn path_helpers_different_names_different_paths() {
         "different names should produce different pid_file paths"
     );
 }
-
-// ===========================================================================
-// Group 12: resolve_krunfw_file_path (VM-01, per D-04)
-// ===========================================================================
 
 #[test]
 fn resolve_krunfw_file_path_returns_option() {
@@ -661,11 +606,6 @@ fn resolve_krunfw_file_path_returns_option() {
         assert!(path.exists(), "returned firmware path should exist");
     }
 }
-
-// ===========================================================================
-// Group 13: run_dev console-output convention (ensures VM console output
-// goes to stdout.log instead of through PortOutputLog at ERROR level)
-// ===========================================================================
 
 /// Verify that the dev-worker logs dir + stdout.log path convention matches
 /// the managed-worker console_output convention. Both paths must end with

@@ -1007,9 +1007,16 @@ impl Engine {
                     };
                     return Ok(());
                 } else {
-                    tracing::warn!(
+                    // Expected when the caller disconnected before the
+                    // executor finished (client-side trigger timeout,
+                    // Ctrl-C, etc). `cleanup_worker` already halted the
+                    // invocation, so the late result has nowhere to go.
+                    // Kept at debug to avoid log noise for a normal
+                    // condition — previously this was warn and produced
+                    // a pair of scary lines on every slow sandbox::exec.
+                    tracing::debug!(
                         invocation_id = %invocation_id,
-                        "Did not find caller for invocation"
+                        "Did not find caller for invocation (caller already disconnected)"
                     );
                 }
                 Ok(())

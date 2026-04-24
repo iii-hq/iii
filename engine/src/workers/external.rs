@@ -42,12 +42,72 @@ struct ManifestFile {
     workers: Option<BTreeMap<String, String>>,
 }
 
+/// A built-in external worker: a worker name that resolves to a binary
+/// on $PATH plus extra args, instead of the conventional
+/// `iii_workers/<name>` lookup. Used for daemons shipped as subcommands
+/// of other iii binaries.
+struct KnownExternal {
+    /// Worker class slug as it appears in config.yaml (e.g. "iii-sandbox").
+    name: &'static str,
+    /// Binary to resolve via $PATH (fallback: ~/.local/bin/<binary>).
+    binary: &'static str,
+    /// Extra args prepended to the child's argv, before `--config <path>`.
+    args: &'static [&'static str],
+}
+
+/// Workers shipped as subcommands of a single binary on $PATH, not as
+/// standalone binaries in iii_workers/. Resolved in
+/// `resolve_external_module_in` before the iii.toml lookup.
+const KNOWN_EXTERNAL: &[KnownExternal] = &[KnownExternal {
+    name: "iii-sandbox",
+    binary: "iii-worker",
+    args: &["sandbox-daemon"],
+}];
+
 pub fn resolve_external_module(class: &str) -> Option<ExternalWorkerInfo> {
     let base_dir = std::env::current_dir().ok()?;
     resolve_external_module_in(&base_dir, class)
 }
 
 pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<ExternalWorkerInfo> {
+    // Normalize the class to a binary-name candidate for KNOWN_EXTERNAL
+    // matching. The real caller (`WorkerRegistry::create_worker`) passes
+    // the bare `name` from config.yaml — e.g. "iii-sandbox". Tests and
+    // the legacy iii.toml path use the `workers::<slug>` form. Handle
+    // both by taking the last `::` segment (or the whole string if no
+    // separator) and normalizing `_` -> `-`.
+    let binary_name_candidate = class.rsplit("::").next().unwrap_or(class).replace('_', "-");
+
+    // Check well-known externals first. These are shipped as
+    // subcommands of iii-binaries on $PATH, so we skip the
+    // iii_workers/<name> directory convention entirely.
+    if let Some(hit) = KNOWN_EXTERNAL
+        .iter()
+        .find(|k| k.name == binary_name_candidate)
+    {
+        let binary_path = which::which(hit.binary)
+            .or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/bin").join(hit.binary))
+                    .map_err(|_| which::Error::CannotFindBinaryPath)
+                    .and_then(|p| {
+                        if p.exists() {
+                            Ok(p)
+                        } else {
+                            Err(which::Error::CannotFindBinaryPath)
+                        }
+                    })
+            })
+            .ok()?;
+
+        return Some(ExternalWorkerInfo {
+            name: binary_name_candidate,
+            binary_path,
+            extra_args: hit.args.iter().map(|s| (*s).to_string()).collect(),
+        });
+    }
+
+    // iii.toml lookup uses the `workers::<slug>` class-path form.
     let parts: Vec<&str> = class.split("::").collect();
     if parts.len() < 2 {
         return None;
@@ -87,12 +147,17 @@ pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<Extern
     Some(ExternalWorkerInfo {
         name: binary_name,
         binary_path,
+        extra_args: vec![],
     })
 }
 
 pub struct ExternalWorkerInfo {
     pub name: String,
     pub binary_path: PathBuf,
+    /// Args prepended to the child's argv, before `--config <path>`.
+    /// Empty for conventional iii_workers/<binary> resolution; populated
+    /// when the worker was matched via KNOWN_EXTERNAL.
+    pub extra_args: Vec<String>,
 }
 
 /// A worker implementation backed by an external binary from `iii_workers/`.
@@ -105,6 +170,7 @@ pub struct ExternalWorker {
     display_name: &'static str,
     name: String,
     binary_path: PathBuf,
+    extra_args: Vec<String>,
     config: Option<Value>,
     child: Arc<Mutex<Option<Child>>>,
     config_file: Arc<Mutex<Option<PathBuf>>>,
@@ -118,6 +184,7 @@ impl ExternalWorker {
             display_name,
             name,
             binary_path: info.binary_path,
+            extra_args: info.extra_args,
             config,
             child: Arc::new(Mutex::new(None)),
             config_file: Arc::new(Mutex::new(None)),
@@ -183,6 +250,9 @@ impl Worker for ExternalWorker {
         }
 
         let mut cmd = tokio::process::Command::new(&self.binary_path);
+        for arg in &self.extra_args {
+            cmd.arg(arg);
+        }
         if let Some(ref path) = config_path {
             cmd.arg("--config").arg(path);
         }
@@ -237,9 +307,10 @@ impl Worker for ExternalWorker {
         tracing::info!("Destroying external worker '{}'", self.name);
         kill_child(&self.child).await;
 
-        // Clean up temp config file
         if let Some(path) = self.config_file.lock().await.take() {
-            let _ = std::fs::remove_file(&path);
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!("failed to remove temp config {}: {}", path.display(), e);
+            }
         }
 
         Ok(())
@@ -282,8 +353,6 @@ async fn kill_child(child: &Arc<Mutex<Option<Child>>>) {
 mod tests {
     use super::*;
 
-    // ── helpers ──────────────────────────────────────────────────────────
-
     /// Creates a temp dir with an `iii.toml` and optional binaries under `iii_workers/`.
     fn setup_manifest(workers: &[(&str, &str)], binaries: &[&str]) -> tempfile::TempDir {
         let dir = tempfile::TempDir::new().unwrap();
@@ -303,8 +372,6 @@ mod tests {
         dir
     }
 
-    // ── resolve_external_module (uses cwd, no iii.toml) ─────────────────
-
     #[test]
     fn resolve_external_module_returns_none_for_builtin_name() {
         assert!(resolve_external_module("iii-stream").is_none());
@@ -314,8 +381,6 @@ mod tests {
     fn resolve_external_module_returns_none_for_short_class() {
         assert!(resolve_external_module("SomeModule").is_none());
     }
-
-    // ── resolve_external_module_in: happy paths ─────────────────────────
 
     #[test]
     fn resolve_happy_path_three_segment_class() {
@@ -370,8 +435,6 @@ mod tests {
         let info = result.expect("slug without underscores should pass through unchanged");
         assert_eq!(info.name, "simple");
     }
-
-    // ── resolve_external_module_in: failure paths ───────────────────────
 
     #[test]
     fn resolve_returns_none_for_empty_class() {
@@ -465,13 +528,12 @@ mod tests {
         );
     }
 
-    // ── ExternalWorker construction ─────────────────────────────────────
-
     #[test]
     fn external_module_new_without_config() {
         let info = ExternalWorkerInfo {
             name: "test-worker".to_string(),
             binary_path: PathBuf::from("/tmp/test-worker"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
         assert_eq!(module.name, "test-worker");
@@ -485,6 +547,7 @@ mod tests {
         let info = ExternalWorkerInfo {
             name: "configured-worker".to_string(),
             binary_path: PathBuf::from("/tmp/configured-worker"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, Some(config.clone()));
         assert_eq!(module.config, Some(config));
@@ -495,6 +558,7 @@ mod tests {
         let info = ExternalWorkerInfo {
             name: "my-worker".to_string(),
             binary_path: PathBuf::from("/tmp/my-worker"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
         assert_eq!(module.name(), "ExternalWorker(my-worker)");
@@ -505,6 +569,7 @@ mod tests {
         let info = ExternalWorkerInfo {
             name: "test-worker".to_string(),
             binary_path: PathBuf::from("/tmp/test-worker"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
         let name1 = module.name();
@@ -520,6 +585,7 @@ mod tests {
         let info = ExternalWorkerInfo {
             name: "clone-test".to_string(),
             binary_path: PathBuf::from("/tmp/clone-test"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
         let cloned = module.clone();
@@ -530,13 +596,12 @@ mod tests {
         assert_eq!(module.name, cloned.name);
     }
 
-    // ── async Worker trait methods ──────────────────────────────────────
-
     #[tokio::test]
     async fn external_module_initialize_succeeds() {
         let info = ExternalWorkerInfo {
             name: "init-test".to_string(),
             binary_path: PathBuf::from("/tmp/init-test"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
         assert!(module.initialize().await.is_ok());
@@ -547,6 +612,7 @@ mod tests {
         let info = ExternalWorkerInfo {
             name: "destroy-test".to_string(),
             binary_path: PathBuf::from("/tmp/destroy-test"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
         // destroy on a fresh module (no spawned child) should succeed
@@ -558,6 +624,7 @@ mod tests {
         let info = ExternalWorkerInfo {
             name: "cleanup-test".to_string(),
             binary_path: PathBuf::from("/tmp/cleanup-test"),
+            extra_args: vec![],
         };
         let module = ExternalWorker::new(info, None);
 
@@ -583,5 +650,150 @@ mod tests {
         // Should not panic or error
         kill_child(&child_handle).await;
         assert!(child_handle.lock().await.is_none());
+    }
+
+    #[test]
+    fn external_worker_info_default_extra_args_is_empty() {
+        let info = ExternalWorkerInfo {
+            name: "unit-test".into(),
+            binary_path: PathBuf::from("/tmp/fake"),
+            extra_args: vec![],
+        };
+        assert!(info.extra_args.is_empty());
+    }
+
+    #[test]
+    fn known_external_iii_sandbox_dispatches_to_iii_worker() {
+        let hit = KNOWN_EXTERNAL
+            .iter()
+            .find(|k| k.name == "iii-sandbox")
+            .expect("iii-sandbox must be in KNOWN_EXTERNAL");
+        assert_eq!(hit.binary, "iii-worker");
+        assert_eq!(hit.args, &["sandbox-daemon"]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_external_module_in_hits_known_external_when_binary_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("iii-worker");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let orig_path = std::env::var_os("PATH");
+        // SAFETY: test is marked #[serial] so no other thread mutates env concurrently.
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+
+        let result = resolve_external_module_in(dir.path(), "workers::iii_sandbox");
+
+        // SAFETY: test is marked #[serial] so no other thread mutates env concurrently.
+        unsafe {
+            if let Some(v) = orig_path {
+                std::env::set_var("PATH", v);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+
+        let info = result.expect("iii-sandbox should resolve via KNOWN_EXTERNAL");
+        assert_eq!(info.name, "iii-sandbox");
+        assert_eq!(info.binary_path, fake);
+        assert_eq!(info.extra_args, vec!["sandbox-daemon".to_string()]);
+    }
+
+    // Regression: `WorkerRegistry::create_worker` calls
+    // `resolve_external_module(name)` with the bare `name` from
+    // config.yaml — e.g. "iii-sandbox" — not the `workers::iii_sandbox`
+    // class-path form. The KNOWN_EXTERNAL lookup must handle both.
+    #[test]
+    #[serial_test::serial]
+    fn resolve_external_module_in_hits_known_external_with_bare_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("iii-worker");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let orig_path = std::env::var_os("PATH");
+        // SAFETY: #[serial].
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+
+        let result = resolve_external_module_in(dir.path(), "iii-sandbox");
+
+        // SAFETY: #[serial]; restoring original.
+        unsafe {
+            if let Some(v) = orig_path {
+                std::env::set_var("PATH", v);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+
+        let info = result.expect("bare 'iii-sandbox' must resolve via KNOWN_EXTERNAL");
+        assert_eq!(info.name, "iii-sandbox");
+        assert_eq!(info.binary_path, fake);
+        assert_eq!(info.extra_args, vec!["sandbox-daemon".to_string()]);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn external_worker_spawns_child_with_extra_args_before_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv_log = dir.path().join("argv.txt");
+
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/argv_probe.sh");
+
+        let info = ExternalWorkerInfo {
+            name: "probe".into(),
+            binary_path: fixture,
+            extra_args: vec!["first-arg".into(), "second-arg".into()],
+        };
+
+        let worker = ExternalWorker::new(info, Some(serde_json::json!({"key": "val"})));
+
+        // The probe reads ARGV_LOG from env. Set it on the parent so
+        // the spawned child inherits.
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::set_var("ARGV_LOG", &argv_log);
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        worker.start_background_tasks(rx, tx.clone()).await.unwrap();
+
+        // Poll for the argv file (probe writes immediately; worker may
+        // sleep briefly before spawning).
+        let mut got = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if let Ok(s) = std::fs::read_to_string(&argv_log) {
+                got = Some(s.trim().to_string());
+                break;
+            }
+        }
+        let _ = tx.send(true);
+        worker.destroy().await.unwrap();
+        // SAFETY: test is #[serial].
+        unsafe {
+            std::env::remove_var("ARGV_LOG");
+        }
+
+        let argv = got.expect("probe fixture never wrote argv");
+        assert!(
+            argv.starts_with("first-arg second-arg --config "),
+            "expected extra args before --config, got: {argv:?}"
+        );
     }
 }

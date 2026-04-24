@@ -9,6 +9,8 @@ members = [
   "crates/iii-init",
   "crates/iii-filesystem",
   "crates/iii-network",
+  "crates/iii-shell-client",
+  "crates/iii-shell-proto",
   "crates/iii-supervisor",
   "crates/iii-worker",
   "crates/scaffolder-core",

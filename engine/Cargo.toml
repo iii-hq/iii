@@ -151,7 +151,9 @@ data-encoding = "2"
 zip = "2"
 thiserror = "2"
 tokio-tungstenite = "0.28"
-which = "6"
+# Used by workers::external::resolve_external_module_in to locate
+# iii-worker on $PATH for the iii-sandbox well-known name.
+which = "7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

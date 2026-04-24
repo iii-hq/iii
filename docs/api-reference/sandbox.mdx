@@ -1,0 +1,1010 @@
+---
+title: "Sandbox"
+description: "Spawn ephemeral microVMs from your worker code or terminal with iii.trigger('sandbox::*', ...)."
+---
+
+## What is the sandbox API?
+
+The sandbox API is a runtime interface for spawning short-lived microVMs from your
+worker code or from the terminal. Each sandbox boots in a few hundred
+milliseconds, runs commands in isolation from the host, and tears down
+cleanly. The filesystem is discarded on stop.
+
+**Use it for:**
+
+- Running untrusted code or AI-agent tool calls.
+- One-shot scripts that should not share state with your workers.
+- Per-request isolation where you want a fresh environment every time.
+
+**Don't use it for:**
+
+- Long-lived services — use a regular worker.
+- Durable stateful tasks — the overlay filesystem is wiped on stop.
+
+<Note>
+This page is about the `sandbox::*` runtime API (called via `iii.trigger()`). If you're looking for
+how worker processes run inside isolated microVMs, see
+[Developing Sandbox Workers](/how-to/developing-sandbox-workers).
+</Note>
+
+## Quickstart
+
+### One-shot: boot, run one command, stop
+
+From the terminal:
+
+```bash
+iii sandbox run python -- python3 -c 'print("hi")'
+```
+
+From your code — create, exec, then stop:
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python' },
+  timeoutMs: 300_000,
+})
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print("hi")'] },
+  timeoutMs: 35_000,
+})
+console.log(out.stdout) // "hi\n"
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python"}, "timeout_ms": 300_000})
+sandbox_id = result["sandbox_id"]
+out = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", 'print("hi")']}, "timeout_ms": 35_000})
+print(out["stdout"])  # "hi\n"
+await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": True}})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+    let out: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(\"hi\")"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    println!("{}", out["stdout"].as_str().unwrap_or(""));
+    iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### Full lifecycle: create once, exec many times, stop
+
+For agent loops, REPLs, or any multi-step flow where guest state needs to
+carry across commands, create a sandbox up front and exec into it
+repeatedly:
+
+```bash
+SB=$(iii sandbox create python --idle-timeout 300)
+iii sandbox exec "$SB" -- python3 -c 'print(2+2)'            # 4
+iii sandbox exec "$SB" -- python3 -c 'import sys; print(sys.version)'
+iii sandbox stop "$SB"
+```
+
+On an interactive terminal, `create` prints `✓ sandbox ready in Xs` on
+stderr before the uuid lands on stdout. In a pipe or
+command-substitution like `$(...)` the output is silent automatically,
+so the capture stays clean.
+
+The SDK lifecycle in code mirrors the CLI:
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python', idle_timeout_secs: 300 },
+  timeoutMs: 300_000,
+})
+const a = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print(2+2)'] },
+  timeoutMs: 35_000,
+})
+const b = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'import sys; print(sys.version)'] },
+  timeoutMs: 35_000,
+})
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python", "idle_timeout_secs": 300}, "timeout_ms": 300_000})
+sandbox_id = result["sandbox_id"]
+a = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2+2)"]}, "timeout_ms": 35_000})
+b = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "import sys; print(sys.version)"]}, "timeout_ms": 35_000})
+await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": True}})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python", "idle_timeout_secs": 300 }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+    let _a: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2+2)"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    let _b: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "import sys; print(sys.version)"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+## Engine setup
+
+The quickest path is `iii worker add iii-sandbox`, which appends the
+builtin default block to your engine `config.yaml`:
+
+```yaml
+workers:
+  - name: iii-sandbox
+    config:
+      auto_install: true
+      image_allowlist:
+        - python
+        - node
+      default_idle_timeout_secs: 300
+      max_concurrent_sandboxes: 32
+      default_cpus: 1
+      default_memory_mb: 512
+```
+
+The supported images are `python` and `node` — add them to
+`image_allowlist` to permit boots. An empty `image_allowlist` denies
+every `sandbox::create` with `S100`. Bring any additional image via
+[`custom_images`](#custom-images).
+
+The engine auto-starts the sandbox daemon when it sees this entry. The
+`iii-sandbox` name resolves to `iii-worker sandbox-daemon` on your `$PATH`
+— shipped in the `iii-worker` binary, no separate install step.
+
+### Configuration reference
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `auto_install` | `boolean` | `true` | Pull the image from its OCI ref on first use when the rootfs isn't cached. Set `false` in air-gapped or pre-provisioned deployments — callers get `S101` and the operator pre-pulls with `iii worker add iiidev/<image>`. |
+| `image_allowlist` | `string[]` | `[]` | Fail-closed list of image names that may be booted. Entries must be preset names (`python`, `node`) or keys from `custom_images`. Empty list denies everything — `sandbox::create` returns `S100` for every request. |
+| `default_idle_timeout_secs` | `number` | `300` | Reap a sandbox when `now - last_exec_at` exceeds this. The reaper runs every 10s. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
+| `max_concurrent_sandboxes` | `number` | `32` | Hard cap on live sandboxes. The 33rd concurrent `sandbox::create` returns `S400`. Size by host RAM (default RAM per sandbox × cap ≤ available RAM). |
+| `default_cpus` | `number` | `1` | vCPUs per sandbox when the request omits `cpus`. |
+| `default_memory_mb` | `number` | `512` | RAM ceiling per sandbox when the request omits `memory_mb`. |
+| `per_image_caps` | `map` | `{}` | Per-image hard caps. Each value is `{ max_cpus: N, max_memory_mb: N }`. Requests exceeding a cap return `S400`. |
+| `custom_images` | `map` | `{}` | Deployment-specific images beyond the built-in presets. See [Custom images](#custom-images). |
+
+**Observability.** The sandbox daemon registers via the standard SDK
+worker runtime, which wraps every `sandbox::create` and `sandbox::exec`
+handler invocation in an OpenTelemetry span. Route them through the
+standard observability worker — see
+[iii-observability](/workers/iii-observability).
+
+## SDK: creating a sandbox
+
+Call `sandbox::create` via `iii.trigger()` to boot a sandbox and get a `sandbox_id` handle.
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: {
+    image: 'python',
+    cpus: 2,
+    memory_mb: 512,
+    env: ['LANG=en_US.UTF-8'],
+  },
+  timeoutMs: 300_000,
+})
+```
+
+```python Python
+result = await iii.trigger({
+    "function_id": "sandbox::create",
+    "payload": {
+        "image": "python",
+        "cpus": 2,
+        "memory_mb": 512,
+        "env": ["LANG=en_US.UTF-8"],
+    },
+    "timeout_ms": 300_000,
+})
+sandbox_id = result["sandbox_id"]
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({
+            "image": "python",
+            "cpus": 2,
+            "memory_mb": 512,
+            "env": ["LANG=en_US.UTF-8"],
+        }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = result["sandbox_id"].as_str().unwrap().to_string();
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### `sandbox::create` payload fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `image` | `string` | — | **Required.** Catalog preset (`python`, `node`) or any name declared under `custom_images` in `config.yaml`. Must appear in `image_allowlist`. See [Allowed images](#allowed-images) and [Custom images](#custom-images). |
+| `cpus` | `number` | daemon default | vCPU count. Capped per-image by engine config. |
+| `memory_mb` | `number` | daemon default | RAM in MiB. Capped per-image. |
+| `name` | `string` | generated | Human-readable label for `iii sandbox list`. |
+| `network` | `boolean` | `false` | Opt in to host network access. |
+| `idle_timeout_secs` | `number` | `300` | Reap idle sandbox after N seconds. |
+| `env` | `string[]` | — | Create-time environment variables as `"KEY=VALUE"` strings, baked into the VM's init environment. |
+
+### `sandbox::create` response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `sandbox_id` | `string` | UUID handle — pass to `sandbox::exec`, `sandbox::stop`, and `iii sandbox stop`. |
+| `image` | `string` | Echo of the resolved image name — the catalog preset or `custom_images` key that was booted. |
+
+## SDK: running commands
+
+Use `sandbox::exec` to run a command inside a running sandbox.
+
+<CodeGroup>
+
+```typescript Node
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: {
+    sandbox_id,
+    cmd: '/usr/bin/env',
+    args: ['printenv', 'LANG'],
+    timeout_ms: 10_000,
+    env: ['REQUEST_ID=req-42'],
+  },
+  timeoutMs: 35_000,
+})
+if (out.success) console.log(out.stdout.trim())
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+
+```python Python
+out = await iii.trigger({
+    "function_id": "sandbox::exec",
+    "payload": {
+        "sandbox_id": sandbox_id,
+        "cmd": "/usr/bin/env",
+        "args": ["printenv", "LANG"],
+        "timeout_ms": 10_000,
+        "env": ["REQUEST_ID=req-42"],
+    },
+    "timeout_ms": 35_000,
+})
+if out["success"]:
+    print(out["stdout"].strip())
+await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": True}})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+
+    let out: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({
+            "sandbox_id": sandbox_id,
+            "cmd": "/usr/bin/env",
+            "args": ["printenv", "LANG"],
+            "timeout_ms": 10_000,
+            "env": ["REQUEST_ID=req-42"],
+        }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    if out["success"].as_bool().unwrap_or(false) {
+        println!("{}", out["stdout"].as_str().unwrap_or("").trim());
+    }
+    iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### `sandbox::exec` payload fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sandbox_id` | `string` | — | **Required.** UUID from `sandbox::create`. |
+| `cmd` | `string` | — | **Required.** Command to run. |
+| `args` | `string[]` | `[]` | Arguments for the command. |
+| `timeout_ms` | `number` | `30000` | Per-exec timeout. See [Error handling](#error-handling). |
+| `stdin` | `string` | — | Pre-packaged stdin, base64-encoded. |
+| `env` | `string[]` | — | Exec-time env vars as `"KEY=VALUE"` strings, layered on top of create-time env. |
+| `workdir` | `string` | — | Working directory for the command inside the guest. When omitted, the shell's default cwd is used. |
+
+### Output shape
+
+| Field | Type | Description |
+|---|---|---|
+| `stdout` | `string` | Captured stdout, UTF-8 decoded. |
+| `stderr` | `string` | Captured stderr. |
+| `exit_code` | `number \| null` | Child exit code; `null` on timeout without exit frame. |
+| `timed_out` | `boolean` | `true` when the in-VM timeout fired. |
+| `duration_ms` | `number` | Daemon-side wall clock. |
+| `success` | `boolean` | `true` iff `exit_code === 0`. |
+
+## SDK: one-shot and listing
+
+### One-shot (create → exec → stop)
+
+There is no `runOnce` wire call — expand it into the three-call form:
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python' },
+  timeoutMs: 300_000,
+})
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print(2 ** 10)'] },
+  timeoutMs: 35_000,
+})
+// Best-effort stop — don't await if you only need the result
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: false },
+}).catch(() => {})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python"}, "timeout_ms": 300_000})
+sandbox_id = result["sandbox_id"]
+out = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2 ** 10)"]}, "timeout_ms": 35_000})
+try:
+    await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": False}})
+except Exception:
+    pass
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = result["sandbox_id"].as_str().unwrap().to_string();
+    let _out: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2 ** 10)"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    // Best-effort stop
+    let _ = iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": false }),
+        action: None,
+        timeout_ms: None,
+    }).await;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### `sandbox::list`
+
+Returns active sandboxes.
+
+<CodeGroup>
+
+```typescript Node
+const { sandboxes } = await iii.trigger({
+  function_id: 'sandbox::list',
+  payload: {},
+})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::list", "payload": {}})
+sandboxes = result["sandboxes"]
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let _result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::list".into(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+| Field | Type | Description |
+|---|---|---|
+| `sandbox_id` | `string` | UUID handle — pass to `iii sandbox stop`. |
+| `name` | `string?` | Label set at create time. |
+| `image` | `string` | Catalog preset (`python`, `node`) or `custom_images` key. |
+| `age_secs` | `number` | Seconds since create. |
+| `exec_in_progress` | `boolean` | `true` while an exec is in flight. |
+| `stopped` | `boolean` | `true` for sandboxes awaiting reap. |
+
+## Environment variables
+
+Two layers:
+
+- **Create-time** (`sandbox::create` payload `env`): passed to the VM at boot
+  and exported into the guest shell's init environment. Every exec call
+  inherits these. The right place for secrets (keys, tokens), service URLs,
+  locale/PATH overrides.
+- **Exec-time** (`sandbox::exec` payload `env`): sent with that single exec
+  request. The guest shell layers the exec-time list on top of the init
+  environment for the duration of that call. The right place for per-request
+  correlation IDs, debug flags, and one-off overrides.
+
+Both layers take `env` as a list/array of `"KEY=VALUE"` strings.
+
+If a key appears in both, exec-time wins for that call only. Create-time
+remains the base for every subsequent exec.
+
+There is no "unset" verb. Either don't set the key, or overwrite it with an
+empty string.
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: {
+    image: 'python',
+    env: [
+      `DATABASE_URL=${process.env.DATABASE_URL}`,
+      'LANG=en_US.UTF-8',
+    ],
+  },
+  timeoutMs: 300_000,
+})
+
+// Inherits DATABASE_URL and LANG.
+await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'import os; print(os.environ["LANG"])'] },
+  timeoutMs: 35_000,
+})
+
+// Layers REQUEST_ID on top for this call only.
+await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: {
+    sandbox_id,
+    cmd: 'python3',
+    args: ['-c', 'import os; print(os.environ["REQUEST_ID"])'],
+    env: ['REQUEST_ID=req-42'],
+  },
+  timeoutMs: 35_000,
+})
+```
+
+```python Python
+import os
+result = await iii.trigger({
+    "function_id": "sandbox::create",
+    "payload": {
+        "image": "python",
+        "env": [
+            f"DATABASE_URL={os.environ['DATABASE_URL']}",
+            "LANG=en_US.UTF-8",
+        ],
+    },
+    "timeout_ms": 300_000,
+})
+sandbox_id = result["sandbox_id"]
+
+# Inherits DATABASE_URL and LANG.
+await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", 'import os; print(os.environ["LANG"])']}, "timeout_ms": 35_000})
+
+# Layers REQUEST_ID on top for this call only.
+await iii.trigger({
+    "function_id": "sandbox::exec",
+    "payload": {
+        "sandbox_id": sandbox_id,
+        "cmd": "python3",
+        "args": ["-c", 'import os; print(os.environ["REQUEST_ID"])'],
+        "env": ["REQUEST_ID=req-42"],
+    },
+    "timeout_ms": 35_000,
+})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let database_url = std::env::var("DATABASE_URL")?;
+    let result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({
+            "image": "python",
+            "env": [format!("DATABASE_URL={database_url}"), "LANG=en_US.UTF-8".to_string()],
+        }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = result["sandbox_id"].as_str().unwrap().to_string();
+
+    // Inherits DATABASE_URL and LANG.
+    let _: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "import os; print(os.environ['LANG'])"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+
+    // Layers REQUEST_ID on top for this call only.
+    let _: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({
+            "sandbox_id": sandbox_id,
+            "cmd": "python3",
+            "args": ["-c", "import os; print(os.environ['REQUEST_ID'])"],
+            "env": ["REQUEST_ID=req-42"],
+        }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+## Allowed images
+
+The daemon ships with two catalog presets:
+
+| Image | OCI reference | Use case |
+|---|---|---|
+| `python` | `iiidev/python:latest` | CPython 3 + standard library |
+| `node` | `iiidev/node:latest` | Node.js LTS |
+
+Your engine's `image_allowlist` in `config.yaml` controls which images
+are actually bootable at runtime. The allowlist is fail-closed — an
+image must appear in `image_allowlist` for `sandbox::create` to accept
+it, whether it's a preset or a custom image.
+
+Anything else a deployment needs ships through
+[`custom_images`](#custom-images).
+
+## Custom images
+
+Deployments can register additional OCI images under `custom_images` in
+the `iii-sandbox` config. Each entry maps a short name (used in
+`image_allowlist` and the `image` field on `sandbox::create`) to a
+fully-qualified OCI reference:
+
+```yaml
+workers:
+  - name: iii-sandbox
+    config:
+      image_allowlist:
+        - python
+        - my-app
+        - gpu-worker
+      custom_images:
+        my-app: ghcr.io/acme/my-app:1.2.3
+        gpu-worker: docker.io/tenant/gpu-worker:cuda12
+```
+
+Once `my-app` is in both `custom_images` and `image_allowlist`, callers
+boot it exactly like a preset:
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'my-app' },
+  timeoutMs: 300_000,
+})
+```
+
+**Rules.**
+
+- **Presets cannot be shadowed.** Declaring a `custom_images` entry with
+  a reserved preset name (`python`, `node`) is rejected at config load —
+  the daemon exits with an explicit error. This stops a mistyped or
+  malicious config from silently redirecting the trusted `python`
+  image to an attacker-controlled ref.
+- **Allowlist is still required.** An image in `custom_images` that is
+  not in `image_allowlist` returns `S100` on `sandbox::create`. Presence
+  in the catalog is not permission.
+- **Auto-install applies.** With `auto_install: true` (default), the
+  first `sandbox::create` for a custom image pulls it into
+  `~/.iii/cache/<slug>/` and reuses the cached rootfs on subsequent
+  boots. With `auto_install: false`, pre-pull with
+  `iii worker add <oci-ref>` or the sandbox returns `S101`.
+- **Image must ship a linux/`<host-arch>` manifest.** The sandbox boots
+  a microVM, not a container — an image missing a matching platform
+  manifest returns `S102` with a hint about the host architecture.
+- **Rootfs is shared with managed workers.** A custom image pulled via
+  the sandbox satisfies a managed worker boot of the same OCI ref, and
+  vice versa. One pull, one cache entry.
+
+See [Configure the engine](/how-to/configure-engine) for the full
+engine-level schema.
+
+## Error handling
+
+Every sandbox failure throws an error whose message begins with
+`handler error:` followed by a JSON envelope. The `type` field is
+the error category — one of `validation`, `config`, `internal`,
+`transient`, `execution`, or `platform` — matching the category
+column in the [S-codes table](#s-codes) below:
+
+```
+handler error: {"type":"validation","code":"S002","message":"sandbox not found: <id>"}
+handler error: {"type":"execution","code":"S200","message":"exec timed out after 500ms"}
+```
+
+Parse the envelope if you need the S-code for targeted recovery:
+
+<CodeGroup>
+
+```typescript Node
+try {
+  const { sandbox_id } = await iii.trigger({
+    function_id: 'sandbox::create',
+    payload: { image: 'python' },
+    timeoutMs: 300_000,
+  })
+  await iii.trigger({
+    function_id: 'sandbox::exec',
+    payload: { sandbox_id, cmd: 'python3', args: ['-c', 'while True: pass'], timeout_ms: 500 },
+    timeoutMs: 35_000,
+  })
+} catch (err) {
+  const match = err?.message?.match(/handler error:\s*(\{.*\})/)
+  const envelope = match ? JSON.parse(match[1]) : null
+  if (envelope?.code === 'S200') {
+    console.warn('timed out; raise timeout_ms or split the work')
+  } else if (envelope?.code === 'S101') {
+    console.error('pre-pull with: iii worker add iiidev/<image>')
+  } else {
+    throw err
+  }
+}
+```
+
+```python Python
+import json, re
+
+try:
+    result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python"}, "timeout_ms": 300_000})
+    sandbox_id = result["sandbox_id"]
+    await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "while True: pass"], "timeout_ms": 500}, "timeout_ms": 35_000})
+except Exception as e:
+    m = re.search(r'handler error:\s*(\{.*\})', str(e))
+    envelope = json.loads(m.group(1)) if m else None
+    if envelope and envelope.get("code") == "S200":
+        print("timed out; raise timeout_ms or split the work")
+    elif envelope and envelope.get("code") == "S101":
+        print("pre-pull with: iii worker add iiidev/<image>")
+    else:
+        raise
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+
+    match iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "while True: pass"], "timeout_ms": 500 }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await {
+        Ok::<Value, _>(_out) => { /* ... */ }
+        Err(e) => {
+            let msg = e.to_string();
+            if let Some(json_str) = msg.strip_prefix("handler error: ") {
+                if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    match envelope["code"].as_str() {
+                        Some("S200") => eprintln!("timed out; raise the exec timeout or split the work"),
+                        Some("S101") => eprintln!("pre-pull with: iii worker add iiidev/<image>"),
+                        _ => eprintln!("sandbox error: {e}"),
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### S-codes
+
+Both the S-code and the message are canonical: the daemon in
+[`errors.rs`](https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/errors.rs)
+emits each code from a semantically matching variant. Parse `code` from the
+`handler error: {...}` envelope to distinguish cases.
+
+| Code | Type | Retryable | Meaning | Typical fix |
+|---|---|---|---|---|
+| S001 | validation | false | Malformed request (bad UUID, bad base64 stdin) | Fix the caller |
+| S002 | validation | false | Well-formed `sandbox_id` but no live sandbox matches | Re-create |
+| S003 | validation | false | Another exec is in-flight on this sandbox | Serialize execs per handle |
+| S004 | validation | false | Called exec on a stopped sandbox | Create a new one |
+| S100 | config | false | Image not in engine allowlist | Use a preset or add to allowlist |
+| S101 | internal | false | Rootfs not on disk | Run `iii worker add iiidev/<image>` |
+| S102 | transient | **true** | Pull/unpack failed | Retry with backoff |
+| S200 | execution | false | `timeout_ms` exceeded | Raise the budget or split the work |
+| S300 | platform | false | libkrun refused to boot | Check host reqs (macOS Apple Silicon / Linux KVM) |
+| S400 | config | false | cpus/memory over per-image cap | Lower request or raise cap |
+
+## CLI reference
+
+Five user-facing commands, in two flavors. The daemon itself runs as an internal `iii-worker` subcommand that the engine spawns automatically — you never invoke it yourself.
+
+**One-shot:** `run` creates a sandbox, executes a single command, and stops it. Use for batch scripts, CI, and quick evals.
+
+**Full lifecycle:** `create` → `exec` × N → `stop` keeps the sandbox alive between calls. Use for agent loops, REPLs, multi-step workflows, anything where you need to carry guest state across commands.
+
+### `iii sandbox run`
+
+Create a sandbox, run one command, stop.
+
+```bash
+iii sandbox run <image> [--cpus N] [--memory MiB] [--port P] -- <cmd> [args...]
+```
+
+| Flag | Description |
+|---|---|
+| `--cpus N` | vCPU count. Defaults to `1`. |
+| `--memory MiB` | RAM in MiB. Defaults to `512`. |
+| `--port P` | Override the engine WebSocket port (default `49134`). |
+
+Example:
+
+```bash
+iii sandbox run python --cpus 2 --memory 512 -- python3 -c 'print(2 ** 10)'
+```
+
+### `iii sandbox create`
+
+Boot a long-lived sandbox and print its id. The sandbox persists until you call `iii sandbox stop <id>` or the idle timeout fires.
+
+```bash
+iii sandbox create <image> [--cpus N] [--memory MiB] [--idle-timeout SECS] \
+                            [--name LABEL] [--network] [-e KEY=VAL]... [--port P]
+```
+
+| Flag | Description |
+|---|---|
+| `--cpus N` | vCPU count. Defaults to `1`. |
+| `--memory MiB` | RAM in MiB. Defaults to `512`. |
+| `--idle-timeout SECS` | Auto-stop after this many seconds of exec inactivity. Omit to use the engine's default. |
+| `--name LABEL` | Human-readable label, shown in `iii sandbox list`. |
+| `--network` | Enable guest network access. Default follows the engine policy (typically off). |
+| `-e KEY=VAL`, `--env KEY=VAL` | Repeatable. Entries without `=` are silently skipped. |
+| `--port P` | Engine WebSocket port (default `49134`). |
+
+Pipe-friendly: the sandbox id is the only thing written to stdout, so you can capture it in a shell:
+
+```bash
+SB=$(iii sandbox create python --idle-timeout 300)
+iii sandbox exec "$SB" -- python3 -c 'print(2+2)'
+iii sandbox exec "$SB" -- python3 -c 'import sys; print(sys.version)'
+iii sandbox stop "$SB"
+```
+
+<Note>
+When run interactively, the CLI prints `✓ sandbox ready in Xs` on **stderr**
+before the uuid hits stdout. Redirecting stderr (`2>/dev/null`) or piping
+stdout (`$(...)`) silences it automatically — the capture stays
+clean. First-time boots pull and unpack the rootfs (~5-30s depending on
+image size); subsequent boots with a cached rootfs take well under a
+second.
+</Note>
+
+### `iii sandbox exec`
+
+Run a command inside an already-running sandbox. Pipe-mode only — for interactive TTY sessions use `iii worker exec` against a managed worker instead.
+
+```bash
+iii sandbox exec <sandbox-id> [--timeout DUR] [-e KEY=VAL]... [--port P] -- <cmd> [args...]
+```
+
+| Flag | Description |
+|---|---|
+| `--timeout DUR` | Kill the child after this long (`30s`, `5m`, `500ms` — `humantime` syntax). On expiry the exec exits with code `124`, matching coreutils `timeout(1)`. |
+| `-e KEY=VAL`, `--env KEY=VAL` | Repeatable. Entries without `=` are silently skipped. |
+| `--port P` | Engine WebSocket port. |
+
+Stdout and stderr from the guest command are streamed to the CLI's stdout and stderr respectively; the CLI exits with the child's exit code.
+
+### `iii sandbox list`
+
+```bash
+iii sandbox list [--port P]
+```
+
+Prints the active-sandbox table. Always shows every sandbox the daemon
+knows about — the underlying RPC is owner-scoped for multi-tenant SDK
+callers, but the CLI has no authenticated identity, so it always
+requests the unscoped view. (Earlier releases exposed an `--all` flag;
+it is now a silent no-op, kept only so existing scripts keep working.)
+
+### `iii sandbox stop`
+
+```bash
+iii sandbox stop <sandbox-id> [--port P]
+```
+
+Graceful stop by UUID. The id comes from `iii sandbox create`, `iii sandbox list`, or the
+`sandbox_id` field returned by `sandbox::create`.
+
+## Testing
+
+The `testing` subpaths (`iii-sdk/testing`, `iii.testing`, `iii_sdk::testing`)
+have been removed along with the SDK sugar. Unit-test sandbox-calling code
+by intercepting `iii.trigger()` calls at the mock/stub layer of your test
+framework. For Node, mock the `trigger` method directly:
+
+```typescript
+const mockIii = {
+  trigger: vi.fn().mockImplementation(async ({ function_id, payload }) => {
+    if (function_id === 'sandbox::create') return { sandbox_id: 'test-sb-uuid' }
+    if (function_id === 'sandbox::exec') return { stdout: 'hi\n', stderr: '', exit_code: 0, success: true, timed_out: false, duration_ms: 5 }
+    if (function_id === 'sandbox::stop') return {}
+    throw new Error(`unexpected function_id: ${function_id}`)
+  }),
+}
+```
+
+## Troubleshooting
+
+**`S101` on first create.** Run `iii worker add iiidev/<image>`
+to pre-pull the rootfs, or set `auto_install: true` in the daemon config
+so the daemon pulls on demand.
+
+**`S003` repeating after a timeout.** The sandbox's
+exec-in-progress flag clears when the shell session drops. If you keep
+getting `S003`, your client probably has a stuck connection or you're
+racing two exec calls on the same handle — serialize them.
+
+**`S300` with a stderr tail.** Sandboxes require
+macOS Apple Silicon or Linux with KVM. On other platforms, and on
+hosts where libkrun can't initialize (missing frameworks, dlopen
+failures), the adapter now appends the last 32 lines (≤ 4 KiB) of the
+VM process's stderr to the `BootFailed` message — read it first; the
+real reason is almost always in there. `dmesg` on Linux or the
+`iii-worker` logs back-fill anything the tail truncated.

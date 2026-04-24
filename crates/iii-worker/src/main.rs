@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use iii_worker::{Cli, Commands};
 
 #[tokio::main]
@@ -16,7 +16,30 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cli_args = Cli::parse();
+    // The `sandbox` subtree is exposed through the `iii` dispatcher as
+    // `iii sandbox ...`. When users run `iii sandbox --help`, clap would
+    // otherwise show `Usage: iii worker sandbox <COMMAND>` because the
+    // top-level bin_name is "iii worker". Clap's help generator always
+    // walks from the root and uses the root's bin_name as the usage
+    // prefix, so per-subcommand overrides don't change the displayed
+    // path. Workaround: peek at argv and, if the first non-program
+    // argument is `sandbox`, swap the root bin_name to `iii` so the
+    // usage line reads `iii sandbox ...`. All other subcommands keep
+    // the existing `iii worker <cmd>` usage.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let is_sandbox = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.to_string_lossy().starts_with('-'))
+        .map_or(false, |a| a == "sandbox");
+
+    let mut cmd = Cli::command();
+    if is_sandbox {
+        cmd = cmd.bin_name("iii");
+    }
+    let matches = cmd.get_matches_from(&args);
+    let cli_args =
+        Cli::from_arg_matches(&matches).map_err(|e| anyhow::anyhow!("cli parse: {e}"))?;
 
     let exit_code = match cli_args.command {
         Commands::Add {
@@ -26,7 +49,6 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let wait = !no_wait;
             if force {
-                // Force mode: process each worker individually with force logic
                 let mut fail_count = 0;
                 for name in &args.worker_names {
                     let result = iii_worker::cli::managed::handle_managed_add(
@@ -105,6 +127,51 @@ async fn main() -> anyhow::Result<()> {
             let handler = iii_worker::cli::shell_client::handle_managed_exec;
             handler(args).await
         }
+        Commands::Sandbox { cmd } => match cmd {
+            iii_worker::cli::app::SandboxCmd::Run {
+                image,
+                cpus,
+                memory,
+                port,
+                cmd,
+            } => iii_worker::cli::sandbox::handle_run(image, cmd, cpus, memory, port).await,
+            iii_worker::cli::app::SandboxCmd::Create {
+                image,
+                cpus,
+                memory,
+                idle_timeout,
+                name,
+                network,
+                env,
+                port,
+            } => {
+                iii_worker::cli::sandbox::handle_create(
+                    image,
+                    cpus,
+                    memory,
+                    idle_timeout,
+                    name,
+                    network,
+                    env,
+                    port,
+                )
+                .await
+            }
+            iii_worker::cli::app::SandboxCmd::Exec {
+                id,
+                timeout,
+                env,
+                port,
+                cmd,
+            } => iii_worker::cli::sandbox::handle_exec(id, timeout, env, port, cmd).await,
+            iii_worker::cli::app::SandboxCmd::List { all, port } => {
+                iii_worker::cli::sandbox::handle_list(all, port).await
+            }
+            iii_worker::cli::app::SandboxCmd::Stop { id, port } => {
+                iii_worker::cli::sandbox::handle_stop(id, port).await
+            }
+        },
+        Commands::SandboxDaemon(args) => iii_worker::cli::sandbox_daemon::run(args).await,
         Commands::VmBoot(args) => {
             // Run the VM on a dedicated OS thread. `msb_krun`'s virtio-blk
             // devices (imago-backed) call `tokio::Runtime::block_on` in

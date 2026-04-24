@@ -24,6 +24,9 @@ integration-oci = []
 [dependencies]
 iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
+# TODO: switch to crates.io pin before shipping; path dep for co-development
+iii-sdk = { path = "../../sdk/packages/rust/iii" }
+iii-shell-client = { path = "../iii-shell-client" }
 iii-supervisor = { path = "../iii-supervisor" }
 msb_krun = { version = "0.1.9", features = ["net", "blk"] }
 oci-client = "0.16"
@@ -59,7 +62,19 @@ libc = "0.2"
 # `iii worker exec --timeout 30s` uses humantime's canonical duration
 # grammar (`30s`, `5m`, `1h`, `500ms`).
 humantime = "2"
+# Used by sandbox_daemon::config for command denylist.
+regex = "1"
+# Used by sandbox_daemon for unique identifiers.
+uuid = { version = "1", features = ["v4", "serde"] }
+# Used by sandbox_daemon for lazy-initialized statics.
+once_cell = "1"
+# Used by sandbox_daemon for derive-based error types.
+thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"
+# Integration tests compare against the shell protocol types.
+iii-shell-proto = { path = "../iii-shell-proto" }
+# Ensure tests that touch HOME env var run serially.
+serial_test = "3"
