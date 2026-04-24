@@ -1,0 +1,41 @@
+---
+title: 'Remove dict form from Python register_function'
+description: 'Python register_function no longer accepts a dict as its first argument.'
+---
+
+## What changed
+
+The Python SDK's `III.register_function` no longer accepts a dict literal as its first argument. Pass a string function ID or a `RegisterFunctionInput` instance instead. This matches the Node and Rust SDK surface, where no equivalent dict/object-builder form exists.
+
+```python
+# Before
+iii.register_function({"id": "greet"}, greet)
+iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
+
+# After
+iii.register_function("greet", greet)
+iii.register_function("greet", greet, description="Greets a user")
+```
+
+Passing a dict now raises `TypeError`:
+
+```
+TypeError: func_or_id must be str or RegisterFunctionInput, got dict
+```
+
+## Why
+
+The dict overload duplicated the string-ID form, produced no IDE autocompletion or type-checking support, and had no counterpart in the Node or Rust SDKs. Removing it tightens the cross-SDK API contract and leaves one idiomatic call shape per use case.
+
+## Migration
+
+Replace every `register_function({"id": X, ...}, handler)` call with `register_function(X, handler, ...)`, converting extra dict keys (`description`, `metadata`, `request_format`, `response_format`) to keyword arguments.
+
+| Before | After |
+|--------|-------|
+| `register_function({"id": "foo"}, h)` | `register_function("foo", h)` |
+| `register_function({"id": "foo", "description": "d"}, h)` | `register_function("foo", h, description="d")` |
+| `register_function({"id": "foo", "metadata": m}, h)` | `register_function("foo", h, metadata=m)` |
+| `register_function({"id": "foo", "request_format": r}, h)` | `register_function("foo", h, request_format=r)` |
+
+If you were relying on the dict path *not* auto-extracting `request_format` / `response_format` from typed handlers, pass explicit `request_format=...` and `response_format=...` to preserve the old message payload.
