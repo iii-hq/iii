@@ -40,10 +40,10 @@ pub async fn handle_stop<S: VmStopper>(
             stopped: true,
         });
     }
-    registry.mark_stopped(id).await;
     if let Some(pid) = state.vm_pid {
         stopper.stop(pid).await?;
     }
+    registry.mark_stopped(id).await;
     let _ = OverlayLayout::for_sandbox(id).cleanup();
     registry.remove(id).await;
     Ok(StopResponse {
@@ -111,6 +111,65 @@ mod tests {
         assert!(resp.stopped);
         assert!(called.load(Ordering::SeqCst));
         assert!(reg.get(id).await.is_err());
+    }
+
+    struct FlakyStopper {
+        fail_once: AtomicBool,
+        call_count: Arc<std::sync::atomic::AtomicU32>,
+    }
+    #[async_trait::async_trait]
+    impl VmStopper for FlakyStopper {
+        async fn stop(&self, _pid: u32) -> Result<(), SandboxError> {
+            self.call_count
+                .fetch_add(1, Ordering::SeqCst);
+            if self.fail_once.swap(false, Ordering::SeqCst) {
+                return Err(SandboxError::BootFailed("transient stop failure".into()));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_error_preserves_state_and_retry_converges() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(state(id)).await;
+        let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let stopper = FlakyStopper {
+            fail_once: AtomicBool::new(true),
+            call_count: call_count.clone(),
+        };
+
+        let err = handle_stop(
+            StopRequest {
+                sandbox_id: id.to_string(),
+                wait: true,
+            },
+            &reg,
+            &stopper,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SandboxError::BootFailed(_)));
+        let after_fail = reg.get(id).await.expect("entry must remain after failed stop");
+        assert!(
+            !after_fail.stopped,
+            "stopped flag must not be set when stopper.stop returned Err"
+        );
+
+        let resp = handle_stop(
+            StopRequest {
+                sandbox_id: id.to_string(),
+                wait: true,
+            },
+            &reg,
+            &stopper,
+        )
+        .await
+        .unwrap();
+        assert!(resp.stopped);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2, "retry must invoke stopper again");
+        assert!(reg.get(id).await.is_err(), "registry entry must be removed after successful retry");
     }
 
     #[tokio::test]
