@@ -10,9 +10,11 @@ use super::registry::validate_worker_name;
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum allowed download size: 512 MB.
 const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Returns the directory where binary workers are installed: `~/.iii/workers/`.
 pub fn binary_workers_dir() -> PathBuf {
@@ -130,23 +132,78 @@ pub fn verify_sha256(data: &[u8], checksum_content: &str) -> Result<(), String> 
     }
 }
 
-/// Downloads a binary worker from the URL provided by the API, verifies its
-/// SHA256 checksum, and installs it to `~/.iii/workers/{worker_name}`.
-///
-/// Returns the path to the installed binary on success.
-pub async fn download_and_install_binary(
-    worker_name: &str,
-    binary_info: &super::registry::BinaryInfo,
-) -> Result<PathBuf, String> {
-    validate_worker_name(worker_name)?;
+pub fn validate_locked_artifact_url(url: &str) -> Result<(), String> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|e| format!("invalid artifact URL `{url}`: {e}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("artifact URL `{url}` has no host"))?;
 
-    tracing::debug!("Downloading from {}", binary_info.url);
+    #[cfg(debug_assertions)]
+    if matches!(parsed.scheme(), "http" | "https") && is_loopback_host(host) {
+        return Ok(());
+    }
 
+    if parsed.scheme() != "https" {
+        return Err(format!(
+            "artifact URL `{url}` is not trusted: locked worker artifacts must use HTTPS registry URLs"
+        ));
+    }
+
+    if is_private_or_loopback_host(host) {
+        return Err(format!(
+            "artifact URL `{url}` is not trusted: private and loopback hosts are not allowed in iii.lock"
+        ));
+    }
+
+    if !is_trusted_registry_host(host) {
+        return Err(format!(
+            "artifact URL `{url}` is not trusted: expected a iii registry artifact host"
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_trusted_registry_host(host: &str) -> bool {
+    matches!(host, "workers.iii.dev" | "api.workers.iii.dev") || host.ends_with(".workers.iii.dev")
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+fn is_private_or_loopback_host(host: &str) -> bool {
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.octets()[0] == 0
+        }
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.segments()[0] & 0xfe00 == 0xfc00
+                || ip.segments()[0] & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+async fn download_archive_bytes(url: &str) -> Result<Vec<u8>, String> {
     let client = &super::registry::HTTP_CLIENT;
 
-    // Download binary.
     let resp = client
-        .get(&binary_info.url)
+        .get(url)
         .send()
         .await
         .map_err(|e| format!("Failed to download binary: {}", e))?;
@@ -180,6 +237,61 @@ pub async fn download_and_install_binary(
         ));
     }
 
+    Ok(binary_data.to_vec())
+}
+
+pub async fn download_locked_binary_archive(
+    worker_name: &str,
+    target: &str,
+    binary_info: &super::registry::BinaryInfo,
+) -> Result<Vec<u8>, String> {
+    validate_worker_name(worker_name)?;
+    validate_locked_artifact_url(&binary_info.url).map_err(|e| {
+        format!(
+            "worker `{worker_name}` target `{target}` cannot be replayed from iii.lock: {e}. \
+             Fix: restore the committed iii.lock, use a registry-managed artifact URL, or run \
+             `iii worker update {worker_name}` only if changing pins is intentional"
+        )
+    })?;
+    let binary_data = download_archive_bytes(&binary_info.url).await?;
+    verify_sha256(&binary_data, &binary_info.sha256)?;
+    Ok(binary_data)
+}
+
+pub fn unique_worker_temp_path(worker_name: &str, suffix: &str) -> PathBuf {
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    binary_workers_dir().join(format!(".{worker_name}.{pid}.{nanos}.{counter}.{suffix}"))
+}
+
+pub fn set_executable_permission(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Failed to set executable permission: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Downloads a binary worker from the URL provided by the API, verifies its
+/// SHA256 checksum, and installs it to `~/.iii/workers/{worker_name}`.
+///
+/// Returns the path to the installed binary on success.
+pub async fn download_and_install_binary(
+    worker_name: &str,
+    binary_info: &super::registry::BinaryInfo,
+) -> Result<PathBuf, String> {
+    validate_worker_name(worker_name)?;
+
+    tracing::debug!("Downloading from {}", binary_info.url);
+
+    let binary_data = download_archive_bytes(&binary_info.url).await?;
+
     // Verify checksum (always — the API provides sha256 for every binary).
     verify_sha256(&binary_data, &binary_info.sha256)?;
 
@@ -192,18 +304,13 @@ pub async fn download_and_install_binary(
         .map_err(|e| format!("Failed to create install directory: {}", e))?;
 
     let install_path = install_dir.join(worker_name);
-    let tmp_path = install_dir.join(format!("{}.tmp", worker_name));
+    let tmp_path = unique_worker_temp_path(worker_name, "tmp");
 
     std::fs::write(&tmp_path, &extracted)
         .map_err(|e| format!("Failed to write binary to temp file: {}", e))?;
 
     let finalize = || -> Result<PathBuf, String> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| format!("Failed to set executable permission: {}", e))?;
-        }
+        set_executable_permission(&tmp_path)?;
 
         std::fs::rename(&tmp_path, &install_path)
             .map_err(|e| format!("Failed to move binary into place: {}", e))?;
@@ -294,6 +401,17 @@ mod tests {
         let result = verify_sha256(data, "");
         assert!(result.is_err(), "expected error for empty checksum");
         assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn validate_locked_artifact_url_accepts_registry_host() {
+        validate_locked_artifact_url("https://workers.iii.dev/worker.tar.gz").unwrap();
+    }
+
+    #[test]
+    fn validate_locked_artifact_url_rejects_untrusted_host() {
+        let err = validate_locked_artifact_url("https://example.com/worker.tar.gz").unwrap_err();
+        assert!(err.contains("not trusted"));
     }
 
     /// Helper: create a tar.gz archive in memory containing one file.
