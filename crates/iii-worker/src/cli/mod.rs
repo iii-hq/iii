@@ -26,6 +26,7 @@ pub mod shell_relay;
 pub mod source_watcher;
 pub mod status;
 pub mod supervisor_ctl;
+pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod vm_boot;
