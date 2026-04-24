@@ -20,7 +20,10 @@ use crate::{
     engine::Engine,
     workers::stream::{
         StreamMetadata, StreamWrapperMessage,
-        adapters::{StreamAdapter, StreamConnection},
+        adapters::{
+            StreamAdapter, StreamConnection, parse_stream_storage_key, stream_storage_key,
+            stream_storage_prefix,
+        },
         registry::{StreamAdapterFuture, StreamAdapterRegistration},
     },
 };
@@ -47,7 +50,7 @@ impl BuiltinKvStoreAdapter {
     }
 
     fn gen_key(&self, stream_name: &str, group_id: &str) -> String {
-        format!("stream:{}:{}", stream_name, group_id)
+        stream_storage_key(stream_name, group_id)
     }
 }
 
@@ -123,7 +126,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
-        let prefix = self.gen_key(stream_name, "");
+        let prefix = stream_storage_prefix(stream_name);
 
         Ok(self
             .storage
@@ -145,13 +148,10 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
         // Parse keys to extract stream names and groups
         for key in all_keys {
-            let parts: Vec<&str> = key.split(':').collect();
-            // Ensure key follows format "stream:<stream_name>:<group_id>"
-            if parts.len() >= 3 && parts[0] == "stream" {
-                let stream_name = parts[1].to_string();
-                let group_id = parts[2].to_string();
-
+            if let Some((stream_name, group_id)) = parse_stream_storage_key(&key) {
                 stream_map.entry(stream_name).or_default().insert(group_id);
+            } else if key.starts_with("stream:") {
+                tracing::warn!(key = %key, "Skipping unparseable stream storage key");
             }
         }
 
@@ -266,6 +266,34 @@ mod tests {
         );
         assert_eq!(metadata[1].id, "users");
         assert_eq!(metadata[1].groups, vec!["default".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_all_stream_preserves_stream_names_with_colons() {
+        let adapter = BuiltinKvStoreAdapter::new(None);
+        adapter
+            .set("orders:v2", "region:us", "item-1", json!({ "value": 1 }))
+            .await
+            .unwrap();
+        adapter
+            .set("orders:v2", "region:eu", "item-2", json!({ "value": 2 }))
+            .await
+            .unwrap();
+
+        let mut groups = adapter.list_groups("orders:v2").await.unwrap();
+        groups.sort();
+        assert_eq!(
+            groups,
+            vec!["region:eu".to_string(), "region:us".to_string()]
+        );
+
+        let metadata = adapter.list_all_stream().await.unwrap();
+        assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata[0].id, "orders:v2");
+        assert_eq!(
+            metadata[0].groups,
+            vec!["region:eu".to_string(), "region:us".to_string()]
+        );
     }
 
     #[tokio::test]

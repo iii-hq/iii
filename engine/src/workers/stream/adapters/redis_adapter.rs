@@ -21,7 +21,10 @@ use crate::{
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         stream::{
             StreamMetadata, StreamWrapperMessage,
-            adapters::{StreamAdapter, StreamConnection},
+            adapters::{
+                StreamAdapter, StreamConnection, parse_stream_storage_key, stream_storage_key,
+                stream_storage_prefix,
+            },
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
     },
@@ -78,7 +81,7 @@ impl StreamAdapter for RedisAdapter {
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
-        let key = format!("stream:{}:{}", stream_name, group_id);
+        let key = stream_storage_key(stream_name, group_id);
 
         // Serialize operations to JSON
         let ops_json = serde_json::to_string(&ops)
@@ -270,7 +273,7 @@ impl StreamAdapter for RedisAdapter {
         item_id: &str,
         data: Value,
     ) -> anyhow::Result<SetResult> {
-        let key: String = format!("stream:{}:{}", stream_name, group_id);
+        let key = stream_storage_key(stream_name, group_id);
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
 
@@ -321,7 +324,7 @@ impl StreamAdapter for RedisAdapter {
         group_id: &str,
         item_id: &str,
     ) -> anyhow::Result<Option<Value>> {
-        let key = format!("stream:{}:{}", stream_name, group_id);
+        let key = stream_storage_key(stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
         match conn.hget::<_, _, Option<String>>(&key, &item_id).await {
@@ -343,7 +346,7 @@ impl StreamAdapter for RedisAdapter {
         let group_id = group_id.to_string();
         let item_id = item_id.to_string();
 
-        let key = format!("stream:{}:{}", stream_name, group_id);
+        let key = stream_storage_key(&stream_name, &group_id);
 
         // Use Lua script for atomic get-and-delete operation
         // This script atomically gets the old value and deletes the field
@@ -380,7 +383,7 @@ impl StreamAdapter for RedisAdapter {
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {
-        let key = format!("stream:{}:{}", stream_name, group_id);
+        let key = stream_storage_key(stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
         match conn.hgetall::<String, HashMap<String, String>>(key).await {
@@ -405,8 +408,8 @@ impl StreamAdapter for RedisAdapter {
 
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
         let mut conn = self.publisher.lock().await;
-        let pattern = format!("stream:{}:*", stream_name);
-        let prefix = format!("stream:{}:", stream_name);
+        let prefix = stream_storage_prefix(stream_name);
+        let pattern = format!("{prefix}*");
 
         match conn.keys::<_, Vec<String>>(pattern).await {
             Ok(keys) => Ok(keys
@@ -437,14 +440,11 @@ impl StreamAdapter for RedisAdapter {
 
             let (next_cursor, keys) = result;
 
-            // Parse keys: stream:<stream_name>:<group_id>
             for key in keys {
-                let parts: Vec<&str> = key.split(':').collect();
-                if parts.len() >= 3 && parts[0] == "stream" {
-                    let stream_name = parts[1].to_string();
-                    let group_id = parts[2].to_string();
-
+                if let Some((stream_name, group_id)) = parse_stream_storage_key(&key) {
                     stream_map.entry(stream_name).or_default().insert(group_id);
+                } else if key.starts_with("stream:") {
+                    tracing::warn!(key = %key, "Skipping unparseable stream storage key");
                 }
             }
 
@@ -565,7 +565,7 @@ impl RedisAdapter {
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
-        let key = format!("stream:{}:{}", stream_name, group_id);
+        let key = stream_storage_key(stream_name, group_id);
 
         // Simple atomic get-and-set approach
         // Get old value
@@ -676,3 +676,49 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> name: "redis", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::*;
+
+    async fn setup_test_adapter() -> RedisAdapter {
+        let redis_url = "redis://localhost:6379".to_string();
+        RedisAdapter::new(redis_url).await.unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis running"]
+    async fn list_all_stream_preserves_stream_names_with_colons_redis() {
+        let adapter = setup_test_adapter().await;
+        let stream_name = format!("orders:{}:v2", Uuid::new_v4());
+
+        let _ = adapter.delete(&stream_name, "region:us", "item-1").await;
+        let _ = adapter.delete(&stream_name, "region:eu", "item-2").await;
+
+        adapter
+            .set(&stream_name, "region:us", "item-1", json!({ "value": 1 }))
+            .await
+            .unwrap();
+        adapter
+            .set(&stream_name, "region:eu", "item-2", json!({ "value": 2 }))
+            .await
+            .unwrap();
+
+        let metadata = adapter.list_all_stream().await.unwrap();
+        let entry = metadata
+            .into_iter()
+            .find(|stream| stream.id == stream_name)
+            .expect("stream with ':' in the name should be listed");
+
+        assert_eq!(
+            entry.groups,
+            vec!["region:eu".to_string(), "region:us".to_string()]
+        );
+
+        let _ = adapter.delete(&stream_name, "region:us", "item-1").await;
+        let _ = adapter.delete(&stream_name, "region:eu", "item-2").await;
+    }
+}
