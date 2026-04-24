@@ -10,12 +10,23 @@
 //! is hermetic and the test asserts real disk state after the call.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Serializes tests in this file that mutate CWD and `III_API_URL`.
+/// Without it, one test's `set_var("III_API_URL", fixture)` leaks into
+/// another test's "unreachable" scenario and the second test sees the
+/// first fixture's URL — turning the failure path into a download-stage
+/// 404 and breaking the deps-before-append assertion.
+static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 async fn in_temp_dir<F, Fut, R>(f: F) -> R
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
 {
+    let _guard = TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let prev = std::env::current_dir().unwrap();
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();

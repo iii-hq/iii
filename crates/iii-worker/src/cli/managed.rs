@@ -4240,12 +4240,14 @@ workers:
 
     #[tokio::test]
     async fn kill_stale_worker_no_op_when_no_pid_files() {
+        let _h = super::super::test_support::lock_home();
         // Should not panic when no PID files exist
         kill_stale_worker("__iii_test_nonexistent_99999__").await;
     }
 
     #[tokio::test]
     async fn kill_stale_worker_removes_watch_pid_file() {
+        let _h = super::super::test_support::lock_home();
         // Writes a fake `watch.pid` with a highly unlikely-to-be-alive
         // PID, then verifies `kill_stale_worker` reaps it from the
         // pid-file list introduced when the source watcher sidecar
@@ -4271,6 +4273,7 @@ workers:
 
     #[tokio::test]
     async fn reap_source_watcher_removes_pid_file() {
+        let _h = super::super::test_support::lock_home();
         // Exercises the stop-path helper used by `handle_managed_stop`
         // to tear down the watcher sidecar before stopping the VM. A
         // dead PID in watch.pid should still produce a clean remove
@@ -4296,6 +4299,7 @@ workers:
 
     #[tokio::test]
     async fn reap_source_watcher_no_op_when_no_pid_file() {
+        let _h = super::super::test_support::lock_home();
         // Idempotent on the cold path — no watch.pid, nothing to do,
         // no panic.
         reap_source_watcher("__iii_test_reap_watcher_nonexistent__").await;
@@ -4303,6 +4307,7 @@ workers:
 
     #[tokio::test]
     async fn reap_source_watcher_handles_garbage_pid_content() {
+        let _h = super::super::test_support::lock_home();
         // Parse failure must not prevent file removal.
         let home = dirs::home_dir().unwrap_or_default();
         let worker_name = "__iii_test_reap_watcher_garbage__";
@@ -4319,6 +4324,7 @@ workers:
 
     #[tokio::test]
     async fn kill_stale_worker_handles_invalid_pid_content() {
+        let _h = super::super::test_support::lock_home();
         // Use real function with a worker name that won't collide
         // The function should handle garbage content gracefully
         let home = dirs::home_dir().unwrap_or_default();
@@ -4336,6 +4342,7 @@ workers:
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_stale_worker_ignores_symlinked_pidfile() {
+        let _h = super::super::test_support::lock_home();
         // A pre-planted symlink at the pidfile location must not be
         // followed: read_pid opens with O_NOFOLLOW and returns None, so
         // we skip the kill. The symlink itself is still removed so
@@ -4343,6 +4350,10 @@ workers:
         let home = dirs::home_dir().unwrap_or_default();
         let worker_name = "__iii_test_symlink_pidfile__";
         let managed_dir = home.join(".iii/managed").join(worker_name);
+        // Scrub leftover state from an aborted prior run so `symlink`
+        // below (which errors EEXIST if the path already exists) and
+        // the post-run assertions see a clean slate.
+        let _ = std::fs::remove_dir_all(&managed_dir);
         let _ = std::fs::create_dir_all(&managed_dir);
 
         // Attacker-controlled file we must NOT overwrite or target.
