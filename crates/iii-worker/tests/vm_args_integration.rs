@@ -600,11 +600,28 @@ fn image_rootfs_uses_sha256_hash_prefix() {
         path_a_str
     );
 
-    // Different image strings should produce different hashes.
+    // Post-refactor layout: image_rootfs returns `<home>/.iii/images/<hash>/rootfs`.
+    // The hash directory is the parent of the `rootfs/` leaf.
+    assert_eq!(
+        path_a.file_name().and_then(|s| s.to_str()),
+        Some("rootfs"),
+        "image_rootfs should end with /rootfs, got: {}",
+        path_a_str
+    );
+
+    // Different image strings should produce different hash directories
+    // (the parent of `rootfs/`).
     let path_b = LibkrunAdapter::image_rootfs("docker.io/library/nginx:alpine");
+    let hash_a = path_a.parent().and_then(|p| p.file_name());
+    let hash_b = path_b.parent().and_then(|p| p.file_name());
+    assert!(
+        hash_a.is_some() && hash_b.is_some(),
+        "image_rootfs paths should have a hash parent dir; got a={:?}, b={:?}",
+        path_a,
+        path_b
+    );
     assert_ne!(
-        path_a.file_name(),
-        path_b.file_name(),
+        hash_a, hash_b,
         "different images should have different hash directories"
     );
 }

@@ -26,7 +26,6 @@ STREAM_NAME = "test-stream-py"
 GROUP_ID = "test-group"
 ITEM_ID = "test-item"
 
-
 @pytest.fixture(autouse=True)
 def cleanup_stream(iii_client: III):
     iii_client.trigger({
@@ -250,6 +249,67 @@ async def test_stream_update_applies_partial_updates_via_ops(iii_client: III):
 
         assert result["count"] == 5
         assert result["name"] == "initial"
+    finally:
+        iii_client.trigger(
+            {
+                "function_id": "stream::delete",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": item_id,
+                },
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_update_appends_array_elements_and_strings(iii_client: III):
+    """Append ops push array elements and concatenate string fields."""
+    ts = int(time.time() * 1000)
+    group_id = f"append-group-py-{ts}"
+    item_id = f"append-item-py-{ts}"
+
+    iii_client.trigger(
+        {
+            "function_id": "stream::set",
+            "payload": {
+                "stream_name": STREAM_NAME,
+                "group_id": group_id,
+                "item_id": item_id,
+                "data": {"chunks": [], "transcript": "hello"},
+            },
+        }
+    )
+
+    try:
+        iii_client.trigger(
+            {
+                "function_id": "stream::update",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": item_id,
+                    "ops": [
+                        {"type": "append", "path": "chunks", "value": {"text": "hello"}},
+                        {"type": "append", "path": "transcript", "value": " world"},
+                    ],
+                },
+            }
+        )
+
+        result = iii_client.trigger(
+            {
+                "function_id": "stream::get",
+                "payload": {
+                    "stream_name": STREAM_NAME,
+                    "group_id": group_id,
+                    "item_id": item_id,
+                },
+            }
+        )
+
+        assert result["chunks"] == [{"text": "hello"}]
+        assert result["transcript"] == "hello world"
     finally:
         iii_client.trigger(
             {

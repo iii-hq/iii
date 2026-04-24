@@ -252,6 +252,53 @@ async def test_state_update_applies_partial_updates_via_ops(iii_client: III):
 
 
 @pytest.mark.asyncio
+async def test_state_update_appends_array_elements_and_strings(iii_client: III):
+    """Append ops push array elements and concatenate string fields."""
+    ts = int(time.time() * 1000)
+    scope = f"append-scope-py-{ts}"
+    key = f"append-key-py-{ts}"
+
+    iii_client.trigger(
+        {
+            "function_id": "state::set",
+            "payload": {"scope": scope, "key": key, "value": {"events": [], "transcript": "hello"}},
+        }
+    )
+
+    try:
+        iii_client.trigger(
+            {
+                "function_id": "state::update",
+                "payload": {
+                    "scope": scope,
+                    "key": key,
+                    "ops": [
+                        {"type": "append", "path": "events", "value": {"kind": "chunk"}},
+                        {"type": "append", "path": "transcript", "value": " world"},
+                    ],
+                },
+            }
+        )
+
+        result = iii_client.trigger(
+            {
+                "function_id": "state::get",
+                "payload": {"scope": scope, "key": key},
+            }
+        )
+
+        assert result["events"] == [{"kind": "chunk"}]
+        assert result["transcript"] == "hello world"
+    finally:
+        iii_client.trigger(
+            {
+                "function_id": "state::delete",
+                "payload": {"scope": scope, "key": key},
+            }
+        )
+
+
+@pytest.mark.asyncio
 async def test_reactive_state(iii_client: III):
     """Registering a state trigger fires the handler when state is updated."""
     reactive_key = _unique_key("reactive")

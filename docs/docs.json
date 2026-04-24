@@ -71,6 +71,7 @@
                     "pages": [
                       "how-to/worker-rbac",
                       "how-to/managing-container-workers",
+                      "how-to/reproduce-worker-installs",
                       "how-to/developing-sandbox-workers"
                     ]
                   },
@@ -128,7 +129,8 @@
                   "workers/iii-pubsub",
                   "workers/iii-exec",
                   "workers/iii-bridge",
-                  "workers/iii-worker-manager"
+                  "workers/iii-worker-manager",
+                  "workers/managed-worker-lockfile"
                 ]
               },
               {

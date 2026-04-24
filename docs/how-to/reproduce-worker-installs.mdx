@@ -1,0 +1,109 @@
+---
+title: 'Reproduce Worker Installs'
+description: 'Use iii.lock to pin registry-managed workers and verify installs across machines and CI.'
+---
+
+## Goal
+
+Use `iii.lock` to make registry-managed worker installs reproducible across local development, CI, and deployment environments.
+
+## Context
+
+Use this when you add workers by registry shorthand, such as `iii worker add image-resize` or `iii worker add image-resize@1.0.0`, and you want every environment to use the same resolved worker graph.
+
+<Info title="Current lockfile scope">
+  `iii.lock` is written for registry-managed workers when the registry resolver returns a worker graph. Direct OCI image references, built-in workers, and local-path sandbox workers are not part of the current lockfile flow.
+</Info>
+
+## Steps
+
+### 1. Add a Registry Worker
+
+Add the worker from the iii registry. You can pin a requested version with `@version`, or omit it to resolve the registry default.
+
+```bash
+iii worker add image-resize
+iii worker add image-resize@1.0.0
+```
+
+When the registry returns a resolved graph, the CLI updates both `config.yaml` and `iii.lock`.
+
+```yaml title="config.yaml"
+workers:
+  - name: image-resize
+    image: ghcr.io/iii-hq/image-resize:1.0.0
+```
+
+```yaml title="iii.lock"
+version: 1
+workers:
+  image-resize:
+    version: 1.0.0
+    type: image
+    dependencies: {}
+    source:
+      kind: image
+      image: ghcr.io/iii-hq/image-resize@sha256:abc123
+```
+
+If the resolved worker depends on other workers, those dependencies are recorded in the same lockfile.
+
+### 2. Commit the Lockfile
+
+Commit `iii.lock` with `config.yaml` so every environment has the same worker set and source pins.
+
+```bash
+git add config.yaml iii.lock
+```
+
+### 3. Verify the Lockfile in CI
+
+Run `iii worker verify` anywhere you need to confirm that registry-managed workers in `config.yaml` are represented in `iii.lock`.
+
+```bash
+iii worker verify
+```
+
+The command succeeds when every lockfile-managed worker listed in `config.yaml` has an entry in `iii.lock`. Built-in workers, direct OCI image references, and local-path sandbox workers are ignored by this check because they are outside the current lockfile flow. Extra entries in `iii.lock` are allowed.
+
+For binary workers, `iii.lock` can carry artifacts for multiple target triples under the same resolved worker version. A lockfile generated on macOS can be reused on Linux CI when the registry resolver included a Linux artifact. If the current target is missing, verification fails with the missing target and the targets already present in the lockfile.
+
+You can use `sync --frozen` for the same non-mutating check:
+
+```bash
+iii worker sync --frozen
+```
+
+### 4. Inspect the Pinned Set
+
+Run `iii worker sync` to read `iii.lock` and print the number of pinned workers.
+
+```bash
+iii worker sync
+```
+
+In the current implementation, non-frozen `sync` reads and parses the lockfile, then reports the pinned worker count. It does not install artifacts from `iii.lock` yet.
+
+### 5. Update Pins Intentionally
+
+Update one locked worker by name:
+
+```bash
+iii worker update image-resize
+```
+
+Or update every locked root worker:
+
+```bash
+iii worker update
+```
+
+`update` re-resolves `latest` for the selected locked worker, or for each inferred root worker when no name is provided, and rewrites `iii.lock` with the new resolved graph. Dependency-only lockfile entries are refreshed through their root graph instead of being updated as independent roots.
+
+## Result
+
+Your registry-managed workers are recorded in `iii.lock`, CI can verify that `config.yaml` and the lockfile agree, and worker updates happen through explicit `iii worker update` commands.
+
+<Info title="Lockfile reference">
+  For the full lockfile schema and command summary, see [Managed Worker Lockfile](/workers/managed-worker-lockfile).
+</Info>

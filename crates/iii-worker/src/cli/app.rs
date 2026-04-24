@@ -69,6 +69,13 @@ pub enum Commands {
         args: AddArgs,
     },
 
+    /// Re-resolve locked workers and update iii.lock
+    Update {
+        /// Optional worker name to update. If omitted, updates every worker in iii.lock.
+        #[arg(value_name = "WORKER")]
+        worker_name: Option<String>,
+    },
+
     /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
     Clear {
         /// Worker name to clear (omit to clear all)
@@ -126,6 +133,17 @@ pub enum Commands {
 
     /// List all workers and their status
     List,
+
+    /// Read iii.lock and report pinned workers.
+    /// Pass --frozen in CI to fail if config.yaml and iii.lock disagree.
+    Sync {
+        /// Verify the lockfile without mutating local files.
+        #[arg(long)]
+        frozen: bool,
+    },
+
+    /// Verify config.yaml is represented in iii.lock without mutating files
+    Verify,
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
     /// By default refreshes live in place until the worker reaches a terminal

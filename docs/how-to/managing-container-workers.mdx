@@ -9,7 +9,7 @@ Use the `iii worker` commands to manage container workers throughout their lifec
 
 ## Context
 
-Container workers are OCI images that the engine pulls, extracts, and runs in isolated sandboxes. The `iii worker` CLI manages these workers declaratively through `config.yaml`, so you rarely need to edit configuration files by hand.
+Container workers are OCI images that the engine pulls, extracts, and runs in isolated sandboxes. The `iii worker` CLI manages these workers declaratively through `config.yaml`, so you rarely need to edit configuration files by hand. Registry-managed workers can also be pinned in `iii.lock` for reproducible installs.
 
 ## Steps
 
@@ -263,4 +263,4 @@ iii worker add localhost:5050/my-worker:latest
 
 ## Result
 
-You can manage the full lifecycle of container workers — add, configure, start, stop, inspect logs, and remove — using the `iii worker` CLI. All state is tracked in `config.yaml`, and workers run in isolated sandboxes managed by the engine.
+You can manage the full lifecycle of container workers — add, configure, start, stop, inspect logs, and remove — using the `iii worker` CLI. Worker configuration is tracked in `config.yaml`; registry-managed worker source pins can also be tracked in `iii.lock`. See [Reproduce Worker Installs](/how-to/reproduce-worker-installs) for the lockfile workflow.
