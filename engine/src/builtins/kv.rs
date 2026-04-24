@@ -455,93 +455,10 @@ impl BuiltinKvStore {
         let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
 
         let old_value = index_map.get(&key).cloned();
-        // Automatically create key entry with empty object if it doesn't exist
-        let existing_value = index_map
-            .entry(key.clone())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
-
-        let mut updated_value = existing_value.clone();
-
-        for op in ops {
-            match op {
-                UpdateOp::Set { path, value } => {
-                    if path.0.is_empty()
-                        && let Some(value) = value
-                    {
-                        updated_value = value;
-                    } else if let Value::Object(ref mut map) = updated_value {
-                        map.insert(path.0, value.unwrap_or(Value::Null));
-                    } else {
-                        tracing::warn!(
-                            "Set operation with path requires existing value to be a JSON object"
-                        );
-                    }
-                }
-                UpdateOp::Merge { path, value } => {
-                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
-                        if let (Value::Object(existing_map), Value::Object(new_map)) =
-                            (&mut updated_value, value)
-                        {
-                            for (k, v) in new_map {
-                                existing_map.insert(k, v);
-                            }
-                        } else {
-                            tracing::warn!(
-                                "Merge operation requires both existing and new values to be JSON objects"
-                            );
-                        }
-                    } else {
-                        tracing::warn!("Only root-level merge is supported");
-                    }
-                }
-                UpdateOp::Increment { path, by } => {
-                    if let Value::Object(ref mut map) = updated_value {
-                        if let Some(existing_val) = map.get_mut(&path.0) {
-                            if let Some(num) = existing_val.as_i64() {
-                                *existing_val = Value::Number(serde_json::Number::from(num + by));
-                            } else {
-                                *existing_val = Value::Number(serde_json::Number::from(by));
-                            }
-                        } else {
-                            map.insert(path.0, Value::Number(serde_json::Number::from(by)));
-                        }
-                    } else {
-                        tracing::warn!(
-                            "Increment operation requires existing value to be a JSON object"
-                        );
-                    }
-                }
-                UpdateOp::Decrement { path, by } => {
-                    if let Value::Object(ref mut map) = updated_value {
-                        if let Some(existing_val) = map.get_mut(&path.0) {
-                            if let Some(num) = existing_val.as_i64() {
-                                *existing_val = Value::Number(serde_json::Number::from(num - by));
-                            } else {
-                                *existing_val = Value::Number(serde_json::Number::from(0));
-                            }
-                        } else {
-                            map.insert(path.0, Value::Number(serde_json::Number::from(-by)));
-                        }
-                    } else {
-                        tracing::warn!(
-                            "Decrement operation requires existing value to be a JSON object"
-                        );
-                    }
-                }
-                UpdateOp::Remove { path } => {
-                    if let Value::Object(ref mut map) = updated_value {
-                        map.remove(&path.0);
-                    } else {
-                        tracing::warn!(
-                            "Remove operation requires existing value to be a JSON object"
-                        );
-                    }
-                }
-            }
-        }
+        let updated_value = crate::update_ops::apply_update_ops(old_value.clone(), &ops);
 
         // Write the updated value back to the store
-        *existing_value = updated_value.clone();
+        index_map.insert(key.clone(), updated_value.clone());
 
         drop(store);
 
@@ -849,6 +766,128 @@ mod test {
             .await;
         assert_eq!(result.new_value["counter"], 1);
         assert_eq!(result.old_value, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_append_operations() {
+        let kv_store = BuiltinKvStore::new(None);
+        let index = "test";
+        let key = "update:append";
+
+        let initial = serde_json::json!({
+            "events": [{"kind": "start"}],
+            "transcript": "hello",
+            "object": {"nested": true},
+            "user.name": ["A"],
+            "user": {"name": ["B"]}
+        });
+        kv_store
+            .set(index.to_string(), key.to_string(), initial.clone())
+            .await;
+
+        let result = kv_store
+            .update(
+                index.to_string(),
+                key.to_string(),
+                vec![
+                    UpdateOp::append("events", serde_json::json!({"kind": "chunk"})),
+                    UpdateOp::append("transcript", serde_json::json!(" world")),
+                    UpdateOp::append("missing_string", serde_json::json!("created")),
+                    UpdateOp::append("missing_array", serde_json::json!({"kind": "created"})),
+                    UpdateOp::append("object", serde_json::json!("ignored")),
+                    UpdateOp::append("user.name", serde_json::json!("C")),
+                ],
+            )
+            .await;
+
+        assert_eq!(result.old_value, Some(initial));
+        assert_eq!(
+            result.new_value["events"],
+            serde_json::json!([{"kind": "start"}, {"kind": "chunk"}])
+        );
+        assert_eq!(result.new_value["transcript"], "hello world");
+        assert_eq!(result.new_value["missing_string"], "created");
+        assert_eq!(
+            result.new_value["missing_array"],
+            serde_json::json!([{"kind": "created"}])
+        );
+        assert_eq!(
+            result.new_value["object"],
+            serde_json::json!({"nested": true})
+        );
+        assert_eq!(result.new_value["user.name"], serde_json::json!(["A", "C"]));
+        assert_eq!(result.new_value["user"], serde_json::json!({"name": ["B"]}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_append_missing_root() {
+        let kv_store = BuiltinKvStore::new(None);
+        let index = "test";
+
+        let string_result = kv_store
+            .update(
+                index.to_string(),
+                "update:append_root_string".to_string(),
+                vec![UpdateOp::append("", serde_json::json!("hello"))],
+            )
+            .await;
+        assert_eq!(string_result.old_value, None);
+        assert_eq!(string_result.new_value, serde_json::json!("hello"));
+
+        let array_result = kv_store
+            .update(
+                index.to_string(),
+                "update:append_root_array".to_string(),
+                vec![UpdateOp::append("", serde_json::json!({"kind": "chunk"}))],
+            )
+            .await;
+        assert_eq!(array_result.old_value, None);
+        assert_eq!(
+            array_result.new_value,
+            serde_json::json!([{"kind": "chunk"}])
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_concurrent_appends() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let index = "test";
+        let key = "update:concurrent_appends";
+        kv_store
+            .set(
+                index.to_string(),
+                key.to_string(),
+                serde_json::json!({"chunks": []}),
+            )
+            .await;
+
+        let mut tasks = vec![];
+        for i in 0..100 {
+            let kv_store = Arc::clone(&kv_store);
+            tasks.push(tokio::spawn(async move {
+                kv_store
+                    .update(
+                        index.to_string(),
+                        key.to_string(),
+                        vec![UpdateOp::append("chunks", serde_json::json!(i))],
+                    )
+                    .await;
+            }));
+        }
+        futures::future::join_all(tasks).await;
+
+        let final_value = kv_store
+            .get(index.to_string(), key.to_string())
+            .await
+            .expect("Value should exist");
+        let chunks = final_value["chunks"]
+            .as_array()
+            .expect("chunks should be array");
+
+        assert_eq!(chunks.len(), 100);
+        for i in 0..100 {
+            assert!(chunks.contains(&serde_json::json!(i)));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

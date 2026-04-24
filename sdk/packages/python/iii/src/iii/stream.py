@@ -135,6 +135,14 @@ class UpdateDecrement(BaseModel):
     by: int | float
 
 
+class UpdateAppend(BaseModel):
+    """Append operation for stream update."""
+
+    type: str = "append"
+    path: str
+    value: Any
+
+
 class UpdateRemove(BaseModel):
     """Remove operation for stream update."""
 
@@ -150,7 +158,7 @@ class UpdateMerge(BaseModel):
     value: Any
 
 
-UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateRemove | UpdateMerge
+UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
 
 
 class StreamTriggerConfig(BaseModel):

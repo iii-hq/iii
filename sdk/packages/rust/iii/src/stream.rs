@@ -7,6 +7,7 @@
 //!
 //! let ops = UpdateBuilder::new()
 //!     .increment("counter", 1)
+//!     .append("events", serde_json::json!({"kind": "created"}))
 //!     .set("status", serde_json::json!("active"))
 //!     .build();
 //! ```
@@ -43,6 +44,12 @@ impl UpdateBuilder {
         self
     }
 
+    /// Add an append operation
+    pub fn append(mut self, path: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
+        self.ops.push(UpdateOp::append(path.into(), value.into()));
+        self
+    }
+
     /// Add a remove operation
     pub fn remove(mut self, path: impl Into<String>) -> Self {
         self.ops.push(UpdateOp::remove(path.into()));
@@ -58,5 +65,28 @@ impl UpdateBuilder {
     /// Build the list of operations
     pub fn build(self) -> Vec<UpdateOp> {
         self.ops
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::FieldPath;
+
+    use super::*;
+
+    #[test]
+    fn builder_adds_append_operation() {
+        let ops = UpdateBuilder::new()
+            .append("chunks", serde_json::json!("hello"))
+            .build();
+
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            UpdateOp::Append { path, value } => {
+                assert_eq!(path, &FieldPath("chunks".to_string()));
+                assert_eq!(value, &serde_json::json!("hello"));
+            }
+            other => panic!("expected append op, got {other:?}"),
+        }
     }
 }

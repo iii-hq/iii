@@ -16,6 +16,7 @@ pub mod services;
 pub mod telemetry;
 pub mod trigger;
 pub mod trigger_formats;
+pub(crate) mod update_ops;
 pub mod worker_connections;
 
 pub mod workers {

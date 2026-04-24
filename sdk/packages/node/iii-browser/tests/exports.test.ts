@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ChannelReader, ChannelWriter, registerWorker, TriggerAction } from '../src/index'
+import type { UpdateAppend, UpdateOp } from '../src/stream'
 
 describe('Package Exports', () => {
   it('should export main SDK symbols', () => {
@@ -22,6 +23,13 @@ describe('Package Exports', () => {
     expect(streamModule).toBeDefined()
     // stream.ts exports only types (IStream, StreamGetInput, etc.) which are
     // erased at runtime, so we just verify the module resolves successfully
+  })
+
+  it('should type append as a browser update operation', () => {
+    const op = { type: 'append', path: 'chunks', value: 'hello' } satisfies UpdateAppend
+    const ops: UpdateOp[] = [op]
+
+    expect(ops[0]).toEqual({ type: 'append', path: 'chunks', value: 'hello' })
   })
 
   it('should import state module', async () => {
