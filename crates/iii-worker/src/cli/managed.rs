@@ -293,6 +293,11 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
         None => locked_root_worker_names(&lockfile),
     };
 
+    if names.is_empty() {
+        eprintln!("  No workers pinned in iii.lock; nothing to update.");
+        return 0;
+    }
+
     let mut fail_count = 0;
     for name in &names {
         let graph = match fetch_resolved_worker_graph(name, Some("latest"), None).await {
@@ -419,6 +424,54 @@ fn print_resolved_tree(graph: &ResolvedWorkerGraph) {
     }
 }
 
+struct ConfigYamlSnapshot {
+    content: Option<String>,
+}
+
+impl ConfigYamlSnapshot {
+    fn capture() -> Result<Self, String> {
+        let path = std::path::Path::new("config.yaml");
+        if !path.exists() {
+            return Ok(Self { content: None });
+        }
+
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("failed to read config.yaml before graph install: {e}"))?;
+        Ok(Self {
+            content: Some(content),
+        })
+    }
+
+    fn restore(&self) -> Result<(), String> {
+        let path = std::path::Path::new("config.yaml");
+        match &self.content {
+            Some(content) => std::fs::write(path, content)
+                .map_err(|e| format!("failed to restore config.yaml: {e}")),
+            None => match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("failed to remove config.yaml: {e}")),
+            },
+        }
+    }
+
+    fn restore_after_failure(&self) {
+        if let Err(e) = self.restore() {
+            eprintln!("{} {}", "error:".red(), e);
+        }
+    }
+}
+
+fn read_lockfile_or_default(
+    path: &std::path::Path,
+) -> Result<super::lockfile::WorkerLockfile, String> {
+    if path.exists() {
+        super::lockfile::WorkerLockfile::read_from(path)
+    } else {
+        Ok(super::lockfile::WorkerLockfile::default())
+    }
+}
+
 async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> i32 {
     for node in &graph.graph {
         if let Err(e) = super::registry::validate_worker_name(&node.name) {
@@ -431,6 +484,34 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
             return 1;
         }
     }
+
+    let graph_lockfile = match lockfile_from_graph(graph).and_then(|lockfile| {
+        lockfile.to_yaml()?;
+        Ok(lockfile)
+    }) {
+        Ok(lockfile) => lockfile,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    let lock_path = super::lockfile::lockfile_path();
+    let mut lockfile = match read_lockfile_or_default(&lock_path) {
+        Ok(lockfile) => lockfile,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    let config_snapshot = match ConfigYamlSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
 
     for node in &graph.graph {
         let rc = match node.worker_type.as_str() {
@@ -450,6 +531,7 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
                         "error:".red(),
                         node.name
                     );
+                    config_snapshot.restore_after_failure();
                     return 1;
                 };
                 handle_oci_pull_and_add(&node.name, image, brief).await
@@ -461,31 +543,24 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
                     node.name,
                     other
                 );
+                config_snapshot.restore_after_failure();
                 return 1;
             }
         };
 
         if rc != 0 {
+            config_snapshot.restore_after_failure();
             return rc;
         }
     }
 
-    let graph_lockfile = match lockfile_from_graph(graph) {
-        Ok(lockfile) => lockfile,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
-
-    let mut lockfile = super::lockfile::WorkerLockfile::read_from(super::lockfile::lockfile_path())
-        .unwrap_or_default();
     for (name, worker) in graph_lockfile.workers {
         lockfile.workers.insert(name, worker);
     }
 
-    if let Err(e) = lockfile.write_to(super::lockfile::lockfile_path()) {
+    if let Err(e) = lockfile.write_to(&lock_path) {
         eprintln!("{} {}", "error:".red(), e);
+        config_snapshot.restore_after_failure();
         return 1;
     }
 
@@ -3088,6 +3163,157 @@ workers:
     }
 
     #[tokio::test]
+    async fn handle_resolved_graph_add_rejects_invalid_existing_lockfile_before_side_effects() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let original_config = "\
+workers:
+  - name: existing-worker
+";
+            std::fs::write("config.yaml", original_config).unwrap();
+            std::fs::write(cli_lockfile::lockfile_path(), "version: 2\nworkers: {}\n").unwrap();
+
+            let archive = binary_archive("root-worker");
+            let (base_url, server) = spawn_static_http_server(StdHashMap::from([(
+                "GET /root-worker.tar.gz".to_string(),
+                TestResponse {
+                    status: 200,
+                    content_type: "application/gzip",
+                    body: archive.clone(),
+                },
+            )]))
+            .await;
+
+            let target = binary_download::current_target();
+            let graph = cli_registry::ResolvedWorkerGraph {
+                root: cli_registry::ResolvedRoot {
+                    name: "root-worker".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                target: Some(target.to_string()),
+                graph: vec![resolved_binary_worker(
+                    "root-worker",
+                    "1.0.0",
+                    StdHashMap::from([(
+                        target.to_string(),
+                        cli_registry::BinaryInfo {
+                            url: format!("{base_url}/root-worker.tar.gz"),
+                            sha256: sha256_hex(&archive),
+                        },
+                    )]),
+                )],
+                edges: Vec::new(),
+            };
+
+            let rc = handle_resolved_graph_add(&graph, true).await;
+
+            assert_eq!(rc, 1);
+            assert_eq!(
+                std::fs::read_to_string("config.yaml").unwrap(),
+                original_config
+            );
+            assert!(
+                std::fs::read_to_string(cli_lockfile::lockfile_path())
+                    .unwrap()
+                    .contains("version: 2")
+            );
+            assert!(!home.join(".iii/workers/root-worker").exists());
+            server.abort();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_resolved_graph_add_restores_config_when_later_node_fails() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let original_config = "\
+workers:
+  - name: existing-worker
+    config:
+      keep: true
+";
+            std::fs::write("config.yaml", original_config).unwrap();
+
+            let root_archive = binary_archive("root-worker");
+            let (base_url, server) = spawn_static_http_server(StdHashMap::from([(
+                "GET /root-worker.tar.gz".to_string(),
+                TestResponse {
+                    status: 200,
+                    content_type: "application/gzip",
+                    body: root_archive.clone(),
+                },
+            )]))
+            .await;
+
+            let target = binary_download::current_target();
+            let root_binaries = StdHashMap::from([(
+                target.to_string(),
+                cli_registry::BinaryInfo {
+                    url: format!("{base_url}/root-worker.tar.gz"),
+                    sha256: sha256_hex(&root_archive),
+                },
+            )]);
+            let broken_binaries = StdHashMap::from([(
+                target.to_string(),
+                cli_registry::BinaryInfo {
+                    url: format!("{base_url}/broken-dep.tar.gz"),
+                    sha256: "a".repeat(64),
+                },
+            )]);
+
+            let mut root = resolved_binary_worker("root-worker", "1.0.0", root_binaries);
+            root.dependencies = [("broken-dep".to_string(), "^1.0.0".to_string())].into();
+            let graph = cli_registry::ResolvedWorkerGraph {
+                root: cli_registry::ResolvedRoot {
+                    name: "root-worker".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                target: Some(target.to_string()),
+                graph: vec![
+                    root,
+                    resolved_binary_worker("broken-dep", "1.0.0", broken_binaries),
+                ],
+                edges: vec![cli_registry::ResolvedEdge {
+                    from: "root-worker".to_string(),
+                    to: "broken-dep".to_string(),
+                    range: "^1.0.0".to_string(),
+                }],
+            };
+
+            let rc = handle_resolved_graph_add(&graph, true).await;
+
+            assert_eq!(rc, 1);
+            assert_eq!(
+                std::fs::read_to_string("config.yaml").unwrap(),
+                original_config
+            );
+            assert!(
+                !cli_lockfile::lockfile_path().exists(),
+                "failed graph installs must not write iii.lock"
+            );
+            assert!(
+                home.join(".iii/workers/root-worker").exists(),
+                "first node should have installed before the later failure"
+            );
+            server.abort();
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn handle_resolved_graph_add_installs_root_and_dependency_graph() {
         in_temp_dir_async(|dir| async move {
             let _env_guard = crate::TEST_ENV_LOCK
@@ -3329,6 +3555,20 @@ workers:
 
             let rc = handle_worker_update(Some("ghost")).await;
             assert_eq!(rc, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_update_reports_empty_lockfile_without_resolving() {
+        in_temp_dir_async(|_| async move {
+            cli_lockfile::WorkerLockfile::default()
+                .write_to(cli_lockfile::lockfile_path())
+                .unwrap();
+
+            let rc = handle_worker_update(None).await;
+
+            assert_eq!(rc, 0);
         })
         .await;
     }
