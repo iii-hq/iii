@@ -42,7 +42,7 @@ workers:
       # === Core Configuration (Required) ===
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii}
-      service_version: ${SERVICE_VERSION:0.2.0}
+      service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}
 
       # === Service Identity (Optional) ===
       service_namespace: ${SERVICE_NAMESPACE:production}  # Optional: environment/namespace for the service

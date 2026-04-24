@@ -34,6 +34,17 @@ pub fn is_any_builtin(name: &str) -> bool {
         || MANDATORY_BUILTIN_NAMES.contains(&name)
 }
 
+/// Version used for built-in worker metadata when the caller did not request
+/// an explicit registry version.
+pub const ENGINE_BUILTIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Resolve the version to use for builtin worker telemetry and display.
+pub fn resolve_builtin_version(requested: Option<&str>) -> &str {
+    requested
+        .filter(|version| !version.is_empty())
+        .unwrap_or(ENGINE_BUILTIN_VERSION)
+}
+
 const HTTP_DEFAULT: &str = "\
 port: 3111
 host: 127.0.0.1
@@ -86,7 +97,7 @@ adapter:
 const OBSERVABILITY_DEFAULT: &str = "\
 enabled: true
 service_name: iii
-service_version: 0.2.0
+service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}
 exporter: memory
 memory_max_spans: 10000
 metrics_enabled: true
@@ -149,6 +160,33 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    #[test]
+    fn resolve_builtin_version_uses_engine_version_by_default() {
+        assert_eq!(resolve_builtin_version(None), ENGINE_BUILTIN_VERSION);
+        assert_eq!(resolve_builtin_version(Some("")), ENGINE_BUILTIN_VERSION);
+    }
+
+    #[test]
+    fn resolve_builtin_version_accepts_explicit_versions() {
+        assert_eq!(resolve_builtin_version(Some("0.10.0")), "0.10.0");
+        assert_eq!(
+            resolve_builtin_version(Some("0.11.4-next.2")),
+            "0.11.4-next.2"
+        );
+        assert_eq!(
+            resolve_builtin_version(Some("custom-channel")),
+            "custom-channel"
+        );
+    }
+
+    #[test]
+    fn observability_default_uses_engine_version_placeholder() {
+        let yaml = get_builtin_default("iii-observability").unwrap();
+
+        assert!(yaml.contains("service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}"));
+        assert!(!yaml.contains("service_version: 0.2.0"));
     }
 
     #[test]

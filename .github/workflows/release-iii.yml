@@ -583,7 +583,6 @@ jobs:
     with:
       worker: ${{ matrix.worker }}
       worker_dir: ${{ matrix.worker_dir }}
-      version: ${{ needs.setup.outputs.version }}
       registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
     secrets: inherit
 

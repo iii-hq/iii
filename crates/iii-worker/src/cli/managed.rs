@@ -26,7 +26,7 @@
 use colored::Colorize;
 
 use super::binary_download;
-use super::builtin_defaults::get_builtin_default;
+use super::builtin_defaults::{get_builtin_default, resolve_builtin_version};
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
@@ -818,6 +818,7 @@ pub async fn handle_managed_add(
 
     // Check for engine-builtin workers first (no network needed).
     if let Some(default_yaml) = get_builtin_default(&name) {
+        let builtin_version = resolve_builtin_version(version.as_deref());
         let already_exists = super::config_file::worker_exists(&name);
         if let Err(e) = super::config_file::append_worker(&name, Some(default_yaml)) {
             eprintln!("{} {}", "error:".red(), e);
@@ -857,7 +858,7 @@ pub async fn handle_managed_add(
         // or binary to watch. The Phase machinery would loop on Queued until
         // timeout, so skip wait_for_ready for builtins even when wait=true.
         // Fire telemetry so the registry can count this activation.
-        fire_engine_telemetry(&name, "latest").await;
+        fire_engine_telemetry(&name, builtin_version).await;
         return 0;
     }
 

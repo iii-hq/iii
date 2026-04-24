@@ -1,6 +1,6 @@
 [package]
 name = "iii-worker"
-version = "0.10.0"
+version.workspace = true
 edition = "2024"
 license = "Elastic-2.0"
 description = "iii managed worker runtime — VM-based isolated worker execution"

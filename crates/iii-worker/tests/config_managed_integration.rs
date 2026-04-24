@@ -74,6 +74,29 @@ async fn handle_managed_add_builtin_creates_config() {
 }
 
 #[tokio::test]
+async fn handle_managed_add_builtin_accepts_explicit_version() {
+    in_temp_dir_async(|| async {
+        let exit_code = iii_worker::cli::managed::handle_managed_add(
+            "iii-http@0.10.0",
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(
+            exit_code, 0,
+            "expected builtins to accept explicit registry versions"
+        );
+
+        let content = std::fs::read_to_string("config.yaml").unwrap();
+        assert!(content.contains("- name: iii-http"));
+        assert!(content.contains("port: 3111"));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn handle_managed_add_builtin_merges_existing() {
     in_temp_dir_async(|| async {
         // Pre-populate with user overrides

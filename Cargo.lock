@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.10.0"
+version = "0.11.4-next.2"
 dependencies = [
  "anyhow",
  "async-trait",
