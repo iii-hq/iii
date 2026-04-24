@@ -403,4 +403,66 @@ pub enum SandboxCmd {
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
+
+    /// Copy a local file into a running sandbox.
+    ///
+    /// Streams bytes through an iii data channel — no JSON-envelope size cap.
+    /// Reads `LOCAL_PATH` from disk (or stdin when `LOCAL_PATH` is `-`) and
+    /// writes atomically (temp file + fsync + rename) to `REMOTE_PATH` inside
+    /// the sandbox.
+    ///
+    /// Examples:
+    ///   iii sandbox upload <SB> ./script.js /workspace/script.js
+    ///   tar -cf - ./srcdir | iii sandbox upload <SB> - /workspace/src.tar
+    Upload {
+        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        #[arg(value_name = "SANDBOX_ID")]
+        id: String,
+
+        /// Source path on the host. Use `-` to read from stdin.
+        #[arg(value_name = "LOCAL_PATH")]
+        local_path: String,
+
+        /// Destination path inside the sandbox.
+        #[arg(value_name = "REMOTE_PATH")]
+        remote_path: String,
+
+        /// File mode (octal) applied to the destination after the rename.
+        #[arg(long, default_value = "0644", value_name = "MODE")]
+        mode: String,
+
+        /// Create parent directories of `REMOTE_PATH` if they're missing.
+        #[arg(long)]
+        parents: bool,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Copy a file out of a running sandbox to a local path.
+    ///
+    /// Streams bytes through an iii data channel. Writes to `LOCAL_PATH` on
+    /// disk (or stdout when `LOCAL_PATH` is `-`).
+    ///
+    /// Examples:
+    ///   iii sandbox download <SB> /workspace/output.json ./output.json
+    ///   iii sandbox download <SB> /workspace/build.tar - | tar -tf -
+    Download {
+        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        #[arg(value_name = "SANDBOX_ID")]
+        id: String,
+
+        /// Source path inside the sandbox.
+        #[arg(value_name = "REMOTE_PATH")]
+        remote_path: String,
+
+        /// Destination path on the host. Use `-` to write to stdout.
+        #[arg(value_name = "LOCAL_PATH")]
+        local_path: String,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
 }

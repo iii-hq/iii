@@ -5,6 +5,13 @@ use crate::error::InitError;
 /// Write `/etc/resolv.conf` with the nameserver IP.
 ///
 /// Priority: `III_INIT_DNS` env var > `/proc/net/route` gateway detection > `10.0.2.2` fallback.
+///
+/// Note: the `10.0.2.2` fallback is a QEMU-user-mode-style guess kept for
+/// backward-compat. libkrun's smoltcp stack actually allocates gateways out
+/// of `100.96.0.0/30` (so `100.96.0.1` is the typical real value), per
+/// `iii_network::SmoltcpNetwork::gateway_ipv4()`. `III_INIT_DNS` is set by
+/// the host (`vm_boot.rs`) and is authoritative; the fallback only fires
+/// when the env var is missing AND `/proc/net/route` has no default route.
 pub fn write_resolv_conf() -> Result<(), InitError> {
     let nameserver = std::env::var("III_INIT_DNS")
         .unwrap_or_else(|_| detect_gateway().unwrap_or_else(|| "10.0.2.2".to_string()));
@@ -43,6 +50,9 @@ pub fn configure_network() -> Result<(), InitError> {
         Ok(v) => v,
         Err(_) => return Ok(()),
     };
+    // See `write_resolv_conf` doc-comment for why `10.0.2.2` is a stale
+    // QEMU-style fallback (real libkrun gateway is in `100.96.0.0/30`).
+    // III_INIT_GW set by `vm_boot.rs` is authoritative.
     let gw_str = std::env::var("III_INIT_GW")
         .unwrap_or_else(|_| detect_gateway().unwrap_or_else(|| "10.0.2.2".to_string()));
     let cidr: u8 = std::env::var("III_INIT_CIDR")

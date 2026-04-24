@@ -256,7 +256,18 @@ impl Worker for ExternalWorker {
         if let Some(ref path) = config_path {
             cmd.arg("--config").arg(path);
         }
-        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        // Pipe stdio instead of inheriting the engine's TTY fds. External
+        // workers (notably iii-sandbox) load libkrun, which raws the host
+        // terminal when attaching the guest serial console — termios is per
+        // tty, so any tcsetattr by the child mutates the engine's terminal
+        // and scrambles tracing output until the VM exits. Piping isolates
+        // libkrun's tcsetattr to non-tty fds (calls become no-ops with
+        // ENOTTY) and forwarders below copy bytes line-atomic to the
+        // engine's stdout/stderr. stdin is /dev/null because workers don't
+        // read host stdin during normal operation.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         // Detach process group on Unix for clean termination
         #[cfg(unix)]
@@ -272,7 +283,7 @@ impl Worker for ExternalWorker {
             });
         }
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!(
                 "Failed to spawn external worker '{}' ({}): {}",
                 self.name,
@@ -280,6 +291,18 @@ impl Worker for ExternalWorker {
                 e
             )
         })?;
+
+        // Forward child stdout/stderr to engine stdout/stderr line-atomically.
+        // BufReader::read_until('\n') hands us complete lines (or trailing EOF
+        // bytes). Each forwarded line is one Stdout::write_all / Stderr::write_all
+        // call, which holds the global StdoutLock/StderrLock for the duration —
+        // so worker lines never interleave mid-line with engine tracing output.
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(forward_pipe(stdout, false));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(forward_pipe(stderr, true));
+        }
 
         tracing::info!(
             "Spawned external worker '{}' (pid: {:?})",
@@ -345,6 +368,42 @@ async fn kill_child(child: &Arc<Mutex<Option<Child>>>) {
                 let _ = proc.kill().await;
             }
             let _ = proc.wait().await;
+        }
+    }
+}
+
+/// Copy a child process pipe to the engine's stdout/stderr line-atomically.
+///
+/// `read_until(b'\n', ...)` returns each complete line (with the trailing
+/// newline) plus any unterminated tail at EOF. We then issue one
+/// `write_all` call to the engine's stdout/stderr lock, which holds the
+/// process-global `StdoutLock`/`StderrLock` for the full write — so a
+/// worker log line never lands in the middle of an engine tracing event
+/// and the terminal sees coherent line boundaries.
+///
+/// The task ends when the child closes its end of the pipe (Ok(0)) or
+/// on any read error.
+async fn forward_pipe<R>(reader: R, to_stderr: bool)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use std::io::Write;
+    use tokio::io::AsyncBufReadExt;
+
+    let mut buf = tokio::io::BufReader::new(reader);
+    let mut line: Vec<u8> = Vec::with_capacity(512);
+    loop {
+        line.clear();
+        match buf.read_until(b'\n', &mut line).await {
+            Ok(0) => return,
+            Ok(_) => {
+                if to_stderr {
+                    let _ = std::io::stderr().lock().write_all(&line);
+                } else {
+                    let _ = std::io::stdout().lock().write_all(&line);
+                }
+            }
+            Err(_) => return,
         }
     }
 }
