@@ -89,8 +89,8 @@ def _make_client() -> III:
 # ---------------------------------------------------------------------------
 
 
-def test_register_function_dict_with_request_format(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function accepts a dict as first arg, with request_format."""
+def test_register_function_str_with_request_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function accepts a string id with explicit request_format kwarg."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
@@ -106,7 +106,7 @@ def test_register_function_dict_with_request_format(monkeypatch: pytest.MonkeyPa
     async def handler(data: Any) -> Any:
         return data
 
-    client.register_function({"id": "demo.with_args", "request_format": req_fmt}, handler)
+    client.register_function("demo.with_args", handler, request_format=req_fmt)
     time.sleep(0.02)
 
     reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.with_args"]
@@ -169,15 +169,15 @@ def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPat
     client.shutdown()
 
 
-def test_register_function_dict_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function with just {id} and handler — no formats sent."""
+def test_register_function_str_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function with just a string id and handler — no formats sent when handler is untyped."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
     async def handler(data: Any) -> Any:
         return data
 
-    client.register_function({"id": "demo.minimal"}, handler)
+    client.register_function("demo.minimal", handler)
     time.sleep(0.02)
 
     reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.minimal"]
@@ -188,8 +188,8 @@ def test_register_function_dict_minimal(monkeypatch: pytest.MonkeyPatch) -> None
     client.shutdown()
 
 
-def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function with dict + HttpInvocationConfig."""
+def test_register_function_str_with_http_invocation_and_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function with string id + explicit request_format + HttpInvocationConfig."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
@@ -204,8 +204,9 @@ def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyP
     )
 
     client.register_function(
-        {"id": "external::with_format", "request_format": req_fmt},
+        "external::with_format",
         HttpInvocationConfig(url="https://example.com/fn", method="POST"),
+        request_format=req_fmt,
     )
     time.sleep(0.02)
 
@@ -365,27 +366,6 @@ def test_register_function_str_id_with_metadata(monkeypatch: pytest.MonkeyPatch)
     client.shutdown()
 
 
-def test_register_function_backward_compat_dict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dict API still works unchanged (backward compat)."""
-    ws = _patch_ws(monkeypatch)
-    client = _make_client()
-
-    async def handler(data: UserInput) -> UserOutput:
-        return UserOutput(message="hi")
-
-    # Using dict — should NOT auto-extract (backward compat)
-    client.register_function({"id": "demo.dict_compat"}, handler)
-    time.sleep(0.02)
-
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.dict_compat"]
-    assert len(reg_msgs) == 1
-    # Dict path does not auto-extract
-    assert "request_format" not in reg_msgs[0]
-    assert "response_format" not in reg_msgs[0]
-
-    client.shutdown()
-
-
 def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
     """String ID with HttpInvocationConfig doesn't attempt auto-extraction."""
     ws = _patch_ws(monkeypatch)
@@ -407,5 +387,19 @@ def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.Monke
     # No auto-extraction since HttpInvocationConfig is not callable
     assert "request_format" not in reg_msgs[0]
     assert "response_format" not in reg_msgs[0]
+
+    client.shutdown()
+
+
+def test_register_function_dict_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dict-form register_function is no longer supported — must raise TypeError."""
+    _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: Any) -> Any:
+        return data
+
+    with pytest.raises(TypeError, match="must be str or RegisterFunctionInput"):
+        client.register_function({"id": "demo.dict_removed"}, handler)
 
     client.shutdown()

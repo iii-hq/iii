@@ -787,7 +787,7 @@ class III:
 
     def register_function(
         self,
-        func_or_id: RegisterFunctionInput | dict[str, Any] | str,
+        func_or_id: RegisterFunctionInput | str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
         *,
         description: str | None = None,
@@ -868,10 +868,12 @@ class III:
                 request_format=request_format,
                 response_format=response_format,
             )
-        elif isinstance(func_or_id, dict):
-            func = RegisterFunctionInput(**func_or_id)
-        else:
+        elif isinstance(func_or_id, RegisterFunctionInput):
             func = func_or_id
+        else:
+            raise TypeError(
+                f"func_or_id must be str or RegisterFunctionInput, got {type(func_or_id).__name__}"
+            )
 
         if not func.id or not func.id.strip():
             raise ValueError("id is required")
