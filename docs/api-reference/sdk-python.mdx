@@ -152,26 +152,25 @@ automatically wrapped with ``run_in_executor`` so they do not
 block the event loop.  Each handler receives a single ``data``
 argument containing the trigger payload.
 
-When ``func_or_id`` is a ``str``, the simplified API is used:
 ``request_format`` and ``response_format`` are auto-extracted
 from the handler's type hints when not explicitly provided.
 
 **Signature**
 
 ```python
-register_function(func_or_id: RegisterFunctionInput | dict[str, Any] | str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None)
+register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None)
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `func_or_id` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] \| str | Yes | A ``RegisterFunctionInput`` or a plain string function ID.  When a string is passed, use keyword arguments for ``description``, ``metadata``, ``request_format``, and ``response_format``. |
+| `function_id` | `str` | Yes | Unique string identifier for the function. |
 | `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A callable handler or ``HttpInvocationConfig``.  Callable handlers receive one positional argument (``data`` -- the trigger payload) and may return a value. |
-| `description` | `str \| None` | No | Human-readable description (only with string ID). |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata (only with string ID). |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input (only with string ID).  Auto-extracted from handler type hints when omitted. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output (only with string ID).  Auto-extracted from handler type hints when omitted. |
+| `description` | `str \| None` | No | Human-readable description. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. Auto-extracted from handler type hints when omitted. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. Auto-extracted from handler type hints when omitted. |
 
 #### Example
 
@@ -526,7 +525,7 @@ logger.warn('Retry attempt', {'attempt': 3, 'max_retries': 5, 'endpoint': '/api/
 
 ## Types
 
-[`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`OtelConfig`](#otelconfig) · [`TriggerHandler`](#triggerhandler)
+[`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`OtelConfig`](#otelconfig) · [`TriggerHandler`](#triggerhandler)
 
 ### InitOptions
 
@@ -589,19 +588,6 @@ Format definition for function parameters.
 | `name` | `str` | Yes | Parameter name. |
 | `required` | `bool` | No | Whether the parameter is required. |
 | `type` | `str` | Yes | Type string (``string``, ``number``, ``boolean``, ``object``, ``array``, ``null``, ``map``). |
-
-### RegisterFunctionInput
-
-Input for registering a function — matches Node.js RegisterFunctionInput.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `str \| None` | No | Human-readable description. |
-| `id` | `str` | No | Unique function identifier. |
-| `invocation` | [`HttpInvocationConfig`](#httpinvocationconfig) \| None | No | HTTP invocation config for externally hosted functions. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. |
 
 ### RegisterServiceInput
 
