@@ -1,0 +1,5 @@
+iii: v1
+name: iii-http
+type: engine
+description: Expose functions as HTTP endpoints.
+repo: https://github.com/iii-hq/iii

@@ -1,0 +1,5 @@
+iii: v1
+name: iii-observability
+type: engine
+description: OpenTelemetry-based traces, metrics, logs, alerts, and sampling.
+repo: https://github.com/iii-hq/iii

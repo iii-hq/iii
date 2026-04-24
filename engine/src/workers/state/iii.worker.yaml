@@ -1,0 +1,5 @@
+iii: v1
+name: iii-state
+type: engine
+description: Distributed key-value state management with reactive change triggers.
+repo: https://github.com/iii-hq/iii

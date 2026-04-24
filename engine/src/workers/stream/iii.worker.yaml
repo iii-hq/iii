@@ -1,0 +1,5 @@
+iii: v1
+name: iii-stream
+type: engine
+description: Build durable streams for real-time data subscriptions.
+repo: https://github.com/iii-hq/iii

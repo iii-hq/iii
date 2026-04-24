@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-/// All builtin worker names recognised by the CLI.
+/// Configurable builtin workers: enabled by default and have a default YAML config.
 pub const BUILTIN_NAMES: [&str; 7] = [
     "iii-http",
     "iii-stream",
@@ -14,6 +14,25 @@ pub const BUILTIN_NAMES: [&str; 7] = [
     "iii-cron",
     "iii-observability",
 ];
+
+/// Optional builtin workers: baked into the engine but disabled by default.
+/// They have no auto-generated YAML config and must be configured manually.
+pub const OPTIONAL_BUILTIN_NAMES: [&str; 2] = ["iii-exec", "iii-bridge"];
+
+/// Internal builtin workers that are always present and never user-configured.
+pub const MANDATORY_BUILTIN_NAMES: [&str; 4] = [
+    "iii-worker-manager",
+    "iii-telemetry",
+    "iii-engine-functions",
+    "iii-http-functions",
+];
+
+/// Returns true if the name is any engine builtin (configurable, optional, or mandatory).
+pub fn is_any_builtin(name: &str) -> bool {
+    BUILTIN_NAMES.contains(&name)
+        || OPTIONAL_BUILTIN_NAMES.contains(&name)
+        || MANDATORY_BUILTIN_NAMES.contains(&name)
+}
 
 const HTTP_DEFAULT: &str = "\
 port: 3111
