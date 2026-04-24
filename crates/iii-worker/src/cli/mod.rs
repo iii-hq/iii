@@ -13,6 +13,7 @@ pub mod lifecycle;
 pub mod local_worker;
 pub mod lockfile;
 pub mod managed;
+pub mod oci_ref;
 pub mod pidfile;
 pub mod project;
 pub mod registry;

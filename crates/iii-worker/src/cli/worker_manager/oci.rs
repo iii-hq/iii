@@ -366,13 +366,25 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 }
 
 /// Pull an OCI image and extract it as a rootfs directory.
+///
+/// **Atomicity contract:** `dest` is produced via rename(2) from a sibling
+/// temp directory, so observers either see the fully-extracted rootfs or
+/// nothing at all. A SIGTERM / network failure / disk-full partway through
+/// extraction leaves an orphaned `.tmp-*` sibling that the next pull
+/// cleans up. The cache-hit check at
+/// `crates/iii-worker/src/cli/worker_manager/libkrun.rs:393` can therefore
+/// trust that `dest` existing with `bin/` means the rootfs is complete.
+///
+/// Atomicity scope is `dest` ONLY — callers can rely on
+/// `dest` either existing with the full rootfs or not existing. Sibling
+/// metadata (e.g. a digest sidecar in a later task) is written by the
+/// caller AFTER this function returns and is not covered by the same
+/// rename; a missing sidecar beside a valid rootfs is treated as a
+/// cache miss upstream, which forces a re-pull that rewrites both.
 pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
-
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("Failed to create rootfs directory: {}", dest.display()))?;
 
     let reference: Reference = image
         .parse()
@@ -504,20 +516,105 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         .progress_chars("=> "),
     );
 
+    // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
+    // before pull would leak the temp dir on network/auth failure.
+    //
+    // The atomic unit is `dest` itself, NOT its parent. The staging dir
+    // lives as a SIBLING of `dest` so the final rename(temp, dest) touches
+    // only the one dir the caller asked for — it must never clobber the
+    // parent, which may house other unrelated cache entries (e.g.
+    // `~/.iii/rootfs/` is shared across base images like `node`, `bun`,
+    // `python`; similarly `~/.iii/images/<hash>/` may have a sibling
+    // `digest.txt` added in a later task).
+    let dest_parent = dest.parent();
+    let dest_basename = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rootfs");
+
+    let (extract_root, temp_to_promote) = match dest_parent {
+        Some(parent) => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let tmp_name = format!(".{}.tmp-{}-{}", dest_basename, std::process::id(), nanos);
+            let tmp_dir = parent.join(tmp_name);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            std::fs::create_dir_all(&tmp_dir).with_context(|| {
+                format!(
+                    "Failed to create temp extract directory: {}",
+                    tmp_dir.display()
+                )
+            })?;
+            (tmp_dir.clone(), Some((tmp_dir, dest.to_path_buf())))
+        }
+        None => {
+            // Degenerate: dest has no parent. Skip atomicity.
+            std::fs::create_dir_all(dest).with_context(|| {
+                format!("Failed to create rootfs directory: {}", dest.display())
+            })?;
+            (dest.to_path_buf(), None)
+        }
+    };
+
     let mut total_size: u64 = 0;
-    for (i, layer) in image_data.layers.iter().enumerate() {
-        extract_layer_with_limits(&layer.data, dest, i, layer_count, &mut total_size)?;
-        pb.inc(1);
+    let extract_result: Result<()> = (|| {
+        for (i, layer) in image_data.layers.iter().enumerate() {
+            extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
+            pb.inc(1);
+        }
+        pb.finish();
+
+        let config_json = &image_data.config.data;
+        let config_path = extract_root.join(".oci-config.json");
+        let _ = std::fs::write(&config_path, config_json);
+        Ok(())
+    })();
+
+    // Extraction done. If we were in the atomic path, either promote the
+    // temp dir into place OR clean it up.
+    if let Some((tmp_dir, final_dir)) = temp_to_promote {
+        match extract_result {
+            Ok(()) => {
+                // If `final_dir` already exists (leftover from a prior
+                // interrupted run, or a race with another `iii worker add`),
+                // remove it so the rename can succeed. We're claiming this
+                // dir atomically — stale contents are replaced wholesale.
+                if final_dir.exists() {
+                    std::fs::remove_dir_all(&final_dir).with_context(|| {
+                        format!(
+                            "Failed to remove stale rootfs before atomic promote: {}",
+                            final_dir.display()
+                        )
+                    })?;
+                }
+                std::fs::rename(&tmp_dir, &final_dir).with_context(|| {
+                    format!(
+                        "Failed to atomically promote rootfs {} -> {}",
+                        tmp_dir.display(),
+                        final_dir.display()
+                    )
+                })?;
+                tracing::info!(path = %dest.display(), "rootfs ready (atomic promote)");
+                eprintln!("  {} Rootfs ready", "\u{2713}".green());
+                Ok(())
+            }
+            Err(e) => {
+                // Extraction failed mid-way. Clean up the temp dir so the
+                // next pull doesn't see a half-filled sibling. Ignore errors
+                // on cleanup — original extraction error is what matters.
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                Err(e)
+            }
+        }
+    } else {
+        // Degenerate path (no parent): extraction wrote directly to dest.
+        extract_result?;
+        tracing::info!(path = %dest.display(), "rootfs ready");
+        eprintln!("  {} Rootfs ready", "\u{2713}".green());
+        Ok(())
     }
-    pb.finish();
-
-    let config_json = &image_data.config.data;
-    let config_path = dest.join(".oci-config.json");
-    let _ = std::fs::write(&config_path, config_json);
-
-    tracing::info!(path = %dest.display(), "rootfs ready");
-    eprintln!("  {} Rootfs ready", "\u{2713}".green());
-    Ok(())
 }
 
 pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {

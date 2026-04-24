@@ -349,11 +349,27 @@ impl LibkrunAdapter {
         }
     }
 
-    pub fn image_rootfs(image: &str) -> PathBuf {
+    /// Directory containing the image cache entry: `<home>/.iii/images/<hash>/`.
+    /// Hash input is the CANONICAL form of the image ref (any trailing
+    /// `@sha256:...` stripped via [`oci_ref::canonical_cache_key`]) so pinned
+    /// and unpinned variants of the same image share one cache dir. This
+    /// matters because the engine at worker-start time may resolve the image
+    /// ref from `config.yaml` (pinned) while `iii worker add` pulled it
+    /// originally from `/resolve` (unpinned) — both must hit the same dir or
+    /// we re-pull gigabytes for no reason.
+    ///
+    /// The cache dir wraps two children:
+    /// - `rootfs/` — the extracted image contents (what used to live
+    ///   directly under `<hash>/` in the pre-fix layout). `clone_rootfs`
+    ///   copies this into per-worker rootfs at VM start.
+    /// - `digest.txt` — sidecar metadata (Task 5). Lives OUTSIDE `rootfs/`
+    ///   so it does NOT end up inside worker filesystems.
+    pub fn image_cache_dir(image: &str) -> PathBuf {
+        use crate::cli::oci_ref;
         let hash = {
             use sha2::Digest;
             let mut hasher = sha2::Sha256::new();
-            hasher.update(image.as_bytes());
+            hasher.update(oci_ref::canonical_cache_key(image).as_bytes());
             hex::encode(&hasher.finalize()[..8])
         };
         dirs::home_dir()
@@ -361,6 +377,18 @@ impl LibkrunAdapter {
             .join(".iii")
             .join("images")
             .join(hash)
+    }
+
+    /// Path to the extracted rootfs inside the image cache dir.
+    /// Callers mount / clone / read files from this dir.
+    ///
+    /// Layout changed from the pre-fix version: the rootfs used to live
+    /// directly at `<hash>/`; it now lives at `<hash>/rootfs/`. This
+    /// naturally invalidates old caches (the cache-hit check looks for
+    /// `<hash>/rootfs/bin/` which old layouts don't have, forcing a
+    /// re-pull). Orphaned old dirs waste disk but don't break anything.
+    pub fn image_rootfs(image: &str) -> PathBuf {
+        Self::image_cache_dir(image).join("rootfs")
     }
 
     pub fn pid_file(name: &str) -> PathBuf {
