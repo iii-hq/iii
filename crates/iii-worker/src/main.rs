@@ -66,6 +66,9 @@ async fn main() -> anyhow::Result<()> {
             }
             if fail_count == 0 { 0 } else { 1 }
         }
+        Commands::Update { worker_name } => {
+            iii_worker::cli::managed::handle_worker_update(worker_name.as_deref()).await
+        }
         Commands::Clear { worker_name, yes } => {
             iii_worker::cli::managed::handle_managed_clear(worker_name.as_deref(), yes)
         }
@@ -83,6 +86,8 @@ async fn main() -> anyhow::Result<()> {
             port,
         } => iii_worker::cli::managed::handle_managed_restart(&worker_name, !no_wait, port).await,
         Commands::List => iii_worker::cli::managed::handle_worker_list().await,
+        Commands::Sync { frozen } => iii_worker::cli::managed::handle_worker_sync(frozen).await,
+        Commands::Verify => iii_worker::cli::managed::handle_worker_verify().await,
         Commands::Status {
             worker_name,
             no_watch,

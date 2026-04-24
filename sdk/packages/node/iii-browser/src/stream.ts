@@ -106,7 +106,7 @@ export type StreamUpdateResult<TData> = {
 /** Set a field at the given path to a value. */
 export type UpdateSet = {
   type: 'set'
-  /** Dot-separated field path (e.g. `user.name`). */
+  /** First-level field path. Use an empty string to target the root value. */
   path: string
   /** Value to set. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
@@ -116,7 +116,7 @@ export type UpdateSet = {
 /** Increment a numeric field by a given amount. */
 export type UpdateIncrement = {
   type: 'increment'
-  /** Dot-separated field path. */
+  /** First-level field path. */
   path: string
   /** Amount to increment by. */
   by: number
@@ -125,23 +125,33 @@ export type UpdateIncrement = {
 /** Decrement a numeric field by a given amount. */
 export type UpdateDecrement = {
   type: 'decrement'
-  /** Dot-separated field path. */
+  /** First-level field path. */
   path: string
   /** Amount to decrement by. */
   by: number
 }
 
+/** Append an element to an array or concatenate a string. */
+export type UpdateAppend = {
+  type: 'append'
+  /** First-level field path. Use an empty string to target the root value. */
+  path: string
+  /** Value to append. String targets only accept string values. */
+  // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+  value: any
+}
+
 /** Remove a field at the given path. */
 export type UpdateRemove = {
   type: 'remove'
-  /** Dot-separated field path. */
+  /** First-level field path. */
   path: string
 }
 
-/** Deep-merge an object into the field at the given path. */
+/** Shallow-merge an object into the root value. Only root-level merge is supported. */
 export type UpdateMerge = {
   type: 'merge'
-  /** Dot-separated field path. */
+  /** Must be an empty string. Non-empty paths are ignored. */
   path: string
   /** Object to merge. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
@@ -159,9 +169,15 @@ export type DeleteResult = {
  * Union of all atomic update operations supported by streams.
  *
  * @see {@link UpdateSet}, {@link UpdateIncrement}, {@link UpdateDecrement},
- *      {@link UpdateRemove}, {@link UpdateMerge}
+ *      {@link UpdateAppend}, {@link UpdateRemove}, {@link UpdateMerge}
  */
-export type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateRemove | UpdateMerge
+export type UpdateOp =
+  | UpdateSet
+  | UpdateIncrement
+  | UpdateDecrement
+  | UpdateAppend
+  | UpdateRemove
+  | UpdateMerge
 
 /** Input for atomically updating a stream item. */
 export type StreamUpdateInput = {

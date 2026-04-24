@@ -74,3 +74,5 @@ sdk/packages/python/iii/api-docs.json
 
 
 docs/plans/
+# Local-only personal notes (per-contributor, not tracked)
+TODOS.md

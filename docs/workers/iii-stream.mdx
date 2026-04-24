@@ -293,7 +293,7 @@ config:
         The item ID in the stream to update.
       </ResponseField>
       <ResponseField name="ops" type="UpdateOp[]" required>
-        The list of atomic operations to apply. Each operation is a tagged object with a `type` field (`set`, `merge`, `increment`, `decrement`, or `remove`) and associated fields (`path`, `value`, `by`).
+        The list of atomic operations to apply. Each operation is a tagged object with a `type` field (`set`, `merge`, `increment`, `decrement`, `append`, or `remove`) and associated fields (`path`, `value`, `by`). Paths are first-level field names; use `path: ""` to target the root value.
       </ResponseField>
     </Accordion>
     <Accordion title="Returns">

@@ -13,3 +13,6 @@ pub mod cli;
 
 pub use cli::app::{AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, WatchSourceArgs};
 pub use cli::vm_boot::VmBootArgs;
+
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
