@@ -151,7 +151,10 @@ class UpdateRemove(BaseModel):
 
 
 class UpdateMerge(BaseModel):
-    """Merge operation for stream update."""
+    """Shallow root-level merge operation for stream update.
+
+    Only an empty path is supported. Non-empty paths are ignored by the engine.
+    """
 
     type: str = "merge"
     path: str

@@ -148,10 +148,10 @@ export type UpdateRemove = {
   path: string
 }
 
-/** Deep-merge an object into the field at the given path. */
+/** Shallow-merge an object into the root value. Only root-level merge is supported. */
 export type UpdateMerge = {
   type: 'merge'
-  /** First-level field path. */
+  /** Must be an empty string. Non-empty paths are ignored. */
   path: string
   /** Object to merge. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here

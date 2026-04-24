@@ -130,7 +130,7 @@ impl StateAdapter for StateRedisAdapter {
 
         match result {
             Ok(values) if values.len() >= 2 => {
-                // Check if cjson was available
+                // Check if the Lua update script reported a failure.
                 if values[0] == "false" {
                     return Err(anyhow::anyhow!(
                         "Redis atomic update script failed: {}",

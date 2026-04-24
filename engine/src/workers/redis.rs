@@ -9,13 +9,8 @@ use std::time::Duration;
 pub const DEFAULT_REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const JSON_UPDATE_SCRIPT: &str = r#"
-    local json_decode, json_encode
-    if cjson then
-        json_decode = cjson.decode
-        json_encode = cjson.encode
-    else
-        return {'false', 'cjson not available'}
-    end
+    local json_decode = cjson.decode
+    local json_encode = cjson.encode
 
     local key = KEYS[1]
     local field = ARGV[1]
@@ -27,6 +22,8 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         local ok, decoded = pcall(json_decode, old_value_str)
         if ok then
             old_value = decoded
+        else
+            return {'false', 'failed to decode existing JSON: ' .. tostring(decoded)}
         end
     end
 
@@ -74,7 +71,7 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
             end
             count = count + 1
         end
-        return count == max
+        return count > 0 and count == max
     end
 
     local function append_to_target(target, value)
@@ -104,7 +101,11 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
                 if type(current) ~= 'table' or current == nil then
                     current = {}
                 end
-                current[path] = op.value or cjson.null
+                if op.value == nil then
+                    current[path] = cjson.null
+                else
+                    current[path] = op.value
+                end
                 using_missing_default = false
             end
         elseif op.type == 'merge' then

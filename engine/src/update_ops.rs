@@ -72,7 +72,7 @@ pub(crate) fn apply_update_ops(old_value: Option<Value>, ops: &[UpdateOp]) -> Va
                         if let Some(num) = existing_val.as_i64() {
                             *existing_val = Value::Number(Number::from(num - *by));
                         } else {
-                            *existing_val = Value::Number(Number::from(0));
+                            *existing_val = Value::Number(Number::from(-*by));
                         }
                     } else {
                         map.insert(path.0.clone(), Value::Number(Number::from(-*by)));
@@ -230,6 +230,57 @@ mod tests {
         );
 
         assert_eq!(updated, json!({ "transcript": "hello" }));
+    }
+
+    #[test]
+    fn skips_incompatible_object_append_target() {
+        let updated = apply_update_ops(
+            Some(json!({ "events": {} })),
+            &[UpdateOp::append("events", json!("chunk"))],
+        );
+
+        assert_eq!(updated, json!({ "events": {} }));
+    }
+
+    #[test]
+    fn increments_existing_non_number_and_missing_fields() {
+        let updated = apply_update_ops(
+            Some(json!({ "count": 2, "bad": "value" })),
+            &[
+                UpdateOp::increment("count", 3),
+                UpdateOp::increment("bad", 3),
+                UpdateOp::increment("missing", 3),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "count": 5, "bad": 3, "missing": 3 }));
+    }
+
+    #[test]
+    fn decrements_existing_non_number_and_missing_fields() {
+        let updated = apply_update_ops(
+            Some(json!({ "count": 5, "bad": "value" })),
+            &[
+                UpdateOp::decrement("count", 3),
+                UpdateOp::decrement("bad", 3),
+                UpdateOp::decrement("missing", 3),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "count": 2, "bad": -3, "missing": -3 }));
+    }
+
+    #[test]
+    fn preserves_order_across_multiple_numeric_ops() {
+        let updated = apply_update_ops(
+            Some(json!({ "count": 10 })),
+            &[
+                UpdateOp::increment("count", 5),
+                UpdateOp::decrement("count", 3),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "count": 12 }));
     }
 
     #[test]

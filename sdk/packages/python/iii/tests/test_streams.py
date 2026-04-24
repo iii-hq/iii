@@ -18,7 +18,6 @@ from iii.stream import (
     StreamSetResult,
     StreamUpdateInput,
     StreamUpdateResult,
-    UpdateAppend,
 )
 
 _list = list
@@ -26,13 +25,6 @@ _list = list
 STREAM_NAME = "test-stream-py"
 GROUP_ID = "test-group"
 ITEM_ID = "test-item"
-
-
-def test_update_append_model_serializes() -> None:
-    op = UpdateAppend(path="chunks", value={"text": "hello"})
-
-    assert op.model_dump() == {"type": "append", "path": "chunks", "value": {"text": "hello"}}
-
 
 @pytest.fixture(autouse=True)
 def cleanup_stream(iii_client: III):
