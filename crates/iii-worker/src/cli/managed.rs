@@ -572,6 +572,106 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     0
 }
 
+/// Merge N resolved graphs into a single graph. Nodes are deduped by name.
+/// If the same name appears at different versions across graphs, returns an
+/// error naming the conflicting dep and both versions — this is the cross-dep
+/// version-conflict gate.
+pub(crate) fn merge_resolved_graphs(
+    graphs: Vec<(String, ResolvedWorkerGraph)>,
+) -> Result<ResolvedWorkerGraph, String> {
+    if graphs.is_empty() {
+        return Err("merge_resolved_graphs: no graphs provided".to_string());
+    }
+
+    let mut nodes_by_name: std::collections::BTreeMap<String, super::registry::ResolvedWorker> =
+        std::collections::BTreeMap::new();
+    let mut edges: Vec<super::registry::ResolvedEdge> = Vec::new();
+    let first_root = graphs[0].1.root.clone();
+
+    for (origin, graph) in graphs {
+        for node in graph.graph {
+            if let Some(existing) = nodes_by_name.get(&node.name) {
+                if existing.version != node.version {
+                    return Err(format!(
+                        "dependency `{name}` resolved to conflicting versions across declared deps: \
+                         `{v1}` (from earlier graph) vs `{v2}` (from `{origin}`)",
+                        name = node.name,
+                        v1 = existing.version,
+                        v2 = node.version,
+                        origin = origin,
+                    ));
+                }
+                // Same version — skip; first wins.
+            } else {
+                nodes_by_name.insert(node.name.clone(), node);
+            }
+        }
+        edges.extend(graph.edges);
+    }
+
+    Ok(ResolvedWorkerGraph {
+        root: first_root,
+        target: None,
+        graph: nodes_by_name.into_values().collect(),
+        edges,
+    })
+}
+
+/// Resolve every declared manifest dependency against the registry and install
+/// the full transitive chain into `config.yaml` + `iii.lock` using the same
+/// path that `iii worker add <name>` uses.
+///
+/// Pass-1: resolve each dep via `fetch_resolved_worker_graph` (serial — fine
+/// for ≤3 deps; parallel fan-out is a future optimization).
+/// Pass-2: merge all graphs into one synthetic graph (dedupes shared
+/// transitive deps, errors on cross-graph version conflicts).
+/// Pass-3: single call to `handle_resolved_graph_add`. Its snapshot/rollback
+/// boundary covers the whole chain — no partial-install state is possible.
+pub(crate) async fn install_manifest_dependencies(
+    deps: &std::collections::BTreeMap<String, String>,
+    brief: bool,
+) -> Result<(), String> {
+    if deps.is_empty() {
+        return Ok(());
+    }
+
+    let mut graphs = Vec::with_capacity(deps.len());
+    for (name, range) in deps {
+        let graph = match fetch_resolved_worker_graph(name, Some(range.as_str()), None).await {
+            Ok(g) => g,
+            Err(e) => {
+                // If the declared range is a prerelease, preempt the common
+                // confusion: the default registry resolver filters to stable
+                // versions, so a published prerelease looks "not found."
+                let hint = semver::VersionReq::parse(range)
+                    .ok()
+                    .filter(|req| req.comparators.iter().any(|c| !c.pre.is_empty()))
+                    .map(|_| {
+                        " (note: the registry filters prereleases by default; \
+                         configure the registry to expose prereleases if this \
+                         range is intentional)"
+                    })
+                    .unwrap_or("");
+                return Err(format!(
+                    "failed to resolve dependency `{name}@{range}`: {e}{hint}"
+                ));
+            }
+        };
+        graphs.push((name.clone(), graph));
+    }
+
+    let merged = merge_resolved_graphs(graphs)?;
+
+    let rc = handle_resolved_graph_add(&merged, brief).await;
+    if rc != 0 {
+        return Err(format!(
+            "failed to install merged dependency graph (exit {rc}); no partial \
+             state written — rerun after fixing the failure",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn handle_managed_add(
     image_or_name: &str,
     brief: bool,
@@ -4140,12 +4240,14 @@ workers:
 
     #[tokio::test]
     async fn kill_stale_worker_no_op_when_no_pid_files() {
+        let _h = super::super::test_support::lock_home();
         // Should not panic when no PID files exist
         kill_stale_worker("__iii_test_nonexistent_99999__").await;
     }
 
     #[tokio::test]
     async fn kill_stale_worker_removes_watch_pid_file() {
+        let _h = super::super::test_support::lock_home();
         // Writes a fake `watch.pid` with a highly unlikely-to-be-alive
         // PID, then verifies `kill_stale_worker` reaps it from the
         // pid-file list introduced when the source watcher sidecar
@@ -4171,6 +4273,7 @@ workers:
 
     #[tokio::test]
     async fn reap_source_watcher_removes_pid_file() {
+        let _h = super::super::test_support::lock_home();
         // Exercises the stop-path helper used by `handle_managed_stop`
         // to tear down the watcher sidecar before stopping the VM. A
         // dead PID in watch.pid should still produce a clean remove
@@ -4196,6 +4299,7 @@ workers:
 
     #[tokio::test]
     async fn reap_source_watcher_no_op_when_no_pid_file() {
+        let _h = super::super::test_support::lock_home();
         // Idempotent on the cold path — no watch.pid, nothing to do,
         // no panic.
         reap_source_watcher("__iii_test_reap_watcher_nonexistent__").await;
@@ -4203,6 +4307,7 @@ workers:
 
     #[tokio::test]
     async fn reap_source_watcher_handles_garbage_pid_content() {
+        let _h = super::super::test_support::lock_home();
         // Parse failure must not prevent file removal.
         let home = dirs::home_dir().unwrap_or_default();
         let worker_name = "__iii_test_reap_watcher_garbage__";
@@ -4219,6 +4324,7 @@ workers:
 
     #[tokio::test]
     async fn kill_stale_worker_handles_invalid_pid_content() {
+        let _h = super::super::test_support::lock_home();
         // Use real function with a worker name that won't collide
         // The function should handle garbage content gracefully
         let home = dirs::home_dir().unwrap_or_default();
@@ -4236,6 +4342,7 @@ workers:
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_stale_worker_ignores_symlinked_pidfile() {
+        let _h = super::super::test_support::lock_home();
         // A pre-planted symlink at the pidfile location must not be
         // followed: read_pid opens with O_NOFOLLOW and returns None, so
         // we skip the kill. The symlink itself is still removed so
@@ -4243,6 +4350,10 @@ workers:
         let home = dirs::home_dir().unwrap_or_default();
         let worker_name = "__iii_test_symlink_pidfile__";
         let managed_dir = home.join(".iii/managed").join(worker_name);
+        // Scrub leftover state from an aborted prior run so `symlink`
+        // below (which errors EEXIST if the path already exists) and
+        // the post-run assertions see a clean slate.
+        let _ = std::fs::remove_dir_all(&managed_dir);
         let _ = std::fs::create_dir_all(&managed_dir);
 
         // Attacker-controlled file we must NOT overwrite or target.
@@ -4365,5 +4476,126 @@ workers:
             );
         })
         .await;
+    }
+
+    // ------------------------------------------------------------------
+    // install_manifest_dependencies / merge_resolved_graphs
+    // ------------------------------------------------------------------
+
+    fn graph_with_nodes(
+        root_name: &str,
+        root_version: &str,
+        nodes: Vec<cli_registry::ResolvedWorker>,
+    ) -> cli_registry::ResolvedWorkerGraph {
+        cli_registry::ResolvedWorkerGraph {
+            root: cli_registry::ResolvedRoot {
+                name: root_name.to_string(),
+                version: root_version.to_string(),
+            },
+            target: None,
+            graph: nodes,
+            edges: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn install_manifest_dependencies_empty_is_noop() {
+        let deps: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        let result = super::install_manifest_dependencies(&deps, true).await;
+        assert!(result.is_ok(), "empty deps must succeed as noop");
+    }
+
+    #[tokio::test]
+    async fn install_manifest_dependencies_propagates_resolve_error() {
+        let prev = std::env::var("III_API_URL").ok();
+        unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
+        let mut deps = std::collections::BTreeMap::new();
+        deps.insert("math-worker".to_string(), "^0.1.0".to_string());
+        let result = super::install_manifest_dependencies(&deps, true).await;
+        match prev {
+            Some(v) => unsafe { std::env::set_var("III_API_URL", v) },
+            None => unsafe { std::env::remove_var("III_API_URL") },
+        }
+        assert!(
+            result.is_err(),
+            "unreachable registry must surface an error"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("filters prereleases"),
+            "stable range must not emit the prerelease hint; got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_manifest_dependencies_emits_prerelease_hint() {
+        let prev = std::env::var("III_API_URL").ok();
+        unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
+        let mut deps = std::collections::BTreeMap::new();
+        deps.insert("math-worker".to_string(), "1.0.0-beta.1".to_string());
+        let result = super::install_manifest_dependencies(&deps, true).await;
+        match prev {
+            Some(v) => unsafe { std::env::set_var("III_API_URL", v) },
+            None => unsafe { std::env::remove_var("III_API_URL") },
+        }
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("filters prereleases"),
+            "prerelease range must trigger the registry-filter hint; got: {err}"
+        );
+    }
+
+    #[test]
+    fn merge_graphs_unifies_shared_nodes_at_same_version() {
+        let a = graph_with_nodes(
+            "a",
+            "1.0.0",
+            vec![
+                resolved_binary_worker("a", "1.0.0", StdHashMap::new()),
+                resolved_binary_worker("shared", "1.2.3", StdHashMap::new()),
+            ],
+        );
+        let b = graph_with_nodes(
+            "b",
+            "1.0.0",
+            vec![
+                resolved_binary_worker("b", "1.0.0", StdHashMap::new()),
+                resolved_binary_worker("shared", "1.2.3", StdHashMap::new()),
+            ],
+        );
+        let merged =
+            super::merge_resolved_graphs(vec![("a".to_string(), a), ("b".to_string(), b)]).unwrap();
+        let names: std::collections::BTreeSet<_> =
+            merged.graph.iter().map(|n| n.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["a", "b", "shared"].iter().map(|s| s.to_string()).collect()
+        );
+    }
+
+    #[test]
+    fn merge_graphs_errors_on_cross_graph_version_mismatch() {
+        let a = graph_with_nodes(
+            "a",
+            "1.0.0",
+            vec![
+                resolved_binary_worker("a", "1.0.0", StdHashMap::new()),
+                resolved_binary_worker("shared", "1.2.3", StdHashMap::new()),
+            ],
+        );
+        let b = graph_with_nodes(
+            "b",
+            "1.0.0",
+            vec![
+                resolved_binary_worker("b", "1.0.0", StdHashMap::new()),
+                resolved_binary_worker("shared", "2.0.0", StdHashMap::new()),
+            ],
+        );
+        let err = super::merge_resolved_graphs(vec![("a".to_string(), a), ("b".to_string(), b)])
+            .unwrap_err();
+        assert!(
+            err.contains("shared") && err.contains("1.2.3") && err.contains("2.0.0"),
+            "error should name the conflicting dep + both versions; got: {err}",
+        );
     }
 }
