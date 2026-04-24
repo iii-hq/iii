@@ -68,11 +68,13 @@ pub enum SandboxError {
     #[error("sandbox already stopped: {0}")]
     AlreadyStopped(String),
 
-    #[error("image '{image}' not in catalog. Valid images: python, node, bash, alpine")]
+    #[error(
+        "image '{image}' not in catalog; valid presets are 'python' and 'node', or add a custom image via worker config (see S100 docs)"
+    )]
     ImageNotInCatalog { image: String },
 
     #[error(
-        "rootfs missing on disk for image '{image}'. Run: iii worker clear {image} && iii worker add iiidev/{image}"
+        "rootfs missing on disk for image '{image}'. Run: iii worker add <image-ref> (see S101 docs)"
     )]
     RootfsMissing { image: String },
 
