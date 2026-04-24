@@ -120,8 +120,7 @@ mod tests {
     #[async_trait::async_trait]
     impl VmStopper for FlakyStopper {
         async fn stop(&self, _pid: u32) -> Result<(), SandboxError> {
-            self.call_count
-                .fetch_add(1, Ordering::SeqCst);
+            self.call_count.fetch_add(1, Ordering::SeqCst);
             if self.fail_once.swap(false, Ordering::SeqCst) {
                 return Err(SandboxError::BootFailed("transient stop failure".into()));
             }
@@ -151,7 +150,10 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, SandboxError::BootFailed(_)));
-        let after_fail = reg.get(id).await.expect("entry must remain after failed stop");
+        let after_fail = reg
+            .get(id)
+            .await
+            .expect("entry must remain after failed stop");
         assert!(
             !after_fail.stopped,
             "stopped flag must not be set when stopper.stop returned Err"
@@ -168,8 +170,15 @@ mod tests {
         .await
         .unwrap();
         assert!(resp.stopped);
-        assert_eq!(call_count.load(Ordering::SeqCst), 2, "retry must invoke stopper again");
-        assert!(reg.get(id).await.is_err(), "registry entry must be removed after successful retry");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "retry must invoke stopper again"
+        );
+        assert!(
+            reg.get(id).await.is_err(),
+            "registry entry must be removed after successful retry"
+        );
     }
 
     #[tokio::test]
