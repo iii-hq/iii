@@ -2682,6 +2682,7 @@ dependencies = [
  "oci-client",
  "oci-spec",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

@@ -26,3 +26,4 @@ pub mod supervisor_ctl;
 pub(crate) mod test_support;
 pub mod vm_boot;
 pub mod worker_manager;
+pub mod worker_manifest_deps;
