@@ -1,0 +1,89 @@
+name: SDK README Guard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/**/README.md'
+      - 'sdk/README.md'
+      - 'sdk/packages/rust/iii/examples/readme_hello.rs'
+      - 'sdk/packages/rust/iii/src/**'
+      - 'sdk/packages/python/iii/src/**'
+      - 'sdk/fixtures/readme-guard/**'
+      - 'scripts/readme-guard/**'
+      - '.github/workflows/sdk-readme.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sdk/**/README.md'
+      - 'sdk/README.md'
+      - 'sdk/packages/rust/iii/examples/readme_hello.rs'
+      - 'sdk/packages/rust/iii/src/**'
+      - 'sdk/packages/python/iii/src/**'
+      - 'sdk/fixtures/readme-guard/**'
+      - 'scripts/readme-guard/**'
+      - '.github/workflows/sdk-readme.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# This workflow runs in warn-only mode so it can ship alongside the first round
+# of README fixes without blocking merges. After the follow-up PR flips
+# `continue-on-error` to `false`, any new README drift will fail CI.
+jobs:
+  rust-readme:
+    name: Rust — cargo check --example readme_hello
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compile the canonical Rust Hello World
+        run: cargo check -p iii-sdk --example readme_hello
+
+  python-readme:
+    name: Python — attribute-probe against real `iii.III`
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install guard deps + editable SDK
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install markdown-it-py
+          python -m pip install -e sdk/packages/python/iii
+
+      - name: Verify golden-good fixture passes
+        run: python scripts/readme-guard/check_python_readme.py sdk/fixtures/readme-guard/golden-good-python.md
+
+      - name: Verify golden-bad fixture fails (meta-test)
+        # The guard *must* exit non-zero on this fixture. If it exits 0, the
+        # guard is silently broken and would let real bugs ship.
+        run: |
+          set +e
+          python scripts/readme-guard/check_python_readme.py sdk/fixtures/readme-guard/golden-bad-python.md
+          rc=$?
+          set -e
+          if [ "$rc" = "0" ]; then
+            echo "::error::Guard passed the golden-bad fixture — it is silently broken."
+            exit 1
+          fi
+          echo "Guard correctly rejected golden-bad (exit $rc)."
+
+      - name: Run guard against real READMEs
+        run: |
+          python scripts/readme-guard/check_python_readme.py \
+            sdk/packages/python/iii/README.md \
+            sdk/packages/node/iii/README.md \
+            sdk/README.md

@@ -106,6 +106,45 @@ pub struct TriggerRequest {
     pub timeout_ms: Option<u64>,
 }
 
+impl TriggerRequest {
+    /// Build a synchronous `TriggerRequest` for the given function id and payload.
+    /// Equivalent to `TriggerRequest { function_id, payload, action: None, timeout_ms: None }`.
+    ///
+    /// ```rust
+    /// # use iii_sdk::{TriggerRequest};
+    /// # use serde_json::json;
+    /// let req = TriggerRequest::new("math::add", json!({ "a": 1, "b": 2 }));
+    /// ```
+    pub fn new(function_id: impl Into<String>, payload: Value) -> Self {
+        Self {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        }
+    }
+
+    /// Attach a [`TriggerAction`] (e.g., `TriggerAction::Void` for fire-and-forget,
+    /// `TriggerAction::Enqueue { queue }` for async queued routing).
+    ///
+    /// ```rust
+    /// # use iii_sdk::{TriggerRequest, TriggerAction};
+    /// # use serde_json::json;
+    /// let req = TriggerRequest::new("analytics::track", json!({ "event": "view" }))
+    ///     .with_action(TriggerAction::Void);
+    /// ```
+    pub fn with_action(mut self, action: TriggerAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    /// Override the default invocation timeout (milliseconds).
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {

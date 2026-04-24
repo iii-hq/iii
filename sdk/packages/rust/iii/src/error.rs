@@ -5,7 +5,12 @@ use thiserror::Error;
 /// Errors returned by the III SDK.
 #[derive(Debug, Error, Clone, Serialize, JsonSchema)]
 pub enum IIIError {
-    #[error("iii is not connected")]
+    #[error(
+        "iii is not connected: engine unreachable. Verify the engine is running \
+         (`iii --config config.yaml`) and that the WebSocket URL passed to \
+         `register_worker` matches (default: ws://localhost:49134). \
+         See https://iii.dev/docs/install"
+    )]
     NotConnected,
     #[error("invocation timed out")]
     Timeout,

@@ -29,6 +29,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/iii-hq/sdk"
 Repository = "https://github.com/iii-hq/sdk"
+Changelog = "https://github.com/iii-hq/iii/blob/main/sdk/packages/python/iii/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -44,6 +45,17 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/iii"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"CHANGELOG.md" = "iii/CHANGELOG.md"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/iii",
+    "README.md",
+    "CHANGELOG.md",
+    "pyproject.toml",
+]
 
 [tool.ruff]
 line-length = 120

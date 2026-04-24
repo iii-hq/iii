@@ -27,6 +27,26 @@ def test_register_worker_is_sync() -> None:
     assert not inspect.iscoroutinefunction(register_worker)
 
 
+def test_not_connected_error_is_actionable(monkeypatch) -> None:
+    """Failed connection should raise with problem + cause + fix text."""
+    import pytest
+
+    from iii.iii import III
+
+    iii = III.__new__(III)
+    iii._address = "ws://localhost:49134"
+    iii._connection_state = "failed"
+    # _wait_until_connected is the first wall a dev hits; assert content.
+    with pytest.raises(ConnectionError) as excinfo:
+        iii._wait_until_connected()
+    msg = str(excinfo.value)
+    assert "iii is not connected" in msg
+    assert "engine unreachable" in msg
+    assert "ws://localhost:49134" in msg
+    assert "iii --config" in msg
+    assert "https://iii.dev/docs/install" in msg
+
+
 def test_connect_consumes_otel_from_init_options(monkeypatch) -> None:
     import iii.telemetry as telemetry
 
