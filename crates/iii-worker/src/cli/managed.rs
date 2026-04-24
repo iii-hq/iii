@@ -187,6 +187,33 @@ pub async fn handle_managed_add_many(worker_names: &[String], wait: bool) -> i32
 
 pub async fn handle_worker_sync(frozen: bool) -> i32 {
     if frozen {
+        let lock_path = super::lockfile::lockfile_path();
+        let lockfile = match super::lockfile::WorkerLockfile::read_from(lock_path) {
+            Ok(lockfile) => lockfile,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        };
+
+        // Drift check: only active for locks that carry a manifest_hash
+        // (i.e. written by Lane A or later). Legacy locks fall through
+        // to verify unchanged so we don't regress existing CI pipelines.
+        if let Some(stored_hash) = &lockfile.manifest_hash {
+            let manifest_deps = load_cwd_manifest_dependencies().unwrap_or_default();
+            let current_hash = super::sync::compute_manifest_hash(&manifest_deps);
+            if current_hash != *stored_hash {
+                let lock_deps = lockfile.declared_dependencies.clone().unwrap_or_default();
+                let report =
+                    super::sync::detect_drift(&manifest_deps, &lock_deps).unwrap_or_default();
+                let err = super::sync::SyncError::Drift { report };
+                // stdout is reserved for worker names; all diagnostic output
+                // — including the drift error — goes to stderr.
+                eprint!("{}", err.render());
+                return 1;
+            }
+        }
+
         return handle_worker_verify().await;
     }
 
@@ -472,6 +499,41 @@ fn read_lockfile_or_default(
     }
 }
 
+/// Read the cwd `iii.worker.yaml` `dependencies:` block. Returns `None`
+/// when the file is absent, empty, or has a null dependencies field.
+/// Errors are downgraded to `None` with a stderr warning — missing or
+/// malformed root manifests should not block a resolve that otherwise
+/// succeeded; drift detection just doesn't light up for that project.
+fn load_cwd_manifest_dependencies() -> Option<std::collections::BTreeMap<String, String>> {
+    let manifest_path = std::path::Path::new("iii.worker.yaml");
+    if !manifest_path.exists() {
+        return None;
+    }
+    match super::project::load_manifest_dependencies(manifest_path) {
+        Ok(deps) => Some(deps),
+        Err(e) => {
+            eprintln!(
+                "  {} ignoring iii.worker.yaml for manifest_hash: {e}",
+                "warning:".yellow()
+            );
+            None
+        }
+    }
+}
+
+/// Populate [`super::lockfile::WorkerLockfile::manifest_hash`] and
+/// [`super::lockfile::WorkerLockfile::declared_dependencies`] from the
+/// current cwd manifest. No-ops when the manifest is absent, leaving both
+/// fields at whatever they were before (preserves previous writer's
+/// values across incremental `iii worker add` runs).
+fn populate_manifest_hash_fields(lockfile: &mut super::lockfile::WorkerLockfile) {
+    let Some(deps) = load_cwd_manifest_dependencies() else {
+        return;
+    };
+    lockfile.manifest_hash = Some(super::sync::compute_manifest_hash(&deps));
+    lockfile.declared_dependencies = Some(deps);
+}
+
 async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> i32 {
     for node in &graph.graph {
         if let Err(e) = super::registry::validate_worker_name(&node.name) {
@@ -557,6 +619,16 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     for (name, worker) in graph_lockfile.workers {
         lockfile.workers.insert(name, worker);
     }
+
+    // Populate manifest_hash + declared_dependencies from the project's
+    // root iii.worker.yaml (if present) so `iii worker sync --frozen` can
+    // detect drift on the next run. Projects without a root manifest get
+    // `None` for both fields, which preserves legacy behavior.
+    //
+    // Slice A.1 limitation: only the cwd manifest is scanned. Multi-worker
+    // projects with manifests in subdirectories won't get aggregate
+    // drift detection until Slice A.2 adds project-wide scanning.
+    populate_manifest_hash_fields(&mut lockfile);
 
     if let Err(e) = lockfile.write_to(&lock_path) {
         eprintln!("{} {}", "error:".red(), e);
@@ -3622,6 +3694,121 @@ workers:
         in_temp_dir_async(|_| async move {
             let rc = handle_worker_sync(true).await;
             assert_eq!(rc, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_frozen_passes_when_hash_matches() {
+        // A fresh lock written by Lane A carries manifest_hash +
+        // declared_dependencies. When the cwd manifest agrees, --frozen
+        // falls through to verify, which in turn passes because config.yaml
+        // is absent and the asymmetric verify design ignores extras.
+        in_temp_dir_async(|dir| async move {
+            use super::super::lockfile::{
+                LockedSource, LockedWorker, LockedWorkerType, WorkerLockfile,
+            };
+            use super::super::sync::compute_manifest_hash;
+            use std::collections::BTreeMap;
+
+            let manifest = r#"name: my-project
+dependencies:
+  alpha: "^1.0.0"
+"#;
+            std::fs::write(dir.join("iii.worker.yaml"), manifest).unwrap();
+
+            let declared = BTreeMap::from([("alpha".to_string(), "^1.0.0".to_string())]);
+            let mut lock = WorkerLockfile {
+                manifest_hash: Some(compute_manifest_hash(&declared)),
+                declared_dependencies: Some(declared),
+                ..Default::default()
+            };
+            lock.workers.insert(
+                "alpha".to_string(),
+                LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: LockedWorkerType::Image,
+                    dependencies: BTreeMap::new(),
+                    source: LockedSource::Image {
+                        image: "ghcr.io/iii-hq/alpha@sha256:aaa".to_string(),
+                    },
+                },
+            );
+            lock.write_to(&dir.join("iii.lock")).unwrap();
+
+            let rc = handle_worker_sync(true).await;
+            assert_eq!(rc, 0);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_frozen_reports_drift_on_added_dep() {
+        in_temp_dir_async(|dir| async move {
+            use super::super::lockfile::WorkerLockfile;
+            use super::super::sync::compute_manifest_hash;
+            use std::collections::BTreeMap;
+
+            // Lock was written with only `alpha`, but the manifest now
+            // declares `alpha` + `beta`. --frozen must fail and name `beta`.
+            let original = BTreeMap::from([("alpha".to_string(), "^1.0.0".to_string())]);
+            let lock = WorkerLockfile {
+                manifest_hash: Some(compute_manifest_hash(&original)),
+                declared_dependencies: Some(original),
+                ..Default::default()
+            };
+            lock.write_to(&dir.join("iii.lock")).unwrap();
+
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                "name: my-project\ndependencies:\n  alpha: \"^1.0.0\"\n  beta: \"^2.0.0\"\n",
+            )
+            .unwrap();
+
+            let rc = handle_worker_sync(true).await;
+            assert_eq!(rc, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_frozen_skips_drift_on_legacy_lock() {
+        // Legacy lock (no manifest_hash) must NOT trigger drift detection.
+        // It falls through to the existing verify path, which fails because
+        // config.yaml listing is broken in a pristine tempdir; but the code
+        // path we're testing is that we got to verify, not that sync
+        // short-circuited with a drift error.
+        in_temp_dir_async(|dir| async move {
+            use super::super::lockfile::{
+                LockedSource, LockedWorker, LockedWorkerType, WorkerLockfile,
+            };
+            use std::collections::BTreeMap;
+
+            let mut lock = WorkerLockfile::default();
+            lock.workers.insert(
+                "alpha".to_string(),
+                LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: LockedWorkerType::Image,
+                    dependencies: BTreeMap::new(),
+                    source: LockedSource::Image {
+                        image: "ghcr.io/iii-hq/alpha@sha256:aaa".to_string(),
+                    },
+                },
+            );
+            lock.write_to(&dir.join("iii.lock")).unwrap();
+            // Manifest declares a dep not in the legacy lock. With no
+            // manifest_hash stored, this MUST NOT trigger drift.
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                "name: my-project\ndependencies:\n  beta: \"^2.0.0\"\n",
+            )
+            .unwrap();
+
+            let rc = handle_worker_sync(true).await;
+            // Falls through to verify, which passes because config.yaml
+            // is absent and verify is asymmetric w.r.t. extras.
+            assert_eq!(rc, 0);
         })
         .await;
     }
