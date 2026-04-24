@@ -63,7 +63,7 @@ create_channel(buffer_size: int | None = None)
 
 ```python
 ch = iii.create_channel()
-fn = iii.register_function({"id": "producer"}, producer_handler)
+fn = iii.register_function("producer", producer_handler)
 iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
 ```
 
@@ -91,7 +91,7 @@ async (buffer_size: int | None = None)
 
 ```python
 ch = await iii.create_channel_async()
-fn = iii.register_function({"id": "producer"}, producer_handler)
+fn = iii.register_function("producer", producer_handler)
 await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
 ```
 
@@ -166,7 +166,7 @@ register_function(func_or_id: RegisterFunctionInput | dict[str, Any] | str, hand
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `func_or_id` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] \| str | Yes | A ``RegisterFunctionInput``, dict with ``id``, or a plain string function ID.  When a string is passed, use keyword arguments for ``description``, ``metadata``, ``request_format``, and ``response_format``. |
+| `func_or_id` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] \| str | Yes | A ``RegisterFunctionInput`` or a plain string function ID.  When a string is passed, use keyword arguments for ``description``, ``metadata``, ``request_format``, and ``response_format``. |
 | `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A callable handler or ``HttpInvocationConfig``.  Callable handlers receive one positional argument (``data`` -- the trigger payload) and may return a value. |
 | `description` | `str \| None` | No | Human-readable description (only with string ID). |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata (only with string ID). |
@@ -178,7 +178,7 @@ register_function(func_or_id: RegisterFunctionInput | dict[str, Any] | str, hand
 ```python
 def greet(data):
     return {'message': f"Hello, {data['name']}!"}
-fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
+fn = iii.register_function("greet", greet, description="Greets a user")
 fn.unregister()
 from pydantic import BaseModel
 class GreetInput(BaseModel):
