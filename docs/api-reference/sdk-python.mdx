@@ -153,7 +153,11 @@ block the event loop.  Each handler receives a single ``data``
 argument containing the trigger payload.
 
 ``request_format`` and ``response_format`` are auto-extracted
-from the handler's type hints when not explicitly provided.
+from the handler's type hints when omitted or passed as ``None``
+(the default).  To opt out of auto-extraction, pass an explicit
+schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
+is Python-specific -- the Node SDK does not auto-extract from TS
+types, because TypeScript types are erased at runtime.
 
 **Signature**
 
@@ -169,8 +173,8 @@ register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler
 | `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A callable handler or ``HttpInvocationConfig``.  Callable handlers receive one positional argument (``data`` -- the trigger payload) and may return a value. |
 | `description` | `str \| None` | No | Human-readable description. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. Auto-extracted from handler type hints when omitted. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. Auto-extracted from handler type hints when omitted. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input.  When ``None`` (default), auto-extracted from the handler's first-parameter type hint.  Pass an explicit schema to override; there is no way to register with no schema when the handler is typed. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output.  Same auto-extraction semantics as ``request_format``. |
 
 #### Example
 

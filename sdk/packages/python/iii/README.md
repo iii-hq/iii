@@ -55,7 +55,7 @@ print(result)  # {"message": "Hello, world!"}
 def create_order(data):
     return {"status_code": 201, "body": {"id": "123", "item": data["body"]["item"]}}
 
-iii.register_function("orders.create", create_order)
+iii.register_function("orders::create", create_order)
 ```
 
 ### Registering Triggers
@@ -63,7 +63,7 @@ iii.register_function("orders.create", create_order)
 ```python
 iii.register_trigger({
     "type": "http",
-    "function_id": "orders.create",
+    "function_id": "orders::create",
     "config": {"api_path": "/orders", "http_method": "POST"},
 })
 ```
@@ -71,7 +71,7 @@ iii.register_trigger({
 ### Invoking Functions
 
 ```python
-result = iii.trigger({"function_id": "orders.create", "payload": {"body": {"item": "widget"}}})
+result = iii.trigger({"function_id": "orders::create", "payload": {"body": {"item": "widget"}}})
 ```
 
 ## Modules

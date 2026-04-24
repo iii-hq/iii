@@ -264,7 +264,8 @@ class TestRbacWorkers:
         )
 
         try:
-            iii_client.register_function("denied::blocked-fn",
+            iii_client.register_function(
+                "denied::blocked-fn",
                 lambda _data: {"should": "not reach"},
             )
 
@@ -333,7 +334,8 @@ class TestRbacWorkers:
         )
 
         try:
-            iii_client.register_function("prefixed-echo",
+            iii_client.register_function(
+                "prefixed-echo",
                 lambda data: {"echoed": data},
             )
 

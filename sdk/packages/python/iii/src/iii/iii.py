@@ -806,7 +806,11 @@ class III:
         argument containing the trigger payload.
 
         ``request_format`` and ``response_format`` are auto-extracted
-        from the handler's type hints when not explicitly provided.
+        from the handler's type hints when omitted or passed as ``None``
+        (the default).  To opt out of auto-extraction, pass an explicit
+        schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
+        is Python-specific -- the Node SDK does not auto-extract from TS
+        types, because TypeScript types are erased at runtime.
 
         Args:
             function_id: Unique string identifier for the function.
@@ -816,10 +820,13 @@ class III:
                 may return a value.
             description: Human-readable description.
             metadata: Arbitrary metadata.
-            request_format: Schema describing expected input.
-                Auto-extracted from handler type hints when omitted.
-            response_format: Schema describing expected output.
-                Auto-extracted from handler type hints when omitted.
+            request_format: Schema describing expected input.  When
+                ``None`` (default), auto-extracted from the handler's
+                first-parameter type hint.  Pass an explicit schema to
+                override; there is no way to register with no schema
+                when the handler is typed.
+            response_format: Schema describing expected output.  Same
+                auto-extraction semantics as ``request_format``.
 
         Returns:
             A ``FunctionRef`` with an ``id`` attribute and an
@@ -851,6 +858,10 @@ class III:
             raise TypeError(
                 f"function_id must be str, got {type(function_id).__name__}"
             )
+        if not function_id or not function_id.strip():
+            raise ValueError("id is required")
+        if function_id in self._functions:
+            raise ValueError(f"function id '{function_id}' already registered")
 
         handler_for_extraction = (
             handler_or_invocation if callable(handler_or_invocation) else None
@@ -866,11 +877,6 @@ class III:
             request_format=request_format,
             response_format=response_format,
         )
-
-        if not func.id or not func.id.strip():
-            raise ValueError("id is required")
-        if func.id in self._functions:
-            raise ValueError(f"function id '{func.id}' already registered")
 
         if isinstance(handler_or_invocation, HttpInvocationConfig):
             msg = RegisterFunctionMessage(
