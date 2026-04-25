@@ -8,9 +8,23 @@ use std::time::Duration;
 
 pub const DEFAULT_REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
+// Validation bounds mirrored from `engine/src/update_ops.rs`. If you
+// change one side, change both.
+//   MAX_PATH_DEPTH    = 32
+//   MAX_SEGMENT_BYTES = 256
+//   MAX_VALUE_DEPTH   = 16
+//   MAX_VALUE_KEYS    = 1024
+// Prototype-pollution sinks: __proto__, constructor, prototype.
 pub const JSON_UPDATE_SCRIPT: &str = r#"
     local json_decode = cjson.decode
     local json_encode = cjson.encode
+
+    local MAX_PATH_DEPTH = 32
+    local MAX_SEGMENT_BYTES = 256
+    local MAX_VALUE_DEPTH = 16
+    local MAX_VALUE_KEYS = 1024
+    local PROTO = { __proto__ = true, constructor = true, prototype = true }
+    local DOC_URL = 'https://docs.iii.dev/workers/iii-state#merge-bounds'
 
     local key = KEYS[1]
     local field = ARGV[1]
@@ -30,23 +44,133 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
     local ops = json_decode(ops_json)
     local current = json_decode(json_encode(old_value))
     local using_missing_default = old_value_str == nil
+    local errors = {}
 
+    -- get_path for legacy non-merge ops: collapses anything to a single
+    -- first-level key for backward compat.
     local function get_path(path)
-        if path == nil then
-            return nil
-        end
-        if type(path) == 'string' then
-            return path
-        end
+        if path == nil then return nil end
+        if type(path) == 'string' then return path end
         if type(path) == 'table' then
-            if path[1] then
-                return path[1]
-            end
-            if path['0'] then
-                return path['0']
-            end
+            if path[1] then return path[1] end
+            if path['0'] then return path['0'] end
         end
         return path
+    end
+
+    -- merge_path_segments: returns a Lua array of literal segments, or
+    -- empty array meaning "root merge".
+    local function merge_path_segments(path)
+        if path == nil then return {} end
+        if type(path) == 'string' then
+            if path == '' then return {} end
+            return { path }
+        end
+        if type(path) == 'table' then
+            local out = {}
+            for i, seg in ipairs(path) do
+                out[i] = seg
+            end
+            return out
+        end
+        return {}
+    end
+
+    local function push_error(op_index, code, message)
+        errors[#errors + 1] = {
+            op_index = op_index,
+            code = code,
+            message = message,
+            doc_url = DOC_URL,
+        }
+    end
+
+    local function json_depth(value)
+        if type(value) ~= 'table' then return 0 end
+        local max = 0
+        for _, v in pairs(value) do
+            local d = json_depth(v)
+            if d > max then max = d end
+        end
+        return 1 + max
+    end
+
+    local function validate_merge_path(op_index, segments)
+        if #segments > MAX_PATH_DEPTH then
+            push_error(op_index, 'merge.path.too_deep',
+                'Path depth ' .. #segments .. ' exceeds maximum of ' .. MAX_PATH_DEPTH)
+            return false
+        end
+        for _, seg in ipairs(segments) do
+            if type(seg) ~= 'string' or seg == '' then
+                push_error(op_index, 'merge.path.empty_segment',
+                    'Path contains an empty or non-string segment')
+                return false
+            end
+            if #seg > MAX_SEGMENT_BYTES then
+                push_error(op_index, 'merge.path.segment_too_long',
+                    'Path segment of ' .. #seg .. ' bytes exceeds maximum of ' .. MAX_SEGMENT_BYTES)
+                return false
+            end
+            if PROTO[seg] then
+                push_error(op_index, 'merge.path.proto_polluted',
+                    'Path segment "' .. seg .. '" is a prototype-pollution sink')
+                return false
+            end
+        end
+        return true
+    end
+
+    local function validate_merge_value(op_index, value)
+        if type(value) ~= 'table' or value == cjson.null then
+            push_error(op_index, 'merge.value.not_an_object',
+                'Merge value must be a JSON object')
+            return false
+        end
+        local key_count = 0
+        for k, _ in pairs(value) do
+            -- JSON arrays land as Lua arrays with numeric keys; reject.
+            if type(k) ~= 'string' then
+                push_error(op_index, 'merge.value.not_an_object',
+                    'Merge value must be a JSON object')
+                return false
+            end
+            if PROTO[k] then
+                push_error(op_index, 'merge.value.proto_polluted',
+                    'Merge value top-level key "' .. k .. '" is a prototype-pollution sink')
+                return false
+            end
+            key_count = key_count + 1
+            if key_count > MAX_VALUE_KEYS then
+                push_error(op_index, 'merge.value.too_many_keys',
+                    'Merge value has more than ' .. MAX_VALUE_KEYS .. ' top-level keys')
+                return false
+            end
+        end
+        if json_depth(value) > MAX_VALUE_DEPTH then
+            push_error(op_index, 'merge.value.too_deep',
+                'Merge value JSON nesting depth exceeds maximum of ' .. MAX_VALUE_DEPTH)
+            return false
+        end
+        return true
+    end
+
+    -- Walk segments inside `root`, replacing or auto-creating non-object
+    -- intermediates. Returns the target object table for shallow merge.
+    local function walk_or_create(root, segments)
+        if type(root) ~= 'table' or root == cjson.null then
+            return nil  -- caller normalises root before invoking
+        end
+        local node = root
+        for _, seg in ipairs(segments) do
+            local next_node = node[seg]
+            if type(next_node) ~= 'table' or next_node == cjson.null then
+                next_node = {}
+                node[seg] = next_node
+            end
+            node = next_node
+        end
+        return node
     end
 
     local function initial_append_value(value)
@@ -91,7 +215,9 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         return false, target
     end
 
-    for _, op in ipairs(ops) do
+    for op_index, op in ipairs(ops) do
+        -- ipairs yields 1-based; mirror the engine's 0-based op_index.
+        local zero_index = op_index - 1
         if op.type == 'set' then
             local path = get_path(op.path)
             if (path == '' or path == nil) and op.value ~= nil then
@@ -109,12 +235,29 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
                 using_missing_default = false
             end
         elseif op.type == 'merge' then
-            local path = get_path(op.path)
-            if (path == nil or path == '') and type(current) == 'table' and type(op.value) == 'table' then
-                for k, v in pairs(op.value) do
-                    current[k] = v
+            local segments = merge_path_segments(op.path)
+            if validate_merge_path(zero_index, segments) and
+               validate_merge_value(zero_index, op.value) then
+                if #segments == 0 then
+                    -- Root merge — preserve existing semantics.
+                    if type(current) == 'table' and current ~= cjson.null then
+                        for k, v in pairs(op.value) do
+                            current[k] = v
+                        end
+                        using_missing_default = false
+                    end
+                else
+                    if type(current) ~= 'table' or current == cjson.null then
+                        current = {}
+                    end
+                    local target = walk_or_create(current, segments)
+                    if target ~= nil then
+                        for k, v in pairs(op.value) do
+                            target[k] = v
+                        end
+                        using_missing_default = false
+                    end
                 end
-                using_missing_default = false
             end
         elseif op.type == 'increment' then
             local path = get_path(op.path)
@@ -169,5 +312,14 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
     local new_value_str = json_encode(current)
     redis.call('HSET', key, field, new_value_str)
 
-    return {'true', old_value_str or '', new_value_str}
+    -- Return tuple shape:
+    --   {'true', old_value_str, new_value_str, errors_json}
+    -- errors_json is omitted (4 elements only when present) when no
+    -- errors occurred, preserving backward compatibility with adapters
+    -- that expect 3 elements.
+    if #errors == 0 then
+        return {'true', old_value_str or '', new_value_str}
+    else
+        return {'true', old_value_str or '', new_value_str, json_encode(errors)}
+    end
 "#;

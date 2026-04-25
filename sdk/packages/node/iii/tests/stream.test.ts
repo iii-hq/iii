@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { iii, sleep } from './utils'
-import type { StreamSetInput, StreamSetResult, UpdateAppend, UpdateOp } from '../src/stream'
+import type {
+  StreamSetInput,
+  StreamSetResult,
+  StreamUpdateResult,
+  UpdateAppend,
+  UpdateMerge,
+  UpdateOp,
+  UpdateOpError,
+} from '../src/stream'
 
 type TestData = {
   name?: string
@@ -246,6 +254,45 @@ describe('Stream Operations', () => {
       const ops: UpdateOp[] = [op]
 
       expect(ops[0]).toEqual({ type: 'append', path: 'chunks', value: 'hello' })
+    })
+
+    it('should round-trip merge with string path through JSON', () => {
+      const op = {
+        type: 'merge',
+        path: 'session-abc',
+        value: { author: 'alice' },
+      } satisfies UpdateMerge
+
+      const parsed: UpdateMerge = JSON.parse(JSON.stringify(op))
+      expect(parsed).toEqual(op)
+      expect(parsed.path).toBe('session-abc')
+    })
+
+    it('should round-trip merge with array path through JSON', () => {
+      const op = {
+        type: 'merge',
+        path: ['sessions', 'abc'],
+        value: { ts: 'chunk' },
+      } satisfies UpdateMerge
+
+      const parsed: UpdateMerge = JSON.parse(JSON.stringify(op))
+      expect(parsed).toEqual(op)
+      expect(Array.isArray(parsed.path)).toBe(true)
+    })
+
+    it('should type a StreamUpdateResult with errors', () => {
+      const err: UpdateOpError = {
+        op_index: 0,
+        code: 'merge.path.proto_polluted',
+        message: 'Path segment "__proto__" is a prototype-pollution sink',
+      }
+      const result: StreamUpdateResult<{ x: number }> = {
+        old_value: undefined,
+        new_value: { x: 1 },
+        errors: [err],
+      }
+
+      expect(result.errors?.[0].code).toBe('merge.path.proto_polluted')
     })
 
     it('should apply partial updates via ops array', async () => {

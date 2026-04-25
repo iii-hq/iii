@@ -138,7 +138,7 @@ impl StateAdapter for StateRedisAdapter {
                     ));
                 }
 
-                if values.len() == 3 {
+                if values.len() == 3 || values.len() == 4 {
                     let old_value = if values[1].is_empty() {
                         None
                     } else {
@@ -150,13 +150,22 @@ impl StateAdapter for StateRedisAdapter {
                     let new_value = serde_json::from_str(&values[2])
                         .map_err(|e| anyhow::anyhow!("Failed to deserialize new value: {}", e))?;
 
+                    let errors = if values.len() == 4 && !values[3].is_empty() {
+                        serde_json::from_str(&values[3]).map_err(|e| {
+                            anyhow::anyhow!("Failed to deserialize update errors: {}", e)
+                        })?
+                    } else {
+                        Vec::new()
+                    };
+
                     Ok(UpdateResult {
                         old_value,
                         new_value,
+                        errors,
                     })
                 } else {
                     Err(anyhow::anyhow!(
-                        "Unexpected return value from update script: expected 3 values, got {}",
+                        "Unexpected return value from update script: expected 3 or 4 values, got {}",
                         values.len()
                     ))
                 }

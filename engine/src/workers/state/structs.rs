@@ -90,6 +90,35 @@ mod tests {
     }
 
     #[test]
+    fn state_update_input_schema_merge_path_accepts_string_or_array() {
+        // Regression: changing UpdateOp::Merge.path to an untagged
+        // enum (MergePath: Single | Segments) must keep the schemars
+        // schema for ops accepting both string and array path forms.
+        // This test catches silent drift if schemars output changes.
+        let schema = schemars::schema_for!(StateUpdateInput);
+        let schema_value = serde_json::to_value(&schema).unwrap();
+        let pretty = serde_json::to_string_pretty(&schema_value).unwrap();
+
+        // The Merge variant must surface anyOf-of-(string, array of string)
+        // somewhere in the generated schema. We don't pin the exact
+        // shape (schemars output evolves) but we assert presence of
+        // both forms in the pretty-printed schema text.
+        assert!(
+            pretty.contains("\"merge\""),
+            "schema must mention the merge variant: {}",
+            pretty
+        );
+        assert!(
+            pretty.contains("array"),
+            "schema must include an array form for merge.path"
+        );
+        assert!(
+            pretty.contains("string"),
+            "schema must include a string form for merge.path"
+        );
+    }
+
+    #[test]
     fn state_event_type_serde() {
         let created = StateEventType::Created;
         let json = serde_json::to_value(&created).unwrap();

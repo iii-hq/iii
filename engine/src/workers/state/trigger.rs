@@ -144,6 +144,7 @@ mod tests {
             Ok(UpdateResult {
                 old_value: None,
                 new_value: serde_json::Value::Null,
+                errors: Vec::new(),
             })
         }
 

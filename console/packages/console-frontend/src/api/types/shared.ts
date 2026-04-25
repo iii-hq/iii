@@ -8,11 +8,24 @@ export type StreamUpdateOp =
   | { type: 'increment'; path: string; by: number }
   | { type: 'decrement'; path: string; by: number }
   | { type: 'remove'; path: string }
-  | { type: 'merge'; path: string; value: unknown }
+  // Merge accepts a single string (legacy / first-level field) or an
+  // array of literal segments (nested path). Path may be omitted to
+  // target the root value.
+  | { type: 'merge'; path?: string | string[]; value: unknown }
+
+export type StreamUpdateOpError = {
+  op_index: number
+  code: string
+  message: string
+  doc_url?: string
+}
 
 export type StreamUpdateResult = {
   old_value?: unknown
   new_value: unknown
+  // Per-op errors. Currently emitted only by `merge` for validation
+  // rejections (depth/size/proto-pollution). Field omitted when empty.
+  errors?: StreamUpdateOpError[]
 }
 
 export type MetricsSnapshot = {

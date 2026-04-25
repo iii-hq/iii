@@ -937,6 +937,7 @@ mod tests {
                 update_result: Mutex::new(Ok(UpdateResult {
                     old_value: None,
                     new_value: serde_json::json!({}),
+                    errors: Vec::new(),
                 })),
                 emitted_messages: Mutex::new(Vec::new()),
                 destroy_called: AtomicBool::new(false),

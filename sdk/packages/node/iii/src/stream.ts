@@ -101,6 +101,14 @@ export type StreamUpdateResult<TData> = {
   old_value?: TData
   /** New value after the update. */
   new_value: TData
+  /**
+   * Per-op errors. Currently emitted only by the `merge` op when input
+   * violates the validation bounds (path depth/size, value depth, or
+   * a `__proto__`/`constructor`/`prototype` segment or top-level key).
+   * Successfully applied ops are still reflected in `new_value`. The
+   * field is omitted from the JSON wire when empty.
+   */
+  errors?: UpdateOpError[]
 }
 
 /** Set a field at the given path to a value. */
@@ -148,14 +156,61 @@ export type UpdateRemove = {
   path: string
 }
 
-/** Shallow-merge an object into the root value. Only root-level merge is supported. */
+/**
+ * Path target for a {@link UpdateMerge} op. Accepts:
+ *   - a single string (legacy / first-level field)
+ *   - an array of literal segments (nested path; each element is one
+ *     literal key, dots are NOT interpreted as separators)
+ *
+ * Omit `path`, pass `""`, or pass `[]` to target the root value.
+ *
+ * @example single first-level field
+ *   { type: 'merge', path: 'session-abc', value: { author: 'alice' } }
+ * @example nested path (closes issue #1546's structured-state use case)
+ *   { type: 'merge', path: ['sessions', 'abc'], value: { ts: chunk } }
+ */
+export type MergePath = string | string[]
+
+/**
+ * Shallow-merge an object into the target. The target is the root
+ * (when `path` is omitted/empty) or an arbitrary nested location
+ * specified by an array of literal segments.
+ *
+ * Engine semantics:
+ *   - Missing or non-object intermediates along the path are
+ *     auto-replaced with `{}` so a stray `null` or scalar never
+ *     blocks future merges.
+ *   - The merge is shallow at the target — top-level keys of `value`
+ *     replace same-named keys; siblings are preserved.
+ *   - Each path segment is a literal key. `["a.b"]` writes a single
+ *     key named `"a.b"`, not `a → b`.
+ *
+ * Validation: invalid paths/values (depth > 32 segments, segment >
+ * 256 bytes, value depth > 16, > 1024 top-level keys, or any
+ * `__proto__`/`constructor`/`prototype` segment or top-level key)
+ * are rejected with a structured error in the `errors` field of the
+ * `state::update` / `stream::update` response. The merge does not
+ * apply when an error is returned for that op.
+ */
 export type UpdateMerge = {
   type: 'merge'
-  /** Must be an empty string. Non-empty paths are ignored. */
-  path: string
-  /** Object to merge. */
+  /** Optional path to the merge target. See {@link MergePath}. */
+  path?: MergePath
+  /** Object to merge. Must be a JSON object. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
   value: any
+}
+
+/** Per-op error returned by `state::update` / `stream::update`. */
+export type UpdateOpError = {
+  /** Index of the offending op within the original `ops` array. */
+  op_index: number
+  /** Stable error code, e.g. `"merge.path.too_deep"`. */
+  code: string
+  /** Human-readable description with concrete numbers when applicable. */
+  message: string
+  /** Optional documentation URL. */
+  doc_url?: string
 }
 
 /** Result of a stream delete operation. */
