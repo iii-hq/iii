@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ChannelReader, ChannelWriter, registerWorker, TriggerAction } from '../src/index'
-import type { UpdateAppend, UpdateMerge, UpdateOp } from '../src/stream'
+import type { UpdateAppend, UpdateOp } from '../src/stream'
 
 describe('Package Exports', () => {
   it('should export main SDK symbols', () => {
@@ -31,31 +31,6 @@ describe('Package Exports', () => {
 
     expect(ops[0]).toEqual({ type: 'append', path: 'chunks', value: 'hello' })
   })
-
-  it('should type merge with a string path (legacy/first-level form)', () => {
-    const op = {
-      type: 'merge',
-      path: 'session-abc',
-      value: { author: 'alice' },
-    } satisfies UpdateMerge
-
-    expect(op).toEqual({ type: 'merge', path: 'session-abc', value: { author: 'alice' } })
-  })
-
-  it('should type merge with an array path (nested form)', () => {
-    const op = {
-      type: 'merge',
-      path: ['sessions', 'abc'],
-      value: { ts: 'chunk' },
-    } satisfies UpdateMerge
-
-    expect(op).toEqual({ type: 'merge', path: ['sessions', 'abc'], value: { ts: 'chunk' } })
-
-    // Round-trips through JSON unchanged.
-    const parsed: UpdateMerge = JSON.parse(JSON.stringify(op))
-    expect(parsed).toEqual(op)
-  })
-
 
   it('should import state module', async () => {
     const stateModule = await import('../src/state')
