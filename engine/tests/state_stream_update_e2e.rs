@@ -150,4 +150,3 @@ async fn merge_with_proto_polluted_segment_returns_structured_error() {
     // The op did not apply.
     assert_eq!(r.new_value, json!({}));
 }
-
