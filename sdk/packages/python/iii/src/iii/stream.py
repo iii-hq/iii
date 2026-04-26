@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Generic, List, Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 TData = TypeVar("TData")
 
@@ -91,6 +91,20 @@ class StreamUpdateInput(BaseModel):
     ops: list["UpdateOp"]
 
 
+class UpdateOpError(BaseModel):
+    """Per-op error returned by ``state::update`` / ``stream::update``.
+
+    Currently emitted only by the ``merge`` op when input violates the
+    new validation bounds. Successfully applied ops are still
+    reflected in the response's ``new_value``.
+    """
+
+    op_index: int
+    code: str
+    message: str
+    doc_url: str | None = None
+
+
 class StreamSetResult(BaseModel, Generic[TData]):
     """Result of stream set operation."""
 
@@ -105,8 +119,10 @@ class StreamUpdateResult(BaseModel, Generic[TData]):
     new_value: TData
     # Per-op errors. Currently emitted only by the ``merge`` op for
     # validation rejections. Field is omitted from the JSON wire when
-    # empty (default factory keeps the Python object usable).
-    errors: list["UpdateOpError"] = []
+    # empty. ``default_factory`` is used (not ``= []``) to keep
+    # Pydantic's parameterized-Generic + default handling well-behaved
+    # across Python versions.
+    errors: list[UpdateOpError] = Field(default_factory=list)
 
 
 class StreamDeleteResult(BaseModel):
@@ -188,20 +204,6 @@ class UpdateMerge(BaseModel):
     # input -> str, array input -> list[str].
     path: str | list[str] | None = None
     value: Any
-
-
-class UpdateOpError(BaseModel):
-    """Per-op error returned by ``state::update`` / ``stream::update``.
-
-    Currently emitted only by the ``merge`` op when input violates the
-    new validation bounds. Successfully applied ops are still
-    reflected in the response's ``new_value``.
-    """
-
-    op_index: int
-    code: str
-    message: str
-    doc_url: str | None = None
 
 
 UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
