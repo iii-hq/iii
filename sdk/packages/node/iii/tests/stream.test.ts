@@ -256,28 +256,12 @@ describe('Stream Operations', () => {
       expect(ops[0]).toEqual({ type: 'append', path: 'chunks', value: 'hello' })
     })
 
-    it('should round-trip merge with string path through JSON', () => {
-      const op = {
-        type: 'merge',
-        path: 'session-abc',
-        value: { author: 'alice' },
-      } satisfies UpdateMerge
-
+    it.each<[string, UpdateMerge]>([
+      ['string path (legacy / first-level)', { type: 'merge', path: 'session-abc', value: { author: 'alice' } }],
+      ['array path (nested)', { type: 'merge', path: ['sessions', 'abc'], value: { ts: 'chunk' } }],
+    ])('should round-trip merge with %s through JSON', (_, op) => {
       const parsed: UpdateMerge = JSON.parse(JSON.stringify(op))
       expect(parsed).toEqual(op)
-      expect(parsed.path).toBe('session-abc')
-    })
-
-    it('should round-trip merge with array path through JSON', () => {
-      const op = {
-        type: 'merge',
-        path: ['sessions', 'abc'],
-        value: { ts: 'chunk' },
-      } satisfies UpdateMerge
-
-      const parsed: UpdateMerge = JSON.parse(JSON.stringify(op))
-      expect(parsed).toEqual(op)
-      expect(Array.isArray(parsed.path)).toBe(true)
     })
 
     it('should type a StreamUpdateResult with errors', () => {

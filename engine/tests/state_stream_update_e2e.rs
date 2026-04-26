@@ -1,10 +1,12 @@
 // Integration tests for nested merge in `state::update` (and the
 // shared `apply_update_ops` machinery used by `stream::update`).
 //
-// Closes iii-hq/iii#1546. Runs the same op sequences against the
-// in-memory `BuiltinKvStore`. A Redis-backed pass is gated on a
-// `IIITEST_REDIS_URL` env var; when set, we run the same ops against
-// the Lua `JSON_UPDATE_SCRIPT` and assert identical resulting state.
+// Closes iii-hq/iii#1546. Each test here exercises behavior that
+// requires going through `BuiltinKvStore` (persistence across calls,
+// op-batch interleaving, error plumbing into `UpdateResult`). The
+// in-batch nested-merge mechanics — auto-create intermediates, replace
+// non-object intermediates, validation rejections — are covered by
+// the unit tests in `engine/src/update_ops.rs`.
 
 use serde_json::json;
 
@@ -54,41 +56,6 @@ async fn merge_first_level_path_accumulates_siblings_across_calls() {
             "session-1": {
                 "ts:0001": "first chunk",
                 "ts:0002": "second chunk",
-            }
-        })
-    );
-}
-
-#[tokio::test]
-async fn merge_at_nested_path_creates_missing_intermediates_from_empty_root() {
-    // Closes the bug class: nested merge from empty state must
-    // auto-create every intermediate object.
-    let store = fresh_store().await;
-    let segs: Vec<String> = vec!["sessions".into(), "abc".into(), "metadata".into()];
-
-    let result = store
-        .update(
-            SCOPE.to_string(),
-            "key".to_string(),
-            vec![UpdateOp::merge_at(
-                MergePath::Segments(segs),
-                json!({ "author": "alice" }),
-            )],
-        )
-        .await;
-
-    assert!(
-        result.errors.is_empty(),
-        "nested merge errors: {:?}",
-        result.errors
-    );
-    assert_eq!(
-        result.new_value,
-        json!({
-            "sessions": {
-                "abc": {
-                    "metadata": { "author": "alice" }
-                }
             }
         })
     );
@@ -184,21 +151,3 @@ async fn merge_with_proto_polluted_segment_returns_structured_error() {
     assert_eq!(r.new_value, json!({}));
 }
 
-#[tokio::test]
-async fn root_merge_unchanged_for_legacy_callers() {
-    // Existing root-merge senders (`path: ""` or omitted) must keep
-    // working unchanged.
-    let store = fresh_store().await;
-    let key = "key".to_string();
-
-    let r = store
-        .update(
-            SCOPE.to_string(),
-            key.clone(),
-            vec![UpdateOp::merge(json!({ "a": 1, "b": 2 }))],
-        )
-        .await;
-
-    assert!(r.errors.is_empty());
-    assert_eq!(r.new_value, json!({ "a": 1, "b": 2 }));
-}

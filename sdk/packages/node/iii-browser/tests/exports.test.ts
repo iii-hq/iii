@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ChannelReader, ChannelWriter, registerWorker, TriggerAction } from '../src/index'
-import type { UpdateAppend, UpdateMerge, UpdateOp, UpdateOpError } from '../src/stream'
+import type { UpdateAppend, UpdateMerge, UpdateOp } from '../src/stream'
 
 describe('Package Exports', () => {
   it('should export main SDK symbols', () => {
@@ -56,21 +56,6 @@ describe('Package Exports', () => {
     expect(parsed).toEqual(op)
   })
 
-  it('should type merge with no path (root merge)', () => {
-    const op: UpdateMerge = { type: 'merge', value: { x: 1 } }
-    expect(op.path).toBeUndefined()
-  })
-
-  it('should type UpdateOpError with required fields', () => {
-    const err: UpdateOpError = {
-      op_index: 0,
-      code: 'merge.path.too_deep',
-      message: 'Path depth 33 exceeds maximum of 32',
-      doc_url: 'https://docs.iii.dev/workers/iii-state#merge-bounds',
-    }
-
-    expect(err.code).toBe('merge.path.too_deep')
-  })
 
   it('should import state module', async () => {
     const stateModule = await import('../src/state')
