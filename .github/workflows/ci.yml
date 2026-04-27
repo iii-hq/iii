@@ -90,6 +90,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Free up disk space to avoid "No space left on device" during the
+      # post-job rust-cache save step on ubuntu-latest runners.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/microsoft
+          df -h /
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
