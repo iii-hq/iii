@@ -555,7 +555,7 @@ jobs:
 
   publish-builtin-workers:
     name: Publish builtin workers
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, engine-release]
     if: needs.setup.outputs.dry_run != 'true'
     strategy:
       fail-fast: false
