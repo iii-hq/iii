@@ -111,4 +111,8 @@ iii.registerTrigger({
 
 ## Distributed Execution
 
-When running multiple III Engine instances, the Cron Worker uses distributed locking to ensure jobs execute only once. The first engine instance to acquire the lock runs the job; other instances skip it until the lock is released.
+When running multiple III Engine instances, the once-only execution guarantee applies only with the `redis` adapter. Select it with `adapter.name: redis` and configure `adapter.config.redis_url` so all engine instances share the same Redis-backed lock store.
+
+The default `kv` adapter uses process-local locks. In multi-instance deployments, each engine instance can acquire its own local lock and run the same cron job.
+
+Cron handlers receive the trigger payload described above: `trigger`, `job_id`, `scheduled_time`, and `actual_time`.

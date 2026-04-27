@@ -712,6 +712,26 @@ mod tests {
         }
     }
 
+    struct EnvVarGuard {
+        name: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn capture(name: &'static str) -> Self {
+            Self {
+                name,
+                value: env::var_os(name),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            restore_env_var(self.name, self.value.clone());
+        }
+    }
+
     #[test]
     fn test_env_var_expansion() {
         unsafe {
@@ -780,26 +800,24 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_uses_engine_version_placeholder() {
-        let original = env::var_os("III_TEST_ENGINE_VERSION_MISSING");
+        let _guard = EnvVarGuard::capture("III_TEST_ENGINE_VERSION_MISSING");
         unsafe {
             env::remove_var("III_TEST_ENGINE_VERSION_MISSING");
         }
         let input = "service_version: ${III_TEST_ENGINE_VERSION_MISSING:__III_ENGINE_VERSION__}";
         let expected = format!("service_version: {}", env!("CARGO_PKG_VERSION"));
         let output = EngineConfig::expand_env_vars(input);
-        restore_env_var("III_TEST_ENGINE_VERSION_MISSING", original);
         assert_eq!(output, expected);
     }
 
     #[test]
     fn test_expand_env_vars_service_version_overrides_engine_version_placeholder() {
-        let original = env::var_os("III_TEST_ENGINE_VERSION_OVERRIDE");
+        let _guard = EnvVarGuard::capture("III_TEST_ENGINE_VERSION_OVERRIDE");
         unsafe {
             env::set_var("III_TEST_ENGINE_VERSION_OVERRIDE", "user-version");
         }
         let input = "service_version: ${III_TEST_ENGINE_VERSION_OVERRIDE:__III_ENGINE_VERSION__}";
         let output = EngineConfig::expand_env_vars(input);
-        restore_env_var("III_TEST_ENGINE_VERSION_OVERRIDE", original);
         assert_eq!(output, "service_version: user-version");
     }
 

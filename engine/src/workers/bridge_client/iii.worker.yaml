@@ -1,5 +1,5 @@
 iii: v1
 name: iii-bridge
 type: engine
-description: Connect to another iii instance over WebSocket to expose and forward functions.
+description: Connect to another iii instance over iii-sdk to expose and forward functions.
 repo: https://github.com/iii-hq/iii

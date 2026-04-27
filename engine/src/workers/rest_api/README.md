@@ -51,7 +51,7 @@ Register a trigger with type `http` to expose a function as an HTTP endpoint.
 ### Sample Code
 
 ```typescript
-const fn = iii.registerFunction('api.getUsers', handler)
+const fn = iii.registerFunction('api::getUsers', handler)
 iii.registerTrigger({
   type: 'http',
   function_id: fn.id,
@@ -83,7 +83,7 @@ iii.registerTrigger({
 |---|---|---|
 | `status_code` | number | HTTP status code. |
 | `body` | any | The response payload. |
-| `headers` | string[] | HTTP response headers as `"Header-Name: value"` strings. Optional. |
+| `headers` | string[] \| Record\<string, string\> | HTTP response headers as `"Header-Name: value"` strings or an object such as `{ "Content-Type": "application/json" }`. Optional. |
 
 ## Middleware
 
@@ -149,7 +149,7 @@ async function getUser(req: ApiRequest): Promise<ApiResponse> {
   }
 }
 
-const fn = iii.registerFunction('api.getUser', getUser)
+const fn = iii.registerFunction('api::getUser', getUser)
 iii.registerTrigger({
   type: 'http',
   function_id: fn.id,
