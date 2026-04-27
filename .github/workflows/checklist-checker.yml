@@ -1,37 +1,36 @@
-name: 'PR Tasks Completed Check'
+name: License Agreement Check
+
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened]
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  statuses: write
+
+concurrency:
+  group: license-agreement-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
 
 jobs:
-  task-check:
+  license-agreement:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
-      - name: Check repo permission
-        id: perm-check
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check license agreement
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          USER=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
-          PERM=$(gh api "repos/${{ github.repository }}/collaborators/$USER/permission" --jq '.permission')
-          echo "level=$PERM" >> "$GITHUB_OUTPUT"
-      - name: Check all tasks are completed
-        if: steps.perm-check.outputs.level != 'admin'
-        run: |
-          BODY=$(jq -r '.pull_request.body' "$GITHUB_EVENT_PATH")
-          TOTAL=$(echo "$BODY" | grep -cE '^\s*- \[[ xX]\]' || true)
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "::error::PR has no checklist items. The template checklist was removed — restore it from .github/pull_request_template.md."
-            exit 1
-          fi
-          # Match a checked box that mentions both "licens" and "Apache" so the
-          # check survives minor rewordings of the template copy.
-          if ! echo "$BODY" | grep -qiE '^\s*- \[[xX]\].*licens.*Apache'; then
-            echo "::error::Apache 2.0 license checkbox is unchecked. Edit this PR's description (click the Edit pencil at the top of the PR) and tick the box that starts with 'I am licensing...'. This confirmation is required before the PR can be merged."
-            exit 1
-          fi
-          UNCHECKED=$(echo "$BODY" | grep -cE '^\s*- \[ \]' || true)
-          if [ "$UNCHECKED" -gt 0 ]; then
-            echo "::error::PR has $UNCHECKED unchecked task(s). Edit the PR description and tick each remaining checkbox."
-            exit 1
-          fi
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/license-agreement-check.mjs
