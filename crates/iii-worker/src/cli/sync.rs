@@ -107,6 +107,21 @@ pub enum SyncError {
     Drift { report: DriftReport },
     /// Lockfile on disk but malformed or unreadable.
     CorruptLock { path: String, reason: String },
+    /// `iii.worker.yaml` does not exist but the lock recorded a
+    /// manifest_hash. Distinct from drift: the manifest isn't *changed*,
+    /// it's *gone* — the user needs to restore the file or remove the
+    /// lock, not run `--refresh`.
+    ManifestMissing { lock_deps: BTreeMap<String, String> },
+    /// `iii.worker.yaml` exists but failed to parse. The reason carries
+    /// the parser's message so the user can fix the YAML directly.
+    CorruptManifest { reason: String },
+    /// The lock's `manifest_hash` does not match
+    /// `compute_manifest_hash(&declared_dependencies)` AND
+    /// declared_dependencies equals the manifest deps. The lock is
+    /// internally inconsistent (likely tampered or partially edited);
+    /// drift attribution would be empty so we surface the corruption
+    /// directly instead.
+    LockInconsistent,
     // CacheMiss and NetworkRequired variants land in Slice A.3 (install-
     // from-lock) and Lane B (CAS). Not included here to avoid dead code.
 }
@@ -127,8 +142,32 @@ impl SyncError {
                      docs: https://iii.dev/docs/sync#corrupt-lock\n"
                 )
             }
+            Self::ManifestMissing { lock_deps } => render_manifest_missing(lock_deps),
+            Self::CorruptManifest { reason } => {
+                format!(
+                    "error: iii.worker.yaml failed to parse: {reason}\n\
+                     fix: correct the YAML in iii.worker.yaml and re-run\n\
+                     docs: https://iii.dev/docs/sync#corrupt-manifest\n"
+                )
+            }
+            Self::LockInconsistent => String::from(
+                "error: iii.lock is internally inconsistent: \
+                 manifest_hash does not match declared_dependencies\n\
+                 fix: restore iii.lock from git, or regenerate with `iii worker add`\n\
+                 docs: https://iii.dev/docs/sync#corrupt-lock\n",
+            ),
         }
     }
+}
+
+fn render_manifest_missing(lock_deps: &BTreeMap<String, String>) -> String {
+    let mut out = String::from("error: iii.worker.yaml is missing but iii.lock expects it\n");
+    for (name, range) in lock_deps {
+        out.push_str(&format!("  - {name} \"{range}\" (in lock)\n"));
+    }
+    out.push_str("fix: restore iii.worker.yaml from git, or remove iii.lock\n");
+    out.push_str("docs: https://iii.dev/docs/sync#missing-manifest\n");
+    out
 }
 
 fn render_drift(report: &DriftReport) -> String {
@@ -370,5 +409,43 @@ fix: restore the file from git or run `iii worker sync --refresh`
 docs: https://iii.dev/docs/sync#corrupt-lock
 ";
         assert_eq!(err.render(), expected);
+    }
+
+    #[test]
+    fn render_manifest_missing_golden() {
+        let err = SyncError::ManifestMissing {
+            lock_deps: deps(&[("alpha", "^1.0.0"), ("beta", "^2.0.0")]),
+        };
+        let expected = "\
+error: iii.worker.yaml is missing but iii.lock expects it
+  - alpha \"^1.0.0\" (in lock)
+  - beta \"^2.0.0\" (in lock)
+fix: restore iii.worker.yaml from git, or remove iii.lock
+docs: https://iii.dev/docs/sync#missing-manifest
+";
+        assert_eq!(err.render(), expected);
+    }
+
+    #[test]
+    fn render_corrupt_manifest_golden() {
+        let err = SyncError::CorruptManifest {
+            reason: "`dependencies` must be a mapping".into(),
+        };
+        let expected = "\
+error: iii.worker.yaml failed to parse: `dependencies` must be a mapping
+fix: correct the YAML in iii.worker.yaml and re-run
+docs: https://iii.dev/docs/sync#corrupt-manifest
+";
+        assert_eq!(err.render(), expected);
+    }
+
+    #[test]
+    fn render_lock_inconsistent_golden() {
+        let expected = "\
+error: iii.lock is internally inconsistent: manifest_hash does not match declared_dependencies
+fix: restore iii.lock from git, or regenerate with `iii worker add`
+docs: https://iii.dev/docs/sync#corrupt-lock
+";
+        assert_eq!(SyncError::LockInconsistent.render(), expected);
     }
 }

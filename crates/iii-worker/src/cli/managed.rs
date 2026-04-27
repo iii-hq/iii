@@ -199,16 +199,38 @@ pub async fn handle_worker_sync(frozen: bool) -> i32 {
         // Drift check: only active for locks that carry a manifest_hash
         // (i.e. written by Lane A or later). Legacy locks fall through
         // to verify unchanged so we don't regress existing CI pipelines.
+        //
+        // Each `iii.worker.yaml` state surfaces a distinct error so the
+        // user sees what's actually wrong: a *missing* manifest reads
+        // as `ManifestMissing`, a *malformed* one as `CorruptManifest`,
+        // and a hash mismatch with no structural drift as
+        // `LockInconsistent`. Only an actual content change reaches the
+        // `Drift` variant — the one with actionable add/remove/change
+        // attribution.
         if let Some(stored_hash) = &lockfile.manifest_hash {
-            let manifest_deps = load_cwd_manifest_dependencies().unwrap_or_default();
-            let current_hash = super::sync::compute_manifest_hash(&manifest_deps);
-            if current_hash != *stored_hash {
-                let lock_deps = lockfile.declared_dependencies.clone().unwrap_or_default();
-                let report =
-                    super::sync::detect_drift(&manifest_deps, &lock_deps).unwrap_or_default();
-                let err = super::sync::SyncError::Drift { report };
-                // stdout is reserved for worker names; all diagnostic output
-                // — including the drift error — goes to stderr.
+            let err: Option<super::sync::SyncError> = match load_cwd_manifest_state() {
+                ManifestState::Missing => Some(super::sync::SyncError::ManifestMissing {
+                    lock_deps: lockfile.declared_dependencies.clone().unwrap_or_default(),
+                }),
+                ManifestState::Malformed(reason) => {
+                    Some(super::sync::SyncError::CorruptManifest { reason })
+                }
+                ManifestState::Loaded(manifest_deps) => {
+                    let current_hash = super::sync::compute_manifest_hash(&manifest_deps);
+                    if current_hash != *stored_hash {
+                        let lock_deps = lockfile.declared_dependencies.clone().unwrap_or_default();
+                        match super::sync::detect_drift(&manifest_deps, &lock_deps) {
+                            Some(report) => Some(super::sync::SyncError::Drift { report }),
+                            None => Some(super::sync::SyncError::LockInconsistent),
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(err) = err {
+                // stdout is reserved for worker names; all diagnostic
+                // output goes to stderr.
                 eprint!("{}", err.render());
                 return 1;
             }
@@ -499,19 +521,40 @@ fn read_lockfile_or_default(
     }
 }
 
+/// Distinguishes the three states of `iii.worker.yaml` that drift
+/// detection cares about. Collapsing `Missing` and `Malformed` into the
+/// same fallback (as `load_cwd_manifest_dependencies` does for the
+/// `iii worker add` write path) is fine for *populating* a fresh hash,
+/// but it produces misleading "drift" output when those states arise
+/// during `--frozen`. The `--frozen` path uses this enum directly so
+/// each state surfaces with its own error variant.
+pub(crate) enum ManifestState {
+    Missing,
+    Malformed(String),
+    Loaded(std::collections::BTreeMap<String, String>),
+}
+
+pub(crate) fn load_cwd_manifest_state() -> ManifestState {
+    let manifest_path = std::path::Path::new("iii.worker.yaml");
+    if !manifest_path.exists() {
+        return ManifestState::Missing;
+    }
+    match super::project::load_manifest_dependencies(manifest_path) {
+        Ok(deps) => ManifestState::Loaded(deps),
+        Err(e) => ManifestState::Malformed(e),
+    }
+}
+
 /// Read the cwd `iii.worker.yaml` `dependencies:` block. Returns `None`
 /// when the file is absent, empty, or has a null dependencies field.
 /// Errors are downgraded to `None` with a stderr warning — missing or
 /// malformed root manifests should not block a resolve that otherwise
 /// succeeded; drift detection just doesn't light up for that project.
 fn load_cwd_manifest_dependencies() -> Option<std::collections::BTreeMap<String, String>> {
-    let manifest_path = std::path::Path::new("iii.worker.yaml");
-    if !manifest_path.exists() {
-        return None;
-    }
-    match super::project::load_manifest_dependencies(manifest_path) {
-        Ok(deps) => Some(deps),
-        Err(e) => {
+    match load_cwd_manifest_state() {
+        ManifestState::Loaded(deps) => Some(deps),
+        ManifestState::Missing => None,
+        ManifestState::Malformed(e) => {
             eprintln!(
                 "  {} ignoring iii.worker.yaml for manifest_hash: {e}",
                 "warning:".yellow()
@@ -3809,6 +3852,87 @@ dependencies:
             // Falls through to verify, which passes because config.yaml
             // is absent and verify is asymmetric w.r.t. extras.
             assert_eq!(rc, 0);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_frozen_fails_when_manifest_missing() {
+        // Lock has manifest_hash + declared_dependencies but
+        // iii.worker.yaml doesn't exist. The user must see a distinct
+        // error — NOT a misleading "drift" report — and rc must be 1.
+        in_temp_dir_async(|dir| async move {
+            use super::super::lockfile::WorkerLockfile;
+            use super::super::sync::compute_manifest_hash;
+            use std::collections::BTreeMap;
+
+            let declared = BTreeMap::from([("alpha".to_string(), "^1.0.0".to_string())]);
+            let lock = WorkerLockfile {
+                manifest_hash: Some(compute_manifest_hash(&declared)),
+                declared_dependencies: Some(declared),
+                ..Default::default()
+            };
+            lock.write_to(&dir.join("iii.lock")).unwrap();
+            // No iii.worker.yaml — that's the scenario.
+
+            let rc = handle_worker_sync(true).await;
+            assert_eq!(rc, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_frozen_fails_when_manifest_malformed() {
+        // Lock is fine; iii.worker.yaml has bad YAML. The user must see
+        // a CorruptManifest error (with the parser reason) — not drift.
+        in_temp_dir_async(|dir| async move {
+            use super::super::lockfile::WorkerLockfile;
+            use super::super::sync::compute_manifest_hash;
+            use std::collections::BTreeMap;
+
+            let declared = BTreeMap::from([("alpha".to_string(), "^1.0.0".to_string())]);
+            let lock = WorkerLockfile {
+                manifest_hash: Some(compute_manifest_hash(&declared)),
+                declared_dependencies: Some(declared),
+                ..Default::default()
+            };
+            lock.write_to(&dir.join("iii.lock")).unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                "name: x\ndependencies: this-is-not-a-mapping\n",
+            )
+            .unwrap();
+
+            let rc = handle_worker_sync(true).await;
+            assert_eq!(rc, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_frozen_rejects_inconsistent_lock_at_read() {
+        // A lock with manifest_hash that does NOT match its
+        // declared_dependencies must be rejected at read time so the
+        // empty-drift-report path is unreachable end-to-end.
+        in_temp_dir_async(|dir| async move {
+            use super::super::lockfile::MANIFEST_HASH_PREFIX;
+
+            let bogus_hash = format!("{MANIFEST_HASH_PREFIX}{}", "f".repeat(64));
+            std::fs::write(
+                dir.join("iii.lock"),
+                format!(
+                    "version: 1\nmanifest_hash: \"{bogus_hash}\"\ndeclared_dependencies:\n  alpha: \"^1.0.0\"\nworkers: {{}}\n",
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                "name: x\ndependencies:\n  alpha: \"^1.0.0\"\n",
+            )
+            .unwrap();
+
+            let rc = handle_worker_sync(true).await;
+            assert_eq!(rc, 1);
         })
         .await;
     }
