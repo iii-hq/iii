@@ -137,13 +137,22 @@ impl Default for WorkerLockfile {
     }
 }
 
-/// Returns `true` if `s` matches the `"sha256:v1:<64-hex>"` manifest-hash
-/// shape. Used by lockfile validation and drift detection.
+/// Returns `true` if `s` matches the `"sha256:v1:<64-lowercase-hex>"`
+/// manifest-hash shape. Used by lockfile validation and drift detection.
+///
+/// Comparison against `compute_manifest_hash` output is byte-exact, and
+/// `hex::encode` always emits lowercase — so an uppercase-hex hash
+/// would silently never match and trigger false-positive drift on every
+/// sync. We reject uppercase here so the validator catches that
+/// hand-edit immediately.
 pub fn is_valid_manifest_hash(s: &str) -> bool {
     let Some(rest) = s.strip_prefix(MANIFEST_HASH_PREFIX) else {
         return false;
     };
-    rest.len() == 64 && rest.chars().all(|c| c.is_ascii_hexdigit())
+    rest.len() == 64
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
 }
 
 impl WorkerLockfile {
@@ -235,7 +244,22 @@ impl WorkerLockfile {
         {
             return Err(format!(
                 "{LOCKFILE_NAME} manifest_hash must match \
-                 `{MANIFEST_HASH_PREFIX}<64-hex>`; got `{hash}`"
+                 `{MANIFEST_HASH_PREFIX}<64-lowercase-hex>`; got `{hash}`"
+            ));
+        }
+
+        // `manifest_hash` and `declared_dependencies` must be paired:
+        // `(None, None)` is a legacy lock (drift detection skipped),
+        // `(Some, None)` is hash-only attribution, and `(Some, Some)` is
+        // the full Lane-A shape. `(None, Some)` is the dangerous combo
+        // — it means the deps are recorded but drift detection is
+        // disabled, so stripping the hash from a Lane-A lock would
+        // silently bypass `--frozen`.
+        if self.declared_dependencies.is_some() && self.manifest_hash.is_none() {
+            return Err(format!(
+                "{LOCKFILE_NAME}: declared_dependencies is set without manifest_hash; \
+                 the lock is internally inconsistent (stripping `manifest_hash` would \
+                 silently bypass drift detection)"
             ));
         }
 
@@ -244,9 +268,31 @@ impl WorkerLockfile {
                 super::registry::validate_worker_name(name).map_err(|e| {
                     format!("{LOCKFILE_NAME} declared dependency `{name}` is invalid: {e}")
                 })?;
-                if range.trim().is_empty() {
+                let trimmed = range.trim();
+                if trimmed.is_empty() {
                     return Err(format!(
                         "{LOCKFILE_NAME} declared dependency `{name}` has empty range"
+                    ));
+                }
+                semver::VersionReq::parse(trimmed).map_err(|e| {
+                    format!(
+                        "{LOCKFILE_NAME} declared dependency `{name}` has invalid \
+                         semver range `{range}`: {e}"
+                    )
+                })?;
+            }
+
+            // Cross-check: when both fields are present they must be
+            // mutually consistent. Compute the canonical hash from
+            // `declared_dependencies` and reject any mismatch — silent
+            // mismatches let drift detection produce empty,
+            // unactionable error reports.
+            if let Some(stored_hash) = &self.manifest_hash {
+                let computed = super::sync::compute_manifest_hash(declared);
+                if &computed != stored_hash {
+                    return Err(format!(
+                        "{LOCKFILE_NAME}: manifest_hash does not match \
+                         declared_dependencies; the lock is internally inconsistent"
                     ));
                 }
             }
@@ -925,7 +971,12 @@ workers:
             ("alpha".to_string(), "^1.0".to_string()),
             ("beta".to_string(), "~2.0".to_string()),
         ]);
+        // Validation requires manifest_hash and declared_dependencies
+        // to be paired and consistent. Compute the hash from the
+        // declared deps so the roundtrip stays valid.
+        let manifest_hash = Some(super::super::sync::compute_manifest_hash(&declared));
         let lock = WorkerLockfile {
+            manifest_hash,
             declared_dependencies: Some(declared.clone()),
             ..Default::default()
         };
@@ -936,12 +987,15 @@ workers:
 
     #[test]
     fn declared_dependencies_rejects_empty_range() {
-        let yaml = r#"version: 1
-declared_dependencies:
-  alpha: ""
-workers: {}
-"#;
-        let err = WorkerLockfile::from_yaml(yaml).unwrap_err();
+        // Pair the empty range with a manifest_hash so the (None,Some)
+        // pairing check doesn't fire first — we want to assert the
+        // empty-range check specifically.
+        let yaml = format!(
+            "version: 1\nmanifest_hash: \"{prefix}{hex}\"\ndeclared_dependencies:\n  alpha: \"\"\nworkers: {{}}\n",
+            prefix = MANIFEST_HASH_PREFIX,
+            hex = "0".repeat(64),
+        );
+        let err = WorkerLockfile::from_yaml(&yaml).unwrap_err();
         assert!(err.contains("alpha"), "got: {err}");
         assert!(err.contains("empty range"), "got: {err}");
     }
