@@ -40,16 +40,17 @@ def test_enqueue_delivers_message_to_function(iii_client: III):
         received.append(input_data)
         return None
 
-    ref = iii_client.register_function({"id": "test.queue.py.consumer"}, consumer_handler)
+    ref = iii_client.register_function("test.queue.py.consumer", consumer_handler)
     time.sleep(0.3)
 
     try:
-
-        result = iii_client.trigger({
-            "function_id": "test.queue.py.consumer",
-            "payload": {"order": "pizza"},
-            "action": TriggerAction.Enqueue(queue="test-orders"),
-        })
+        result = iii_client.trigger(
+            {
+                "function_id": "test.queue.py.consumer",
+                "payload": {"order": "pizza"},
+                "action": TriggerAction.Enqueue(queue="test-orders"),
+            }
+        )
 
         assert isinstance(result, dict)
         assert isinstance(result["messageReceiptId"], str)
@@ -69,15 +70,17 @@ def test_void_trigger_returns_none(iii_client: III):
         calls.append(input_data)
         return None
 
-    ref = iii_client.register_function({"id": "test.queue.py.void-consumer"}, void_consumer_handler)
+    ref = iii_client.register_function("test.queue.py.void-consumer", void_consumer_handler)
     time.sleep(0.3)
 
     try:
-        result = iii_client.trigger({
-            "function_id": "test.queue.py.void-consumer",
-            "payload": {"msg": "fire"},
-            "action": TriggerAction.Void(),
-        })
+        result = iii_client.trigger(
+            {
+                "function_id": "test.queue.py.void-consumer",
+                "payload": {"msg": "fire"},
+                "action": TriggerAction.Void(),
+            }
+        )
 
         assert result is None
 
@@ -96,16 +99,18 @@ def test_enqueue_multiple_messages(iii_client: III):
         received.append(input_data)
         return None
 
-    ref = iii_client.register_function({"id": "test.queue.py.multi"}, multi_handler)
+    ref = iii_client.register_function("test.queue.py.multi", multi_handler)
     time.sleep(0.3)
 
     try:
         for i in range(5):
-            iii_client.trigger({
-                "function_id": "test.queue.py.multi",
-                "payload": {"index": i},
-                "action": TriggerAction.Enqueue(queue="test-multi"),
-            })
+            iii_client.trigger(
+                {
+                    "function_id": "test.queue.py.multi",
+                    "payload": {"index": i},
+                    "action": TriggerAction.Enqueue(queue="test-multi"),
+                }
+            )
 
         wait_for(lambda: len(received) == 5, timeout=10.0)
 
@@ -121,27 +126,31 @@ def test_chained_enqueue(iii_client: III):
     chain_received = []
 
     def chain_a_handler(input_data):
-        iii_client.trigger({
-            "function_id": "test.queue.py.chain-b",
-            "payload": {**input_data, "chained": True},
-            "action": TriggerAction.Enqueue(queue="test-chain"),
-        })
+        iii_client.trigger(
+            {
+                "function_id": "test.queue.py.chain-b",
+                "payload": {**input_data, "chained": True},
+                "action": TriggerAction.Enqueue(queue="test-chain"),
+            }
+        )
         return input_data
 
     def chain_b_handler(input_data):
         chain_received.append(input_data)
         return None
 
-    ref_a = iii_client.register_function({"id": "test.queue.py.chain-a"}, chain_a_handler)
-    ref_b = iii_client.register_function({"id": "test.queue.py.chain-b"}, chain_b_handler)
+    ref_a = iii_client.register_function("test.queue.py.chain-a", chain_a_handler)
+    ref_b = iii_client.register_function("test.queue.py.chain-b", chain_b_handler)
     time.sleep(0.3)
 
     try:
-        iii_client.trigger({
-            "function_id": "test.queue.py.chain-a",
-            "payload": {"origin": "test"},
-            "action": TriggerAction.Enqueue(queue="test-chain"),
-        })
+        iii_client.trigger(
+            {
+                "function_id": "test.queue.py.chain-a",
+                "payload": {"origin": "test"},
+                "action": TriggerAction.Enqueue(queue="test-chain"),
+            }
+        )
 
         wait_for(lambda: len(chain_received) > 0, timeout=5.0)
 
@@ -169,7 +178,7 @@ def test_durable_publish_delivers_to_subscribed_handler(iii_client: III):
         received.append(data)
         return None
 
-    fn_ref = iii_client.register_function({"id": function_id}, handler)
+    fn_ref = iii_client.register_function(function_id, handler)
     trigger = iii_client.register_trigger(
         {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
     )
@@ -200,7 +209,7 @@ def test_durable_publish_delivers_exact_payload(iii_client: III):
         received.append(data)
         return None
 
-    fn_ref = iii_client.register_function({"id": function_id}, handler)
+    fn_ref = iii_client.register_function(function_id, handler)
     trigger = iii_client.register_trigger(
         {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
     )
@@ -230,7 +239,7 @@ def test_durable_subscriber_with_queue_config(iii_client: III):
         received.append(data)
         return None
 
-    fn_ref = iii_client.register_function({"id": function_id}, handler)
+    fn_ref = iii_client.register_function(function_id, handler)
     trigger = iii_client.register_trigger(
         {
             "type": "durable:subscriber",
@@ -277,8 +286,8 @@ def test_durable_multiple_subscribers_fanout(iii_client: III):
         received2.append(data)
         return None
 
-    fn1 = iii_client.register_function({"id": function_id1}, handler1)
-    fn2 = iii_client.register_function({"id": function_id2}, handler2)
+    fn1 = iii_client.register_function(function_id1, handler1)
+    fn2 = iii_client.register_function(function_id2, handler2)
     trigger1 = iii_client.register_trigger(
         {"type": "durable:subscriber", "function_id": function_id1, "config": {"topic": topic}}
     )
@@ -288,12 +297,8 @@ def test_durable_multiple_subscribers_fanout(iii_client: III):
     time.sleep(0.5)
 
     try:
-        iii_client.trigger(
-            {"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"msg": 1}}}
-        )
-        iii_client.trigger(
-            {"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"msg": 2}}}
-        )
+        iii_client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"msg": 1}}})
+        iii_client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": {"msg": 2}}})
         wait_for(lambda: len(received1) >= 2 and len(received2) >= 2, timeout=8.0)
 
         assert len(received1) == 2
@@ -323,8 +328,8 @@ def test_durable_condition_function_filters_messages(iii_client: III):
     def condition(input_data):
         return bool(input_data.get("accept"))
 
-    fn_ref = iii_client.register_function({"id": function_id}, handler)
-    cond_ref = iii_client.register_function({"id": condition_path}, condition)
+    fn_ref = iii_client.register_function(function_id, handler)
+    cond_ref = iii_client.register_function(condition_path, condition)
     trigger = iii_client.register_trigger(
         {
             "type": "durable:subscriber",

@@ -24,7 +24,7 @@ async def test_get_endpoint(engine_http_url, iii_client: III):
     def handler(input_data):
         return {"status_code": 200, "body": {"message": "Hello from GET"}}
 
-    fn_ref = iii_client.register_function({"id": "test.api.get.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.get.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -59,7 +59,7 @@ async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
             "body": {"received": body, "created": True},
         }
 
-    fn_ref = iii_client.register_function({"id": "test.api.post.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.post.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -97,7 +97,7 @@ async def test_path_parameters(engine_http_url, iii_client: III):
             "body": {"id": input_data.get("path_params", {}).get("id")},
         }
 
-    fn_ref = iii_client.register_function({"id": "test.api.getbyid.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.getbyid.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -138,7 +138,7 @@ async def test_query_parameters(engine_http_url, iii_client: III):
             "body": {"query": q, "limit": limit},
         }
 
-    fn_ref = iii_client.register_function({"id": "test.api.search.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.search.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -170,7 +170,7 @@ async def test_custom_status_code(engine_http_url, iii_client: III):
     def handler(input_data):
         return {"status_code": 404, "body": {"error": "Not found"}}
 
-    fn_ref = iii_client.register_function({"id": "test.api.notfound.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.notfound.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -206,7 +206,7 @@ async def test_content_type_on_api_response_return(engine_http_url, iii_client: 
             "body": xml_body,
         }
 
-    fn_ref = iii_client.register_function({"id": "test.api.xml.return.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.xml.return.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -245,7 +245,7 @@ async def test_download_pdf_streaming(engine_http_url, iii_client: III):
         await response.writer.write(original_pdf)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function({"id": "test.api.download.pdf.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.download.pdf.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -296,7 +296,7 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
         await response.writer.write(body)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function({"id": "test.api.upload.pdf.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.upload.pdf.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -359,7 +359,7 @@ async def test_sse_streaming(engine_http_url, iii_client: III):
 
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function({"id": "test.api.sse.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.sse.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -434,7 +434,7 @@ async def test_urlencoded_form_data(engine_http_url, iii_client: III):
         await response.writer.write(result)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function({"id": "test.api.form.urlencoded.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.form.urlencoded.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -504,7 +504,7 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
         await response.writer.write(result)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function({"id": "test.api.form.multipart.py"}, handler)
+    fn_ref = iii_client.register_function("test.api.form.multipart.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",

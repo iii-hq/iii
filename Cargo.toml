@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.11.4-next.2"
+version = "0.11.4-next.3"
 edition = "2024"
 authors = ["Motia LLC"]
 repository = "https://github.com/iii-hq/iii"

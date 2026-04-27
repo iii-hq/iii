@@ -116,11 +116,11 @@ def iii_server():
             raise Exception("denied trigger registration")
         return OnTriggerRegistrationResult().model_dump()
 
-    client.register_function({"id": "test::rbac-worker::auth"}, auth_handler)
-    client.register_function({"id": "test::rbac-worker::middleware"}, middlware_handler)
-    client.register_function({"id": "test::rbac-worker::on-function-reg"}, on_function_reg_handler)
-    client.register_function({"id": "test::rbac-worker::on-trigger-type-reg"}, on_trigger_type_reg_handler)
-    client.register_function({"id": "test::rbac-worker::on-trigger-reg"}, on_trigger_reg_handler)
+    client.register_function("test::rbac-worker::auth", auth_handler)
+    client.register_function("test::rbac-worker::middleware", middlware_handler)
+    client.register_function("test::rbac-worker::on-function-reg", on_function_reg_handler)
+    client.register_function("test::rbac-worker::on-trigger-type-reg", on_trigger_type_reg_handler)
+    client.register_function("test::rbac-worker::on-trigger-reg", on_trigger_reg_handler)
     class NoopTriggerHandler(TriggerHandler):
         async def register_trigger(self, config: TriggerConfig) -> None:
             pass
@@ -132,13 +132,14 @@ def iii_server():
         {"id": "test-rbac-trigger", "description": "Trigger type for RBAC tests"},
         NoopTriggerHandler(),
     )
-    client.register_function({"id": "test::ew::public::echo"}, echo_handler)
-    client.register_function({"id": "test::ew::valid-token-echo"}, valid_token_echo_handler)
+    client.register_function("test::ew::public::echo", echo_handler)
+    client.register_function("test::ew::valid-token-echo", valid_token_echo_handler)
     client.register_function(
-        {"id": "test::ew::meta-public", "metadata": {"ew_public": True}},
+        "test::ew::meta-public",
         meta_public_handler,
+        metadata={"ew_public": True},
     )
-    client.register_function({"id": "test::ew::private"}, private_handler)
+    client.register_function("test::ew::private", private_handler)
 
     time.sleep(1.0)
     yield client
@@ -264,7 +265,7 @@ class TestRbacWorkers:
 
         try:
             iii_client.register_function(
-                {"id": "denied::blocked-fn"},
+                "denied::blocked-fn",
                 lambda _data: {"should": "not reach"},
             )
 
@@ -334,7 +335,7 @@ class TestRbacWorkers:
 
         try:
             iii_client.register_function(
-                {"id": "prefixed-echo"},
+                "prefixed-echo",
                 lambda data: {"echoed": data},
             )
 

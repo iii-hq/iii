@@ -32,7 +32,7 @@ async def test_register_healthcheck_function_and_trigger(engine_http_url: str, i
             },
         }
 
-    fn = iii_client.register_function({"id": "test.healthcheck.py"}, healthcheck_handler)
+    fn = iii_client.register_function("test.healthcheck.py", healthcheck_handler)
 
     status_before, _ = await get_health(engine_http_url)
     assert status_before == 404
