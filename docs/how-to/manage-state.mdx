@@ -365,11 +365,102 @@ await iii.trigger({
 
 If `transcript` is missing, a string append creates a string. If `events` is missing, a non-string append creates an array with one element. Existing arrays receive one new element per append. Existing strings only accept string values.
 
-Paths are first-level field names. `user.name` means the field literally named `user.name`; it does not traverse nested objects. Use `path: ""` to append to the root value.
+Paths for `set` / `append` / `increment` / `decrement` / `remove` are first-level field names. `user.name` means the field literally named `user.name`; it does not traverse nested objects. Use `path: ""` to target the root value.
 
 <Warning>
   Atomic append rewrites and returns the full JSON value. For very large payloads or long-running high-throughput streams, store chunks as separate stream items or use channels instead of repeatedly appending to one large value.
 </Warning>
+
+### Build per-session structured state with nested merge
+
+`merge` is the one update op that accepts a nested path. Its `path` is either a single string (legacy / first-level field) or an array of literal segments. This makes it the right tool for accumulating per-session structured state — a transcript timeline keyed by session, an event log per user, the metadata sidebar of an in-flight call.
+
+The example below builds `audio::transcripts[<session-id>] = { "<timestamp>": chunk }` incrementally. Two writers can append to different timestamps in the same session without stepping on each other; sibling timestamps are preserved by every merge.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="record-transcript-chunk.ts"
+await iii.trigger({
+  function_id: 'state::update',
+  payload: {
+    scope: 'audio::transcripts',
+    key: 'session-abc',
+    ops: [
+      // Nested path: walks into "session-abc" → "metadata", auto-
+      // creating each intermediate object. Sibling keys at any level
+      // are preserved.
+      {
+        type: 'merge',
+        path: ['session-abc', 'metadata'],
+        value: { author: 'alice' },
+      },
+      // First-level form (sugar for path: ['session-abc']).
+      {
+        type: 'merge',
+        path: 'session-abc',
+        value: { [Date.now()]: 'transcript chunk' },
+      },
+    ],
+  },
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="record_transcript_chunk.py"
+import time
+
+iii.trigger({
+    "function_id": "state::update",
+    "payload": {
+        "scope": "audio::transcripts",
+        "key": "session-abc",
+        "ops": [
+            {
+                "type": "merge",
+                "path": ["session-abc", "metadata"],
+                "value": {"author": "alice"},
+            },
+            {
+                "type": "merge",
+                "path": "session-abc",
+                "value": {str(int(time.time() * 1000)): "transcript chunk"},
+            },
+        ],
+    },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust title="record_transcript_chunk.rs"
+use iii_sdk::{TriggerRequest, UpdateOp};
+use serde_json::{json, Value};
+
+iii.trigger(TriggerRequest {
+    function_id: "state::update".into(),
+    payload: json!({
+        "scope": "audio::transcripts",
+        "key": "session-abc",
+        "ops": [
+            UpdateOp::merge_at_path(
+                ["session-abc", "metadata"],
+                json!({ "author": "alice" }),
+            ),
+            UpdateOp::merge_at(
+                "session-abc",
+                json!({ format!("{}", chrono::Utc::now().timestamp_millis()): "transcript chunk" }),
+            ),
+        ],
+    }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+</Tab>
+</Tabs>
+
+Each segment in a `merge` path array is a *literal* key. `["a.b"]` writes a single key named `"a.b"`, not `a → b`. To deep-merge sub-objects, compose multiple ops with deeper paths.
+
+If the engine rejects a `merge` op (path > 32 segments, segment > 256 bytes, value > 16 levels deep, > 1024 top-level keys, or a `__proto__` / `constructor` / `prototype` segment or top-level key), it returns an entry in the response's `errors` array with a stable `code`, `message`, and `doc_url`. Successfully applied ops still reflect in `new_value`.
 
 ## Result
 

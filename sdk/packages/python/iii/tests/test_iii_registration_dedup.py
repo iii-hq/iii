@@ -85,7 +85,7 @@ def test_preconnect_registration_sent_once(monkeypatch: pytest.MonkeyPatch) -> N
     async def handler(data: Any) -> Any:
         return data
 
-    client.register_function({"id": "demo.fn"}, handler)
+    client.register_function("demo.fn", handler)
     client.register_trigger({"type": "cron", "function_id": "demo.fn", "config": {"cron": "* * * * * *"}})
 
     time.sleep(0.05)
@@ -120,7 +120,7 @@ def test_reconnect_replays_durable_state_once_per_connection(
     async def handler(data: Any) -> Any:
         return data
 
-    client.register_function({"id": "demo.fn"}, handler)
+    client.register_function("demo.fn", handler)
     client.register_trigger({"type": "cron", "function_id": "demo.fn", "config": {"cron": "* * * * * *"}})
     time.sleep(0.05)
 

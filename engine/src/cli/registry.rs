@@ -6,7 +6,6 @@
 
 use super::error::RegistryError;
 
-/// Specification for a managed binary
 #[derive(Debug, Clone)]
 pub struct BinarySpec {
     pub name: &'static str,
@@ -17,7 +16,6 @@ pub struct BinarySpec {
     pub tag_prefix: Option<&'static str>,
 }
 
-/// Maps a CLI command to a binary subcommand
 #[derive(Debug, Clone)]
 pub struct CommandMapping {
     /// The command name as exposed by iii (e.g., "console", "create")
@@ -45,7 +43,6 @@ pub static SELF_SPEC: BinarySpec = BinarySpec {
     tag_prefix: Some("iii"),
 };
 
-/// The compiled-in binary registry
 pub static REGISTRY: &[BinarySpec] = &[
     BinarySpec {
         name: "iii-init",
@@ -128,15 +125,20 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
-        commands: &[CommandMapping {
-            cli_command: "worker",
-            binary_subcommand: None,
-        }],
+        commands: &[
+            CommandMapping {
+                cli_command: "worker",
+                binary_subcommand: None,
+            },
+            CommandMapping {
+                cli_command: "sandbox",
+                binary_subcommand: Some("sandbox"),
+            },
+        ],
         tag_prefix: Some("iii"),
     },
 ];
 
-/// Resolve a CLI command name to its BinarySpec and optional binary subcommand.
 pub fn resolve_command(
     command: &str,
 ) -> Result<(&'static BinarySpec, Option<&'static str>), RegistryError> {
@@ -155,13 +157,11 @@ pub fn resolve_command(
 /// Resolve a command name to its parent BinarySpec (for update resolution).
 /// e.g., "create" resolves to iii-tools.
 pub fn resolve_binary_for_update(command: &str) -> Result<&'static BinarySpec, RegistryError> {
-    // First try exact binary name match
     for spec in REGISTRY {
         if spec.name == command {
             return Ok(spec);
         }
     }
-    // Then try command name match
     for spec in REGISTRY {
         for mapping in spec.commands {
             if mapping.cli_command == command {
@@ -174,7 +174,6 @@ pub fn resolve_binary_for_update(command: &str) -> Result<&'static BinarySpec, R
     })
 }
 
-/// Get all unique BinarySpecs in the registry.
 pub fn all_binaries() -> Vec<&'static BinarySpec> {
     REGISTRY.iter().collect()
 }

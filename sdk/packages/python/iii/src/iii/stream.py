@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Generic, List, Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 TData = TypeVar("TData")
 
@@ -91,6 +91,20 @@ class StreamUpdateInput(BaseModel):
     ops: list["UpdateOp"]
 
 
+class UpdateOpError(BaseModel):
+    """Per-op error returned by ``state::update`` / ``stream::update``.
+
+    Currently emitted only by the ``merge`` op when input violates the
+    new validation bounds. Successfully applied ops are still
+    reflected in the response's ``new_value``.
+    """
+
+    op_index: int
+    code: str
+    message: str
+    doc_url: str | None = None
+
+
 class StreamSetResult(BaseModel, Generic[TData]):
     """Result of stream set operation."""
 
@@ -103,6 +117,12 @@ class StreamUpdateResult(BaseModel, Generic[TData]):
 
     old_value: TData | None = None
     new_value: TData
+    # Per-op errors. Currently emitted only by the ``merge`` op for
+    # validation rejections. Field is omitted from the JSON wire when
+    # empty. ``default_factory`` is used (not ``= []``) to keep
+    # Pydantic's parameterized-Generic + default handling well-behaved
+    # across Python versions.
+    errors: list[UpdateOpError] = Field(default_factory=list)
 
 
 class StreamDeleteResult(BaseModel):
@@ -151,13 +171,38 @@ class UpdateRemove(BaseModel):
 
 
 class UpdateMerge(BaseModel):
-    """Shallow root-level merge operation for stream update.
+    """Shallow merge an object into the target.
 
-    Only an empty path is supported. Non-empty paths are ignored by the engine.
+    The target is the root (when ``path`` is omitted, an empty string,
+    or an empty list) or an arbitrary nested location specified by an
+    array of literal segments.
+
+    Path forms accepted:
+      - ``None`` / ``""`` / ``[]``: merge at the root.
+      - ``"foo"``: equivalent to ``["foo"]`` -- single first-level key.
+      - ``["a", "b", "c"]``: nested path. Each element is a *literal*
+        key. ``["a.b"]`` writes a single key named ``"a.b"``, not
+        ``a -> b``.
+
+    Engine semantics:
+      - Missing or non-object intermediates along the path are
+        auto-replaced with ``{}``.
+      - The merge is shallow at the target node (top-level keys of
+        ``value`` overwrite same-named keys; siblings preserved).
+
+    Validation: invalid paths/values (depth > 32 segments, segment >
+    256 bytes, value depth > 16, > 1024 top-level keys, or any
+    ``__proto__`` / ``constructor`` / ``prototype`` segment or
+    top-level key) are rejected with a structured error in the
+    ``errors`` array of the ``state::update`` / ``stream::update``
+    response. The merge does not apply when an error is returned.
     """
 
     type: str = "merge"
-    path: str
+    # Optional. Accepts a single string or a list of literal segments.
+    # Pydantic resolves ``str | list[str]`` via smart-union: string
+    # input -> str, array input -> list[str].
+    path: str | list[str] | None = None
     value: Any
 
 

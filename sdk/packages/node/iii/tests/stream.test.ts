@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { iii, sleep } from './utils'
-import type { StreamSetInput, StreamSetResult, UpdateAppend, UpdateOp } from '../src/stream'
+import type {
+  StreamSetInput,
+  StreamSetResult,
+  StreamUpdateResult,
+  UpdateAppend,
+  UpdateOp,
+} from '../src/stream'
 
 type TestData = {
   name?: string
@@ -333,6 +339,112 @@ describe('Stream Operations', () => {
 
       expect(result?.chunks).toEqual([{ text: 'hello' }])
       expect(result?.transcript).toBe('hello world')
+
+      await iii.trigger({
+        function_id: 'stream::delete',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+        },
+      })
+    })
+
+    it('should merge into a first-level path and preserve siblings', async () => {
+      const groupId = `merge-group-${Date.now()}`
+      const itemId = `merge-item-${Date.now()}`
+
+      await iii.trigger({
+        function_id: 'stream::set',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+          data: {},
+        },
+      })
+
+      const update = await iii.trigger<unknown, StreamUpdateResult<Record<string, unknown>>>({
+        function_id: 'stream::update',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+          ops: [
+            { type: 'merge', path: 'session-abc', value: { author: 'alice' } },
+            { type: 'merge', path: 'session-abc', value: { ts: 'chunk' } },
+          ],
+        },
+      })
+
+      expect(update.errors ?? []).toEqual([])
+      expect(update.new_value).toEqual({
+        'session-abc': { author: 'alice', ts: 'chunk' },
+      })
+
+      const result = await iii.trigger<unknown, Record<string, unknown>>({
+        function_id: 'stream::get',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+        },
+      })
+
+      expect(result).toEqual(update.new_value)
+
+      await iii.trigger({
+        function_id: 'stream::delete',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+        },
+      })
+    })
+
+    it('should merge into a nested array path and persist the updated record', async () => {
+      const groupId = `nested-merge-group-${Date.now()}`
+      const itemId = `nested-merge-item-${Date.now()}`
+
+      await iii.trigger({
+        function_id: 'stream::set',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+          data: { sessions: { existing: { ts: 'anchor' } } },
+        },
+      })
+
+      const update = await iii.trigger<unknown, StreamUpdateResult<Record<string, unknown>>>({
+        function_id: 'stream::update',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+          ops: [{ type: 'merge', path: ['sessions', 'abc'], value: { ts: 'chunk' } }],
+        },
+      })
+
+      expect(update.errors ?? []).toEqual([])
+      expect(update.new_value).toEqual({
+        sessions: {
+          existing: { ts: 'anchor' },
+          abc: { ts: 'chunk' },
+        },
+      })
+
+      const result = await iii.trigger<unknown, Record<string, unknown>>({
+        function_id: 'stream::get',
+        payload: {
+          stream_name: testStreamName,
+          group_id: groupId,
+          item_id: itemId,
+        },
+      })
+
+      expect(result).toEqual(update.new_value)
 
       await iii.trigger({
         function_id: 'stream::delete',

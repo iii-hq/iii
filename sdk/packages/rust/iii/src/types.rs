@@ -45,6 +45,52 @@ impl From<String> for FieldPath {
     }
 }
 
+/// Path target for a [`UpdateOp::Merge`] operation. Accepts either a
+/// single string (legacy / first-level field) or an array of literal
+/// segments (nested path).
+///
+/// Path normalization rules applied by the engine:
+/// - absent / `Single("")` / `Segments(vec![])` → root merge
+/// - `Single("foo")` is equivalent to `Segments(vec!["foo".into()])`
+/// - `Segments(["a", "b", "c"])` walks three literal keys, never
+///   interpreting dots specially. `Segments(vec!["a.b".into()])` is a
+///   single literal key named `"a.b"`.
+///
+/// **Variant ordering is load-bearing.** `#[serde(untagged)]` tries
+/// variants in declaration order — `Single` MUST come before
+/// `Segments` so a JSON string deserializes into `Single` rather than
+/// failing the array match first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum MergePath {
+    Single(String),
+    Segments(Vec<String>),
+}
+
+impl From<&str> for MergePath {
+    fn from(value: &str) -> Self {
+        Self::Single(value.to_string())
+    }
+}
+
+impl From<String> for MergePath {
+    fn from(value: String) -> Self {
+        Self::Single(value)
+    }
+}
+
+impl From<Vec<String>> for MergePath {
+    fn from(value: Vec<String>) -> Self {
+        Self::Segments(value)
+    }
+}
+
+impl From<Vec<&str>> for MergePath {
+    fn from(value: Vec<&str>) -> Self {
+        Self::Segments(value.into_iter().map(String::from).collect())
+    }
+}
+
 /// Operations that can be performed atomically on a stream value
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -55,9 +101,11 @@ pub enum UpdateOp {
         value: Option<Value>,
     },
 
-    /// Merge object into existing value (object-only)
+    /// Merge object into existing value (object-only). Path may be
+    /// omitted (root merge), a single first-level key, or an array of
+    /// literal segments for nested merge. See [`MergePath`].
     Merge {
-        path: Option<FieldPath>,
+        path: Option<MergePath>,
         value: Value,
     },
 
@@ -120,13 +168,47 @@ impl UpdateOp {
         }
     }
 
-    /// Create a Merge operation at a specific path
-    pub fn merge_at(path: impl Into<FieldPath>, value: impl Into<Value>) -> Self {
+    /// Create a Merge operation at a specific path. Accepts a single
+    /// first-level key (`"foo"`) or any type that converts into
+    /// [`MergePath`] (e.g. `Vec<String>` for nested paths).
+    pub fn merge_at(path: impl Into<MergePath>, value: impl Into<Value>) -> Self {
         Self::Merge {
             path: Some(path.into()),
             value: value.into(),
         }
     }
+
+    /// Create a Merge operation at a nested path of literal segments.
+    /// Convenience wrapper for `merge_at(vec!["a", "b"], v)`.
+    pub fn merge_at_path<I, S>(segments: I, value: impl Into<Value>) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::Merge {
+            path: Some(MergePath::Segments(
+                segments.into_iter().map(Into::into).collect(),
+            )),
+            value: value.into(),
+        }
+    }
+}
+
+/// Per-op error reported by an atomic update operation. Currently
+/// emitted only for the `merge` op when input violates the new
+/// validation bounds (depth/size/proto-pollution); the other ops
+/// retain warn-and-skip semantics for backward compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateOpError {
+    /// Index of the offending op within the original `ops` array.
+    pub op_index: usize,
+    /// Stable error code, e.g. `"merge.path.too_deep"`.
+    pub code: String,
+    /// Human-readable description with concrete numbers when applicable.
+    pub message: String,
+    /// Optional documentation URL for this error class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_url: Option<String>,
 }
 
 /// Result of an atomic update operation
@@ -136,6 +218,11 @@ pub struct UpdateResult {
     pub old_value: Option<Value>,
     /// The value after the update
     pub new_value: Value,
+    /// Errors encountered while applying ops. Successfully applied ops
+    /// are still reflected in `new_value`. Field is omitted from JSON
+    /// when empty for backward compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<UpdateOpError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -310,5 +397,115 @@ mod tests {
             }
             other => panic!("expected append op, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn merge_with_string_path_round_trips_to_single_variant() {
+        // Regression: Single must come before Segments in the
+        // untagged enum or this test fails.
+        let op = UpdateOp::merge_at("session-abc", serde_json::json!({"author": "alice"}));
+        let encoded = serde_json::to_value(&op).unwrap();
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "merge",
+                "path": "session-abc",
+                "value": {"author": "alice"},
+            })
+        );
+
+        let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
+        match decoded {
+            UpdateOp::Merge {
+                path: Some(MergePath::Single(s)),
+                value,
+            } => {
+                assert_eq!(s, "session-abc");
+                assert_eq!(value, serde_json::json!({"author": "alice"}));
+            }
+            other => panic!("expected single-string merge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_with_segments_path_round_trips_as_array() {
+        let op = UpdateOp::merge_at_path(["sessions", "abc"], serde_json::json!({"ts": "chunk"}));
+        let encoded = serde_json::to_value(&op).unwrap();
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "merge",
+                "path": ["sessions", "abc"],
+                "value": {"ts": "chunk"},
+            })
+        );
+
+        let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
+        match decoded {
+            UpdateOp::Merge {
+                path: Some(MergePath::Segments(segs)),
+                value,
+            } => {
+                assert_eq!(segs, vec!["sessions", "abc"]);
+                assert_eq!(value, serde_json::json!({"ts": "chunk"}));
+            }
+            other => panic!("expected segments merge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_without_path_round_trips() {
+        let op = UpdateOp::merge(serde_json::json!({"x": 1}));
+        let encoded = serde_json::to_value(&op).unwrap();
+
+        // path is None, so it serializes as null.
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "merge",
+                "path": null,
+                "value": {"x": 1},
+            })
+        );
+
+        let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
+        match decoded {
+            UpdateOp::Merge { path: None, value } => {
+                assert_eq!(value, serde_json::json!({"x": 1}));
+            }
+            other => panic!("expected root merge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_result_with_errors_serializes_field() {
+        let result = UpdateResult {
+            old_value: None,
+            new_value: serde_json::json!({"a": 1}),
+            errors: vec![UpdateOpError {
+                op_index: 0,
+                code: "merge.path.too_deep".to_string(),
+                message: "Path depth 33 exceeds maximum of 32".to_string(),
+                doc_url: Some("https://docs.iii.dev/workers/iii-state#merge-bounds".to_string()),
+            }],
+        };
+        let encoded = serde_json::to_value(&result).unwrap();
+        assert_eq!(encoded["errors"][0]["code"], "merge.path.too_deep");
+    }
+
+    #[test]
+    fn update_result_without_errors_omits_field_from_json() {
+        let result = UpdateResult {
+            old_value: None,
+            new_value: serde_json::json!({"a": 1}),
+            errors: vec![],
+        };
+        let encoded = serde_json::to_value(&result).unwrap();
+        assert!(
+            encoded.get("errors").is_none(),
+            "errors field should be omitted when empty for backward compat"
+        );
     }
 }

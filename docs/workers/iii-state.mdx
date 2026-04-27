@@ -174,18 +174,36 @@ name: bridge
         The key to update.
       </ResponseField>
       <ResponseField name="ops" type="UpdateOp[]" required>
-        Array of update operations applied in order. Each operation is a tagged object with a `type` field and a first-level `path`. Use `path: ""` to target the root value.
+        Array of update operations applied in order. Each operation is a tagged object with a `type` field and a `path`. Use `path: ""` (or omit `path`) to target the root value.
 
         | Operation | Shape | Description |
         |-----------|-------|-------------|
         | `set` | `{ "type": "set", "path": "status", "value": "active" }` | Set a field or replace the root value. |
-        | `merge` | `{ "type": "merge", "path": "", "value": { "status": "active" } }` | Shallow-merge an object at the root. |
+        | `merge` | `{ "type": "merge", "path": ["sessions", "abc"], "value": { "ts": "chunk" } }` | Shallow-merge an object at the root or at any nested path. |
         | `increment` | `{ "type": "increment", "path": "count", "by": 1 }` | Add `by` to a numeric field. |
         | `decrement` | `{ "type": "decrement", "path": "count", "by": 1 }` | Subtract `by` from a numeric field. |
         | `append` | `{ "type": "append", "path": "events", "value": { "kind": "chunk" } }` | Push one element to an array or concatenate a string value. |
         | `remove` | `{ "type": "remove", "path": "status" }` | Remove a field from the current object. |
 
-        Paths are first-level field names. For example, `user.name` updates the field named `user.name`; it does not traverse into `{ "user": { "name": ... } }`.
+        For `set`, `increment`, `decrement`, `append`, and `remove`, paths are first-level field names. For example, `user.name` updates the field named `user.name`; it does not traverse into `{ "user": { "name": ... } }`.
+
+        For `merge`, `path` accepts either a single string (legacy / first-level field) or an array of literal segments for nested merge:
+
+        ```json
+        // Root merge (existing behavior, unchanged).
+        { "type": "merge", "path": "", "value": { "status": "active" } }
+
+        // First-level merge into the field named "session-abc".
+        { "type": "merge", "path": "session-abc", "value": { "author": "alice" } }
+
+        // Nested merge: walks "sessions" → "abc", auto-creating
+        // missing or non-object intermediates as it goes.
+        { "type": "merge", "path": ["sessions", "abc"], "value": { "ts": "chunk" } }
+        ```
+
+        Each array element is a *literal* key. `["a.b"]` writes a single key named `"a.b"`, not `a → b`.
+
+        Validation: invalid `merge` inputs are rejected with a structured error in the response's `errors` array. Reasons include path depth > 32 segments, segment > 256 bytes, value depth > 16, > 1024 top-level keys, or any segment / top-level key matching `__proto__` / `constructor` / `prototype`. Successfully applied ops still reflect in `new_value`.
       </ResponseField>
     </Accordion>
     <Accordion title="Returns">
@@ -194,6 +212,9 @@ name: bridge
       </ResponseField>
       <ResponseField name="new_value" type="any">
         The value after all operations were applied.
+      </ResponseField>
+      <ResponseField name="errors" type="UpdateOpError[]">
+        Per-op validation errors. Currently emitted only by `merge` for inputs that violate validation bounds (path depth/size, value depth, prototype-pollution sinks). Field is omitted when empty. Each entry has `op_index`, `code`, `message`, and an optional `doc_url`.
       </ResponseField>
     </Accordion>
   </AccordionGroup>

@@ -20,6 +20,7 @@ from iii.iii_types import HttpAuthBearer
 def _unique_function_id(prefix: str) -> str:
     return f"{prefix}::{int(time.time())}::{random.random():.10f}".replace(".", "")
 
+
 def _unique_topic(prefix: str) -> str:
     return f"{prefix}.{int(time.time())}.{random.random():.10f}".replace(".", "")
 
@@ -173,6 +174,7 @@ def _make_connected_client() -> III:
 # Helpers for integration tests
 # ---------------------------------------------------------------------------
 
+
 def _make_integration_client() -> III:
     """Create a real III client connected to the engine; skips if unavailable."""
     ws_url = os.environ.get("III_URL", "ws://localhost:49199")
@@ -199,7 +201,7 @@ def test_register_http_function_sends_invocation_message(monkeypatch: pytest.Mon
     client = _make_connected_client()
 
     config = HttpInvocationConfig(url="https://example.com/invoke", method="POST", timeout_ms=3000)
-    ref = client.register_function({"id": "external::my_lambda"}, config)
+    ref = client.register_function("external::my_lambda", config)
     time.sleep(0.02)
 
     assert ref.id == "external::my_lambda"
@@ -227,7 +229,7 @@ def test_register_http_function_with_all_config_options(monkeypatch: pytest.Monk
         headers={"X-Custom-Header": "test-value", "X-Another": "123"},
         auth=HttpAuthBearer(token_key="MY_SECRET_TOKEN"),
     )
-    ref = client.register_function({"id": "external::full_config"}, config)
+    ref = client.register_function("external::full_config", config)
     time.sleep(0.02)
 
     assert ref.id == "external::full_config"
@@ -251,7 +253,7 @@ def test_unregister_removes_function_from_sent_messages(monkeypatch: pytest.Monk
     client = _make_connected_client()
 
     config = HttpInvocationConfig(url="https://example.com/fn", method="POST")
-    ref = client.register_function({"id": "external::to_remove"}, config)
+    ref = client.register_function("external::to_remove", config)
     time.sleep(0.02)
 
     # Verify registration was sent.
@@ -294,12 +296,14 @@ async def test_delivers_queue_events_to_external_http_function() -> None:
 
     try:
         http_fn = client.register_function(
-            {"id": function_id},
+            function_id,
             HttpInvocationConfig(url=probe.url(), method="POST", timeout_ms=3000),
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger(
+            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
+        )
         time.sleep(0.5)
 
         client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
@@ -331,7 +335,7 @@ async def test_registers_and_unregisters_external_function() -> None:
 
     try:
         http_fn = client.register_function(
-            {"id": function_id},
+            function_id,
             HttpInvocationConfig(url=probe.url(), method="POST", timeout_ms=3000),
         )
         time.sleep(0.5)
@@ -384,7 +388,7 @@ async def test_delivers_events_with_custom_headers() -> None:
 
     try:
         http_fn = client.register_function(
-            {"id": function_id},
+            function_id,
             HttpInvocationConfig(
                 url=probe.url(),
                 method="POST",
@@ -394,7 +398,9 @@ async def test_delivers_events_with_custom_headers() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger(
+            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
+        )
         time.sleep(0.5)
 
         client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
@@ -443,17 +449,21 @@ async def test_delivers_events_to_multiple_external_functions() -> None:
 
     try:
         http_fn_a = client.register_function(
-            {"id": fn_id_a},
+            fn_id_a,
             HttpInvocationConfig(url=probe_a.url("/hook_a"), method="POST", timeout_ms=3000),
         )
         http_fn_b = client.register_function(
-            {"id": fn_id_b},
+            fn_id_b,
             HttpInvocationConfig(url=probe_b.url("/hook_b"), method="POST", timeout_ms=3000),
         )
         time.sleep(0.5)
 
-        trigger_a = client.register_trigger({"type": "durable:subscriber", "function_id": fn_id_a, "config": {"topic": topic_a}})
-        trigger_b = client.register_trigger({"type": "durable:subscriber", "function_id": fn_id_b, "config": {"topic": topic_b}})
+        trigger_a = client.register_trigger(
+            {"type": "durable:subscriber", "function_id": fn_id_a, "config": {"topic": topic_a}}
+        )
+        trigger_b = client.register_trigger(
+            {"type": "durable:subscriber", "function_id": fn_id_b, "config": {"topic": topic_b}}
+        )
         time.sleep(0.5)
 
         client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic_a, "data": payload_a}})
@@ -498,12 +508,14 @@ async def test_stops_delivering_after_unregister() -> None:
 
     try:
         http_fn = client.register_function(
-            {"id": function_id},
+            function_id,
             HttpInvocationConfig(url=probe.url(), method="POST", timeout_ms=3000),
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger(
+            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
+        )
         time.sleep(0.5)
 
         # First enqueue -- should be delivered.
@@ -546,12 +558,14 @@ async def test_delivers_with_put_method() -> None:
 
     try:
         http_fn = client.register_function(
-            {"id": function_id},
+            function_id,
             HttpInvocationConfig(url=probe.url(), method="PUT", timeout_ms=3000),
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}})
+        trigger = client.register_trigger(
+            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
+        )
         time.sleep(0.5)
 
         client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})

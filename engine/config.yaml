@@ -175,3 +175,32 @@ workers:
   #       - local_function: remote.state.get
   #         remote_function: state::get
   #         timeout_ms: 5000
+
+  # Ephemeral sandboxes (VMs booted on demand from OCI rootfs images).
+  # Run `iii worker add iii-sandbox` to append the block below automatically,
+  # or uncomment and restart the engine. The daemon ships inside the
+  # iii-worker binary — no separate install step.
+  # - name: iii-sandbox
+  #   config:
+  #     auto_install: true
+  #     # python + node cover most AI-agent use cases. Opt into bash /
+  #     # alpine by adding them here — both are catalog presets, just
+  #     # not permitted by default.
+  #     image_allowlist:
+  #       - python
+  #       - node
+  #     default_idle_timeout_secs: 300
+  #     max_concurrent_sandboxes: 32
+  #     default_cpus: 1
+  #     default_memory_mb: 512
+  #     # Deployment-specific images beyond the built-in presets.
+  #     # Preset names (python, node, bash, alpine) are reserved and
+  #     # rejected here — custom_images cannot shadow the trusted catalog.
+  #     # Each key must also appear in image_allowlist to be bootable.
+  #     # custom_images:
+  #     #   my-app: ghcr.io/acme/my-app:1.2.3
+  #     #   gpu-worker: docker.io/tenant/gpu-worker:cuda12
+  #     # Per-image hard caps override default_cpus / default_memory_mb.
+  #     # Requests exceeding a cap return S400.
+  #     # per_image_caps:
+  #     #   python: { max_cpus: 4, max_memory_mb: 2048 }

@@ -10,8 +10,11 @@
 //! definitions instead of maintaining duplicate struct copies.
 
 pub mod cli;
+pub mod sandbox_daemon;
 
-pub use cli::app::{AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, WatchSourceArgs};
+pub use cli::app::{
+    AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, SandboxDaemonArgs, WatchSourceArgs,
+};
 pub use cli::vm_boot::VmBootArgs;
 
 // Test-time env/HOME/CWD serialization: unified with `cli::test_support::TEST_HOME_LOCK`

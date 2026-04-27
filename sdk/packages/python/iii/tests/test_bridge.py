@@ -21,9 +21,7 @@ async def wait_for(condition, timeout=5.0, interval=0.1):
 @pytest.mark.asyncio
 async def test_connect_successfully(iii_client: III):
     """SDK connects to the engine and can list functions."""
-    result = iii_client.trigger(
-        {"function_id": "engine::functions::list", "payload": {}}
-    )
+    result = iii_client.trigger({"function_id": "engine::functions::list", "payload": {}})
     functions = [FunctionInfo(**f) for f in result.get("functions", [])]
     assert isinstance(functions, list)
 
@@ -37,7 +35,7 @@ async def test_register_and_invoke_function(iii_client: III):
         received.append(data)
         return {"echoed": data}
 
-    fn = iii_client.register_function({"id": "test.bridge.py.echo"}, echo_handler)
+    fn = iii_client.register_function("test.bridge.py.echo", echo_handler)
     await asyncio.sleep(0.3)
 
     try:
@@ -66,15 +64,17 @@ async def test_invoke_function_fire_and_forget(iii_client: III):
         received_event.set()
         return {}
 
-    fn = iii_client.register_function({"id": "test.bridge.py.receiver"}, receiver_handler)
+    fn = iii_client.register_function("test.bridge.py.receiver", receiver_handler)
     await asyncio.sleep(0.3)
 
     try:
-        result = iii_client.trigger({
-            "function_id": "test.bridge.py.receiver",
-            "payload": {"value": 42},
-            "action": TriggerAction.Void(),
-        })
+        result = iii_client.trigger(
+            {
+                "function_id": "test.bridge.py.receiver",
+                "payload": {"value": 42},
+                "action": TriggerAction.Void(),
+            }
+        )
 
         assert result is None
 
@@ -87,14 +87,12 @@ async def test_invoke_function_fire_and_forget(iii_client: III):
 @pytest.mark.asyncio
 async def test_list_registered_functions(iii_client: III):
     """Registered function IDs appear in the engine functions list."""
-    fn1 = iii_client.register_function({"id": "test.bridge.py.list.func1"}, lambda _: {})
-    fn2 = iii_client.register_function({"id": "test.bridge.py.list.func2"}, lambda _: {})
+    fn1 = iii_client.register_function("test.bridge.py.list.func1", lambda _: {})
+    fn2 = iii_client.register_function("test.bridge.py.list.func2", lambda _: {})
     await asyncio.sleep(0.3)
 
     try:
-        result = iii_client.trigger(
-            {"function_id": "engine::functions::list", "payload": {}}
-        )
+        result = iii_client.trigger({"function_id": "engine::functions::list", "payload": {}})
         functions = [FunctionInfo(**f) for f in result.get("functions", [])]
         function_ids = [f.function_id for f in functions]
 
@@ -109,8 +107,10 @@ async def test_list_registered_functions(iii_client: III):
 async def test_reject_non_existent_function(iii_client: III):
     """Triggering a non-existent function raises an error."""
     with pytest.raises(Exception):
-        iii_client.trigger({
-            "function_id": "nonexistent.function.py",
-            "payload": {},
-            "timeout_ms": 2000,
-        })
+        iii_client.trigger(
+            {
+                "function_id": "nonexistent.function.py",
+                "payload": {},
+                "timeout_ms": 2000,
+            }
+        )

@@ -787,7 +787,7 @@ class III:
 
     def register_function(
         self,
-        func_or_id: RegisterFunctionInput | dict[str, Any] | str,
+        function_id: str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
         *,
         description: str | None = None,
@@ -805,27 +805,28 @@ class III:
         block the event loop.  Each handler receives a single ``data``
         argument containing the trigger payload.
 
-        When ``func_or_id`` is a ``str``, the simplified API is used:
         ``request_format`` and ``response_format`` are auto-extracted
-        from the handler's type hints when not explicitly provided.
+        from the handler's type hints when omitted or passed as ``None``
+        (the default).  To opt out of auto-extraction, pass an explicit
+        schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
+        is Python-specific -- the Node SDK does not auto-extract from TS
+        types, because TypeScript types are erased at runtime.
 
         Args:
-            func_or_id: A ``RegisterFunctionInput``, dict with ``id``, or
-                a plain string function ID.  When a string is passed, use
-                keyword arguments for ``description``, ``metadata``,
-                ``request_format``, and ``response_format``.
+            function_id: Unique string identifier for the function.
             handler_or_invocation: A callable handler or
                 ``HttpInvocationConfig``.  Callable handlers receive one
                 positional argument (``data`` -- the trigger payload) and
                 may return a value.
-            description: Human-readable description (only with string ID).
-            metadata: Arbitrary metadata (only with string ID).
-            request_format: Schema describing expected input (only with
-                string ID).  Auto-extracted from handler type hints when
-                omitted.
-            response_format: Schema describing expected output (only with
-                string ID).  Auto-extracted from handler type hints when
-                omitted.
+            description: Human-readable description.
+            metadata: Arbitrary metadata.
+            request_format: Schema describing expected input.  When
+                ``None`` (default), auto-extracted from the handler's
+                first-parameter type hint.  Pass an explicit schema to
+                override; there is no way to register with no schema
+                when the handler is typed.
+            response_format: Schema describing expected output.  Same
+                auto-extraction semantics as ``request_format``.
 
         Returns:
             A ``FunctionRef`` with an ``id`` attribute and an
@@ -833,14 +834,15 @@ class III:
             the function from the engine.
 
         Raises:
-            ValueError: If ``id`` is empty or already registered.
-            TypeError: If ``handler_or_invocation`` is not callable or
+            TypeError: If ``function_id`` is not a string, or if
+                ``handler_or_invocation`` is not callable or
                 ``HttpInvocationConfig``.
+            ValueError: If ``function_id`` is empty or already registered.
 
         Examples:
             >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
-            >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
+            >>> fn = iii.register_function("greet", greet, description="Greets a user")
             >>> fn.unregister()
 
             >>> from pydantic import BaseModel
@@ -852,31 +854,29 @@ class III:
             ...     return GreetOutput(message=f"Hello, {data.name}!")
             >>> fn = iii.register_function("greet", greet, description="Greets a user")
         """
-        if isinstance(func_or_id, str):
-            # Simplified API: auto-extract formats from handler type hints
-            handler_for_extraction = (
-                handler_or_invocation if callable(handler_or_invocation) else None
+        if not isinstance(function_id, str):
+            raise TypeError(
+                f"function_id must be str, got {type(function_id).__name__}"
             )
-            if request_format is None and handler_for_extraction is not None:
-                request_format = extract_request_format(handler_for_extraction)
-            if response_format is None and handler_for_extraction is not None:
-                response_format = extract_response_format(handler_for_extraction)
-            func = RegisterFunctionInput(
-                id=func_or_id,
-                description=description,
-                metadata=metadata,
-                request_format=request_format,
-                response_format=response_format,
-            )
-        elif isinstance(func_or_id, dict):
-            func = RegisterFunctionInput(**func_or_id)
-        else:
-            func = func_or_id
-
-        if not func.id or not func.id.strip():
+        if not function_id or not function_id.strip():
             raise ValueError("id is required")
-        if func.id in self._functions:
-            raise ValueError(f"function id '{func.id}' already registered")
+        if function_id in self._functions:
+            raise ValueError(f"function id '{function_id}' already registered")
+
+        handler_for_extraction = (
+            handler_or_invocation if callable(handler_or_invocation) else None
+        )
+        if request_format is None and handler_for_extraction is not None:
+            request_format = extract_request_format(handler_for_extraction)
+        if response_format is None and handler_for_extraction is not None:
+            response_format = extract_response_format(handler_for_extraction)
+        func = RegisterFunctionInput(
+            id=function_id,
+            description=description,
+            metadata=metadata,
+            request_format=request_format,
+            response_format=response_format,
+        )
 
         if isinstance(handler_or_invocation, HttpInvocationConfig):
             msg = RegisterFunctionMessage(
@@ -1107,7 +1107,7 @@ class III:
 
         Examples:
             >>> ch = iii.create_channel()
-            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> fn = iii.register_function("producer", producer_handler)
             >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
         return self._run_on_loop(self.create_channel_async(buffer_size))
@@ -1128,7 +1128,7 @@ class III:
 
         Examples:
             >>> ch = await iii.create_channel_async()
-            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> fn = iii.register_function("producer", producer_handler)
             >>> await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
         result = await self.trigger_async(
@@ -1237,12 +1237,12 @@ class III:
             )
             return await stream.list_groups(input_data)
 
-        self.register_function({"id": f"stream::get({stream_name})"}, get_handler)
-        self.register_function({"id": f"stream::set({stream_name})"}, set_handler)
-        self.register_function({"id": f"stream::delete({stream_name})"}, delete_handler)
-        self.register_function({"id": f"stream::list({stream_name})"}, list_handler)
+        self.register_function(f"stream::get({stream_name})", get_handler)
+        self.register_function(f"stream::set({stream_name})", set_handler)
+        self.register_function(f"stream::delete({stream_name})", delete_handler)
+        self.register_function(f"stream::list({stream_name})", list_handler)
         self.register_function(
-            {"id": f"stream::list_groups({stream_name})"}, list_groups_handler
+            f"stream::list_groups({stream_name})", list_groups_handler
         )
 
 

@@ -172,6 +172,7 @@
                   "api-reference/sdk-browser",
                   "api-reference/sdk-python",
                   "api-reference/sdk-rust",
+                  "api-reference/sandbox",
                   "api-reference/disable-telemetry"
                 ]
               }
