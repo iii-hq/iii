@@ -166,7 +166,16 @@ pub fn validate_locked_artifact_url(url: &str) -> Result<(), String> {
 }
 
 fn is_trusted_registry_host(host: &str) -> bool {
-    matches!(host, "workers.iii.dev" | "api.workers.iii.dev") || host.ends_with(".workers.iii.dev")
+    if matches!(host, "workers.iii.dev" | "api.workers.iii.dev") {
+        return true;
+    }
+    // Suffix match must be anchored on a non-empty label so hosts like
+    // `.workers.iii.dev` or `..workers.iii.dev` (empty leading labels) are
+    // not silently treated as trusted subdomains.
+    let Some(prefix) = host.strip_suffix(".workers.iii.dev") else {
+        return false;
+    };
+    !prefix.is_empty() && prefix.split('.').all(|label| !label.is_empty())
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -412,6 +421,26 @@ mod tests {
     fn validate_locked_artifact_url_rejects_untrusted_host() {
         let err = validate_locked_artifact_url("https://example.com/worker.tar.gz").unwrap_err();
         assert!(err.contains("not trusted"));
+    }
+
+    #[test]
+    fn validate_locked_artifact_url_rejects_leading_dot_subdomain() {
+        // `.workers.iii.dev` literally ends with `.workers.iii.dev`, so a
+        // naive suffix check accepts it. Empty DNS labels are not valid
+        // hostnames and must not be treated as trusted registry hosts.
+        for url in [
+            "https://.workers.iii.dev/worker.tar.gz",
+            "https://..workers.iii.dev/worker.tar.gz",
+            "https://.api.workers.iii.dev/worker.tar.gz",
+        ] {
+            let err = validate_locked_artifact_url(url)
+                .err()
+                .unwrap_or_else(|| panic!("expected {url} to be rejected"));
+            assert!(
+                err.contains("not trusted"),
+                "expected `not trusted` for {url}, got: {err}",
+            );
+        }
     }
 
     /// Helper: create a tar.gz archive in memory containing one file.
