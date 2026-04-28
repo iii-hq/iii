@@ -24,7 +24,7 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
     local MAX_VALUE_DEPTH = 16
     local MAX_VALUE_KEYS = 1024
     local PROTO = { __proto__ = true, constructor = true, prototype = true }
-    local DOC_URL = 'https://docs.iii.dev/workers/iii-state#merge-bounds'
+    local DOC_URL = 'https://iii.dev/docs/workers/iii-state#merge-bounds'
 
     local key = KEYS[1]
     local field = ARGV[1]

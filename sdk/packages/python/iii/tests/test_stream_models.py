@@ -49,7 +49,7 @@ def test_update_op_error_round_trip() -> None:
         op_index=0,
         code="merge.path.too_deep",
         message="Path depth 33 exceeds maximum of 32",
-        doc_url="https://docs.iii.dev/workers/iii-state#merge-bounds",
+        doc_url="https://iii.dev/docs/workers/iii-state#merge-bounds",
     )
     dumped = err.model_dump()
     assert dumped["code"] == "merge.path.too_deep"

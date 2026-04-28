@@ -10,7 +10,7 @@ How-to references:
   - Engine config:         https://iii.dev/docs/how-to/configure-engine
   - State management:      https://iii.dev/docs/how-to/manage-state
   - Cron:                  https://iii.dev/docs/how-to/schedule-cron-task
-  - Queues:                https://iii.dev/docs/how-to/use-queues
+  - Queues:                https://iii.dev/docs/how-to/use-named-queues
 
 Prerequisites:
   - HttpFunctionsModule enabled in iii engine config
