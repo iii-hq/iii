@@ -14,7 +14,11 @@ permissions:
 
 concurrency:
   group: license-agreement-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  # Let an in-flight run finish so it can post its final commit status. With
+  # `cancel-in-progress: true` a synchronize event would cancel the prior run
+  # mid-flight, leaving a CANCELLED check on the PR rollup even for team-member
+  # PRs that the script would otherwise mark `success`.
+  cancel-in-progress: false
 
 jobs:
   license-agreement:
