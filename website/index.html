@@ -6480,13 +6480,14 @@ iii.register_function(
   })();
 
   // ============= Footer install copy =============
+  // Always copies the full install command (same as the navbar). The button's
+  // visible '.cmd' text is intentionally an abbreviated display version.
   (function footInstall(){
     const btn = document.getElementById('foot-install');
     if (!btn) return;
     btn.addEventListener('click', async () => {
-      const cmd = btn.querySelector('.cmd').textContent.trim();
       try {
-        await navigator.clipboard.writeText(cmd);
+        await navigator.clipboard.writeText(INSTALL_CMD);
         btn.classList.add('copied');
         setTimeout(() => btn.classList.remove('copied'), 1400);
       } catch(_) {}
