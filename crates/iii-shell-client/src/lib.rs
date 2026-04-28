@@ -43,6 +43,8 @@
 //!   return on the happy path" invariant that tripped shell_client.rs.
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use base64::Engine;
@@ -76,6 +78,31 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 /// against a dead relay whose write side has filled and will never
 /// drain.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-read idle timeout for `Session::fs_write_stream`. If the
+/// caller-supplied `AsyncRead` (typically a `ChannelReader`-backed
+/// adapter feeding from an iii data channel) doesn't deliver any
+/// bytes for this long, we abort the upload with `S218`. Without
+/// this, a hard-terminated channel writer (caller-side
+/// `ws.terminate()` with no close frame) leaves the worker's
+/// `next_binary().await` hanging indefinitely — the trigger never
+/// returns, the supervisor's temp file leaks until its 30s
+/// recv_timeout safety valve fires, and the SDK's outer trigger
+/// timeout lands first as an opaque "Invocation timeout".
+///
+/// 5s is well above realistic per-chunk inter-arrival latency on
+/// a healthy 64 KiB-frame channel (chunks typically arrive in
+/// milliseconds) and tight enough that the host-side trigger
+/// returns `S218` before any reasonable caller-side test timeout
+/// fires. Aborting the host trigger triggers a shell.sock
+/// disconnect, which in turn fires the relay's SIGKILL fan-out;
+/// the dispatcher's `Signal` handler then drops the corr_id from
+/// `fs_writes`, the supervisor unlinks the temp, all within
+/// hundreds of ms. The supervisor's 30s `recv_timeout` is the
+/// defense-in-depth safety valve for paths where SIGKILL doesn't
+/// reach the dispatcher (relay died, frame dropped under
+/// saturation).
+const FS_WRITE_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Specification for a single `ShellMessage::Request` frame.
 ///
@@ -229,6 +256,12 @@ pub enum VmClientError {
     /// Base64 decode failed on a Stdout/Stderr frame's data_b64 field.
     #[error("base64 decode: {0}")]
     Base64(String),
+
+    /// The guest fs handler returned a typed S21x error. `code` is the
+    /// Sx-series code (e.g. `"S211"`); `message` is the human-readable
+    /// detail from the guest.
+    #[error("fs error {code}: {message}")]
+    FsError { code: String, message: String },
 }
 
 /// Resolve the shell-channel socket path for a worker under
@@ -527,6 +560,326 @@ impl Session {
                 other => {
                     tracing::warn!("unexpected guest-originated variant: {other:?}");
                 }
+            }
+        }
+    }
+
+    /// Execute a one-shot filesystem operation (anything except
+    /// `WriteStart` and `ReadStart`) and return the typed result.
+    ///
+    /// Calling `fs_call` with `WriteStart` or `ReadStart` returns an
+    /// `FsError { code: "S210" }` immediately — use `fs_write_stream`
+    /// or `fs_read_stream` for streaming ops.
+    pub async fn fs_call(
+        mut self,
+        op: iii_shell_proto::FsOp,
+    ) -> Result<iii_shell_proto::FsResult, VmClientError> {
+        // Streaming ops must go through the dedicated helpers.
+        if matches!(
+            op,
+            iii_shell_proto::FsOp::WriteStart { .. } | iii_shell_proto::FsOp::ReadStart { .. }
+        ) {
+            return Err(VmClientError::FsError {
+                code: "S210".into(),
+                message: "use fs_write_stream / fs_read_stream for streaming ops".into(),
+            });
+        }
+
+        let frame =
+            encode_frame(self.corr_id, 0, &ShellMessage::FsRequest(op)).map_err(|e| match e {
+                iii_shell_proto::ShellCodecError::InvalidFrameLength(n) => {
+                    VmClientError::RequestTooLarge { size: n }
+                }
+                other => VmClientError::Encode(other.to_string()),
+            })?;
+        write_frame_bounded(&mut self.stream, &frame).await?;
+
+        match read_frame_async(&mut self.stream).await? {
+            None => Err(VmClientError::SessionTerminated),
+            Some((_, _, ShellMessage::FsResponse(result))) => Ok(result),
+            Some((_, _, ShellMessage::FsError { code, message })) => {
+                Err(VmClientError::FsError { code, message })
+            }
+            Some((_, _, ShellMessage::Error { message })) => {
+                Err(VmClientError::DispatcherError(message))
+            }
+            Some((_, _, other)) => Err(VmClientError::ProtocolViolation(format!(
+                "unexpected fs reply: {other:?}"
+            ))),
+        }
+    }
+
+    /// Upload bytes from `reader` to `path` inside the guest.
+    ///
+    /// Sends `FsRequest(WriteStart)` → N `FsChunk` frames → terminal
+    /// `FsEnd`, then reads the `FsResponse(Write)` reply.
+    ///
+    /// `mode` is the octal permission string (e.g. `"0644"`).
+    /// `parents` creates parent directories if missing.
+    pub async fn fs_write_stream<R>(
+        mut self,
+        path: String,
+        mode: String,
+        parents: bool,
+        mut reader: R,
+    ) -> Result<iii_shell_proto::FsResult, VmClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        // Send WriteStart.
+        let start_frame = encode_frame(
+            self.corr_id,
+            0,
+            &ShellMessage::FsRequest(iii_shell_proto::FsOp::WriteStart {
+                path,
+                mode,
+                parents,
+            }),
+        )
+        .map_err(|e| VmClientError::Encode(e.to_string()))?;
+        write_frame_bounded(&mut self.stream, &start_frame).await?;
+
+        // Stream chunks (64 KiB buffer). Each `reader.read` is bounded
+        // by `FS_WRITE_READ_IDLE_TIMEOUT` so a stalled / hard-terminated
+        // caller-side data channel can't pin the trigger handler. On
+        // timeout we abort with S218; the dropped Session disconnects
+        // shell.sock, the relay's SIGKILL fan-out cascades into the
+        // supervisor, the temp file gets unlinked, and the caller sees
+        // a typed S218 error well before any outer SDK trigger timeout.
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match tokio::time::timeout(FS_WRITE_READ_IDLE_TIMEOUT, reader.read(&mut buf))
+                .await
+            {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
+                    return Err(VmClientError::Io(format!("read from caller: {e}")));
+                }
+                Err(_elapsed) => {
+                    return Err(VmClientError::FsError {
+                        code: "S218".into(),
+                        message: format!(
+                            "no chunks from caller for {}s — channel stalled or aborted",
+                            FS_WRITE_READ_IDLE_TIMEOUT.as_secs(),
+                        ),
+                    });
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            let chunk_frame = encode_frame(
+                self.corr_id,
+                0,
+                &ShellMessage::FsChunk {
+                    data_b64: B64.encode(&buf[..n]),
+                },
+            )
+            .map_err(|e| VmClientError::Encode(e.to_string()))?;
+            write_frame_bounded(&mut self.stream, &chunk_frame).await?;
+        }
+
+        // Terminate the upload sequence.
+        let end_frame = encode_frame(self.corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd)
+            .map_err(|e| VmClientError::Encode(e.to_string()))?;
+        write_frame_bounded(&mut self.stream, &end_frame).await?;
+
+        // Read the single reply frame.
+        match read_frame_async(&mut self.stream).await? {
+            None => Err(VmClientError::SessionTerminated),
+            Some((_, _, ShellMessage::FsResponse(result))) => Ok(result),
+            Some((_, _, ShellMessage::FsError { code, message })) => {
+                Err(VmClientError::FsError { code, message })
+            }
+            Some((_, _, other)) => Err(VmClientError::ProtocolViolation(format!(
+                "unexpected fs write reply: {other:?}"
+            ))),
+        }
+    }
+
+    /// Begin a streaming download of `path` from the guest.
+    ///
+    /// Sends `FsRequest(ReadStart)`, reads the `FsMeta` reply, then
+    /// returns `(meta, FsStreamReader)`. The caller reads bytes from
+    /// `FsStreamReader` which implements `tokio::io::AsyncRead`.
+    pub async fn fs_read_stream(
+        mut self,
+        path: String,
+    ) -> Result<(iii_shell_proto::FsReadMeta, FsStreamReader), VmClientError> {
+        let frame = encode_frame(
+            self.corr_id,
+            0,
+            &ShellMessage::FsRequest(iii_shell_proto::FsOp::ReadStart { path }),
+        )
+        .map_err(|e| VmClientError::Encode(e.to_string()))?;
+        write_frame_bounded(&mut self.stream, &frame).await?;
+
+        // The first reply must be FsMeta.
+        match read_frame_async(&mut self.stream).await? {
+            None => Err(VmClientError::SessionTerminated),
+            Some((_, _, ShellMessage::FsMeta(meta))) => {
+                let reader = FsStreamReader::new(self.stream);
+                Ok((meta, reader))
+            }
+            Some((_, _, ShellMessage::FsError { code, message })) => {
+                Err(VmClientError::FsError { code, message })
+            }
+            Some((_, _, other)) => Err(VmClientError::ProtocolViolation(format!(
+                "expected FsMeta, got {other:?}"
+            ))),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FsStreamReader
+// ---------------------------------------------------------------------------
+
+/// An `AsyncRead` adapter that reads `FsChunk`/`FsEnd` frames from the
+/// session stream and exposes them as a contiguous byte stream.
+///
+/// Constructed by `Session::fs_read_stream` after the `FsMeta` frame has
+/// been consumed. Reading to EOF corresponds to receiving `FsEnd` from
+/// the guest.
+///
+/// # Implementation note
+/// A dedicated background task owns the underlying `UnixStream` and
+/// runs `read_frame_async` in a loop, pushing each decoded `FsChunk` /
+/// `FsEnd` / `FsError` into an internal mpsc. `poll_read` consumes the
+/// mpsc.
+///
+/// This shape is required for correctness, not just performance: the
+/// frame-read future stores partial state across syscalls (4-byte length
+/// prefix, then body bytes). Dropping the future between polls — which
+/// happens if you `Box::pin(read_frame_async(...))` per poll —
+/// **discards already-consumed bytes** the moment the inner read
+/// suspends, corrupting framing on every multi-syscall frame. Tiny
+/// frames that fit in one read worked by accident; ~16 KiB+ frames
+/// broke deterministically with truncation to 0 bytes downstream.
+pub struct FsStreamReader {
+    /// Decoded chunks coming off the background task. `None` value
+    /// signals clean end-of-stream (FsEnd), `Err` signals a wire error
+    /// the caller should surface up the read chain.
+    rx: tokio::sync::mpsc::Receiver<Result<Vec<u8>, std::io::Error>>,
+    /// Bytes decoded from a previous chunk that didn't fit in the
+    /// caller's `ReadBuf` in one shot.
+    leftover: Vec<u8>,
+    /// Set to `true` after the background task signals end-of-stream;
+    /// subsequent reads return `Poll::Ready(Ok(()))` with zero bytes.
+    finished: bool,
+}
+
+impl FsStreamReader {
+    fn new(mut stream: UnixStream) -> Self {
+        // Bound the channel so a slow caller backpressures the wire
+        // reader instead of buffering unbounded chunks. 8 chunks ≈
+        // 8 × 64 KiB = 512 KiB ceiling — enough to hide single-stall
+        // jitter, small enough to surface a stuck caller.
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            loop {
+                let frame = match read_frame_async(&mut stream).await {
+                    Ok(Some(f)) => f,
+                    Ok(None) => {
+                        // Clean EOF without FsEnd — terminate the stream.
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                e.to_string(),
+                            )))
+                            .await;
+                        break;
+                    }
+                };
+                match frame {
+                    (_, _, ShellMessage::FsEnd) => break,
+                    (_, _, ShellMessage::FsChunk { data_b64 }) => {
+                        let bytes = match B64.decode(data_b64.as_bytes()) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = tx
+                                    .send(Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("base64 decode in FsChunk: {e}"),
+                                    )))
+                                    .await;
+                                break;
+                            }
+                        };
+                        if tx.send(Ok(bytes)).await.is_err() {
+                            // Caller dropped the reader.
+                            break;
+                        }
+                    }
+                    (_, _, ShellMessage::FsError { code, message }) => {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("fs error {code}: {message}"),
+                            )))
+                            .await;
+                        break;
+                    }
+                    (_, _, other) => {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("unexpected fs frame: {other:?}"),
+                            )))
+                            .await;
+                        break;
+                    }
+                }
+            }
+            // Dropping `tx` here closes `rx` — `poll_read` sees
+            // `Poll::Ready(None)` and reports clean EOF.
+        });
+        Self {
+            rx,
+            leftover: Vec::new(),
+            finished: false,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for FsStreamReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+
+        // Already at EOS — signal clean EOF.
+        if this.finished {
+            return Poll::Ready(Ok(()));
+        }
+
+        // Flush leftover bytes from a previous oversized chunk first.
+        if !this.leftover.is_empty() {
+            let n = this.leftover.len().min(buf.remaining());
+            buf.put_slice(&this.leftover[..n]);
+            this.leftover.drain(..n);
+            return Poll::Ready(Ok(()));
+        }
+
+        match this.rx.poll_recv(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => {
+                this.finished = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Err(e)),
+            Poll::Ready(Some(Ok(bytes))) => {
+                let n = bytes.len().min(buf.remaining());
+                buf.put_slice(&bytes[..n]);
+                if n < bytes.len() {
+                    this.leftover.extend_from_slice(&bytes[n..]);
+                }
+                Poll::Ready(Ok(()))
             }
         }
     }

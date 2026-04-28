@@ -9,6 +9,7 @@ pub mod create;
 pub mod errors;
 pub mod events;
 pub mod exec;
+pub mod fs;
 pub mod list;
 pub mod overlay;
 pub mod reaper;
@@ -52,6 +53,11 @@ pub async fn run(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> 
     register_sandbox_exec(&iii, sandbox_registry.clone(), runner.clone());
     register_sandbox_stop(&iii, sandbox_registry.clone(), stopper.clone());
     register_sandbox_list(&iii, sandbox_registry.clone());
+
+    {
+        let fs_runner: std::sync::Arc<dyn fs::FsRunner> = std::sync::Arc::new(fs::IiiShellFsRunner);
+        fs::register_all(&iii, sandbox_registry.clone(), fs_runner);
+    }
 
     {
         let registry = (*sandbox_registry).clone();

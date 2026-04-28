@@ -62,6 +62,189 @@ pub mod flags {
     pub const FLAG_TERMINAL: u8 = 0x01;
 }
 
+/// Single directory entry returned by `FsOp::Ls` / `FsOp::Stat`.
+/// `mode` is the octal permission string (e.g. `"0644"`); `mtime` is
+/// Unix seconds. `is_symlink` reflects the entry itself — FS handlers
+/// never follow symlinks unless the op doc-comment says otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FsEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub mode: String,
+    pub mtime: i64,
+    pub is_symlink: bool,
+}
+
+/// Single grep hit. `line` is 1-based. `content` is already truncated
+/// to `max_line_bytes` (with a trailing `…`) if the original line was
+/// longer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FsMatch {
+    #[serde(alias = "file")]
+    pub path: String,
+    pub line: u64,
+    pub content: String,
+}
+
+/// One `sed` file-level outcome. `success=false` carries the human
+/// failure message in `error`; otherwise `error` is absent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FsSedFileResult {
+    #[serde(alias = "file")]
+    pub path: String,
+    pub replacements: u64,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+/// Body of an `FsRequest` frame. Tagged on `op` so a new op can be
+/// added without a protocol rev (old peers reply with
+/// `FsError { code: "S219" }` because `deny_unknown_fields` rejects
+/// unknown tags).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FsOp {
+    Ls {
+        path: String,
+    },
+    Stat {
+        path: String,
+    },
+    Mkdir {
+        path: String,
+        mode: String,
+        parents: bool,
+    },
+    /// Upload: start of a chunked write. Followed by N `FsChunk`
+    /// frames and a terminal `FsEnd`.
+    WriteStart {
+        path: String,
+        mode: String,
+        parents: bool,
+    },
+    /// Download: start of a chunked read. Supervisor responds with
+    /// `FsMeta` then streams N `FsChunk` frames and a terminal
+    /// `FsEnd`.
+    ReadStart {
+        path: String,
+    },
+    Rm {
+        path: String,
+        recursive: bool,
+    },
+    Chmod {
+        path: String,
+        mode: String,
+        #[serde(default)]
+        uid: Option<u32>,
+        #[serde(default)]
+        gid: Option<u32>,
+        recursive: bool,
+    },
+    Mv {
+        src: String,
+        dst: String,
+        overwrite: bool,
+    },
+    Grep {
+        path: String,
+        pattern: String,
+        recursive: bool,
+        ignore_case: bool,
+        include_glob: Vec<String>,
+        exclude_glob: Vec<String>,
+        max_matches: u64,
+        max_line_bytes: u64,
+    },
+    /// Apply a find-and-replace.
+    ///
+    /// Caller must provide **exactly one** of:
+    /// - `files` — explicit list of paths to rewrite (legacy form;
+    ///   non-empty vec).
+    /// - `path` + optional `recursive` / `include_glob` / `exclude_glob`
+    ///   — walk a tree like grep does and rewrite every matching file.
+    ///   `path` may be a directory, a regular file, or a symlink to
+    ///   either (symlink-to-dir is resolved before walking).
+    ///   `recursive=false` on a directory is rejected with `S210`,
+    ///   matching grep — pass `files: [...]` instead, or use
+    ///   `recursive=true` with a tighter `include_glob`.
+    ///
+    /// Both forms produce per-file atomic temp+rename writes. The handler
+    /// returns `FsError { code: "S210" }` if both or neither form is
+    /// supplied (validated in the worker before the wire call). Old
+    /// guests that only know the legacy form keep working because the
+    /// new fields are `#[serde(default)]`.
+    Sed {
+        #[serde(default)]
+        files: Vec<String>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default = "default_recursive_true")]
+        recursive: bool,
+        #[serde(default)]
+        include_glob: Vec<String>,
+        #[serde(default)]
+        exclude_glob: Vec<String>,
+        pattern: String,
+        replacement: String,
+        regex: bool,
+        first_only: bool,
+        ignore_case: bool,
+    },
+}
+
+fn default_recursive_true() -> bool {
+    true
+}
+
+/// Body of an `FsResponse` frame. One variant per op. Errors do not
+/// come back as `FsResult`; they come back as `FsError`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum FsResult {
+    Ls {
+        entries: Vec<FsEntry>,
+    },
+    Stat(FsEntry),
+    Mkdir {
+        created: bool,
+    },
+    /// Terminal response of a `WriteStart` sequence. Always carries
+    /// the final byte count fsync'd to the target path.
+    Write {
+        bytes_written: u64,
+        path: String,
+    },
+    Rm {
+        removed: bool,
+    },
+    Chmod {
+        updated: u64,
+    },
+    Mv {
+        moved: bool,
+    },
+    Grep {
+        matches: Vec<FsMatch>,
+        truncated: bool,
+    },
+    Sed {
+        results: Vec<FsSedFileResult>,
+        total_replacements: u64,
+    },
+}
+
+/// Metadata frame sent by the supervisor at the start of a
+/// `ReadStart` sequence (one per session, before any `FsChunk`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FsReadMeta {
+    pub size: u64,
+    pub mode: String,
+    pub mtime: i64,
+}
+
 /// One shell-channel message. Wire JSON uses an internal `t` tag so
 /// extra variants can be added without breaking existing decoders (a
 /// peer that sees an unknown tag gets a serde error and the relay
@@ -153,6 +336,38 @@ pub enum ShellMessage {
         /// to the user and translates to a nonzero exit code.
         message: String,
     },
+    /// Host → guest: run a filesystem operation under this
+    /// correlation id. For one-shot ops (ls, stat, mkdir, rm, chmod,
+    /// mv, grep, sed) the guest replies with `FsResponse` (terminal)
+    /// or `FsError` (terminal). For `WriteStart`, the host sends N
+    /// `FsChunk` frames followed by `FsEnd`, and the guest replies
+    /// with `FsResponse { Write { .. } }` (terminal). For
+    /// `ReadStart`, the guest replies with `FsMeta`, N `FsChunk`
+    /// frames, and a terminal `FsEnd`.
+    FsRequest(FsOp),
+    /// Guest → host: metadata for a download. Sent exactly once at
+    /// the start of a `ReadStart` session, before any `FsChunk`.
+    FsMeta(FsReadMeta),
+    /// Host ↔ guest: raw bytes of a streamed upload (host → guest)
+    /// or download (guest → host). `data_b64` is base64-encoded for
+    /// JSON transport; producers should chunk at 64 KiB to match III
+    /// data-channel framing and stay safely under MAX_FRAME_SIZE.
+    FsChunk {
+        /// Base64-encoded bytes.
+        data_b64: String,
+    },
+    /// Host ↔ guest: terminal frame of a chunked upload/download
+    /// sequence. Always sent with `FLAG_TERMINAL`. For `WriteStart`
+    /// this flows host → guest and triggers the supervisor's
+    /// fsync+rename. For `ReadStart` this flows guest → host and
+    /// closes the session.
+    FsEnd,
+    /// Guest → host: terminal response carrying the op result.
+    /// Always sent with `FLAG_TERMINAL`.
+    FsResponse(FsResult),
+    /// Guest → host: terminal error frame carrying an S21x code.
+    /// Always sent with `FLAG_TERMINAL`.
+    FsError { code: String, message: String },
 }
 
 /// Encoding/decoding errors for the shell-channel frame codec.
@@ -598,5 +813,214 @@ mod tests {
     fn flag_terminal_bit_is_stable() {
         // Wire-visible constant: changing this silently breaks existing peers.
         assert_eq!(flags::FLAG_TERMINAL, 0x01);
+    }
+
+    /// Helper that mirrors `encode_frame` for tests: takes the full wire
+    /// frame (including the 4-byte `frame_len` prefix) and returns
+    /// `(corr_id, flags, ShellMessage)`.
+    fn decode_frame(frame: &[u8]) -> Result<(u32, u8, ShellMessage), ShellCodecError> {
+        // frame[0..4] is the frame_len prefix; body starts at byte 4.
+        decode_frame_body(&frame[4..])
+    }
+
+    #[test]
+    fn fs_request_roundtrips() {
+        let msg = ShellMessage::FsRequest(FsOp::Ls {
+            path: "/workspace".into(),
+        });
+        let frame = encode_frame(7, 0, &msg).unwrap();
+        let (corr_id, flag, decoded) = decode_frame(&frame).unwrap();
+        assert_eq!(corr_id, 7);
+        assert_eq!(flag, 0);
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn fs_chunk_carries_raw_bytes() {
+        use base64::Engine;
+        let msg = ShellMessage::FsChunk {
+            data_b64: base64::engine::general_purpose::STANDARD.encode([0xDE, 0xAD, 0xBE, 0xEF]),
+        };
+        let frame = encode_frame(7, 0, &msg).unwrap();
+        let (_, _, decoded) = decode_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn fs_end_is_terminal_flagged() {
+        let msg = ShellMessage::FsEnd;
+        let frame = encode_frame(7, flags::FLAG_TERMINAL, &msg).unwrap();
+        let (_, flag, decoded) = decode_frame(&frame).unwrap();
+        assert_eq!(flag & flags::FLAG_TERMINAL, flags::FLAG_TERMINAL);
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn fs_response_carries_result() {
+        let msg = ShellMessage::FsResponse(FsResult::Ls {
+            entries: vec![FsEntry {
+                name: "foo.py".into(),
+                is_dir: false,
+                size: 1234,
+                mode: "0644".into(),
+                mtime: 1_714_000_000,
+                is_symlink: false,
+            }],
+        });
+        let frame = encode_frame(7, flags::FLAG_TERMINAL, &msg).unwrap();
+        let (_, _, decoded) = decode_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn fs_error_carries_code_and_message() {
+        let msg = ShellMessage::FsError {
+            code: "S211".into(),
+            message: "path not found".into(),
+        };
+        let frame = encode_frame(7, flags::FLAG_TERMINAL, &msg).unwrap();
+        let (_, _, decoded) = decode_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    /// Forward-compat: an FsRequest carrying an unknown `op` tag (e.g.
+    /// from a newer host hitting an older supervisor) must decode-fail
+    /// rather than silently land in some default variant. The supervisor
+    /// translates the decode error into an `FsError { code: "S219" }`
+    /// frame on the wire so the host gets a typed signal.
+    #[test]
+    fn unknown_fs_op_is_rejected_by_decoder() {
+        let payload = br#"{"t":"fs_request","op":"teleport","path":"/x"}"#;
+        let total_len = FRAME_HEADER_SIZE + payload.len();
+        let mut frame = Vec::with_capacity(4 + total_len);
+        frame.extend_from_slice(&(total_len as u32).to_be_bytes());
+        frame.extend_from_slice(&7u32.to_be_bytes()); // corr_id
+        frame.push(0); // flags
+        frame.extend_from_slice(payload);
+
+        let err = decode_frame(&frame).unwrap_err();
+        assert!(
+            matches!(err, ShellCodecError::Deserialize(_)),
+            "expected Deserialize error, got: {err:?}"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // FsMatch / FsSedFileResult: canonical serde key is `path`, with
+    // `#[serde(alias = "file")]` so older wire payloads still decode.
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fs_match_deserializes_legacy_file_alias() {
+        let json = r#"{"file":"/x","line":1,"content":"hi"}"#;
+        let m: FsMatch = serde_json::from_str(json).expect("decode legacy");
+        assert_eq!(m.path, "/x");
+    }
+
+    #[test]
+    fn fs_match_deserializes_canonical_path() {
+        let json = r#"{"path":"/x","line":1,"content":"hi"}"#;
+        let m: FsMatch = serde_json::from_str(json).expect("decode canonical");
+        assert_eq!(m.path, "/x");
+    }
+
+    #[test]
+    fn fs_match_serializes_as_path_not_file() {
+        let m = FsMatch {
+            path: "/x".into(),
+            line: 1,
+            content: "hi".into(),
+        };
+        let v: serde_json::Value = serde_json::to_value(&m).unwrap();
+        assert!(v.get("path").is_some(), "expected `path` key, got: {v}");
+        assert!(v.get("file").is_none(), "expected no `file` key, got: {v}");
+    }
+
+    #[test]
+    fn fs_sed_file_result_deserializes_legacy_file_alias() {
+        let json = r#"{"file":"/x","replacements":2,"success":true}"#;
+        let r: FsSedFileResult = serde_json::from_str(json).expect("decode legacy");
+        assert_eq!(r.path, "/x");
+        assert_eq!(r.replacements, 2);
+        assert!(r.success);
+    }
+
+    #[test]
+    fn fs_sed_file_result_deserializes_canonical_path() {
+        let json = r#"{"path":"/x","replacements":2,"success":true}"#;
+        let r: FsSedFileResult = serde_json::from_str(json).expect("decode canonical");
+        assert_eq!(r.path, "/x");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // FsOp::Sed dual-form serde: legacy `files:[…]` payloads must keep
+    // decoding, and the new `path` + `recursive` + `*_glob` form must
+    // round-trip with `#[serde(default)]` on every new field.
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fs_op_sed_legacy_files_only_payload_decodes() {
+        // Wire payload an old guest would send: only `files`, no
+        // `path`/`recursive`/`*_glob`.
+        let json = r#"{
+            "op":"sed",
+            "files":["/x/a.py","/x/b.py"],
+            "pattern":"hello",
+            "replacement":"world",
+            "regex":false,
+            "first_only":false,
+            "ignore_case":false
+        }"#;
+        let op: FsOp = serde_json::from_str(json).expect("decode legacy sed");
+        match op {
+            FsOp::Sed {
+                files,
+                path,
+                recursive,
+                include_glob,
+                exclude_glob,
+                ..
+            } => {
+                assert_eq!(files, vec!["/x/a.py".to_string(), "/x/b.py".to_string()]);
+                assert!(path.is_none(), "path should default to None");
+                // recursive defaults to true via default_recursive_true.
+                assert!(recursive, "recursive should default to true");
+                assert!(include_glob.is_empty());
+                assert!(exclude_glob.is_empty());
+            }
+            other => panic!("expected Sed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fs_op_sed_path_form_with_globs_roundtrips() {
+        let original = FsOp::Sed {
+            files: Vec::new(),
+            path: Some("/workspace".into()),
+            recursive: true,
+            include_glob: vec!["*.py".into()],
+            exclude_glob: vec!["target/*".into()],
+            pattern: "foo".into(),
+            replacement: "bar".into(),
+            regex: false,
+            first_only: false,
+            ignore_case: false,
+        };
+        let encoded = serde_json::to_string(&original).expect("encode");
+        let decoded: FsOp = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn fs_sed_file_result_serializes_as_path_not_file() {
+        let r = FsSedFileResult {
+            path: "/x".into(),
+            replacements: 2,
+            success: true,
+            error: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&r).unwrap();
+        assert!(v.get("path").is_some(), "expected `path` key, got: {v}");
+        assert!(v.get("file").is_none(), "expected no `file` key, got: {v}");
     }
 }

@@ -27,7 +27,101 @@ how worker processes run inside isolated microVMs, see
 [Developing Sandbox Workers](/how-to/developing-sandbox-workers).
 </Note>
 
+<Warning>
+**Host requirements.** Sandboxes run as libkrun microVMs and need
+hardware virtualization on the host: macOS on **Apple Silicon**, or
+Linux with **KVM** enabled (`/dev/kvm` readable by the engine
+process). Intel Macs, Linux without KVM, and Windows hosts cannot
+boot sandboxes — `sandbox::create` returns `S300` with a stderr tail
+from the failed VM process. See [`S300`](#s-codes) in the error
+table for the full diagnostic flow.
+</Warning>
+
+## API surface at a glance
+
+The daemon registers fourteen triggers — four lifecycle ops plus ten
+filesystem ops. Every call goes through `iii.trigger()`; nothing is
+exposed over plain HTTP.
+
+The "Recommended `timeoutMs`" column is what to pass to
+`iii.trigger()`'s envelope timeout from the caller side — the daemon
+itself enforces a separate per-exec deadline (`payload.timeout_ms` on
+`sandbox::exec`) which defaults to 30s. Pad the envelope by ~5s over
+the daemon deadline so the daemon's own `timed_out` signal lands
+before the trigger client gives up.
+
+| Trigger | Category | Recommended `timeoutMs` | Purpose |
+|---|---|---|---|
+| [`sandbox::create`](#trigger-create) | lifecycle | `300_000` (cold pull can take 5-30s) | Boot a microVM and return a `sandbox_id` |
+| [`sandbox::exec`](#trigger-exec) | lifecycle | `35_000` (daemon default + 5s margin) | Run a command inside a live sandbox |
+| [`sandbox::list`](#trigger-list) | lifecycle | omit | Enumerate active sandboxes |
+| [`sandbox::stop`](#trigger-stop) | lifecycle | omit | Tear down a sandbox and reclaim resources |
+| [`sandbox::fs::ls`](#trigger-fs-ls) | filesystem | omit | List directory entries |
+| [`sandbox::fs::stat`](#trigger-fs-stat) | filesystem | omit | Inspect a single path |
+| [`sandbox::fs::mkdir`](#trigger-fs-mkdir) | filesystem | omit | Create a directory |
+| [`sandbox::fs::write`](#trigger-fs-write) | filesystem | omit (channel-paced) | Stream a file in (no envelope cap) |
+| [`sandbox::fs::read`](#trigger-fs-read) | filesystem | omit (channel-paced) | Stream a file out |
+| [`sandbox::fs::rm`](#trigger-fs-rm) | filesystem | omit | Remove a file or directory |
+| [`sandbox::fs::chmod`](#trigger-fs-chmod) | filesystem | omit | Change mode / owner |
+| [`sandbox::fs::mv`](#trigger-fs-mv) | filesystem | omit | Move or rename atomically |
+| [`sandbox::fs::grep`](#trigger-fs-grep) | filesystem | scale with tree size | Recursive regex search |
+| [`sandbox::fs::sed`](#trigger-fs-sed) | filesystem | scale with file count | Find-and-replace across files |
+
+The CLI (`iii sandbox …`) wraps a strict subset: `run`, `create`,
+`exec`, `list`, `stop`, `upload`, `download`. Anything not on that
+list is reachable only through `iii.trigger()` from your worker code.
+
+**Also on this page:**
+[Engine setup](#engine-setup) ·
+[Allowed images](#allowed-images) ·
+[Custom images](#custom-images) ·
+[Environment variables](#environment-variables) ·
+[Error handling](#error-handling) ·
+[S-codes](#s-codes) ·
+[CLI reference](#cli-reference) ·
+[Testing](#testing) ·
+[Troubleshooting](#troubleshooting)
+
 ## Quickstart
+
+The Node and Python examples below assume you already have an `iii`
+worker handle in scope. If this is your first call from outside an
+existing worker, here's the minimal setup:
+
+<CodeGroup>
+
+```typescript Node
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker('ws://127.0.0.1:49134')
+// `iii` is now usable for every `iii.trigger(...)` call below.
+```
+
+```python Python
+# pip install iii-sdk
+from iii import register_worker
+
+iii = register_worker("ws://127.0.0.1:49134")
+# Reuse `iii` for every `iii.trigger(...)` call below. The streaming
+# channel examples (fs::write, fs::read) rebind it as `iii_client`
+# purely to disambiguate from the SDK module name.
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions};
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+// Reuse `iii` for every `iii.trigger(...)` call below.
+```
+
+</CodeGroup>
+
+The default engine WebSocket port is `49134` and the engine binds to
+`0.0.0.0:49134` by default. Override the port with the `--port` flag
+on every CLI command. If your engine runs on a remote host (Docker
+host, K8s service, remote dev VM), substitute that host's address in
+the `registerWorker("ws://<host>:<port>")` URL. See
+[Engine setup](#engine-setup) for the full URL convention.
 
 ### One-shot: boot, run one command, stop
 
@@ -239,6 +333,8 @@ handler invocation in an OpenTelemetry span. Route them through the
 standard observability worker — see
 [iii-observability](/workers/iii-observability).
 
+<a id="trigger-create" />
+
 ## SDK: creating a sandbox
 
 Call `sandbox::create` via `iii.trigger()` to boot a sandbox and get a `sandbox_id` handle.
@@ -316,6 +412,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|---|
 | `sandbox_id` | `string` | UUID handle — pass to `sandbox::exec`, `sandbox::stop`, and `iii sandbox stop`. |
 | `image` | `string` | Echo of the resolved image name — the catalog preset or `custom_images` key that was booted. |
+
+<a id="trigger-exec" />
 
 ## SDK: running commands
 
@@ -495,6 +593,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 </CodeGroup>
 
+<a id="trigger-list" />
+
 ### `sandbox::list`
 
 Returns active sandboxes.
@@ -541,6 +641,413 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `age_secs` | `number` | Seconds since create. |
 | `exec_in_progress` | `boolean` | `true` while an exec is in flight. |
 | `stopped` | `boolean` | `true` for sandboxes awaiting reap. |
+
+<a id="trigger-stop" />
+
+### `sandbox::stop`
+
+Tear down a running sandbox. The handler kills the VM process,
+unmounts and removes the overlay, drops the registry entry, and
+returns. The trigger is **not** idempotent across the registry
+boundary: once a stop succeeds, the registry entry is gone, so a
+second `sandbox::stop` against the same UUID returns `S002` (not
+found). It *is* tolerant of the rare race where the reaper marks the
+sandbox stopped between your calls — that path returns `{ stopped:
+true }` without re-killing anything.
+
+<CodeGroup>
+
+```typescript Node
+const result = await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: {
+    sandbox_id,
+    wait: true,             // optional, default false
+  },
+})
+// → { sandbox_id: '...', stopped: true }
+```
+
+```python Python
+result = await iii.trigger({
+    "function_id": "sandbox::stop",
+    "payload": {"sandbox_id": sandbox_id, "wait": True},
+})
+```
+
+```rust Rust
+use iii_sdk::{TriggerRequest};
+use serde_json::json;
+
+let _ = iii.trigger(TriggerRequest {
+    function_id: "sandbox::stop".into(),
+    payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+
+</CodeGroup>
+
+#### `sandbox::stop` payload fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sandbox_id` | `string` | — | **Required.** UUID handle from `sandbox::create`. |
+| `wait` | `boolean` | `false` | When `true`, the trigger waits for the reaper to finish releasing kernel/disk resources. When `false`, the call returns once the kill signal has been delivered — the resources may still be reclaiming in the background. |
+
+#### `sandbox::stop` response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `sandbox_id` | `string` | Echo of the stopped sandbox's UUID. |
+| `stopped` | `boolean` | Always `true` on success. |
+
+Errors: `S001` on a malformed `sandbox_id`; `S002` on a UUID the
+daemon doesn't know about (which is what you'll get if you call stop
+twice on the same sandbox — the second call sees an empty registry
+slot).
+
+<a id="sdk-filesystem-operations" />
+
+## SDK: filesystem operations
+
+Ten `sandbox::fs::*` triggers give first-class file access to a live sandbox without going through `sandbox::exec`. Binary-safe, atomic where it matters (write, mv, sed all use temp + fsync + rename), and deterministic regex semantics (Rust `regex` flavor — RE2-ish, no backrefs/lookarounds) independent of the image's coreutils.
+
+| Trigger | Purpose |
+|---|---|
+| `sandbox::fs::ls` | List directory entries (non-recursive) |
+| `sandbox::fs::stat` | Get file/dir metadata |
+| `sandbox::fs::mkdir` | Create directory (with optional `parents`) |
+| `sandbox::fs::write` | Upload a file via streaming channel (no size cap) |
+| `sandbox::fs::read` | Download a file via streaming channel |
+| `sandbox::fs::rm` | Remove file or directory |
+| `sandbox::fs::chmod` | Change permissions / ownership |
+| `sandbox::fs::mv` | Move or rename |
+| `sandbox::fs::grep` | Search text recursively |
+| `sandbox::fs::sed` | Find-and-replace across files |
+
+All requests carry `sandbox_id` (the UUID returned by `sandbox::create`). Paths are absolute inside the VM's rootfs. Symlinks are operated on as symlinks, never followed.
+
+`fs::write` and `fs::read` stream bytes through III data channels — they don't share `sandbox::exec`'s 4 MiB JSON envelope cap, so multi-megabyte files round-trip cleanly. The other eight ops are one-shot JSON. None of them take the per-sandbox exec mutex, so a long `fs::grep` won't block a concurrent `sandbox::exec`.
+
+<a id="trigger-fs-ls" />
+
+### `sandbox::fs::ls`
+
+```typescript
+const { entries } = await iii.trigger({
+  function_id: 'sandbox::fs::ls',
+  payload: { sandbox_id, path: '/workspace' },
+})
+// entries: [{ name, is_dir, size, mode, mtime, is_symlink }, ...]
+```
+
+Non-recursive. Returns `S211` if the path is missing, `S212` if it's a regular file.
+
+<a id="trigger-fs-stat" />
+
+### `sandbox::fs::stat`
+
+```typescript
+const entry = await iii.trigger({
+  function_id: 'sandbox::fs::stat',
+  payload: { sandbox_id, path: '/workspace/foo.py' },
+})
+// entry: { name, is_dir, size, mode, mtime, is_symlink }
+```
+
+Returns `S211` if the path is missing.
+
+<a id="trigger-fs-mkdir" />
+
+### `sandbox::fs::mkdir`
+
+```typescript
+await iii.trigger({
+  function_id: 'sandbox::fs::mkdir',
+  payload: {
+    sandbox_id,
+    path: '/workspace/new/nested',
+    mode: '0755',           // optional, default '0755'
+    parents: true,          // optional, default false → mkdir -p semantics
+  },
+})
+// → { created: true }
+```
+
+`parents: false` + missing ancestor → `S211`. Existing path + `parents: false` → `S213`. `parents: true` on an existing directory is a no-op.
+
+<a id="trigger-fs-write" />
+
+### `sandbox::fs::write` (streaming upload)
+
+Caller opens a data channel, writes bytes into the writer half, and passes the reader half's ref to the trigger. The worker pumps from the channel into the guest's atomic temp+rename write.
+
+<CodeGroup>
+
+```typescript Node
+const channel = await iii.createChannel()
+channel.writer.stream.write(Buffer.from('hello\n'))
+channel.writer.stream.end()
+
+const { bytes_written, path } = await iii.trigger({
+  function_id: 'sandbox::fs::write',
+  payload: {
+    sandbox_id,
+    path: '/workspace/hello.txt',
+    mode: '0644',           // optional, default '0644'
+    parents: false,         // optional, default false
+    content: channel.readerRef,
+  },
+})
+// → { bytes_written: 6, path: '/workspace/hello.txt' }
+```
+
+```python Python
+channel = iii_client.create_channel()
+await channel.writer.write(b"hello\n")
+await channel.writer.close_async()
+
+result = await iii_client.trigger({
+    "function_id": "sandbox::fs::write",
+    "payload": {
+        "sandbox_id": sandbox_id,
+        "path": "/workspace/hello.txt",
+        "mode": "0644",
+        "content": channel.reader_ref.model_dump(),
+    },
+})
+```
+
+```rust Rust
+use iii_sdk::{ChannelWriter, register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+let channel = iii.create_channel(None).await?;
+channel.writer.write(b"hello\n").await?;
+channel.writer.close().await?;
+
+let resp = iii.trigger(TriggerRequest {
+    function_id: "sandbox::fs::write".into(),
+    payload: json!({
+        "sandbox_id": sandbox_id,
+        "path": "/workspace/hello.txt",
+        "mode": "0644",
+        "content": channel.reader_ref,
+    }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+
+</CodeGroup>
+
+Atomic on disk: the supervisor writes to `<path>.iii-tmp-<uuid>`, fsyncs, then renames onto the target. If the channel closes before the writer signals end-of-stream (caller crashed mid-upload), the temp file is unlinked and the trigger returns `S218`. The original target — if it existed — is untouched.
+
+<a id="trigger-fs-read" />
+
+### `sandbox::fs::read` (streaming download)
+
+Trigger returns metadata synchronously plus a `StreamChannelRef` the caller pulls bytes from. The worker spawns a background task that pumps file bytes into the channel as the caller reads.
+
+<CodeGroup>
+
+```typescript Node
+import { ChannelReader } from 'iii-sdk'
+
+const resp = await iii.trigger({
+  function_id: 'sandbox::fs::read',
+  payload: { sandbox_id, path: '/workspace/hello.txt' },
+})
+// resp = { content: StreamChannelRef, size, mode, mtime }
+
+const reader = new ChannelReader(ENGINE_URL, resp.content)
+const chunks: Buffer[] = []
+for await (const chunk of reader.stream) chunks.push(chunk)
+const bytes = Buffer.concat(chunks)
+```
+
+```python Python
+result = await iii_client.trigger({
+    "function_id": "sandbox::fs::read",
+    "payload": {"sandbox_id": sandbox_id, "path": "/workspace/hello.txt"},
+})
+reader = ChannelReader(ENGINE_URL, StreamChannelRef(**result["content"]))
+data = await reader.read_all()
+```
+
+```rust Rust
+use iii_sdk::{ChannelReader, TriggerRequest};
+use serde_json::{json, Value};
+
+let resp: Value = iii.trigger(TriggerRequest {
+    function_id: "sandbox::fs::read".into(),
+    payload: json!({ "sandbox_id": sandbox_id, "path": "/workspace/hello.txt" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+// resp = { "content": StreamChannelRef, "size", "mode", "mtime" }
+
+let channel_ref = serde_json::from_value(resp["content"].clone())?;
+let reader = ChannelReader::new("ws://127.0.0.1:49134", &channel_ref);
+let bytes = reader.read_all().await?;
+```
+
+</CodeGroup>
+
+`S211` if the path is missing, `S212` if it's a directory. The supervisor holds the file descriptor open for the full stream so mid-read size changes don't affect the bytes you receive. If the read fails after metadata was emitted (e.g. `EIO`), the worker side-bands `{ "error": "S216", "message": "..." }` via the channel's text-message channel and closes the stream early.
+
+<a id="trigger-fs-rm" />
+
+### `sandbox::fs::rm`
+
+```typescript
+await iii.trigger({
+  function_id: 'sandbox::fs::rm',
+  payload: {
+    sandbox_id,
+    path: '/workspace/junk',
+    recursive: false,       // default false
+  },
+})
+// → { removed: true }
+```
+
+Non-recursive on a non-empty directory → `S214`, with the path preserved on disk. Symlinks are unlinked, never their targets.
+
+<a id="trigger-fs-chmod" />
+
+### `sandbox::fs::chmod`
+
+```typescript
+const { updated } = await iii.trigger({
+  function_id: 'sandbox::fs::chmod',
+  payload: {
+    sandbox_id,
+    path: '/workspace/foo.sh',
+    mode: '0755',
+    uid: null,              // optional u32
+    gid: null,              // optional u32
+    recursive: false,
+  },
+})
+// updated: number of entries successfully chmod'd (root included)
+```
+
+`uid` / `gid` are optional — pass either or both to chown alongside the mode change. `recursive: true` walks the tree (root entry counted). `updated` counts entries the call applied to, not entries whose mode actually differed.
+
+<a id="trigger-fs-mv" />
+
+### `sandbox::fs::mv`
+
+```typescript
+await iii.trigger({
+  function_id: 'sandbox::fs::mv',
+  payload: {
+    sandbox_id,
+    src: '/workspace/a',
+    dst: '/workspace/b',
+    overwrite: false,       // default false
+  },
+})
+// → { moved: true }
+```
+
+Same-filesystem moves are atomic via `rename(2)`. Cross-filesystem moves (e.g. across a virtio-fs mountpoint) fall back to copy-to-temp-at-dst, fsync, rename, unlink-src — `src` survives any partial failure. `overwrite: false` + existing `dst` → `S213`.
+
+<a id="trigger-fs-grep" />
+
+### `sandbox::fs::grep`
+
+```typescript
+const { matches, truncated } = await iii.trigger({
+  function_id: 'sandbox::fs::grep',
+  payload: {
+    sandbox_id,
+    path: '/workspace',
+    pattern: 'TODO\\(.+\\):',
+    recursive: true,
+    ignore_case: false,
+    include_glob: ['*.rs', '*.py'],
+    exclude_glob: ['target/*'],
+    max_matches: 1000,        // default 10000
+    max_line_bytes: 4096,     // default 4096
+  },
+})
+// matches: [{ path, line, content }, ...]   (legacy callers may also see `file` — it's an alias for `path`)
+```
+
+Rust `regex` syntax. Lines longer than `max_line_bytes` are truncated with `…`. Binary files (null-byte scan in the first 8 KiB) are skipped silently — same default as `ripgrep`. `truncated: true` means `max_matches` was reached and the walk stopped early. `line` is 1-based.
+
+`include_glob` / `exclude_glob` accept `*` (any chars except `/`) and `?` (any single char except `/`). For richer globbing, pre-filter via `sandbox::exec find ...` and pass single files.
+
+Bad regex → `S217`.
+
+<a id="trigger-fs-sed" />
+
+### `sandbox::fs::sed`
+
+`fs::sed` accepts **exactly one** of two forms — explicit `files`, or
+`path` + walk filters (mirrors `fs::grep`'s walk semantics so you can
+copy a grep query into a sed call). Sending both, or neither, returns
+`S210` before any file is touched.
+
+**Form 1 — explicit list (`files`):**
+
+```typescript
+const { results, total_replacements } = await iii.trigger({
+  function_id: 'sandbox::fs::sed',
+  payload: {
+    sandbox_id,
+    files: ['/workspace/a.txt', '/workspace/b.txt'],
+    pattern: 'foo',
+    replacement: 'bar',
+    regex: true,            // default true — false → literal substring match
+    first_only: false,      // true → at most one replace per line
+    ignore_case: false,
+  },
+})
+// results: [{ path, replacements, success, error? }, ...]   (alias `file` accepted for back-compat)
+```
+
+**Form 2 — walk a tree (`path`):**
+
+```typescript
+const { results, total_replacements } = await iii.trigger({
+  function_id: 'sandbox::fs::sed',
+  payload: {
+    sandbox_id,
+    path: '/workspace',
+    recursive: true,                     // default true; false on a directory → S210
+    include_glob: ['*.rs', '*.py'],      // gitignore-style; relative to `path`
+    exclude_glob: ['target/*'],
+    pattern: 'foo',
+    replacement: 'bar',
+    regex: true,
+    first_only: false,
+    ignore_case: false,
+  },
+})
+```
+
+Line-oriented: regex matches are tested per line, never across
+newlines. Use `$1`, `$2`, etc. in `replacement` for capture-group
+references. Each file is rewritten via temp+rename — a per-file error
+sets `success: false` on that entry without aborting the rest. The
+trigger always returns 2xx; check the per-file `success` flag and the
+top-level `total_replacements` counter.
+
+Bad regex → `S217` (top-level error; nothing rewritten). Mutually
+exclusive form check (`files` + `path`, or neither) → `S210`.
+
+For full POSIX sed (hold space, multi-line patterns, chained
+commands), use `sandbox::exec` with the image's own `sed` binary.
+
+### Concurrency and lifecycle
+
+Each `sandbox::fs::*` call opens a fresh `shell.sock` connection; the supervisor serves them on independent threads. There is no per-sandbox FS serialization — parallel `fs::write` and `fs::read` on the same file race at the filesystem level (same as two concurrent `sandbox::exec`s would). FS ops do **not** take the `exec_in_progress` mutex, so a long `fs::grep` does not block `sandbox::exec`. They do bump `last_exec_at` so the idle reaper leaves the sandbox alone while files are being moved around.
 
 ## Environment variables
 
@@ -681,8 +1188,14 @@ The daemon ships with two catalog presets:
 
 | Image | OCI reference | Use case |
 |---|---|---|
-| `python` | `iiidev/python:latest` | CPython 3 + standard library |
-| `node` | `iiidev/node:latest` | Node.js LTS |
+| `python` | `docker.io/iiidev/python:latest` | CPython 3 + standard library |
+| `node` | `docker.io/iiidev/node:latest` | Node.js LTS |
+
+The catalog stores fully-qualified refs (registry / namespace / repo /
+tag) so they hash to the same rootfs-cache slug as managed-worker
+boots of the same image. A custom-images entry that uses the
+shorthand `iiidev/python:latest` would pull the same bytes into a
+second cache slug under `~/.iii/cache/` — always pin the registry.
 
 Your engine's `image_allowlist` in `config.yaml` controls which images
 are actually bootable at runtime. The allowlist is fail-closed — an
@@ -751,17 +1264,25 @@ engine-level schema.
 ## Error handling
 
 Every sandbox failure throws an error whose message begins with
-`handler error:` followed by a JSON envelope. The `type` field is
-the error category — one of `validation`, `config`, `internal`,
-`transient`, `execution`, or `platform` — matching the category
-column in the [S-codes table](#s-codes) below:
+`handler error:` followed by a JSON envelope. The envelope is flat
+and always carries five fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `string` | Category: `validation`, `config`, `internal`, `transient`, `execution`, `filesystem`, or `platform`. |
+| `code` | `string` | Stable S-code (e.g. `S100`, `S211`). The wire ABI — the [S-codes table](#s-codes) is the canonical reference. |
+| `message` | `string` | Human-readable explanation. Often includes the offending path, image, or timeout value. |
+| `docs_url` | `string` | Permalink to the per-code troubleshooting page: `https://docs.iii.dev/errors/sandbox/<code>`. |
+| `retryable` | `boolean` | `true` only for transient codes (`S102`, `S218`). All other codes are caller-fixable, not retryable. |
 
 ```
-handler error: {"type":"validation","code":"S002","message":"sandbox not found: <id>"}
-handler error: {"type":"execution","code":"S200","message":"exec timed out after 500ms"}
+handler error: {"type":"validation","code":"S002","message":"sandbox not found: <id>","docs_url":"https://docs.iii.dev/errors/sandbox/S002","retryable":false}
+handler error: {"type":"execution","code":"S200","message":"exec timed out after 500 ms","docs_url":"https://docs.iii.dev/errors/sandbox/S200","retryable":false}
+handler error: {"type":"transient","code":"S102","message":"auto-install failed for image 'python': network down","docs_url":"https://docs.iii.dev/errors/sandbox/S102","retryable":true}
 ```
 
-Parse the envelope if you need the S-code for targeted recovery:
+Parse the envelope if you need the S-code or the `retryable` flag for
+targeted recovery:
 
 <CodeGroup>
 
@@ -852,10 +1373,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### S-codes
 
-Both the S-code and the message are canonical: the daemon in
-[`errors.rs`](https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/errors.rs)
-emits each code from a semantically matching variant. Parse `code` from the
-`handler error: {...}` envelope to distinguish cases.
+Both the S-code and the message are canonical: the daemon emits each
+code from a semantically matching error variant, and the
+`{type, code, message, docs_url, retryable}` payload is the stable
+SDK contract. Parse `code` from the `handler error: {...}` envelope
+for targeted recovery, and follow `docs_url` for the per-code
+troubleshooting page.
 
 | Code | Type | Retryable | Meaning | Typical fix |
 |---|---|---|---|---|
@@ -867,6 +1390,16 @@ emits each code from a semantically matching variant. Parse `code` from the
 | S101 | internal | false | Rootfs not on disk | Run `iii worker add iiidev/<image>` |
 | S102 | transient | **true** | Pull/unpack failed | Retry with backoff |
 | S200 | execution | false | `timeout_ms` exceeded | Raise the budget or split the work |
+| S210 | filesystem | false | Invalid `fs::*` request (bad path, malformed mode, empty pattern) | Fix the caller |
+| S211 | filesystem | false | Path not found | Check the path; create it first if needed |
+| S212 | filesystem | false | Wrong file type (e.g. `ls` on a file, `read` on a directory) | Match op to entry type |
+| S213 | filesystem | false | Path already exists (`mkdir` / `mv` without `overwrite`) | Pass `parents: true` / `overwrite: true`, or remove first |
+| S214 | filesystem | false | Directory not empty (`rm` without `recursive`) | Pass `recursive: true` |
+| S215 | filesystem | false | Permission denied inside the VM | Adjust mode/uid/gid via `fs::chmod` |
+| S216 | filesystem | false | I/O error (`EIO`, disk full, quota) | Inspect message; check VM disk health |
+| S217 | filesystem | false | Regex won't compile (`fs::grep` / `fs::sed`) | Fix the pattern (Rust regex flavor) |
+| S218 | filesystem | **true** | Channel closed before `FsEnd` (caller aborted upload mid-stream) | Retry with a fresh channel |
+| S219 | filesystem | false | FS ops not supported by this supervisor | Upgrade `iii-worker` (and restart it) |
 | S300 | platform | false | libkrun refused to boot | Check host reqs (macOS Apple Silicon / Linux KVM) |
 | S400 | config | false | cpus/memory over per-image cap | Lower request or raise cap |
 
@@ -971,6 +1504,125 @@ iii sandbox stop <sandbox-id> [--port P]
 
 Graceful stop by UUID. The id comes from `iii sandbox create`, `iii sandbox list`, or the
 `sandbox_id` field returned by `sandbox::create`.
+
+### `iii sandbox upload`
+
+```bash
+iii sandbox upload <sandbox-id> <local-path|-> <remote-path> [--mode 0644] [--parents] [--port P]
+```
+
+Stream a local file into a running sandbox via an iii data channel — no JSON-envelope size cap. Atomic on disk: the supervisor writes to a temp sibling, fsyncs, and renames onto `remote-path`. The original target (if any) is preserved on caller abort and surfaces as `S218` (retryable).
+
+Pass `-` as the local path to read from stdin, which makes the command pipe-friendly:
+
+```bash
+# Push a local file
+iii sandbox upload "$SB" ./script.js /workspace/script.js
+
+# Stream a tar archive directly into the sandbox without an intermediate file
+tar -cf - ./srcdir | iii sandbox upload "$SB" - /workspace/src.tar
+
+# Auto-create parent directories and tighten permissions
+iii sandbox upload "$SB" ./key.pem /etc/keys/app.pem --mode 0600 --parents
+```
+
+Two of the eight non-streaming `sandbox::fs::*` ops have shell equivalents that work fine through `sandbox::exec` (see [SDK: filesystem operations](#sdk-filesystem-operations)) — `upload` and `download` exist as dedicated commands because host↔guest byte movement does *not* have a clean shell equivalent.
+
+### `iii sandbox download`
+
+```bash
+iii sandbox download <sandbox-id> <remote-path> <local-path|-> [--port P]
+```
+
+Stream a sandbox file out to disk (or stdout). Pass `-` as the local path to write to stdout for piping:
+
+```bash
+# Save to disk
+iii sandbox download "$SB" /workspace/output.json ./output.json
+
+# Pipe straight into another tool — no intermediate file
+iii sandbox download "$SB" /workspace/build.tar - | tar -tf -
+
+# Inspect a JSON artifact with jq
+iii sandbox download "$SB" /workspace/result.json - | jq '.summary'
+```
+
+Errors map to the S21x band: missing path → `S211`, directory instead of file → `S212`, permission denied → `S215`, mid-stream I/O failure → `S216`. See [S-codes](#s-codes).
+
+### Smoke testing upload / download
+
+End-to-end verification you can paste into a terminal. Boots a sandbox, exercises both directions, verifies bytes round-trip, and tears down.
+
+**Upload round-trip** — push a known file, then `cat` it from inside the VM and `diff` against the original:
+
+```bash
+SB=$(iii sandbox create node)
+
+# 1. Upload from a local file
+echo "hello from upload smoke" > /tmp/payload.txt
+iii sandbox upload "$SB" /tmp/payload.txt /tmp/upload.txt
+
+# 2. Read it back via exec and diff against the source
+iii sandbox exec "$SB" -- cat /tmp/upload.txt | diff -q - /tmp/payload.txt \
+  && echo "OK: bytes match"
+
+# 3. Stdin variant — pipe directly without a temp file
+echo "from stdin" | iii sandbox upload "$SB" - /tmp/upload-stdin.txt
+iii sandbox exec "$SB" -- cat /tmp/upload-stdin.txt
+
+# 4. mode + parents into a deep path
+echo "secret" | iii sandbox upload "$SB" - /a/b/c/secret.bin --mode 0600 --parents
+iii sandbox exec "$SB" -- stat -c '%a' /a/b/c/secret.bin   # expects: 600
+
+iii sandbox stop "$SB"
+```
+
+**Download round-trip** — seed a file in the VM, download, byte-compare:
+
+```bash
+SB=$(iii sandbox create node)
+
+# 1. Seed a known file inside the sandbox
+iii sandbox exec "$SB" -- sh -c 'printf "round-trip me\n" > /tmp/source.txt'
+
+# 2. Download to a local path and diff
+iii sandbox download "$SB" /tmp/source.txt /tmp/got.txt
+iii sandbox exec "$SB" -- cat /tmp/source.txt | diff -q - /tmp/got.txt \
+  && echo "OK: bytes match"
+
+# 3. Stdout variant — pipe straight to jq, sha256sum, etc.
+iii sandbox exec "$SB" -- sh -c 'echo {"ok":true} > /tmp/out.json'
+iii sandbox download "$SB" /tmp/out.json - | jq .ok   # → true
+
+# 4. Error path — missing file surfaces S211 on stderr, nonzero exit
+iii sandbox download "$SB" /tmp/no-such-file - ; echo "rc=$?"
+
+iii sandbox stop "$SB"
+```
+
+The 16 KiB binary round-trip is the strict check — generate the same buffer host-side and in-VM, then `cmp -s`:
+
+```bash
+SB=$(iii sandbox create node)
+
+iii sandbox exec "$SB" -- node -e '
+  const fs = require("node:fs"); const buf = Buffer.alloc(16 * 1024);
+  for (let i = 0; i < buf.length; i++) buf[i] = i & 0xff;
+  fs.writeFileSync("/tmp/random.bin", buf);
+'
+node -e '
+  const fs = require("node:fs"); const buf = Buffer.alloc(16 * 1024);
+  for (let i = 0; i < buf.length; i++) buf[i] = i & 0xff;
+  fs.writeFileSync("/tmp/expected.bin", buf);
+'
+
+iii sandbox download "$SB" /tmp/random.bin /tmp/got.bin
+cmp -s /tmp/expected.bin /tmp/got.bin && echo "OK: 16 KiB binary match"
+
+iii sandbox stop "$SB"
+```
+
+This catches off-by-one truncation, base64 decode bugs in the channel layer, and partial chunk loss. If you see a sha256 mismatch instead, run with `RUST_LOG=trace,iii_worker::cli::shell_relay=trace` to inspect the per-chunk relay flow.
 
 ## Testing
 

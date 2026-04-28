@@ -27,6 +27,7 @@ iii-network = { path = "../iii-network" }
 # TODO: switch to crates.io pin before shipping; path dep for co-development
 iii-sdk = { path = "../../sdk/packages/rust/iii" }
 iii-shell-client = { path = "../iii-shell-client" }
+iii-shell-proto = { path = "../iii-shell-proto" }
 iii-supervisor = { path = "../iii-supervisor" }
 msb_krun = { version = "0.1.9", features = ["net", "blk"] }
 oci-client = "0.16"

@@ -170,6 +170,30 @@ async fn main() -> anyhow::Result<()> {
             iii_worker::cli::app::SandboxCmd::Stop { id, port } => {
                 iii_worker::cli::sandbox::handle_stop(id, port).await
             }
+            iii_worker::cli::app::SandboxCmd::Upload {
+                id,
+                local_path,
+                remote_path,
+                mode,
+                parents,
+                port,
+            } => {
+                iii_worker::cli::sandbox::handle_upload(
+                    id,
+                    local_path,
+                    remote_path,
+                    mode,
+                    parents,
+                    port,
+                )
+                .await
+            }
+            iii_worker::cli::app::SandboxCmd::Download {
+                id,
+                remote_path,
+                local_path,
+                port,
+            } => iii_worker::cli::sandbox::handle_download(id, remote_path, local_path, port).await,
         },
         Commands::SandboxDaemon(args) => iii_worker::cli::sandbox_daemon::run(args).await,
         Commands::VmBoot(args) => {

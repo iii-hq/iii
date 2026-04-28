@@ -61,13 +61,21 @@ async fn preflight_pull_if_preset(image: &str) {
     let _ = rootfs_cache::ensure_rootfs(oci_ref, &hints, || {}).await;
 }
 
-/// Extract a human-readable message from a `handler error: {...}` envelope.
+/// Extract a human-readable, S-code-tagged message from a
+/// `handler error: {...}` envelope.
+///
 /// The worker emits a flat payload shape
-/// `{"type":"SandboxNotFound","code":"S002","message":"..."}` (see
-/// `SandboxError::to_payload`), but we also tolerate a legacy nested
-/// `{"error":{"message":"..."}}` wrapper for symmetry with the SDK parser in
-/// `sdk/packages/rust/iii/src/sandbox.rs`. For anything else, fall back to
-/// the raw error display.
+/// `{"type":"...","code":"S211","message":"..."}` (see
+/// `SandboxError::to_payload`); we also tolerate a legacy nested
+/// `{"error":{"code":"...","message":"..."}}` wrapper for symmetry with
+/// the SDK parser in `sdk/packages/rust/iii/src/sandbox.rs`.
+///
+/// The returned string is `"[<code>] <message>"` whenever the payload
+/// carries both, e.g. `"[S211] path not found: /tmp/no/such/file"`.
+/// Callers and shell scripts can grep for the S-code directly. When the
+/// payload only has a message (or the body isn't JSON at all), the
+/// formatted string falls back to bare message / raw error display so we
+/// never strip information.
 fn handler_error_message(err: &IIIError) -> String {
     let raw = err.to_string();
     let stripped = raw.strip_prefix("handler error: ").unwrap_or(&raw);
@@ -78,10 +86,15 @@ fn handler_error_message(err: &IIIError) -> String {
         return raw;
     };
     let node = parsed.get("error").unwrap_or(&parsed);
-    node.get("message")
+    let message = node
+        .get("message")
         .and_then(|m| m.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or(raw)
+        .unwrap_or(&raw)
+        .to_string();
+    match node.get("code").and_then(|c| c.as_str()) {
+        Some(code) => format!("[{code}] {message}"),
+        None => message,
+    }
 }
 
 /// `iii sandbox run <image> [--cpus N] [--memory MB] -- <cmd> [args...]`
@@ -421,6 +434,251 @@ pub async fn handle_stop(id: String, port: u16) -> i32 {
     code
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// upload / download
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Hard ceiling on the per-trigger timeout for upload/download. The
+/// trigger itself returns once the supervisor has fsync+rename'd
+/// (upload) or once the metadata frame is back (download), so this
+/// bounds the *handshake*, not the byte stream. The stream lives on
+/// the data channel after the trigger returns.
+const FS_TRIGGER_TIMEOUT_MS: u64 = 60_000;
+
+/// Build the engine WebSocket base URL from the port the CLI talked
+/// to. `ChannelReader` / `ChannelWriter` need this to dial the
+/// channel WebSocket; `iii.address()` is not exposed publicly so we
+/// mirror what `connect()` constructed.
+fn engine_ws_base(port: u16) -> String {
+    format!("ws://127.0.0.1:{port}")
+}
+
+/// `iii sandbox upload <SB> <LOCAL_PATH | -> <REMOTE_PATH> [--mode 0644] [--parents]`
+pub async fn handle_upload(
+    id: String,
+    local_path: String,
+    remote_path: String,
+    mode: String,
+    parents: bool,
+    port: u16,
+) -> i32 {
+    use tokio::io::AsyncReadExt;
+
+    let iii = connect(port);
+
+    // Caller creates the channel; worker reads from the reader half.
+    let channel = match iii.create_channel(None).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: create_channel: {e}");
+            iii.shutdown();
+            return 1;
+        }
+    };
+    let reader_ref = channel.reader_ref.clone();
+    let writer = channel.writer;
+
+    // Feed bytes from the local source into the channel on a separate
+    // task. The trigger call below races the feed: as soon as the
+    // supervisor sees `FsEnd` (which the channel surfaces when we
+    // close it), the trigger response comes back.
+    //
+    // 64 KiB matches `ChannelWriter`'s internal frame size; using the
+    // same chunk avoids re-chunking inside the writer.
+    const BUF: usize = 64 * 1024;
+    let local_path_for_feed = local_path.clone();
+    let feed = tokio::spawn(async move {
+        let mut buf = vec![0u8; BUF];
+        let result: Result<u64, std::io::Error> = if local_path_for_feed == "-" {
+            let mut stdin = tokio::io::stdin();
+            let mut total: u64 = 0;
+            loop {
+                let n = stdin.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                if writer.write(&buf[..n]).await.is_err() {
+                    break; // channel closed; writer.close() below is a no-op
+                }
+                total += n as u64;
+            }
+            Ok(total)
+        } else {
+            let mut f = tokio::fs::File::open(&local_path_for_feed).await?;
+            let mut total: u64 = 0;
+            loop {
+                let n = f.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                if writer.write(&buf[..n]).await.is_err() {
+                    break;
+                }
+                total += n as u64;
+            }
+            Ok(total)
+        };
+        let _ = writer.close().await;
+        result
+    });
+
+    let trigger_result = iii
+        .trigger(TriggerRequest {
+            function_id: "sandbox::fs::write".into(),
+            payload: json!({
+                "sandbox_id": id,
+                "path": remote_path,
+                "mode": mode,
+                "parents": parents,
+                "content": reader_ref,
+            }),
+            action: None,
+            timeout_ms: Some(FS_TRIGGER_TIMEOUT_MS),
+        })
+        .await;
+
+    // Always join the feed so we don't leak the task or miss a local
+    // read error. If the trigger itself succeeded but the feed errored
+    // (e.g. `--` source disappeared mid-stream), surface that — the
+    // remote file may be truncated even though the supervisor reported
+    // success on the bytes it received.
+    let feed_outcome = feed.await;
+
+    let code = match (trigger_result, feed_outcome) {
+        (Ok(resp), Ok(Ok(local_bytes))) => {
+            let bytes_written = resp
+                .get("bytes_written")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if bytes_written != local_bytes {
+                eprintln!(
+                    "warning: local read {local_bytes} bytes but remote wrote \
+                     {bytes_written} bytes — likely a partial transfer"
+                );
+            }
+            println!("uploaded {bytes_written} bytes to {id}:{remote_path}");
+            0
+        }
+        (Ok(_), Ok(Err(e))) => {
+            eprintln!("error: reading {local_path}: {e}");
+            1
+        }
+        (Ok(_), Err(e)) => {
+            eprintln!("error: feed task panicked: {e}");
+            1
+        }
+        (Err(e), _) => {
+            eprintln!("error: {}", handler_error_message(&e));
+            1
+        }
+    };
+
+    iii.shutdown();
+    code
+}
+
+/// `iii sandbox download <SB> <REMOTE_PATH> <LOCAL_PATH | ->`
+pub async fn handle_download(
+    id: String,
+    remote_path: String,
+    local_path: String,
+    port: u16,
+) -> i32 {
+    use iii_sdk::{ChannelReader, StreamChannelRef};
+    use tokio::io::AsyncWriteExt;
+
+    let iii = connect(port);
+
+    let resp: Value = match iii
+        .trigger(TriggerRequest {
+            function_id: "sandbox::fs::read".into(),
+            payload: json!({
+                "sandbox_id": id,
+                "path": remote_path,
+            }),
+            action: None,
+            timeout_ms: Some(FS_TRIGGER_TIMEOUT_MS),
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {}", handler_error_message(&e));
+            iii.shutdown();
+            return 1;
+        }
+    };
+
+    // Pull the channel ref out of the response. The supervisor sets
+    // `content: <StreamChannelRef>`; size/mode/mtime are also returned
+    // but we only surface them on stderr so stdout stays clean for
+    // pipe use (`download <id> <remote> -`).
+    let content = match resp.get("content").cloned() {
+        Some(v) => v,
+        None => {
+            eprintln!("error: read response missing `content` channel ref");
+            iii.shutdown();
+            return 1;
+        }
+    };
+    let channel_ref: StreamChannelRef = match serde_json::from_value(content) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: malformed channel ref in read response: {e}");
+            iii.shutdown();
+            return 1;
+        }
+    };
+    let size = resp.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    let reader = ChannelReader::new(&engine_ws_base(port), &channel_ref);
+
+    // Pull all chunks. read_all() collects into Vec<u8> — fine for
+    // the typical "fetch a config / artifact / log" use case. For
+    // very large downloads, swap in a chunk loop later (the SDK
+    // exposes next_binary() for that).
+    let bytes = match reader.read_all().await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: channel read: {e}");
+            iii.shutdown();
+            return 1;
+        }
+    };
+
+    let written = if local_path == "-" {
+        let mut out = tokio::io::stdout();
+        if let Err(e) = out.write_all(&bytes).await {
+            eprintln!("error: write to stdout: {e}");
+            iii.shutdown();
+            return 1;
+        }
+        let _ = out.flush().await;
+        bytes.len() as u64
+    } else {
+        match tokio::fs::write(&local_path, &bytes).await {
+            Ok(()) => bytes.len() as u64,
+            Err(e) => {
+                eprintln!("error: write {local_path}: {e}");
+                iii.shutdown();
+                return 1;
+            }
+        }
+    };
+
+    if size != 0 && size != written {
+        eprintln!(
+            "warning: response declared size={size} but received {written} bytes \
+             — channel may have closed early"
+        );
+    }
+    if local_path != "-" {
+        println!("downloaded {written} bytes to {local_path}");
+    }
+    iii.shutdown();
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,7 +689,7 @@ mod tests {
         let e = IIIError::Handler(
             r#"{"type":"SandboxNotFound","code":"S002","message":"sandbox abc not found"}"#.into(),
         );
-        assert_eq!(handler_error_message(&e), "sandbox abc not found");
+        assert_eq!(handler_error_message(&e), "[S002] sandbox abc not found");
     }
 
     #[test]
@@ -439,7 +697,39 @@ mod tests {
         let e = IIIError::Handler(
             r#"{"error":{"code":"S002","message":"sandbox abc not found"}}"#.into(),
         );
-        assert_eq!(handler_error_message(&e), "sandbox abc not found");
+        assert_eq!(handler_error_message(&e), "[S002] sandbox abc not found");
+    }
+
+    /// When the JSON payload only has a `message` and no `code` (legacy
+    /// shape, or non-Sandbox handler), fall back to the bare message —
+    /// no `[None]`-style placeholder, no thrown information.
+    #[test]
+    fn omits_code_prefix_when_only_message_present() {
+        let e = IIIError::Handler(r#"{"message":"some other error"}"#.into());
+        assert_eq!(handler_error_message(&e), "some other error");
+    }
+
+    /// FS-trigger response: the supervisor's verbatim message survives
+    /// (no doubled "fs path not found:" prefix), and the S-code lands
+    /// in stderr where shell scripts can grep for it.
+    #[test]
+    fn fs_trigger_payload_carries_s_code_without_doubled_prefix() {
+        let e = IIIError::Handler(
+            r#"{"type":"filesystem","code":"S211","message":"path not found: /tmp/no/such/file","retryable":false}"#
+                .into(),
+        );
+        let formatted = handler_error_message(&e);
+        assert!(formatted.contains("S211"), "S-code missing: {formatted}");
+        assert!(
+            formatted.contains("path not found: /tmp/no/such/file"),
+            "supervisor message missing: {formatted}"
+        );
+        // No doubled "fs path not found: path not found:" anywhere.
+        assert!(
+            !formatted.contains("path not found: path not found"),
+            "doubled prefix leaked: {formatted}"
+        );
+        assert_eq!(formatted, "[S211] path not found: /tmp/no/such/file");
     }
 
     #[test]

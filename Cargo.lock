@@ -2611,11 +2611,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "iii-shell-proto",
  "iii-supervisor",
  "libc",
  "nix 0.31.2",
+ "regex",
  "tempfile",
  "thiserror 2.0.18",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]
@@ -2678,6 +2682,7 @@ dependencies = [
 name = "iii-shell-proto"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

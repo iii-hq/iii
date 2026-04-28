@@ -341,6 +341,82 @@ fn read_stderr_tail(log_path: &std::path::Path) -> String {
     }
 }
 
+/// Detect dispatcher errors that represent in-VM `execve()` failures
+/// (POSIX ENOENT/ENOTDIR/EACCES) and convert them into a synthetic
+/// `ExecResponse` carrying the canonical POSIX shell exit code (127 for
+/// "not found", 126 for "permission denied"). Returns `None` for any
+/// other dispatcher error so the caller preserves `BootFailed` (S300)
+/// semantics.
+///
+/// **Why substring matching:** the in-VM dispatcher (iii-init's
+/// `shell_dispatcher.rs:193`) builds its `Error { message }` frame as
+/// `format!("spawn: {e}")` where `e` is a `std::io::Error` from
+/// `Command::spawn()`. By the time the host receives this through
+/// `VmClientError::DispatcherError(String)`, the structured `ErrorKind`
+/// has been flattened to its `Display` representation. The strings we
+/// match here are stable POSIX `strerror(3)` messages plus libstd's
+/// `(os error N)` suffix, which are stable across every Linux target
+/// the sandbox runs on. Promoting this to a structured wire type
+/// (e.g. carrying `errno: i32` end-to-end through the proto) would be
+/// the right next step if these strings ever drift; today the brittle
+/// substring check is the smallest correct change.
+///
+/// `cmd` is folded into the synthetic stderr the way `/bin/sh` does
+/// (`exec: <cmd>: not found`) so users see what failed without
+/// scrolling through `code: S300` chrome that no longer applies.
+fn classify_dispatcher_spawn_error(msg: &str, cmd: &str, duration_ms: u64) -> Option<ExecResponse> {
+    // `os error N` is the canonical libstd suffix on Unix; we anchor on
+    // it to avoid catching unrelated dispatcher errors that happen to
+    // mention "permission" in some other context.
+    let is_enoent = msg.contains("No such file or directory") || msg.contains("(os error 2)");
+    let is_enotdir = msg.contains("Not a directory") || msg.contains("(os error 20)");
+    let is_eacces = msg.contains("Permission denied") || msg.contains("(os error 13)");
+
+    if is_enoent || is_enotdir {
+        return Some(ExecResponse {
+            stdout: String::new(),
+            stderr: format!("exec: {cmd}: not found\n"),
+            exit_code: Some(127),
+            timed_out: false,
+            duration_ms,
+            success: false,
+        });
+    }
+    if is_eacces {
+        return Some(ExecResponse {
+            stdout: String::new(),
+            stderr: format!("exec: {cmd}: permission denied\n"),
+            exit_code: Some(126),
+            timed_out: false,
+            duration_ms,
+            success: false,
+        });
+    }
+    None
+}
+
+/// Translate the wire-level `stdin: Option<String>` into the byte-level
+/// payload `iii-shell-client::Session::run` expects.
+///
+/// `Some(vec![])` -> open stdin, write 0 bytes, send EOF (lib.rs:448).
+/// `None` -> don't touch stdin; child stays blocked on read.
+///
+/// Both `Some("")` and missing-stdin must map to `Some(vec![])` so an
+/// exec that reads from stdin (e.g. `for line in sys.stdin:`) gets EOF
+/// instead of timing out.
+fn decode_stdin(stdin: Option<&str>) -> Result<Option<Vec<u8>>, SandboxError> {
+    match stdin {
+        Some(s) if s.is_empty() => Ok(Some(Vec::new())),
+        Some(s) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(s.as_bytes())
+                .map_err(|e| SandboxError::InvalidRequest(format!("stdin base64 decode: {e}")))?;
+            Ok(Some(bytes))
+        }
+        None => Ok(Some(Vec::new())),
+    }
+}
+
 /// Uses `tokio::task::spawn_blocking` + an inner `current_thread`
 /// runtime so the `!Send` `&mut dyn OutputSink` reference never crosses
 /// the outer multi-thread runtime's Send boundary.
@@ -355,17 +431,7 @@ impl ShellRunner for ShellProtoRunner {
         let cwd = req.workdir.clone();
         let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_EXEC_TIMEOUT_MS);
 
-        let stdin: Option<Vec<u8>> = match &req.stdin {
-            Some(s) if !s.is_empty() => {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(s.as_bytes())
-                    .map_err(|e| {
-                        SandboxError::InvalidRequest(format!("stdin base64 decode: {e}"))
-                    })?;
-                Some(bytes)
-            }
-            _ => None,
-        };
+        let stdin: Option<Vec<u8>> = decode_stdin(req.stdin.as_deref())?;
 
         let join: Result<ExecResponse, SandboxError> = tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -384,6 +450,12 @@ impl ShellRunner for ShellProtoRunner {
                     "exec_phase: shell_connect"
                 );
 
+                // Keep a copy of `cmd` for the spawn-failure error path
+                // (`classify_dispatcher_spawn_error`) so the synthetic
+                // stderr can name the binary the user tried to exec.
+                // `RequestSpec` consumes the original, so without this
+                // we'd have nothing to render after the move.
+                let cmd_for_err = cmd.clone();
                 let spec = RequestSpec {
                     cmd,
                     args,
@@ -423,6 +495,25 @@ impl ShellRunner for ShellProtoRunner {
                 let outcome = match outer {
                     Ok(Ok(o)) => o,
                     Ok(Err(e)) => {
+                        // In-VM `execve()` failures (binary missing, not
+                        // executable, intermediate path component is a
+                        // file) arrive as `DispatcherError`. POSIX shells
+                        // surface these as exit 127 / 126; do the same so
+                        // callers don't see S300 BootFailed for what is
+                        // really a per-exec spawn failure on a healthy
+                        // VM. See `classify_dispatcher_spawn_error` for
+                        // the substring rationale. All other dispatcher
+                        // errors fall through to the original
+                        // BootFailed mapping.
+                        if let iii_shell_client::VmClientError::DispatcherError(msg) = &e {
+                            if let Some(resp) = classify_dispatcher_spawn_error(
+                                msg,
+                                &cmd_for_err,
+                                started.elapsed().as_millis() as u64,
+                            ) {
+                                return Ok(resp);
+                            }
+                        }
                         return Err(SandboxError::BootFailed(format!("shell run: {e}")));
                     }
                     Err(_) => {
@@ -494,5 +585,145 @@ impl VmStopper for SignalStopper {
             "stop_phase: SIGTERM+grace+SIGKILL"
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `Some(vec![])` is the iii-shell-client trigger for "open stdin,
+    // write 0 bytes, send EOF" (lib.rs:448-468). `None` skips stdin
+    // entirely and leaves the child blocked on read. So the wire-level
+    // `Some("")` and missing-stdin must both decode to `Some(vec![])`,
+    // not `None`.
+    #[test]
+    fn decode_stdin_empty_string_is_eof_not_none() {
+        let got = decode_stdin(Some("")).unwrap();
+        assert_eq!(
+            got,
+            Some(Vec::<u8>::new()),
+            "stdin: \"\" must produce Some(empty) so the child sees EOF"
+        );
+    }
+
+    #[test]
+    fn decode_stdin_missing_is_eof_not_none() {
+        let got = decode_stdin(None).unwrap();
+        assert_eq!(
+            got,
+            Some(Vec::<u8>::new()),
+            "missing stdin must produce Some(empty) so the child sees EOF"
+        );
+    }
+
+    #[test]
+    fn decode_stdin_non_empty_decodes_base64() {
+        // base64("hi\n") = "aGkK"
+        let got = decode_stdin(Some("aGkK")).unwrap();
+        assert_eq!(got, Some(b"hi\n".to_vec()));
+    }
+
+    #[test]
+    fn decode_stdin_invalid_base64_is_invalid_request() {
+        let err = decode_stdin(Some("!!!not-base64!!!")).unwrap_err();
+        assert_eq!(err.code().as_str(), "S001");
+    }
+
+    // The dispatcher surfaces ENOENT (execve of a missing binary) as
+    // `format!("spawn: {e}")` where `e` is a `std::io::Error`. Display
+    // for that is `"No such file or directory (os error 2)"`. POSIX
+    // shells exit 127 for "command not found"; sandbox::exec must
+    // mirror that instead of returning S300 BootFailed (which is
+    // reserved for genuine VM-boot failures).
+    #[test]
+    fn classify_spawn_enoent_returns_exit_127() {
+        let resp = classify_dispatcher_spawn_error(
+            "spawn: No such file or directory (os error 2)",
+            "/no/such/binary",
+            42,
+        )
+        .expect("ENOENT must classify as a synthetic ExecResponse, not None");
+        assert_eq!(resp.exit_code, Some(127));
+        assert!(!resp.success);
+        assert!(!resp.timed_out);
+        assert!(resp.stdout.is_empty());
+        assert!(
+            resp.stderr.contains("/no/such/binary") && resp.stderr.contains("not found"),
+            "stderr should look like POSIX shell 'not found' message, got {:?}",
+            resp.stderr
+        );
+        assert_eq!(resp.duration_ms, 42);
+    }
+
+    // Adversarial probe B15 from test.mjs uses a non-ASCII path; the
+    // classifier must not be sensitive to the cmd's contents — only to
+    // the dispatcher's message.
+    #[test]
+    fn classify_spawn_enoent_handles_non_ascii_cmd() {
+        let resp = classify_dispatcher_spawn_error(
+            "spawn: No such file or directory (os error 2)",
+            "/💥/no/such",
+            0,
+        )
+        .expect("ENOENT must classify regardless of cmd encoding");
+        assert_eq!(resp.exit_code, Some(127));
+        assert!(resp.stderr.contains("/💥/no/such"));
+    }
+
+    // ENOTDIR (an intermediate path component is a regular file) is
+    // also a "command not found" failure mode; same exit code.
+    #[test]
+    fn classify_spawn_enotdir_returns_exit_127() {
+        let resp = classify_dispatcher_spawn_error(
+            "spawn: Not a directory (os error 20)",
+            "/etc/hosts/x",
+            0,
+        )
+        .expect("ENOTDIR must classify as 127 like POSIX shells");
+        assert_eq!(resp.exit_code, Some(127));
+        assert!(resp.stderr.contains("not found"));
+    }
+
+    // EACCES (binary exists but isn't executable) maps to 126, the
+    // POSIX shell exit code for "found but not executable".
+    #[test]
+    fn classify_spawn_eacces_returns_exit_126() {
+        let resp = classify_dispatcher_spawn_error(
+            "spawn: Permission denied (os error 13)",
+            "/tmp/not-exec",
+            0,
+        )
+        .expect("EACCES must classify as 126");
+        assert_eq!(resp.exit_code, Some(126));
+        assert!(
+            resp.stderr.contains("permission denied"),
+            "stderr should mention permission denied, got {:?}",
+            resp.stderr
+        );
+    }
+
+    // Non-spawn dispatcher errors (e.g. PTY allocation failure) must
+    // fall through so the caller still sees S300. Reserving S300 for
+    // genuine VM-level failures depends on this — over-classifying
+    // here would silently swallow real boot/dispatcher bugs as exit
+    // 127.
+    #[test]
+    fn classify_unknown_dispatcher_error_returns_none() {
+        // Realistic non-spawn dispatcher message: PTY/openpty failure.
+        let resp = classify_dispatcher_spawn_error(
+            "openpty: Resource temporarily unavailable (os error 11)",
+            "/bin/sh",
+            0,
+        );
+        assert!(
+            resp.is_none(),
+            "non-ENOENT/ENOTDIR/EACCES must fall through to BootFailed, got {resp:?}"
+        );
+    }
+
+    #[test]
+    fn classify_empty_message_returns_none() {
+        assert!(classify_dispatcher_spawn_error("", "/bin/true", 0).is_none());
     }
 }

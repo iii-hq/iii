@@ -94,6 +94,16 @@ impl SandboxRegistry {
     pub async fn count(&self) -> usize {
         self.inner.lock().await.len()
     }
+
+    /// Update `last_exec_at` to now. Called by fs::* trigger handlers (which
+    /// don't use the exec-serialization guard) to keep the idle reaper from
+    /// evicting a sandbox that is actively performing file operations.
+    pub async fn bump_last_exec(&self, id: Uuid) {
+        let mut map = self.inner.lock().await;
+        if let Some(state) = map.get_mut(&id) {
+            state.last_exec_at = Instant::now();
+        }
+    }
 }
 
 #[cfg(test)]
