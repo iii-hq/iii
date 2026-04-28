@@ -4,4 +4,4 @@ packages:
   - sdk/packages/node/iii-browser
   - console/packages/*
   - docs
-  #- website
+  - website
