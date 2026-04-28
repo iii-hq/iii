@@ -6075,7 +6075,6 @@ iii.register_function(
   function flashCopied(){
     installBtn.classList.add('copied');
     installBtnM.classList.add('copied');
-    installLabel.textContent = INSTALL_CMD;
     installLabelM.textContent = 'Copied!';
     if (heroInstallBtn){
       heroInstallBtn.classList.add('copied');
@@ -6085,7 +6084,6 @@ iii.register_function(
     copyTimer = setTimeout(() => {
       installBtn.classList.remove('copied');
       installBtnM.classList.remove('copied');
-      installLabel.textContent = 'install.sh';
       installLabelM.textContent = 'install.sh';
       if (heroInstallBtn){
         heroInstallBtn.classList.remove('copied');
