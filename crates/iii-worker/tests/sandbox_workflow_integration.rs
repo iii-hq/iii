@@ -100,7 +100,10 @@ async fn workflow_create_exec_stop_list_round_trip() {
 
     // List is empty
     let post_list = handle_list(ListRequest::default(), &reg).await;
-    assert!(post_list.sandboxes.is_empty(), "list must be empty after stop");
+    assert!(
+        post_list.sandboxes.is_empty(),
+        "list must be empty after stop"
+    );
 }
 
 // --------------------------------------------------------------------

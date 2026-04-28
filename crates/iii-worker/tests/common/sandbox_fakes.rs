@@ -212,9 +212,13 @@ impl VmStopper for FakeVmStopper {
 // ────────────────────────────────────────────────────────────────────
 
 pub enum LaunchMode {
-    Ok { vm_pid: u32 },
+    Ok {
+        vm_pid: u32,
+    },
     Err(SandboxError),
-    Block { release: oneshot::Receiver<LaunchMode> },
+    Block {
+        release: oneshot::Receiver<LaunchMode>,
+    },
 }
 
 #[derive(Default)]

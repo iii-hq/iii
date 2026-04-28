@@ -146,9 +146,9 @@ pub struct WriteResponse {
 // Handler — testable inner function
 // ---------------------------------------------------------------------------
 
-/// Inner handler that accepts a pre-constructed `AsyncRead`. Unit tests call
+/// Inner handler that accepts a pre-constructed `AsyncRead`. Tests call
 /// this directly with a `Cursor<Vec<u8>>`, bypassing the channel layer.
-pub(crate) async fn handle_write_with_reader<R: FsRunner + ?Sized>(
+pub async fn handle_write_with_reader<R: FsRunner + ?Sized>(
     sandbox_id: String,
     path: String,
     mode: String,
