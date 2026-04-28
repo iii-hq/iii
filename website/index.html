@@ -50,7 +50,7 @@
 <!-- SEO Meta Tags -->
 <meta name="description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
 <meta name="keywords" content="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox" />
-<meta name="author" content="III, Inc." />
+<meta name="author" content="Mo" />
 <meta name="theme-color" content="#0a0a0a" />
 
 <!-- Open Graph / Facebook -->
@@ -1963,12 +1963,34 @@
   }
   .nw-card.focused .name{ color:var(--ink); }
 
+  .nw-cta-row{
+    display:flex;
+    justify-content:flex-end;
+    margin-top:24px;
+  }
+  .nw-cta{
+    display:inline-flex; align-items:center; gap:10px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size:13px; font-weight:500;
+    padding:12px 20px;
+    border:1px solid var(--ink);
+    background:transparent;
+    color:var(--ink);
+    cursor:pointer;
+    text-decoration:none;
+    transition:background-color .15s ease, color .15s ease;
+  }
+  .nw-cta:hover{ background:var(--ink); color:var(--bg); }
+  .nw-cta .arrow{ font-weight:400; }
+
   @media (max-width: 720px){
     .nut-workers-head{ flex-direction:column; align-items:flex-start; gap:12px; }
     .nut-workers-thesis{ text-align:left; }
     .nw-search-field{ font-size:18px; }
     .nw-card{ width:320px; padding:18px 18px; }
     .nw-ticker-viewport{ height:300px; }
+    .nw-cta-row{ justify-content:stretch; }
+    .nw-cta{ width:100%; justify-content:center; }
   }
 
   /* ===== Animation primitives (LiveSystem + ExecutionModel) ===== */
@@ -3910,6 +3932,7 @@
         <a class="nav-link" href="#agents">agents</a>
         <a class="nav-link" href="/manifesto">manifesto</a>
         <a class="nav-link docs" href="/docs">docs</a>
+        <a class="nav-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry</a>
       </div>
     </div>
 
@@ -3969,6 +3992,7 @@
       <a class="mobile-link" href="#agents">agents</a>
       <a class="mobile-link" href="/manifesto">manifesto</a>
       <a class="mobile-link docs" href="/docs">docs</a>
+      <a class="mobile-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry</a>
       <a class="mobile-link" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">
         <span style="display:inline-flex;align-items:center;gap:8px;">
           <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="width:14px;height:14px;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -4132,6 +4156,13 @@
       <div class="nw-ticker-viewport">
         <div class="nw-ticker-track" id="nw-track"></div>
       </div>
+    </div>
+
+    <div class="nw-cta-row">
+      <a class="nw-cta" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">
+        <span>View the Worker Registry</span>
+        <span class="arrow">↗</span>
+      </a>
     </div>
   </section>
 
