@@ -42,8 +42,17 @@ impl VmLauncher for IiiWorkerLauncher {
         // reliable than a PATH lookup: current_exe() is guaranteed to
         // resolve (unlike PATH, which can be empty in service managers)
         // and cannot disagree with the version we compiled against.
-        let bin = std::env::current_exe()
-            .map_err(|e| SandboxError::BootFailed(format!("current_exe() failed: {e}")))?;
+        //
+        // Test seam: integration tests run from a Cargo test binary
+        // whose `current_exe()` lacks `__vm-boot`. The env override
+        // lets the tier-C suite (sandbox_integration_e2e.rs) point at
+        // the real `iii-worker` binary built earlier in the same CI
+        // job. Production never sets this var.
+        let bin = match std::env::var("III_WORKER_BINARY_OVERRIDE") {
+            Ok(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => std::env::current_exe()
+                .map_err(|e| SandboxError::BootFailed(format!("current_exe() failed: {e}")))?,
+        };
 
         // Per-host provisioning: codesign (macOS Hypervisor entitlement)
         // and libkrunfw dylib placement. Both are idempotent but touch
