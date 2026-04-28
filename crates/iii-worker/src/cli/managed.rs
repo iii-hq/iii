@@ -925,15 +925,23 @@ fn lockfile_from_graph(
                 let artifacts = binaries
                     .iter()
                     .map(|(target, binary)| {
-                        (
+                        binary_download::validate_locked_artifact_url(&binary.url).map_err(
+                            |e| {
+                                format!(
+                                    "resolved binary worker '{}' target '{}' has unreplayable artifact URL: {}",
+                                    node.name, target, e
+                                )
+                            },
+                        )?;
+                        Ok((
                             target.clone(),
                             super::lockfile::LockedBinaryArtifact {
                                 url: binary.url.clone(),
                                 sha256: binary.sha256.clone(),
                             },
-                        )
+                        ))
                     })
-                    .collect();
+                    .collect::<Result<_, String>>()?;
                 (
                     super::lockfile::LockedWorkerType::Binary,
                     Some(super::lockfile::LockedSource::Binary { artifacts }),
@@ -3705,14 +3713,14 @@ mod tests {
         binaries.insert(
             "x86_64-unknown-linux-gnu".to_string(),
             cli_registry::BinaryInfo {
-                url: "https://example.com/linux.tar.gz".to_string(),
+                url: "https://workers.iii.dev/linux.tar.gz".to_string(),
                 sha256: "b".repeat(64),
             },
         );
         binaries.insert(
             "aarch64-apple-darwin".to_string(),
             cli_registry::BinaryInfo {
-                url: "https://example.com/darwin.tar.gz".to_string(),
+                url: "https://workers.iii.dev/darwin.tar.gz".to_string(),
                 sha256: "a".repeat(64),
             },
         );
@@ -3726,15 +3734,34 @@ mod tests {
                 assert_eq!(artifacts.len(), 2);
                 assert_eq!(
                     artifacts.get("aarch64-apple-darwin").unwrap().url,
-                    "https://example.com/darwin.tar.gz"
+                    "https://workers.iii.dev/darwin.tar.gz"
                 );
                 assert_eq!(
                     artifacts.get("x86_64-unknown-linux-gnu").unwrap().url,
-                    "https://example.com/linux.tar.gz"
+                    "https://workers.iii.dev/linux.tar.gz"
                 );
             }
             other => panic!("expected binary source, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn lockfile_from_graph_rejects_unreplayable_binary_artifact_url() {
+        let mut binaries = StdHashMap::new();
+        binaries.insert(
+            "aarch64-apple-darwin".to_string(),
+            cli_registry::BinaryInfo {
+                url: "https://example.com/h.tar.gz".to_string(),
+                sha256: "c".repeat(64),
+            },
+        );
+        let worker = resolved_binary_worker("hello-worker", "1.0.0", binaries);
+
+        let err = lockfile_from_graph(&graph_with(worker)).unwrap_err();
+
+        assert!(err.contains("hello-worker"));
+        assert!(err.contains("aarch64-apple-darwin"));
+        assert!(err.contains("unreplayable artifact URL"));
     }
 
     #[test]
@@ -3768,7 +3795,7 @@ mod tests {
         binaries.insert(
             "aarch64-apple-darwin".to_string(),
             cli_registry::BinaryInfo {
-                url: "https://example.com/h.tar.gz".to_string(),
+                url: "https://workers.iii.dev/h.tar.gz".to_string(),
                 sha256: "c".repeat(64),
             },
         );
@@ -3789,7 +3816,7 @@ mod tests {
         match entry.source.as_ref().unwrap() {
             cli_lockfile::LockedSource::Binary { artifacts } => {
                 let artifact = artifacts.get("aarch64-apple-darwin").unwrap();
-                assert_eq!(artifact.url, "https://example.com/h.tar.gz");
+                assert_eq!(artifact.url, "https://workers.iii.dev/h.tar.gz");
                 assert_eq!(artifact.sha256.len(), 64);
             }
             other => panic!("expected binary source, got {:?}", other),
@@ -3840,7 +3867,7 @@ mod tests {
                     dependencies: Default::default(),
                     source: locked_binary_source(
                         "aarch64-apple-darwin",
-                        "https://example.com/image-resize.tar.gz",
+                        "https://workers.iii.dev/image-resize.tar.gz",
                         "a".repeat(64),
                     ),
                 },
@@ -3909,7 +3936,7 @@ workers:
                     dependencies: Default::default(),
                     source: locked_binary_source(
                         binary_download::current_target(),
-                        "https://example.com/image-resize.tar.gz",
+                        "https://workers.iii.dev/image-resize.tar.gz",
                         "a".repeat(64),
                     ),
                 },
@@ -3975,7 +4002,7 @@ workers:
                     dependencies: Default::default(),
                     source: locked_binary_source(
                         other_target,
-                        "https://example.com/image-resize.tar.gz",
+                        "https://workers.iii.dev/image-resize.tar.gz",
                         "a".repeat(64),
                     ),
                 },
@@ -4008,7 +4035,7 @@ workers:
                 dependencies: [("helper".to_string(), "^1.0.0".to_string())].into(),
                 source: locked_binary_source(
                     "aarch64-apple-darwin",
-                    "https://example.com/root.tar.gz",
+                    "https://workers.iii.dev/root.tar.gz",
                     "a".repeat(64),
                 ),
             },
@@ -4021,7 +4048,7 @@ workers:
                 dependencies: Default::default(),
                 source: locked_binary_source(
                     "aarch64-apple-darwin",
-                    "https://example.com/helper.tar.gz",
+                    "https://workers.iii.dev/helper.tar.gz",
                     "b".repeat(64),
                 ),
             },
@@ -4061,7 +4088,7 @@ workers:
             binaries.insert(
                 target.to_string(),
                 cli_registry::BinaryInfo {
-                    url: "https://example.com/evil.tar.gz".to_string(),
+                    url: "https://workers.iii.dev/evil.tar.gz".to_string(),
                     sha256: "a".repeat(64),
                 },
             );
@@ -4282,7 +4309,7 @@ workers:
                 binaries.insert(
                     other_target.to_string(),
                     cli_registry::BinaryInfo {
-                        url: format!("https://example.com/{name}-{other_target}.tar.gz"),
+                        url: format!("https://workers.iii.dev/{name}-{other_target}.tar.gz"),
                         sha256: "f".repeat(64),
                     },
                 );

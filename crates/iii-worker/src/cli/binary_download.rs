@@ -10,11 +10,23 @@ use super::registry::validate_worker_name;
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// Maximum allowed download size: 512 MB.
 const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_REDIRECTS: usize = 10;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+static NO_REDIRECT_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Failed to create no-redirect HTTP client")
+});
 
 /// Returns the directory where binary workers are installed: `~/.iii/workers/`.
 pub fn binary_workers_dir() -> PathBuf {
@@ -212,26 +224,14 @@ async fn download_archive_bytes(
     url: &str,
     validate_final_url: Option<&dyn Fn(&str) -> Result<(), String>>,
 ) -> Result<Vec<u8>, String> {
-    let client = &super::registry::HTTP_CLIENT;
-
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download binary: {}", e))?;
-
-    // The shared HTTP_CLIENT follows up to 10 redirects by default, so a
-    // trusted artifact URL could redirect to an untrusted host and bypass the
-    // pre-send allowlist check. Re-validate the final URL before reading the
-    // body when a validator is provided.
-    if let Some(validator) = validate_final_url {
-        let final_url = resp.url().as_str();
-        if final_url != url {
-            validator(final_url).map_err(|e| {
-                format!("artifact download for `{url}` was redirected to an untrusted URL: {e}")
-            })?;
-        }
-    }
+    let resp = match validate_final_url {
+        Some(validator) => download_archive_bytes_with_validated_redirects(url, validator).await?,
+        None => super::registry::HTTP_CLIENT
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download binary: {}", e))?,
+    };
 
     if !resp.status().is_success() {
         return Err(format!(
@@ -263,6 +263,57 @@ async fn download_archive_bytes(
     }
 
     Ok(binary_data.to_vec())
+}
+
+async fn download_archive_bytes_with_validated_redirects(
+    url: &str,
+    validator: &dyn Fn(&str) -> Result<(), String>,
+) -> Result<reqwest::Response, String> {
+    let mut current_url =
+        reqwest::Url::parse(url).map_err(|e| format!("invalid artifact URL `{url}`: {e}"))?;
+
+    for redirects_followed in 0..=MAX_REDIRECTS {
+        let resp = NO_REDIRECT_HTTP_CLIENT
+            .get(current_url.clone())
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download binary: {}", e))?;
+
+        if !resp.status().is_redirection() {
+            return Ok(resp);
+        }
+
+        if redirects_followed == MAX_REDIRECTS {
+            return Err(format!(
+                "Binary download exceeded {MAX_REDIRECTS} redirects"
+            ));
+        }
+
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .ok_or_else(|| {
+                format!(
+                    "Binary download redirect from `{}` did not include a Location header",
+                    current_url
+                )
+            })?
+            .to_str()
+            .map_err(|e| format!("Binary download redirect has invalid Location header: {e}"))?;
+        let next_url = current_url.join(location).map_err(|e| {
+            format!(
+                "Binary download redirect from `{}` has invalid Location `{}`: {}",
+                current_url, location, e
+            )
+        })?;
+
+        validator(next_url.as_str()).map_err(|e| {
+            format!("artifact download for `{url}` was redirected to an untrusted URL: {e}")
+        })?;
+        current_url = next_url;
+    }
+
+    unreachable!("redirect loop always returns or errors");
 }
 
 pub async fn download_locked_binary_archive(
@@ -499,21 +550,36 @@ mod tests {
     /// to whatever request comes in. Returns the bound base URL and a join
     /// handle that the caller should `abort()` when done.
     async fn spawn_oneshot_http(response_bytes: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
+        let (base_url, handle, _) = spawn_counting_http(response_bytes).await;
+        (base_url, handle)
+    }
+
+    async fn spawn_counting_http(
+        response_bytes: Vec<u8>,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let hit_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_hit_count = hit_count.clone();
         let handle = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let response = response_bytes.clone();
+                let server_hit_count = server_hit_count.clone();
                 tokio::spawn(async move {
+                    server_hit_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let mut buf = [0u8; 4096];
                     let _ = stream.read(&mut buf).await;
                     let _ = stream.write_all(&response).await;
                 });
             }
         });
-        (format!("http://{addr}"), handle)
+        (format!("http://{addr}"), handle, hit_count)
     }
 
     #[tokio::test]
@@ -530,7 +596,7 @@ mod tests {
             bytes.extend_from_slice(&final_body);
             bytes
         };
-        let (final_base, final_server) = spawn_oneshot_http(final_response).await;
+        let (final_base, final_server, final_hits) = spawn_counting_http(final_response).await;
 
         // Redirect server: returns 302 -> final_base/final, so the final URL
         // observed after `send()` differs from the input URL and the validator
@@ -553,6 +619,11 @@ mod tests {
             err.contains("redirected to an untrusted URL"),
             "expected wrapped redirect rejection, got: {err}",
         );
+        assert_eq!(
+            final_hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "validated redirects must be rejected before requesting the target",
+        );
 
         // 2. No-redirect path with validator: validator NOT called when the
         //    final URL matches the request URL, so the download succeeds.
@@ -561,6 +632,7 @@ mod tests {
             .await
             .expect("direct download with unchanged URL must skip validator");
         assert_eq!(body, final_body);
+        assert_eq!(final_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         // 3. Redirect path without validator: legacy behavior preserved —
         //    redirects are still followed.
