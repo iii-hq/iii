@@ -5,11 +5,11 @@
   "version": "0.1.0",
   "description": "iii.dev — minimal static HTML site",
   "scripts": {
-    "dev": "serve . -l 3000",
+    "dev": "browser-sync start --server --port 3000 --no-notify --no-open --files '*.html, *.css, fonts/*'",
     "build": "echo 'static site — nothing to build'",
-    "preview": "serve . -l 3000"
+    "preview": "browser-sync start --server --port 3000 --no-notify --no-open"
   },
   "devDependencies": {
-    "serve": "^14.2.6"
+    "browser-sync": "^3.0.4"
   }
 }
