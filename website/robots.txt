@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://iii.dev/docs/sitemap.xml

@@ -4,6 +4,70 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>iii / manifesto</title>
+
+<!-- Google Tag Manager -->
+<script>
+  (function (w, d, s, l, i) {
+    w[l] = w[l] || [];
+    w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+    var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s),
+      dl = l != 'dataLayer' ? '&l=' + l : '';
+    j.async = true;
+    j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+    f.parentNode.insertBefore(j, f);
+  })(window, document, 'script', 'dataLayer', 'GTM-N8DCTFB8');
+</script>
+<!-- End Google Tag Manager -->
+
+<!-- Common Room signals -->
+<script>
+  (function () {
+    if (typeof window.signals !== 'undefined') return;
+    window.signals = Object.assign(
+      [],
+      { _opts: { apiHost: 'https://api.cr-relay.com' } },
+      ['page', 'identify', 'form'].reduce(function (acc, method) {
+        acc[method] = function () {
+          window.signals.push([method, arguments]);
+          return window.signals;
+        };
+        return acc;
+      }, {})
+    );
+    var s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+    document.head.appendChild(s);
+  })();
+</script>
+<!-- End Common Room signals -->
+
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="apple-touch-icon" href="/favicon.svg" />
+
+<!-- SEO Meta Tags -->
+<meta name="description" content="The iii manifesto — one engine, three primitives. A unified backend runtime for distributed systems, AI agents, and durable workflows." />
+<meta name="author" content="III, Inc." />
+<meta name="theme-color" content="#0a0a0a" />
+
+<!-- Open Graph / Facebook -->
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://iii.dev/manifesto" />
+<meta property="og:title" content="iii / manifesto" />
+<meta property="og:description" content="One engine. Three primitives. The iii manifesto." />
+<meta property="og:image" content="https://iii.dev/og-image.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:url" content="https://iii.dev/manifesto" />
+<meta name="twitter:title" content="iii / manifesto" />
+<meta name="twitter:description" content="One engine. Three primitives. The iii manifesto." />
+<meta name="twitter:image" content="https://iii.dev/og-image.png" />
 <style>
   @font-face {
     font-family: 'Chivo Mono';
@@ -205,6 +269,9 @@
 </style>
 </head>
 <body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 
 <div class="page">
   <main class="sheet">

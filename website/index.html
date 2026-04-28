@@ -2,8 +2,79 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>iii navbar — schematic</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>iii | Interoperable Invocation Interface</title>
+
+<!-- Google Tag Manager -->
+<script>
+  (function (w, d, s, l, i) {
+    w[l] = w[l] || [];
+    w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+    var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s),
+      dl = l != 'dataLayer' ? '&l=' + l : '';
+    j.async = true;
+    j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+    f.parentNode.insertBefore(j, f);
+  })(window, document, 'script', 'dataLayer', 'GTM-N8DCTFB8');
+</script>
+<!-- End Google Tag Manager -->
+
+<!-- Common Room signals -->
+<script>
+  (function () {
+    if (typeof window.signals !== 'undefined') return;
+    window.signals = Object.assign(
+      [],
+      { _opts: { apiHost: 'https://api.cr-relay.com' } },
+      ['page', 'identify', 'form'].reduce(function (acc, method) {
+        acc[method] = function () {
+          window.signals.push([method, arguments]);
+          return window.signals;
+        };
+        return acc;
+      }, {})
+    );
+    var s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+    document.head.appendChild(s);
+  })();
+</script>
+<!-- End Common Room signals -->
+
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="apple-touch-icon" href="/favicon.svg" />
+
+<!-- SEO Meta Tags -->
+<meta name="description" content="The universal runtime engine for distributed systems. iii unifies APIs, jobs, queues, streams, workflows, and AI agents into a single durable execution model." />
+<meta name="keywords" content="iii, runtime, distributed systems, APIs, workflows, AI agents, open source, backend, execution engine" />
+<meta name="author" content="III, Inc." />
+<meta name="theme-color" content="#0a0a0a" />
+
+<!-- Open Graph / Facebook -->
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://iii.dev/" />
+<meta property="og:title" content="iii | The Universal Runtime Engine" />
+<meta property="og:description" content="One engine. Three primitives. iii unifies APIs, jobs, queues, streams, workflows, and AI agents into a single durable execution model. Open Source." />
+<meta property="og:image" content="https://iii.dev/og-image.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:url" content="https://iii.dev/" />
+<meta name="twitter:title" content="iii | The Universal Runtime Engine" />
+<meta name="twitter:description" content="One engine. Three primitives. iii unifies APIs, jobs, queues, streams, workflows, and AI agents into a single durable execution model. Open Source." />
+<meta name="twitter:image" content="https://iii.dev/og-image.png" />
+
+<!-- Mailmodo form URL (optional). Set the content attribute to your Mailmodo
+     form endpoint to enable email submission to Mailmodo. If left empty, the
+     form falls back to localStorage-only behavior. -->
+<meta name="iii:mailmodo-form-url" content="" />
+
 <style>
   @font-face {
     font-family: 'Chivo Mono';
@@ -3809,6 +3880,9 @@
 </style>
 </head>
 <body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 
 <div class="sheet">
 
@@ -6015,6 +6089,33 @@ iii.register_function(
     }, 3000);
   }
 
+  // ============= Email signup helpers =============
+  function getMailmodoFormUrl(){
+    const meta = document.querySelector('meta[name="iii:mailmodo-form-url"]');
+    return meta && meta.getAttribute('content') ? meta.getAttribute('content').trim() : '';
+  }
+  async function submitToMailmodo(email){
+    const url = getMailmodoFormUrl();
+    if (!url) return;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      // Mailmodo returns 409 for already-subscribed; treat as success.
+      if (!res.ok && res.status !== 409) throw new Error('mailmodo submission failed');
+    } catch (_) {
+      // Swallow — we still mark the form submitted so users aren't blocked.
+    }
+  }
+  function persistAccessRequest(email){
+    try {
+      window.localStorage.setItem('iii_access_requested', 'true');
+      window.localStorage.setItem('iii_access_email', email);
+    } catch(_) {}
+  }
+
   // ============= Hero email signup =============
   const emailForm = document.getElementById('email-form');
   const emailInput = document.getElementById('email-input');
@@ -6024,16 +6125,14 @@ iii.register_function(
         emailForm.classList.add('submitted');
       }
     } catch(_) {}
-    emailForm.addEventListener('submit', (e) => {
+    emailForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const v = (emailInput.value || '').trim();
       if (!v) return;
-      try {
-        window.localStorage.setItem('iii_access_requested', 'true');
-        window.localStorage.setItem('iii_access_email', v);
-      } catch(_) {}
+      persistAccessRequest(v);
       emailForm.classList.add('submitted');
       emailInput.value = '';
+      submitToMailmodo(v);
     });
   }
 
@@ -6373,16 +6472,14 @@ iii.register_function(
         form.classList.add('submitted');
       }
     } catch(_) {}
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const v = (input.value || '').trim();
       if (!v) return;
-      try {
-        window.localStorage.setItem('iii_access_requested', 'true');
-        window.localStorage.setItem('iii_access_email', v);
-      } catch(_) {}
+      persistAccessRequest(v);
       form.classList.add('submitted');
       input.value = '';
+      submitToMailmodo(v);
     });
   })();
 
