@@ -1,0 +1,48 @@
+---
+title: 'Tighten Python register_function signature'
+description: 'register_function now takes a string function ID — dict and RegisterFunctionInput forms are removed.'
+---
+
+## What changed
+
+The Python SDK's `III.register_function` now accepts only a string function ID as its first argument. The dict (`{"id": "..."}`) and `RegisterFunctionInput` overloads are removed, matching the Node (`registerFunction(id, handler, options?)`) and Rust (`register_function(id, f)`) surfaces exactly.
+
+```python
+# Before
+iii.register_function({"id": "greet"}, greet)
+iii.register_function(RegisterFunctionInput(id="greet", description="Greets"), greet)
+
+# After
+iii.register_function("greet", greet)
+iii.register_function("greet", greet, description="Greets")
+```
+
+The first parameter was also renamed from `func_or_id` to `function_id`. Callers using positional arguments are unaffected; anyone using `func_or_id=...` as a keyword argument must update to `function_id=...`.
+
+Passing anything other than a string now raises `TypeError`:
+
+```
+TypeError: function_id must be str, got dict
+```
+
+`RegisterFunctionInput` is no longer re-exported from `iii`. It remains an internal helper for building the WebSocket `RegisterFunctionMessage`, but should not be imported by user code.
+
+## Why
+
+Two overloads duplicated the string-ID form, produced no IDE autocompletion or type-checking support, and had no counterpart in the Node or Rust SDKs. Removing them leaves one idiomatic call shape per use case and tightens the cross-SDK API contract so the three SDKs describe the same concept in the same way.
+
+## Migration
+
+Replace every `register_function({"id": X, ...}, handler)` or `register_function(RegisterFunctionInput(...), handler)` call with `register_function(X, handler, ...)`, converting extra keys (`description`, `metadata`, `request_format`, `response_format`) to keyword arguments.
+
+| Before | After |
+|--------|-------|
+| `register_function({"id": "foo"}, h)` | `register_function("foo", h)` |
+| `register_function({"id": "foo", "description": "d"}, h)` | `register_function("foo", h, description="d")` |
+| `register_function({"id": "foo", "metadata": m}, h)` | `register_function("foo", h, metadata=m)` |
+| `register_function({"id": "foo", "request_format": r}, h)` | `register_function("foo", h, request_format=r)` |
+| `register_function(RegisterFunctionInput(id="foo", metadata=m), h)` | `register_function("foo", h, metadata=m)` |
+
+Remove any `from iii import RegisterFunctionInput` import — the class is no longer part of the public API.
+
+If you were relying on the dict path *not* auto-extracting `request_format` / `response_format` from typed handlers, pass explicit `request_format=...` and `response_format=...` to preserve the old message payload.

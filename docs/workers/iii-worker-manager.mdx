@@ -294,13 +294,13 @@ Triggers registered by a session are automatically cleaned up when the worker di
 
 ## Channel Support
 
-Channels work on every `iii-worker-manager` port. The module mounts the channel WebSocket endpoint at `/ws/channels/{channel_id}` on the same port.
+Channels work on every `iii-worker-manager` port. The worker mounts the channel WebSocket endpoint at `/ws/channels/{channel_id}` on the same port.
 
 SDK workers can use `createChannel()` without any changes. On RBAC ports, the `engine::channels::create` function is automatically whitelisted to enable channel creation. Channel data transfer uses the standard channel WebSocket endpoint, which validates access via the `access_key` capability token.
 
 ## Protocol
 
-The Worker module uses the standard iii engine WebSocket protocol. SDK workers connect with `registerWorker()` and everything works out of the box.
+The Worker Manager uses the standard iii engine WebSocket protocol. SDK workers connect with `registerWorker()` and everything works out of the box.
 
 ### Worker to Server
 

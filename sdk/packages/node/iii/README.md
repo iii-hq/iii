@@ -8,7 +8,8 @@ Node.js / TypeScript SDK for the [iii engine](https://github.com/iii-hq/iii).
 ## Install
 
 ```bash
-npm install iii-sdk
+pnpm add iii-sdk
+# or: npm install iii-sdk
 ```
 
 ## Hello World
@@ -18,17 +19,17 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-iii.registerFunction('greet', async (input) => {
+iii.registerFunction('hello::greet', async (input) => {
   return { message: `Hello, ${input.name}!` }
 })
 
 iii.registerTrigger({
   type: 'http',
-  function_id: 'greet',
+  function_id: 'hello::greet',
   config: { api_path: '/greet', http_method: 'POST' },
 })
 
-const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world' } })
+const result = await iii.trigger({ function_id: 'hello::greet', payload: { name: 'world' } })
 ```
 
 ## API
@@ -44,7 +45,7 @@ const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world
 ### Registering Functions
 
 ```javascript
-iii.registerFunction('orders.create', async (input) => {
+iii.registerFunction('orders::create', async (input) => {
   return { status_code: 201, body: { id: '123', item: input.body.item } }
 })
 ```
@@ -54,7 +55,7 @@ iii.registerFunction('orders.create', async (input) => {
 ```javascript
 iii.registerTrigger({
   type: 'http',
-  function_id: 'orders.create',
+  function_id: 'orders::create',
   config: { api_path: '/orders', http_method: 'POST' },
 })
 ```
@@ -66,9 +67,9 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-const result = await iii.trigger({ function_id: 'orders.create', payload: { item: 'widget' } })
+const result = await iii.trigger({ function_id: 'orders::create', payload: { item: 'widget' } })
 
-iii.trigger({ function_id: 'analytics.track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
+iii.trigger({ function_id: 'analytics::track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
 ```
 
 ## Node Modules

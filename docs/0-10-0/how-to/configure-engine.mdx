@@ -652,7 +652,7 @@ Enables HTTP-invoked functions (outbound HTTP calls from the engine). Required f
 
 **Class:** `modules::shell::ExecModule`
 
-Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host, or from frameworks like Motia.
+Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host.
 
 <ResponseField name="config.watch" type="string[]">
   Directories to watch for file changes. Changes trigger process restart.
@@ -667,18 +667,19 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
 - class: modules::shell::ExecModule
   config:
     watch:
-      - ./steps
+      - ./workers
     exec:
-      - motia-py
+      - python
+      - ./workers/main.py
 
 # Example: run Node.js SDK worker
 - class: modules::shell::ExecModule
   config:
     watch:
-      - ./steps
+      - ./workers
     exec:
-      - npx
-      - motia-node
+      - node
+      - ./workers/main.js
 ```
 
 </Accordion>

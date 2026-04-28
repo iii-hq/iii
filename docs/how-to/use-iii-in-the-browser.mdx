@@ -15,7 +15,7 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 
 - **Persistent connection** — one WebSocket replaces many HTTP round-trips. No per-request handshake, no CORS preflight on every call.
 - **Bi-directional** — the engine can invoke functions registered in the browser. Backend workers push data to the frontend with `trigger()`, enabling real-time patterns without polling.
-- **Same API** — `registerFunction`, `trigger`, `registerTrigger`, `onFunctionsAvailable` — all the primitives you use server-side work identically in the browser.
+- **Same primitives** — `registerFunction`, `trigger`, `registerTrigger`, and `createChannel` work the same way they do server-side.
 - **Type-safe** — the same TypeScript types (`ISdk`, `TriggerRequest`, `ApiRequest`) are shared between `iii-sdk` and `iii-browser-sdk`.
 
 ## Prerequisites
@@ -28,7 +28,8 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 ### 1. Install the browser SDK
 
 ```bash
-npm install iii-browser-sdk
+pnpm add iii-browser-sdk
+# or: npm install iii-browser-sdk
 ```
 
 ### 2. Enable the Worker Manager with RBAC

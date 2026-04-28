@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits that would fail CI's format check.
+# Install with: make install-hooks
+set -euo pipefail
+
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' || true)
+
+if [ -n "$staged_rs" ]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "[pre-commit] cargo not found; skipping rustfmt check" >&2
+  else
+    if ! cargo fmt --all -- --check >/dev/null 2>&1; then
+      echo "[pre-commit] rustfmt would reformat files — CI will fail." >&2
+      echo "             Run 'make fix-fmt' (or 'cargo fmt --all'), re-stage, and commit again." >&2
+      exit 1
+    fi
+  fi
+fi

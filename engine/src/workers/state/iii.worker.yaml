@@ -1,0 +1,11 @@
+iii: v1
+name: iii-state
+type: engine
+description: Distributed key-value state management with reactive change triggers.
+repo: https://github.com/iii-hq/iii
+config:
+  adapter:
+    name: kv
+    config:
+      store_method: file_based
+      file_path: ./data/state_store.db

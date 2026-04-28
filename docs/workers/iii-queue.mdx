@@ -3,7 +3,7 @@ title: 'Queue'
 description: 'Queue worker for async job processing with named queues, retries, and dead-letter support.'
 ---
 
-A module for asynchronous job processing. It supports two modes: **topic-based queues** (register a consumer per topic, emit events) and **named queues** (enqueue function calls via `TriggerAction.Enqueue`, no trigger registration).
+A worker for asynchronous job processing. It supports two modes: **topic-based queues** (register a consumer per topic, emit events) and **named queues** (enqueue function calls via `TriggerAction.Enqueue`, no trigger registration).
 
 ```
 iii-queue
@@ -298,7 +298,7 @@ Regardless of which adapter you choose, retry semantics, concurrency enforcement
 
 ## Builtin Functions
 
-The queue module registers the following functions automatically when it initializes. These are callable via `trigger()` from any SDK or via the `iii trigger` CLI command.
+The queue worker registers the following functions automatically when it initializes. These are callable via `trigger()` from any SDK or via the `iii trigger` CLI command.
 
 ### iii::durable::publish
 

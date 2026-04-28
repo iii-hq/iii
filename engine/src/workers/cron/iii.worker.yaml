@@ -1,0 +1,8 @@
+iii: v1
+name: iii-cron
+type: engine
+description: Schedule functions with cron expressions.
+repo: https://github.com/iii-hq/iii
+config:
+  adapter:
+    name: kv

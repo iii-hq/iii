@@ -10,6 +10,17 @@
 //! definitions instead of maintaining duplicate struct copies.
 
 pub mod cli;
+pub mod sandbox_daemon;
 
-pub use cli::app::{AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, WatchSourceArgs};
+pub use cli::app::{
+    AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, SandboxDaemonArgs, WatchSourceArgs,
+};
 pub use cli::vm_boot::VmBootArgs;
+
+// Test-time env/HOME/CWD serialization: unified with `cli::test_support::TEST_HOME_LOCK`
+// so every HOME-mutating test (`TEST_ENV_LOCK` callers) is mutually exclusive with
+// every HOME-reading test (`test_support::lock_home()` callers). Keeping two distinct
+// mutexes silently let HOME get rewritten under tests that only read it via
+// `dirs::home_dir()`, producing intermittent pidfile-path mismatches.
+#[cfg(test)]
+pub(crate) use crate::cli::test_support::TEST_HOME_LOCK as TEST_ENV_LOCK;

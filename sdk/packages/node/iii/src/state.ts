@@ -1,4 +1,4 @@
-import type { UpdateOp } from './stream'
+import type { UpdateOp, UpdateOpError } from './stream'
 
 /** Input for retrieving a state value. */
 export type StateGetInput = {
@@ -54,6 +54,13 @@ export type StateUpdateResult<TData> = {
   old_value?: TData
   /** New value after the update. */
   new_value: TData
+  /**
+   * Per-op errors. Currently emitted only by the `merge` op when input
+   * violates the validation bounds. See {@link UpdateOpError} and the
+   * `UpdateMerge` JSDoc in `./stream` for the error codes. Field is
+   * omitted from the JSON wire when empty.
+   */
+  errors?: UpdateOpError[]
 }
 
 /** Result of a state delete operation. */

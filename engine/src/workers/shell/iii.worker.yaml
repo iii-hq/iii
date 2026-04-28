@@ -1,0 +1,5 @@
+iii: v1
+name: iii-exec
+type: engine
+description: Execute shell commands as part of engine startup.
+repo: https://github.com/iii-hq/iii

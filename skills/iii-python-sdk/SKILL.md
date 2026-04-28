@@ -30,7 +30,6 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-python>
 | `get_context()`                               | Access logger and trace context inside handlers |
 | `ApiRequest` / `ApiResponse`                  | HTTP request/response types (pydantic)          |
 | `IStream`                                     | Interface for custom stream implementations     |
-| `on_functions_available(callback)`            | Listen for function discovery                   |
 | `on_connection_state_change(callback)`        | Monitor connection state                        |
 | `register_trigger(type, fn_id, config, metadata?)` | Bind a trigger with optional metadata      |
 
@@ -41,6 +40,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-python>
 - End workers with `while True: await asyncio.sleep(60)` to keep the event loop alive
 - Use `asyncio.to_thread()` for CPU-heavy sync work inside handlers
 - The SDK implements both `trigger_async(request)` and a synchronous `trigger(request)`. Use `trigger_async` inside async handlers, and `trigger` in synchronous scripts or threads where blocking behavior is desired.
+- For discovery reads and topology subscriptions, call the built-in engine functions with `trigger()` / `trigger_async()` and bind `engine::functions-available` with `register_trigger()`. See `/docs/how-to/discover-workers-functions-triggers`.
 
 ## Examples
 

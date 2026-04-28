@@ -388,6 +388,31 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
+  # CLI Tools Binary (downloaded on first use of `iii create`)
+  # ──────────────────────────────────────────────────────────────
+
+  cli-tools-release:
+    name: CLI Tools Binary Release
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: iii-tools
+      manifest_path: crates/iii-tools/Cargo.toml
+      tag_name: ${{ needs.setup.outputs.tag }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      skip_create_release: true
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      targets: '["aarch64-apple-darwin","x86_64-apple-darwin","x86_64-unknown-linux-gnu","x86_64-unknown-linux-musl","aarch64-unknown-linux-gnu"]'
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: CLI Tools Binary
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  # ──────────────────────────────────────────────────────────────
   # SDK Publish
   # ──────────────────────────────────────────────────────────────
 
@@ -523,6 +548,45 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
+  # Publish builtin (engine) workers to the workers registry.
+  # Runs on every release including prereleases; 409 (already
+  # published) is treated as a no-op so re-runs are safe.
+  # ──────────────────────────────────────────────────────────────
+
+  publish-builtin-workers:
+    name: Publish builtin workers
+    needs: [setup, create-iii-release, engine-release]
+    if: needs.setup.outputs.dry_run != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - worker: iii-http
+            worker_dir: engine/src/workers/rest_api
+          - worker: iii-stream
+            worker_dir: engine/src/workers/stream
+          - worker: iii-state
+            worker_dir: engine/src/workers/state
+          - worker: iii-queue
+            worker_dir: engine/src/workers/queue
+          - worker: iii-pubsub
+            worker_dir: engine/src/workers/pubsub
+          - worker: iii-cron
+            worker_dir: engine/src/workers/cron
+          - worker: iii-observability
+            worker_dir: engine/src/workers/observability
+          - worker: iii-exec
+            worker_dir: engine/src/workers/shell
+          - worker: iii-bridge
+            worker_dir: engine/src/workers/bridge_client
+    uses: ./.github/workflows/_publish-engine-workers.yml
+    with:
+      worker: ${{ matrix.worker }}
+      worker_dir: ${{ matrix.worker_dir }}
+      registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
+    secrets: inherit
+
+  # ──────────────────────────────────────────────────────────────
   # Notification: Complete
   # ──────────────────────────────────────────────────────────────
 
@@ -535,6 +599,7 @@ jobs:
       - engine-release
       - worker-release
       - console-release
+      - cli-tools-release
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -542,6 +607,7 @@ jobs:
       - docker-engine
       - homebrew-engine
       - homebrew-console
+      - publish-builtin-workers
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -556,6 +622,7 @@ jobs:
           ENGINE_RESULT: ${{ needs.engine-release.result }}
           WORKER_RESULT: ${{ needs.worker-release.result }}
           CONSOLE_RESULT: ${{ needs.console-release.result }}
+          CLI_TOOLS_RESULT: ${{ needs.cli-tools-release.result }}
           SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
           SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
           SDK_PY_RESULT: ${{ needs.sdk-py.result }}
@@ -563,6 +630,7 @@ jobs:
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
+          BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
         run: |
           icon() {
             case "$1" in
@@ -580,10 +648,12 @@ jobs:
           LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
           LINES="$LINES$(icon "$WORKER_RESULT") Worker Binary\n"
           LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
+          LINES="$LINES$(icon "$CLI_TOOLS_RESULT") CLI Tools Binary\n"
           LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
           LINES="$LINES$(icon "$SDK_RUST_RESULT") SDK Rust\n"
+          LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
@@ -591,7 +661,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$CLI_TOOLS_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$BUILTIN_WORKERS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

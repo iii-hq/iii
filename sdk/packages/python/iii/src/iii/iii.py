@@ -9,6 +9,7 @@ import random
 import threading
 import traceback
 import uuid
+from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
@@ -16,6 +17,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
+from .errors import IIIInvocationError, IIITimeoutError, _wrap_wire_error
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_RECONNECTION_CONFIG,
@@ -25,7 +27,6 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
-    FunctionInfo,
     HttpInvocationConfig,
     InvocationResultMessage,
     InvokeFunctionMessage,
@@ -42,13 +43,10 @@ from .iii_types import (
     StreamChannelRef,
     TriggerActionEnqueue,
     TriggerActionVoid,
-    TriggerInfo,
     TriggerRequest,
-    TriggerTypeInfo,
     UnregisterFunctionMessage,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
-    WorkerInfo,
 )
 from .stream import (
     IStream,
@@ -86,6 +84,18 @@ class _TraceContextError(Exception):
         self.traceparent = traceparent
 
 
+@dataclass(frozen=True)
+class _PendingInvocation:
+    """Pending invocation record kept on the SDK until the engine responds.
+
+    ``function_id`` is preserved so the timeout and error-wrapping paths
+    can name the target without plumbing it through every call site.
+    """
+
+    future: asyncio.Future[Any]
+    function_id: str
+
+
 class III:
     """WebSocket client for communication with the III Engine.
 
@@ -107,18 +117,13 @@ class III:
         self._ws: ClientConnection | None = None
         self._functions: dict[str, RemoteFunctionData] = {}
         self._services: dict[str, RegisterServiceMessage] = {}
-        self._pending: dict[str, asyncio.Future[Any]] = {}
+        self._pending: dict[str, _PendingInvocation] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
         self._queue: list[dict[str, Any]] = []
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
         self._receiver_task: asyncio.Task[None] | None = None
-        self._functions_available_callbacks: set[
-            Callable[[list[FunctionInfo]], None]
-        ] = set()
-        self._functions_available_trigger: Trigger | None = None
-        self._functions_available_function_id: str | None = None
         self._reconnection_config = (
             self._options.reconnection_config or DEFAULT_RECONNECTION_CONFIG
         )
@@ -224,9 +229,16 @@ class III:
                     pass
 
         # Reject all pending invocations
-        for invocation_id, future in list(self._pending.items()):
-            if not future.done():
-                future.set_exception(Exception("iii is shutting down"))
+        for invocation_id, pending in list(self._pending.items()):
+            if not pending.future.done():
+                pending.future.set_exception(
+                    IIIInvocationError(
+                        code="SHUTDOWN",
+                        message="iii is shutting down",
+                        function_id=pending.function_id,
+                        invocation_id=invocation_id,
+                    )
+                )
         self._pending.clear()
 
         if self._ws:
@@ -401,15 +413,21 @@ class III:
             log.debug(f"Worker registered with ID: {worker_id}")
 
     def _handle_result(self, invocation_id: str, result: Any, error: Any) -> None:
-        future = self._pending.pop(invocation_id, None)
-        if not future:
+        pending = self._pending.pop(invocation_id, None)
+        if not pending:
             log.debug(f"No pending invocation: {invocation_id}")
             return
 
         if error:
-            future.set_exception(Exception(str(error)))
+            pending.future.set_exception(
+                _wrap_wire_error(
+                    error,
+                    function_id=pending.function_id,
+                    invocation_id=invocation_id,
+                )
+            )
         else:
-            future.set_result(result)
+            pending.future.set_result(result)
 
     def _inject_traceparent(self) -> str | None:
         from opentelemetry import context as otel_context
@@ -769,7 +787,7 @@ class III:
 
     def register_function(
         self,
-        func_or_id: RegisterFunctionInput | dict[str, Any] | str,
+        function_id: str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
         *,
         description: str | None = None,
@@ -787,27 +805,28 @@ class III:
         block the event loop.  Each handler receives a single ``data``
         argument containing the trigger payload.
 
-        When ``func_or_id`` is a ``str``, the simplified API is used:
         ``request_format`` and ``response_format`` are auto-extracted
-        from the handler's type hints when not explicitly provided.
+        from the handler's type hints when omitted or passed as ``None``
+        (the default).  To opt out of auto-extraction, pass an explicit
+        schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
+        is Python-specific -- the Node SDK does not auto-extract from TS
+        types, because TypeScript types are erased at runtime.
 
         Args:
-            func_or_id: A ``RegisterFunctionInput``, dict with ``id``, or
-                a plain string function ID.  When a string is passed, use
-                keyword arguments for ``description``, ``metadata``,
-                ``request_format``, and ``response_format``.
+            function_id: Unique string identifier for the function.
             handler_or_invocation: A callable handler or
                 ``HttpInvocationConfig``.  Callable handlers receive one
                 positional argument (``data`` -- the trigger payload) and
                 may return a value.
-            description: Human-readable description (only with string ID).
-            metadata: Arbitrary metadata (only with string ID).
-            request_format: Schema describing expected input (only with
-                string ID).  Auto-extracted from handler type hints when
-                omitted.
-            response_format: Schema describing expected output (only with
-                string ID).  Auto-extracted from handler type hints when
-                omitted.
+            description: Human-readable description.
+            metadata: Arbitrary metadata.
+            request_format: Schema describing expected input.  When
+                ``None`` (default), auto-extracted from the handler's
+                first-parameter type hint.  Pass an explicit schema to
+                override; there is no way to register with no schema
+                when the handler is typed.
+            response_format: Schema describing expected output.  Same
+                auto-extraction semantics as ``request_format``.
 
         Returns:
             A ``FunctionRef`` with an ``id`` attribute and an
@@ -815,14 +834,15 @@ class III:
             the function from the engine.
 
         Raises:
-            ValueError: If ``id`` is empty or already registered.
-            TypeError: If ``handler_or_invocation`` is not callable or
+            TypeError: If ``function_id`` is not a string, or if
+                ``handler_or_invocation`` is not callable or
                 ``HttpInvocationConfig``.
+            ValueError: If ``function_id`` is empty or already registered.
 
         Examples:
             >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
-            >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
+            >>> fn = iii.register_function("greet", greet, description="Greets a user")
             >>> fn.unregister()
 
             >>> from pydantic import BaseModel
@@ -834,31 +854,29 @@ class III:
             ...     return GreetOutput(message=f"Hello, {data.name}!")
             >>> fn = iii.register_function("greet", greet, description="Greets a user")
         """
-        if isinstance(func_or_id, str):
-            # Simplified API: auto-extract formats from handler type hints
-            handler_for_extraction = (
-                handler_or_invocation if callable(handler_or_invocation) else None
+        if not isinstance(function_id, str):
+            raise TypeError(
+                f"function_id must be str, got {type(function_id).__name__}"
             )
-            if request_format is None and handler_for_extraction is not None:
-                request_format = extract_request_format(handler_for_extraction)
-            if response_format is None and handler_for_extraction is not None:
-                response_format = extract_response_format(handler_for_extraction)
-            func = RegisterFunctionInput(
-                id=func_or_id,
-                description=description,
-                metadata=metadata,
-                request_format=request_format,
-                response_format=response_format,
-            )
-        elif isinstance(func_or_id, dict):
-            func = RegisterFunctionInput(**func_or_id)
-        else:
-            func = func_or_id
-
-        if not func.id or not func.id.strip():
+        if not function_id or not function_id.strip():
             raise ValueError("id is required")
-        if func.id in self._functions:
-            raise ValueError(f"function id '{func.id}' already registered")
+        if function_id in self._functions:
+            raise ValueError(f"function id '{function_id}' already registered")
+
+        handler_for_extraction = (
+            handler_or_invocation if callable(handler_or_invocation) else None
+        )
+        if request_format is None and handler_for_extraction is not None:
+            request_format = extract_request_format(handler_for_extraction)
+        if response_format is None and handler_for_extraction is not None:
+            response_format = extract_response_format(handler_for_extraction)
+        func = RegisterFunctionInput(
+            id=function_id,
+            description=description,
+            metadata=metadata,
+            request_format=request_format,
+            response_format=response_format,
+        )
 
         if isinstance(handler_or_invocation, HttpInvocationConfig):
             msg = RegisterFunctionMessage(
@@ -972,7 +990,9 @@ class III:
             actions.
 
         Raises:
-            TimeoutError: If the invocation times out.
+            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
+            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
+            IIIInvocationError: For any other engine rejection.
 
         Examples:
             >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -997,7 +1017,9 @@ class III:
             The result of the function invocation, or ``None`` for void calls.
 
         Raises:
-            TimeoutError: If the invocation times out.
+            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
+            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
+            IIIInvocationError: For any other engine rejection.
 
         Examples:
             >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -1035,7 +1057,9 @@ class III:
         invocation_id = str(uuid.uuid4())
         future: asyncio.Future[Any] = self._loop.create_future()
 
-        self._pending[invocation_id] = future
+        self._pending[invocation_id] = _PendingInvocation(
+            future=future, function_id=function_id
+        )
 
         enqueue_action: TriggerActionEnqueue | None = (
             action if isinstance(action, TriggerActionEnqueue) else None
@@ -1056,151 +1080,12 @@ class III:
             return await asyncio.wait_for(future, timeout=timeout_secs)
         except asyncio.TimeoutError:
             self._pending.pop(invocation_id, None)
-            raise TimeoutError(
-                f"Invocation of '{function_id}' timed out after {timeout_ms}ms"
+            raise IIITimeoutError(
+                code="TIMEOUT",
+                message=f"invocation timed out after {timeout_ms}ms",
+                function_id=function_id,
+                invocation_id=invocation_id,
             )
-
-    def list_functions(self) -> list[FunctionInfo]:
-        """List all functions registered with the engine across all workers.
-
-        Returns:
-            A list of ``FunctionInfo`` objects describing each function.
-
-        Examples:
-            >>> for fn in iii.list_functions():
-            ...     print(fn.function_id, fn.description)
-        """
-        return self._run_on_loop(self.list_functions_async())
-
-    async def list_functions_async(self) -> list[FunctionInfo]:
-        """List all functions registered with the engine across all workers.
-
-        Returns:
-            A list of ``FunctionInfo`` objects describing each function.
-
-        Examples:
-            >>> for fn in await iii.list_functions_async():
-            ...     print(fn.function_id, fn.description)
-        """
-        result = await self.trigger_async(
-            {"function_id": "engine::functions::list", "payload": {}}
-        )
-        functions_data = result.get("functions", [])
-        return [FunctionInfo(**f) for f in functions_data]
-
-    def list_workers(self) -> list[WorkerInfo]:
-        """List all workers currently connected to the engine.
-
-        Returns:
-            A list of ``WorkerInfo`` objects with worker metadata.
-
-        Examples:
-            >>> for w in iii.list_workers():
-            ...     print(w.name, w.worker_id)
-        """
-        return self._run_on_loop(self.list_workers_async())
-
-    async def list_workers_async(self) -> list[WorkerInfo]:
-        """List all workers currently connected to the engine.
-
-        Returns:
-            A list of ``WorkerInfo`` objects with worker metadata.
-
-        Examples:
-            >>> for w in await iii.list_workers_async():
-            ...     print(w.name, w.worker_id)
-        """
-        result = await self.trigger_async(
-            {"function_id": "engine::workers::list", "payload": {}}
-        )
-        workers_data = result.get("workers", [])
-        return [WorkerInfo(**w) for w in workers_data]
-
-    def list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]:
-        """List all triggers registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal triggers
-                (e.g. ``functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerInfo`` objects.
-
-        Examples:
-            >>> triggers = iii.list_triggers()
-            >>> internal = iii.list_triggers(include_internal=True)
-        """
-        return self._run_on_loop(self.list_triggers_async(include_internal))
-
-    async def list_triggers_async(
-        self, include_internal: bool = False
-    ) -> list[TriggerInfo]:
-        """List all triggers registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal triggers
-                (e.g. ``functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerInfo`` objects.
-
-        Examples:
-            >>> triggers = await iii.list_triggers_async()
-            >>> internal = await iii.list_triggers_async(include_internal=True)
-        """
-        result = await self.trigger_async(
-            {
-                "function_id": "engine::triggers::list",
-                "payload": {"include_internal": include_internal},
-            }
-        )
-        triggers_data = result.get("triggers", [])
-        return [TriggerInfo(**t) for t in triggers_data]
-
-    def list_trigger_types(
-        self, include_internal: bool = False
-    ) -> list[TriggerTypeInfo]:
-        """List all trigger types registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal trigger
-                types (e.g. ``engine::functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
-            and ``call_request_format`` schemas.
-
-        Examples:
-            >>> trigger_types = iii.list_trigger_types()
-            >>> for tt in trigger_types:
-            ...     print(tt.id, tt.trigger_request_format)
-        """
-        return self._run_on_loop(self.list_trigger_types_async(include_internal))
-
-    async def list_trigger_types_async(
-        self, include_internal: bool = False
-    ) -> list[TriggerTypeInfo]:
-        """List all trigger types registered with the engine.
-
-        Args:
-            include_internal: If ``True``, include engine-internal trigger
-                types (e.g. ``engine::functions-available``). Defaults to ``False``.
-
-        Returns:
-            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
-            and ``call_request_format`` schemas.
-
-        Examples:
-            >>> trigger_types = await iii.list_trigger_types_async()
-        """
-        result = await self.trigger_async(
-            {
-                "function_id": "engine::trigger-types::list",
-                "payload": {"include_internal": include_internal},
-            }
-        )
-        types_data = result.get("trigger_types", [])
-        return [TriggerTypeInfo(**t) for t in types_data]
 
     def create_channel(self, buffer_size: int | None = None) -> Channel:
         """Create a streaming channel pair for worker-to-worker data transfer.
@@ -1222,7 +1107,7 @@ class III:
 
         Examples:
             >>> ch = iii.create_channel()
-            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> fn = iii.register_function("producer", producer_handler)
             >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
         return self._run_on_loop(self.create_channel_async(buffer_size))
@@ -1243,7 +1128,7 @@ class III:
 
         Examples:
             >>> ch = await iii.create_channel_async()
-            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> fn = iii.register_function("producer", producer_handler)
             >>> await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
         result = await self.trigger_async(
@@ -1305,69 +1190,6 @@ class III:
         )
         asyncio.run_coroutine_threadsafe(self._send(msg), self._loop)
 
-    def on_functions_available(
-        self, callback: Callable[[list[FunctionInfo]], None]
-    ) -> Callable[[], None]:
-        """Subscribe to function-availability events from the engine.
-
-        The callback fires whenever the set of available functions changes
-        (e.g. a new worker connects or a function is unregistered).
-
-        Args:
-            callback (Callable[[list[FunctionInfo]], None]): Receives the
-                current list of ``FunctionInfo`` objects each time
-                availability changes.
-
-        Returns:
-            A callable that unsubscribes when called.  Calling the
-            returned function removes the callback and, if no callbacks
-            remain, tears down the internal trigger.
-
-        Examples:
-            >>> def on_change(functions):
-            ...     print("Available:", [f.function_id for f in functions])
-            >>> unsub = iii.on_functions_available(on_change)
-            >>> # later ...
-            >>> unsub()
-        """
-        self._functions_available_callbacks.add(callback)
-
-        if not self._functions_available_trigger:
-            if not self._functions_available_function_id:
-                self._functions_available_function_id = (
-                    f"iii.on_functions_available.{uuid.uuid4()}"
-                )
-
-            function_id = self._functions_available_function_id
-            if function_id not in self._functions:
-
-                async def handler(data: dict[str, Any]) -> None:
-                    functions_data = data.get("functions", [])
-                    functions = [FunctionInfo(**f) for f in functions_data]
-                    for cb in list(self._functions_available_callbacks):
-                        cb(functions)
-
-                self.register_function({"id": function_id}, handler)
-
-            self._functions_available_trigger = self.register_trigger(
-                {
-                    "type": "engine::functions-available",
-                    "function_id": function_id,
-                    "config": {},
-                }
-            )
-
-        def unsubscribe() -> None:
-            self._functions_available_callbacks.discard(callback)
-            if (
-                len(self._functions_available_callbacks) == 0
-                and self._functions_available_trigger
-            ):
-                self._functions_available_trigger.unregister()
-                self._functions_available_trigger = None
-
-        return unsubscribe
-
     def create_stream(self, stream_name: str, stream: IStream[Any]) -> None:
         """Register a custom stream implementation, overriding the engine default.
 
@@ -1415,12 +1237,12 @@ class III:
             )
             return await stream.list_groups(input_data)
 
-        self.register_function({"id": f"stream::get({stream_name})"}, get_handler)
-        self.register_function({"id": f"stream::set({stream_name})"}, set_handler)
-        self.register_function({"id": f"stream::delete({stream_name})"}, delete_handler)
-        self.register_function({"id": f"stream::list({stream_name})"}, list_handler)
+        self.register_function(f"stream::get({stream_name})", get_handler)
+        self.register_function(f"stream::set({stream_name})", set_handler)
+        self.register_function(f"stream::delete({stream_name})", delete_handler)
+        self.register_function(f"stream::list({stream_name})", list_handler)
         self.register_function(
-            {"id": f"stream::list_groups({stream_name})"}, list_groups_handler
+            f"stream::list_groups({stream_name})", list_groups_handler
         )
 
 

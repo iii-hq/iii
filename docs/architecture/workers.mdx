@@ -1,8 +1,40 @@
 ---
 title: 'Workers'
-description: 'Workers are the interface between the Engine and the rest of the application.'
+description: 'Built-in and external workers in iii.'
 ---
 
+Workers are the units that add capability to a iii system.
+
+## Worker types
+
+| Type | Examples | Description |
+|------|----------|-------------|
+| Built-in workers | `iii-http`, `iii-queue`, `iii-state`, `iii-stream`, `iii-cron`, `iii-observability` | Rust workers shipped with the engine and enabled in `config.yaml`. |
+| External workers | Node.js, Python, Rust, browser workers | SDK processes that connect to the engine and register application functions. |
+| Managed workers | Local directories or OCI images added with `iii worker add` | Workers started and supervised by the iii worker manager. |
+
+## Configuration
+
+Built-in and managed workers are configured under the `workers` key:
+
+```yaml
+workers:
+  - name: iii-http
+    config:
+      port: 3111
+
+  - name: iii-queue
+```
+
+External SDK workers usually configure only their engine address:
+
+```typescript
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+```
+
+<Info title="Terminology">
+  Older docs and configs may use "module" for built-in workers. In current iii, "worker" is the canonical term.
+</Info>
 Workers are the interface between the Engine and the rest of the application. They are responsible for establishing connections to services, implementing trigger types, and supplying application Context.
 
 Every capability in iii (HTTP endpoints, cron scheduling, state management, queues, streams, observability) is implemented as a Worker. This modular architecture means the Engine itself stays small and focused on orchestration, while Workers handle all external concerns.

@@ -12,7 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use iii_sdk::{
-    HttpInvocationConfig, HttpMethod, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest,
+    FunctionInfo, HttpInvocationConfig, HttpMethod, RegisterFunctionMessage, RegisterTriggerInput,
+    TriggerRequest,
 };
 
 fn unique_function_id(prefix: &str) -> String {
@@ -202,7 +203,22 @@ async fn registers_and_unregisters_external_http_function() {
     common::settle().await;
 
     let found = {
-        let functions = iii.list_functions().await.expect("list_functions failed");
+        let list_result = iii
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::list".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .expect("function discovery request failed");
+        let functions: Vec<FunctionInfo> = serde_json::from_value(
+            list_result
+                .get("functions")
+                .cloned()
+                .unwrap_or(Value::Array(vec![])),
+        )
+        .expect("deserialize functions");
         functions.iter().any(|f| f.function_id == function_id)
     };
     assert!(found, "function should appear after registration");
@@ -211,7 +227,22 @@ async fn registers_and_unregisters_external_http_function() {
     common::settle().await;
 
     let gone = {
-        let functions = iii.list_functions().await.expect("list_functions failed");
+        let list_result = iii
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::list".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .expect("function discovery request failed");
+        let functions: Vec<FunctionInfo> = serde_json::from_value(
+            list_result
+                .get("functions")
+                .cloned()
+                .unwrap_or(Value::Array(vec![])),
+        )
+        .expect("deserialize functions");
         !functions.iter().any(|f| f.function_id == function_id)
     };
     assert!(gone, "function should be absent after unregister");

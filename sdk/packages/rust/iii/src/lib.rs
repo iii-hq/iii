@@ -20,9 +20,9 @@ pub use channels::{
 };
 pub use error::IIIError;
 pub use iii::{
-    FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIAsyncFn, IIIConnectionState, IIIFn,
-    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, RegisterTriggerType,
-    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata, iii_async_fn, iii_fn,
+    FunctionInfo, FunctionRef, III, IIIAsyncFn, IIIConnectionState, IIIFn, IntoFunctionHandler,
+    IntoFunctionRegistration, RegisterFunction, RegisterTriggerType, TriggerInfo, TriggerTypeInfo,
+    TriggerTypeRef, WorkerInfo, WorkerMetadata, iii_async_fn, iii_fn,
 };
 pub use logger::Logger;
 pub use protocol::{
@@ -38,9 +38,10 @@ pub use structs::{
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
-    ApiRequest, ApiResponse, Channel, DeleteResult, FieldPath, SetResult, StreamAuthInput,
-    StreamAuthResult, StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput,
-    StreamListInput, StreamSetInput, StreamUpdateInput, UpdateOp, UpdateResult,
+    ApiRequest, ApiResponse, Channel, DeleteResult, FieldPath, MergePath, SetResult,
+    StreamAuthInput, StreamAuthResult, StreamDeleteInput, StreamGetInput, StreamJoinResult,
+    StreamListGroupsInput, StreamListInput, StreamSetInput, StreamUpdateInput, UpdateOp,
+    UpdateOpError, UpdateResult,
 };
 
 pub use serde_json::Value;
@@ -80,11 +81,9 @@ pub struct InitOptions {
 /// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// fn main() {
-///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
-///     // register functions, handle events, etc.
-///     iii.shutdown(); // cleanly stops the connection thread
-/// }
+/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// // register functions, handle events, etc.
+/// iii.shutdown(); // cleanly stops the connection thread
 /// ```
 pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {

@@ -7,7 +7,7 @@
  * Each step is its own function chained via named queues.
  *
  * How-to references:
- *   - Queues & retries: https://iii.dev/docs/how-to/use-queues
+ *   - Queues & retries: https://iii.dev/docs/workers/iii-queue
  *   - DLQ handling:     https://iii.dev/docs/how-to/dead-letter-queues
  *   - Cron scheduling:  https://iii.dev/docs/how-to/schedule-cron-task
  *   - State management: https://iii.dev/docs/how-to/manage-state

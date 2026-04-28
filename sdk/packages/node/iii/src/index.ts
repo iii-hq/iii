@@ -1,11 +1,16 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
+export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
+
 export { type InitOptions, registerWorker, TriggerAction } from './iii'
+
+export { EngineFunctions, EngineTriggers } from './iii-constants'
 
 export type {
   AuthInput,
   AuthResult,
   EnqueueResult,
+  FunctionInfo,
   HttpAuthConfig,
   HttpInvocationConfig,
   MessageType,
@@ -24,6 +29,7 @@ export type {
   TriggerInfo,
   TriggerRequest,
   TriggerTypeInfo,
+  WorkerInfo,
 } from './iii-types'
 
 export { Logger } from './logger'

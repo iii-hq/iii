@@ -102,7 +102,7 @@ await iii.registerFunction(
 await iii.registerTrigger({
   type: 'http',
   function_id: 'hello::api',
-  config: { api_path: 'hello', http_method: 'GET' },
+  config: { api_path: '/hello', http_method: 'GET' },
 })
 ```
 
@@ -150,7 +150,7 @@ iii.register_function("hello::api", hello_api)
 iii.register_trigger({
     "type": "http",
     "function_id": "hello::api",
-    "config": {"api_path": "hello", "http_method": "GET"},
+    "config": {"api_path": "/hello", "http_method": "GET"},
 })
 ```
 
@@ -161,7 +161,7 @@ iii.register_trigger({
 use iii_sdk::{Logger, TriggerAction, TriggerRequest, types::ApiRequest, RegisterFunctionMessage, RegisterTriggerInput};
 
 iii.register_function((RegisterFunctionMessage::with_id("hello::api".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     let app_name = "III App";
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -193,7 +193,7 @@ iii.register_function((RegisterFunctionMessage::with_id("hello::api".into()), |i
 });
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::api".into(), config: json!({
-    "api_path": "hello",
+    "api_path": "/hello",
     "http_method": "GET",
 }), metadata: None })?;
 ```
@@ -288,7 +288,7 @@ iii.register_trigger({
 
 ```rust
 iii.register_function((RegisterFunctionMessage::with_id("greet::process".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     let request_id = input["requestId"].as_str().unwrap_or("unknown");
     let app_name = input["appName"].as_str().unwrap_or("III App");

@@ -20,8 +20,8 @@ async def test_middleware_continue_to_handler(engine_http_url, iii_client: III):
     def handler(req):
         return {"status_code": 200, "body": {"message": "handler reached"}}
 
-    mw_ref = iii_client.register_function({"id": "test.mw.continue.py"}, mw_handler)
-    fn_ref = iii_client.register_function({"id": "test.mw.continue.handler.py"}, handler)
+    mw_ref = iii_client.register_function("test.mw.continue.py", mw_handler)
+    fn_ref = iii_client.register_function("test.mw.continue.handler.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -67,8 +67,8 @@ async def test_middleware_short_circuit(engine_http_url, iii_client: III):
         handler_called["value"] = True
         return {"status_code": 200, "body": {"message": "should not reach"}}
 
-    mw_ref = iii_client.register_function({"id": "test.mw.block.py"}, mw_handler)
-    fn_ref = iii_client.register_function({"id": "test.mw.block.handler.py"}, handler)
+    mw_ref = iii_client.register_function("test.mw.block.py", mw_handler)
+    fn_ref = iii_client.register_function("test.mw.block.handler.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -113,9 +113,9 @@ async def test_multiple_middleware_ordering(engine_http_url, iii_client: III):
         call_order.append("handler")
         return {"status_code": 200, "body": {"order": call_order}}
 
-    mw1_ref = iii_client.register_function({"id": "test.mw.order.first.py"}, mw1)
-    mw2_ref = iii_client.register_function({"id": "test.mw.order.second.py"}, mw2)
-    fn_ref = iii_client.register_function({"id": "test.mw.order.handler.py"}, handler)
+    mw1_ref = iii_client.register_function("test.mw.order.first.py", mw1)
+    mw2_ref = iii_client.register_function("test.mw.order.second.py", mw2)
+    fn_ref = iii_client.register_function("test.mw.order.handler.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -157,8 +157,8 @@ async def test_middleware_receives_request_metadata(engine_http_url, iii_client:
     def handler(req):
         return {"status_code": 200, "body": {"ok": True}}
 
-    mw_ref = iii_client.register_function({"id": "test.mw.meta.py"}, mw_handler)
-    fn_ref = iii_client.register_function({"id": "test.mw.meta.handler.py"}, handler)
+    mw_ref = iii_client.register_function("test.mw.meta.py", mw_handler)
+    fn_ref = iii_client.register_function("test.mw.meta.handler.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
@@ -196,7 +196,7 @@ async def test_no_middleware_regression(engine_http_url, iii_client: III):
     def handler(req):
         return {"status_code": 200, "body": {"message": "no middleware"}}
 
-    fn_ref = iii_client.register_function({"id": "test.mw.none.py"}, handler)
+    fn_ref = iii_client.register_function("test.mw.none.py", handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",

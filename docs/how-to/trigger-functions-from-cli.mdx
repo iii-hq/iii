@@ -25,7 +25,7 @@ iii trigger \
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--function-id` | Yes | — | The ID of the function to invoke (e.g. `iii::queue::redrive`, `orders::process`) |
-| `--payload` | Yes | `{}` | A JSON string passed as the function's input |
+| `--payload` | No | `{}` | A JSON string passed as the function's input |
 | `--address` | No | `localhost` | The hostname or IP of the engine |
 | `--port` | No | `49134` | The engine's WebSocket port |
 | `--timeout-ms` | No | `30000` | Max time in milliseconds to wait for the invocation result |

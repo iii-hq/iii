@@ -101,12 +101,20 @@ export type StreamUpdateResult<TData> = {
   old_value?: TData
   /** New value after the update. */
   new_value: TData
+  /**
+   * Per-op errors. Currently emitted only by the `merge` op when input
+   * violates the validation bounds (path depth/size, value depth, or
+   * a `__proto__`/`constructor`/`prototype` segment or top-level key).
+   * Successfully applied ops are still reflected in `new_value`. The
+   * field is omitted from the JSON wire when empty.
+   */
+  errors?: UpdateOpError[]
 }
 
 /** Set a field at the given path to a value. */
 export type UpdateSet = {
   type: 'set'
-  /** Dot-separated field path (e.g. `user.name`). */
+  /** First-level field path. Use an empty string to target the root value. */
   path: string
   /** Value to set. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
@@ -116,7 +124,7 @@ export type UpdateSet = {
 /** Increment a numeric field by a given amount. */
 export type UpdateIncrement = {
   type: 'increment'
-  /** Dot-separated field path. */
+  /** First-level field path. */
   path: string
   /** Amount to increment by. */
   by: number
@@ -125,27 +133,84 @@ export type UpdateIncrement = {
 /** Decrement a numeric field by a given amount. */
 export type UpdateDecrement = {
   type: 'decrement'
-  /** Dot-separated field path. */
+  /** First-level field path. */
   path: string
   /** Amount to decrement by. */
   by: number
 }
 
+/** Append an element to an array or concatenate a string. */
+export type UpdateAppend = {
+  type: 'append'
+  /** First-level field path. Use an empty string to target the root value. */
+  path: string
+  /** Value to append. String targets only accept string values. */
+  // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+  value: any
+}
+
 /** Remove a field at the given path. */
 export type UpdateRemove = {
   type: 'remove'
-  /** Dot-separated field path. */
+  /** First-level field path. */
   path: string
 }
 
-/** Deep-merge an object into the field at the given path. */
+/**
+ * Path target for a {@link UpdateMerge} op. Accepts:
+ *   - a single string (legacy / first-level field)
+ *   - an array of literal segments (nested path; each element is one
+ *     literal key, dots are NOT interpreted as separators)
+ *
+ * Omit `path`, pass `""`, or pass `[]` to target the root value.
+ *
+ * @example single first-level field
+ *   { type: 'merge', path: 'session-abc', value: { author: 'alice' } }
+ * @example nested path (closes issue #1546's structured-state use case)
+ *   { type: 'merge', path: ['sessions', 'abc'], value: { ts: chunk } }
+ */
+export type MergePath = string | string[]
+
+/**
+ * Shallow-merge an object into the target. The target is the root
+ * (when `path` is omitted/empty) or an arbitrary nested location
+ * specified by an array of literal segments.
+ *
+ * Engine semantics:
+ *   - Missing or non-object intermediates along the path are
+ *     auto-replaced with `{}` so a stray `null` or scalar never
+ *     blocks future merges.
+ *   - The merge is shallow at the target — top-level keys of `value`
+ *     replace same-named keys; siblings are preserved.
+ *   - Each path segment is a literal key. `["a.b"]` writes a single
+ *     key named `"a.b"`, not `a → b`.
+ *
+ * Validation: invalid paths/values (depth > 32 segments, segment >
+ * 256 bytes, value depth > 16, > 1024 top-level keys, or any
+ * `__proto__`/`constructor`/`prototype` segment or top-level key)
+ * are rejected with a structured error in the `errors` field of the
+ * `state::update` / `stream::update` response. The merge does not
+ * apply when an error is returned for that op.
+ */
 export type UpdateMerge = {
   type: 'merge'
-  /** Dot-separated field path. */
-  path: string
-  /** Object to merge. */
+  /** Optional path to the merge target. See {@link MergePath}. */
+  path?: MergePath
+  /** Object to merge. Must be a JSON object. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
   value: any
+}
+
+/** Per-op error returned by `state::update` / `stream::update`. */
+export type UpdateOpError = {
+  /** Index of the offending op within the original `ops` array. */
+  op_index: number
+  /** Stable error code, e.g. `"merge.path.too_deep"`. */
+  code: string
+  /** Human-readable description with concrete numbers when applicable. */
+  message: string
+  /** Optional documentation URL. */
+  doc_url?: string
 }
 
 /** Result of a stream delete operation. */
@@ -159,9 +224,15 @@ export type DeleteResult = {
  * Union of all atomic update operations supported by streams.
  *
  * @see {@link UpdateSet}, {@link UpdateIncrement}, {@link UpdateDecrement},
- *      {@link UpdateRemove}, {@link UpdateMerge}
+ *      {@link UpdateAppend}, {@link UpdateRemove}, {@link UpdateMerge}
  */
-export type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateRemove | UpdateMerge
+export type UpdateOp =
+  | UpdateSet
+  | UpdateIncrement
+  | UpdateDecrement
+  | UpdateAppend
+  | UpdateRemove
+  | UpdateMerge
 
 /** Input for atomically updating a stream item. */
 export type StreamUpdateInput = {

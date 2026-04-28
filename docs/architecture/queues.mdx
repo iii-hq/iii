@@ -1,8 +1,40 @@
 ---
 title: 'Queues'
-description: 'Why iii queues are structured the way they are — the design decisions behind retry, dead-lettering, and multi-resource topology.'
+description: 'Queue architecture in iii: topic-based queues, named queues, retries, and dead letters.'
 ---
 
+iii has two queue models.
+
+| Model | Producer | Consumer |
+|-------|----------|----------|
+| Topic-based queue | Calls `iii::durable::publish` with a topic and data. | Registers a `durable:subscriber` trigger for a topic. |
+| Named queue | Invokes a function with `TriggerAction.Enqueue({ queue })`. | The target function processes jobs from the named queue. |
+
+## Topic-based queues
+
+Topic-based queues fan out each message to every subscribed function. If one function has multiple replicas, those replicas compete on that function's queue so only one replica handles each copy.
+
+```typescript
+iii.registerTrigger({
+  type: 'durable:subscriber',
+  function_id: 'orders::process',
+  config: { topic: 'order.created' },
+})
+```
+
+## Named queues
+
+Named queues route invocations to a specific function through a queue. No trigger registration is required.
+
+```typescript
+await iii.trigger({
+  function_id: 'orders::process',
+  payload: order,
+  action: TriggerAction.Enqueue({ queue: 'orders' }),
+})
+```
+
+Both models support retries and dead-letter handling through the `iii-queue` worker.
 ## What Are Queues
 
 A queue sits between the code that **produces** work and the code that **processes** it. Instead of calling a function and waiting for it to finish, you hand the work to a queue. The queue stores the message, delivers it to a consumer, retries on failure, and routes permanently failed messages to a dead-letter queue (DLQ) for later inspection.
@@ -33,7 +65,7 @@ This separation solves three problems:
 | The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](/how-to/trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
 
 <Info title="How-to guide">
-  For step-by-step instructions on setting up queues, see [Use Queues](/how-to/use-queues).
+  For queue modes, configuration, retries, and adapter guidance, see the [Queue worker reference](/workers/iii-queue).
 </Info>
 
 ## RabbitMQ Resource Topology
@@ -76,7 +108,7 @@ Because each of the three lifecycle stages is a separate routing destination, an
 | Dead-letter | `iii.__fn_queue::<name>::dlq` | `iii.__fn_queue::<name>::dlq.queue` |
 
 <Info title="Full resource map">
-  For the complete naming convention and examples, see the [Queue module reference — Queue naming in RabbitMQ](/modules/module-queue#queue-naming-in-rabbitmq).
+  For the complete naming convention and examples, see the [Queue worker reference — Queue naming in RabbitMQ](/workers/iii-queue#queue-naming-in-rabbitmq).
 </Info>
 
 ## The Delayed Retry Problem
@@ -158,19 +190,19 @@ The builtin adapter implements the same three-stage lifecycle entirely in-proces
 The conceptual model is identical across all adapters. Only the transport differs. This means you can develop locally with the builtin adapter and deploy to production with RabbitMQ, and the retry and DLQ behavior stays the same.
 
 <Info title="Choosing an adapter">
-  For a feature comparison of all queue adapters and scenario-based recommendations, see the [adapter comparison](/modules/module-queue#adapter-comparison).
+  For a feature comparison of all queue adapters and scenario-based recommendations, see the [adapter comparison](/workers/iii-queue#adapter-comparison).
 </Info>
 
 ## Related
 
 <CardGroup cols={3}>
-  <Card title="Use Queues" href="/how-to/use-queues" icon="list-check">
+  <Card title="Use Queues" href="/workers/iii-queue" icon="list-check">
     Configure named queues with retries, concurrency, and FIFO ordering
   </Card>
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Inspect and redrive failed queue messages
   </Card>
-  <Card title="Queue Worker Reference" href="/modules/module-queue" icon="gear">
+  <Card title="Queue Worker Reference" href="/workers/iii-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
 </CardGroup>

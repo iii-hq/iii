@@ -63,6 +63,12 @@ export type Invocation<TOutput = any> = {
   resolve: (data: TOutput) => void
   // biome-ignore lint/suspicious/noExplicitAny: error can be any type
   reject: (error: any) => void
+  /**
+   * Target function_id for the pending invocation, preserved so timeout and
+   * error-wrapping paths can name the function that tripped without needing
+   * to plumb it through every call site.
+   */
+  function_id?: string
 }
 
 /** Internal handler type that includes traceparent and baggage for distributed tracing */
@@ -94,7 +100,6 @@ export type RegisterServiceInput = Omit<RegisterServiceMessage, 'message_type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
-export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 
 export interface ISdk {
   /**
@@ -107,7 +112,7 @@ export interface ISdk {
    * const trigger = iii.registerTrigger({
    *   type: 'cron',
    *   function_id: 'my-service::process-batch',
-   *   config: { schedule: '*\/5 * * * *' },
+   *   config: { expression: '0 *\/5 * * * * *' },
    * })
    *
    * // Later, remove the trigger
@@ -194,39 +199,6 @@ export interface ISdk {
   trigger<TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput>
 
   /**
-   * Lists all registered functions.
-   *
-   * @example
-   * ```typescript
-   * const functions = await iii.listFunctions()
-   * for (const fn of functions) {
-   *   console.log(`${fn.function_id}: ${fn.description}`)
-   * }
-   * ```
-   */
-  listFunctions(): Promise<FunctionInfo[]>
-
-  /**
-   * Lists all registered triggers.
-   * @param includeInternal - Whether to include internal triggers (default: false)
-   */
-  listTriggers(includeInternal?: boolean): Promise<TriggerInfo[]>
-
-  /**
-   * Lists all trigger types registered with the engine.
-   * @param includeInternal - Whether to include internal trigger types (default: false)
-   *
-   * @example
-   * ```typescript
-   * const triggerTypes = await iii.listTriggerTypes()
-   * for (const tt of triggerTypes) {
-   *   console.log(`${tt.id}: ${tt.description}`)
-   * }
-   * ```
-   */
-  listTriggerTypes(includeInternal?: boolean): Promise<TriggerTypeInfo[]>
-
-  /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
    * @param triggerType - The trigger type to register
    * @param handler - The handler for the trigger type
@@ -234,13 +206,13 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * type CronConfig = { schedule: string }
+   * type CronConfig = { expression: string }
    *
    * iii.registerTriggerType<CronConfig>(
    *   { id: 'cron', description: 'Fires on a cron schedule' },
    *   {
    *     async registerTrigger({ id, function_id, config }) {
-   *       startCronJob(id, config.schedule, () =>
+   *       startCronJob(id, config.expression, () =>
    *         iii.trigger({ function_id, payload: {} }),
    *       )
    *     },
@@ -328,25 +300,6 @@ export interface ISdk {
   createStream<TData>(streamName: string, stream: IStream<TData>): void
 
   /**
-   * Registers a callback to receive the current functions list
-   * when the engine announces changes.
-   *
-   * @example
-   * ```typescript
-   * const unsubscribe = iii.onFunctionsAvailable((functions) => {
-   *   console.log(`${functions.length} functions available:`)
-   *   for (const fn of functions) {
-   *     console.log(`  - ${fn.function_id}`)
-   *   }
-   * })
-   *
-   * // Later, stop listening
-   * unsubscribe()
-   * ```
-   */
-  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void
-
-  /**
    * Gracefully shutdown the iii, cleaning up all resources.
    *
    * @example
@@ -390,7 +343,7 @@ export type FunctionRef = {
  *
  * @example
  * ```typescript
- * type CronConfig = { schedule: string }
+ * type CronConfig = { expression: string }
  *
  * const cron = iii.registerTriggerType<CronConfig>(
  *   { id: 'cron', description: 'Fires on a cron schedule' },
@@ -398,12 +351,13 @@ export type FunctionRef = {
  * )
  *
  * // Register a trigger — type is inferred as CronConfig
- * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
+ * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
  *
  * // Register a function and bind a trigger in one call
  * cron.registerFunction(
- *   'my-fn',
+ *   'my::fn',
  *   async (data) => { return { ok: true } },
+ *   { expression: '0 *\/5 * * * * *' },
  * )
  * ```
  */

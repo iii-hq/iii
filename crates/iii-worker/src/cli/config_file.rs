@@ -799,6 +799,25 @@ pub fn list_worker_names() -> Vec<String> {
         Err(_) => return Vec::new(),
     };
 
+    list_worker_names_from_content(&content)
+}
+
+/// Returns worker names from `config.yaml`, surfacing read/parse failures.
+pub fn list_worker_names_result() -> Result<Vec<String>, String> {
+    let path = Path::new(CONFIG_FILE);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read {}: {}", CONFIG_FILE, e))?;
+    serde_yaml::from_str::<serde_yaml::Value>(&content)
+        .map_err(|e| format!("failed to parse {}: {}", CONFIG_FILE, e))?;
+
+    Ok(list_worker_names_from_content(&content))
+}
+
+fn list_worker_names_from_content(content: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut in_workers = false;
 
@@ -882,33 +901,8 @@ mod tests {
 
     #[test]
     fn test_list_worker_names_basic() {
-        // We can't call list_worker_names() without a real file, but we can
-        // test the logic via the helpers used in it.
         let content = "workers:\n  - name: foo\n  - name: bar\n";
-        let mut names = Vec::new();
-        let mut in_workers = false;
-        for line in content.lines() {
-            if line.trim_start() == "workers:" || line.starts_with("workers:") {
-                in_workers = true;
-                continue;
-            }
-            if in_workers {
-                if !line.is_empty()
-                    && !line.starts_with(' ')
-                    && !line.starts_with('\t')
-                    && !line.starts_with('-')
-                {
-                    break;
-                }
-                let trimmed = line.trim();
-                if let Some(rest) = trimmed.strip_prefix("- name:") {
-                    let name = rest.trim().to_string();
-                    if !name.is_empty() {
-                        names.push(name);
-                    }
-                }
-            }
-        }
+        let names = list_worker_names_from_content(content);
         assert_eq!(names, vec!["foo", "bar"]);
     }
 

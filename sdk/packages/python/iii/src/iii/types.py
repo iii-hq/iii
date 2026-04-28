@@ -10,16 +10,13 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Protocol, T
 from pydantic import BaseModel, ConfigDict, Field
 
 from .iii_types import (
-    FunctionInfo,
     HttpInvocationConfig,
-    RegisterFunctionInput,
     RegisterFunctionMessage,
     RegisterServiceInput,
     RegisterTriggerInput,
     RegisterTriggerTypeInput,
     RegisterTriggerTypeMessage,
     StreamChannelRef,
-    TriggerInfo,
     TriggerRequest,
 )
 from .stream import IStream
@@ -80,11 +77,6 @@ class RemoteServiceFunctionData(BaseModel):
     handler: RemoteFunctionHandler
 
 
-# Type aliases for registration inputs
-# Callback type for functions available event
-FunctionsAvailableCallback = Callable[[list[FunctionInfo]], None]
-
-
 class IIIClient(Protocol):
     """Protocol for III client implementations."""
 
@@ -94,7 +86,7 @@ class IIIClient(Protocol):
 
     def register_function(
         self,
-        func: RegisterFunctionInput | dict[str, Any],
+        function_id: str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
     ) -> Any: ...
 
@@ -108,17 +100,9 @@ class IIIClient(Protocol):
 
     def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
 
-    def list_trigger_types(self, include_internal: bool = False) -> list[Any]: ...
-
     def create_channel(self, buffer_size: int | None = None) -> Channel: ...
 
     def create_stream(self, stream_name: str, stream: IStream[Any]) -> None: ...
-
-    def list_functions(self) -> list[FunctionInfo]: ...
-
-    def list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]: ...
-
-    def on_functions_available(self, callback: FunctionsAvailableCallback) -> Callable[[], None]: ...
 
     def shutdown(self) -> None: ...
 

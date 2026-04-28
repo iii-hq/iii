@@ -58,33 +58,66 @@ pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
 
 /// Sanitize an OCI image reference into a cache-dir-safe name so two
 /// workers using different base images don't collide on disk under
-/// `~/.iii/rootfs/<name>/`. Keeps it human-readable for easier
-/// troubleshooting: `oven/bun:1` → `oven-bun-1-<hash>`,
+/// `~/.iii/cache/<slug>/`. Keeps it human-readable for easier
+/// troubleshooting: `oven/bun:1` → `docker.io-oven-bun-1-<hash>`,
 /// `ghcr.io/my-org/my-worker:latest` → `ghcr.io-my-org-my-worker-latest-<hash>`.
 ///
-/// The 16-hex-digit FNV-1a suffix is derived from the raw image
-/// reference. It makes the slug injective: inputs like `a/b:c`,
-/// `a-b:c`, and `a/b-c` all sanitize to `a-b-c` but hash to different
-/// suffixes, so their cache dirs never collide. Cost is 17 trailing
-/// characters on every dir name.
+/// The input is first normalized through `oci_client::Reference` so
+/// equivalent shorthand refs hit the same slug — `iiidev/node:latest`,
+/// `docker.io/iiidev/node:latest`, and `docker.io/iiidev/node` (tag
+/// inferred as `:latest`) all canonicalize to the same whole-form ref
+/// and therefore share one cache dir. Refs that fail to parse (pure-
+/// separator gibberish, malformed test inputs) fall through to the
+/// raw string so the slug is still deterministic.
+///
+/// The 16-hex-digit FNV-1a suffix is derived from the canonical form.
+/// It makes the slug injective: inputs that sanitize to the same
+/// human-readable base (e.g. `ghcr.io/foo/bar:1` and `ghcr.io/foo-bar:1`
+/// both collapse to `ghcr.io-foo-bar-1`) hash differently, so their
+/// cache dirs never collide. Cost is 17 trailing characters on every
+/// dir name.
 pub fn rootfs_slug_for_image(image: &str) -> String {
-    let raw = image.trim();
-    let hash = fnv1a64(raw.as_bytes());
+    slug_from_text(&canonicalize_oci_ref(image.trim()))
+}
+
+/// Pre-canonicalization slug. Only used by `rootfs_cache` to locate
+/// rootfses left on disk by the pre-fix hashing scheme so upgrading
+/// users don't re-pull on their first post-upgrade run.
+pub fn raw_rootfs_slug_for_image(image: &str) -> String {
+    slug_from_text(image.trim())
+}
+
+/// Parse `image` as an OCI reference and return its canonical whole
+/// form (registry/namespace/repo:tag with all defaults materialized).
+/// Falls back to the raw string when the parser rejects it, so edge-
+/// case inputs (test fixtures, malformed refs) still produce a stable
+/// slug instead of panicking.
+fn canonicalize_oci_ref(raw: &str) -> String {
+    raw.parse::<oci_client::Reference>()
+        .map(|r| r.whole())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+/// Sanitize + hash. Kept private so the two public entry points
+/// (`rootfs_slug_for_image`, `raw_rootfs_slug_for_image`) are the only
+/// callers and the canonicalization boundary stays crisp.
+fn slug_from_text(s: &str) -> String {
+    let hash = fnv1a64(s.as_bytes());
     // Single-pass emit + coalesce runs of `-`; O(n) vs the previous
     // `while contains("--") { replace("--","-") }` O(n²) loop.
-    let mut s = String::with_capacity(raw.len());
-    for c in raw.chars() {
-        let out = match c {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let ch = match c {
             'A'..='Z' => c.to_ascii_lowercase(),
             'a'..='z' | '0'..='9' | '.' | '-' | '_' => c,
             _ => '-',
         };
-        if out == '-' && s.ends_with('-') {
+        if ch == '-' && out.ends_with('-') {
             continue;
         }
-        s.push(out);
+        out.push(ch);
     }
-    let base = s
+    let base = out
         .trim_matches(|c: char| c == '-' || c == '.' || c == '_')
         .to_string();
     if base.is_empty() {
@@ -117,7 +150,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
 /// `~/.iii/rootfs/bun/` that every default `kind: bun` worker uses).
 pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
-    let (oci_image, rootfs_name): (String, String) = match base_image_override {
+    let (oci_image, legacy_slug): (String, String) = match base_image_override {
         Some(img) if !img.trim().is_empty() => {
             let slug = rootfs_slug_for_image(img.trim());
             if slug.is_empty() {
@@ -134,23 +167,24 @@ pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Re
         }
     };
 
-    let search_paths = rootfs_search_paths(&rootfs_name);
-    for path in &search_paths {
-        if path.exists() && path.join("bin").exists() {
-            return Ok(path.clone());
-        }
-    }
+    // Delegate cache lookup + pull to the unified rootfs cache. Legacy
+    // `~/.iii/rootfs/<kind>/` and `~/.iii/images/<sha>/` layouts are
+    // consulted as fallbacks so pre-unification users don't re-pull.
+    let image_for_log = oci_image.clone();
+    let slug_for_log = legacy_slug.clone();
+    let hints = crate::cli::rootfs_cache::CacheHints {
+        legacy_kind: Some(&legacy_slug),
+        consult_images_cache: true,
+        ..Default::default()
+    };
+    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, &hints, move || {
+        eprintln!("  Pulling rootfs {} ({})...", slug_for_log, image_for_log);
+    })
+    .await?;
 
-    let rootfs_dir = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".iii")
-        .join("rootfs")
-        .join(&rootfs_name);
-
-    eprintln!("  Pulling rootfs {} ({})...", rootfs_name, oci_image);
-
-    pull_and_extract_rootfs(&oci_image, &rootfs_dir).await?;
-
+    // Post-populate runtime-expected dirs even on a cache hit; these are
+    // idempotent and cheap, and covers the case where a legacy rootfs
+    // predates the workspace/ convention.
     let workspace = rootfs_dir.join("workspace");
     std::fs::create_dir_all(&workspace).ok();
 
@@ -366,13 +400,25 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 }
 
 /// Pull an OCI image and extract it as a rootfs directory.
+///
+/// **Atomicity contract:** `dest` is produced via rename(2) from a sibling
+/// temp directory, so observers either see the fully-extracted rootfs or
+/// nothing at all. A SIGTERM / network failure / disk-full partway through
+/// extraction leaves an orphaned `.tmp-*` sibling that the next pull
+/// cleans up. The cache-hit check at
+/// `crates/iii-worker/src/cli/worker_manager/libkrun.rs:393` can therefore
+/// trust that `dest` existing with `bin/` means the rootfs is complete.
+///
+/// Atomicity scope is `dest` ONLY — callers can rely on
+/// `dest` either existing with the full rootfs or not existing. Sibling
+/// metadata (e.g. a digest sidecar in a later task) is written by the
+/// caller AFTER this function returns and is not covered by the same
+/// rename; a missing sidecar beside a valid rootfs is treated as a
+/// cache miss upstream, which forces a re-pull that rewrites both.
 pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
-
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("Failed to create rootfs directory: {}", dest.display()))?;
 
     let reference: Reference = image
         .parse()
@@ -504,20 +550,105 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         .progress_chars("=> "),
     );
 
+    // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
+    // before pull would leak the temp dir on network/auth failure.
+    //
+    // The atomic unit is `dest` itself, NOT its parent. The staging dir
+    // lives as a SIBLING of `dest` so the final rename(temp, dest) touches
+    // only the one dir the caller asked for — it must never clobber the
+    // parent, which may house other unrelated cache entries (e.g.
+    // `~/.iii/rootfs/` is shared across base images like `node`, `bun`,
+    // `python`; similarly `~/.iii/images/<hash>/` may have a sibling
+    // `digest.txt` added in a later task).
+    let dest_parent = dest.parent();
+    let dest_basename = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rootfs");
+
+    let (extract_root, temp_to_promote) = match dest_parent {
+        Some(parent) => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let tmp_name = format!(".{}.tmp-{}-{}", dest_basename, std::process::id(), nanos);
+            let tmp_dir = parent.join(tmp_name);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            std::fs::create_dir_all(&tmp_dir).with_context(|| {
+                format!(
+                    "Failed to create temp extract directory: {}",
+                    tmp_dir.display()
+                )
+            })?;
+            (tmp_dir.clone(), Some((tmp_dir, dest.to_path_buf())))
+        }
+        None => {
+            // Degenerate: dest has no parent. Skip atomicity.
+            std::fs::create_dir_all(dest).with_context(|| {
+                format!("Failed to create rootfs directory: {}", dest.display())
+            })?;
+            (dest.to_path_buf(), None)
+        }
+    };
+
     let mut total_size: u64 = 0;
-    for (i, layer) in image_data.layers.iter().enumerate() {
-        extract_layer_with_limits(&layer.data, dest, i, layer_count, &mut total_size)?;
-        pb.inc(1);
+    let extract_result: Result<()> = (|| {
+        for (i, layer) in image_data.layers.iter().enumerate() {
+            extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
+            pb.inc(1);
+        }
+        pb.finish();
+
+        let config_json = &image_data.config.data;
+        let config_path = extract_root.join(".oci-config.json");
+        let _ = std::fs::write(&config_path, config_json);
+        Ok(())
+    })();
+
+    // Extraction done. If we were in the atomic path, either promote the
+    // temp dir into place OR clean it up.
+    if let Some((tmp_dir, final_dir)) = temp_to_promote {
+        match extract_result {
+            Ok(()) => {
+                // If `final_dir` already exists (leftover from a prior
+                // interrupted run, or a race with another `iii worker add`),
+                // remove it so the rename can succeed. We're claiming this
+                // dir atomically — stale contents are replaced wholesale.
+                if final_dir.exists() {
+                    std::fs::remove_dir_all(&final_dir).with_context(|| {
+                        format!(
+                            "Failed to remove stale rootfs before atomic promote: {}",
+                            final_dir.display()
+                        )
+                    })?;
+                }
+                std::fs::rename(&tmp_dir, &final_dir).with_context(|| {
+                    format!(
+                        "Failed to atomically promote rootfs {} -> {}",
+                        tmp_dir.display(),
+                        final_dir.display()
+                    )
+                })?;
+                tracing::info!(path = %dest.display(), "rootfs ready (atomic promote)");
+                eprintln!("  {} Rootfs ready", "\u{2713}".green());
+                Ok(())
+            }
+            Err(e) => {
+                // Extraction failed mid-way. Clean up the temp dir so the
+                // next pull doesn't see a half-filled sibling. Ignore errors
+                // on cleanup — original extraction error is what matters.
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                Err(e)
+            }
+        }
+    } else {
+        // Degenerate path (no parent): extraction wrote directly to dest.
+        extract_result?;
+        tracing::info!(path = %dest.display(), "rootfs ready");
+        eprintln!("  {} Rootfs ready", "\u{2713}".green());
+        Ok(())
     }
-    pb.finish();
-
-    let config_json = &image_data.config.data;
-    let config_path = dest.join(".oci-config.json");
-    let _ = std::fs::write(&config_path, config_json);
-
-    tracing::info!(path = %dest.display(), "rootfs ready");
-    eprintln!("  {} Rootfs ready", "\u{2713}".green());
-    Ok(())
 }
 
 pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
@@ -635,12 +766,21 @@ mod tests {
 
     #[test]
     fn slug_converts_simple_image_ref() {
+        // `oven/bun:1` is a Docker Hub shorthand; canonicalizer inserts
+        // the default registry, so the slug is keyed on the canonical
+        // form. The hash is still computed from the canonical text.
         let slug = rootfs_slug_for_image("oven/bun:1");
-        assert!(slug.starts_with("oven-bun-1-"), "unexpected slug: {slug}");
+        assert!(
+            slug.starts_with("docker.io-oven-bun-1-"),
+            "unexpected slug: {slug}"
+        );
     }
 
     #[test]
     fn slug_lowercases() {
+        // Uppercase paths fail the Docker reference regex, so
+        // `canonicalize_oci_ref` falls back to the raw string and the
+        // sanitizer lowercases it. Behavior unchanged from pre-canon.
         let slug = rootfs_slug_for_image("GHCR.io/Foo/Bar:1.0");
         assert!(
             slug.starts_with("ghcr.io-foo-bar-1.0-"),
@@ -651,7 +791,9 @@ mod tests {
     #[test]
     fn slug_collapses_consecutive_separators() {
         // Weird but defensive: double colons and leading/trailing junk
-        // shouldn't produce runs of dashes or empty segments.
+        // shouldn't produce runs of dashes or empty segments. These
+        // inputs fail Reference::try_from and hit the raw-string
+        // fallback, so sanitizer behavior is what's under test.
         let a = rootfs_slug_for_image("::foo::");
         assert!(a.starts_with("foo-"), "unexpected slug: {a}");
         let b = rootfs_slug_for_image("a//b:c");
@@ -669,24 +811,20 @@ mod tests {
         );
     }
 
-    /// Regression for the slug-collision hole: refs that sanitize to
-    /// the same human-readable prefix must still get distinct cache
-    /// dirs via the hash suffix. Without the suffix, `a/b:c`, `a-b:c`,
-    /// and `a/b-c` all collapse to `a-b-c` and one worker would clobber
-    /// another's extracted rootfs on disk.
+    /// The sanitizer can still collapse distinct canonical refs into
+    /// the same human-readable base (`ghcr.io/foo/bar:1` and
+    /// `ghcr.io/foo-bar:1` both become `ghcr.io-foo-bar-1`). The hash
+    /// suffix keeps their cache dirs from colliding on disk.
     #[test]
     fn slug_hash_prevents_prefix_collision() {
-        let a = rootfs_slug_for_image("a/b:c");
-        let b = rootfs_slug_for_image("a-b:c");
-        let c = rootfs_slug_for_image("a/b-c");
-        // All three share the human prefix.
-        assert!(a.starts_with("a-b-c-"));
-        assert!(b.starts_with("a-b-c-"));
-        assert!(c.starts_with("a-b-c-"));
-        // But none of the full slugs collide.
+        let a = rootfs_slug_for_image("ghcr.io/foo/bar:1");
+        let b = rootfs_slug_for_image("ghcr.io/foo-bar:1");
+        // Both share the human prefix after sanitization.
+        assert!(a.starts_with("ghcr.io-foo-bar-1-"), "unexpected slug: {a}");
+        assert!(b.starts_with("ghcr.io-foo-bar-1-"), "unexpected slug: {b}");
+        // But the full slugs differ because the hash is computed over
+        // the canonical ref, which still distinguishes them.
         assert_ne!(a, b);
-        assert_ne!(b, c);
-        assert_ne!(a, c);
     }
 
     #[test]
@@ -708,6 +846,55 @@ mod tests {
             rootfs_slug_for_image("oven/bun:1"),
             rootfs_slug_for_image("oven/bun:1")
         );
+    }
+
+    /// Regression for the ~/.iii/cache/ duplication bug: sandbox
+    /// presets pass `iiidev/node:latest` (no registry prefix) while
+    /// managed workers pass `docker.io/iiidev/node:latest`. Without
+    /// canonicalization, both wrote to distinct slug dirs and pulled
+    /// the same image twice.
+    #[test]
+    fn slug_normalizes_docker_hub_default_registry() {
+        assert_eq!(
+            rootfs_slug_for_image("iiidev/node:latest"),
+            rootfs_slug_for_image("docker.io/iiidev/node:latest"),
+        );
+    }
+
+    /// Docker Hub shorthand `node` expands to
+    /// `docker.io/library/node:latest` — the `library/` namespace is
+    /// the canonical location for official images.
+    #[test]
+    fn slug_normalizes_library_shortform() {
+        assert_eq!(
+            rootfs_slug_for_image("node"),
+            rootfs_slug_for_image("docker.io/library/node:latest"),
+        );
+    }
+
+    /// Omitting the tag is equivalent to `:latest`. Both forms must
+    /// land in the same cache dir or the first pull won't satisfy the
+    /// second call.
+    #[test]
+    fn slug_normalizes_missing_tag_to_latest() {
+        assert_eq!(
+            rootfs_slug_for_image("iiidev/node"),
+            rootfs_slug_for_image("iiidev/node:latest"),
+        );
+    }
+
+    /// Guard the pre-canonicalization escape hatch used by
+    /// `rootfs_cache::legacy_candidates`. When the raw form differs
+    /// from the canonical form, the two slugs must differ so upgrading
+    /// users' existing rootfses remain findable through the legacy
+    /// path.
+    #[test]
+    fn raw_slug_differs_from_canonical_when_shorthand() {
+        let raw = raw_rootfs_slug_for_image("iiidev/node:latest");
+        let canonical = rootfs_slug_for_image("iiidev/node:latest");
+        assert_ne!(raw, canonical);
+        assert!(raw.starts_with("iiidev-node-latest-"));
+        assert!(canonical.starts_with("docker.io-iiidev-node-latest-"));
     }
 
     #[test]

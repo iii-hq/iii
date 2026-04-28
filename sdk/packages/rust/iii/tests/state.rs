@@ -242,6 +242,122 @@ async fn state_list_all_items_in_scope() {
 }
 
 #[tokio::test]
+async fn state_list_groups_returns_available_scopes() {
+    // Ported from motia state integration suite: state#listGroups returns
+    // available scopes. JS counterpart: sdk/packages/node/iii/tests/state.test.ts
+    // describe('state::list_groups').
+    let iii = common::shared_iii();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let scope = format!("list-groups-scope-rs-{ts}");
+
+    iii.trigger(TriggerRequest {
+        function_id: "state::set".to_string(),
+        payload: json!({"scope": scope, "key": "anchor", "value": {"present": true}}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("state::set anchor");
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "state::list_groups".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("state::list_groups");
+
+    let groups: Vec<Value> = if let Some(arr) = result.as_array() {
+        arr.clone()
+    } else if let Some(arr) = result.get("groups").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else {
+        panic!("expected array or {{ groups: [] }}, got {result:?}");
+    };
+
+    assert!(
+        groups.iter().any(|g| g.as_str() == Some(scope.as_str())),
+        "expected groups to contain {scope}, got {groups:?}"
+    );
+
+    iii.trigger(TriggerRequest {
+        function_id: "state::delete".to_string(),
+        payload: json!({"scope": scope, "key": "anchor"}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("state::delete anchor");
+}
+
+#[tokio::test]
+async fn state_update_applies_partial_updates_via_ops() {
+    // Ported from motia state integration suite: state#update applies partial
+    // updates. JS counterpart: sdk/packages/node/iii/tests/state.test.ts
+    // describe('state::update').
+    let iii = common::shared_iii();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let scope = format!("update-scope-rs-{ts}");
+    let key = format!("update-key-rs-{ts}");
+
+    iii.trigger(TriggerRequest {
+        function_id: "state::set".to_string(),
+        payload: json!({
+            "scope": scope,
+            "key": key,
+            "value": {"count": 0, "name": "initial"},
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("state::set initial");
+
+    iii.trigger(TriggerRequest {
+        function_id: "state::update".to_string(),
+        payload: json!({
+            "scope": scope,
+            "key": key,
+            "ops": [{"type": "set", "path": "count", "value": 5}],
+        }),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("state::update");
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "state::get".to_string(),
+            payload: json!({"scope": scope, "key": key}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("state::get after update");
+
+    assert_eq!(result["count"], json!(5));
+    assert_eq!(result["name"], json!("initial"));
+
+    iii.trigger(TriggerRequest {
+        function_id: "state::delete".to_string(),
+        payload: json!({"scope": scope, "key": key}),
+        action: None,
+        timeout_ms: None,
+    })
+    .await
+    .expect("state::delete");
+}
+
+#[tokio::test]
 async fn reactive_state() {
     let key = unique_key("reactive");
     let iii = common::shared_iii();

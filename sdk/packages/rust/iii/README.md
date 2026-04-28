@@ -12,7 +12,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-iii-sdk = "0.3"
+iii-sdk = "0.11"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -27,19 +27,19 @@ use serde_json::{json, Value};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    iii.register_function("greet", |input: Value| async move {
+    iii.register_function("hello::greet", |input: Value| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
 
-    iii.register_trigger("http", "greet", json!({
+    iii.register_trigger("http", "hello::greet", json!({
         "api_path": "/greet",
         "http_method": "POST"
     }))?;
 
     let result: Value = iii
         .trigger(TriggerRequest {
-            function_id: "greet".to_string(),
+        function_id: "hello::greet".to_string(),
             payload: json!({ "name": "world" }),
             action: None,
             timeout_ms: None,
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use serde_json::{json, Value};
 
-iii.register_function("orders.create", |input: Value| async move {
+iii.register_function("orders::create", |input: Value| async move {
     let item = input["body"]["item"].as_str().unwrap_or("");
     Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
 });
@@ -78,7 +78,7 @@ iii.register_function("orders.create", |input: Value| async move {
 ### Registering Triggers
 
 ```rust
-iii.register_trigger("http", "orders.create", json!({
+iii.register_trigger("http", "orders::create", json!({
     "api_path": "/orders",
     "http_method": "POST"
 }))?;
@@ -92,7 +92,7 @@ use serde_json::json;
 
 // Synchronous -- waits for the result
 let result = iii.trigger(TriggerRequest {
-    function_id: "orders.create".to_string(),
+    function_id: "orders::create".to_string(),
     payload: json!({ "body": { "item": "widget" } }),
     action: None,
     timeout_ms: None,
@@ -100,7 +100,7 @@ let result = iii.trigger(TriggerRequest {
 
 // Fire-and-forget
 iii.trigger(TriggerRequest {
-    function_id: "analytics.track".to_string(),
+    function_id: "analytics::track".to_string(),
     payload: json!({ "event": "page_view" }),
     action: Some(TriggerAction::Void),
     timeout_ms: None,
@@ -108,7 +108,7 @@ iii.trigger(TriggerRequest {
 
 // Async via named queue
 iii.trigger(TriggerRequest {
-    function_id: "orders.process".to_string(),
+    function_id: "orders::process".to_string(),
     payload: json!({ "order_id": "456" }),
     action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
     timeout_ms: None,

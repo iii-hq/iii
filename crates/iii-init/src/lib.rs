@@ -26,6 +26,11 @@ pub mod child_exits;
 pub mod shell_dispatcher;
 #[cfg(target_os = "linux")]
 pub mod supervisor;
+// Filesystem operation handlers. Linux-only because the module calls
+// std::os::unix::fs APIs and references shell_dispatcher internals.
+// Keeping it behind cfg(linux) also keeps macOS unit test builds clean.
+#[cfg(target_os = "linux")]
+pub mod fs_handler;
 
 #[cfg(target_os = "linux")]
 pub use error::InitError;

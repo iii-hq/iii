@@ -69,6 +69,46 @@ async fn handle_managed_add_builtin_creates_config() {
         assert!(content.contains("default_timeout: 30000"));
         assert!(content.contains("concurrency_request_limit: 1024"));
         assert!(content.contains("allowed_origins"));
+        let lockfile = iii_worker::cli::lockfile::WorkerLockfile::read_from(
+            iii_worker::cli::lockfile::lockfile_path(),
+        )
+        .unwrap();
+        let worker = lockfile.workers.get("iii-http").unwrap();
+        assert!(matches!(
+            worker.worker_type,
+            iii_worker::cli::lockfile::LockedWorkerType::Engine
+        ));
+        assert!(worker.source.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn handle_managed_add_builtin_accepts_explicit_version() {
+    in_temp_dir_async(|| async {
+        // The explicit version intentionally differs from the workspace
+        // version; this pins that user-supplied registry versions are accepted.
+        let exit_code = iii_worker::cli::managed::handle_managed_add(
+            "iii-http@0.10.0",
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(
+            exit_code, 0,
+            "expected builtins to accept explicit registry versions"
+        );
+
+        let content = std::fs::read_to_string("config.yaml").unwrap();
+        assert!(content.contains("- name: iii-http"));
+        assert!(content.contains("port: 3111"));
+        let lockfile = iii_worker::cli::lockfile::WorkerLockfile::read_from(
+            iii_worker::cli::lockfile::lockfile_path(),
+        )
+        .unwrap();
+        assert_eq!(lockfile.workers["iii-http"].version, "0.10.0");
     })
     .await;
 }
@@ -162,6 +202,27 @@ async fn handle_managed_start_unconfigured_builtin_fails() {
         assert_ne!(
             start_rc, 0,
             "handle_managed_start must fail for unconfigured builtin 'iii-http'"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn handle_managed_start_unconfigured_optional_builtin_fails() {
+    in_temp_dir_async(|| async {
+        assert!(
+            !iii_worker::cli::config_file::worker_exists("iii-exec"),
+            "precondition: iii-exec must not be in config.yaml"
+        );
+        let start_rc = iii_worker::cli::managed::handle_managed_start(
+            "iii-exec",
+            false,
+            iii_worker::DEFAULT_PORT,
+        )
+        .await;
+        assert_ne!(
+            start_rc, 0,
+            "handle_managed_start must fail for unconfigured optional builtin 'iii-exec'"
         );
     })
     .await;

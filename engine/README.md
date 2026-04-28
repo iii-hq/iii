@@ -59,7 +59,7 @@ Check out [iii.dev/docs](https://iii.dev/docs) to get started building with iii.
 
 | Language | Package                                            | Install               |
 | -------- | -------------------------------------------------- | --------------------- |
-| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `npm install iii-sdk` |
+| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk` |
 | Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk` |
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`   |
 
@@ -157,7 +157,7 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 - [CLI & Engine](https://github.com/iii-hq/iii)
 - [Console](https://github.com/iii-hq/console)
 - [Examples](https://github.com/iii-hq/iii-examples)
-- [SDKs](https://github.com/iii-hq/sdk)
+- [SDKs](https://github.com/iii-hq/iii/tree/main/sdk)
 
 ## License
 

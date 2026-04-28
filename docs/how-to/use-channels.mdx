@@ -238,7 +238,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'http',
   function_id: 'files::download',
-  config: { api_path: 'files/:filename', http_method: 'GET' },
+  config: { api_path: '/files/:filename', http_method: 'GET' },
 })
 ```
 </Tab>
@@ -268,7 +268,7 @@ iii.register_function("files::download", download_file)
 iii.register_trigger({
     "type": "http",
     "function_id": "files::download",
-    "config": {"api_path": "files/:filename", "http_method": "GET"},
+    "config": {"api_path": "/files/:filename", "http_method": "GET"},
 })
 ```
 </Tab>
@@ -317,7 +317,7 @@ iii.registerFunction(
 iii.registerTrigger({
   type: 'http',
   function_id: 'events::stream',
-  config: { api_path: 'events/stream', http_method: 'GET' },
+  config: { api_path: '/events/stream', http_method: 'GET' },
 })
 ```
 </Tab>

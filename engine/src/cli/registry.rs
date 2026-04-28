@@ -6,7 +6,6 @@
 
 use super::error::RegistryError;
 
-/// Specification for a managed binary
 #[derive(Debug, Clone)]
 pub struct BinarySpec {
     pub name: &'static str,
@@ -17,7 +16,6 @@ pub struct BinarySpec {
     pub tag_prefix: Option<&'static str>,
 }
 
-/// Maps a CLI command to a binary subcommand
 #[derive(Debug, Clone)]
 pub struct CommandMapping {
     /// The command name as exposed by iii (e.g., "console", "create")
@@ -45,7 +43,6 @@ pub static SELF_SPEC: BinarySpec = BinarySpec {
     tag_prefix: Some("iii"),
 };
 
-/// The compiled-in binary registry
 pub static REGISTRY: &[BinarySpec] = &[
     BinarySpec {
         name: "iii-init",
@@ -83,7 +80,7 @@ pub static REGISTRY: &[BinarySpec] = &[
     },
     BinarySpec {
         name: "iii-tools",
-        repo: "iii-hq/cli-tooling",
+        repo: "iii-hq/iii",
         has_checksum: true,
         supported_targets: &[
             "aarch64-apple-darwin",
@@ -96,27 +93,7 @@ pub static REGISTRY: &[BinarySpec] = &[
             cli_command: "create",
             binary_subcommand: Some("create"),
         }],
-        tag_prefix: None,
-    },
-    BinarySpec {
-        name: "motia-cli",
-        repo: "MotiaDev/motia-cli",
-        has_checksum: false,
-        supported_targets: &[
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "x86_64-pc-windows-msvc",
-            "aarch64-pc-windows-msvc",
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-            "armv7-unknown-linux-gnueabihf",
-        ],
-        commands: &[CommandMapping {
-            cli_command: "motia",
-            binary_subcommand: None,
-        }],
-        tag_prefix: None,
+        tag_prefix: Some("iii"),
     },
     BinarySpec {
         name: "iii-cloud",
@@ -148,15 +125,20 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
-        commands: &[CommandMapping {
-            cli_command: "worker",
-            binary_subcommand: None,
-        }],
+        commands: &[
+            CommandMapping {
+                cli_command: "worker",
+                binary_subcommand: None,
+            },
+            CommandMapping {
+                cli_command: "sandbox",
+                binary_subcommand: Some("sandbox"),
+            },
+        ],
         tag_prefix: Some("iii"),
     },
 ];
 
-/// Resolve a CLI command name to its BinarySpec and optional binary subcommand.
 pub fn resolve_command(
     command: &str,
 ) -> Result<(&'static BinarySpec, Option<&'static str>), RegistryError> {
@@ -175,13 +157,11 @@ pub fn resolve_command(
 /// Resolve a command name to its parent BinarySpec (for update resolution).
 /// e.g., "create" resolves to iii-tools.
 pub fn resolve_binary_for_update(command: &str) -> Result<&'static BinarySpec, RegistryError> {
-    // First try exact binary name match
     for spec in REGISTRY {
         if spec.name == command {
             return Ok(spec);
         }
     }
-    // Then try command name match
     for spec in REGISTRY {
         for mapping in spec.commands {
             if mapping.cli_command == command {
@@ -194,7 +174,6 @@ pub fn resolve_binary_for_update(command: &str) -> Result<&'static BinarySpec, R
     })
 }
 
-/// Get all unique BinarySpecs in the registry.
 pub fn all_binaries() -> Vec<&'static BinarySpec> {
     REGISTRY.iter().collect()
 }
@@ -215,16 +194,9 @@ mod tests {
     fn test_resolve_create() {
         let (spec, sub) = resolve_command("create").unwrap();
         assert_eq!(spec.name, "iii-tools");
-        assert_eq!(spec.repo, "iii-hq/cli-tooling");
+        assert_eq!(spec.repo, "iii-hq/iii");
+        assert_eq!(spec.tag_prefix, Some("iii"));
         assert_eq!(sub, Some("create"));
-    }
-
-    #[test]
-    fn test_resolve_motia() {
-        let (spec, sub) = resolve_command("motia").unwrap();
-        assert_eq!(spec.name, "motia-cli");
-        assert_eq!(spec.repo, "MotiaDev/motia-cli");
-        assert!(sub.is_none());
     }
 
     #[test]
@@ -233,12 +205,6 @@ mod tests {
         assert_eq!(spec.name, "iii-cloud");
         assert_eq!(spec.repo, "iii-hq/iii-cloud-cli");
         assert!(sub.is_none());
-    }
-
-    #[test]
-    fn test_motia_no_checksum() {
-        let (spec, _) = resolve_command("motia").unwrap();
-        assert!(!spec.has_checksum);
     }
 
     #[test]
@@ -253,12 +219,6 @@ mod tests {
 
         let spec = resolve_binary_for_update("iii-console").unwrap();
         assert_eq!(spec.name, "iii-console");
-    }
-
-    #[test]
-    fn test_resolve_binary_for_update_motia() {
-        let spec = resolve_binary_for_update("motia").unwrap();
-        assert_eq!(spec.name, "motia-cli");
     }
 
     #[test]

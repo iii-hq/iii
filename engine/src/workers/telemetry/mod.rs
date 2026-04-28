@@ -842,32 +842,28 @@ impl Worker for TelemetryWorker {
 
                     let acc = crate::workers::observability::metrics::get_metrics_accumulator();
 
-                    if !success_sent {
-                        if let Some(fn_id) = acc.first_user_success_fn.get() {
-                            let (event_type, props) = build_template_lifecycle_properties(
-                                "template_success",
-                                fn_id,
-                                &source,
-                                &project_for_template,
-                            );
-                            let event = ctx_for_template.build_event(&event_type, props, None);
-                            let _ = client_for_template.send_event(event).await;
-                            success_sent = true;
-                        }
+                    if !success_sent && let Some(fn_id) = acc.first_user_success_fn.get() {
+                        let (event_type, props) = build_template_lifecycle_properties(
+                            "template_success",
+                            fn_id,
+                            &source,
+                            &project_for_template,
+                        );
+                        let event = ctx_for_template.build_event(&event_type, props, None);
+                        let _ = client_for_template.send_event(event).await;
+                        success_sent = true;
                     }
 
-                    if !failure_sent {
-                        if let Some(fn_id) = acc.first_user_failure_fn.get() {
-                            let (event_type, props) = build_template_lifecycle_properties(
-                                "template_failure",
-                                fn_id,
-                                &source,
-                                &project_for_template,
-                            );
-                            let event = ctx_for_template.build_event(&event_type, props, None);
-                            let _ = client_for_template.send_event(event).await;
-                            failure_sent = true;
-                        }
+                    if !failure_sent && let Some(fn_id) = acc.first_user_failure_fn.get() {
+                        let (event_type, props) = build_template_lifecycle_properties(
+                            "template_failure",
+                            fn_id,
+                            &source,
+                            &project_for_template,
+                        );
+                        let event = ctx_for_template.build_event(&event_type, props, None);
+                        let _ = client_for_template.send_event(event).await;
+                        failure_sent = true;
                     }
                 }
             });

@@ -1,0 +1,21 @@
+iii: v1
+name: iii-observability
+type: engine
+description: OpenTelemetry-based traces, metrics, logs, alerts, and sampling.
+repo: https://github.com/iii-hq/iii
+config:
+  enabled: true
+  service_name: iii
+  service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}
+  exporter: memory
+  memory_max_spans: 10000
+  metrics_enabled: true
+  metrics_exporter: memory
+  metrics_retention_seconds: 3600
+  metrics_max_count: 10000
+  logs_enabled: true
+  logs_exporter: memory
+  logs_max_count: 1000
+  logs_retention_seconds: 3600
+  logs_console_output: true
+  sampling_ratio: 1.0

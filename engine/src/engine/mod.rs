@@ -565,7 +565,8 @@ impl Engine {
         );
     }
 
-    async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
+    #[doc(hidden)]
+    pub async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
                 id,
@@ -797,13 +798,26 @@ impl Engine {
                         function.as_ref(),
                     ) {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        let explicitly_forbidden =
+                            session.forbidden_functions.iter().any(|f| f == function_id);
+                        let remediation = if explicitly_forbidden {
+                            "remove from rbac.forbidden_functions"
+                        } else {
+                            "add to rbac.expose_functions"
+                        };
                         self.send_msg(
                             worker,
                             Message::InvocationResult {
                                 invocation_id: inv_id,
                                 function_id: function_id.clone(),
                                 result: None,
-                                error: Some(ErrorBody::new("FORBIDDEN", "function not allowed")),
+                                error: Some(ErrorBody::new(
+                                    "FORBIDDEN",
+                                    format!(
+                                        "function '{}' not allowed ({})",
+                                        function_id, remediation
+                                    ),
+                                )),
                                 traceparent: traceparent.clone(),
                                 baggage: baggage.clone(),
                             },
@@ -993,9 +1007,16 @@ impl Engine {
                     };
                     return Ok(());
                 } else {
-                    tracing::warn!(
+                    // Expected when the caller disconnected before the
+                    // executor finished (client-side trigger timeout,
+                    // Ctrl-C, etc). `cleanup_worker` already halted the
+                    // invocation, so the late result has nowhere to go.
+                    // Kept at debug to avoid log noise for a normal
+                    // condition — previously this was warn and produced
+                    // a pair of scary lines on every slow sandbox::exec.
+                    tracing::debug!(
                         invocation_id = %invocation_id,
-                        "Did not find caller for invocation"
+                        "Did not find caller for invocation (caller already disconnected)"
                     );
                 }
                 Ok(())

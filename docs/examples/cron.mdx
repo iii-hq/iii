@@ -23,7 +23,7 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'cron.periodic_job', description: 'Fires on schedule and enqueues work' },
+  { id: 'cron::periodic_job', description: 'Fires on schedule and enqueues work' },
   async () => {
     const logger = new Logger()
     logger.info('Periodic job fired')
@@ -41,7 +41,7 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'cron',
-  function_id: 'cron.periodic_job',
+  function_id: 'cron::periodic_job',
   config: { expression: '0 * * * * * *' }, // every minute
 })
 ```
@@ -72,10 +72,10 @@ def periodic_job(_data) -> None:
     })
 
 
-iii.register_function("cron.periodic_job", periodic_job)
+iii.register_function("cron::periodic_job", periodic_job)
 iii.register_trigger({
     "type": "cron",
-    "function_id": "cron.periodic_job",
+    "function_id": "cron::periodic_job",
     "config": {"expression": "0 * * * * * *"},  # every minute
 })
 ```
@@ -89,7 +89,7 @@ use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into()), |_input| async move {
+iii.register_function((RegisterFunctionMessage::with_id("cron::periodic_job".into()), |_input| async move {
     let logger = Logger::new();
 
     logger.info("Periodic job fired", None);
@@ -105,7 +105,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron::periodic_job".into(), config: json!({
     "expression": "0 * * * * * *",
 }), metadata: None })?;
 ```
@@ -122,7 +122,7 @@ The function that consumes the cron's emitted event:
 
 ```typescript
 iii.registerFunction(
-  { id: 'job.handle_tick', description: 'Processes the periodic job event' },
+  { id: 'job::handle_tick', description: 'Processes the periodic job event' },
   async (data: { firedAt: string; message: string }) => {
     const logger = new Logger()
     logger.info('Periodic job processed', { firedAt: data.firedAt, message: data.message })
@@ -131,7 +131,7 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'durable:subscriber',
-  function_id: 'job.handle_tick',
+  function_id: 'job::handle_tick',
   config: { topic: 'job.tick' },
 })
 ```
@@ -149,8 +149,8 @@ def handle_tick(data: dict) -> None:
         "message": data.get("message"),
     })
 
-iii.register_function("job.handle_tick", handle_tick)
-iii.register_trigger({"type": "durable:subscriber", "function_id": "job.handle_tick", "config": {"topic": "job.tick"}})
+iii.register_function("job::handle_tick", handle_tick)
+iii.register_trigger({"type": "durable:subscriber", "function_id": "job::handle_tick", "config": {"topic": "job.tick"}})
 ```
 
   </Tab>
@@ -160,14 +160,14 @@ iii.register_trigger({"type": "durable:subscriber", "function_id": "job.handle_t
 use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function((RegisterFunctionMessage::with_id("job.handle_tick".into()), |input| async move {
+iii.register_function((RegisterFunctionMessage::with_id("job::handle_tick".into()), |input| async move {
     let logger = Logger::new();
 
     logger.info("Periodic job processed", Some(input));
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "job::handle_tick".into(), config: json!({ "topic": "job.tick" }), metadata: None })?;
 ```
 
   </Tab>
@@ -182,7 +182,7 @@ A common pattern: read all records in a state scope, filter them by a business r
 
 ```typescript
 iii.registerFunction(
-  { id: 'cron.orders_sweep', description: 'Checks for overdue orders every 5 minutes' },
+  { id: 'cron::orders_sweep', description: 'Checks for overdue orders every 5 minutes' },
   async () => {
     const logger = new Logger()
 
@@ -223,7 +223,7 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'cron',
-  function_id: 'cron.orders_sweep',
+  function_id: 'cron::orders_sweep',
   config: { expression: '0 */5 * * * * *' },
 })
 ```
@@ -268,8 +268,8 @@ def orders_sweep(_data) -> None:
 
     logger.info("Sweep complete", {"checked": len(orders), "swept": swept})
 
-iii.register_function("cron.orders_sweep", orders_sweep)
-iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "0 */5 * * * * *"}})
+iii.register_function("cron::orders_sweep", orders_sweep)
+iii.register_trigger({"type": "cron", "function_id": "cron::orders_sweep", "config": {"expression": "0 */5 * * * * *"}})
 ```
 
   </Tab>
@@ -279,7 +279,7 @@ iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "confi
 use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into()), |_input| async move {
+iii.register_function((RegisterFunctionMessage::with_id("cron::orders_sweep".into()), |_input| async move {
     let logger = Logger::new();
 
     let orders_val = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "orders" }))).await?;
@@ -315,7 +315,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "0 */5 * * * * *" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron::orders_sweep".into(), config: json!({ "expression": "0 */5 * * * * *" }), metadata: None })?;
 ```
 
   </Tab>

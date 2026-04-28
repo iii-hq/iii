@@ -1,4 +1,7 @@
-use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler};
+use iii_sdk::{
+    III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, TriggerRequest,
+    TriggerTypeInfo,
+};
 
 // ── Custom trigger type config & call request as typed structs ──────────
 
@@ -80,11 +83,27 @@ fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, String
 
 // ── List trigger types example ──────────────────────────────────────────
 
-pub async fn list_trigger_types_example(iii: &III) {
+pub async fn print_trigger_type_catalog(iii: &III) {
     println!("\n--- Listing all trigger types ---");
 
-    match iii.list_trigger_types(false).await {
-        Ok(trigger_types) => {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::trigger-types::list".to_string(),
+            payload: serde_json::json!({ "include_internal": false }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+
+    match result {
+        Ok(value) => {
+            let trigger_types: Vec<TriggerTypeInfo> = serde_json::from_value(
+                value
+                    .get("trigger_types")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Array(vec![])),
+            )
+            .unwrap_or_default();
             println!("Found {} trigger types:\n", trigger_types.len());
             for tt in &trigger_types {
                 println!("  [{}] {}", tt.id, tt.description);

@@ -16,7 +16,22 @@ use iii_sdk::{FunctionInfo, RegisterFunctionMessage, TriggerAction, TriggerReque
 async fn connect_successfully() {
     let iii = common::shared_iii();
 
-    let functions: Vec<FunctionInfo> = iii.list_functions().await.expect("list_functions");
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("function discovery request should succeed");
+    let functions: Vec<FunctionInfo> = serde_json::from_value(
+        result
+            .get("functions")
+            .cloned()
+            .expect("functions field should be present in discovery response"),
+    )
+    .expect("deserialize functions");
     // Just verify it returns a valid list (may be empty if no functions registered)
     let _ = functions;
 }
@@ -120,7 +135,22 @@ async fn list_registered_functions() {
 
     common::settle().await;
 
-    let functions: Vec<FunctionInfo> = iii.list_functions().await.expect("list_functions");
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("function discovery request should succeed");
+    let functions: Vec<FunctionInfo> = serde_json::from_value(
+        result
+            .get("functions")
+            .cloned()
+            .expect("functions field should be present in discovery response"),
+    )
+    .expect("deserialize functions");
     let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
 
     assert!(ids.contains(&"test::bridge::rs::list::func1"));

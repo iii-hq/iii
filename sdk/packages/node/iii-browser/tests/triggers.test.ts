@@ -1,11 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registerWorker } from '../src/iii'
+import type { FunctionInfo } from '../src/iii-types'
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
-
-const empty = async () => {
-  //
-}
 
 describe('Trigger Registration', () => {
   let engine: MockEngine
@@ -91,23 +88,41 @@ describe('Trigger Registration', () => {
     expect(allUnregister[1].id).toBe(idB)
   })
 
-  it('should register internal trigger for onFunctionsAvailable', () => {
-    sdk.onFunctionsAvailable(empty)
+  it('should register a function-availability trigger manually', () => {
+    const handlerFunctionId = 'test.functions_available.handler'
+    sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionInfo[] }) => null)
+    sdk.registerTrigger({
+      type: 'engine::functions-available',
+      function_id: handlerFunctionId,
+      config: {},
+    })
 
     const fnMsgs = engine.findAllSent('registerfunction')
-    const internalFn = fnMsgs.find((m) => (m.id as string).startsWith('engine.on_functions_available.'))
-    expect(internalFn).toBeDefined()
+    const handlerFn = fnMsgs.find((m) => m.id === handlerFunctionId)
+    expect(handlerFn).toBeDefined()
 
     const triggerMsgs = engine.findAllSent('registertrigger')
-    const internalTrigger = triggerMsgs.find((m) => m.trigger_type === 'engine::functions-available')
-    expect(internalTrigger).toBeDefined()
+    const availabilityTrigger = triggerMsgs.find((m) => m.trigger_type === 'engine::functions-available')
+    expect(availabilityTrigger).toBeDefined()
+    expect(availabilityTrigger?.function_id).toBe(handlerFunctionId)
   })
 
-  it('should clean up onFunctionsAvailable on unsubscribe', () => {
-    const unsubscribe = sdk.onFunctionsAvailable(empty)
-    unsubscribe()
+  it('should clean up a manually-registered function-availability trigger', () => {
+    const handlerFunctionId = 'test.functions_available.cleanup'
+    const fn = sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionInfo[] }) => null)
+    const trigger = sdk.registerTrigger({
+      type: 'engine::functions-available',
+      function_id: handlerFunctionId,
+      config: {},
+    })
 
-    const unregisterMsgs = engine.findAllSent('unregistertrigger')
-    expect(unregisterMsgs.length).toBeGreaterThanOrEqual(1)
+    trigger.unregister()
+    fn.unregister()
+
+    const unregisterTriggerMsgs = engine.findAllSent('unregistertrigger')
+    expect(unregisterTriggerMsgs.length).toBeGreaterThanOrEqual(1)
+    expect(
+      unregisterTriggerMsgs.some((m) => m.trigger_type === 'engine::functions-available'),
+    ).toBe(true)
   })
 })

@@ -1,0 +1,27 @@
+[package]
+name = "iii-shell-client"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+publish = false
+description = "Async pipe-mode client for the iii shell-exec channel. Connects to ~/.iii/managed/<name>/shell.sock, speaks iii-shell-proto, streams output through a caller-supplied OutputSink. Pipe mode only; TTY/SIGWINCH lives in consumer binaries."
+
+[lib]
+name = "iii_shell_client"
+path = "src/lib.rs"
+
+[dependencies]
+iii-shell-proto = { path = "../iii-shell-proto", version = "0.1.0" }
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "sync", "macros"] }
+base64 = "0.22"
+anyhow = "1.0.100"
+thiserror = "2"
+tracing = "0.1"
+libc = "0.2"
+dirs = "5"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+iii-shell-proto = { path = "../iii-shell-proto" }
+base64 = "0.22"

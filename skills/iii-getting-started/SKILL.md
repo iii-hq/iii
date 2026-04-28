@@ -25,12 +25,16 @@ iii --version
 ## Step 2: Create a Project
 
 ```bash
-curl -LO https://github.com/iii-hq/cli-tooling/releases/latest/download/quickstart.zip
-unzip quickstart.zip
-cd quickstart
+iii create
 ```
 
-The quickstart includes TypeScript, Python, and Rust workers. If you don't have all runtimes, the README includes Docker Compose instructions.
+Follow the interactive prompts to select a template and language. The default quickstart template includes TypeScript, Python, and Rust workers.
+
+Then change into the project directory you chose at the prompt:
+
+```bash
+cd <your-project>
+```
 
 ## Step 3: Start the Engine
 
@@ -176,7 +180,7 @@ After getting your first worker running:
 - [SDK Reference — Python](https://iii.dev/docs/api-reference/sdk-python)
 - [SDK Reference — Rust](https://iii.dev/docs/api-reference/sdk-rust)
 - [Engine Configuration](https://iii.dev/docs/configuration)
-- [Console Dashboard](https://iii.dev/docs/console)
+- [Console](https://iii.dev/docs/console)
 
 ## Pattern Boundaries
 

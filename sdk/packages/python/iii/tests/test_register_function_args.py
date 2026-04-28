@@ -1,4 +1,4 @@
-"""Tests for the two-arg register_function() pattern with RegisterFunctionInput."""
+"""Tests for the string-id register_function() public API."""
 
 import json
 import time
@@ -11,35 +11,7 @@ from pydantic import BaseModel, Field
 import iii.iii as iii_module
 from iii import InitOptions
 from iii.iii import III
-from iii.iii_types import RegisterFunctionFormat, RegisterFunctionInput
-
-
-def test_register_function_input_model() -> None:
-    """RegisterFunctionInput should be constructible with just an id."""
-    inp = RegisterFunctionInput(id="demo.fn")
-    assert inp.id == "demo.fn"
-    assert inp.description is None
-    assert inp.request_format is None
-    assert inp.response_format is None
-    assert inp.metadata is None
-
-
-def test_register_function_input_with_all_fields() -> None:
-    """RegisterFunctionInput should accept all optional fields."""
-    req_fmt = RegisterFunctionFormat(name="input", type="object")
-    res_fmt = RegisterFunctionFormat(name="output", type="string")
-    inp = RegisterFunctionInput(
-        id="demo.fn",
-        description="A demo function",
-        request_format=req_fmt,
-        response_format=res_fmt,
-        metadata={"version": "1.0"},
-    )
-    assert inp.id == "demo.fn"
-    assert inp.description == "A demo function"
-    assert inp.request_format is not None
-    assert inp.response_format is not None
-    assert inp.metadata == {"version": "1.0"}
+from iii.iii_types import RegisterFunctionFormat
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +61,8 @@ def _make_client() -> III:
 # ---------------------------------------------------------------------------
 
 
-def test_register_function_dict_with_request_format(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function accepts a dict as first arg, with request_format."""
+def test_register_function_str_with_request_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function accepts a string id with explicit request_format kwarg."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
@@ -106,7 +78,7 @@ def test_register_function_dict_with_request_format(monkeypatch: pytest.MonkeyPa
     async def handler(data: Any) -> Any:
         return data
 
-    client.register_function({"id": "demo.with_args", "request_format": req_fmt}, handler)
+    client.register_function("demo.with_args", handler, request_format=req_fmt)
     time.sleep(0.02)
 
     reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.with_args"]
@@ -123,8 +95,8 @@ def test_register_function_dict_with_request_format(monkeypatch: pytest.MonkeyPa
     client.shutdown()
 
 
-def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function accepts a RegisterFunctionInput model."""
+def test_register_function_str_with_both_formats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function accepts explicit request_format and response_format kwargs."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
@@ -148,14 +120,14 @@ def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPat
     async def handler(data: Any) -> Any:
         return {"items": []}
 
-    func_input = RegisterFunctionInput(
-        id="demo.both_formats",
+    client.register_function(
+        "demo.both_formats",
+        handler,
         description="A search function",
         request_format=req_fmt,
         response_format=res_fmt,
         metadata={"version": "1"},
     )
-    client.register_function(func_input, handler)
     time.sleep(0.02)
 
     reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.both_formats"]
@@ -169,15 +141,15 @@ def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPat
     client.shutdown()
 
 
-def test_register_function_dict_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function with just {id} and handler — no formats sent."""
+def test_register_function_str_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function with just a string id and handler — no formats sent when handler is untyped."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
     async def handler(data: Any) -> Any:
         return data
 
-    client.register_function({"id": "demo.minimal"}, handler)
+    client.register_function("demo.minimal", handler)
     time.sleep(0.02)
 
     reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.minimal"]
@@ -188,8 +160,8 @@ def test_register_function_dict_minimal(monkeypatch: pytest.MonkeyPatch) -> None
     client.shutdown()
 
 
-def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_function with dict + HttpInvocationConfig."""
+def test_register_function_str_with_http_invocation_and_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """register_function with string id + explicit request_format + HttpInvocationConfig."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
@@ -204,8 +176,9 @@ def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyP
     )
 
     client.register_function(
-        {"id": "external::with_format", "request_format": req_fmt},
+        "external::with_format",
         HttpInvocationConfig(url="https://example.com/fn", method="POST"),
+        request_format=req_fmt,
     )
     time.sleep(0.02)
 
@@ -218,16 +191,19 @@ def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyP
     client.shutdown()
 
 
-def test_register_function_input_importable_from_top_level() -> None:
-    """RegisterFunctionInput and RegisterFunctionFormat should be importable from iii."""
-    from iii import RegisterFunctionFormat, RegisterFunctionInput
+def test_register_function_format_importable_from_top_level() -> None:
+    """RegisterFunctionFormat should remain importable from iii."""
+    from iii import RegisterFunctionFormat
 
     fmt = RegisterFunctionFormat(name="test", type="string")
     assert fmt.name == "test"
 
-    inp = RegisterFunctionInput(id="test.fn", request_format=fmt)
-    assert inp.id == "test.fn"
-    assert inp.request_format is not None
+
+def test_register_function_input_not_exported() -> None:
+    """RegisterFunctionInput is no longer part of the public iii surface."""
+    import iii
+
+    assert not hasattr(iii, "RegisterFunctionInput")
 
 
 # ---------------------------------------------------------------------------
@@ -365,27 +341,6 @@ def test_register_function_str_id_with_metadata(monkeypatch: pytest.MonkeyPatch)
     client.shutdown()
 
 
-def test_register_function_backward_compat_dict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dict API still works unchanged (backward compat)."""
-    ws = _patch_ws(monkeypatch)
-    client = _make_client()
-
-    async def handler(data: UserInput) -> UserOutput:
-        return UserOutput(message="hi")
-
-    # Using dict — should NOT auto-extract (backward compat)
-    client.register_function({"id": "demo.dict_compat"}, handler)
-    time.sleep(0.02)
-
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.dict_compat"]
-    assert len(reg_msgs) == 1
-    # Dict path does not auto-extract
-    assert "request_format" not in reg_msgs[0]
-    assert "response_format" not in reg_msgs[0]
-
-    client.shutdown()
-
-
 def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
     """String ID with HttpInvocationConfig doesn't attempt auto-extraction."""
     ws = _patch_ws(monkeypatch)
@@ -407,5 +362,36 @@ def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.Monke
     # No auto-extraction since HttpInvocationConfig is not callable
     assert "request_format" not in reg_msgs[0]
     assert "response_format" not in reg_msgs[0]
+
+    client.shutdown()
+
+
+def test_register_function_dict_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dict-form register_function is no longer supported — must raise TypeError."""
+    _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: Any) -> Any:
+        return data
+
+    with pytest.raises(TypeError, match="function_id must be str"):
+        client.register_function({"id": "demo.dict_removed"}, handler)
+
+    client.shutdown()
+
+
+def test_register_function_input_model_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RegisterFunctionInput as first arg is no longer supported — must raise TypeError."""
+    _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: Any) -> Any:
+        return data
+
+    # RegisterFunctionInput used to be public; keep an import path for this negative test.
+    from iii.iii_types import RegisterFunctionInput as _LegacyInput
+
+    with pytest.raises(TypeError, match="function_id must be str"):
+        client.register_function(_LegacyInput(id="demo.model_removed"), handler)
 
     client.shutdown()

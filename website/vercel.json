@@ -1,13 +1,20 @@
 {
-  "installCommand": "npm install --include=dev",
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "trailingSlash": false,
   "rewrites": [
-    { "source": "/api/search", "destination": "https://iii-docs.vercel.app/api/search" },
+    {
+      "source": "/manifesto",
+      "destination": "https://iii-web.vercel.app/manifesto.html"
+    },
+    {
+      "source": "/api/search",
+      "destination": "https://iii-docs.vercel.app/api/search"
+    },
     { "source": "/docs", "destination": "https://iii-docs.vercel.app/docs" },
-    { "source": "/docs/:path*", "destination": "https://iii-docs.vercel.app/docs/:path*" },
-    { "source": "/ai", "destination": "/ai/index.html" },
-    { "source": "/(.*)", "destination": "/" }
+    {
+      "source": "/docs/:path*",
+      "destination": "https://iii-docs.vercel.app/docs/:path*"
+    }
   ]
 }

@@ -95,10 +95,6 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Manage SDKs powered by Motia
-    #[command(subcommand)]
-    Sdk(SdkCommands),
-
     /// Manage workers (add, remove, list, info)
     #[command(
         trailing_var_arg = true,
@@ -110,6 +106,17 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Spawn and manage ephemeral sandbox VMs (run, list, stop)
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
+    Sandbox {
+        #[arg(num_args = 0..)]
+        args: Vec<String>,
+    },
+
     /// Update iii and managed binaries to their latest versions
     Update {
         /// Specific command or binary to update (e.g., "console", "self").
@@ -117,20 +124,6 @@ enum Commands {
         /// If omitted, updates iii and all installed binaries.
         #[arg(name = "command")]
         target: Option<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum SdkCommands {
-    /// Motia SDK tools
-    #[command(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Motia {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
     },
 }
 
@@ -200,12 +193,12 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::handle_dispatch("cloud", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-            let exit_code = cli::handle_dispatch("motia", args, cli_args.no_update_check).await;
-            std::process::exit(exit_code);
-        }
         Some(Commands::Worker { args }) => {
             let exit_code = cli::handle_dispatch("worker", args, cli_args.no_update_check).await;
+            std::process::exit(exit_code);
+        }
+        Some(Commands::Sandbox { args }) => {
+            let exit_code = cli::handle_dispatch("sandbox", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Update { target }) => {
@@ -296,8 +289,6 @@ mod tests {
         assert!(should_init_logging_from_engine_config(&cli));
     }
 
-    // --- New subcommand parse tests ---
-
     #[test]
     fn console_parses_with_passthrough_args() {
         let cli = Cli::try_parse_from(["iii", "console", "--port", "3000"])
@@ -359,30 +350,6 @@ mod tests {
     }
 
     #[test]
-    fn sdk_motia_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "sdk", "motia", "init", "--lang", "typescript"])
-            .expect("should parse sdk motia with args");
-        match cli.command {
-            Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-                assert_eq!(args, vec!["init", "--lang", "typescript"]);
-            }
-            _ => panic!("expected Sdk Motia subcommand"),
-        }
-    }
-
-    #[test]
-    fn sdk_motia_parses_with_no_args() {
-        let cli = Cli::try_parse_from(["iii", "sdk", "motia"])
-            .expect("should parse sdk motia with no args");
-        match cli.command {
-            Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Sdk Motia subcommand"),
-        }
-    }
-
-    #[test]
     fn worker_parses_with_passthrough_args() {
         let cli = Cli::try_parse_from(["iii", "worker", "add", "pdfkit@1.0.0"])
             .expect("should parse worker with passthrough args");
@@ -438,6 +405,76 @@ mod tests {
             }
             _ => panic!("expected Worker subcommand"),
         }
+    }
+
+    #[test]
+    fn sandbox_parses_with_passthrough_args() {
+        let cli = Cli::try_parse_from(["iii", "sandbox", "run", "python", "--cpus", "2"])
+            .expect("should parse sandbox with passthrough args");
+        match cli.command {
+            Some(Commands::Sandbox { args }) => {
+                assert_eq!(args, vec!["run", "python", "--cpus", "2"]);
+            }
+            _ => panic!("expected Sandbox subcommand"),
+        }
+    }
+
+    #[test]
+    fn sandbox_parses_with_no_args() {
+        let cli =
+            Cli::try_parse_from(["iii", "sandbox"]).expect("should parse sandbox with no args");
+        match cli.command {
+            Some(Commands::Sandbox { args }) => {
+                assert!(args.is_empty());
+            }
+            _ => panic!("expected Sandbox subcommand"),
+        }
+    }
+
+    #[test]
+    fn sandbox_list_parses_passthrough() {
+        let cli = Cli::try_parse_from(["iii", "sandbox", "list", "--all"])
+            .expect("should parse sandbox list --all");
+        match cli.command {
+            Some(Commands::Sandbox { args }) => {
+                assert_eq!(args, vec!["list", "--all"]);
+            }
+            _ => panic!("expected Sandbox subcommand"),
+        }
+    }
+
+    #[test]
+    fn sandbox_run_parses_trailing_cmd_with_dashdash() {
+        // Mirrors the docs' recommended syntax:
+        //   iii sandbox run python -- python3 -c 'print("hi")'
+        let cli = Cli::try_parse_from([
+            "iii",
+            "sandbox",
+            "run",
+            "python",
+            "--",
+            "python3",
+            "-c",
+            "print(\"hi\")",
+        ])
+        .expect("should parse sandbox run with trailing command");
+        match cli.command {
+            Some(Commands::Sandbox { args }) => {
+                assert_eq!(
+                    args,
+                    vec!["run", "python", "--", "python3", "-c", "print(\"hi\")"]
+                );
+            }
+            _ => panic!("expected Sandbox subcommand"),
+        }
+    }
+
+    #[test]
+    fn sandbox_dispatch_resolves_to_iii_worker() {
+        use crate::cli::registry::resolve_command;
+        let (spec, binary_subcommand) = resolve_command("sandbox").expect("sandbox should resolve");
+        assert_eq!(spec.name, "iii-worker");
+        assert_eq!(binary_subcommand, Some("sandbox"));
     }
 
     #[test]

@@ -11,7 +11,7 @@ These are iii official SDKs for Node, Python, and Rust. See the [engine README](
 
 | Package                                            | Language             | Install               | Docs                                      |
 | -------------------------------------------------- | -------------------- | --------------------- | ----------------------------------------- |
-| [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | Node.js / TypeScript | `npm install iii-sdk` | [README](./packages/node/iii/README.md)   |
+| [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | Node.js / TypeScript | `pnpm add iii-sdk` or `npm install iii-sdk` | [README](./packages/node/iii/README.md)   |
 | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | Python               | `pip install iii-sdk` | [README](./packages/python/iii/README.md) |
 | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Rust                 | Add to `Cargo.toml`   | [README](./packages/rust/iii/README.md)   |
 
@@ -24,17 +24,17 @@ import { registerWorker } from 'iii-sdk';
 
 const iii = registerWorker('ws://localhost:49134');
 
-iii.registerFunction('greet', async (input) => {
+iii.registerFunction('hello::greet', async (input) => {
   return { message: `Hello, ${input.name}!` };
 });
 
 iii.registerTrigger({
   type: 'http',
-  function_id: 'greet',
+  function_id: 'hello::greet',
   config: { api_path: '/greet', http_method: 'POST' },
 });
 
-const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world' } });
+const result = await iii.trigger({ function_id: 'hello::greet', payload: { name: 'world' } });
 ```
 
 ### Python
@@ -47,15 +47,15 @@ iii = register_worker("ws://localhost:49134")
 def greet(data):
     return {"message": f"Hello, {data['name']}!"}
 
-iii.register_function({"id": "greet"}, greet)
+iii.register_function({"id": "hello::greet"}, greet)
 
 iii.register_trigger({
     "type": "http",
-    "function_id": "greet",
+    "function_id": "hello::greet",
     "config": {"api_path": "/greet", "http_method": "POST"}
 })
 
-result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
+result = iii.trigger({"function_id": "hello::greet", "payload": {"name": "world"}})
 ```
 
 ### Rust
@@ -68,18 +68,18 @@ use serde_json::json;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function(RegisterFunctionMessage::with_id("greet".into()), |input| async move {
+    iii.register_function(RegisterFunctionMessage::with_id("hello::greet".into()), |input| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
 
-    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "greet".into(), config: json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::greet".into(), config: json!({
         "api_path": "/greet",
         "http_method": "POST"
     }) })?;
 
     let result: serde_json::Value = iii
-        .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
+        .trigger(TriggerRequest::new("hello::greet", json!({ "name": "world" })))
         .await?;
 
     Ok(())

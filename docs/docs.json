@@ -2,10 +2,32 @@
   "$schema": "https://mintlify.com/docs.json",
   "name": "iii",
   "theme": "mint",
+  "appearance": {
+    "default": "light"
+  },
   "colors": {
-    "primary": "#8a8c00",
-    "light": "#c8ca00",
-    "dark": "#6b6d00"
+    "primary": "#ff5a1f",
+    "light": "#ff7a45",
+    "dark": "#3ea8ff"
+  },
+  "fonts": {
+    "family": "Chivo Mono",
+    "heading": {
+      "family": "Chivo Mono"
+    },
+    "body": {
+      "family": "Chivo Mono"
+    }
+  },
+  "background": {
+    "color": {
+      "light": "#f2f0ed",
+      "dark": "#111110"
+    }
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs",
+    "codeblocks": "system"
   },
   "logo": {
     "light": "/images/icons/iii-black.svg",
@@ -21,6 +43,7 @@
       },
       {
         "type": "github",
+        "label": "GitHub",
         "href": "https://github.com/iii-hq/iii"
       }
     ],
@@ -76,6 +99,7 @@
                     "pages": [
                       "how-to/worker-rbac",
                       "how-to/managing-container-workers",
+                      "how-to/reproduce-worker-installs",
                       "how-to/developing-sandbox-workers"
                     ]
                   },
@@ -133,7 +157,8 @@
                   "workers/iii-pubsub",
                   "workers/iii-exec",
                   "workers/iii-bridge",
-                  "workers/iii-worker-manager"
+                  "workers/iii-worker-manager",
+                  "workers/managed-worker-lockfile"
                 ]
               },
               {
@@ -175,6 +200,7 @@
                   "api-reference/sdk-browser",
                   "api-reference/sdk-python",
                   "api-reference/sdk-rust",
+                  "api-reference/sandbox",
                   "api-reference/disable-telemetry"
                 ]
               }

@@ -15,24 +15,25 @@ The workflows are organized into two categories:
                        ▼
         ┌──────────────────────────────┐
         │      Tag push triggers       │
-        ├──────────────┬───────────────┤
-        │  iii/v*      │  motia/v*     │
-        ▼              ▼               │
-   release-iii    release-motia        │
-        │              │               │
-        │   ┌──────────┴──────┐        │
-        │   │  _npm.yml       │        │
-        │   │  _py.yml        │        │
-        │   │  _rust-cargo.yml│        │
+        ├──────────────────────────────┤
+        │  iii/v*                      │
+        ▼                              │
+   release-iii                         │
+        │                              │
+        │   ┌──────────────────┐       │
+        │   │  _npm.yml        │       │
+        │   │  _py.yml         │       │
+        │   │  _rust-cargo.yml │       │
         │   │  _rust-binary.yml│       │
-        │   │  _homebrew.yml  │        │
-        │   └─────────────────┘        │
+        │   │  _homebrew.yml   │       │
+        │   └──────────────────┘       │
         │     (reusable workflows)     │
         └──────────────────────────────┘
 
    ci.yml ◄── push to main / PRs
    docker-engine.yml ◄── called by release-iii / manual
    license-check.yml ◄── push to main / PRs
+   checklist-checker.yml ◄── PR license agreement / comments
 ```
 
 ---
@@ -47,16 +48,19 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 
 | Job | Depends On | What it does |
 |-----|-----------|--------------|
-| `build-engine` | — | Fmt check, tests, release build. Uploads `iii-binary` artifact |
+| `changes` | — | Detects changed paths (engine/crates/Cargo) for scoping downstream jobs |
+| `engine-build` | — | Builds debug `iii` with all features, uploads `iii-binary` artifact (critical path) |
+| `engine-test` | — | Tests `iii-worker`, `iii-filesystem`, `iii-network`, `iii-init`, and `iii --all-features` |
+| `engine-coverage` | `changes` | `cargo llvm-cov` on `iii --all-features`. PRs: only when engine paths change. Push/dispatch: always |
+| `engine-benches` | — | `cargo bench --benches --no-run` to verify benches compile |
+| `engine-fmt` | — | `cargo fmt --all -- --check` |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
-| `sdk-node-ci` | `build-engine` | Type check, build, start engine, run SDK tests |
-| `sdk-python-ci` | `build-engine` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `build-engine` | Fmt, clippy, start engine, run cargo tests |
-| `motia-js-ci` | `build-engine`, `sdk-node-ci` | Build SDK + Motia, start engine, run tests |
-| `motia-py-ci` | `build-engine`, `sdk-python-ci` | Lint, type check, start engine, run pytest. Matrix: Python 3.11/3.12/3.13 |
-| `console-ci` | `build-engine` | Lint + build frontend (Node 22), build console Rust binary |
+| `sdk-node-ci` | `engine-build` | Type check, build, start engine, run SDK tests |
+| `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
+| `sdk-rust-ci` | `engine-build` | Fmt, clippy, start engine, run cargo tests |
+| `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
 
-All SDK and framework tests download the engine binary artifact and start a live engine instance before running.
+All SDK tests download the engine binary artifact and start a live engine instance before running.
 
 ---
 
@@ -68,7 +72,7 @@ Entry point for all releases. Provides a form with:
 
 | Input | Options |
 |-------|---------|
-| `target` | `iii` or `motia` |
+| `target` | `iii` |
 | `bump` | `patch`, `minor`, `major` |
 | `prerelease` | `none`, `alpha`, `beta`, `rc` |
 | `dry_run` | boolean |
@@ -85,7 +89,7 @@ Entry point for all releases. Provides a form with:
 
 The tag push then triggers the corresponding release workflow.
 
-**Tag format:** `{target}/v{version}` (e.g., `iii/v1.2.3`, `motia/v0.5.0-beta.1`)
+**Tag format:** `{target}/v{version}` (e.g., `iii/v1.2.3`)
 
 ---
 
@@ -131,23 +135,6 @@ setup (parse tag metadata, Slack notification)
 
 ---
 
-### `release-motia.yml` — Motia Release Pipeline
-
-**Triggers:** tag push matching `motia/v*`
-
-Simpler than iii — publishes only the Motia framework packages.
-
-```text
-setup (parse tag metadata, Slack notification)
-  │
-  ├─► motia-npm ──► _npm.yml (builds iii-sdk first as dependency)
-  ├─► motia-py ───► _py.yml
-  │
-  └─► notify-complete (aggregated Slack status)
-```
-
----
-
 ### `docker-engine.yml` — Docker Image Build & Publish
 
 **Triggers:** called by `release-iii.yml` after engine binaries are built, or manual dispatch with a release tag
@@ -172,6 +159,14 @@ Downloads pre-built binaries from the GitHub Release (no Rust compilation) and p
 **Triggers:** push to `main`, pull requests to `main`
 
 Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers across source files, configured via `engine/licenserc.toml`.
+
+### `checklist-checker.yml` — License Agreement Check
+
+**Triggers:** `pull_request_target` for pull request changes, `issue_comment` for PR comments
+
+Requires external contributors to acknowledge the Apache 2.0 contributor license agreement before merge. Contributors can satisfy the gate by checking the license box in the PR description or by replying with the exact acknowledgement phrase posted by the bot. iii team members with `write`, `maintain`, or `admin` repository permission are skipped.
+
+The workflow posts a sticky PR comment and publishes the `license-agreement` commit status on the PR head SHA. Branch protection should require the `license-agreement` status context.
 
 ---
 
@@ -244,7 +239,7 @@ Only runs for stable (non-prerelease) versions.
 |--------|---------|
 | `III_CI_APP_ID` / `III_CI_APP_PRIVATE_KEY` | GitHub App token for pushing tags, creating releases, updating homebrew-tap |
 | `NPM_TOKEN` | npm registry authentication |
-| `PYPI_API_TOKEN` / `PYPI_MOTIA_TOKEN` | PyPI publishing (separate tokens for iii and motia) |
+| `PYPI_API_TOKEN` | PyPI publishing |
 | `CARGO_REGISTRY_TOKEN` | crates.io publishing |
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD` | DockerHub publishing |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Slack release notifications |
@@ -256,7 +251,7 @@ Only runs for stable (non-prerelease) versions.
 
 1. Developer triggers `create-tag` workflow manually, selecting target/bump/prerelease
 2. Workflow bumps versions across all manifests, commits, and pushes a tag
-3. Tag push triggers the corresponding release workflow (`release-iii` or `release-motia`)
+3. Tag push triggers the `release-iii` workflow
 4. Release workflow fans out to reusable workflows in parallel
 5. Each reusable workflow posts progress to a Slack thread
 6. Final job aggregates results and updates the parent Slack message with overall status

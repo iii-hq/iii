@@ -107,16 +107,18 @@ def test_trigger_is_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     def echo_handler(data: Any) -> Any:
         return {"echo": data}
 
-    client.register_function({"id": "test.echo"}, echo_handler)
+    client.register_function("test.echo", echo_handler)
     time.sleep(0.05)
 
     from iii import TriggerAction
 
-    result = client.trigger({
-        "function_id": "test.echo",
-        "payload": {"hello": "world"},
-        "action": TriggerAction.Void(),
-    })
+    result = client.trigger(
+        {
+            "function_id": "test.echo",
+            "payload": {"hello": "world"},
+            "action": TriggerAction.Void(),
+        }
+    )
     assert result is None
 
     client.shutdown()
@@ -131,7 +133,7 @@ def test_register_function_accepts_sync_handler(monkeypatch: pytest.MonkeyPatch)
     def greet(data: Any) -> Any:
         return {"message": f"Hello, {data['name']}!"}
 
-    ref = client.register_function({"id": "test.greet"}, greet)
+    ref = client.register_function("test.greet", greet)
     assert ref.id == "test.greet"
     time.sleep(0.05)
 
@@ -150,7 +152,7 @@ def test_register_function_accepts_async_handler(monkeypatch: pytest.MonkeyPatch
     async def greet(data: Any) -> Any:
         return {"message": f"Hello, {data['name']}!"}
 
-    ref = client.register_function({"id": "test.greet.async"}, greet)
+    ref = client.register_function("test.greet.async", greet)
     assert ref.id == "test.greet.async"
 
     client.shutdown()
@@ -199,14 +201,14 @@ def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: p
 
 
 def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """list_functions, list_triggers, create_channel should be sync."""
+    """trigger and create_channel should be sync."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
 
     import inspect
-    assert not inspect.iscoroutinefunction(client.list_functions)
-    assert not inspect.iscoroutinefunction(client.list_triggers)
+
+    assert not inspect.iscoroutinefunction(client.trigger)
     assert not inspect.iscoroutinefunction(client.create_channel)
 
     client.shutdown()
