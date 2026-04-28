@@ -2,10 +2,32 @@
   "$schema": "https://mintlify.com/docs.json",
   "name": "iii",
   "theme": "mint",
+  "appearance": {
+    "default": "light"
+  },
   "colors": {
-    "primary": "#8a8c00",
-    "light": "#c8ca00",
-    "dark": "#6b6d00"
+    "primary": "#ff5a1f",
+    "light": "#ff7a45",
+    "dark": "#3ea8ff"
+  },
+  "fonts": {
+    "family": "Chivo Mono",
+    "heading": {
+      "family": "Chivo Mono"
+    },
+    "body": {
+      "family": "Chivo Mono"
+    }
+  },
+  "background": {
+    "color": {
+      "light": "#f2f0ed",
+      "dark": "#111110"
+    }
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs",
+    "codeblocks": "system"
   },
   "logo": {
     "light": "/images/icons/iii-black.svg",
@@ -15,14 +37,20 @@
   "navbar": {
     "links": [
       {
+        "label": "Discord",
+        "href": "https://discord.gg/motia",
+        "icon": "discord"
+      },
+      {
         "type": "github",
+        "label": "GitHub",
         "href": "https://github.com/iii-hq/iii"
       }
     ],
     "primary": {
       "type": "button",
       "label": "Install",
-      "href": "/install"
+      "href": "https://docs.iii.dev/install"
     }
   },
   "navigation": {
