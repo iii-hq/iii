@@ -50,7 +50,7 @@
     "primary": {
       "type": "button",
       "label": "Install",
-      "href": "install"
+      "href": "/install"
     }
   },
   "navigation": {
