@@ -128,7 +128,9 @@ async fn create_resource_limit_returns_s400_before_allowlist() {
     .unwrap_err();
     assert_eq!(err.code().as_str(), "S400");
     assert_eq!(
-        launcher.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        launcher
+            .call_count
+            .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "launcher must not run when resource limit reached"
     );
@@ -164,7 +166,9 @@ async fn create_image_not_in_catalog_skips_launcher() {
     .unwrap_err();
     assert_eq!(err.code().as_str(), "S100");
     assert_eq!(
-        launcher.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        launcher
+            .call_count
+            .load(std::sync::atomic::Ordering::SeqCst),
         0
     );
 }
@@ -188,7 +192,10 @@ async fn exec_happy_path_returns_response_and_clears_in_progress() {
 
     let state = reg.get(id).await.unwrap();
     assert!(!state.exec_in_progress, "in-progress flag must be cleared");
-    assert_eq!(runner.call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        runner.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 }
 
 #[tokio::test]
@@ -200,7 +207,10 @@ async fn exec_invalid_uuid_returns_s001() {
 
     let err = handle_exec(req, &reg, &runner).await.unwrap_err();
     assert_eq!(err.code().as_str(), "S001");
-    assert_eq!(runner.call_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        runner.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -224,7 +234,10 @@ async fn exec_on_stopped_sandbox_returns_s004() {
         .await
         .unwrap_err();
     assert_eq!(err.code().as_str(), "S004");
-    assert_eq!(runner.call_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        runner.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -290,7 +303,10 @@ async fn exec_argv_passed_verbatim_no_shell_interpretation() {
     let calls = runner.calls.lock().unwrap();
     assert_eq!(calls.calls.len(), 1);
     assert_eq!(calls.calls[0].1.cmd, "/bin/echo");
-    assert_eq!(calls.calls[0].1.args, nasty, "argv must pass through unmodified");
+    assert_eq!(
+        calls.calls[0].1.args, nasty,
+        "argv must pass through unmodified"
+    );
 }
 
 #[tokio::test]
@@ -303,7 +319,12 @@ async fn exec_does_not_hold_registry_mutex_across_adapter_await() {
     let runner_for_task = runner.clone();
     let reg_for_task = reg.clone();
     let blocked_task = tokio::spawn(async move {
-        handle_exec(build_req(id, "/bin/true"), &*reg_for_task, &*runner_for_task).await
+        handle_exec(
+            build_req(id, "/bin/true"),
+            &*reg_for_task,
+            &*runner_for_task,
+        )
+        .await
     });
 
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -390,7 +411,10 @@ async fn stop_invalid_uuid_returns_s001() {
     .await
     .unwrap_err();
     assert_eq!(err.code().as_str(), "S001");
-    assert_eq!(stopper.call_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        stopper.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -408,7 +432,10 @@ async fn stop_unknown_sandbox_returns_s002() {
     .await
     .unwrap_err();
     assert_eq!(err.code().as_str(), "S002");
-    assert_eq!(stopper.call_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        stopper.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -547,9 +574,10 @@ async fn stop_during_exec_does_not_deadlock_and_settles_consistently() {
 
     let r1 = reg.clone();
     let runner_t = runner.clone();
-    let exec_task = tokio::spawn(async move {
-        handle_exec(build_req(id, "/bin/sleep"), &*r1, &*runner_t).await
-    });
+    let exec_task =
+        tokio::spawn(
+            async move { handle_exec(build_req(id, "/bin/sleep"), &*r1, &*runner_t).await },
+        );
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     let r2 = reg.clone();

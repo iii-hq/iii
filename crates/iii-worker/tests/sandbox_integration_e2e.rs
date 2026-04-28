@@ -34,9 +34,7 @@ fn integration_rootfs() -> Option<PathBuf> {
             if path.exists() {
                 Some(path)
             } else {
-                eprintln!(
-                    "[skip] sandbox_integration_e2e: III_VM_INTEGRATION_ROOTFS={s} missing"
-                );
+                eprintln!("[skip] sandbox_integration_e2e: III_VM_INTEGRATION_ROOTFS={s} missing");
                 None
             }
         }

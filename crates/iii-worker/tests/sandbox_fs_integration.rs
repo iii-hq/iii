@@ -23,6 +23,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use iii_shell_proto::{FsEntry, FsMatch, FsOp, FsReadMeta, FsResult, FsSedFileResult};
 use iii_worker::sandbox_daemon::SandboxError;
 use iii_worker::sandbox_daemon::fs::adapter::FsRunner;
 use iii_worker::sandbox_daemon::fs::chmod::{ChmodRequest, handle_chmod};
@@ -35,7 +36,6 @@ use iii_worker::sandbox_daemon::fs::sed::{SedRequest, handle_sed};
 use iii_worker::sandbox_daemon::fs::stat::{StatRequest, handle_stat};
 use iii_worker::sandbox_daemon::fs::write::handle_write_with_reader;
 use iii_worker::sandbox_daemon::registry::{SandboxRegistry, SandboxState};
-use iii_shell_proto::{FsEntry, FsMatch, FsOp, FsReadMeta, FsResult, FsSedFileResult};
 
 // ────────────────────────────────────────────────────────────────────
 // In-memory filesystem
@@ -121,7 +121,11 @@ impl FakeFs {
                 SandboxError::FsNotFound { path: path.into() }
             });
         }
-        let prefix = if path == "/" { "/".to_string() } else { format!("{path}/") };
+        let prefix = if path == "/" {
+            "/".to_string()
+        } else {
+            format!("{path}/")
+        };
         let mut entries = Vec::new();
         let candidates = self
             .files
@@ -193,7 +197,8 @@ impl FakeFs {
         }
         if recursive {
             self.files.retain(|k, _| !k.starts_with(&prefix));
-            self.dirs.retain(|k, _| !k.starts_with(&prefix) && k != path);
+            self.dirs
+                .retain(|k, _| !k.starts_with(&prefix) && k != path);
         } else {
             self.dirs.remove(path);
         }
@@ -220,7 +225,11 @@ impl FakeFs {
         }
         if recursive {
             let prefix = format!("{path}/");
-            for (_, f) in self.files.iter_mut().filter(|(k, _)| k.starts_with(&prefix)) {
+            for (_, f) in self
+                .files
+                .iter_mut()
+                .filter(|(k, _)| k.starts_with(&prefix))
+            {
                 f.mode = mode.clone();
                 updated += 1;
             }
@@ -266,7 +275,11 @@ impl FakeFs {
         } else {
             pattern.into()
         };
-        let prefix = if path == "/" { "/".into() } else { format!("{path}/") };
+        let prefix = if path == "/" {
+            "/".into()
+        } else {
+            format!("{path}/")
+        };
         let mut matches: Vec<FsMatch> = Vec::new();
         let mut truncated = false;
         for (key, file) in self.files.iter() {
@@ -515,14 +528,7 @@ impl FsRunner for FakeFsRunner {
                 replacement,
                 first_only,
                 ..
-            } => fs.sed(
-                files,
-                path,
-                recursive,
-                &pattern,
-                &replacement,
-                first_only,
-            ),
+            } => fs.sed(files, path, recursive, &pattern, &replacement, first_only),
             FsOp::WriteStart { .. } | FsOp::ReadStart { .. } => {
                 panic!("WriteStart/ReadStart should reach fs_write_stream / fs_read_stream")
             }
@@ -735,10 +741,7 @@ async fn fs_full_workflow_round_trips_through_every_handler() {
     hit_paths.sort();
     assert_eq!(
         hit_paths,
-        vec![
-            "/tmp/iii-fs-demo/hello.txt",
-            "/tmp/iii-fs-demo/notes.md",
-        ]
+        vec!["/tmp/iii-fs-demo/hello.txt", "/tmp/iii-fs-demo/notes.md",]
     );
 
     // 7. sed (path form) — replace TODO → DONE in both files
