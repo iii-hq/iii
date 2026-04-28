@@ -426,4 +426,41 @@ mod tests {
 
         let _ = adapter.delete(scope, key).await;
     }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    async fn test_update_empty_path_numeric_and_remove_ops_target_root_redis() {
+        let adapter = setup_test_adapter().await;
+        let scope = "test_root_ops_scope";
+        let key = "root_ops_item";
+
+        let _ = adapter.delete(scope, key).await;
+        adapter.set(scope, key, json!(2)).await.unwrap();
+
+        let result = adapter
+            .update(scope, key, vec![UpdateOp::increment("", 3)])
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(5));
+        assert!(result.errors.is_empty());
+
+        let result = adapter
+            .update(scope, key, vec![UpdateOp::decrement("", 2)])
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(3));
+        assert!(result.errors.is_empty());
+
+        let result = adapter
+            .update(scope, key, vec![UpdateOp::remove("")])
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(null));
+        assert!(result.errors.is_empty());
+
+        let _ = adapter.delete(scope, key).await;
+    }
 }

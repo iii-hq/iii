@@ -299,7 +299,18 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         elseif op.type == 'increment' then
             local path = get_path(op.path)
             if validate_op_path('increment', zero_index, field_path_segments(path)) then
-              if type(current) == 'table' and current ~= cjson.null then
+              if path == '' or path == nil then
+                if using_missing_default then
+                    current = op.by
+                    using_missing_default = false
+                elseif type(current) == 'number' then
+                    current = current + op.by
+                    using_missing_default = false
+                else
+                    push_error(zero_index, 'increment.not_number',
+                        "Expected number at path '" .. path_label(path) .. "', got " .. json_type_name(current) .. ".")
+                end
+              elseif type(current) == 'table' and current ~= cjson.null then
                 local val = current[path]
                 if val == nil then
                     current[path] = op.by
@@ -319,7 +330,18 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         elseif op.type == 'decrement' then
             local path = get_path(op.path)
             if validate_op_path('decrement', zero_index, field_path_segments(path)) then
-              if type(current) == 'table' and current ~= cjson.null then
+              if path == '' or path == nil then
+                if using_missing_default then
+                    current = -op.by
+                    using_missing_default = false
+                elseif type(current) == 'number' then
+                    current = current - op.by
+                    using_missing_default = false
+                else
+                    push_error(zero_index, 'decrement.not_number',
+                        "Expected number at path '" .. path_label(path) .. "', got " .. json_type_name(current) .. ".")
+                end
+              elseif type(current) == 'table' and current ~= cjson.null then
                 local val = current[path]
                 if val == nil then
                     current[path] = -op.by
@@ -359,7 +381,10 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         elseif op.type == 'remove' then
             local path = get_path(op.path)
             if validate_op_path('remove', zero_index, field_path_segments(path)) then
-              if type(current) == 'table' and current ~= cjson.null then
+              if path == '' or path == nil then
+                current = cjson.null
+                using_missing_default = false
+              elseif type(current) == 'table' and current ~= cjson.null then
                 current[path] = nil
                 using_missing_default = false
               else

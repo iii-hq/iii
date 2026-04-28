@@ -261,7 +261,22 @@ fn increment_number(value: &Value, by: i64) -> Option<Value> {
         return Some(Value::Number(Number::from(sum)));
     }
 
-    Number::from_f64(value.as_f64()? + by as f64).map(Value::Number)
+    if let Some(num) = value.as_u64() {
+        let sum = if by >= 0 {
+            num.checked_add(by as u64)?
+        } else {
+            num.checked_sub(by.unsigned_abs())?
+        };
+        return Some(Value::Number(Number::from(sum)));
+    }
+
+    if let Value::Number(number) = value
+        && number.is_f64()
+    {
+        return Number::from_f64(number.as_f64()? + by as f64).map(Value::Number);
+    }
+
+    None
 }
 
 fn decrement_number(value: &Value, by: i64) -> Option<Value> {
@@ -271,7 +286,30 @@ fn decrement_number(value: &Value, by: i64) -> Option<Value> {
         return Some(Value::Number(Number::from(diff)));
     }
 
-    Number::from_f64(value.as_f64()? - by as f64).map(Value::Number)
+    if let Some(num) = value.as_u64() {
+        let diff = if by >= 0 {
+            num.checked_sub(by as u64)?
+        } else {
+            num.checked_add(by.unsigned_abs())?
+        };
+        return Some(Value::Number(Number::from(diff)));
+    }
+
+    if let Value::Number(number) = value
+        && number.is_f64()
+    {
+        return Number::from_f64(number.as_f64()? - by as f64).map(Value::Number);
+    }
+
+    None
+}
+
+fn missing_decrement_value(by: i64) -> Value {
+    if let Some(negated) = by.checked_neg() {
+        Value::Number(Number::from(negated))
+    } else {
+        Value::Number(Number::from(by.unsigned_abs()))
+    }
 }
 
 pub(crate) fn apply_update_ops(
@@ -349,7 +387,25 @@ pub(crate) fn apply_update_ops(
                 if !validate_op_path("increment", op_index, segments, &mut errors) {
                     continue;
                 }
-                if let Value::Object(ref mut map) = current {
+                if path.0.is_empty() {
+                    if using_missing_default {
+                        current = Value::Number(Number::from(*by));
+                    } else if let Some(updated) = increment_number(&current, *by) {
+                        current = updated;
+                    } else {
+                        errors.push(err(
+                            op_index,
+                            ERR_INCREMENT_NOT_NUMBER,
+                            format!(
+                                "Expected number at path '{}', got {}.",
+                                path_label(&path.0),
+                                json_type_name(&current)
+                            ),
+                        ));
+                        continue;
+                    }
+                    using_missing_default = false;
+                } else if let Value::Object(ref mut map) = current {
                     if let Some(existing_val) = map.get_mut(&path.0) {
                         if let Some(updated) = increment_number(existing_val, *by) {
                             *existing_val = updated;
@@ -386,7 +442,25 @@ pub(crate) fn apply_update_ops(
                 if !validate_op_path("decrement", op_index, segments, &mut errors) {
                     continue;
                 }
-                if let Value::Object(ref mut map) = current {
+                if path.0.is_empty() {
+                    if using_missing_default {
+                        current = missing_decrement_value(*by);
+                    } else if let Some(updated) = decrement_number(&current, *by) {
+                        current = updated;
+                    } else {
+                        errors.push(err(
+                            op_index,
+                            ERR_DECREMENT_NOT_NUMBER,
+                            format!(
+                                "Expected number at path '{}', got {}.",
+                                path_label(&path.0),
+                                json_type_name(&current)
+                            ),
+                        ));
+                        continue;
+                    }
+                    using_missing_default = false;
+                } else if let Value::Object(ref mut map) = current {
                     if let Some(existing_val) = map.get_mut(&path.0) {
                         if let Some(updated) = decrement_number(existing_val, *by) {
                             *existing_val = updated;
@@ -403,7 +477,7 @@ pub(crate) fn apply_update_ops(
                             continue;
                         }
                     } else {
-                        map.insert(path.0.clone(), Value::Number(Number::from(-*by)));
+                        map.insert(path.0.clone(), missing_decrement_value(*by));
                     }
                     using_missing_default = false;
                 } else {
@@ -454,7 +528,10 @@ pub(crate) fn apply_update_ops(
                 if !validate_op_path("remove", op_index, segments, &mut errors) {
                     continue;
                 }
-                if let Value::Object(ref mut map) = current {
+                if path.0.is_empty() {
+                    current = Value::Null;
+                    using_missing_default = false;
+                } else if let Value::Object(ref mut map) = current {
                     map.remove(&path.0);
                     using_missing_default = false;
                 } else {
@@ -535,7 +612,7 @@ fn initial_append_value(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use iii_sdk::{FieldPath, UpdateOp, types::MergePath};
-    use serde_json::json;
+    use serde_json::{Number, json};
 
     use super::apply_update_ops;
 
@@ -757,14 +834,51 @@ mod tests {
     }
 
     #[test]
-    fn numeric_overflow_falls_back_to_json_float_number() {
+    fn numeric_overflow_promotes_to_exact_unsigned_integer() {
         let updated = run(
             Some(json!({ "count": i64::MAX })),
             &[UpdateOp::increment("count", 1)],
         );
 
-        assert!(updated["count"].is_number());
-        assert_eq!(updated["count"].as_f64(), Some(i64::MAX as f64 + 1.0));
+        assert_eq!(updated["count"].as_u64(), Some(i64::MAX as u64 + 1));
+    }
+
+    #[test]
+    fn numeric_ops_preserve_large_unsigned_integer_precision() {
+        let large = Number::from(i64::MAX as u64 + 10);
+        let updated = run(
+            Some(json!({ "inc": large.clone(), "dec": large })),
+            &[UpdateOp::increment("inc", 1), UpdateOp::decrement("dec", 1)],
+        );
+
+        assert_eq!(updated["inc"].as_u64(), Some(i64::MAX as u64 + 11));
+        assert_eq!(updated["dec"].as_u64(), Some(i64::MAX as u64 + 9));
+    }
+
+    #[test]
+    fn missing_decrement_by_i64_min_initializes_exact_unsigned_value() {
+        let updated = run(Some(json!({})), &[UpdateOp::decrement("count", i64::MIN)]);
+
+        assert_eq!(updated["count"].as_u64(), Some(i64::MIN.unsigned_abs()));
+    }
+
+    #[test]
+    fn empty_path_numeric_ops_target_root_value() {
+        let incremented = run(Some(json!(2)), &[UpdateOp::increment("", 3)]);
+        let decremented = run(Some(json!(5)), &[UpdateOp::decrement("", 3)]);
+
+        assert_eq!(incremented, json!(5));
+        assert_eq!(decremented, json!(2));
+    }
+
+    #[test]
+    fn empty_path_remove_clears_root_value() {
+        let updated = run(
+            Some(json!({ "": "empty-field", "keep": true })),
+            &[UpdateOp::remove("")],
+        );
+
+        assert_eq!(updated, json!(null));
     }
 
     #[test]

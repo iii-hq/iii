@@ -243,7 +243,7 @@ Each `state::update` op may add an entry to the response `errors` array. Operati
 | `merge.value.too_many_keys` | `merge` value has more than 1024 top-level keys | Split the write into smaller updates. |
 | `merge.value.proto_polluted` | A top-level key in the merge value is `__proto__`, `constructor`, or `prototype` | Use a different key name. |
 
-All errors include `op_index`, `code`, `message`, and `doc_url`.
+Each error includes `op_index`, `code`, and `message`; `doc_url` is optional.
 
 ```json
 {
