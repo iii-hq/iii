@@ -52,7 +52,7 @@ This separation solves three problems:
 2. **Reliability** — transient failures (network blips, service restarts) are retried automatically instead of being lost.
 3. **Load control** — concurrency limits prevent consumers from overwhelming downstream systems.
 
-## When to Use Named Queues
+## When to Use Queues
 
 | Scenario | Use a queue? | Why |
 |----------|-------------|-----|
@@ -65,7 +65,7 @@ This separation solves three problems:
 | The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](/how-to/trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
 
 <Info title="How-to guide">
-  For step-by-step instructions on setting up queues, see [Use Named Queues](/how-to/use-named-queues).
+  For queue modes, configuration, retries, and adapter guidance, see the [Queue worker reference](/workers/iii-queue).
 </Info>
 
 ## RabbitMQ Resource Topology
@@ -196,7 +196,7 @@ The conceptual model is identical across all adapters. Only the transport differ
 ## Related
 
 <CardGroup cols={3}>
-  <Card title="Use Named Queues" href="/how-to/use-named-queues" icon="list-check">
+  <Card title="Use Queues" href="/workers/iii-queue" icon="list-check">
     Configure named queues with retries, concurrency, and FIFO ordering
   </Card>
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
