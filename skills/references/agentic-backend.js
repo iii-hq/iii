@@ -11,7 +11,7 @@
  *   - Functions & Triggers: https://iii.dev/docs/how-to/use-functions-and-triggers
  *   - State management:    https://iii.dev/docs/how-to/manage-state
  *   - State reactions:     https://iii.dev/docs/how-to/react-to-state-changes
- *   - Queues:              https://iii.dev/docs/how-to/use-queues
+ *   - Queues:              https://iii.dev/docs/workers/iii-queue
  *   - Conditions:          https://iii.dev/docs/how-to/use-trigger-conditions
  */
 

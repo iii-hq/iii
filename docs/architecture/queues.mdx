@@ -65,7 +65,7 @@ This separation solves three problems:
 | The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](/how-to/trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
 
 <Info title="How-to guide">
-  For step-by-step instructions on setting up queues, see [Use Queues](/how-to/use-queues).
+  For queue modes, configuration, retries, and adapter guidance, see the [Queue worker reference](/workers/iii-queue).
 </Info>
 
 ## RabbitMQ Resource Topology
@@ -108,7 +108,7 @@ Because each of the three lifecycle stages is a separate routing destination, an
 | Dead-letter | `iii.__fn_queue::<name>::dlq` | `iii.__fn_queue::<name>::dlq.queue` |
 
 <Info title="Full resource map">
-  For the complete naming convention and examples, see the [Queue module reference — Queue naming in RabbitMQ](/modules/module-queue#queue-naming-in-rabbitmq).
+  For the complete naming convention and examples, see the [Queue worker reference — Queue naming in RabbitMQ](/workers/iii-queue#queue-naming-in-rabbitmq).
 </Info>
 
 ## The Delayed Retry Problem
@@ -190,19 +190,19 @@ The builtin adapter implements the same three-stage lifecycle entirely in-proces
 The conceptual model is identical across all adapters. Only the transport differs. This means you can develop locally with the builtin adapter and deploy to production with RabbitMQ, and the retry and DLQ behavior stays the same.
 
 <Info title="Choosing an adapter">
-  For a feature comparison of all queue adapters and scenario-based recommendations, see the [adapter comparison](/modules/module-queue#adapter-comparison).
+  For a feature comparison of all queue adapters and scenario-based recommendations, see the [adapter comparison](/workers/iii-queue#adapter-comparison).
 </Info>
 
 ## Related
 
 <CardGroup cols={3}>
-  <Card title="Use Queues" href="/how-to/use-queues" icon="list-check">
+  <Card title="Use Queues" href="/workers/iii-queue" icon="list-check">
     Configure named queues with retries, concurrency, and FIFO ordering
   </Card>
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Inspect and redrive failed queue messages
   </Card>
-  <Card title="Queue Worker Reference" href="/modules/module-queue" icon="gear">
+  <Card title="Queue Worker Reference" href="/workers/iii-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
 </CardGroup>

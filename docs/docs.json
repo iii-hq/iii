@@ -50,7 +50,7 @@
     "primary": {
       "type": "button",
       "label": "Install",
-      "href": "https://docs.iii.dev/install"
+      "href": "/install"
     }
   },
   "navigation": {

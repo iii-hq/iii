@@ -30,7 +30,7 @@ pub(crate) const ERR_VALUE_TOO_MANY_KEYS: &str = "merge.value.too_many_keys";
 pub(crate) const ERR_VALUE_PROTO: &str = "merge.value.proto_polluted";
 pub(crate) const ERR_VALUE_NOT_OBJECT: &str = "merge.value.not_an_object";
 
-const DOC_URL_BASE: &str = "https://docs.iii.dev/workers/iii-state#merge-bounds";
+const DOC_URL_BASE: &str = "https://iii.dev/docs/workers/iii-state#merge-bounds";
 
 fn err(op_index: usize, code: &str, message: String) -> UpdateOpError {
     UpdateOpError {

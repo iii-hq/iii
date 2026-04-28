@@ -488,7 +488,7 @@ mod tests {
                 op_index: 0,
                 code: "merge.path.too_deep".to_string(),
                 message: "Path depth 33 exceeds maximum of 32".to_string(),
-                doc_url: Some("https://docs.iii.dev/workers/iii-state#merge-bounds".to_string()),
+                doc_url: Some("https://iii.dev/docs/workers/iii-state#merge-bounds".to_string()),
             }],
         };
         let encoded = serde_json::to_value(&result).unwrap();

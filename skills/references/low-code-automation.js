@@ -10,7 +10,7 @@
  * How-to references:
  *   - Functions & Triggers: https://iii.dev/docs/how-to/use-functions-and-triggers
  *   - HTTP endpoints:       https://iii.dev/docs/how-to/expose-http-endpoint
- *   - Queues:               https://iii.dev/docs/how-to/use-queues
+ *   - Queues:               https://iii.dev/docs/workers/iii-queue
  *   - PubSub:               https://iii.dev/docs/how-to/use-functions-and-triggers
  *   - Cron:                 https://iii.dev/docs/how-to/schedule-cron-task
  */

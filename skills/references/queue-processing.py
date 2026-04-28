@@ -17,7 +17,7 @@ Retry / backoff is configured in iii-config.yaml under queue_configs:
       backoff_ms: 500
 
 How-to references:
-  - Queues: https://iii.dev/docs/how-to/use-queues
+  - Queues: https://iii.dev/docs/workers/iii-queue
 """
 
 import asyncio

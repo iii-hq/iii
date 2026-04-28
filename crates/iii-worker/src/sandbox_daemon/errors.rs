@@ -6,7 +6,7 @@
 use serde_json::json;
 use thiserror::Error;
 
-const DOCS_BASE: &str = "https://docs.iii.dev/errors/sandbox/";
+const DOCS_BASE: &str = "https://iii.dev/docs/errors/sandbox/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxErrorCode {

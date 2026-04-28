@@ -1272,13 +1272,13 @@ and always carries five fields:
 | `type` | `string` | Category: `validation`, `config`, `internal`, `transient`, `execution`, `filesystem`, or `platform`. |
 | `code` | `string` | Stable S-code (e.g. `S100`, `S211`). The wire ABI — the [S-codes table](#s-codes) is the canonical reference. |
 | `message` | `string` | Human-readable explanation. Often includes the offending path, image, or timeout value. |
-| `docs_url` | `string` | Permalink to the per-code troubleshooting page: `https://docs.iii.dev/errors/sandbox/<code>`. |
+| `docs_url` | `string` | Permalink to the per-code troubleshooting page: `https://iii.dev/docs/errors/sandbox/<code>`. |
 | `retryable` | `boolean` | `true` only for transient codes (`S102`, `S218`). All other codes are caller-fixable, not retryable. |
 
 ```
-handler error: {"type":"validation","code":"S002","message":"sandbox not found: <id>","docs_url":"https://docs.iii.dev/errors/sandbox/S002","retryable":false}
-handler error: {"type":"execution","code":"S200","message":"exec timed out after 500 ms","docs_url":"https://docs.iii.dev/errors/sandbox/S200","retryable":false}
-handler error: {"type":"transient","code":"S102","message":"auto-install failed for image 'python': network down","docs_url":"https://docs.iii.dev/errors/sandbox/S102","retryable":true}
+handler error: {"type":"validation","code":"S002","message":"sandbox not found: <id>","docs_url":"https://iii.dev/docs/errors/sandbox/S002","retryable":false}
+handler error: {"type":"execution","code":"S200","message":"exec timed out after 500 ms","docs_url":"https://iii.dev/docs/errors/sandbox/S200","retryable":false}
+handler error: {"type":"transient","code":"S102","message":"auto-install failed for image 'python': network down","docs_url":"https://iii.dev/docs/errors/sandbox/S102","retryable":true}
 ```
 
 Parse the envelope if you need the S-code or the `retryable` flag for

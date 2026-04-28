@@ -8,7 +8,7 @@
  * fan-out — both to projections and downstream notification consumers.
  *
  * How-to references:
- *   - Queues:           https://iii.dev/docs/how-to/use-queues
+ *   - Queues:           https://iii.dev/docs/workers/iii-queue
  *   - State management: https://iii.dev/docs/how-to/manage-state
  *   - State reactions:  https://iii.dev/docs/how-to/react-to-state-changes
  *   - HTTP endpoints:   https://iii.dev/docs/how-to/expose-http-endpoint

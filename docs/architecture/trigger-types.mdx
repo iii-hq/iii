@@ -95,7 +95,7 @@ graph LR
 
 Executes functions in response to HTTP requests.
 
-**Provided by**: [HTTP Worker](/modules/module-http)
+**Provided by**: [HTTP Worker](/workers/iii-http)
 
 **Configuration:**
 
@@ -152,7 +152,7 @@ json!({
 // Handler receives: { path_params: { userId: '123', postId: '456' } }
 ```
 
-<Card title="HTTP Worker" href="/modules/module-http" icon="globe">
+<Card title="HTTP Worker" href="/workers/iii-http" icon="globe">
   Learn more about the API trigger
 </Card>
 
@@ -527,7 +527,7 @@ Each SSE frame follows the standard format: `id`, `event`, and `data` fields sep
 
 Executes functions when events are published to subscribed topics.
 
-**Provided by**: [Queue Worker](/modules/module-queue)
+**Provided by**: [Queue Worker](/workers/iii-queue)
 
 **Configuration:**
 
@@ -575,7 +575,7 @@ json!({
 
 **Multiple Topics**: Register separate triggers for each topic.
 
-<Card title="Queue Worker" href="/modules/module-queue" icon="bolt">
+<Card title="Queue Worker" href="/workers/iii-queue" icon="bolt">
   Learn more about the Queue trigger
 </Card>
 
@@ -585,7 +585,7 @@ json!({
 
 Executes functions on a time-based schedule using cron expressions.
 
-**Provided by**: [Cron Worker](/modules/module-cron)
+**Provided by**: [Cron Worker](/workers/iii-cron)
 
 **Configuration:**
 
@@ -633,7 +633,7 @@ json!({
 
 **Cron Expression**: Standard 5-field format (minute hour day month weekday)
 
-<Card title="Cron Worker" href="/modules/module-cron" icon="clock">
+<Card title="Cron Worker" href="/workers/iii-cron" icon="clock">
   Learn more about the Cron trigger
 </Card>
 
@@ -643,7 +643,7 @@ json!({
 
 Executes functions when log entries match specified criteria.
 
-**Provided by**: [Observability Worker](/modules/module-observability)
+**Provided by**: [Observability Worker](/workers/iii-observability)
 
 **Configuration:**
 
@@ -689,7 +689,7 @@ json!({
 
 **Log Levels**: `info`, `warn`, `error`, `debug` (omit to receive all levels)
 
-<Card title="Observability Worker" href="/modules/module-observability" icon="file-text">
+<Card title="Observability Worker" href="/workers/iii-observability" icon="file-text">
   Learn more about the Log trigger
 </Card>
 
@@ -699,7 +699,7 @@ json!({
 
 Executes functions when clients connect to or disconnect from streams.
 
-**Provided by**: [Stream Worker](/modules/module-stream)
+**Provided by**: [Stream Worker](/workers/iii-stream)
 
 **Configuration:**
 
@@ -723,7 +723,7 @@ Executes functions when clients connect to or disconnect from streams.
 
 **Conditions**: Optional. Add `condition_function_id` to config for stream:join/stream:leave. See [Trigger Conditions](#trigger-conditions).
 
-<Card title="Stream Worker" href="/modules/module-stream" icon="chart-line">
+<Card title="Stream Worker" href="/workers/iii-stream" icon="chart-line">
   Learn more about Stream triggers
 </Card>
 
@@ -1513,6 +1513,6 @@ impl CoreWorker for CustomWorker {
 
 ## Next Steps
 
-<Card title="Modules" href="/modules" icon="cubes">
+<Card title="Modules" href="/workers" icon="cubes">
   Explore modules that provide trigger types
 </Card>
