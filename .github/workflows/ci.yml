@@ -388,8 +388,7 @@ jobs:
 
   worker-test-vm-linux:
     name: Worker Tests (VM) - linux
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, kvm]
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -401,6 +400,23 @@ jobs:
           key: worker-test-vm-linux
 
       - uses: taiki-e/install-action@cargo-nextest
+
+      # Public GitHub-hosted Linux runners expose /dev/kvm as of April 2024
+      # (github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available).
+      # The udev rule below grants the runner user direct access — required for
+      # libkrun-backed sandbox tests that boot a real microVM. Cheap no-op for
+      # any feature-gated tests that don't actually launch a guest.
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            ls -l /dev/kvm
+          else
+            echo "::warning::/dev/kvm missing on this runner image; libkrun guest boot will be unavailable"
+          fi
 
       - name: Install system dependencies
         run: |
