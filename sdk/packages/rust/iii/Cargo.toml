@@ -6,8 +6,8 @@ rust-version = "1.85"
 license = "Apache-2.0"
 authors = ["Motia LLC"]
 description = "SDK for III Engine - a platform for building distributed applications"
-repository = "https://github.com/iii-hq/sdk"
-homepage = "https://github.com/iii-hq/sdk"
+repository = "https://github.com/iii-hq/iii"
+homepage = "https://github.com/iii-hq/iii"
 keywords = ["iii", "sdk", "engine", "distributed"]
 categories = ["api-bindings", "asynchronous", "development-tools"]
 

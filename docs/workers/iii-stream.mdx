@@ -369,7 +369,7 @@ iii.register_function((RegisterFunctionMessage::with_id("onAuth".into()), |_inpu
 
 ## Trigger Types
 
-This module adds three trigger types: `stream` (item changes), `stream:join` (WebSocket connect), and `stream:leave` (WebSocket disconnect).
+This worker adds three trigger types: `stream` (item changes), `stream:join` (WebSocket connect), and `stream:leave` (WebSocket disconnect).
 
 ### stream:join and stream:leave
 
@@ -658,7 +658,7 @@ Clients connect via WebSocket to `ws://host:3112/stream/presence/room-1/` and re
 
 ### Usage Example: Join with Auth Context
 
-Configure the stream module with an auth function:
+Configure the stream worker with an auth function:
 
 ```yaml
 - name: iii-stream

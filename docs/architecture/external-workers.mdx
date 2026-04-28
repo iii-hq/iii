@@ -1,5 +1,30 @@
 ---
 title: 'External Workers'
+description: 'How SDK processes connect to iii and register application logic.'
+---
+
+External workers are application processes that use an iii SDK. They connect to the engine over WebSocket, register functions and triggers, and execute business logic when the engine invokes them.
+
+## Lifecycle
+
+1. The worker starts in Node.js, Python, Rust, or the browser.
+2. The SDK connects to the engine WebSocket endpoint.
+3. The worker registers functions, trigger types, triggers, and optional service metadata.
+4. The engine routes matching invocations to that worker.
+5. The SDK sends results or errors back over the same connection.
+
+## SDKs
+
+| SDK | Package |
+|-----|---------|
+| Node.js | `iii-sdk` |
+| Browser | `iii-browser-sdk` |
+| Python | `iii-sdk` |
+| Rust | `iii-sdk` |
+
+External workers can run locally, in containers, on separate hosts, or in browser tabs. They only need network access to the engine WebSocket endpoint.
+---
+title: 'External Workers'
 description: 'Any process that connects to the iii Engine using an SDK and registers Functions.'
 ---
 

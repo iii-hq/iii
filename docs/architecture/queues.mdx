@@ -1,5 +1,42 @@
 ---
 title: 'Queues'
+description: 'Queue architecture in iii: topic-based queues, named queues, retries, and dead letters.'
+---
+
+iii has two queue models.
+
+| Model | Producer | Consumer |
+|-------|----------|----------|
+| Topic-based queue | Calls `iii::durable::publish` with a topic and data. | Registers a `durable:subscriber` trigger for a topic. |
+| Named queue | Invokes a function with `TriggerAction.Enqueue({ queue })`. | The target function processes jobs from the named queue. |
+
+## Topic-based queues
+
+Topic-based queues fan out each message to every subscribed function. If one function has multiple replicas, those replicas compete on that function's queue so only one replica handles each copy.
+
+```typescript
+iii.registerTrigger({
+  type: 'durable:subscriber',
+  function_id: 'orders::process',
+  config: { topic: 'order.created' },
+})
+```
+
+## Named queues
+
+Named queues route invocations to a specific function through a queue. No trigger registration is required.
+
+```typescript
+await iii.trigger({
+  function_id: 'orders::process',
+  payload: order,
+  action: TriggerAction.Enqueue({ queue: 'orders' }),
+})
+```
+
+Both models support retries and dead-letter handling through the `iii-queue` worker.
+---
+title: 'Queues'
 description: 'Why iii queues are structured the way they are — the design decisions behind retry, dead-lettering, and multi-resource topology.'
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "Architecture Overview"
-description: 'An overview of the iii system components — engine core, core modules, and workers — and how they interact.'
+description: 'An overview of the iii system components — engine core, built-in workers, and external workers — and how they interact.'
 ---
 
 Understanding the iii architecture helps you build more efficient and scalable applications.
@@ -9,9 +9,9 @@ Understanding the iii architecture helps you build more efficient and scalable a
 
 The iii architecture consists of three main layers:
 
-1. **Engine Core** - Manages worker connections, routing, and module lifecycle
-2. **Core Modules** - Provide interfaces to external systems (HTTP, Redis, WebSocket)
-3. **Workers** - External processes that execute business logic
+1. **Engine Core** - Manages worker connections, routing, and worker lifecycle
+2. **Built-in Workers** - Provide interfaces to external systems (HTTP, queues, state, streams, observability)
+3. **External Workers** - SDK processes that execute business logic
 
 ```mermaid
 graph TD
@@ -25,7 +25,7 @@ graph TD
         Core[Engine Core]
         Reg[Worker<br/>Registry]
 
-        subgraph "Core Modules"
+        subgraph "Built-in Workers"
             API[iii-http]
             Stream[iii-stream]
             Log[iii-observability]
@@ -198,7 +198,7 @@ Run multiple engine instances with shared Redis:
 
 Optimize single instance performance:
 
-- **Rust Performance**: Core modules built for speed and memory efficiency
+- **Rust Performance**: Built-in workers are built for speed and memory efficiency
 - **Async Runtime**: Tokio for concurrent request handling
 - **Connection Pooling**: Efficient WebSocket management
 - **Adapter Optimization**: Redis pipelining, connection pooling

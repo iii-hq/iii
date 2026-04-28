@@ -28,7 +28,7 @@ Language-native logging functions — `console.log` in Node, `print()` in Python
 
 When you use the iii Logger, every log entry is attached to the trace that was active when the log was emitted. In the iii Console, clicking a trace in the waterfall chart opens a detail drawer. The **Logs** tab shows every log entry from that exact execution — with severity, timestamp, message, and any structured data you attached.
 
-<img src="/images/console/console-logs.png" alt="iii Console trace detail showing the Logs tab with correlated log entries for a specific trace execution" />
+<img src="/assets/console-logs-detail.png" alt="iii Console Logs page showing structured log rows with a selected log entry and its context data" />
 
 This is the core value of using the iii Logger: you can go from a slow trace in the waterfall chart directly to the logs that explain what happened, without grepping through stdout or cross-referencing timestamps manually.
 
@@ -305,12 +305,21 @@ Click on a trace to open the detail view with four visualization modes:
 - **Flame Graph** — stack-based view where wider bars mean longer duration. Best for spotting time-consuming operations.
 - **Service Breakdown** — aggregate stats per service (total spans, average duration, error rate). Best for identifying bottleneck services.
 - **Trace Map** — topology graph showing cross-service communication patterns.
+- **Flow** — node graph showing parent-child span relationships for the selected trace.
+
+<img src="/assets/console-traces-waterfall.png" alt="iii Console Traces waterfall view showing span timing and selected span details" />
+
+<img src="/assets/console-traces-flame-graph.png" alt="iii Console Traces flame graph view showing relative span duration within a trace" />
+
+<img src="/assets/console-traces-map.png" alt="iii Console Traces map view showing service relationships in a selected trace" />
+
+<img src="/assets/console-traces-flow.png" alt="iii Console Traces flow view showing parent-child span relationships as connected nodes" />
 
 ### Inspecting logs per trace
 
 Click on any span in the trace view to open the detail drawer. Switch to the **Logs** tab to see every log entry that was emitted during that span's execution. Each entry includes the severity level, timestamp, message, and structured attributes.
 
-<img src="/images/console/console-logs.png" alt="Trace detail drawer with the Logs tab selected, showing correlated log entries" />
+<img src="/assets/console-logs-detail.png" alt="Trace and log inspection in iii Console with structured log details and context data" />
 
 You can also use the dedicated **Logs** page for a full log viewer with severity filters, full-text search, and time-range controls. If a log entry has a `trace_id`, you can click it to jump directly to the corresponding trace.
 

@@ -102,7 +102,7 @@ await iii.registerFunction(
 await iii.registerTrigger({
   type: 'http',
   function_id: 'hello::api',
-  config: { api_path: 'hello', http_method: 'GET' },
+  config: { api_path: '/hello', http_method: 'GET' },
 })
 ```
 
@@ -150,7 +150,7 @@ iii.register_function("hello::api", hello_api)
 iii.register_trigger({
     "type": "http",
     "function_id": "hello::api",
-    "config": {"api_path": "hello", "http_method": "GET"},
+    "config": {"api_path": "/hello", "http_method": "GET"},
 })
 ```
 
@@ -193,7 +193,7 @@ iii.register_function((RegisterFunctionMessage::with_id("hello::api".into()), |i
 });
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::api".into(), config: json!({
-    "api_path": "hello",
+    "api_path": "/hello",
     "http_method": "GET",
 }), metadata: None })?;
 ```

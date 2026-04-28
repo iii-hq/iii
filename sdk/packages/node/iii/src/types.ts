@@ -112,7 +112,7 @@ export interface ISdk {
    * const trigger = iii.registerTrigger({
    *   type: 'cron',
    *   function_id: 'my-service::process-batch',
-   *   config: { schedule: '*\/5 * * * *' },
+   *   config: { expression: '0 *\/5 * * * * *' },
    * })
    *
    * // Later, remove the trigger
@@ -206,18 +206,18 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * type CronConfig = { schedule: string }
+   * type TimerConfig = { intervalMs: number }
    *
-   * iii.registerTriggerType<CronConfig>(
-   *   { id: 'cron', description: 'Fires on a cron schedule' },
+   * iii.registerTriggerType<TimerConfig>(
+   *   { id: 'timer', description: 'Fires on an interval' },
    *   {
    *     async registerTrigger({ id, function_id, config }) {
-   *       startCronJob(id, config.schedule, () =>
+   *       startTimer(id, config.intervalMs, () =>
    *         iii.trigger({ function_id, payload: {} }),
    *       )
    *     },
    *     async unregisterTrigger({ id }) {
-   *       stopCronJob(id)
+   *       stopTimer(id)
    *     },
    *   },
    * )
@@ -234,7 +234,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
+   * iii.unregisterTriggerType({ id: 'timer', description: 'Fires on an interval' })
    * ```
    */
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
@@ -343,15 +343,15 @@ export type FunctionRef = {
  *
  * @example
  * ```typescript
- * type CronConfig = { schedule: string }
+ * type TimerConfig = { intervalMs: number }
  *
- * const cron = iii.registerTriggerType<CronConfig>(
- *   { id: 'cron', description: 'Fires on a cron schedule' },
+ * const timer = iii.registerTriggerType<TimerConfig>(
+ *   { id: 'timer', description: 'Fires on an interval' },
  *   cronHandler,
  * )
  *
- * // Register a trigger — type is inferred as CronConfig
- * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
+ * // Register a trigger — type is inferred as TimerConfig
+ * timer.registerTrigger('my::fn', { intervalMs: 60_000 })
  *
  * // Register a function and bind a trigger in one call
  * cron.registerFunction(

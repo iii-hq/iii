@@ -146,7 +146,7 @@ workers:
 
 **Name:** `iii-http`
 
-Exposes HTTP endpoints for triggers and the core API surface. Functions with HTTP triggers are served through this module.
+Exposes HTTP endpoints for triggers and the core API surface. Functions with HTTP triggers are served through this worker.
 
 <ResponseField name="config.port" type="integer" default="3111">
   TCP port for the HTTP server.
@@ -655,7 +655,7 @@ Enables HTTP-invoked functions (outbound HTTP calls from the engine). Required f
 
 **Name:** `iii-exec`
 
-Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host, or to keep external framework workers in sync with the engine lifecycle.
+Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host.
 
 <ResponseField name="config.watch" type="string[]">
   Directories to watch for file changes. Changes trigger process restart.
@@ -666,21 +666,21 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
 </ResponseField>
 
 ```yaml
-# Example: run a Python worker
+# Example: run a Python SDK worker
 - name: iii-exec
   config:
     watch:
-      - ./src
+      - ./workers/python
     exec:
-      - uv run python -m my_worker
+      - uv run python workers/python/main.py
 
-# Example: run a Node.js worker
+# Example: run a Node.js SDK worker
 - name: iii-exec
   config:
     watch:
-      - ./src
+      - ./workers/node
     exec:
-      - pnpm dev:worker
+      - pnpm --dir workers/node dev
 ```
 
 </Accordion>

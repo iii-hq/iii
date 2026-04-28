@@ -12,7 +12,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-iii-sdk = "0.3"
+iii-sdk = "0.11"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    iii.register_function("greet", |input: Value| async move {
+    iii.register_function("hello::greet", |input: Value| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result: Value = iii
         .trigger(TriggerRequest {
-            function_id: "greet".to_string(),
+        function_id: "hello::greet".to_string(),
             payload: json!({ "name": "world" }),
             action: None,
             timeout_ms: None,
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use serde_json::{json, Value};
 
-iii.register_function("orders.create", |input: Value| async move {
+iii.register_function("orders::create", |input: Value| async move {
     let item = input["body"]["item"].as_str().unwrap_or("");
     Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
 });

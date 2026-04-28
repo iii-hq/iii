@@ -62,7 +62,7 @@ workers:
 | **iii-worker-manager** | 49134 | Internal port. The API worker connects here to register functions. |
 | **iii-worker-manager (RBAC)** | 3111 | Public-facing port. The browser connects here. RBAC controls which functions are exposed and runs an auth function on every new connection. |
 | **iii-exec** | — | Runs `pnpm dev` to start the API worker process. |
-| **iii-stream** | 3112 | Manages stream state with a file-based KvStore adapter. The engine routes `stream::get`, `stream::set`, `stream::delete`, and `stream::list` to this module. |
+| **iii-stream** | 3112 | Manages stream state with a file-based KvStore adapter. The engine routes `stream::get`, `stream::set`, `stream::delete`, and `stream::list` to this worker. |
 
 The RBAC configuration on port `3111` references `todo-project::auth-function` and explicitly lists the five functions the browser is allowed to call. See [Worker RBAC](/how-to/worker-rbac) for the full reference.
 

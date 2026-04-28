@@ -36,7 +36,7 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["index", "install", "quickstart"]
+                "pages": ["index", "install", "quickstart", "tutorials/index"]
               },
               {
                 "group": "Primitives & Concepts",
@@ -206,7 +206,7 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["0-10-0/index", "0-10-0/quickstart"]
+                "pages": ["0-10-0/index", "0-10-0/quickstart", "0-10-0/tutorials/index"]
               },
               {
                 "group": "Primitives & Concepts",

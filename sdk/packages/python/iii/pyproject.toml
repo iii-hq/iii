@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/iii-hq/sdk"
-Repository = "https://github.com/iii-hq/sdk"
+Homepage = "https://github.com/iii-hq/iii"
+Repository = "https://github.com/iii-hq/iii"
 
 [project.optional-dependencies]
 dev = [

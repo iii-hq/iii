@@ -180,7 +180,7 @@ After getting your first worker running:
 - [SDK Reference — Python](https://iii.dev/docs/api-reference/sdk-python)
 - [SDK Reference — Rust](https://iii.dev/docs/api-reference/sdk-rust)
 - [Engine Configuration](https://iii.dev/docs/configuration)
-- [Console Dashboard](https://iii.dev/docs/console)
+- [Console](https://iii.dev/docs/console)
 
 ## Pattern Boundaries
 
