@@ -311,9 +311,12 @@ button {
 nav a[href="/install"],
 nav a[href="/docs/install"],
 nav a[href$="/install"],
+nav a[href="install"],
 header a[href="/install"],
 header a[href="/docs/install"],
 header a[href$="/install"],
+header a[href="install"],
+a[href="install"],
 a[href="/docs/install"] {
   background: var(--iii-ink) !important;
   border: 1px solid var(--iii-ink) !important;
@@ -324,16 +327,20 @@ a[href="/docs/install"] {
 nav a[href="/install"]:hover,
 nav a[href="/docs/install"]:hover,
 nav a[href$="/install"]:hover,
+nav a[href="install"]:hover,
 header a[href="/install"]:hover,
 header a[href="/docs/install"]:hover,
 header a[href$="/install"]:hover,
+header a[href="install"]:hover,
+a[href="install"]:hover,
 a[href="/docs/install"]:hover {
   background: var(--iii-bg) !important;
   color: var(--iii-ink) !important;
 }
 
 a[target="_blank"][href="/docs/install"],
-a[target="_blank"][href="/install"] {
+a[target="_blank"][href="/install"],
+a[target="_blank"][href="install"] {
   background: transparent !important;
   border: 1px solid var(--iii-ink) !important;
   color: var(--iii-bg) !important;
@@ -341,7 +348,8 @@ a[target="_blank"][href="/install"] {
 }
 
 a[target="_blank"][href="/docs/install"] > span.absolute,
-a[target="_blank"][href="/install"] > span.absolute {
+a[target="_blank"][href="/install"] > span.absolute,
+a[target="_blank"][href="install"] > span.absolute {
   background: var(--iii-ink) !important;
   border-radius: 0 !important;
 }
@@ -349,12 +357,15 @@ a[target="_blank"][href="/install"] > span.absolute {
 a[target="_blank"][href="/docs/install"] span,
 a[target="_blank"][href="/docs/install"] svg,
 a[target="_blank"][href="/install"] span,
-a[target="_blank"][href="/install"] svg {
+a[target="_blank"][href="/install"] svg,
+a[target="_blank"][href="install"] span,
+a[target="_blank"][href="install"] svg {
   color: var(--iii-bg) !important;
 }
 
 a[target="_blank"][href="/docs/install"]:hover > span.absolute,
-a[target="_blank"][href="/install"]:hover > span.absolute {
+a[target="_blank"][href="/install"]:hover > span.absolute,
+a[target="_blank"][href="install"]:hover > span.absolute {
   background: var(--iii-bg) !important;
   opacity: 1 !important;
 }
@@ -362,7 +373,9 @@ a[target="_blank"][href="/install"]:hover > span.absolute {
 a[target="_blank"][href="/docs/install"]:hover span,
 a[target="_blank"][href="/docs/install"]:hover svg,
 a[target="_blank"][href="/install"]:hover span,
-a[target="_blank"][href="/install"]:hover svg {
+a[target="_blank"][href="/install"]:hover svg,
+a[target="_blank"][href="install"]:hover span,
+a[target="_blank"][href="install"]:hover svg {
   color: var(--iii-ink) !important;
 }
 
