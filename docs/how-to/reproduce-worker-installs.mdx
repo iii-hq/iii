@@ -5,7 +5,7 @@ description: 'Use iii.lock to pin registry-managed workers and verify installs a
 
 ## Goal
 
-Use `iii.lock` to make registry-managed worker installs reproducible across local development, CI, and deployment environments.
+Use `iii.lock` to replay registry-managed worker installs across local development, CI, and deployment environments.
 
 ## Context
 
@@ -74,15 +74,23 @@ You can use `sync --frozen` for the same non-mutating check:
 iii worker sync --frozen
 ```
 
-### 4. Inspect the Pinned Set
+Use strict verification when you also want dependency declarations checked against the locked versions:
 
-Run `iii worker sync` to read `iii.lock` and print the number of pinned workers.
+```bash
+iii worker verify --strict
+```
+
+Strict mode checks dependency ranges recorded in `iii.lock` and local `iii.worker.yaml` dependency blocks. It does not update pins; use `iii worker update` when you intentionally want new resolved versions.
+
+### 4. Replay the Pinned Set
+
+Run `iii worker sync` after cloning a repo, changing machines, or restoring CI/deployment state. The command reads `iii.lock`, installs or repairs registry-managed workers for the current platform, and verifies binary artifacts by SHA-256 before activation.
 
 ```bash
 iii worker sync
 ```
 
-In the current implementation, non-frozen `sync` reads and parses the lockfile, then reports the pinned worker count. It does not install artifacts from `iii.lock` yet.
+`sync` does not contact the registry resolver, does not refresh versions, and does not rewrite `config.yaml` or `iii.lock`. It reports installed, already-current, repaired, skipped, and failed workers. Built-ins, direct OCI image references, local-path workers, and sandbox rootfs/base images are skipped because they are outside the v1 lockfile replay contract.
 
 ### 5. Update Pins Intentionally
 
@@ -102,7 +110,7 @@ iii worker update
 
 ## Result
 
-Your registry-managed workers are recorded in `iii.lock`, CI can verify that `config.yaml` and the lockfile agree, and worker updates happen through explicit `iii worker update` commands.
+Your registry-managed workers are recorded in `iii.lock`, `iii worker sync` can replay them from trusted registry artifact URLs, CI can verify that `config.yaml` and the lockfile agree, and worker updates happen through explicit `iii worker update` commands.
 
 <Info title="Lockfile reference">
   For the full lockfile schema and command summary, see [Managed Worker Lockfile](/workers/managed-worker-lockfile).

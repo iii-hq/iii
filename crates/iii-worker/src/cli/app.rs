@@ -134,8 +134,8 @@ pub enum Commands {
     /// List all workers and their status
     List,
 
-    /// Read iii.lock and report pinned workers.
-    /// Pass --frozen in CI to fail if config.yaml and iii.lock disagree.
+    /// Install registry-managed workers exactly from iii.lock.
+    /// Pass --frozen in CI to verify without mutating local files.
     Sync {
         /// Verify the lockfile without mutating local files.
         #[arg(long)]
@@ -143,7 +143,11 @@ pub enum Commands {
     },
 
     /// Verify config.yaml is represented in iii.lock without mutating files
-    Verify,
+    Verify {
+        /// Also check dependency declarations against locked versions.
+        #[arg(long)]
+        strict: bool,
+    },
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
     /// By default refreshes live in place until the worker reaches a terminal

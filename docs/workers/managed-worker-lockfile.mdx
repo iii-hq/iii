@@ -3,7 +3,7 @@ title: 'Managed Worker Lockfile'
 description: 'Reference for iii.lock and the managed-worker lockfile commands.'
 ---
 
-`iii.lock` is a YAML lockfile in the project root. It records the resolved source pins for registry-managed workers so worker installs can be reproduced across environments. Binary workers can include artifacts for multiple platform targets in the same lockfile.
+`iii.lock` is a YAML lockfile in the project root. It records the resolved source pins for registry-managed workers so those workers can be replayed across environments with `iii worker sync`. Binary workers can include artifacts for multiple platform targets in the same lockfile.
 
 ## Location
 
@@ -42,7 +42,7 @@ Binary source entries are platform-neutral at the worker level. The `artifacts` 
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | `string` | Yes | Download URL for this target's binary artifact. |
+| `url` | `string` | Yes | Trusted HTTPS iii registry download URL for this target's binary artifact. |
 | `sha256` | `string` | Yes | Expected SHA-256 digest for this target's binary artifact. |
 
 ### Image Source
@@ -86,9 +86,18 @@ workers:
 | --- | --- | --- |
 | `iii worker add <worker[@version]>` | Yes | Adds a registry-managed worker. When the registry returns a resolved graph, writes or merges `iii.lock` entries for the graph. |
 | `iii worker update [worker]` | Yes | Re-resolves `latest` for one locked worker, or inferred root workers when no name is provided, then rewrites `iii.lock`. |
-| `iii worker sync` | No | Reads `iii.lock` and reports the number of pinned workers. Current behavior does not install artifacts from the lockfile. |
+| `iii worker sync` | Yes, local artifacts only | Replays registry-managed workers from `iii.lock` for the current target. It installs or repairs active worker artifacts, does not contact the registry resolver, and does not rewrite `config.yaml` or `iii.lock`. |
 | `iii worker sync --frozen` | No | Delegates to `iii worker verify`. |
 | `iii worker verify` | No | Checks that every lockfile-managed worker in `config.yaml` has an entry in `iii.lock` and that locked binary workers include an artifact for the current target. Built-ins, direct OCI refs, and local-path sandbox workers are skipped. Extra lockfile entries are allowed. |
+| `iii worker verify --strict` | No | Runs the normal verification plus declaration freshness checks for locked dependency ranges and local `iii.worker.yaml` dependency blocks. |
+
+<Info title="Replay scope">
+  `iii worker sync` replays registry-managed workers recorded in `iii.lock`. Built-in workers, direct OCI refs, local-path workers, and sandbox rootfs/base images stay on their existing lifecycle flows and are reported as outside the v1 replay contract.
+</Info>
+
+<Info title="Artifact trust">
+  Binary replay accepts trusted HTTPS iii registry artifact URLs and verifies the downloaded bytes against the lockfile SHA-256 before activation. A hash proves integrity of the bytes, not that an arbitrary host is trusted, so lockfile replay rejects untrusted artifact hosts by default.
+</Info>
 
 <Info title="Legacy binary sources">
   Lockfiles that use the older single-target `target`, `url`, and `sha256` binary source fields are still read by the CLI. When the lockfile is rewritten, binary sources are serialized with the `artifacts` map.

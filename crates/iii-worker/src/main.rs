@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
         } => iii_worker::cli::managed::handle_managed_restart(&worker_name, !no_wait, port).await,
         Commands::List => iii_worker::cli::managed::handle_worker_list().await,
         Commands::Sync { frozen } => iii_worker::cli::managed::handle_worker_sync(frozen).await,
-        Commands::Verify => iii_worker::cli::managed::handle_worker_verify().await,
+        Commands::Verify { strict } => iii_worker::cli::managed::handle_worker_verify(strict).await,
         Commands::Status {
             worker_name,
             no_watch,
