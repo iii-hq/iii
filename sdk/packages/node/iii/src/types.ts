@@ -206,18 +206,18 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * type TimerConfig = { intervalMs: number }
+   * type CronConfig = { expression: string }
    *
-   * iii.registerTriggerType<TimerConfig>(
-   *   { id: 'timer', description: 'Fires on an interval' },
+   * iii.registerTriggerType<CronConfig>(
+   *   { id: 'cron', description: 'Fires on a cron schedule' },
    *   {
    *     async registerTrigger({ id, function_id, config }) {
-   *       startTimer(id, config.intervalMs, () =>
+   *       startCronJob(id, config.expression, () =>
    *         iii.trigger({ function_id, payload: {} }),
    *       )
    *     },
    *     async unregisterTrigger({ id }) {
-   *       stopTimer(id)
+   *       stopCronJob(id)
    *     },
    *   },
    * )
@@ -234,7 +234,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * iii.unregisterTriggerType({ id: 'timer', description: 'Fires on an interval' })
+   * iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
    * ```
    */
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
@@ -343,20 +343,21 @@ export type FunctionRef = {
  *
  * @example
  * ```typescript
- * type TimerConfig = { intervalMs: number }
+ * type CronConfig = { expression: string }
  *
- * const timer = iii.registerTriggerType<TimerConfig>(
- *   { id: 'timer', description: 'Fires on an interval' },
- *   timerHandler,
+ * const cron = iii.registerTriggerType<CronConfig>(
+ *   { id: 'cron', description: 'Fires on a cron schedule' },
+ *   cronHandler,
  * )
  *
- * // Register a trigger — type is inferred as TimerConfig
- * timer.registerTrigger('my::fn', { intervalMs: 60_000 })
+ * // Register a trigger — type is inferred as CronConfig
+ * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
  *
  * // Register a function and bind a trigger in one call
- * timer.registerFunction(
+ * cron.registerFunction(
  *   'my::fn',
  *   async (data) => { return { ok: true } },
+ *   { expression: '0 *\/5 * * * * *' },
  * )
  * ```
  */

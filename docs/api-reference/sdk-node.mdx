@@ -215,18 +215,18 @@ registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandl
 #### Example
 
 ```typescript
-type TimerConfig = { intervalMs: number }
+type CronConfig = { expression: string }
 
-iii.registerTriggerType<TimerConfig>(
-  { id: 'timer', description: 'Fires on an interval' },
+iii.registerTriggerType<CronConfig>(
+  { id: 'cron', description: 'Fires on a cron schedule' },
   {
     async registerTrigger({ id, function_id, config }) {
-      startTimer(id, config.intervalMs, () =>
+      startCronJob(id, config.expression, () =>
         iii.trigger({ function_id, payload: {} }),
       )
     },
     async unregisterTrigger({ id }) {
-      stopTimer(id)
+      stopCronJob(id)
     },
   },
 )
@@ -312,7 +312,7 @@ unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
 #### Example
 
 ```typescript
-iii.unregisterTriggerType({ id: 'timer', description: 'Fires on an interval' })
+iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
 ```
 
 ## Subpath Exports
