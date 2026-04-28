@@ -33,16 +33,20 @@ To deploy, point a Vercel project at this directory (`website/`) with framework 
 
 ### Mailmodo
 
-The hero and footer email forms POST to a Mailmodo form endpoint when one is configured. Set the URL in the meta tag at the top of `index.html`:
+The hero and footer email forms POST to a Mailmodo form endpoint configured via a meta tag at the top of `index.html`:
 
 ```html
 <meta
   name="iii:mailmodo-form-url"
-  content="https://api.mailmodo.com/...your-form-url..."
+  content="https://api.mailmodo.com/api/v1/at/f/..."
 />
 ```
 
-If left empty, the form still works for the user (success state + localStorage), but no email is submitted to Mailmodo. This keeps the secret out of source control while making the integration trivial to enable on any deploy.
+The endpoint is checked into source. Mailmodo form endpoints are public-client-safe (the same URL is what would be embedded in any front-end form), so there's no secret material in this value. To change it per environment:
+
+- **Production**: edit the `content` attribute in `index.html` and redeploy.
+- **Locally / per-branch**: edit the same attribute on a feature branch.
+- **To disable submission entirely**: clear the `content` attribute. The form will still show the "Thanks for subscribing!" success state and persist to `localStorage`, but no request goes to Mailmodo.
 
 ## Editing the site
 

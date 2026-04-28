@@ -71,9 +71,10 @@
 <meta name="twitter:description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
 <meta name="twitter:image" content="https://iii.dev/og-image.png" />
 
-<!-- Mailmodo form URL (optional). Set the content attribute to your Mailmodo
-     form endpoint to enable email submission to Mailmodo. If left empty, the
-     form falls back to localStorage-only behavior. -->
+<!-- Mailmodo form URL. Public-client-safe (no secret material), so it lives
+     in source. Edit content="" to change the destination per environment, or
+     clear it to disable Mailmodo submission (form still falls back to
+     localStorage-only behavior). -->
 <meta name="iii:mailmodo-form-url" content="https://api.mailmodo.com/api/v1/at/f/b7XMGvRS9B/cdb51f52-a91e-520c-888d-03470a9c8faa" />
 
 <style>
