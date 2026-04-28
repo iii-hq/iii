@@ -193,9 +193,7 @@ async fn main() -> anyhow::Result<()> {
                 remote_path,
                 local_path,
                 port,
-            } => {
-                iii_worker::cli::sandbox::handle_download(id, remote_path, local_path, port).await
-            }
+            } => iii_worker::cli::sandbox::handle_download(id, remote_path, local_path, port).await,
         },
         Commands::SandboxDaemon(args) => iii_worker::cli::sandbox_daemon::run(args).await,
         Commands::VmBoot(args) => {

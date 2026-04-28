@@ -15,14 +15,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use iii_sdk::{IIIError, RegisterFunctionMessage};
 use iii_sdk::channels::{ChannelReader, StreamChannelRef};
+use iii_sdk::{IIIError, RegisterFunctionMessage};
 use iii_shell_proto::FsResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 // ---------------------------------------------------------------------------
 // AsyncRead adapter for ChannelReader
@@ -156,9 +158,7 @@ pub(crate) async fn handle_write_with_reader<R: FsRunner + ?Sized>(
     runner: &R,
 ) -> Result<WriteResponse, SandboxError> {
     let id = Uuid::parse_str(&sandbox_id).map_err(|_| {
-        SandboxError::InvalidRequest(format!(
-            "sandbox_id is not a valid UUID: {sandbox_id}"
-        ))
+        SandboxError::InvalidRequest(format!("sandbox_id is not a valid UUID: {sandbox_id}"))
     })?;
     let state = registry.get(id).await?;
     if state.stopped {
@@ -171,7 +171,10 @@ pub(crate) async fn handle_write_with_reader<R: FsRunner + ?Sized>(
         .await?;
 
     match result {
-        FsResult::Write { bytes_written, path: p } => Ok(WriteResponse {
+        FsResult::Write {
+            bytes_written,
+            path: p,
+        } => Ok(WriteResponse {
             bytes_written,
             path: p,
         }),
@@ -262,11 +265,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FsRunner for FakeRunner {
-        async fn fs_call(
-            &self,
-            _shell_sock: PathBuf,
-            _op: FsOp,
-        ) -> Result<FsResult, SandboxError> {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
             unimplemented!()
         }
 
@@ -283,14 +282,18 @@ mod tests {
             reader.read_to_end(&mut buf).await.unwrap();
             let bytes = buf.len() as u64;
             *self.captured.lock().await = buf;
-            Ok(FsResult::Write { bytes_written: bytes, path })
+            Ok(FsResult::Write {
+                bytes_written: bytes,
+                path,
+            })
         }
 
         async fn fs_read_stream(
             &self,
             _shell_sock: PathBuf,
             _path: String,
-        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
             unimplemented!()
         }
     }
@@ -319,7 +322,9 @@ mod tests {
         reg.insert(make_state(id)).await;
         let data = b"hello, sandbox!";
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let runner = FakeRunner { captured: captured.clone() };
+        let runner = FakeRunner {
+            captured: captured.clone(),
+        };
         let cursor = Box::new(Cursor::new(data.to_vec()));
         let resp = handle_write_with_reader(
             id.to_string(),

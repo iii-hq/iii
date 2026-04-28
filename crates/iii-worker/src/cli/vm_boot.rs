@@ -684,8 +684,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         let mut network =
             iii_network::SmoltcpNetwork::new(iii_network::NetworkConfig::default(), args.slot);
         network.start(tokio_rt.handle().clone());
-        builder =
-            builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));
+        builder = builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));
         (
             network.gateway_ipv4().to_string(),
             network.guest_ipv4().to_string(),

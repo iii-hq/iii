@@ -26,11 +26,7 @@ use super::{FsCallResult, FsError, parse_mode};
 /// Build an `FsEntry` from a path and its already-fetched metadata.
 /// Uses `symlink_metadata` semantics — callers must pass metadata
 /// obtained without following the symlink so `is_symlink` is accurate.
-pub(super) fn entry_from_metadata(
-    name: String,
-    _path: &Path,
-    md: &std::fs::Metadata,
-) -> FsEntry {
+pub(super) fn entry_from_metadata(name: String, _path: &Path, md: &std::fs::Metadata) -> FsEntry {
     let mode_bits = md.mode() & 0o7777;
     let mtime = md.mtime();
     FsEntry {
@@ -320,10 +316,7 @@ pub fn mkdir(path: String, mode: String, parents: bool) -> FsCallResult {
         if parents {
             return Ok(FsResult::Mkdir { created: false });
         }
-        return Err(FsError::new(
-            "S213",
-            format!("path already exists: {path}"),
-        ));
+        return Err(FsError::new("S213", format!("path already exists: {path}")));
     }
 
     let result = if parents {
@@ -364,13 +357,9 @@ pub fn rm(path: String, recursive: bool) -> FsCallResult {
         } else {
             // Check emptiness first so we return S214 with a clean
             // message rather than the generic ENOTEMPTY io error.
-            let mut rd =
-                std::fs::read_dir(p).map_err(|e| FsError::from_io(&path, e))?;
+            let mut rd = std::fs::read_dir(p).map_err(|e| FsError::from_io(&path, e))?;
             if rd.next().is_some() {
-                return Err(FsError::new(
-                    "S214",
-                    format!("directory not empty: {path}"),
-                ));
+                return Err(FsError::new("S214", format!("directory not empty: {path}")));
             }
             std::fs::remove_dir(p).map_err(|e| FsError::from_io(&path, e))?;
         }
@@ -412,8 +401,7 @@ pub fn chmod(
         std::fs::set_permissions(target, perms)
             .map_err(|e| FsError::from_io(&target.to_string_lossy(), e))?;
         if uid.is_some() || gid.is_some() {
-            chown(target, uid, gid)
-                .map_err(|e| FsError::from_io(&target.to_string_lossy(), e))?;
+            chown(target, uid, gid).map_err(|e| FsError::from_io(&target.to_string_lossy(), e))?;
         }
         Ok(())
     };
@@ -453,10 +441,7 @@ pub fn mv(src: String, dst: String, overwrite: bool) -> FsCallResult {
         return Err(FsError::new("S211", format!("src not found: {src}")));
     }
     if dst_p.exists() && !overwrite {
-        return Err(FsError::new(
-            "S213",
-            format!("dst already exists: {dst}"),
-        ));
+        return Err(FsError::new("S213", format!("dst already exists: {dst}")));
     }
 
     match std::fs::rename(src_p, dst_p) {
@@ -464,8 +449,7 @@ pub fn mv(src: String, dst: String, overwrite: bool) -> FsCallResult {
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             // Cross-fs: copy to temp sibling of dst, then rename.
             let tmp = temp_sibling(dst_p);
-            std::fs::copy(src_p, &tmp)
-                .map_err(|e| FsError::from_io(&dst, e))?;
+            std::fs::copy(src_p, &tmp).map_err(|e| FsError::from_io(&dst, e))?;
             if let Err(e) = std::fs::rename(&tmp, dst_p) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(FsError::from_io(&dst, e));
@@ -517,9 +501,7 @@ pub fn grep(
     let mut truncated = false;
 
     let should_scan = |rel: &str| -> bool {
-        if !include_glob.is_empty()
-            && !include_glob.iter().any(|g| glob_matches_path(g, rel))
-        {
+        if !include_glob.is_empty() && !include_glob.iter().any(|g| glob_matches_path(g, rel)) {
             return false;
         }
         if exclude_glob.iter().any(|g| glob_matches_path(g, rel)) {
@@ -645,9 +627,7 @@ fn collect_files_to_sed(
     };
 
     let passes = |rel: &str| -> bool {
-        if !include_glob.is_empty()
-            && !include_glob.iter().any(|g| glob_matches_path(g, rel))
-        {
+        if !include_glob.is_empty() && !include_glob.iter().any(|g| glob_matches_path(g, rel)) {
             return false;
         }
         if exclude_glob.iter().any(|g| glob_matches_path(g, rel)) {
@@ -801,12 +781,8 @@ pub fn sed(
                      pass a file path or set recursive=true",
                 ));
             }
-            let collected = collect_files_to_sed(
-                root_path,
-                recursive,
-                &include_glob,
-                &exclude_glob,
-            );
+            let collected =
+                collect_files_to_sed(root_path, recursive, &include_glob, &exclude_glob);
             collected
                 .into_iter()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -882,13 +858,7 @@ pub fn sed(
                     };
                     (produced, count_here)
                 }
-                None => literal_replace_line(
-                    line,
-                    &pattern,
-                    case_fold,
-                    &replacement,
-                    first_only,
-                ),
+                None => literal_replace_line(line, &pattern, case_fold, &replacement, first_only),
             };
             replacements += n;
             output.push_str(&new_line);

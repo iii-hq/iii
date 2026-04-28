@@ -364,19 +364,13 @@ fn read_stderr_tail(log_path: &std::path::Path) -> String {
 /// `cmd` is folded into the synthetic stderr the way `/bin/sh` does
 /// (`exec: <cmd>: not found`) so users see what failed without
 /// scrolling through `code: S300` chrome that no longer applies.
-fn classify_dispatcher_spawn_error(
-    msg: &str,
-    cmd: &str,
-    duration_ms: u64,
-) -> Option<ExecResponse> {
+fn classify_dispatcher_spawn_error(msg: &str, cmd: &str, duration_ms: u64) -> Option<ExecResponse> {
     // `os error N` is the canonical libstd suffix on Unix; we anchor on
     // it to avoid catching unrelated dispatcher errors that happen to
     // mention "permission" in some other context.
-    let is_enoent =
-        msg.contains("No such file or directory") || msg.contains("(os error 2)");
+    let is_enoent = msg.contains("No such file or directory") || msg.contains("(os error 2)");
     let is_enotdir = msg.contains("Not a directory") || msg.contains("(os error 20)");
-    let is_eacces =
-        msg.contains("Permission denied") || msg.contains("(os error 13)");
+    let is_eacces = msg.contains("Permission denied") || msg.contains("(os error 13)");
 
     if is_enoent || is_enotdir {
         return Some(ExecResponse {

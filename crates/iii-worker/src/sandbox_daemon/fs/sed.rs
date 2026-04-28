@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 /// Find-and-replace request, accepting either an explicit `files` list
 /// or a `path` walked like grep does. Exactly one of those two must be
@@ -48,7 +50,9 @@ pub struct SedRequest {
     pub ignore_case: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Serialize)]
 pub struct SedResponse {
@@ -111,7 +115,13 @@ pub async fn handle_sed<R: FsRunner + ?Sized>(
         .await?;
 
     match result {
-        FsResult::Sed { results, total_replacements } => Ok(SedResponse { results, total_replacements }),
+        FsResult::Sed {
+            results,
+            total_replacements,
+        } => Ok(SedResponse {
+            results,
+            total_replacements,
+        }),
         other => Err(SandboxError::FsIo(format!(
             "expected Sed result, got {other:?}"
         ))),
@@ -163,11 +173,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FsRunner for FakeRunner {
-        async fn fs_call(
-            &self,
-            _shell_sock: PathBuf,
-            _op: FsOp,
-        ) -> Result<FsResult, SandboxError> {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
             Ok(FsResult::Sed {
                 results: vec![FsSedFileResult {
                     path: "a.py".into(),
@@ -192,7 +198,8 @@ mod tests {
             &self,
             _shell_sock: PathBuf,
             _path: String,
-        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
             unimplemented!()
         }
     }
@@ -274,10 +281,7 @@ mod tests {
         // Form-check happens after UUID parse but before registry hit,
         // so a valid UUID with no matching sandbox is fine here.
         let reg = SandboxRegistry::new();
-        let mut req = req_files(
-            Uuid::new_v4().to_string(),
-            vec!["/workspace/a.py".into()],
-        );
+        let mut req = req_files(Uuid::new_v4().to_string(), vec!["/workspace/a.py".into()]);
         req.path = Some("/workspace".into());
         let err = handle_sed(req, &reg, &FakeRunner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S210");

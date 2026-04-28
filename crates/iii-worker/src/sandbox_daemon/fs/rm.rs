@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RmRequest {
@@ -46,7 +48,10 @@ pub async fn handle_rm<R: FsRunner + ?Sized>(
     let result = runner
         .fs_call(
             state.shell_sock,
-            FsOp::Rm { path: req.path, recursive: req.recursive },
+            FsOp::Rm {
+                path: req.path,
+                recursive: req.recursive,
+            },
         )
         .await?;
 
@@ -103,11 +108,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FsRunner for FakeRunner {
-        async fn fs_call(
-            &self,
-            _shell_sock: PathBuf,
-            _op: FsOp,
-        ) -> Result<FsResult, SandboxError> {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
             Ok(FsResult::Rm { removed: true })
         }
         async fn fs_write_stream(
@@ -124,7 +125,8 @@ mod tests {
             &self,
             _shell_sock: PathBuf,
             _path: String,
-        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
             unimplemented!()
         }
     }
@@ -152,7 +154,11 @@ mod tests {
         let id = Uuid::new_v4();
         reg.insert(make_state(id)).await;
         let resp = handle_rm(
-            RmRequest { sandbox_id: id.to_string(), path: "/workspace/file.txt".into(), recursive: false },
+            RmRequest {
+                sandbox_id: id.to_string(),
+                path: "/workspace/file.txt".into(),
+                recursive: false,
+            },
             &reg,
             &FakeRunner,
         )
@@ -165,7 +171,11 @@ mod tests {
     async fn bad_uuid_returns_s001() {
         let reg = SandboxRegistry::new();
         let err = handle_rm(
-            RmRequest { sandbox_id: "bad".into(), path: "/".into(), recursive: false },
+            RmRequest {
+                sandbox_id: "bad".into(),
+                path: "/".into(),
+                recursive: false,
+            },
             &reg,
             &FakeRunner,
         )
@@ -178,7 +188,11 @@ mod tests {
     async fn missing_sandbox_returns_s002() {
         let reg = SandboxRegistry::new();
         let err = handle_rm(
-            RmRequest { sandbox_id: Uuid::new_v4().to_string(), path: "/".into(), recursive: false },
+            RmRequest {
+                sandbox_id: Uuid::new_v4().to_string(),
+                path: "/".into(),
+                recursive: false,
+            },
             &reg,
             &FakeRunner,
         )

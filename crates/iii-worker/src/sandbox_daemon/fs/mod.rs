@@ -27,11 +27,7 @@ use std::sync::Arc;
 use crate::sandbox_daemon::registry::SandboxRegistry;
 
 /// Register all ten `sandbox::fs::*` triggers with the III engine.
-pub fn register_all(
-    iii: &iii_sdk::III,
-    registry: Arc<SandboxRegistry>,
-    runner: Arc<dyn FsRunner>,
-) {
+pub fn register_all(iii: &iii_sdk::III, registry: Arc<SandboxRegistry>, runner: Arc<dyn FsRunner>) {
     ls::register(iii, registry.clone(), runner.clone());
     stat::register(iii, registry.clone(), runner.clone());
     mkdir::register(iii, registry.clone(), runner.clone());

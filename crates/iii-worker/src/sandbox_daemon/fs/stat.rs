@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct StatRequest {
@@ -120,11 +122,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FsRunner for FakeRunner {
-        async fn fs_call(
-            &self,
-            _shell_sock: PathBuf,
-            _op: FsOp,
-        ) -> Result<FsResult, SandboxError> {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
             Ok(FsResult::Stat(self.entry.clone()))
         }
         async fn fs_write_stream(
@@ -141,7 +139,8 @@ mod tests {
             &self,
             _shell_sock: PathBuf,
             _path: String,
-        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
             unimplemented!()
         }
     }
@@ -179,7 +178,9 @@ mod tests {
         let reg = SandboxRegistry::new();
         let id = Uuid::new_v4();
         reg.insert(make_state(id)).await;
-        let runner = FakeRunner { entry: fake_entry() };
+        let runner = FakeRunner {
+            entry: fake_entry(),
+        };
         let req = StatRequest {
             sandbox_id: id.to_string(),
             path: "/workspace/foo.txt".into(),
@@ -192,9 +193,14 @@ mod tests {
     #[tokio::test]
     async fn bad_uuid_returns_s001() {
         let reg = SandboxRegistry::new();
-        let runner = FakeRunner { entry: fake_entry() };
+        let runner = FakeRunner {
+            entry: fake_entry(),
+        };
         let err = handle_stat(
-            StatRequest { sandbox_id: "not-a-uuid".into(), path: "/".into() },
+            StatRequest {
+                sandbox_id: "not-a-uuid".into(),
+                path: "/".into(),
+            },
             &reg,
             &runner,
         )
@@ -206,9 +212,14 @@ mod tests {
     #[tokio::test]
     async fn missing_sandbox_returns_s002() {
         let reg = SandboxRegistry::new();
-        let runner = FakeRunner { entry: fake_entry() };
+        let runner = FakeRunner {
+            entry: fake_entry(),
+        };
         let err = handle_stat(
-            StatRequest { sandbox_id: Uuid::new_v4().to_string(), path: "/".into() },
+            StatRequest {
+                sandbox_id: Uuid::new_v4().to_string(),
+                path: "/".into(),
+            },
             &reg,
             &runner,
         )

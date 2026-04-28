@@ -46,11 +46,7 @@ pub fn map_vm_error(e: VmClientError) -> SandboxError {
 #[async_trait::async_trait]
 pub trait FsRunner: Send + Sync + 'static {
     /// Run a one-shot filesystem op (anything except WriteStart/ReadStart).
-    async fn fs_call(
-        &self,
-        shell_sock: PathBuf,
-        op: FsOp,
-    ) -> Result<FsResult, SandboxError>;
+    async fn fs_call(&self, shell_sock: PathBuf, op: FsOp) -> Result<FsResult, SandboxError>;
 
     /// Upload bytes from `reader` to `path` inside the guest.
     async fn fs_write_stream(
@@ -78,14 +74,8 @@ pub struct IiiShellFsRunner;
 
 #[async_trait::async_trait]
 impl FsRunner for IiiShellFsRunner {
-    async fn fs_call(
-        &self,
-        shell_sock: PathBuf,
-        op: FsOp,
-    ) -> Result<FsResult, SandboxError> {
-        let session = Session::connect(&shell_sock)
-            .await
-            .map_err(map_vm_error)?;
+    async fn fs_call(&self, shell_sock: PathBuf, op: FsOp) -> Result<FsResult, SandboxError> {
+        let session = Session::connect(&shell_sock).await.map_err(map_vm_error)?;
         session.fs_call(op).await.map_err(map_vm_error)
     }
 
@@ -97,9 +87,7 @@ impl FsRunner for IiiShellFsRunner {
         parents: bool,
         reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
     ) -> Result<FsResult, SandboxError> {
-        let session = Session::connect(&shell_sock)
-            .await
-            .map_err(map_vm_error)?;
+        let session = Session::connect(&shell_sock).await.map_err(map_vm_error)?;
         session
             .fs_write_stream(path, mode, parents, reader)
             .await
@@ -111,9 +99,7 @@ impl FsRunner for IiiShellFsRunner {
         shell_sock: PathBuf,
         path: String,
     ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
-        let session = Session::connect(&shell_sock)
-            .await
-            .map_err(map_vm_error)?;
+        let session = Session::connect(&shell_sock).await.map_err(map_vm_error)?;
         let (meta, stream_reader) = session.fs_read_stream(path).await.map_err(map_vm_error)?;
         Ok((meta, Box::new(stream_reader)))
     }
@@ -267,12 +253,14 @@ mod tests {
                 VmClientError::WorkerMissing("/tmp/missing.sock: ENOENT".into())
             }),
             ("Permission", || VmClientError::Permission("EACCES".into())),
-            ("RelayDown", || VmClientError::RelayDown("relay panic".into())),
+            ("RelayDown", || {
+                VmClientError::RelayDown("relay panic".into())
+            }),
             ("AuthRejected", || {
                 VmClientError::AuthRejected("uid mismatch".into())
             }),
-            ("HandshakeTruncated", || {
-                VmClientError::HandshakeTruncated { got: 2 }
+            ("HandshakeTruncated", || VmClientError::HandshakeTruncated {
+                got: 2,
             }),
             ("WriteBlocked", || VmClientError::WriteBlocked),
             ("ProtocolViolation", || {
@@ -291,9 +279,9 @@ mod tests {
                         "missing prefix for {label}: {s}"
                     );
                 }
-                other => panic!(
-                    "non-FsError VmClientError must map to FsIo, got {other:?} for {label}"
-                ),
+                other => {
+                    panic!("non-FsError VmClientError must map to FsIo, got {other:?} for {label}")
+                }
             }
             assert_eq!(
                 mapped.to_payload()["code"],

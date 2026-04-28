@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct MvRequest {
@@ -47,7 +49,11 @@ pub async fn handle_mv<R: FsRunner + ?Sized>(
     let result = runner
         .fs_call(
             state.shell_sock,
-            FsOp::Mv { src: req.src, dst: req.dst, overwrite: req.overwrite },
+            FsOp::Mv {
+                src: req.src,
+                dst: req.dst,
+                overwrite: req.overwrite,
+            },
         )
         .await?;
 
@@ -104,11 +110,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FsRunner for FakeRunner {
-        async fn fs_call(
-            &self,
-            _shell_sock: PathBuf,
-            _op: FsOp,
-        ) -> Result<FsResult, SandboxError> {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
             Ok(FsResult::Mv { moved: true })
         }
         async fn fs_write_stream(
@@ -125,7 +127,8 @@ mod tests {
             &self,
             _shell_sock: PathBuf,
             _path: String,
-        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
             unimplemented!()
         }
     }
@@ -171,7 +174,12 @@ mod tests {
     async fn bad_uuid_returns_s001() {
         let reg = SandboxRegistry::new();
         let err = handle_mv(
-            MvRequest { sandbox_id: "bad".into(), src: "/a".into(), dst: "/b".into(), overwrite: false },
+            MvRequest {
+                sandbox_id: "bad".into(),
+                src: "/a".into(),
+                dst: "/b".into(),
+                overwrite: false,
+            },
             &reg,
             &FakeRunner,
         )

@@ -94,8 +94,7 @@ pub(crate) fn handle_write_start_with_timeout(
     if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() {
             if parents {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| FsError::from_io(&path, e))?;
+                std::fs::create_dir_all(parent).map_err(|e| FsError::from_io(&path, e))?;
             } else if !parent.exists() {
                 return Err(FsError::new(
                     "S211",
@@ -132,16 +131,11 @@ pub(crate) fn handle_write_start_with_timeout(
         };
         match msg {
             ShellMessage::FsChunk { data_b64 } => {
-                let bytes = match base64::engine::general_purpose::STANDARD
-                    .decode(&data_b64)
-                {
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(&data_b64) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = std::fs::remove_file(&tmp);
-                        return Err(FsError::new(
-                            "S210",
-                            format!("bad base64 in chunk: {e}"),
-                        ));
+                        return Err(FsError::new("S210", format!("bad base64 in chunk: {e}")));
                     }
                 };
                 if let Err(e) = f.write_all(&bytes) {
@@ -188,9 +182,7 @@ pub(crate) fn handle_write_start_with_timeout(
     }
     drop(f);
 
-    if let Err(e) =
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(bits))
-    {
+    if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(bits)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(FsError::from_io(&path, e));
     }
@@ -226,11 +218,7 @@ pub(crate) fn handle_write_start_with_timeout(
 /// - `S211` — path does not exist.
 /// - `S212` — path is a directory.
 /// - `S216` — I/O error opening the file.
-pub fn handle_read_start(
-    path: String,
-    writer: &Writer,
-    corr_id: u32,
-) -> Result<(), FsError> {
+pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<(), FsError> {
     use iii_shell_proto::flags::FLAG_TERMINAL;
 
     let p = Path::new(&path);

@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct GrepRequest {
@@ -32,9 +34,15 @@ pub struct GrepRequest {
     pub max_line_bytes: u64,
 }
 
-fn default_recursive() -> bool { true }
-fn default_max_matches() -> u64 { 10_000 }
-fn default_max_line_bytes() -> u64 { 4096 }
+fn default_recursive() -> bool {
+    true
+}
+fn default_max_matches() -> u64 {
+    10_000
+}
+fn default_max_line_bytes() -> u64 {
+    4096
+}
 
 #[derive(Debug, Serialize)]
 pub struct GrepResponse {
@@ -130,12 +138,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FsRunner for FakeRunner {
-        async fn fs_call(
-            &self,
-            _shell_sock: PathBuf,
-            _op: FsOp,
-        ) -> Result<FsResult, SandboxError> {
-            Ok(FsResult::Grep { matches: self.matches.clone(), truncated: false })
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
+            Ok(FsResult::Grep {
+                matches: self.matches.clone(),
+                truncated: false,
+            })
         }
         async fn fs_write_stream(
             &self,
@@ -151,7 +158,8 @@ mod tests {
             &self,
             _shell_sock: PathBuf,
             _path: String,
-        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError> {
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
             unimplemented!()
         }
     }
@@ -179,7 +187,11 @@ mod tests {
         let id = Uuid::new_v4();
         reg.insert(make_state(id)).await;
         let runner = FakeRunner {
-            matches: vec![FsMatch { path: "a.py".into(), line: 1, content: "hello".into() }],
+            matches: vec![FsMatch {
+                path: "a.py".into(),
+                line: 1,
+                content: "hello".into(),
+            }],
         };
         let req = GrepRequest {
             sandbox_id: id.to_string(),

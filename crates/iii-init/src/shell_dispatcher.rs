@@ -317,17 +317,20 @@ fn handle_frame(
         }
         // ── Filesystem ops ────────────────────────────────────────────────
         ShellMessage::FsRequest(op) => {
-            use iii_shell_proto::flags::FLAG_TERMINAL;
             use iii_shell_proto::FsOp;
+            use iii_shell_proto::flags::FLAG_TERMINAL;
 
             match op {
                 // ── WriteStart: streaming upload ─────────────────────────
-                FsOp::WriteStart { path, mode, parents } => {
+                FsOp::WriteStart {
+                    path,
+                    mode,
+                    parents,
+                } => {
                     // Create a sync channel for this write session and
                     // register the sender so FsChunk/FsEnd frames can
                     // be forwarded to the write thread.
-                    let (chunk_tx, chunk_rx) =
-                        std::sync::mpsc::sync_channel::<ShellMessage>(64);
+                    let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<ShellMessage>(64);
                     fs_writes
                         .lock()
                         .expect("fs_writes mutex poisoned")
@@ -338,10 +341,9 @@ fn handle_frame(
                     thread::Builder::new()
                         .name(format!("iii-fs-write-{corr_id}"))
                         .spawn(move || {
-                            let result =
-                                crate::fs_handler::streaming::handle_write_start(
-                                    path, mode, parents, chunk_rx,
-                                );
+                            let result = crate::fs_handler::streaming::handle_write_start(
+                                path, mode, parents, chunk_rx,
+                            );
                             // Always remove the registry entry when done.
                             fs_writes
                                 .lock()
@@ -378,10 +380,9 @@ fn handle_frame(
                     thread::Builder::new()
                         .name(format!("iii-fs-read-{corr_id}"))
                         .spawn(move || {
-                            let result =
-                                crate::fs_handler::streaming::handle_read_start(
-                                    path, &writer, corr_id,
-                                );
+                            let result = crate::fs_handler::streaming::handle_read_start(
+                                path, &writer, corr_id,
+                            );
                             // handle_read_start only returns Err for
                             // pre-FsMeta failures; emit the terminal
                             // FsError here.
@@ -481,9 +482,11 @@ fn dispatch_one_shot(op: iii_shell_proto::FsOp) -> crate::fs_handler::FsCallResu
     match op {
         FsOp::Ls { path } => crate::fs_handler::ops::ls(path),
         FsOp::Stat { path } => crate::fs_handler::ops::stat(path),
-        FsOp::Mkdir { path, mode, parents } => {
-            crate::fs_handler::ops::mkdir(path, mode, parents)
-        }
+        FsOp::Mkdir {
+            path,
+            mode,
+            parents,
+        } => crate::fs_handler::ops::mkdir(path, mode, parents),
         FsOp::Rm { path, recursive } => crate::fs_handler::ops::rm(path, recursive),
         FsOp::Chmod {
             path,
@@ -492,7 +495,11 @@ fn dispatch_one_shot(op: iii_shell_proto::FsOp) -> crate::fs_handler::FsCallResu
             gid,
             recursive,
         } => crate::fs_handler::ops::chmod(path, mode, uid, gid, recursive),
-        FsOp::Mv { src, dst, overwrite } => crate::fs_handler::ops::mv(src, dst, overwrite),
+        FsOp::Mv {
+            src,
+            dst,
+            overwrite,
+        } => crate::fs_handler::ops::mv(src, dst, overwrite),
         FsOp::Grep {
             path,
             pattern,
@@ -536,12 +543,10 @@ fn dispatch_one_shot(op: iii_shell_proto::FsOp) -> crate::fs_handler::FsCallResu
             ignore_case,
         ),
         // Streaming ops are dispatched before this function is called.
-        FsOp::WriteStart { .. } | FsOp::ReadStart { .. } => {
-            Err(crate::fs_handler::FsError::new(
-                "S219",
-                "streaming ops must not reach dispatch_one_shot",
-            ))
-        }
+        FsOp::WriteStart { .. } | FsOp::ReadStart { .. } => Err(crate::fs_handler::FsError::new(
+            "S219",
+            "streaming ops must not reach dispatch_one_shot",
+        )),
     }
 }
 

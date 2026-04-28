@@ -16,9 +16,8 @@ use std::path::PathBuf;
 use base64::Engine;
 use iii_shell_client::{FsStreamReader, Session, VmClientError};
 use iii_shell_proto::{
-    FsEntry, FsOp, FsReadMeta, FsResult, ShellMessage, encode_frame,
-    flags::FLAG_TERMINAL,
-    FRAME_HEADER_SIZE, MAX_FRAME_SIZE, decode_frame_body,
+    FRAME_HEADER_SIZE, FsEntry, FsOp, FsReadMeta, FsResult, MAX_FRAME_SIZE, ShellMessage,
+    decode_frame_body, encode_frame, flags::FLAG_TERMINAL,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -271,12 +270,7 @@ async fn fs_write_stream_sends_chunks_and_end() {
 
     let session = Session::connect(&sock).await.expect("connect");
     let result = session
-        .fs_write_stream(
-            "/workspace/out.bin".into(),
-            "0644".into(),
-            false,
-            reader,
-        )
+        .fs_write_stream("/workspace/out.bin".into(), "0644".into(), false, reader)
         .await
         .expect("fs_write_stream succeeded");
 
@@ -285,14 +279,20 @@ async fn fs_write_stream_sends_chunks_and_end() {
             bytes_written,
             path,
         } => {
-            assert_eq!(bytes_written, 200, "bytes_written must match payload length");
+            assert_eq!(
+                bytes_written, 200,
+                "bytes_written must match payload length"
+            );
             assert_eq!(path, "/workspace/out.bin");
         }
         other => panic!("expected FsResult::Write, got {other:?}"),
     }
 
     let relay_total = rx.await.expect("relay total");
-    assert_eq!(relay_total, 200, "relay counted {relay_total} bytes, expected 200");
+    assert_eq!(
+        relay_total, 200,
+        "relay counted {relay_total} bytes, expected 200"
+    );
 
     relay.await.expect("relay join");
 }
@@ -541,10 +541,7 @@ async fn fs_write_stream_aborts_on_stalled_reader() {
         write_handshake(&mut s, 0).await.expect("handshake");
         // Expect WriteStart only — host should give up on its idle
         // timeout and drop the Session before sending FsChunk/FsEnd.
-        let (_, _, msg) = read_one_frame(&mut s)
-            .await
-            .expect("read")
-            .expect("frame");
+        let (_, _, msg) = read_one_frame(&mut s).await.expect("read").expect("frame");
         assert!(matches!(
             msg,
             ShellMessage::FsRequest(FsOp::WriteStart { .. })

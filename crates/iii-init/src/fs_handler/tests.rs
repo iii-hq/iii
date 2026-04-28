@@ -136,8 +136,7 @@ fn mkdir_parents_true_creates_ancestors() {
 #[test]
 fn mkdir_existing_without_parents_returns_s213() {
     let dir = tmpdir();
-    let err =
-        ops::mkdir(dir.path().to_string_lossy().into(), "0755".into(), false).unwrap_err();
+    let err = ops::mkdir(dir.path().to_string_lossy().into(), "0755".into(), false).unwrap_err();
     assert_eq!(err.code, "S213");
 }
 
@@ -227,8 +226,14 @@ fn chmod_recursive_counts_every_entry() {
     // root + a/ + a/b/ + a/c = 4 entries
     std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
     std::fs::write(dir.path().join("a/c"), b"x").unwrap();
-    let res =
-        ops::chmod(dir.path().to_string_lossy().into(), "0755".into(), None, None, true).unwrap();
+    let res = ops::chmod(
+        dir.path().to_string_lossy().into(),
+        "0755".into(),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
     let FsResult::Chmod { updated } = res else {
         panic!("expected Chmod result");
     };
@@ -238,14 +243,7 @@ fn chmod_recursive_counts_every_entry() {
 
 #[test]
 fn chmod_missing_returns_s211() {
-    let err = ops::chmod(
-        "/nonexistent/xyz".into(),
-        "0755".into(),
-        None,
-        None,
-        false,
-    )
-    .unwrap_err();
+    let err = ops::chmod("/nonexistent/xyz".into(), "0755".into(), None, None, false).unwrap_err();
     assert_eq!(err.code, "S211");
 }
 
@@ -259,7 +257,12 @@ fn mv_same_fs_rename() {
     let src = dir.path().join("a");
     let dst = dir.path().join("b");
     std::fs::write(&src, b"hello").unwrap();
-    ops::mv(src.to_string_lossy().into(), dst.to_string_lossy().into(), false).unwrap();
+    ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        false,
+    )
+    .unwrap();
     assert!(!src.exists());
     assert_eq!(std::fs::read(&dst).unwrap(), b"hello");
 }
@@ -271,8 +274,12 @@ fn mv_overwrite_false_on_existing_dst_returns_s213() {
     let dst = dir.path().join("b");
     std::fs::write(&src, b"A").unwrap();
     std::fs::write(&dst, b"B").unwrap();
-    let err =
-        ops::mv(src.to_string_lossy().into(), dst.to_string_lossy().into(), false).unwrap_err();
+    let err = ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        false,
+    )
+    .unwrap_err();
     assert_eq!(err.code, "S213");
     assert!(src.exists(), "source should survive failed mv");
     assert_eq!(std::fs::read(&dst).unwrap(), b"B", "dst unchanged");
@@ -285,7 +292,12 @@ fn mv_overwrite_true_replaces_dst() {
     let dst = dir.path().join("b");
     std::fs::write(&src, b"A").unwrap();
     std::fs::write(&dst, b"B").unwrap();
-    ops::mv(src.to_string_lossy().into(), dst.to_string_lossy().into(), true).unwrap();
+    ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        true,
+    )
+    .unwrap();
     assert!(!src.exists());
     assert_eq!(std::fs::read(&dst).unwrap(), b"A");
 }
@@ -320,14 +332,14 @@ fn write_stream_happy_path_atomic() {
         tx.send(ShellMessage::FsEnd).unwrap();
     });
 
-    let res = streaming::handle_write_start(
-        target.to_string_lossy().into(),
-        "0600".into(),
-        false,
-        rx,
-    )
-    .unwrap();
-    let FsResult::Write { bytes_written, path } = res else {
+    let res =
+        streaming::handle_write_start(target.to_string_lossy().into(), "0600".into(), false, rx)
+            .unwrap();
+    let FsResult::Write {
+        bytes_written,
+        path,
+    } = res
+    else {
         panic!("expected Write result");
     };
     assert_eq!(bytes_written, payload.len() as u64);
@@ -351,13 +363,9 @@ fn write_stream_early_channel_close_unlinks_temp() {
         // Drop tx without sending FsEnd — simulates caller abort.
     });
 
-    let err = streaming::handle_write_start(
-        target.to_string_lossy().into(),
-        "0644".into(),
-        false,
-        rx,
-    )
-    .unwrap_err();
+    let err =
+        streaming::handle_write_start(target.to_string_lossy().into(), "0644".into(), false, rx)
+            .unwrap_err();
     assert_eq!(err.code, "S218");
     assert!(!target.exists(), "target must not exist");
 
@@ -455,13 +463,9 @@ fn write_stream_parents_false_missing_parent_returns_s211() {
     let dir = tmpdir();
     let target = dir.path().join("missing/x.bin");
     let (_tx, rx) = std::sync::mpsc::sync_channel::<ShellMessage>(4);
-    let err = streaming::handle_write_start(
-        target.to_string_lossy().into(),
-        "0644".into(),
-        false,
-        rx,
-    )
-    .unwrap_err();
+    let err =
+        streaming::handle_write_start(target.to_string_lossy().into(), "0644".into(), false, rx)
+            .unwrap_err();
     assert_eq!(err.code, "S211");
 }
 
@@ -481,9 +485,7 @@ fn mock_writer() -> (
 }
 
 /// Decode the ShellMessages from a mock writer receiver.
-fn collect_messages(
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
-) -> Vec<ShellMessage> {
+fn collect_messages(rx: std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<ShellMessage> {
     let mut msgs = Vec::new();
     while let Ok(frame_bytes) = rx.try_recv() {
         // frame_bytes is a complete wire frame (4-byte len + corr_id + flags + JSON).
@@ -848,7 +850,11 @@ fn sed_global_literal_replaces_all_occurrences() {
         false,
     )
     .unwrap();
-    let FsResult::Sed { results, total_replacements } = res else {
+    let FsResult::Sed {
+        results,
+        total_replacements,
+    } = res
+    else {
         panic!();
     };
     assert_eq!(total_replacements, 4);
@@ -927,7 +933,11 @@ fn sed_per_file_failure_does_not_abort_remaining() {
         false,
     )
     .unwrap();
-    let FsResult::Sed { results, total_replacements } = res else {
+    let FsResult::Sed {
+        results,
+        total_replacements,
+    } = res
+    else {
         panic!();
     };
     assert_eq!(total_replacements, 1);

@@ -648,11 +648,8 @@ impl Session {
         // a typed S218 error well before any outer SDK trigger timeout.
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            let n = match tokio::time::timeout(
-                FS_WRITE_READ_IDLE_TIMEOUT,
-                reader.read(&mut buf),
-            )
-            .await
+            let n = match tokio::time::timeout(FS_WRITE_READ_IDLE_TIMEOUT, reader.read(&mut buf))
+                .await
             {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => {
@@ -683,9 +680,8 @@ impl Session {
         }
 
         // Terminate the upload sequence.
-        let end_frame =
-            encode_frame(self.corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd)
-                .map_err(|e| VmClientError::Encode(e.to_string()))?;
+        let end_frame = encode_frame(self.corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd)
+            .map_err(|e| VmClientError::Encode(e.to_string()))?;
         write_frame_bounded(&mut self.stream, &end_frame).await?;
 
         // Read the single reply frame.

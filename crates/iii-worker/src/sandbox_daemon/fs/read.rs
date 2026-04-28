@@ -15,14 +15,16 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunctionMessage};
 use iii_sdk::channels::StreamChannelRef;
+use iii_sdk::{IIIError, RegisterFunctionMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
-use crate::sandbox_daemon::{errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry};
+use crate::sandbox_daemon::{
+    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ReadRequest {
@@ -58,7 +60,10 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
     registry.bump_last_exec(id).await;
 
     let path = req.path;
-    let (meta, mut reader): (iii_shell_proto::FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>) = runner
+    let (meta, mut reader): (
+        iii_shell_proto::FsReadMeta,
+        Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    ) = runner
         .fs_read_stream(state.shell_sock, path.clone())
         .await?;
 

@@ -52,15 +52,11 @@ impl FsError {
     /// Mirrors `SandboxError::from_io` on the worker side.
     pub fn from_io(path: &str, err: std::io::Error) -> Self {
         match err.kind() {
-            std::io::ErrorKind::NotFound => {
-                Self::new("S211", format!("path not found: {path}"))
-            }
+            std::io::ErrorKind::NotFound => Self::new("S211", format!("path not found: {path}")),
             std::io::ErrorKind::AlreadyExists => {
                 Self::new("S213", format!("path already exists: {path}"))
             }
-            std::io::ErrorKind::PermissionDenied => {
-                Self::new("S215", format!("{path}: {err}"))
-            }
+            std::io::ErrorKind::PermissionDenied => Self::new("S215", format!("{path}: {err}")),
             _ => Self::new("S216", format!("{path}: {err}")),
         }
     }

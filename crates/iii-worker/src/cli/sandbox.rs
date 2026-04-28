@@ -689,10 +689,7 @@ mod tests {
         let e = IIIError::Handler(
             r#"{"type":"SandboxNotFound","code":"S002","message":"sandbox abc not found"}"#.into(),
         );
-        assert_eq!(
-            handler_error_message(&e),
-            "[S002] sandbox abc not found"
-        );
+        assert_eq!(handler_error_message(&e), "[S002] sandbox abc not found");
     }
 
     #[test]
@@ -700,10 +697,7 @@ mod tests {
         let e = IIIError::Handler(
             r#"{"error":{"code":"S002","message":"sandbox abc not found"}}"#.into(),
         );
-        assert_eq!(
-            handler_error_message(&e),
-            "[S002] sandbox abc not found"
-        );
+        assert_eq!(handler_error_message(&e), "[S002] sandbox abc not found");
     }
 
     /// When the JSON payload only has a `message` and no `code` (legacy
@@ -735,10 +729,7 @@ mod tests {
             !formatted.contains("path not found: path not found"),
             "doubled prefix leaked: {formatted}"
         );
-        assert_eq!(
-            formatted,
-            "[S211] path not found: /tmp/no/such/file"
-        );
+        assert_eq!(formatted, "[S211] path not found: /tmp/no/such/file");
     }
 
     #[test]

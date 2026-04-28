@@ -250,9 +250,7 @@ impl SandboxError {
         match err.kind() {
             std::io::ErrorKind::NotFound => Self::fs_not_found(path),
             std::io::ErrorKind::AlreadyExists => Self::fs_already_exists(path),
-            std::io::ErrorKind::PermissionDenied => {
-                Self::FsPermission(format!("{path}: {err}"))
-            }
+            std::io::ErrorKind::PermissionDenied => Self::FsPermission(format!("{path}: {err}")),
             _ => Self::FsIo(format!("{path}: {err}")),
         }
     }
@@ -325,12 +323,7 @@ mod tests {
         let err = SandboxError::FsUnsupported;
         let payload = err.to_payload();
         assert_eq!(payload["code"], "S219");
-        assert!(
-            payload["message"]
-                .as_str()
-                .unwrap()
-                .contains("supervisor")
-        );
+        assert!(payload["message"].as_str().unwrap().contains("supervisor"));
     }
 
     #[test]

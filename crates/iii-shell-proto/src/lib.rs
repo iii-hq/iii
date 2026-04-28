@@ -204,15 +204,28 @@ fn default_recursive_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum FsResult {
-    Ls { entries: Vec<FsEntry> },
+    Ls {
+        entries: Vec<FsEntry>,
+    },
     Stat(FsEntry),
-    Mkdir { created: bool },
+    Mkdir {
+        created: bool,
+    },
     /// Terminal response of a `WriteStart` sequence. Always carries
     /// the final byte count fsync'd to the target path.
-    Write { bytes_written: u64, path: String },
-    Rm { removed: bool },
-    Chmod { updated: u64 },
-    Mv { moved: bool },
+    Write {
+        bytes_written: u64,
+        path: String,
+    },
+    Rm {
+        removed: bool,
+    },
+    Chmod {
+        updated: u64,
+    },
+    Mv {
+        moved: bool,
+    },
     Grep {
         matches: Vec<FsMatch>,
         truncated: bool,
@@ -354,10 +367,7 @@ pub enum ShellMessage {
     FsResponse(FsResult),
     /// Guest → host: terminal error frame carrying an S21x code.
     /// Always sent with `FLAG_TERMINAL`.
-    FsError {
-        code: String,
-        message: String,
-    },
+    FsError { code: String, message: String },
 }
 
 /// Encoding/decoding errors for the shell-channel frame codec.
@@ -829,8 +839,7 @@ mod tests {
     fn fs_chunk_carries_raw_bytes() {
         use base64::Engine;
         let msg = ShellMessage::FsChunk {
-            data_b64: base64::engine::general_purpose::STANDARD
-                .encode([0xDE, 0xAD, 0xBE, 0xEF]),
+            data_b64: base64::engine::general_purpose::STANDARD.encode([0xDE, 0xAD, 0xBE, 0xEF]),
         };
         let frame = encode_frame(7, 0, &msg).unwrap();
         let (_, _, decoded) = decode_frame(&frame).unwrap();
@@ -917,7 +926,11 @@ mod tests {
 
     #[test]
     fn fs_match_serializes_as_path_not_file() {
-        let m = FsMatch { path: "/x".into(), line: 1, content: "hi".into() };
+        let m = FsMatch {
+            path: "/x".into(),
+            line: 1,
+            content: "hi".into(),
+        };
         let v: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert!(v.get("path").is_some(), "expected `path` key, got: {v}");
         assert!(v.get("file").is_none(), "expected no `file` key, got: {v}");
