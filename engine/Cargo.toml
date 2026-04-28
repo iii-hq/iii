@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version.workspace = true
+version = "0.11.4-next.4"
 edition = "2024"
 license = "Elastic-2.0"
 
