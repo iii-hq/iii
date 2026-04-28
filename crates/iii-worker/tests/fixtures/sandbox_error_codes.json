@@ -1,0 +1,27 @@
+{
+  "_comment": "Wire ABI for sandbox::* error codes. Pinned by sandbox_error_codes_integration.rs (Rust) and consumed by SDK contract tests in Node + Python. Adding a new SandboxError variant requires adding a row here. Changing a `code` is a breaking SDK change.",
+  "version": 1,
+  "docs_base": "https://docs.iii.dev/errors/sandbox/",
+  "codes": [
+    {"code": "S001", "type": "validation", "retryable": false, "rust_variant": "InvalidRequest", "summary": "request payload failed validation (e.g. missing/malformed sandbox_id)"},
+    {"code": "S002", "type": "validation", "retryable": false, "rust_variant": "NotFound", "summary": "sandbox uuid not found in registry"},
+    {"code": "S003", "type": "validation", "retryable": false, "rust_variant": "ConcurrentExec", "summary": "another exec is in flight on this sandbox; await before firing another"},
+    {"code": "S004", "type": "validation", "retryable": false, "rust_variant": "AlreadyStopped", "summary": "sandbox already stopped; create a new one"},
+    {"code": "S100", "type": "config", "retryable": false, "rust_variant": "ImageNotInCatalog", "summary": "image not in catalog or allowlist"},
+    {"code": "S101", "type": "internal", "retryable": false, "rust_variant": "RootfsMissing", "summary": "rootfs missing on disk; run iii worker add"},
+    {"code": "S102", "type": "transient", "retryable": true, "rust_variant": "AutoInstallFailed", "summary": "auto-install pull/extract failed; retry"},
+    {"code": "S200", "type": "execution", "retryable": false, "rust_variant": "ExecTimedOut", "summary": "exec exceeded timeout_ms"},
+    {"code": "S210", "type": "filesystem", "retryable": false, "rust_variant": "FsInvalidRequest", "summary": "fs op rejected by supervisor as invalid"},
+    {"code": "S211", "type": "filesystem", "retryable": false, "rust_variant": "FsNotFound", "summary": "path does not exist"},
+    {"code": "S212", "type": "filesystem", "retryable": false, "rust_variant": "FsWrongType", "summary": "path is wrong type (file vs dir)"},
+    {"code": "S213", "type": "filesystem", "retryable": false, "rust_variant": "FsAlreadyExists", "summary": "path already exists"},
+    {"code": "S214", "type": "filesystem", "retryable": false, "rust_variant": "FsNotEmpty", "summary": "directory is not empty"},
+    {"code": "S215", "type": "filesystem", "retryable": false, "rust_variant": "FsPermission", "summary": "permission denied"},
+    {"code": "S216", "type": "filesystem", "retryable": false, "rust_variant": "FsIo", "summary": "generic fs I/O failure"},
+    {"code": "S217", "type": "filesystem", "retryable": false, "rust_variant": "FsRegex", "summary": "invalid regex/pattern in grep or sed"},
+    {"code": "S218", "type": "transient", "retryable": true, "rust_variant": "FsChannelAborted", "summary": "fs streaming channel aborted mid-flight; retry"},
+    {"code": "S219", "type": "filesystem", "retryable": false, "rust_variant": "FsUnsupported", "summary": "fs op unsupported by this supervisor; upgrade iii-worker"},
+    {"code": "S300", "type": "platform", "retryable": false, "rust_variant": "BootFailed", "summary": "VM boot or supervisor session failure"},
+    {"code": "S400", "type": "config", "retryable": false, "rust_variant": "ResourceLimit", "summary": "resource limit exceeded (cpu/memory/concurrency cap)"}
+  ]
+}
