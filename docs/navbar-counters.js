@@ -1,7 +1,6 @@
 ;(() => {
   const CACHE_KEY = 'iii-navbar-counters'
   const CACHE_TTL_MS = 1000 * 60 * 10
-  const GITHUB_REPO = 'iii-hq/iii'
   const DISCORD_INVITE = 'motia'
 
   function compact(value) {
@@ -34,18 +33,12 @@
     const cached = readCache()
     if (cached) return cached
 
-    const [github, discord] = await Promise.allSettled([
-      fetch(`https://api.github.com/repos/${GITHUB_REPO}`, {
-        headers: { Accept: 'application/vnd.github+json' },
-      }).then((response) => (response.ok ? response.json() : null)),
-      fetch(`https://discord.com/api/v10/invites/${DISCORD_INVITE}?with_counts=true`).then((response) =>
-        response.ok ? response.json() : null,
-      ),
-    ])
+    const discord = await fetch(`https://discord.com/api/v10/invites/${DISCORD_INVITE}?with_counts=true`).then(
+      (response) => (response.ok ? response.json() : null),
+    )
 
     const values = {
-      github: github.status === 'fulfilled' ? compact(github.value?.stargazers_count) : null,
-      discord: discord.status === 'fulfilled' ? compact(discord.value?.approximate_member_count) : null,
+      discord: compact(discord?.approximate_member_count),
     }
 
     writeCache(values)
@@ -67,15 +60,10 @@
   }
 
   function applyCounts(values) {
-    const githubLink = document.querySelector('a[href="https://github.com/iii-hq/iii"]')
     const discordLink = document.querySelector('a[href="https://discord.gg/motia"]')
 
-    upsertCount(githubLink, values.github)
     upsertCount(discordLink, values.discord)
 
-    if (githubLink && values.github) {
-      githubLink.setAttribute('aria-label', `GitHub, ${values.github} stars`)
-    }
     if (discordLink && values.discord) {
       discordLink.setAttribute('aria-label', `Discord, ${values.discord} members`)
     }
