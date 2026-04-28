@@ -67,9 +67,9 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-const result = await iii.trigger({ function_id: 'orders.create', payload: { item: 'widget' } })
+const result = await iii.trigger({ function_id: 'orders::create', payload: { item: 'widget' } })
 
-iii.trigger({ function_id: 'analytics.track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
+iii.trigger({ function_id: 'analytics::track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
 ```
 
 ## Node Modules

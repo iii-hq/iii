@@ -35,11 +35,6 @@ await iii.trigger({
 ```
 
 Both models support retries and dead-letter handling through the `iii-queue` worker.
----
-title: 'Queues'
-description: 'Why iii queues are structured the way they are — the design decisions behind retry, dead-lettering, and multi-resource topology.'
----
-
 ## What Are Queues
 
 A queue sits between the code that **produces** work and the code that **processes** it. Instead of calling a function and waiting for it to finish, you hand the work to a queue. The queue stores the message, delivers it to a consumer, retries on failure, and routes permanently failed messages to a dead-letter queue (DLQ) for later inspection.

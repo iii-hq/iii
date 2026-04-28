@@ -35,11 +35,6 @@ const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 <Info title="Terminology">
   Older docs and configs may use "module" for built-in workers. In current iii, "worker" is the canonical term.
 </Info>
----
-title: 'Workers'
-description: 'Workers are the interface between the Engine and the rest of the application.'
----
-
 Workers are the interface between the Engine and the rest of the application. They are responsible for establishing connections to services, implementing trigger types, and supplying application Context.
 
 Every capability in iii (HTTP endpoints, cron scheduling, state management, queues, streams, observability) is implemented as a Worker. This modular architecture means the Engine itself stays small and focused on orchestration, while Workers handle all external concerns.

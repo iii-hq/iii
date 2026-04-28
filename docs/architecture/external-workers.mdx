@@ -23,11 +23,6 @@ External workers are application processes that use an iii SDK. They connect to 
 | Rust | `iii-sdk` |
 
 External workers can run locally, in containers, on separate hosts, or in browser tabs. They only need network access to the engine WebSocket endpoint.
----
-title: 'External Workers'
-description: 'Any process that connects to the iii Engine using an SDK and registers Functions.'
----
-
 A Worker is any process that connects to the iii Engine over WebSocket using an SDK and registers Functions. The Engine routes incoming triggers to the correct Worker, which executes the handler and optionally returns a result.
 
 Workers are independent processes — they can be written in any language, run anywhere, and crash without affecting other Workers.

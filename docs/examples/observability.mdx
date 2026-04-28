@@ -31,7 +31,7 @@ const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
 
 // Step 1 — HTTP handler
 iii.registerFunction(
-  { id: 'orders.create', description: 'Creates an order and starts the processing pipeline' },
+  { id: 'orders::create', description: 'Creates an order and starts the processing pipeline' },
   async (req: ApiRequest<{ customerId: string; amount: number; items: string[] }>) => {
     const logger = new Logger()
     const { customerId, amount, items } = req.body ?? {}
@@ -145,7 +145,7 @@ use serde_json::json;
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 iii.register_function((RegisterFunctionMessage::with_id("orders::create".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     let req: ApiRequest = serde_json::from_value(input)?;
 
@@ -204,7 +204,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), functio
 
 ```typescript
 iii.registerFunction(
-  { id: 'order.process', description: 'Processes a created order' },
+  { id: 'order::process', description: 'Processes a created order' },
   async (data: { orderId: string; amount: number; customerId: string }) => {
     const logger = new Logger()
     const { orderId, amount, customerId } = data
@@ -289,7 +289,7 @@ use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, Re
 use serde_json::json;
 
 iii.register_function((RegisterFunctionMessage::with_id("order::process".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
@@ -320,7 +320,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".i
 
 ```typescript
 iii.registerFunction(
-  { id: 'order.notify', description: 'Sends order notification' },
+  { id: 'order::notify', description: 'Sends order notification' },
   async (data: { orderId: string; customerId: string; status: string; amount: number }) => {
     const logger = new Logger()
     const { orderId, customerId, status, amount } = data
@@ -377,7 +377,7 @@ use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 iii.register_function((RegisterFunctionMessage::with_id("order::notify".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 

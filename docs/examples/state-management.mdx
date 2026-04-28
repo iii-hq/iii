@@ -25,7 +25,7 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'users.update_status', description: 'Update user status in state' },
+  { id: 'users::update_status', description: 'Update user status in state' },
   async (req: ApiRequest<{ status: string }>) => {
     const logger = new Logger()
     const userId = req.path_params?.id

@@ -347,15 +347,15 @@ export type FunctionRef = {
  *
  * const timer = iii.registerTriggerType<TimerConfig>(
  *   { id: 'timer', description: 'Fires on an interval' },
- *   cronHandler,
+ *   timerHandler,
  * )
  *
  * // Register a trigger — type is inferred as TimerConfig
  * timer.registerTrigger('my::fn', { intervalMs: 60_000 })
  *
  * // Register a function and bind a trigger in one call
- * cron.registerFunction(
- *   'my-fn',
+ * timer.registerFunction(
+ *   'my::fn',
  *   async (data) => { return { ok: true } },
  * )
  * ```

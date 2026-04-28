@@ -23,7 +23,7 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'cron.periodic_job', description: 'Fires on schedule and enqueues work' },
+  { id: 'cron::periodic_job', description: 'Fires on schedule and enqueues work' },
   async () => {
     const logger = new Logger()
     logger.info('Periodic job fired')

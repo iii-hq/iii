@@ -24,7 +24,7 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'orders.handle', description: 'Handles orders from API, queue, or cron' },
+  { id: 'orders::handle', description: 'Handles orders from API, queue, or cron' },
   async (input) => {
     const logger = new Logger()
 

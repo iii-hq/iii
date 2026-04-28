@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) })?;
 
     let result: serde_json::Value = iii
-        .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
+        .trigger(TriggerRequest::new("hello::greet", json!({ "name": "world" })))
         .await?;
 
     Ok(())
