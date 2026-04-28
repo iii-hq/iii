@@ -1,0 +1,15 @@
+{
+  "name": "iii-website",
+  "private": true,
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "description": "iii.dev — minimal static HTML site",
+  "scripts": {
+    "dev": "serve . -l 3000",
+    "build": "echo 'static site — nothing to build'",
+    "preview": "serve . -l 3000"
+  },
+  "devDependencies": {
+    "serve": "^14.2.6"
+  }
+}
