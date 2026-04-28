@@ -323,6 +323,11 @@ impl Drop for WorkerActivationLock {
 struct ActiveWorkerRestore {
     install_path: PathBuf,
     backup_path: Option<PathBuf>,
+    // Hold the per-worker activation lock until the batch commits or rolls
+    // back. Dropping it earlier would let a concurrent sync overwrite this
+    // worker's install before our rollback runs, causing rollback to delete
+    // a newer install and resurrect a stale backup.
+    _lock: WorkerActivationLock,
 }
 
 impl ActiveWorkerRestore {
@@ -604,8 +609,8 @@ fn activate_locked_worker(
             bytes,
             existed_before,
         } => {
-            let _lock = WorkerActivationLock::acquire(&name)?;
-            activate_locked_binary(&name, &version, &bytes, existed_before)
+            let lock = WorkerActivationLock::acquire(&name)?;
+            activate_locked_binary(&name, &version, &bytes, existed_before, lock)
         }
         PreparedLockedWorker::Image { name, version } => {
             eprintln!(
@@ -624,6 +629,7 @@ fn activate_locked_binary(
     version: &str,
     bytes: &[u8],
     existed_before: bool,
+    lock: WorkerActivationLock,
 ) -> Result<Option<ActiveWorkerRestore>, String> {
     let install_dir = binary_download::binary_workers_dir();
     std::fs::create_dir_all(&install_dir)
@@ -686,6 +692,7 @@ fn activate_locked_binary(
     Ok(Some(ActiveWorkerRestore {
         install_path,
         backup_path,
+        _lock: lock,
     }))
 }
 
@@ -3416,6 +3423,62 @@ mod tests {
     #[test]
     fn binary_config_yaml_omits_empty_registry_config() {
         assert_eq!(binary_config_yaml(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn active_worker_restore_holds_activation_lock_until_commit() {
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let name = "lock-holder";
+            let lock = WorkerActivationLock::acquire(name).expect("first acquire");
+            let restore = activate_locked_binary(name, "1.0.0", b"binary-bytes", false, lock)
+                .expect("activate must succeed")
+                .expect("expected Some(restore) for fresh install");
+
+            // Critical: while the restore is alive (i.e., commit/rollback not
+            // yet called), a concurrent sync MUST NOT be able to overwrite this
+            // worker. If the lock were dropped early, the second acquire would
+            // succeed and a later rollback could resurrect a stale backup over
+            // the newer install.
+            let err = WorkerActivationLock::acquire(name)
+                .err()
+                .expect("second acquire must fail while restore is alive");
+            assert!(
+                err.contains("being installed by another process"),
+                "expected lock-busy message, got: {err}"
+            );
+
+            restore.commit();
+            WorkerActivationLock::acquire(name).expect("acquire after commit must succeed");
+        });
+    }
+
+    #[test]
+    fn active_worker_restore_holds_activation_lock_until_rollback() {
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let name = "rollback-lock-holder";
+            let lock = WorkerActivationLock::acquire(name).unwrap();
+            let restore = activate_locked_binary(name, "1.0.0", b"x", false, lock)
+                .unwrap()
+                .unwrap();
+
+            assert!(WorkerActivationLock::acquire(name).is_err());
+            restore.rollback();
+            WorkerActivationLock::acquire(name).expect("acquire after rollback must succeed");
+        });
     }
 
     #[test]

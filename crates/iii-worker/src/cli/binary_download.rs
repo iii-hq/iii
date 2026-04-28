@@ -208,7 +208,10 @@ fn is_private_or_loopback_host(host: &str) -> bool {
     }
 }
 
-async fn download_archive_bytes(url: &str) -> Result<Vec<u8>, String> {
+async fn download_archive_bytes(
+    url: &str,
+    validate_final_url: Option<&dyn Fn(&str) -> Result<(), String>>,
+) -> Result<Vec<u8>, String> {
     let client = &super::registry::HTTP_CLIENT;
 
     let resp = client
@@ -216,6 +219,19 @@ async fn download_archive_bytes(url: &str) -> Result<Vec<u8>, String> {
         .send()
         .await
         .map_err(|e| format!("Failed to download binary: {}", e))?;
+
+    // The shared HTTP_CLIENT follows up to 10 redirects by default, so a
+    // trusted artifact URL could redirect to an untrusted host and bypass the
+    // pre-send allowlist check. Re-validate the final URL before reading the
+    // body when a validator is provided.
+    if let Some(validator) = validate_final_url {
+        let final_url = resp.url().as_str();
+        if final_url != url {
+            validator(final_url).map_err(|e| {
+                format!("artifact download for `{url}` was redirected to an untrusted URL: {e}")
+            })?;
+        }
+    }
 
     if !resp.status().is_success() {
         return Err(format!(
@@ -262,7 +278,8 @@ pub async fn download_locked_binary_archive(
              `iii worker update {worker_name}` only if changing pins is intentional"
         )
     })?;
-    let binary_data = download_archive_bytes(&binary_info.url).await?;
+    let binary_data =
+        download_archive_bytes(&binary_info.url, Some(&validate_locked_artifact_url)).await?;
     verify_sha256(&binary_data, &binary_info.sha256)?;
     Ok(binary_data)
 }
@@ -299,7 +316,7 @@ pub async fn download_and_install_binary(
 
     tracing::debug!("Downloading from {}", binary_info.url);
 
-    let binary_data = download_archive_bytes(&binary_info.url).await?;
+    let binary_data = download_archive_bytes(&binary_info.url, None).await?;
 
     // Verify checksum (always — the API provides sha256 for every binary).
     verify_sha256(&binary_data, &binary_info.sha256)?;
@@ -476,6 +493,84 @@ mod tests {
         let result = extract_binary_from_targz("my-worker", &archive);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found in archive"));
+    }
+
+    /// Spawn a one-shot HTTP server on loopback that returns `response_bytes`
+    /// to whatever request comes in. Returns the bound base URL and a join
+    /// handle that the caller should `abort()` when done.
+    async fn spawn_oneshot_http(response_bytes: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let response = response_bytes.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(&response).await;
+                });
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn download_archive_bytes_revalidates_redirect_target() {
+        // Final server: returns a 200 with a body. A direct fetch here yields
+        // `final_url == url`, so the validator must NOT be called.
+        let final_body = b"final-payload".to_vec();
+        let final_response = {
+            let mut bytes = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/octet-stream\r\nconnection: close\r\n\r\n",
+                final_body.len()
+            )
+            .into_bytes();
+            bytes.extend_from_slice(&final_body);
+            bytes
+        };
+        let (final_base, final_server) = spawn_oneshot_http(final_response).await;
+
+        // Redirect server: returns 302 -> final_base/final, so the final URL
+        // observed after `send()` differs from the input URL and the validator
+        // MUST be called.
+        let redirect_target = format!("{final_base}/final");
+        let redirect_response = format!(
+            "HTTP/1.1 302 Found\r\nlocation: {redirect_target}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        )
+        .into_bytes();
+        let (redirect_base, redirect_server) = spawn_oneshot_http(redirect_response).await;
+
+        let always_reject = |url: &str| -> Result<(), String> { Err(format!("untrusted: {url}")) };
+
+        // 1. Redirect path: validator IS called and its error is wrapped.
+        let err = download_archive_bytes(&format!("{redirect_base}/start"), Some(&always_reject))
+            .await
+            .err()
+            .expect("redirected download must be rejected by validator");
+        assert!(
+            err.contains("redirected to an untrusted URL"),
+            "expected wrapped redirect rejection, got: {err}",
+        );
+
+        // 2. No-redirect path with validator: validator NOT called when the
+        //    final URL matches the request URL, so the download succeeds.
+        let direct = format!("{final_base}/final");
+        let body = download_archive_bytes(&direct, Some(&always_reject))
+            .await
+            .expect("direct download with unchanged URL must skip validator");
+        assert_eq!(body, final_body);
+
+        // 3. Redirect path without validator: legacy behavior preserved —
+        //    redirects are still followed.
+        let body = download_archive_bytes(&format!("{redirect_base}/start"), None)
+            .await
+            .expect("download without validator must follow redirects");
+        assert_eq!(body, final_body);
+
+        redirect_server.abort();
+        final_server.abort();
     }
 
     #[test]
