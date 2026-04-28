@@ -3,6 +3,7 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [
+    { "source": "/manifesto", "destination": "/manifesto.html" },
     { "source": "/api/search", "destination": "https://iii-docs.vercel.app/api/search" },
     { "source": "/docs", "destination": "https://iii-docs.vercel.app/docs" },
     { "source": "/docs/:path*", "destination": "https://iii-docs.vercel.app/docs/:path*" }
