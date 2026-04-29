@@ -57,7 +57,7 @@ test('/docsfoo → NOT redirected (not under /docs/)', () => {
   assert.equal(result.uri, '/index.html')
 })
 
-test('/llms.txt → pass through unchanged (matches current 404 behavior)', () => {
+test('/llms.txt → pass through unchanged (static file)', () => {
   const result = handler(buildEvent('/llms.txt', 'iii.dev'))
   assert.ok(!isRedirect(result))
   assert.equal(result.uri, '/llms.txt')
@@ -99,6 +99,12 @@ test('/manifesto → rewrite uri to /index.html', () => {
   assert.equal(result.uri, '/index.html')
 })
 
+test('/AGENTS.md → pass through unchanged', () => {
+  const result = handler(buildEvent('/AGENTS.md', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/AGENTS.md')
+})
+
 test('/foo/ trailing slash → pass through unchanged (no SPA rewrite)', () => {
   const result = handler(buildEvent('/foo/', 'iii.dev'))
   assert.ok(!isRedirect(result))
@@ -111,10 +117,10 @@ test('/missing.jpg → pass through unchanged (S3 returns 404)', () => {
   assert.equal(result.uri, '/missing.jpg')
 })
 
-test('/ai/index.html → pass through unchanged', () => {
-  const result = handler(buildEvent('/ai/index.html', 'iii.dev'))
+test('/ai → SPA fallback to /index.html', () => {
+  const result = handler(buildEvent('/ai', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/ai/index.html')
+  assert.equal(result.uri, '/index.html')
 })
 
 test('/assets/main.abc123.js → pass through unchanged', () => {

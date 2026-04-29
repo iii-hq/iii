@@ -109,8 +109,6 @@ async function prerender() {
   const template = await fs.readFile(TEMPLATE_PATH, "utf8");
 
   for (const route of ROUTES) {
-    if (route.path === "/ai") continue;
-
     const canonical = `${SITE_ORIGIN}${route.path === "/" ? "/" : route.path}`;
     const html = injectSeo({
       template,

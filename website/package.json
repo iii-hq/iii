@@ -6,10 +6,14 @@
   "description": "iii.dev — minimal static HTML site",
   "scripts": {
     "dev": "browser-sync start --server --port 3000 --no-online --no-notify --no-open --files '*.html, *.css, fonts/*'",
-    "build": "echo 'static site — nothing to build'",
+    "build": "tsx scripts/generate-llms-agents.ts && tsx scripts/generate-sitemap.ts",
+    "generate:llms": "tsx scripts/generate-llms-agents.ts",
+    "test": "tsx --test scripts/*.test.ts",
     "preview": "browser-sync start --server --port 3000 --no-notify --no-open"
   },
   "devDependencies": {
-    "browser-sync": "^3.0.4"
+    "browser-sync": "^3.0.4",
+    "node-html-parser": "^7.0.1",
+    "tsx": "^4.21.0"
   }
 }

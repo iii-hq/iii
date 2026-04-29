@@ -37,6 +37,19 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate llms.txt and AGENTS.md
+        run: pnpm --filter iii-website build
+
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -49,6 +62,8 @@ jobs:
             --delete \
             --cache-control "public,max-age=31536000,immutable" \
             --exclude "*.html" \
+            --exclude "llms.txt" \
+            --exclude "AGENTS.md" \
             --exclude "node_modules/*" \
             --exclude "package.json" \
             --exclude "package-lock.json" \
@@ -57,13 +72,15 @@ jobs:
             --exclude "README.md" \
             --exclude "vercel.json"
 
-      - name: Sync HTML (no cache, must revalidate)
+      - name: Sync HTML and AI snapshot (no cache, must revalidate)
         run: |
           aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
             --cache-control "public,max-age=0,must-revalidate" \
             --exclude "*" \
-            --include "*.html"
+            --include "*.html" \
+            --include "llms.txt" \
+            --include "AGENTS.md"
 
       - name: Create CloudFront invalidation
         id: invalidation

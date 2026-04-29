@@ -24,14 +24,6 @@ export const ROUTES: RouteMeta[] = [
     ogTitle: "iii Manifesto — Everything is a worker",
   },
   {
-    path: "/ai",
-    title: "iii Homepage for AI",
-    description:
-      "Machine-readable snapshot of the iii homepage. Plain-text markdown for LLM ingestion.",
-    indexable: true,
-    ogTitle: "iii | AI-readable Homepage",
-  },
-  {
     path: "/preview",
     title: "Sections Preview | iii (internal)",
     description: "Internal preview of homepage sections.",
