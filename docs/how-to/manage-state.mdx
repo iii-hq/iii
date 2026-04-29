@@ -347,6 +347,30 @@ println!("Login recorded");
 </Tab>
 </Tabs>
 
+Append operations are useful for incremental data such as transcript chunks, progress events, or small audit trails:
+
+```typescript title="append-transcript.ts"
+await iii.trigger({
+  function_id: 'state::update',
+  payload: {
+    scope: 'calls',
+    key: callId,
+    ops: [
+      { type: 'append', path: 'transcript', value: 'Hello ' },
+      { type: 'append', path: 'events', value: { type: 'chunk', offset: 0 } },
+    ],
+  },
+})
+```
+
+If `transcript` is missing, a string append creates a string. If `events` is missing, a non-string append creates an array with one element. Existing arrays receive one new element per append. Existing strings only accept string values.
+
+Paths are first-level field names. `user.name` means the field literally named `user.name`; it does not traverse nested objects. Use `path: ""` to append to the root value.
+
+<Warning>
+  Atomic append rewrites and returns the full JSON value. For very large payloads or long-running high-throughput streams, store chunks as separate stream items or use channels instead of repeatedly appending to one large value.
+</Warning>
+
 ## Result
 
 State is shared across all Functions in the system. Any Function can read or write to any scope/key pair. The Engine handles consistency and persistence based on the configured adapter.

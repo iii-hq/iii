@@ -7,7 +7,7 @@
 //! Project auto-detection and manifest loading for worker dev sessions.
 
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub const WORKER_MANIFEST: &str = "iii.worker.yaml";
 
@@ -260,6 +260,24 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         env,
         base_image,
     })
+}
+
+/// Read only the `dependencies:` block from an `iii.worker.yaml` manifest.
+/// Returns an empty map when the file is missing (authors without deps work
+/// unchanged) or the field is absent/null. Returns `Err` only when the file
+/// exists but is malformed YAML or the `dependencies:` block is invalid.
+pub fn load_manifest_dependencies(
+    manifest_path: &std::path::Path,
+) -> Result<BTreeMap<String, String>, String> {
+    if !manifest_path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let content = std::fs::read_to_string(manifest_path)
+        .map_err(|e| format!("failed to read {}: {e}", manifest_path.display()))?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| format!("failed to parse {}: {e}", manifest_path.display()))?;
+    let self_name = doc.get("name").and_then(|v| v.as_str());
+    super::worker_manifest_deps::parse_dependencies(&doc, self_name)
 }
 
 pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
@@ -675,5 +693,31 @@ runtime:
             base_image: None,
         };
         assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn load_manifest_dependencies_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: caller
+runtime:
+  kind: bun
+  entry: src/index.ts
+dependencies:
+  math-worker: "^0.1.0"
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let deps = super::load_manifest_dependencies(&manifest_path).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps.get("math-worker").unwrap(), "^0.1.0");
+    }
+
+    #[test]
+    fn load_manifest_dependencies_missing_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let deps = super::load_manifest_dependencies(&manifest_path).unwrap();
+        assert!(deps.is_empty());
     }
 }

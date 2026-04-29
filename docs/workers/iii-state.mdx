@@ -174,15 +174,18 @@ name: bridge
         The key to update.
       </ResponseField>
       <ResponseField name="ops" type="UpdateOp[]" required>
-        Array of update operations applied in order. Each operation is an object with a single key:
+        Array of update operations applied in order. Each operation is a tagged object with a `type` field and a first-level `path`. Use `path: ""` to target the root value.
 
         | Operation | Shape | Description |
         |-----------|-------|-------------|
-        | `set` | `{ "set": value }` | Replace the current value entirely. |
-        | `merge` | `{ "merge": object }` | Shallow-merge an object into the current value. |
-        | `increment` | `{ "increment": { "field": string, "by": number } }` | Add `by` to a numeric field. |
-        | `decrement` | `{ "decrement": { "field": string, "by": number } }` | Subtract `by` from a numeric field. |
-        | `remove` | `{ "remove": field }` | Remove a field from the current object. |
+        | `set` | `{ "type": "set", "path": "status", "value": "active" }` | Set a field or replace the root value. |
+        | `merge` | `{ "type": "merge", "path": "", "value": { "status": "active" } }` | Shallow-merge an object at the root. |
+        | `increment` | `{ "type": "increment", "path": "count", "by": 1 }` | Add `by` to a numeric field. |
+        | `decrement` | `{ "type": "decrement", "path": "count", "by": 1 }` | Subtract `by` from a numeric field. |
+        | `append` | `{ "type": "append", "path": "events", "value": { "kind": "chunk" } }` | Push one element to an array or concatenate a string value. |
+        | `remove` | `{ "type": "remove", "path": "status" }` | Remove a field from the current object. |
+
+        Paths are first-level field names. For example, `user.name` updates the field named `user.name`; it does not traverse into `{ "user": { "name": ... } }`.
       </ResponseField>
     </Accordion>
     <Accordion title="Returns">

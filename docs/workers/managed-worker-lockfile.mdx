@@ -1,0 +1,99 @@
+---
+title: 'Managed Worker Lockfile'
+description: 'Reference for iii.lock and the managed-worker lockfile commands.'
+---
+
+`iii.lock` is a YAML lockfile in the project root. It records the resolved source pins for registry-managed workers so worker installs can be reproduced across environments. Binary workers can include artifacts for multiple platform targets in the same lockfile.
+
+## Location
+
+```text
+iii.lock
+```
+
+## Format
+
+Top-level fields:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | `number` | Yes | Lockfile format version. Current value: `1`. |
+| `workers` | `Record<string, LockedWorker>` | Yes | Worker entries keyed by worker name. Entries are serialized in sorted key order. |
+
+### LockedWorker
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | `string` | Yes | Resolved worker version. |
+| `type` | `binary` or `image` | Yes | Resolved worker artifact type. |
+| `dependencies` | `Record<string, string>` | No | Dependency name to version range. Defaults to `{}`. |
+| `source` | `LockedSource` | Yes | Pinned binary or image source. |
+
+### Binary Source
+
+Binary source entries are platform-neutral at the worker level. The `artifacts` map is keyed by target triple, so one lockfile can carry macOS and Linux artifacts for the same resolved worker version. `iii worker verify` and `iii worker sync --frozen` fail only when a locked binary worker does not include an artifact for the current target.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `binary` | Yes | Source discriminator. |
+| `artifacts` | `Record<string, BinaryArtifact>` | Yes | Binary artifacts keyed by target triple. |
+
+### BinaryArtifact
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | `string` | Yes | Download URL for this target's binary artifact. |
+| `sha256` | `string` | Yes | Expected SHA-256 digest for this target's binary artifact. |
+
+### Image Source
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `image` | Yes | Source discriminator. |
+| `image` | `string` | Yes | Pinned OCI image reference. |
+
+## Example
+
+```yaml title="iii.lock"
+version: 1
+workers:
+  helper:
+    version: 1.0.0
+    type: binary
+    dependencies: {}
+    source:
+      kind: binary
+      artifacts:
+        aarch64-apple-darwin:
+          url: https://workers.iii.dev/helper/aarch64-apple-darwin.tar.gz
+          sha256: 2f1c4d5e6a7b8c9d0e1f2233445566778899aabbccddeeff0011223344556677
+        x86_64-unknown-linux-gnu:
+          url: https://workers.iii.dev/helper/x86_64-unknown-linux-gnu.tar.gz
+          sha256: 1f2e3d4c5b6a79880706050403020100ffeeddccbbaa99887766554433221100
+  image-resize:
+    version: 1.0.0
+    type: image
+    dependencies:
+      helper: ^1.0.0
+    source:
+      kind: image
+      image: ghcr.io/iii-hq/image-resize@sha256:abc123
+```
+
+## Commands
+
+| Command | Mutates files | Description |
+| --- | --- | --- |
+| `iii worker add <worker[@version]>` | Yes | Adds a registry-managed worker. When the registry returns a resolved graph, writes or merges `iii.lock` entries for the graph. |
+| `iii worker update [worker]` | Yes | Re-resolves `latest` for one locked worker, or inferred root workers when no name is provided, then rewrites `iii.lock`. |
+| `iii worker sync` | No | Reads `iii.lock` and reports the number of pinned workers. Current behavior does not install artifacts from the lockfile. |
+| `iii worker sync --frozen` | No | Delegates to `iii worker verify`. |
+| `iii worker verify` | No | Checks that every lockfile-managed worker in `config.yaml` has an entry in `iii.lock` and that locked binary workers include an artifact for the current target. Built-ins, direct OCI refs, and local-path sandbox workers are skipped. Extra lockfile entries are allowed. |
+
+<Info title="Legacy binary sources">
+  Lockfiles that use the older single-target `target`, `url`, and `sha256` binary source fields are still read by the CLI. When the lockfile is rewritten, binary sources are serialized with the `artifacts` map.
+</Info>
+
+<Info title="Workflow guide">
+  For a task-oriented workflow, see [Reproduce Worker Installs](/how-to/reproduce-worker-installs).
+</Info>

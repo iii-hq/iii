@@ -52,6 +52,12 @@ description: "Product updates and announcements for iii."
 
   [Exec into a running worker &rarr;](/how-to/managing-container-workers#5-exec-into-a-running-worker)
 
+  ## Reproducible worker installs
+
+  Registry-managed workers can now be pinned in `iii.lock`. `iii worker add` writes the resolved worker graph when the registry provides one, binary workers can record artifacts for multiple platform targets, `iii worker verify` checks that `config.yaml` is represented in the lockfile, and `iii worker update [worker]` refreshes locked pins intentionally.
+
+  [Reproduce Worker Installs &rarr;](/how-to/reproduce-worker-installs)
+
   ## Topic-based fan-out queues
 
   **Breaking.** The topic-based queue API has been renamed. The trigger type changes from `queue` to `durable:subscriber`, and the publish function changes from `enqueue` to `iii::durable::publish`:

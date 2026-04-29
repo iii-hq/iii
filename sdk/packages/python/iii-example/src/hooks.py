@@ -42,7 +42,7 @@ def use_functions_available(iii: IIIClient, callback: Callable[[list[FunctionInf
         functions = [FunctionInfo(**f) for f in data.get("functions", [])]
         callback(functions)
 
-    fn_ref = iii.register_function({"id": handler_fn_id}, handler)
+    fn_ref = iii.register_function(handler_fn_id, handler)
     trigger_guard = iii.register_trigger(
         {
             "type": "engine::functions-available",

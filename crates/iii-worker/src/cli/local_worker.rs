@@ -453,8 +453,43 @@ pub async fn handle_local_add(
         }
     }
 
-    // 6. Extract default config from iii.worker.yaml
     let manifest_path = project_path.join(WORKER_MANIFEST);
+
+    // 5b. Resolve + install declared manifest dependencies BEFORE we touch
+    //     config.yaml. A failure here leaves the local worker NOT in
+    //     config.yaml and iii.lock unchanged — retry is just retry, no
+    //     `--force` dance required. This is load-bearing: reversing this
+    //     order recreates the "already in config.yaml" rerun trap.
+    let declared_deps = match super::project::load_manifest_dependencies(&manifest_path) {
+        Ok(deps) => deps,
+        Err(e) => {
+            eprintln!(
+                "{} {} in {}\n  \
+                 Fix: correct the `dependencies:` block and rerun \
+                 `iii worker add {}`.",
+                "error:".red(),
+                e,
+                manifest_path.display(),
+                path,
+            );
+            return 1;
+        }
+    };
+    if !declared_deps.is_empty()
+        && let Err(e) = super::managed::install_manifest_dependencies(&declared_deps, brief).await
+    {
+        eprintln!(
+            "{} {}\n  \
+             Nothing was written to config.yaml or iii.lock. Rerun \
+             `iii worker add {}` after fixing the failure.",
+            "error:".red(),
+            e,
+            path,
+        );
+        return 1;
+    }
+
+    // 6. Extract default config from iii.worker.yaml
     let config_yaml = if manifest_path.exists() {
         std::fs::read_to_string(&manifest_path)
             .ok()

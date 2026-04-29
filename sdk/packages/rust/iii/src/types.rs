@@ -67,6 +67,9 @@ pub enum UpdateOp {
     /// Decrement numeric value
     Decrement { path: FieldPath, by: i64 },
 
+    /// Append an element to an array or concatenate a string
+    Append { path: FieldPath, value: Value },
+
     /// Remove a field
     Remove { path: FieldPath },
 }
@@ -93,6 +96,14 @@ impl UpdateOp {
         Self::Decrement {
             path: path.into(),
             by,
+        }
+    }
+
+    /// Create an Append operation
+    pub fn append(path: impl Into<FieldPath>, value: impl Into<Value>) -> Self {
+        Self::Append {
+            path: path.into(),
+            value: value.into(),
         }
     }
 
@@ -275,5 +286,29 @@ mod tests {
         assert_eq!(request.path, "");
         assert_eq!(request.method, "");
         assert!(request.body.is_null());
+    }
+
+    #[test]
+    fn update_append_serializes_as_tagged_operation() {
+        let op = UpdateOp::append("chunks", serde_json::json!({"text": "hello"}));
+        let encoded = serde_json::to_value(&op).unwrap();
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "append",
+                "path": "chunks",
+                "value": {"text": "hello"},
+            })
+        );
+
+        let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
+        match decoded {
+            UpdateOp::Append { path, value } => {
+                assert_eq!(path.0, "chunks");
+                assert_eq!(value, serde_json::json!({"text": "hello"}));
+            }
+            other => panic!("expected append op, got {other:?}"),
+        }
     }
 }

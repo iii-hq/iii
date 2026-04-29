@@ -22,7 +22,7 @@ iii = register_worker("ws://localhost:49134")
 def greet(data):
     return {"message": f"Hello, {data['name']}!"}
 
-iii.register_function({"id": "greet"}, greet)
+iii.register_function("greet", greet)
 
 iii.register_trigger({
     "type": "http",
@@ -41,7 +41,7 @@ print(result)  # {"message": "Hello, world!"}
 | Operation                | Signature                                         | Description                                            |
 | ------------------------ | ------------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `register_worker(url, options?)`                  | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function({"id": id}, handler)`      | Register a function that can be invoked by name        |
+| Register function        | `iii.register_function(id, handler)`              | Register a function that can be invoked by name        |
 | Register trigger         | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
 | Invoke (await result)    | `iii.trigger({"function_id": id, "payload": data})` | Invoke a function and wait for the result           |
 | Invoke (fire-and-forget) | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Void()})` | Fire-and-forget |
@@ -55,7 +55,7 @@ print(result)  # {"message": "Hello, world!"}
 def create_order(data):
     return {"status_code": 201, "body": {"id": "123", "item": data["body"]["item"]}}
 
-iii.register_function({"id": "orders.create"}, create_order)
+iii.register_function("orders::create", create_order)
 ```
 
 ### Registering Triggers
@@ -63,7 +63,7 @@ iii.register_function({"id": "orders.create"}, create_order)
 ```python
 iii.register_trigger({
     "type": "http",
-    "function_id": "orders.create",
+    "function_id": "orders::create",
     "config": {"api_path": "/orders", "http_method": "POST"},
 })
 ```
@@ -71,7 +71,7 @@ iii.register_trigger({
 ### Invoking Functions
 
 ```python
-result = iii.trigger({"function_id": "orders.create", "payload": {"body": {"item": "widget"}}})
+result = iii.trigger({"function_id": "orders::create", "payload": {"body": {"item": "widget"}}})
 ```
 
 ## Modules

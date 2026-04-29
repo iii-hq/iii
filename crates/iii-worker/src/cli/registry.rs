@@ -30,17 +30,11 @@ pub struct BinaryInfo {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct WorkerConfig {
-    pub name: String,
-    pub config: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct BinaryWorkerResponse {
     pub name: String,
     pub version: String,
     pub binaries: HashMap<String, BinaryInfo>,
-    pub config: WorkerConfig,
+    pub config: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +51,45 @@ pub enum WorkerInfoResponse {
     Binary(BinaryWorkerResponse),
     #[serde(rename = "image")]
     Oci(OciWorkerResponse),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolvedEdge {
+    pub from: String,
+    pub to: String,
+    pub range: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolvedWorker {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub worker_type: String,
+    pub version: String,
+    pub repo: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    #[serde(default)]
+    pub binaries: Option<HashMap<String, BinaryInfo>>,
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub dependencies: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolvedWorkerGraph {
+    pub root: ResolvedRoot,
+    #[serde(default)]
+    pub target: Option<String>,
+    pub graph: Vec<ResolvedWorker>,
+    pub edges: Vec<ResolvedEdge>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolvedRoot {
+    pub name: String,
+    pub version: String,
 }
 
 /// Validates that a worker name is safe for use in filesystem paths and YAML content.
@@ -138,13 +171,68 @@ pub async fn fetch_worker_info(
     serde_json::from_str(&body).map_err(|e| format!("Failed to parse worker info: {}", e))
 }
 
+pub async fn fetch_resolved_worker_graph(
+    name: &str,
+    version: Option<&str>,
+    target: Option<&str>,
+) -> Result<ResolvedWorkerGraph, String> {
+    validate_worker_name(name)?;
+
+    let base_or_file = std::env::var("III_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+
+    let body = if base_or_file.starts_with("file://") {
+        #[cfg(not(debug_assertions))]
+        {
+            return Err("file:// API URLs are only supported in debug/test builds. \
+                 Set III_API_URL to an HTTPS URL."
+                .to_string());
+        }
+        #[cfg(debug_assertions)]
+        {
+            let path = base_or_file.strip_prefix("file://").unwrap();
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read local API fixture at {}: {}", path, e))?
+        }
+    } else {
+        let url = format!("{}/resolve", base_or_file);
+        let mut body = serde_json::json!({
+            "worker": name,
+            "version": version.unwrap_or("latest"),
+        });
+        if let Some(target) = target {
+            body["target"] = serde_json::Value::String(target.to_string());
+        }
+
+        let resp = HTTP_CLIENT
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to resolve worker graph: {}", e))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(format!("Worker '{}' not found", name));
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "Failed to resolve worker graph: HTTP {} {}",
+                status, text
+            ));
+        }
+
+        resp.text()
+            .await
+            .map_err(|e| format!("Failed to read API response: {}", e))?
+    };
+
+    serde_json::from_str(&body).map_err(|e| format!("Failed to parse worker graph: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize tests that mutate env vars to prevent races.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[tokio::test]
     async fn fetch_worker_info_binary_via_file() {
@@ -169,7 +257,9 @@ mod tests {
 
         let url = format!("file://{}", response_path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("image-resize", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -200,7 +290,9 @@ mod tests {
 
         let url = format!("file://{}", response_path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("todo-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -215,6 +307,69 @@ mod tests {
             }
             _ => panic!("expected Oci variant"),
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_resolved_worker_graph_via_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{
+            "root": {"name": "hello-worker", "version": "1.0.0"},
+            "target": "aarch64-apple-darwin",
+            "graph": [
+                {
+                    "name": "helper",
+                    "type": "binary",
+                    "version": "1.0.0",
+                    "repo": "https://example.com/helper",
+                    "config": {},
+                    "binaries": {
+                        "aarch64-apple-darwin": {
+                            "sha256": "abc123",
+                            "url": "https://example.com/helper.tar.gz"
+                        }
+                    },
+                    "dependencies": {}
+                },
+                {
+                    "name": "hello-worker",
+                    "type": "binary",
+                    "version": "1.0.0",
+                    "repo": "https://example.com/hello-worker",
+                    "config": {},
+                    "binaries": {
+                        "aarch64-apple-darwin": {
+                            "sha256": "def456",
+                            "url": "https://example.com/hello-worker.tar.gz"
+                        }
+                    },
+                    "dependencies": {"helper": "^1.0.0"}
+                }
+            ],
+            "edges": [{"from": "hello-worker", "to": "helper", "range": "^1.0.0"}]
+        }"#;
+        let response_path = dir.path().join("response.json");
+        std::fs::write(&response_path, json).unwrap();
+
+        let url = format!("file://{}", response_path.display());
+        let result = {
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            unsafe { std::env::set_var("III_API_URL", &url) };
+            let r = fetch_resolved_worker_graph(
+                "hello-worker",
+                Some("1.0.0"),
+                Some("aarch64-apple-darwin"),
+            )
+            .await;
+            unsafe { std::env::remove_var("III_API_URL") };
+            r
+        };
+
+        let graph = result.unwrap();
+        assert_eq!(graph.root.name, "hello-worker");
+        assert_eq!(graph.graph.len(), 2);
+        assert_eq!(graph.edges[0].to, "helper");
     }
 
     #[tokio::test]
@@ -323,7 +478,30 @@ mod tests {
                     "5fdbce8e5db431ea6dddb527d3be0adf5bfac92fafac4a0c78d21e438d583f17"
                 );
                 assert!(darwin.url.ends_with("aarch64-apple-darwin.tar.gz"));
-                assert_eq!(b.config.name, "image-resize");
+                assert_eq!(b.config["name"], "image-resize");
+            }
+            _ => panic!("expected Binary variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_binary_worker_response_with_empty_registry_config() {
+        let json = r#"{
+            "name": "image-resize",
+            "type": "binary",
+            "version": "0.1.2",
+            "binaries": {
+                "aarch64-apple-darwin": {
+                    "sha256": "abc123",
+                    "url": "https://example.com/image-resize-aarch64-apple-darwin.tar.gz"
+                }
+            },
+            "config": {}
+        }"#;
+        let response: WorkerInfoResponse = serde_json::from_str(json).unwrap();
+        match response {
+            WorkerInfoResponse::Binary(b) => {
+                assert_eq!(b.name, "image-resize");
             }
             _ => panic!("expected Binary variant"),
         }
@@ -484,7 +662,7 @@ mod tests {
         let response: WorkerInfoResponse = serde_json::from_str(json).unwrap();
         match response {
             WorkerInfoResponse::Binary(b) => {
-                assert!(b.config.config.is_null());
+                assert!(b.config["config"].is_null());
             }
             _ => panic!("expected Binary variant"),
         }
@@ -510,7 +688,9 @@ mod tests {
     async fn fetch_worker_info_file_not_found() {
         let url = "file:///tmp/nonexistent-iii-test-fixture-12345.json";
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -532,7 +712,9 @@ mod tests {
 
         let url = format!("file://{}", path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -550,7 +732,9 @@ mod tests {
 
         let url = format!("file://{}", path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
@@ -568,7 +752,9 @@ mod tests {
 
         let url = format!("file://{}", path.display());
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap();
+            let _guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::set_var("III_API_URL", &url) };
             let r = fetch_worker_info("some-worker", None).await;
             unsafe { std::env::remove_var("III_API_URL") };
