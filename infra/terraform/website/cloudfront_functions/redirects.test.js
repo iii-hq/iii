@@ -105,6 +105,34 @@ test('www.iii.dev with no querystring → no trailing ?', () => {
   assert.equal(locationOf(result), 'https://iii.dev/some/page')
 })
 
+test('www.iii.dev percent-encodes reserved chars in keys and values', () => {
+  // Values containing &, =, #, + would otherwise corrupt the redirect target
+  // (& splits params, # ends the URL into a fragment, + flips to space on parse,
+  // = confuses some clients). Keys with spaces must also be encoded.
+  const result = handler(
+    buildEvent('/p', 'www.iii.dev', {
+      'weird key': { value: 'a&b=c+d#e' },
+    }),
+  )
+  assert.ok(isRedirect(result))
+  assert.equal(
+    locationOf(result),
+    'https://iii.dev/p?weird%20key=a%26b%3Dc%2Bd%23e',
+  )
+})
+
+test('SPA fallback preserves querystring on the request object (no rewrite)', () => {
+  // The handler mutates request.uri but returns the same request object, so
+  // CloudFront forwards the original querystring untouched. Pin the no-op so
+  // a future refactor doesn't accidentally clear it.
+  const qs = { utm_source: { value: 'twitter' }, ref: { value: 'launch' } }
+  const event = buildEvent('/some/route', 'iii.dev', qs)
+  const result = handler(event)
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/index.html')
+  assert.equal(result.querystring, qs)
+})
+
 test('/ (root) → pass through unchanged', () => {
   const result = handler(buildEvent('/', 'iii.dev'))
   assert.ok(!isRedirect(result))
