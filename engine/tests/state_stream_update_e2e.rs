@@ -11,12 +11,27 @@
 use serde_json::json;
 
 use iii::builtins::kv::BuiltinKvStore;
-use iii_sdk::{UpdateOp, types::MergePath};
+use iii_sdk::{UpdateOp, UpdateOpError, types::MergePath};
 
 const SCOPE: &str = "audio::transcripts";
 
 async fn fresh_store() -> BuiltinKvStore {
     BuiltinKvStore::new(None)
+}
+
+fn set_op(path: impl Into<iii_sdk::FieldPath>, value: serde_json::Value) -> UpdateOp {
+    UpdateOp::Set {
+        path: path.into(),
+        value: Some(value),
+    }
+}
+
+fn assert_structured_error(errors: &[UpdateOpError], op_index: usize, code: &str, path_text: &str) {
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].code, code);
+    assert_eq!(errors[0].op_index, op_index);
+    assert!(errors[0].message.contains(path_text));
+    assert!(errors[0].doc_url.is_some());
 }
 
 #[tokio::test]
@@ -149,4 +164,243 @@ async fn merge_with_proto_polluted_segment_returns_structured_error() {
     assert!(r.errors[0].doc_url.is_some());
     // The op did not apply.
     assert_eq!(r.new_value, json!({}));
+}
+
+#[tokio::test]
+async fn non_merge_ops_with_proto_polluted_path_return_structured_errors() {
+    let cases: Vec<(&str, UpdateOp)> = vec![
+        ("set", set_op("__proto__", json!(1))),
+        ("append", UpdateOp::append("__proto__", json!(1))),
+        ("increment", UpdateOp::increment("__proto__", 1)),
+        ("decrement", UpdateOp::decrement("__proto__", 1)),
+        (
+            "remove",
+            UpdateOp::Remove {
+                path: "__proto__".into(),
+            },
+        ),
+    ];
+
+    for (op_name, op) in cases {
+        let store = fresh_store().await;
+        let result = store
+            .update(SCOPE.to_string(), format!("proto-{op_name}"), vec![op])
+            .await;
+
+        assert_structured_error(
+            &result.errors,
+            0,
+            &format!("{op_name}.path.proto_polluted"),
+            "__proto__",
+        );
+        assert_eq!(result.new_value, json!({}), "op {op_name} should not apply");
+    }
+}
+
+#[tokio::test]
+async fn set_on_non_object_target_returns_structured_error_and_skips() {
+    let store = fresh_store().await;
+    let key = "set-target".to_string();
+
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("", json!("leaf"))],
+        )
+        .await;
+
+    let result = store
+        .update(SCOPE.to_string(), key, vec![set_op("field", json!(1))])
+        .await;
+
+    assert_structured_error(&result.errors, 0, "set.target_not_object", "field");
+    assert_eq!(result.new_value, json!("leaf"));
+}
+
+#[tokio::test]
+async fn append_type_mismatch_returns_structured_error_and_skips() {
+    let store = fresh_store().await;
+    let key = "append-type".to_string();
+
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("count", json!(1))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append("count", json!("chunk"))],
+        )
+        .await;
+
+    assert_structured_error(&result.errors, 0, "append.type_mismatch", "count");
+    assert_eq!(result.new_value, json!({ "count": 1 }));
+}
+
+#[tokio::test]
+async fn append_on_non_object_target_returns_structured_error_and_skips() {
+    let store = fresh_store().await;
+    let key = "append-target".to_string();
+
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("", json!("leaf"))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append("events", json!("chunk"))],
+        )
+        .await;
+
+    assert_structured_error(&result.errors, 0, "append.target_not_object", "events");
+    assert_eq!(result.new_value, json!("leaf"));
+}
+
+#[tokio::test]
+async fn failed_update_ops_continue_and_report_original_indexes() {
+    let store = fresh_store().await;
+    let key = "partial-errors".to_string();
+
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("", json!({ "bad": "value", "events": {} }))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![
+                UpdateOp::increment("bad", 1),
+                set_op("__proto__", json!(true)),
+                UpdateOp::append("events", json!("chunk")),
+                set_op("ok", json!(true)),
+            ],
+        )
+        .await;
+
+    assert_eq!(
+        result.new_value,
+        json!({ "bad": "value", "events": {}, "ok": true })
+    );
+    assert_eq!(result.errors.len(), 3);
+    assert_eq!(result.errors[0].op_index, 0);
+    assert_eq!(result.errors[0].code, "increment.not_number");
+    assert_eq!(result.errors[1].op_index, 1);
+    assert_eq!(result.errors[1].code, "set.path.proto_polluted");
+    assert_eq!(result.errors[2].op_index, 2);
+    assert_eq!(result.errors[2].code, "append.type_mismatch");
+}
+
+#[tokio::test]
+async fn increment_non_number_returns_structured_error_and_skips() {
+    let store = fresh_store().await;
+    let key = "increment-number".to_string();
+
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("name", json!("Ada"))],
+        )
+        .await;
+
+    let result = store
+        .update(SCOPE.to_string(), key, vec![UpdateOp::increment("name", 1)])
+        .await;
+
+    assert_structured_error(&result.errors, 0, "increment.not_number", "name");
+    assert_eq!(result.new_value, json!({ "name": "Ada" }));
+}
+
+#[tokio::test]
+async fn decrement_non_number_returns_structured_error_and_skips() {
+    let store = fresh_store().await;
+    let key = "decrement-number".to_string();
+
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("name", json!("Ada"))],
+        )
+        .await;
+
+    let result = store
+        .update(SCOPE.to_string(), key, vec![UpdateOp::decrement("name", 1)])
+        .await;
+
+    assert_structured_error(&result.errors, 0, "decrement.not_number", "name");
+    assert_eq!(result.new_value, json!({ "name": "Ada" }));
+}
+
+#[tokio::test]
+async fn numeric_ops_and_remove_on_non_object_target_return_structured_errors() {
+    let cases: Vec<(&str, UpdateOp)> = vec![
+        ("increment", UpdateOp::increment("count", 1)),
+        ("decrement", UpdateOp::decrement("count", 1)),
+        (
+            "remove",
+            UpdateOp::Remove {
+                path: "count".into(),
+            },
+        ),
+    ];
+
+    for (op_name, op) in cases {
+        let store = fresh_store().await;
+        let key = format!("{op_name}-target");
+
+        store
+            .update(
+                SCOPE.to_string(),
+                key.clone(),
+                vec![set_op("", json!("leaf"))],
+            )
+            .await;
+
+        let result = store.update(SCOPE.to_string(), key, vec![op]).await;
+
+        assert_structured_error(
+            &result.errors,
+            0,
+            &format!("{op_name}.target_not_object"),
+            "count",
+        );
+        assert_eq!(result.new_value, json!("leaf"));
+    }
+}
+
+#[tokio::test]
+async fn remove_missing_path_remains_idempotent_and_silent() {
+    let store = fresh_store().await;
+    let key = "remove-missing".to_string();
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::Remove {
+                path: "missing".into(),
+            }],
+        )
+        .await;
+
+    assert!(result.errors.is_empty());
+    assert_eq!(result.new_value, json!({}));
 }

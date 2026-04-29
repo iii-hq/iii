@@ -29,8 +29,16 @@ pub(crate) const ERR_VALUE_TOO_DEEP: &str = "merge.value.too_deep";
 pub(crate) const ERR_VALUE_TOO_MANY_KEYS: &str = "merge.value.too_many_keys";
 pub(crate) const ERR_VALUE_PROTO: &str = "merge.value.proto_polluted";
 pub(crate) const ERR_VALUE_NOT_OBJECT: &str = "merge.value.not_an_object";
+pub(crate) const ERR_SET_TARGET_NOT_OBJECT: &str = "set.target_not_object";
+pub(crate) const ERR_APPEND_TARGET_NOT_OBJECT: &str = "append.target_not_object";
+pub(crate) const ERR_APPEND_TYPE_MISMATCH: &str = "append.type_mismatch";
+pub(crate) const ERR_INCREMENT_TARGET_NOT_OBJECT: &str = "increment.target_not_object";
+pub(crate) const ERR_INCREMENT_NOT_NUMBER: &str = "increment.not_number";
+pub(crate) const ERR_DECREMENT_TARGET_NOT_OBJECT: &str = "decrement.target_not_object";
+pub(crate) const ERR_DECREMENT_NOT_NUMBER: &str = "decrement.not_number";
+pub(crate) const ERR_REMOVE_TARGET_NOT_OBJECT: &str = "remove.target_not_object";
 
-const DOC_URL_BASE: &str = "https://iii.dev/docs/workers/iii-state#merge-bounds";
+const DOC_URL_BASE: &str = "https://iii.dev/docs/workers/iii-state#error-codes";
 
 fn err(op_index: usize, code: &str, message: String) -> UpdateOpError {
     UpdateOpError {
@@ -44,7 +52,7 @@ fn err(op_index: usize, code: &str, message: String) -> UpdateOpError {
 /// Normalize an `Option<MergePath>` into a borrowed slice of segments.
 /// `None`, `Single("")`, and `Segments(vec![])` all collapse to an
 /// empty slice meaning "root merge".
-fn merge_path_segments<'a>(path: &'a Option<MergePath>) -> &'a [String] {
+fn merge_path_segments(path: &Option<MergePath>) -> &[String] {
     match path {
         None => &[],
         Some(MergePath::Single(s)) => {
@@ -58,7 +66,26 @@ fn merge_path_segments<'a>(path: &'a Option<MergePath>) -> &'a [String] {
     }
 }
 
-fn validate_merge_path(
+fn field_path_segments(path: &String) -> &[String] {
+    if path.is_empty() {
+        &[]
+    } else {
+        std::slice::from_ref(path)
+    }
+}
+
+fn path_error_code(op_name: &str, reason: &str) -> String {
+    match (op_name, reason) {
+        ("merge", "too_deep") => ERR_PATH_TOO_DEEP.to_string(),
+        ("merge", "segment_too_long") => ERR_SEGMENT_TOO_LONG.to_string(),
+        ("merge", "empty_segment") => ERR_EMPTY_SEGMENT.to_string(),
+        ("merge", "proto_polluted") => ERR_PATH_PROTO.to_string(),
+        _ => format!("{op_name}.path.{reason}"),
+    }
+}
+
+fn validate_op_path(
+    op_name: &str,
     op_index: usize,
     segments: &[String],
     errors: &mut Vec<UpdateOpError>,
@@ -66,7 +93,7 @@ fn validate_merge_path(
     if segments.len() > MAX_PATH_DEPTH {
         errors.push(err(
             op_index,
-            ERR_PATH_TOO_DEEP,
+            &path_error_code(op_name, "too_deep"),
             format!(
                 "Path depth {} exceeds maximum of {}",
                 segments.len(),
@@ -79,7 +106,7 @@ fn validate_merge_path(
         if seg.is_empty() {
             errors.push(err(
                 op_index,
-                ERR_EMPTY_SEGMENT,
+                &path_error_code(op_name, "empty_segment"),
                 "Path contains an empty segment".to_string(),
             ));
             return false;
@@ -87,7 +114,7 @@ fn validate_merge_path(
         if seg.len() > MAX_SEGMENT_BYTES {
             errors.push(err(
                 op_index,
-                ERR_SEGMENT_TOO_LONG,
+                &path_error_code(op_name, "segment_too_long"),
                 format!(
                     "Path segment of {} bytes exceeds maximum of {}",
                     seg.len(),
@@ -99,13 +126,21 @@ fn validate_merge_path(
         if PROTO_POLLUTION_KEYS.contains(&seg.as_str()) {
             errors.push(err(
                 op_index,
-                ERR_PATH_PROTO,
-                format!("Path segment {:?} is a prototype-pollution sink", seg),
+                &path_error_code(op_name, "proto_polluted"),
+                format!("Path segment '{seg}' is not allowed (prototype pollution)."),
             ));
             return false;
         }
     }
     true
+}
+
+fn validate_merge_path(
+    op_index: usize,
+    segments: &[String],
+    errors: &mut Vec<UpdateOpError>,
+) -> bool {
+    validate_op_path("merge", op_index, segments, errors)
 }
 
 fn json_depth(value: &Value) -> usize {
@@ -204,6 +239,79 @@ fn walk_or_create<'a>(
     }
 }
 
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn path_label(path: &str) -> &str {
+    if path.is_empty() { "root" } else { path }
+}
+
+fn increment_number(value: &Value, by: i64) -> Option<Value> {
+    if let Some(num) = value.as_i64()
+        && let Some(sum) = num.checked_add(by)
+    {
+        return Some(Value::Number(Number::from(sum)));
+    }
+
+    if let Some(num) = value.as_u64() {
+        let sum = if by >= 0 {
+            num.checked_add(by as u64)?
+        } else {
+            num.checked_sub(by.unsigned_abs())?
+        };
+        return Some(Value::Number(Number::from(sum)));
+    }
+
+    if let Value::Number(number) = value
+        && number.is_f64()
+    {
+        return Number::from_f64(number.as_f64()? + by as f64).map(Value::Number);
+    }
+
+    None
+}
+
+fn decrement_number(value: &Value, by: i64) -> Option<Value> {
+    if let Some(num) = value.as_i64()
+        && let Some(diff) = num.checked_sub(by)
+    {
+        return Some(Value::Number(Number::from(diff)));
+    }
+
+    if let Some(num) = value.as_u64() {
+        let diff = if by >= 0 {
+            num.checked_sub(by as u64)?
+        } else {
+            num.checked_add(by.unsigned_abs())?
+        };
+        return Some(Value::Number(Number::from(diff)));
+    }
+
+    if let Value::Number(number) = value
+        && number.is_f64()
+    {
+        return Number::from_f64(number.as_f64()? - by as f64).map(Value::Number);
+    }
+
+    None
+}
+
+fn missing_decrement_value(by: i64) -> Value {
+    if let Some(negated) = by.checked_neg() {
+        Value::Number(Number::from(negated))
+    } else {
+        Value::Number(Number::from(by.unsigned_abs()))
+    }
+}
+
 pub(crate) fn apply_update_ops(
     old_value: Option<Value>,
     ops: &[UpdateOp],
@@ -215,19 +323,26 @@ pub(crate) fn apply_update_ops(
     for (op_index, op) in ops.iter().enumerate() {
         match op {
             UpdateOp::Set { path, value } => {
-                if path.0.is_empty()
-                    && let Some(value) = value
-                {
-                    current = value.clone();
+                let segments = field_path_segments(&path.0);
+                if !validate_op_path("set", op_index, segments, &mut errors) {
+                    continue;
+                }
+                if path.0.is_empty() {
+                    current = value.clone().unwrap_or(Value::Null);
                     using_missing_default = false;
                 } else if let Value::Object(ref mut map) = current {
                     map.insert(path.0.clone(), value.clone().unwrap_or(Value::Null));
                     using_missing_default = false;
                 } else {
-                    tracing::warn!(
-                        path = %path.0,
-                        "Set operation with path requires existing value to be a JSON object"
-                    );
+                    errors.push(err(
+                        op_index,
+                        ERR_SET_TARGET_NOT_OBJECT,
+                        format!(
+                            "Cannot set at path '{}': target is {}, expected object.",
+                            path_label(&path.0),
+                            json_type_name(&current)
+                        ),
+                    ));
                 }
             }
             UpdateOp::Merge { path, value } => {
@@ -268,74 +383,167 @@ pub(crate) fn apply_update_ops(
                 }
             }
             UpdateOp::Increment { path, by } => {
-                if let Value::Object(ref mut map) = current {
+                let segments = field_path_segments(&path.0);
+                if !validate_op_path("increment", op_index, segments, &mut errors) {
+                    continue;
+                }
+                if path.0.is_empty() {
+                    if using_missing_default {
+                        current = Value::Number(Number::from(*by));
+                    } else if let Some(updated) = increment_number(&current, *by) {
+                        current = updated;
+                    } else {
+                        errors.push(err(
+                            op_index,
+                            ERR_INCREMENT_NOT_NUMBER,
+                            format!(
+                                "Expected number at path '{}', got {}.",
+                                path_label(&path.0),
+                                json_type_name(&current)
+                            ),
+                        ));
+                        continue;
+                    }
+                    using_missing_default = false;
+                } else if let Value::Object(ref mut map) = current {
                     if let Some(existing_val) = map.get_mut(&path.0) {
-                        if let Some(num) = existing_val.as_i64() {
-                            *existing_val = Value::Number(Number::from(num + *by));
+                        if let Some(updated) = increment_number(existing_val, *by) {
+                            *existing_val = updated;
                         } else {
-                            *existing_val = Value::Number(Number::from(*by));
+                            errors.push(err(
+                                op_index,
+                                ERR_INCREMENT_NOT_NUMBER,
+                                format!(
+                                    "Expected number at path '{}', got {}.",
+                                    path_label(&path.0),
+                                    json_type_name(existing_val)
+                                ),
+                            ));
+                            continue;
                         }
                     } else {
                         map.insert(path.0.clone(), Value::Number(Number::from(*by)));
                     }
                     using_missing_default = false;
                 } else {
-                    tracing::warn!(
-                        path = %path.0,
-                        "Increment operation requires existing value to be a JSON object"
-                    );
+                    errors.push(err(
+                        op_index,
+                        ERR_INCREMENT_TARGET_NOT_OBJECT,
+                        format!(
+                            "Cannot increment at path '{}': target is {}, expected object.",
+                            path_label(&path.0),
+                            json_type_name(&current)
+                        ),
+                    ));
                 }
             }
             UpdateOp::Decrement { path, by } => {
-                if let Value::Object(ref mut map) = current {
+                let segments = field_path_segments(&path.0);
+                if !validate_op_path("decrement", op_index, segments, &mut errors) {
+                    continue;
+                }
+                if path.0.is_empty() {
+                    if using_missing_default {
+                        current = missing_decrement_value(*by);
+                    } else if let Some(updated) = decrement_number(&current, *by) {
+                        current = updated;
+                    } else {
+                        errors.push(err(
+                            op_index,
+                            ERR_DECREMENT_NOT_NUMBER,
+                            format!(
+                                "Expected number at path '{}', got {}.",
+                                path_label(&path.0),
+                                json_type_name(&current)
+                            ),
+                        ));
+                        continue;
+                    }
+                    using_missing_default = false;
+                } else if let Value::Object(ref mut map) = current {
                     if let Some(existing_val) = map.get_mut(&path.0) {
-                        if let Some(num) = existing_val.as_i64() {
-                            *existing_val = Value::Number(Number::from(num - *by));
+                        if let Some(updated) = decrement_number(existing_val, *by) {
+                            *existing_val = updated;
                         } else {
-                            *existing_val = Value::Number(Number::from(-*by));
+                            errors.push(err(
+                                op_index,
+                                ERR_DECREMENT_NOT_NUMBER,
+                                format!(
+                                    "Expected number at path '{}', got {}.",
+                                    path_label(&path.0),
+                                    json_type_name(existing_val)
+                                ),
+                            ));
+                            continue;
                         }
                     } else {
-                        map.insert(path.0.clone(), Value::Number(Number::from(-*by)));
+                        map.insert(path.0.clone(), missing_decrement_value(*by));
                     }
                     using_missing_default = false;
                 } else {
-                    tracing::warn!(
-                        path = %path.0,
-                        "Decrement operation requires existing value to be a JSON object"
-                    );
+                    errors.push(err(
+                        op_index,
+                        ERR_DECREMENT_TARGET_NOT_OBJECT,
+                        format!(
+                            "Cannot decrement at path '{}': target is {}, expected object.",
+                            path_label(&path.0),
+                            json_type_name(&current)
+                        ),
+                    ));
                 }
             }
             UpdateOp::Append { path, value } => {
+                let segments = field_path_segments(&path.0);
+                if !validate_op_path("append", op_index, segments, &mut errors) {
+                    continue;
+                }
                 if path.0.is_empty() {
                     if using_missing_default {
                         current = Value::Null;
                     }
-                    if append_to_target(&mut current, value, "root") {
+                    if append_to_target(&mut current, value, "root", op_index, &mut errors) {
                         using_missing_default = false;
                     }
                 } else if let Value::Object(ref mut map) = current {
                     if let Some(existing_val) = map.get_mut(&path.0) {
-                        append_to_target(existing_val, value, &path.0);
+                        append_to_target(existing_val, value, &path.0, op_index, &mut errors);
                     } else {
                         map.insert(path.0.clone(), initial_append_value(value));
                     }
                     using_missing_default = false;
                 } else {
-                    tracing::warn!(
-                        path = %path.0,
-                        "Append operation with path requires existing value to be a JSON object"
-                    );
+                    errors.push(err(
+                        op_index,
+                        ERR_APPEND_TARGET_NOT_OBJECT,
+                        format!(
+                            "Cannot append at path '{}': target is {}, expected object.",
+                            path_label(&path.0),
+                            json_type_name(&current)
+                        ),
+                    ));
                 }
             }
             UpdateOp::Remove { path } => {
-                if let Value::Object(ref mut map) = current {
+                let segments = field_path_segments(&path.0);
+                if !validate_op_path("remove", op_index, segments, &mut errors) {
+                    continue;
+                }
+                if path.0.is_empty() {
+                    current = Value::Null;
+                    using_missing_default = false;
+                } else if let Value::Object(ref mut map) = current {
                     map.remove(&path.0);
                     using_missing_default = false;
                 } else {
-                    tracing::warn!(
-                        path = %path.0,
-                        "Remove operation requires existing value to be a JSON object"
-                    );
+                    errors.push(err(
+                        op_index,
+                        ERR_REMOVE_TARGET_NOT_OBJECT,
+                        format!(
+                            "Cannot remove at path '{}': target is {}, expected object.",
+                            path_label(&path.0),
+                            json_type_name(&current)
+                        ),
+                    ));
                 }
             }
         }
@@ -345,7 +553,13 @@ pub(crate) fn apply_update_ops(
     (current, errors)
 }
 
-fn append_to_target(target: &mut Value, value: &Value, path: &str) -> bool {
+fn append_to_target(
+    target: &mut Value,
+    value: &Value,
+    path: &str,
+    op_index: usize,
+    errors: &mut Vec<UpdateOpError>,
+) -> bool {
     match target {
         Value::Array(items) => {
             items.push(value.clone());
@@ -356,10 +570,15 @@ fn append_to_target(target: &mut Value, value: &Value, path: &str) -> bool {
                 existing.push_str(chunk);
                 true
             } else {
-                tracing::warn!(
-                    path,
-                    "Append operation on a string target requires a string value"
-                );
+                errors.push(err(
+                    op_index,
+                    ERR_APPEND_TYPE_MISMATCH,
+                    format!(
+                        "Expected string append value at path '{}', got {}.",
+                        path_label(path),
+                        json_type_name(value)
+                    ),
+                ));
                 false
             }
         }
@@ -368,10 +587,15 @@ fn append_to_target(target: &mut Value, value: &Value, path: &str) -> bool {
             true
         }
         _ => {
-            tracing::warn!(
-                path,
-                "Append operation requires target to be an array, string, null, or missing field"
-            );
+            errors.push(err(
+                op_index,
+                ERR_APPEND_TYPE_MISMATCH,
+                format!(
+                    "Cannot append at path '{}': target is {}, expected array, string, null, or missing field.",
+                    path_label(path),
+                    json_type_name(target)
+                ),
+            ));
             false
         }
     }
@@ -388,7 +612,7 @@ fn initial_append_value(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use iii_sdk::{FieldPath, UpdateOp, types::MergePath};
-    use serde_json::json;
+    use serde_json::{Number, json};
 
     use super::apply_update_ops;
 
@@ -453,28 +677,58 @@ mod tests {
     }
 
     #[test]
-    fn skips_incompatible_string_append_value() {
+    fn set_empty_path_replaces_root_even_with_null_value() {
         let updated = run(
+            Some(json!({ "": "empty-field", "keep": true })),
+            &[UpdateOp::Set {
+                path: "".into(),
+                value: None,
+            }],
+        );
+
+        assert_eq!(updated, json!(null));
+    }
+
+    #[test]
+    fn skips_incompatible_string_append_value() {
+        let (updated, errors) = apply_update_ops(
             Some(json!({ "transcript": "hello" })),
             &[UpdateOp::append("transcript", json!({"not": "string"}))],
         );
 
         assert_eq!(updated, json!({ "transcript": "hello" }));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, super::ERR_APPEND_TYPE_MISMATCH);
     }
 
     #[test]
     fn skips_incompatible_object_append_target() {
-        let updated = run(
+        let (updated, errors) = apply_update_ops(
             Some(json!({ "events": {} })),
             &[UpdateOp::append("events", json!("chunk"))],
         );
 
         assert_eq!(updated, json!({ "events": {} }));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, super::ERR_APPEND_TYPE_MISMATCH);
     }
 
     #[test]
-    fn increments_existing_non_number_and_missing_fields() {
+    fn increments_existing_number_and_missing_fields() {
         let updated = run(
+            Some(json!({ "count": 2 })),
+            &[
+                UpdateOp::increment("count", 3),
+                UpdateOp::increment("missing", 3),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "count": 5, "missing": 3 }));
+    }
+
+    #[test]
+    fn increment_rejects_existing_non_number() {
+        let (updated, errors) = apply_update_ops(
             Some(json!({ "count": 2, "bad": "value" })),
             &[
                 UpdateOp::increment("count", 3),
@@ -483,12 +737,28 @@ mod tests {
             ],
         );
 
-        assert_eq!(updated, json!({ "count": 5, "bad": 3, "missing": 3 }));
+        assert_eq!(updated, json!({ "count": 5, "bad": "value", "missing": 3 }));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, super::ERR_INCREMENT_NOT_NUMBER);
+        assert_eq!(errors[0].op_index, 1);
     }
 
     #[test]
-    fn decrements_existing_non_number_and_missing_fields() {
+    fn decrements_existing_number_and_missing_fields() {
         let updated = run(
+            Some(json!({ "count": 5 })),
+            &[
+                UpdateOp::decrement("count", 3),
+                UpdateOp::decrement("missing", 3),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "count": 2, "missing": -3 }));
+    }
+
+    #[test]
+    fn decrement_rejects_existing_non_number() {
+        let (updated, errors) = apply_update_ops(
             Some(json!({ "count": 5, "bad": "value" })),
             &[
                 UpdateOp::decrement("count", 3),
@@ -497,7 +767,13 @@ mod tests {
             ],
         );
 
-        assert_eq!(updated, json!({ "count": 2, "bad": -3, "missing": -3 }));
+        assert_eq!(
+            updated,
+            json!({ "count": 2, "bad": "value", "missing": -3 })
+        );
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, super::ERR_DECREMENT_NOT_NUMBER);
+        assert_eq!(errors[0].op_index, 1);
     }
 
     #[test]
@@ -511,6 +787,126 @@ mod tests {
         );
 
         assert_eq!(updated, json!({ "count": 12 }));
+    }
+
+    #[test]
+    fn numeric_ops_accept_json_float_fields() {
+        let updated = run(
+            Some(json!({ "count": 1.5 })),
+            &[
+                UpdateOp::increment("count", 2),
+                UpdateOp::decrement("count", 1),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "count": 2.5 }));
+    }
+
+    #[test]
+    fn numeric_ops_reject_null_fields_instead_of_treating_them_as_missing() {
+        let (updated, errors) = apply_update_ops(
+            Some(json!({ "inc": null, "dec": null })),
+            &[UpdateOp::increment("inc", 1), UpdateOp::decrement("dec", 1)],
+        );
+
+        assert_eq!(updated, json!({ "inc": null, "dec": null }));
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].op_index, 0);
+        assert_eq!(errors[0].code, super::ERR_INCREMENT_NOT_NUMBER);
+        assert_eq!(errors[1].op_index, 1);
+        assert_eq!(errors[1].code, super::ERR_DECREMENT_NOT_NUMBER);
+    }
+
+    #[test]
+    fn numeric_ops_with_zero_still_validate_existing_type() {
+        let (updated, errors) = apply_update_ops(
+            Some(json!({ "bad": "value", "count": 2 })),
+            &[
+                UpdateOp::increment("bad", 0),
+                UpdateOp::decrement("count", 0),
+            ],
+        );
+
+        assert_eq!(updated, json!({ "bad": "value", "count": 2 }));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].op_index, 0);
+        assert_eq!(errors[0].code, super::ERR_INCREMENT_NOT_NUMBER);
+    }
+
+    #[test]
+    fn numeric_overflow_promotes_to_exact_unsigned_integer() {
+        let updated = run(
+            Some(json!({ "count": i64::MAX })),
+            &[UpdateOp::increment("count", 1)],
+        );
+
+        assert_eq!(updated["count"].as_u64(), Some(i64::MAX as u64 + 1));
+    }
+
+    #[test]
+    fn numeric_ops_preserve_large_unsigned_integer_precision() {
+        let large = Number::from(i64::MAX as u64 + 10);
+        let updated = run(
+            Some(json!({ "inc": large.clone(), "dec": large })),
+            &[UpdateOp::increment("inc", 1), UpdateOp::decrement("dec", 1)],
+        );
+
+        assert_eq!(updated["inc"].as_u64(), Some(i64::MAX as u64 + 11));
+        assert_eq!(updated["dec"].as_u64(), Some(i64::MAX as u64 + 9));
+    }
+
+    #[test]
+    fn missing_decrement_by_i64_min_initializes_exact_unsigned_value() {
+        let updated = run(Some(json!({})), &[UpdateOp::decrement("count", i64::MIN)]);
+
+        assert_eq!(updated["count"].as_u64(), Some(i64::MIN.unsigned_abs()));
+    }
+
+    #[test]
+    fn empty_path_numeric_ops_target_root_value() {
+        let incremented = run(Some(json!(2)), &[UpdateOp::increment("", 3)]);
+        let decremented = run(Some(json!(5)), &[UpdateOp::decrement("", 3)]);
+
+        assert_eq!(incremented, json!(5));
+        assert_eq!(decremented, json!(2));
+    }
+
+    #[test]
+    fn empty_path_remove_clears_root_value() {
+        let updated = run(
+            Some(json!({ "": "empty-field", "keep": true })),
+            &[UpdateOp::remove("")],
+        );
+
+        assert_eq!(updated, json!(null));
+    }
+
+    #[test]
+    fn failed_ops_continue_and_preserve_error_indexes() {
+        let (updated, errors) = apply_update_ops(
+            Some(json!({ "bad": "value", "events": {} })),
+            &[
+                UpdateOp::increment("bad", 1),
+                UpdateOp::Set {
+                    path: "__proto__".into(),
+                    value: Some(json!(true)),
+                },
+                UpdateOp::append("events", json!("chunk")),
+                UpdateOp::Set {
+                    path: "ok".into(),
+                    value: Some(json!(true)),
+                },
+            ],
+        );
+
+        assert_eq!(updated, json!({ "bad": "value", "events": {}, "ok": true }));
+        assert_eq!(errors.len(), 3);
+        assert_eq!(errors[0].op_index, 0);
+        assert_eq!(errors[0].code, super::ERR_INCREMENT_NOT_NUMBER);
+        assert_eq!(errors[1].op_index, 1);
+        assert_eq!(errors[1].code, "set.path.proto_polluted");
+        assert_eq!(errors[2].op_index, 2);
+        assert_eq!(errors[2].code, super::ERR_APPEND_TYPE_MISMATCH);
     }
 
     #[test]
@@ -540,6 +936,35 @@ mod tests {
         );
 
         assert_eq!(updated, json!({ "events": ["first", "second"] }));
+    }
+
+    #[test]
+    fn append_array_value_to_array_target_as_single_element() {
+        let updated = run(
+            Some(json!({ "events": [] })),
+            &[UpdateOp::append("events", json!(["nested", "array"]))],
+        );
+
+        assert_eq!(updated, json!({ "events": [["nested", "array"]] }));
+    }
+
+    #[test]
+    fn append_to_null_field_initializes_by_value_kind() {
+        let updated = run(
+            Some(json!({ "string": null, "array": null })),
+            &[
+                UpdateOp::append("string", json!("chunk")),
+                UpdateOp::append("array", json!({ "kind": "chunk" })),
+            ],
+        );
+
+        assert_eq!(
+            updated,
+            json!({
+                "string": "chunk",
+                "array": [{ "kind": "chunk" }],
+            })
+        );
     }
 
     // ----- Nested merge tests (issue #1546) -----
@@ -656,6 +1081,15 @@ mod tests {
     }
 
     #[test]
+    fn root_merge_on_non_object_current_value_remains_silent_noop() {
+        let (updated, errors) =
+            apply_update_ops(Some(json!("leaf")), &[UpdateOp::merge(json!({ "a": 1 }))]);
+
+        assert_eq!(updated, json!("leaf"));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
     fn single_string_path_equivalent_to_single_segment_array() {
         let from_string = run(Some(json!({})), &[merge_at("foo", json!({ "x": 1 }))]);
         let from_array = run(Some(json!({})), &[merge_at(vec!["foo"], json!({ "x": 1 }))]);
@@ -725,6 +1159,78 @@ mod tests {
             assert_eq!(errors.len(), 1, "expected proto rejection for {sink}");
             assert_eq!(errors[0].code, super::ERR_PATH_PROTO);
         }
+    }
+
+    #[test]
+    fn rejects_all_proto_pollution_sinks_for_each_non_merge_op() {
+        for sink in super::PROTO_POLLUTION_KEYS {
+            let cases = [
+                (
+                    "set",
+                    UpdateOp::Set {
+                        path: (*sink).into(),
+                        value: Some(json!(true)),
+                    },
+                    "set.path.proto_polluted",
+                ),
+                (
+                    "append",
+                    UpdateOp::append(*sink, json!("chunk")),
+                    "append.path.proto_polluted",
+                ),
+                (
+                    "increment",
+                    UpdateOp::increment(*sink, 1),
+                    "increment.path.proto_polluted",
+                ),
+                (
+                    "decrement",
+                    UpdateOp::decrement(*sink, 1),
+                    "decrement.path.proto_polluted",
+                ),
+                (
+                    "remove",
+                    UpdateOp::Remove {
+                        path: (*sink).into(),
+                    },
+                    "remove.path.proto_polluted",
+                ),
+            ];
+
+            for (op_name, op, code) in cases {
+                let (_value, errors) = apply_update_ops(Some(json!({})), &[op]);
+                assert_eq!(
+                    errors.len(),
+                    1,
+                    "expected proto rejection for {op_name} path sink {sink}"
+                );
+                assert_eq!(errors[0].code, code);
+            }
+        }
+    }
+
+    #[test]
+    fn validates_set_path_segments_with_op_specific_error_code() {
+        let (_value, errors) = apply_update_ops(
+            Some(json!({})),
+            &[UpdateOp::Set {
+                path: "__proto__".into(),
+                value: Some(json!(true)),
+            }],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "set.path.proto_polluted");
+    }
+
+    #[test]
+    fn validates_append_path_segments_with_op_specific_error_code() {
+        let oversized = "a".repeat(super::MAX_SEGMENT_BYTES + 1);
+        let (_value, errors) =
+            apply_update_ops(Some(json!({})), &[UpdateOp::append(oversized, json!("x"))]);
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "append.path.segment_too_long");
     }
 
     #[test]
