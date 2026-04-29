@@ -1,5 +1,11 @@
 #![allow(dead_code)]
 
+// Validated flow tests use this helper in three steps:
+// 1. run a real engine path with in-memory tracing enabled,
+// 2. describe the expected nodes, edges, and span evidence,
+// 3. generate the graph asset only after the span evidence is present.
+
+use std::collections::HashMap;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
@@ -43,6 +49,35 @@ pub struct ValidatedFlowGraphAsset {
     pub edges: Vec<FlowGraphEdge>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedSpanAttribute {
+    pub key: String,
+    pub value: String,
+}
+
+/// Span evidence required before a flow asset can be generated.
+///
+/// `parent_id` validates direct parent-child trace structure. `starts_after_id`
+/// handles fire-and-forget paths, such as local pub/sub, where execution hops to
+/// a spawned task without retaining direct span parenting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedFlowSpan {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub starts_after_id: Option<String>,
+    pub attribute: Option<ExpectedSpanAttribute>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatedFlowPathSpec {
+    pub id: String,
+    pub name: String,
+    pub nodes: Vec<FlowGraphNode>,
+    pub edges: Vec<FlowGraphEdge>,
+    pub spans: Vec<ExpectedFlowSpan>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpQueueStatePathSpec {
     pub id: String,
@@ -82,6 +117,45 @@ pub struct HttpPubSubPathSpec {
     pub subscriber_function_id: String,
 }
 
+impl ValidatedFlowPathSpec {
+    pub async fn wait_for_asset(
+        &self,
+        timeout: Duration,
+    ) -> anyhow::Result<ValidatedFlowGraphAsset> {
+        let deadline = Instant::now() + timeout;
+        let mut last_error: Option<anyhow::Error> = None;
+
+        loop {
+            match self.try_build_asset() {
+                Ok(asset) => return Ok(asset),
+                Err(err) if Instant::now() < deadline => {
+                    last_error = Some(err);
+                    sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => {
+                    let last_error = last_error.unwrap_or(err);
+                    return Err(last_error.context("timed out waiting for validated flow asset"));
+                }
+            }
+        }
+    }
+
+    fn try_build_asset(&self) -> anyhow::Result<ValidatedFlowGraphAsset> {
+        let storage =
+            get_span_storage().ok_or_else(|| anyhow!("span storage is not initialized"))?;
+        let spans = storage.get_spans();
+
+        validate_expected_spans(&spans, &self.spans)?;
+
+        Ok(ValidatedFlowGraphAsset {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            nodes: self.nodes.clone(),
+            edges: self.edges.clone(),
+        })
+    }
+}
+
 impl HttpQueueStatePathSpec {
     pub async fn wait_for_validated_asset(
         &self,
@@ -108,63 +182,24 @@ impl HttpQueueStatePathSpec {
 
     fn try_build_asset(&self, state_event: &Value) -> anyhow::Result<ValidatedFlowGraphAsset> {
         validate_state_event(state_event, &self.state_scope, &self.state_key)?;
+        self.declaration().try_build_asset()
+    }
 
-        let storage =
-            get_span_storage().ok_or_else(|| anyhow!("span storage is not initialized"))?;
-        let spans = storage.get_spans();
-
-        let http_root = spans
-            .iter()
-            .find(|span| span.name == format!("{} {}", self.method, self.path))
-            .ok_or_else(|| anyhow!("missing HTTP span for {} {}", self.method, self.path))?;
-
-        let entry_call = find_child_span(
-            &spans,
-            http_root,
-            &format!("call {}", self.entry_function_id),
-            None,
-        )?;
-        let enqueue_call = find_child_span(
-            &spans,
-            entry_call,
-            "call iii::durable::publish",
-            Some(("messaging.destination.name", self.queue_topic.as_str())),
-        )?;
-        let queue_job = find_child_span(
-            &spans,
-            enqueue_call,
-            &format!(
-                "queue {}::{}",
-                self.queue_topic, self.queue_consumer_function_id
-            ),
-            Some((
-                "queue",
-                &format!("{}::{}", self.queue_topic, self.queue_consumer_function_id),
-            )),
-        )?;
-        let consumer_call = find_child_span(
-            &spans,
-            queue_job,
-            &format!("call {}", self.queue_consumer_function_id),
-            None,
-        )?;
-        let state_set = find_child_span(&spans, consumer_call, "call state::set", None)?;
-        let state_triggers = find_child_span(&spans, state_set, "state_triggers", None)?;
-        let _observer_call = find_child_span(
-            &spans,
-            state_triggers,
-            &format!("call {}", self.state_observer_function_id),
-            None,
-        )?;
-
+    fn declaration(&self) -> ValidatedFlowPathSpec {
         let http_node_id = format!("http:{}:{}", self.method, self.path);
         let entry_node_id = self.entry_function_id.clone();
         let queue_node_id = format!("queue:{}", self.queue_topic);
         let consumer_node_id = self.queue_consumer_function_id.clone();
         let state_node_id = format!("state:{}:{}", self.state_scope, self.state_key);
         let observer_node_id = self.state_observer_function_id.clone();
+        let queue_span_name = format!(
+            "queue {}::{}",
+            self.queue_topic, self.queue_consumer_function_id
+        );
+        let queue_span_attribute =
+            format!("{}::{}", self.queue_topic, self.queue_consumer_function_id);
 
-        Ok(ValidatedFlowGraphAsset {
+        ValidatedFlowPathSpec {
             id: self.id.clone(),
             name: self.name.clone(),
             nodes: vec![
@@ -236,7 +271,71 @@ impl HttpQueueStatePathSpec {
                     label: self.state_scope.clone(),
                 },
             ],
-        })
+            spans: vec![
+                ExpectedFlowSpan {
+                    id: "http".to_string(),
+                    name: format!("{} {}", self.method, self.path),
+                    parent_id: None,
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "entry".to_string(),
+                    name: format!("call {}", self.entry_function_id),
+                    parent_id: Some("http".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "publish".to_string(),
+                    name: "call iii::durable::publish".to_string(),
+                    parent_id: Some("entry".to_string()),
+                    starts_after_id: None,
+                    attribute: Some(ExpectedSpanAttribute {
+                        key: "messaging.destination.name".to_string(),
+                        value: self.queue_topic.clone(),
+                    }),
+                },
+                ExpectedFlowSpan {
+                    id: "queue_job".to_string(),
+                    name: queue_span_name,
+                    parent_id: Some("publish".to_string()),
+                    starts_after_id: None,
+                    attribute: Some(ExpectedSpanAttribute {
+                        key: "queue".to_string(),
+                        value: queue_span_attribute,
+                    }),
+                },
+                ExpectedFlowSpan {
+                    id: "consumer".to_string(),
+                    name: format!("call {}", self.queue_consumer_function_id),
+                    parent_id: Some("queue_job".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "state_set".to_string(),
+                    name: "call state::set".to_string(),
+                    parent_id: Some("consumer".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "state_triggers".to_string(),
+                    name: "state_triggers".to_string(),
+                    parent_id: Some("state_set".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "state_observer".to_string(),
+                    name: format!("call {}", self.state_observer_function_id),
+                    parent_id: Some("state_triggers".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+            ],
+        }
     }
 }
 
@@ -273,31 +372,10 @@ impl HttpStreamPathSpec {
             &self.group_id,
             &self.item_id,
         )?;
+        self.declaration().try_build_asset()
+    }
 
-        let storage =
-            get_span_storage().ok_or_else(|| anyhow!("span storage is not initialized"))?;
-        let spans = storage.get_spans();
-
-        let http_root = spans
-            .iter()
-            .find(|span| span.name == format!("{} {}", self.method, self.path))
-            .ok_or_else(|| anyhow!("missing HTTP span for {} {}", self.method, self.path))?;
-
-        let entry_call = find_child_span(
-            &spans,
-            http_root,
-            &format!("call {}", self.entry_function_id),
-            None,
-        )?;
-        let stream_set_call = find_child_span(&spans, entry_call, "call stream::set", None)?;
-        let stream_triggers = find_child_span(&spans, stream_set_call, "stream_triggers", None)?;
-        let _observer_call = find_child_span(
-            &spans,
-            stream_triggers,
-            &format!("call {}", self.stream_observer_function_id),
-            None,
-        )?;
-
+    fn declaration(&self) -> ValidatedFlowPathSpec {
         let http_node_id = format!("http:{}:{}", self.method, self.path);
         let entry_node_id = self.entry_function_id.clone();
         let stream_node_id = format!(
@@ -307,7 +385,7 @@ impl HttpStreamPathSpec {
         let observer_node_id = self.stream_observer_function_id.clone();
         let stream_label = format!("{}/{}/{}", self.stream_name, self.group_id, self.item_id);
 
-        Ok(ValidatedFlowGraphAsset {
+        ValidatedFlowPathSpec {
             id: self.id.clone(),
             name: self.name.clone(),
             nodes: vec![
@@ -355,7 +433,44 @@ impl HttpStreamPathSpec {
                     label: self.stream_name.clone(),
                 },
             ],
-        })
+            spans: vec![
+                ExpectedFlowSpan {
+                    id: "http".to_string(),
+                    name: format!("{} {}", self.method, self.path),
+                    parent_id: None,
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "entry".to_string(),
+                    name: format!("call {}", self.entry_function_id),
+                    parent_id: Some("http".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "stream_set".to_string(),
+                    name: "call stream::set".to_string(),
+                    parent_id: Some("entry".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "stream_triggers".to_string(),
+                    name: "stream_triggers".to_string(),
+                    parent_id: Some("stream_set".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "stream_observer".to_string(),
+                    name: format!("call {}", self.stream_observer_function_id),
+                    parent_id: Some("stream_triggers".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+            ],
+        }
     }
 }
 
@@ -387,35 +502,16 @@ impl HttpPubSubPathSpec {
 
     fn try_build_asset(&self, pubsub_event: &Value) -> anyhow::Result<ValidatedFlowGraphAsset> {
         validate_pubsub_event(pubsub_event, &self.expected_event)?;
+        self.declaration().try_build_asset()
+    }
 
-        let storage =
-            get_span_storage().ok_or_else(|| anyhow!("span storage is not initialized"))?;
-        let spans = storage.get_spans();
-
-        let http_root = spans
-            .iter()
-            .find(|span| span.name == format!("{} {}", self.method, self.path))
-            .ok_or_else(|| anyhow!("missing HTTP span for {} {}", self.method, self.path))?;
-
-        let entry_call = find_child_span(
-            &spans,
-            http_root,
-            &format!("call {}", self.entry_function_id),
-            None,
-        )?;
-        let publish_call = find_child_span(&spans, entry_call, "call publish", None)?;
-        let _subscriber_call = find_span_after(
-            &spans,
-            &format!("call {}", self.subscriber_function_id),
-            publish_call.start_time_unix_nano,
-        )?;
-
+    fn declaration(&self) -> ValidatedFlowPathSpec {
         let http_node_id = format!("http:{}:{}", self.method, self.path);
         let entry_node_id = self.entry_function_id.clone();
         let topic_node_id = format!("pubsub:{}", self.topic);
         let subscriber_node_id = self.subscriber_function_id.clone();
 
-        Ok(ValidatedFlowGraphAsset {
+        ValidatedFlowPathSpec {
             id: self.id.clone(),
             name: self.name.clone(),
             nodes: vec![
@@ -463,7 +559,37 @@ impl HttpPubSubPathSpec {
                     label: self.topic.clone(),
                 },
             ],
-        })
+            spans: vec![
+                ExpectedFlowSpan {
+                    id: "http".to_string(),
+                    name: format!("{} {}", self.method, self.path),
+                    parent_id: None,
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "entry".to_string(),
+                    name: format!("call {}", self.entry_function_id),
+                    parent_id: Some("http".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "publish".to_string(),
+                    name: "call publish".to_string(),
+                    parent_id: Some("entry".to_string()),
+                    starts_after_id: None,
+                    attribute: None,
+                },
+                ExpectedFlowSpan {
+                    id: "subscriber".to_string(),
+                    name: format!("call {}", self.subscriber_function_id),
+                    parent_id: None,
+                    starts_after_id: Some("publish".to_string()),
+                    attribute: None,
+                },
+            ],
+        }
     }
 }
 
@@ -590,48 +716,96 @@ fn validate_pubsub_event(pubsub_event: &Value, expected_event: &Value) -> anyhow
     Ok(())
 }
 
-fn find_child_span<'a>(
+fn validate_expected_spans<'a>(
     spans: &'a [StoredSpan],
-    parent: &StoredSpan,
-    expected_name: &str,
-    attribute: Option<(&str, &str)>,
-) -> anyhow::Result<&'a StoredSpan> {
-    spans
-        .iter()
-        .find(|span| {
-            span.parent_span_id.as_deref() == Some(parent.span_id.as_str())
-                && span.name == expected_name
-                && attribute
-                    .map(|(key, value)| has_attribute(span, key, value))
-                    .unwrap_or(true)
-        })
-        .ok_or_else(|| {
-            anyhow!(
-                "missing child span '{}' under parent '{}'",
-                expected_name,
-                parent.name
-            )
-        })
+    expected_spans: &[ExpectedFlowSpan],
+) -> anyhow::Result<HashMap<String, &'a StoredSpan>> {
+    let mut matched_spans: HashMap<String, &'a StoredSpan> = HashMap::new();
+
+    for expected in expected_spans {
+        let parent_span_id = match expected.parent_id.as_deref() {
+            Some(parent_id) => Some(
+                matched_spans
+                    .get(parent_id)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "span '{}' references unknown parent '{}'",
+                            expected.id,
+                            parent_id
+                        )
+                    })?
+                    .span_id
+                    .as_str(),
+            ),
+            None => None,
+        };
+
+        let min_start_time = match expected.starts_after_id.as_deref() {
+            Some(after_id) => Some(
+                matched_spans
+                    .get(after_id)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "span '{}' references unknown predecessor '{}'",
+                            expected.id,
+                            after_id
+                        )
+                    })?
+                    .start_time_unix_nano,
+            ),
+            None => None,
+        };
+
+        let span = spans
+            .iter()
+            .filter(|span| {
+                span.name == expected.name
+                    && parent_span_id
+                        .map(|span_id| span.parent_span_id.as_deref() == Some(span_id))
+                        .unwrap_or(true)
+                    && min_start_time
+                        .map(|start_time| span.start_time_unix_nano >= start_time)
+                        .unwrap_or(true)
+                    && expected
+                        .attribute
+                        .as_ref()
+                        .map(|attribute| has_attribute(span, &attribute.key, &attribute.value))
+                        .unwrap_or(true)
+            })
+            .min_by_key(|span| span.start_time_unix_nano)
+            .ok_or_else(|| missing_span_error(expected, parent_span_id, min_start_time))?;
+
+        matched_spans.insert(expected.id.clone(), span);
+    }
+
+    Ok(matched_spans)
 }
 
-fn find_span_after<'a>(
-    spans: &'a [StoredSpan],
-    expected_name: &str,
-    min_start_time_unix_nano: u64,
-) -> anyhow::Result<&'a StoredSpan> {
-    spans
-        .iter()
-        .filter(|span| {
-            span.name == expected_name && span.start_time_unix_nano >= min_start_time_unix_nano
-        })
-        .min_by_key(|span| span.start_time_unix_nano)
-        .ok_or_else(|| {
-            anyhow!(
-                "missing span '{}' after {}",
-                expected_name,
-                min_start_time_unix_nano
-            )
-        })
+fn missing_span_error(
+    expected: &ExpectedFlowSpan,
+    parent_span_id: Option<&str>,
+    min_start_time: Option<u64>,
+) -> anyhow::Error {
+    let attribute = expected
+        .attribute
+        .as_ref()
+        .map(|attribute| format!(" with {}={}", attribute.key, attribute.value))
+        .unwrap_or_default();
+    let parent = parent_span_id
+        .map(|span_id| format!(" under parent span {span_id}"))
+        .unwrap_or_default();
+    let timing = min_start_time
+        .map(|start_time| format!(" after {start_time}"))
+        .unwrap_or_default();
+
+    anyhow!(
+        "missing expected span '{}' named '{}'{}{}{}",
+        expected.id,
+        expected.name,
+        attribute,
+        parent,
+        timing
+    )
 }
 
 fn has_attribute(span: &StoredSpan, expected_key: &str, expected_value: &str) -> bool {
