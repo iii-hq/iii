@@ -1501,6 +1501,10 @@
     .xp{ padding:0 0 64px; }
     .xp-head{ padding:56px 18px 24px; }
     .xp > .seq{ margin-left:14px; margin-right:14px; }
+    /* Tighter interior padding on mobile so the reply bubble's text sits
+       closer to its border instead of looking double-indented. */
+    .xp-reply .bubble .text{ padding:2px 0px; }
+    .xp-reply .actions{ padding:2px 8px; }
   }
   @media (max-width: 720px){
     .seq{ height: 540px; }
