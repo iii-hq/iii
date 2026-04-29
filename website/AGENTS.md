@@ -39,19 +39,19 @@ Traditional stacks assign different ontologies to queues, HTTP, cron, actors, et
 
 ## How iii compares (high level)
 
-These are positioning contrasts, not feature checklists. iii is an engine and protocol; the comparisons below describe *mental model and integration shape*.
+These are positioning contrasts, not feature checklists. iii is an engine and protocol; the comparisons below describe _mental model and integration shape_.
 
-**Event systems / event streaming** — Event buses and streams excel at moving facts through a pipeline. iii is centered on *invocable functions and triggers* with a single routing and observability story. Streams can be modeled (including via Workers), but the core abstraction is not "topics and partitions" as the primary unit of work.
+**Event systems / event streaming** — Event buses and streams excel at moving facts through a pipeline. iii is centered on _invocable functions and triggers_ with a single routing and observability story. Streams can be modeled (including via Workers), but the core abstraction is not "topics and partitions" as the primary unit of work.
 
-**Microservices** — Microservices imply many deployables, many boundaries, and N² integration pressure. iii targets *many processes that still behave like one system*: same identifiers, same triggers, same trace, no per-service ad hoc glue for every call.
+**Microservices** — Microservices imply many deployables, many boundaries, and N² integration pressure. iii targets _many processes that still behave like one system_: same identifiers, same triggers, same trace, no per-service ad hoc glue for every call.
 
-**Workflow orchestration (Temporal, Step Functions–style)** — Durable workflow products make long-running coordination a *separate plane* you integrate with. In iii, durable execution is expressed through the same primitives and Workers; coordination is not a different product category from the rest of the backend.
+**Workflow orchestration (Temporal, Step Functions–style)** — Durable workflow products make long-running coordination a _separate plane_ you integrate with. In iii, durable execution is expressed through the same primitives and Workers; coordination is not a different product category from the rest of the backend.
 
 **Message queues** — Queues are usually their own operational world (brokers, DLQs, serializers). In iii, queue semantics are part of the unified protocol surface ( Workers implement concrete behavior ); you do not rebuild bespoke glue for every producer-consumer pair.
 
-**Service mesh** — A mesh optimizes traffic between *already separate* services. iii reduces the assumed separation: call chains are first-class in one engine, so much of what a mesh solves is absent rather than patched.
+**Service mesh** — A mesh optimizes traffic between _already separate_ services. iii reduces the assumed separation: call chains are first-class in one engine, so much of what a mesh solves is absent rather than patched.
 
-**Container orchestration (Kubernetes, etc.)** — Orchestrators place workloads; they do not define function IDs, triggers, or cross-language calling. iii runs *above* that layer: how processes cooperate, not where pods land.
+**Container orchestration (Kubernetes, etc.)** — Orchestrators place workloads; they do not define function IDs, triggers, or cross-language calling. iii runs _above_ that layer: how processes cooperate, not where pods land.
 
 **Serverless platforms** — Serverless ties you to a vendor's unit of deployment and limits. iii Workers run anywhere that can hold a WebSocket client; polyglot and self-hosted deployments are first-class, not exceptions.
 
@@ -61,38 +61,46 @@ These are positioning contrasts, not feature checklists. iii is an engine and pr
 
 **Actor frameworks** — Actors emphasize mailbox concurrency inside a runtime. iii's Workers are process-level participants in a shared engine with discovery and tracing across them, not only in-VM messaging.
 
-**Infrastructure as code** — IaC provisions resources. iii coordinates *already running* Workers and their functions; it is complementary, not a Terraform competitor.
+**Infrastructure as code** — IaC provisions resources. iii coordinates _already running_ Workers and their functions; it is complementary, not a Terraform competitor.
 
 **API gateways** — Gateways aggregate HTTP at the edge. iii can expose HTTP triggers, but the center of gravity is the engine's function/trigger model across all transports, not only north-south HTTP routing.
 
-**Backend-as-a-service (BaaS)** — BaaS bundles auth, DB, and hosting. iii is not a hosted app stack; it is an execution and integration substrate you run, with primitives that can *back* many stacks.
+**Backend-as-a-service (BaaS)** — BaaS bundles auth, DB, and hosting. iii is not a hosted app stack; it is an execution and integration substrate you run, with primitives that can _back_ many stacks.
 
 ---
 
 ## Homepage copy (extracted from iii.dev HTML)
 
 ### Hero
+
 unreasonably simple software engineering Software engineering is an exercise in assembling categories of services. Every new capability means a new system to learn, configure, deploy, and monitor. The complexity of actual integrations is quadratic — overwhelming for devs and for AI context. iii fundamentally eliminates this complexity and makes it linear. And we ship integrations the same way node ships packages so using a new service is as easy as importing a new library.
 
 ### Experience
+
 § 00 · EXPERIENCE any task. one experience. iii makes it unreasonably efficient to create and extend software.
 
 ### Workers
+
 any service. one abstraction. The answer to "we need X" stops being "evaluate, procure, integrate." It becomes: add a worker.
 
 View the Worker Registry ↗
 
 ### Languages / protocol
+
 any language. one protocol. python registers a function. rust registers a function. node consumes both.
 
 Node.js Worker — orchestrator
 Rust Worker — data transform
 Python Worker — ML inference
+
 ### Agents
+
 any agent. one system. agents aren't a new category of infrastructure. they're just workers — same protocol, same trace, same engine.
 
 ### Console / observability
+
 any log. one context. a system you and your agents can see from end to end.
+
 - every worker — across runtimes — discovered as it connects.
 - every function — every language — invokable from one place.
 - http, events, cron, websockets — every entrypoint, one schema.
@@ -104,7 +112,9 @@ any log. one context. a system you and your agents can see from end to end.
 - the system at a glance — every primitive, healthy and addressable.
 
 ### iii in a nutshell
+
 iii in a nutshell. every capability, every framework, and every tool become a pattern on the same core system.
+
 - durable orchestration: coordinate long-running, failure-tolerant execution across workers and triggers.
 - interoperable execution: execute across languages natively, as if it were one runtime.
 - simple primitives: collapse distributed backend design into a paradigm humans and agents can reason about.
@@ -113,6 +123,7 @@ iii in a nutshell. every capability, every framework, and every tool become a pa
 - live observability: observe operations, traces, and behavior across the entire connected stack in real time.
 
 ### Footer / links
+
 get started. install the engine, check out the code, chat with us, or subscribe for updates. GitHub Discord — online
 a next-generation software system. workers. triggers. functions. developers docs quickstart github contact discord twitter / X linkedin
 © Motia LLC pronounced "three eye"
@@ -131,11 +142,11 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 ## Primitives (wire-level)
 
-| Primitive | What it is | How an agent uses it |
-|-----------|------------|----------------------|
-| Worker | A process that speaks the iii protocol and registers functions and triggers | Spawn via SDK; self-registers on connect |
-| Trigger | What causes a function to run: direct call, HTTP, cron, queue subscription, state change, stream event | Declare on your worker; the engine handles routing and delivery |
-| Function | Stable identifier (e.g. `orders::validate`) wrapping input → output | Call via `iii.trigger(name, input)` from anywhere else on the engine |
+| Primitive | What it is                                                                                             | How an agent uses it                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Worker    | A process that speaks the iii protocol and registers functions and triggers                            | Spawn via SDK; self-registers on connect                             |
+| Trigger   | What causes a function to run: direct call, HTTP, cron, queue subscription, state change, stream event | Declare on your worker; the engine handles routing and delivery      |
+| Function  | Stable identifier (e.g. `orders::validate`) wrapping input → output                                    | Call via `iii.trigger(name, input)` from anywhere else on the engine |
 
 ## Quickstart
 
@@ -189,7 +200,7 @@ Agent memory, traces, and function catalogs live wherever you run the engine. Fi
 
 ## Licensing
 
-Elastic-2.0. Source available. Free for direct use; restrictions on offering iii as a managed service.
+Elastic-2.0. Free for direct use; restrictions on offering iii as a managed service.
 
 ## Links
 

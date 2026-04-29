@@ -132,15 +132,20 @@ export function buildLlmsTxt(html: string): string {
 
 - [Worker registry](https://workers.iii.dev) — published workers
 
-## Quickstart
+## Install / start
+
+For **current install paths and prerequisites**, see **[iii.dev/docs/installation](https://iii.dev/docs/installation)**—this file may lag the docs.
 
 \`\`\`bash
-# Install engine
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-
-# Start engine (reads ./config.yaml by default)
 iii
 \`\`\`
+
+Engine **listeners, adapters, and ports** come from your project’s **\`config.yaml\`** (or the config path you pass). Read that file and the docs instead of relying on hardcoded port lists here.
+
+- \`iii console\` — launch the web observability console
+- \`iii --help\` and \`iii <subcommand> --help\` — discover CLI behavior
+- \`iii trigger\` — useful for **manual** checks; **not** the main way apps invoke functions—use SDKs in workers for integration; **don’t** script against the CLI trigger
 
 SDKs:
 
@@ -178,7 +183,6 @@ export function buildAgentsMd(html: string, agentsAppendix: string): string {
     '# iii for AI Agents',
     '',
     'This file is public **[AGENTS.md](https://agents.md/)**-style guidance for **[iii](https://iii.dev/)** (the product): positioning, comparisons, scraped homepage copy, and wire-level notes for autonomous agents.',
-    'For **monorepo** setup (pnpm, cargo, CI, package layout), use [`AGENTS.md` in the GitHub repo](https://github.com/iii-hq/iii/blob/main/AGENTS.md).',
     '',
     '## Overview and comparisons (pre-written)',
     '',

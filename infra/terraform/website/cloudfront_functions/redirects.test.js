@@ -93,10 +93,10 @@ test('/some/client/route → rewrite uri to /index.html', () => {
   assert.equal(result.uri, '/index.html')
 })
 
-test('/manifesto → rewrite uri to /index.html', () => {
+test('/manifesto → rewrite uri to /manifesto.html (flat HTML, Option A)', () => {
   const result = handler(buildEvent('/manifesto', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.equal(result.uri, '/manifesto.html')
 })
 
 test('/AGENTS.md → pass through unchanged', () => {

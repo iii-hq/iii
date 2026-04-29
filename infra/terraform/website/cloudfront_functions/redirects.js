@@ -8,29 +8,43 @@ function redirect(location) {
       location: { value: location },
       'cache-control': { value: 'public, max-age=3600' },
     },
-  }
+  };
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point
 // biome-ignore lint/complexity/useOptionalChain: cloudfront-js-2.0 does NOT support optional chaining
 function handler(event) {
-  var request = event.request
-  var uri = request.uri
-  var host = request.headers && request.headers.host ? request.headers.host.value : undefined
+  var request = event.request;
+  var uri = request.uri;
+  var host =
+    request.headers && request.headers.host
+      ? request.headers.host.value
+      : undefined;
 
-  if (host === 'www.iii.dev') return redirect(`https://iii.dev${uri}`)
+  if (host === 'www.iii.dev') return redirect(`https://iii.dev${uri}`);
 
-  if (uri.indexOf('/.well-known/') === 0) return request
+  if (uri.indexOf('/.well-known/') === 0) return request;
+
+  // Pretty URLs → matching *.html objects in S3 (Option A). Add a key when you
+  // ship a new top-level page as `pagename.html`.
+  var htmlPretty = {
+    '/manifesto': '/manifesto.html',
+  };
+  var htmlTarget = htmlPretty[uri];
+  if (htmlTarget !== undefined) {
+    request.uri = htmlTarget;
+    return request;
+  }
 
   // SPA fallback: extensionless path not ending in /
   if (uri !== '/' && uri.charAt(uri.length - 1) !== '/') {
-    const lastSlash = uri.lastIndexOf('/')
-    const lastSegment = uri.substring(lastSlash + 1)
+    const lastSlash = uri.lastIndexOf('/');
+    const lastSegment = uri.substring(lastSlash + 1);
     if (lastSegment.indexOf('.') === -1) {
-      request.uri = '/index.html'
-      return request
+      request.uri = '/index.html';
+      return request;
     }
   }
 
-  return request
+  return request;
 }

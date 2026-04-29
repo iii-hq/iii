@@ -8,7 +8,7 @@
     "dev": "browser-sync start --server --port 3000 --no-online --no-notify --no-open --files '*.html, *.css, fonts/*'",
     "build": "tsx scripts/generate-llms-agents.ts && tsx scripts/generate-sitemap.ts",
     "generate:llms": "tsx scripts/generate-llms-agents.ts",
-    "test": "tsx --test scripts/*.test.ts",
+    "test": "tsx --test scripts/*.test.ts ../infra/terraform/website/cloudfront_functions/*.test.js",
     "preview": "browser-sync start --server --port 3000 --no-notify --no-open"
   },
   "devDependencies": {

@@ -12,39 +12,37 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 ## Primitives (wire-level)
 
-| Primitive | What it is | How an agent uses it |
-|-----------|------------|----------------------|
-| Worker | A process that speaks the iii protocol and registers functions and triggers | Spawn via SDK; self-registers on connect |
-| Trigger | What causes a function to run: direct call, HTTP, cron, queue subscription, state change, stream event | Declare on your worker; the engine handles routing and delivery |
-| Function | Stable identifier (e.g. `orders::validate`) wrapping input → output | Call via `iii.trigger(name, input)` from anywhere else on the engine |
+| Primitive | What it is                                                                                             | How an agent uses it                                                                                          |
+| --------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Worker    | A process that speaks the iii protocol and registers functions and triggers                            | Spawn via SDK; self-registers on connect                                                                      |
+| Trigger   | What causes a function to run: direct call, HTTP, cron, queue subscription, state change, stream event | Declare on your worker; the engine handles routing and delivery                                               |
+| Function  | Stable identifier (e.g. `orders::validate`) wrapping input → output                                    | Invoke from another worker via your language SDK against the engine (not the `iii trigger` CLI for app logic) |
 
-## Quickstart
+## Install / start
+
+For **current install paths and prerequisites**, use **[iii.dev/docs/installation](https://iii.dev/docs/installation)**—the snippets below may lag the docs.
 
 ```bash
-# Install engine
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-
-# Start engine (reads ./config.yaml by default)
 iii
 ```
 
-Other useful subcommands: `iii worker add <name>` (install a worker from the registry), `iii trigger <function> <payload>` (invoke a function against the running engine), `iii console` (launch web console), `iii update` (update iii and managed binaries).
+Engine **listeners, adapters, and port bindings** are defined in your project’s **`config.yaml`** (or the path you pass to the engine). Read that file and the docs; do not assume fixed port numbers from a static list.
+
+Use **`iii console`** to launch the web observability console against the running engine.
+
+Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. The **`iii trigger`** subcommand is handy for **manual** invocations while debugging; it is **not** the primary way applications call functions—use the SDK from your workers for real integration, and **do not** build automation around the CLI trigger.
+
+Other useful subcommands include `iii worker add <name>` (install a worker from the registry) and `iii update` (update iii and managed binaries).
 
 Install an SDK:
 
 - Rust: `cargo add iii-sdk`
 - Node (backend): `npm install iii-sdk`
-- Node (browser, port 49135, RBAC-scoped): `npm install iii-browser-sdk`
+- Node (browser, RBAC-scoped): `npm install iii-browser-sdk`
 - Python: `pip install iii-sdk`
 
 Full docs: https://iii.dev/docs
-
-## Ports
-
-- `49134` — engine WebSocket (backend SDK connections)
-- `49135` — browser WebSocket (RBAC-scoped, `iii-browser-sdk`)
-- `3111` — REST API when the `iii-http` worker is loaded
-- `3113` — console UI when `iii-console` is loaded
 
 ## Harness composition as a shape, not a product
 
@@ -70,7 +68,7 @@ Agent memory, traces, and function catalogs live wherever you run the engine. Fi
 
 ## Licensing
 
-Elastic-2.0. Source available. Free for direct use; restrictions on offering iii as a managed service.
+Elastic-2.0.
 
 ## Links
 
@@ -79,5 +77,4 @@ Elastic-2.0. Source available. Free for direct use; restrictions on offering iii
 - Docs: https://iii.dev/docs
 - llms.txt (AI discovery): https://iii.dev/llms.txt
 - This file: https://iii.dev/AGENTS.md
-- Monorepo AGENTS.md (build/test for contributors): https://github.com/iii-hq/iii/blob/main/AGENTS.md
 - GitHub: https://github.com/iii-hq/iii
