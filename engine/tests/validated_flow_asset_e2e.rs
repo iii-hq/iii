@@ -13,10 +13,13 @@ use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     trigger::Trigger,
-    workers::{queue::QueueWorker, rest_api::HttpWorker, state::StateWorker, traits::Worker},
+    workers::{
+        queue::QueueWorker, rest_api::HttpWorker, state::StateWorker, stream::StreamWorker,
+        traits::Worker,
+    },
 };
 
-use common::flow_helpers::{HttpQueueStatePathSpec, ensure_flow_test_tracing};
+use common::flow_helpers::{HttpQueueStatePathSpec, HttpStreamPathSpec, ensure_flow_test_tracing};
 use common::queue_helpers::builtin_queue_config;
 
 fn reserve_local_port() -> u16 {
@@ -367,6 +370,230 @@ async fn validated_flow_helper_builds_graph_asset_from_real_http_queue_state_pat
                     "source": "state:validated-flow.orders:order-123",
                     "target": "flow_poc::state_observer",
                     "label": "validated-flow.orders"
+                }
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn validated_flow_helper_builds_graph_asset_from_real_http_stream_path() {
+    let _flow_tracing = ensure_flow_test_tracing().await;
+
+    let engine = Arc::new(Engine::new());
+
+    let stream_module = StreamWorker::create(engine.clone(), Some(json!({ "port": 0 })))
+        .await
+        .expect("StreamWorker::create should succeed");
+    stream_module.register_functions(engine.clone());
+    stream_module
+        .initialize()
+        .await
+        .expect("StreamWorker::initialize should succeed");
+
+    let port = reserve_local_port();
+    let base_url = start_http_worker(engine.clone(), port).await;
+
+    let stream_name = "validated-flow.stream";
+    let group_id = "orders";
+    let expected_item_id = "item-123";
+
+    let (stream_event_tx, mut stream_event_rx) = mpsc::unbounded_channel::<Value>();
+
+    let engine_for_http = engine.clone();
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: "flow_poc::stream_http_entry".to_string(),
+            description: Some("Entry function for validated stream flow POC".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |input: Value| {
+            let engine = engine_for_http.clone();
+            async move {
+                let item_id = input
+                    .get("body")
+                    .and_then(|body| body.get("item_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing-item-id")
+                    .to_string();
+
+                match engine
+                    .call(
+                        "stream::set",
+                        json!({
+                            "stream_name": stream_name,
+                            "group_id": group_id,
+                            "item_id": item_id,
+                            "data": {
+                                "status": "processed"
+                            }
+                        }),
+                    )
+                    .await
+                {
+                    Ok(_) => FunctionResult::Success(Some(json!({
+                        "status_code": 202,
+                        "body": {
+                            "accepted": true,
+                            "stream_name": stream_name
+                        }
+                    }))),
+                    Err(err) => FunctionResult::Failure(err),
+                }
+            }
+        }),
+    );
+
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: "flow_poc::stream_observer".to_string(),
+            description: Some("Stream observer for validated flow POC".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |input: Value| {
+            let tx = stream_event_tx.clone();
+            async move {
+                tx.send(input)
+                    .expect("stream event receiver should remain available");
+                FunctionResult::Success(Some(json!({ "observed": true })))
+            }
+        }),
+    );
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: "validated-stream-http".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "flow_poc::stream_http_entry".to_string(),
+            config: json!({
+                "api_path": "/validated-stream-flow",
+                "http_method": "POST"
+            }),
+            worker_id: None,
+            metadata: None,
+        })
+        .await
+        .expect("HTTP trigger should register");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: "validated-stream-trigger".to_string(),
+            trigger_type: "stream".to_string(),
+            function_id: "flow_poc::stream_observer".to_string(),
+            config: json!({
+                "stream_name": stream_name,
+                "group_id": group_id,
+                "item_id": expected_item_id,
+            }),
+            worker_id: None,
+            metadata: None,
+        })
+        .await
+        .expect("stream trigger should register");
+
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/validated-stream-flow");
+    wait_for_route(&client, &url).await;
+
+    let response = client
+        .post(&url)
+        .json(&json!({ "item_id": expected_item_id }))
+        .send()
+        .await
+        .expect("HTTP request should succeed");
+
+    assert_eq!(response.status().as_u16(), 202);
+
+    let response_body: Value = response
+        .json()
+        .await
+        .expect("response should be valid JSON");
+    assert_eq!(response_body["accepted"], true);
+    assert_eq!(response_body["stream_name"], stream_name);
+
+    let stream_event = timeout(Duration::from_secs(5), stream_event_rx.recv())
+        .await
+        .expect("timed out waiting for stream observer")
+        .expect("stream observer channel should remain open");
+
+    assert_eq!(stream_event["streamName"], stream_name);
+    assert_eq!(stream_event["groupId"], group_id);
+    assert_eq!(stream_event["id"], expected_item_id);
+    assert_eq!(stream_event["event"]["type"], "create");
+    assert_eq!(stream_event["event"]["data"]["status"], "processed");
+
+    let spec = HttpStreamPathSpec {
+        id: "validated-http-stream".to_string(),
+        name: "Validated HTTP Stream Path".to_string(),
+        method: "POST".to_string(),
+        path: "/validated-stream-flow".to_string(),
+        entry_function_id: "flow_poc::stream_http_entry".to_string(),
+        stream_name: stream_name.to_string(),
+        group_id: group_id.to_string(),
+        item_id: expected_item_id.to_string(),
+        stream_observer_function_id: "flow_poc::stream_observer".to_string(),
+    };
+
+    let asset = spec
+        .wait_for_validated_asset(&stream_event, Duration::from_secs(5))
+        .await
+        .expect("validated stream flow asset should be generated");
+
+    assert_eq!(
+        serde_json::to_value(&asset).expect("asset should serialize"),
+        json!({
+            "id": "validated-http-stream",
+            "name": "Validated HTTP Stream Path",
+            "nodes": [
+                {
+                    "id": "http:POST:/validated-stream-flow",
+                    "kind": "http_trigger",
+                    "label": "POST /validated-stream-flow"
+                },
+                {
+                    "id": "flow_poc::stream_http_entry",
+                    "kind": "function",
+                    "label": "flow_poc::stream_http_entry"
+                },
+                {
+                    "id": "stream:validated-flow.stream:orders:item-123",
+                    "kind": "stream_item",
+                    "label": "validated-flow.stream/orders/item-123"
+                },
+                {
+                    "id": "flow_poc::stream_observer",
+                    "kind": "function",
+                    "label": "flow_poc::stream_observer"
+                }
+            ],
+            "edges": [
+                {
+                    "id": "http:POST:/validated-stream-flow->flow_poc::stream_http_entry",
+                    "kind": "http_trigger",
+                    "source": "http:POST:/validated-stream-flow",
+                    "target": "flow_poc::stream_http_entry",
+                    "label": "POST /validated-stream-flow"
+                },
+                {
+                    "id": "flow_poc::stream_http_entry->stream:validated-flow.stream:orders:item-123",
+                    "kind": "stream_write",
+                    "source": "flow_poc::stream_http_entry",
+                    "target": "stream:validated-flow.stream:orders:item-123",
+                    "label": "validated-flow.stream/orders/item-123"
+                },
+                {
+                    "id": "stream:validated-flow.stream:orders:item-123->flow_poc::stream_observer",
+                    "kind": "stream_trigger",
+                    "source": "stream:validated-flow.stream:orders:item-123",
+                    "target": "flow_poc::stream_observer",
+                    "label": "validated-flow.stream"
                 }
             ]
         })

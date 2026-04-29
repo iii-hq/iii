@@ -57,6 +57,19 @@ pub struct HttpQueueStatePathSpec {
     pub state_observer_function_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct HttpStreamPathSpec {
+    pub id: String,
+    pub name: String,
+    pub method: String,
+    pub path: String,
+    pub entry_function_id: String,
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+    pub stream_observer_function_id: String,
+}
+
 impl HttpQueueStatePathSpec {
     pub async fn wait_for_validated_asset(
         &self,
@@ -215,6 +228,125 @@ impl HttpQueueStatePathSpec {
     }
 }
 
+impl HttpStreamPathSpec {
+    pub async fn wait_for_validated_asset(
+        &self,
+        stream_event: &Value,
+        timeout: Duration,
+    ) -> anyhow::Result<ValidatedFlowGraphAsset> {
+        let deadline = Instant::now() + timeout;
+        let mut last_error: Option<anyhow::Error> = None;
+
+        loop {
+            match self.try_build_asset(stream_event) {
+                Ok(asset) => return Ok(asset),
+                Err(err) if Instant::now() < deadline => {
+                    last_error = Some(err);
+                    sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => {
+                    let last_error = last_error.unwrap_or(err);
+                    return Err(
+                        last_error.context("timed out waiting for validated stream flow asset")
+                    );
+                }
+            }
+        }
+    }
+
+    fn try_build_asset(&self, stream_event: &Value) -> anyhow::Result<ValidatedFlowGraphAsset> {
+        validate_stream_event(
+            stream_event,
+            &self.stream_name,
+            &self.group_id,
+            &self.item_id,
+        )?;
+
+        let storage =
+            get_span_storage().ok_or_else(|| anyhow!("span storage is not initialized"))?;
+        let spans = storage.get_spans();
+
+        let http_root = spans
+            .iter()
+            .find(|span| span.name == format!("{} {}", self.method, self.path))
+            .ok_or_else(|| anyhow!("missing HTTP span for {} {}", self.method, self.path))?;
+
+        let entry_call = find_child_span(
+            &spans,
+            http_root,
+            &format!("call {}", self.entry_function_id),
+            None,
+        )?;
+        let stream_set_call = find_child_span(&spans, entry_call, "call stream::set", None)?;
+        let stream_triggers = find_child_span(&spans, stream_set_call, "stream_triggers", None)?;
+        let _observer_call = find_child_span(
+            &spans,
+            stream_triggers,
+            &format!("call {}", self.stream_observer_function_id),
+            None,
+        )?;
+
+        let http_node_id = format!("http:{}:{}", self.method, self.path);
+        let entry_node_id = self.entry_function_id.clone();
+        let stream_node_id = format!(
+            "stream:{}:{}:{}",
+            self.stream_name, self.group_id, self.item_id
+        );
+        let observer_node_id = self.stream_observer_function_id.clone();
+        let stream_label = format!("{}/{}/{}", self.stream_name, self.group_id, self.item_id);
+
+        Ok(ValidatedFlowGraphAsset {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            nodes: vec![
+                FlowGraphNode {
+                    id: http_node_id.clone(),
+                    kind: "http_trigger".to_string(),
+                    label: format!("{} {}", self.method, self.path),
+                },
+                FlowGraphNode {
+                    id: entry_node_id.clone(),
+                    kind: "function".to_string(),
+                    label: self.entry_function_id.clone(),
+                },
+                FlowGraphNode {
+                    id: stream_node_id.clone(),
+                    kind: "stream_item".to_string(),
+                    label: stream_label.clone(),
+                },
+                FlowGraphNode {
+                    id: observer_node_id.clone(),
+                    kind: "function".to_string(),
+                    label: self.stream_observer_function_id.clone(),
+                },
+            ],
+            edges: vec![
+                FlowGraphEdge {
+                    id: format!("{http_node_id}->{entry_node_id}"),
+                    kind: "http_trigger".to_string(),
+                    source: http_node_id,
+                    target: entry_node_id.clone(),
+                    label: format!("{} {}", self.method, self.path),
+                },
+                FlowGraphEdge {
+                    id: format!("{entry_node_id}->{stream_node_id}"),
+                    kind: "stream_write".to_string(),
+                    source: entry_node_id,
+                    target: stream_node_id.clone(),
+                    label: stream_label.clone(),
+                },
+                FlowGraphEdge {
+                    id: format!("{stream_node_id}->{observer_node_id}"),
+                    kind: "stream_trigger".to_string(),
+                    source: stream_node_id,
+                    target: observer_node_id,
+                    label: self.stream_name.clone(),
+                },
+            ],
+        })
+    }
+}
+
 pub async fn ensure_flow_test_tracing() -> FlowTracingGuard {
     let guard = FLOW_TRACING_LOCK.lock().await;
 
@@ -274,6 +406,52 @@ fn validate_state_event(
             "state event key mismatch: expected {}, got {}",
             expected_key,
             actual_key
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_stream_event(
+    stream_event: &Value,
+    expected_stream_name: &str,
+    expected_group_id: &str,
+    expected_item_id: &str,
+) -> anyhow::Result<()> {
+    let actual_stream_name = stream_event
+        .get("streamName")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("stream event is missing streamName"))?;
+    let actual_group_id = stream_event
+        .get("groupId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("stream event is missing groupId"))?;
+    let actual_item_id = stream_event
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("stream event is missing id"))?;
+
+    if actual_stream_name != expected_stream_name {
+        bail!(
+            "stream event streamName mismatch: expected {}, got {}",
+            expected_stream_name,
+            actual_stream_name
+        );
+    }
+
+    if actual_group_id != expected_group_id {
+        bail!(
+            "stream event groupId mismatch: expected {}, got {}",
+            expected_group_id,
+            actual_group_id
+        );
+    }
+
+    if actual_item_id != expected_item_id {
+        bail!(
+            "stream event id mismatch: expected {}, got {}",
+            expected_item_id,
+            actual_item_id
         );
     }
 
