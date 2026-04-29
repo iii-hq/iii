@@ -23,8 +23,8 @@ permissions:
   id-token: write
 
 jobs:
-  build-and-deploy:
-    name: Build & deploy to S3 + CloudFront
+  deploy:
+    name: Deploy to S3 + CloudFront
     runs-on: ubuntu-latest
     environment: iii-website-prod
     timeout-minutes: 15
@@ -37,38 +37,29 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: 'website/package-lock.json'
-
-      - name: Install dependencies
-        working-directory: website
-        run: npm install --include=dev
-
-      - name: Build
-        working-directory: website
-        env:
-          VITE_MAILMODO_FORM_URL: ${{ secrets.VITE_MAILMODO_FORM_URL }}
-        run: npm run build
-
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync hashed assets (long cache, immutable)
+      - name: Sync static assets (long cache, immutable)
         run: |
-          aws s3 sync website/dist/ "s3://${{ vars.S3_BUCKET }}/" \
+          aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
             --cache-control "public,max-age=31536000,immutable" \
-            --exclude "*.html"
+            --exclude "*.html" \
+            --exclude "node_modules/*" \
+            --exclude "package.json" \
+            --exclude "package-lock.json" \
+            --exclude "pnpm-lock.yaml" \
+            --exclude ".gitignore" \
+            --exclude "README.md" \
+            --exclude "vercel.json"
 
       - name: Sync HTML (no cache, must revalidate)
         run: |
-          aws s3 sync website/dist/ "s3://${{ vars.S3_BUCKET }}/" \
+          aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
             --cache-control "public,max-age=0,must-revalidate" \
             --exclude "*" \

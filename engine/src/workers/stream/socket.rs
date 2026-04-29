@@ -326,6 +326,7 @@ mod tests {
             Ok(UpdateResult {
                 old_value: None,
                 new_value: json!({}),
+                errors: Vec::new(),
             })
         }
     }

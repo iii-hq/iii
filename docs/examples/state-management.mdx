@@ -25,7 +25,7 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'users.update_status', description: 'Update user status in state' },
+  { id: 'users::update_status', description: 'Update user status in state' },
   async (req: ApiRequest<{ status: string }>) => {
     const logger = new Logger()
     const userId = req.path_params?.id
@@ -51,8 +51,8 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'http',
-  function_id: 'users.update_status',
-  config: { api_path: 'users/:id/status', http_method: 'POST' },
+  function_id: 'users::update_status',
+  config: { api_path: '/users/:id/status', http_method: 'POST' },
 })
 ```
 
@@ -86,10 +86,10 @@ def update_user_status(data) -> ApiResponse:
 
     return ApiResponse(status_code=200, body={"userId": user_id, "status": new_status})
 
-iii.register_function("users.update_status", update_user_status)
+iii.register_function("users::update_status", update_user_status)
 iii.register_trigger({
-    "type": "http", "function_id": "users.update_status",
-    "config": {"api_path": "users/:id/status", "http_method": "POST"},
+    "type": "http", "function_id": "users::update_status",
+    "config": {"api_path": "/users/:id/status", "http_method": "POST"},
 })
 ```
 
@@ -103,7 +103,7 @@ use serde_json::json;
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunctionMessage::with_id("users.update_status".into()).with_description("Update user status in state".into()),
+    RegisterFunctionMessage::with_id("users::update_status".into()).with_description("Update user status in state".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;
@@ -138,8 +138,8 @@ iii.register_function(
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
-    function_id: "users.update_status".into(),
-    config: json!({ "api_path": "users/:id/status", "http_method": "POST" }),
+    function_id: "users::update_status".into(),
+    config: json!({ "api_path": "/users/:id/status", "http_method": "POST" }),
     metadata: None,
 })?;
 ```
@@ -154,7 +154,7 @@ iii.register_trigger(RegisterTriggerInput {
 
 ```typescript
 iii.registerFunction(
-  { id: 'users.get_status', description: 'Read user status from state' },
+  { id: 'users::get_status', description: 'Read user status from state' },
   async (req: ApiRequest) => {
     const logger = new Logger()
     const userId = req.path_params?.id
@@ -179,8 +179,8 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'http',
-  function_id: 'users.get_status',
-  config: { api_path: 'users/:id/status', http_method: 'GET' },
+  function_id: 'users::get_status',
+  config: { api_path: '/users/:id/status', http_method: 'GET' },
 })
 ```
 
@@ -201,10 +201,10 @@ def get_user_status(data) -> ApiResponse:
     logger.info("Got user status", {"userId": user_id, "status": user.get("status")})
     return ApiResponse(status_code=200, body=user)
 
-iii.register_function("users.get_status", get_user_status)
+iii.register_function("users::get_status", get_user_status)
 iii.register_trigger({
-    "type": "http", "function_id": "users.get_status",
-    "config": {"api_path": "users/:id/status", "http_method": "GET"},
+    "type": "http", "function_id": "users::get_status",
+    "config": {"api_path": "/users/:id/status", "http_method": "GET"},
 })
 ```
 
@@ -213,7 +213,7 @@ iii.register_trigger({
 
 ```rust
 iii.register_function(
-    RegisterFunctionMessage::with_id("users.get_status".into()).with_description("Read user status from state".into()),
+    RegisterFunctionMessage::with_id("users::get_status".into()).with_description("Read user status from state".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;
@@ -237,8 +237,8 @@ iii.register_function(
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
-    function_id: "users.get_status".into(),
-    config: json!({ "api_path": "users/:id/status", "http_method": "GET" }),
+    function_id: "users::get_status".into(),
+    config: json!({ "api_path": "/users/:id/status", "http_method": "GET" }),
     metadata: None,
 })?;
 ```
@@ -255,7 +255,7 @@ iii.register_trigger(RegisterTriggerInput {
 
 ```typescript
 iii.registerFunction(
-  { id: 'cron.orders_audit', description: 'Checks for overdue orders' },
+  { id: 'cron::orders_audit', description: 'Checks for overdue orders' },
   async () => {
     const logger = new Logger()
 
@@ -280,7 +280,7 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'cron',
-  function_id: 'cron.orders_audit',
+  function_id: 'cron::orders_audit',
   config: { expression: '0 */5 * * * * *' },
 })
 ```
@@ -315,8 +315,8 @@ def orders_audit(_data) -> None:
             })
 
 
-iii.register_function("cron.orders_audit", orders_audit)
-iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "config": {"expression": "0 */5 * * * * *"}})
+iii.register_function("cron::orders_audit", orders_audit)
+iii.register_trigger({"type": "cron", "function_id": "cron::orders_audit", "config": {"expression": "0 */5 * * * * *"}})
 ```
 
   </Tab>
@@ -324,7 +324,7 @@ iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "confi
 
 ```rust
 iii.register_function(
-    RegisterFunctionMessage::with_id("cron.orders_audit".into()).with_description("Checks for overdue orders".into()),
+    RegisterFunctionMessage::with_id("cron::orders_audit".into()).with_description("Checks for overdue orders".into()),
     |_input| async move {
         let logger = Logger::new();
 
@@ -363,7 +363,7 @@ iii.register_function(
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
-    function_id: "cron.orders_audit".into(),
+    function_id: "cron::orders_audit".into(),
     config: json!({ "expression": "0 */5 * * * * *" }),
     metadata: None,
 })?;

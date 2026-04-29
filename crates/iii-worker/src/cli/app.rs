@@ -134,8 +134,8 @@ pub enum Commands {
     /// List all workers and their status
     List,
 
-    /// Read iii.lock and report pinned workers.
-    /// Pass --frozen in CI to fail if config.yaml and iii.lock disagree.
+    /// Install registry-managed workers exactly from iii.lock.
+    /// Pass --frozen in CI to verify without mutating local files.
     Sync {
         /// Verify the lockfile without mutating local files.
         #[arg(long)]
@@ -143,7 +143,11 @@ pub enum Commands {
     },
 
     /// Verify config.yaml is represented in iii.lock without mutating files
-    Verify,
+    Verify {
+        /// Also check dependency declarations against locked versions.
+        #[arg(long)]
+        strict: bool,
+    },
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
     /// By default refreshes live in place until the worker reaches a terminal
@@ -181,6 +185,17 @@ pub enum Commands {
     /// stderr through and returns the child's exit code. Pass `-t` for
     /// an interactive PTY.
     Exec(ExecArgs),
+
+    /// Manage ephemeral sandboxes (create/exec/stop short-lived VMs).
+    Sandbox {
+        #[command(subcommand)]
+        cmd: SandboxCmd,
+    },
+
+    /// Internal: sandbox RPC daemon. Started automatically by the iii
+    /// engine when `iii-sandbox` appears in config.yaml.
+    #[command(name = "sandbox-daemon", hide = true)]
+    SandboxDaemon(SandboxDaemonArgs),
 
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
@@ -248,4 +263,210 @@ pub struct WatchSourceArgs {
     /// Absolute project directory to watch recursively
     #[arg(long, value_name = "PATH")]
     pub project: String,
+}
+
+/// Arguments for the `sandbox-daemon` subcommand. Started by the iii
+/// engine as a child process; rarely invoked directly.
+#[derive(Args, Debug)]
+pub struct SandboxDaemonArgs {
+    /// Path to the sandbox daemon's YAML config (flat `SandboxConfig` shape).
+    #[arg(long, default_value = "./config.yaml")]
+    pub config: String,
+
+    /// Engine WebSocket URL to connect back to.
+    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    pub engine: String,
+}
+
+/// Subcommands for `iii sandbox`. Each one talks to the engine's
+/// `sandbox::*` trigger handlers via the iii-sdk WebSocket client.
+#[derive(Subcommand, Debug)]
+pub enum SandboxCmd {
+    /// Create a one-shot sandbox, run a command inside it, and stop it.
+    /// For multi-step workflows (agent loops, REPLs) use `create` + `exec` +
+    /// `stop` instead.
+    Run {
+        /// OCI image reference (must match the engine's sandbox allowlist).
+        #[arg(value_name = "IMAGE")]
+        image: String,
+
+        /// vCPUs allocated to the sandbox VM.
+        #[arg(long, default_value_t = 1)]
+        cpus: u32,
+
+        /// Memory in MiB allocated to the sandbox VM.
+        #[arg(long, default_value_t = 512)]
+        memory: u32,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+
+        /// Program and arguments to exec inside the sandbox.
+        #[arg(trailing_var_arg = true, value_name = "COMMAND")]
+        cmd: Vec<String>,
+    },
+
+    /// Create a long-lived sandbox and print its id to stdout. Pair with
+    /// `iii sandbox exec <id>` and `iii sandbox stop <id>`.
+    ///
+    /// Pipe-friendly: the sandbox id is the only thing on stdout, so you
+    /// can do `SB=$(iii sandbox create python)` in a shell.
+    Create {
+        /// OCI image reference (must match the engine's sandbox allowlist).
+        #[arg(value_name = "IMAGE")]
+        image: String,
+
+        /// vCPUs allocated to the sandbox VM.
+        #[arg(long, default_value_t = 1)]
+        cpus: u32,
+
+        /// Memory in MiB allocated to the sandbox VM.
+        #[arg(long, default_value_t = 512)]
+        memory: u32,
+
+        /// Auto-stop the sandbox after this many seconds of exec inactivity.
+        /// Omit to use the engine's default.
+        #[arg(long, value_name = "SECS")]
+        idle_timeout: Option<u64>,
+
+        /// Human-readable label for the sandbox (shown in `list`).
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// Enable guest network access. Default follows the engine's
+        /// sandbox policy (typically disabled).
+        #[arg(long)]
+        network: bool,
+
+        /// Set an environment variable inside the guest. Repeatable, `KEY=VALUE`
+        /// form; entries without `=` are silently skipped.
+        #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Run a command inside an already-running sandbox.
+    ///
+    /// Pipe-mode only. Pair with `iii sandbox create` for the sandbox id.
+    /// For interactive TTY sessions, use `iii worker exec` against a managed
+    /// worker instead.
+    Exec {
+        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        #[arg(value_name = "SANDBOX_ID")]
+        id: String,
+
+        /// Kill the child after this long (e.g. `30s`, `5m`, `500ms`).
+        /// Parsed by the standard `humantime` syntax.
+        #[arg(long)]
+        timeout: Option<String>,
+
+        /// Set an environment variable inside the spawned process.
+        /// Repeatable, `KEY=VALUE` form; entries without `=` are silently skipped.
+        #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+
+        /// Program and arguments to exec inside the sandbox. Comes after `--`:
+        /// `iii sandbox exec <id> -- python3 -c 'print(2+2)'`.
+        #[arg(trailing_var_arg = true, value_name = "COMMAND")]
+        cmd: Vec<String>,
+    },
+
+    /// List every sandbox the daemon knows about.
+    ///
+    /// The daemon's list RPC is owner-scoped for multi-tenant SDK
+    /// callers, but `iii sandbox` is a local admin tool with no
+    /// authenticated identity, so the CLI always requests the unscoped
+    /// view. The `--all` flag is a silent no-op, kept so scripts that
+    /// pass it from earlier releases keep working.
+    List {
+        /// No-op. Kept for backward compat; the CLI always shows every
+        /// sandbox regardless of this flag.
+        #[arg(long, hide = true)]
+        all: bool,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Stop a sandbox by id, waiting for the reaper to finish.
+    Stop {
+        /// Sandbox id returned by `sandbox create` / `sandbox list`.
+        #[arg(value_name = "SANDBOX_ID")]
+        id: String,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Copy a local file into a running sandbox.
+    ///
+    /// Streams bytes through an iii data channel — no JSON-envelope size cap.
+    /// Reads `LOCAL_PATH` from disk (or stdin when `LOCAL_PATH` is `-`) and
+    /// writes atomically (temp file + fsync + rename) to `REMOTE_PATH` inside
+    /// the sandbox.
+    ///
+    /// Examples:
+    ///   iii sandbox upload <SB> ./script.js /workspace/script.js
+    ///   tar -cf - ./srcdir | iii sandbox upload <SB> - /workspace/src.tar
+    Upload {
+        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        #[arg(value_name = "SANDBOX_ID")]
+        id: String,
+
+        /// Source path on the host. Use `-` to read from stdin.
+        #[arg(value_name = "LOCAL_PATH")]
+        local_path: String,
+
+        /// Destination path inside the sandbox.
+        #[arg(value_name = "REMOTE_PATH")]
+        remote_path: String,
+
+        /// File mode (octal) applied to the destination after the rename.
+        #[arg(long, default_value = "0644", value_name = "MODE")]
+        mode: String,
+
+        /// Create parent directories of `REMOTE_PATH` if they're missing.
+        #[arg(long)]
+        parents: bool,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Copy a file out of a running sandbox to a local path.
+    ///
+    /// Streams bytes through an iii data channel. Writes to `LOCAL_PATH` on
+    /// disk (or stdout when `LOCAL_PATH` is `-`).
+    ///
+    /// Examples:
+    ///   iii sandbox download <SB> /workspace/output.json ./output.json
+    ///   iii sandbox download <SB> /workspace/build.tar - | tar -tf -
+    Download {
+        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        #[arg(value_name = "SANDBOX_ID")]
+        id: String,
+
+        /// Source path inside the sandbox.
+        #[arg(value_name = "REMOTE_PATH")]
+        remote_path: String,
+
+        /// Destination path on the host. Use `-` to write to stdout.
+        #[arg(value_name = "LOCAL_PATH")]
+        local_path: String,
+
+        /// Engine WebSocket port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
 }

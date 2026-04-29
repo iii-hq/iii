@@ -35,7 +35,10 @@ fn cli_parses_all_subcommands() {
             assert!(matches!(c, Commands::Sync { .. }))
         }),
         (&["iii-worker", "verify"], |c| {
-            assert!(matches!(c, Commands::Verify))
+            assert!(matches!(c, Commands::Verify { strict: false }))
+        }),
+        (&["iii-worker", "verify", "--strict"], |c| {
+            assert!(matches!(c, Commands::Verify { strict: true }))
         }),
         (&["iii-worker", "logs", "my-worker"], |c| {
             assert!(matches!(c, Commands::Logs { .. }))
@@ -186,11 +189,11 @@ fn sync_subcommand_accepts_frozen_flag() {
 }
 
 #[test]
-fn sync_help_matches_current_read_only_behavior() {
+fn sync_help_matches_lockfile_replay_behavior() {
     let help = Cli::command().render_long_help().to_string();
 
-    assert!(help.contains("Read iii.lock and report pinned workers"));
-    assert!(!help.contains("Install workers exactly from iii.lock"));
+    assert!(help.contains("Install registry-managed workers exactly from iii.lock"));
+    assert!(help.contains("Pass --frozen in CI to verify without mutating local files"));
 }
 
 #[test]

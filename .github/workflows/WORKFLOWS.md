@@ -33,6 +33,7 @@ The workflows are organized into two categories:
    ci.yml ◄── push to main / PRs
    docker-engine.yml ◄── called by release-iii / manual
    license-check.yml ◄── push to main / PRs
+   checklist-checker.yml ◄── PR license agreement / comments
 ```
 
 ---
@@ -158,6 +159,14 @@ Downloads pre-built binaries from the GitHub Release (no Rust compilation) and p
 **Triggers:** push to `main`, pull requests to `main`
 
 Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers across source files, configured via `engine/licenserc.toml`.
+
+### `checklist-checker.yml` — License Agreement Check
+
+**Triggers:** `pull_request_target` for pull request changes, `issue_comment` for PR comments
+
+Requires external contributors to acknowledge the Apache 2.0 contributor license agreement before merge. Contributors can satisfy the gate by checking the license box in the PR description or by replying with the exact acknowledgement phrase posted by the bot. iii team members with `write`, `maintain`, or `admin` repository permission are skipped.
+
+The workflow posts a sticky PR comment and publishes the `license-agreement` commit status on the PR head SHA. Branch protection should require the `license-agreement` status context.
 
 ---
 

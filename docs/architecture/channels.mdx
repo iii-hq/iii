@@ -1,8 +1,24 @@
 ---
-title: 'Data Channels'
-description: 'Channels enable streaming binary data between functions across workers. Learn about channel creation, writer/reader pairs, and serializable refs.'
+title: 'Channels'
+description: 'Bidirectional stream channels between iii workers.'
 ---
 
+Channels provide WebSocket-backed pipes for moving data between workers without turning every payload into a trigger invocation.
+
+## Model
+
+| Concept | Description |
+|---------|-------------|
+| Channel | A named connection endpoint managed by the worker manager. |
+| Reader | Receives bytes or messages from a channel. |
+| Writer | Sends bytes or messages into a channel. |
+| Direction | Defines whether a worker reads, writes, or does both. |
+
+Use channels when the payload is large, binary, or naturally stream-shaped. Use triggers when the payload is a discrete event that should invoke a function.
+
+<Info title="Worker reference">
+  Channel endpoints are served by the [Worker Manager](/workers/iii-worker-manager). For SDK APIs, see the Node, Python, and Rust API references.
+</Info>
 Data channels provide a streaming primitive for moving binary data between functions — even when those functions run in different worker processes. Instead of serializing an entire payload into a single invocation message, channels let producers write data incrementally while consumers read it as a stream.
 
 ## Why Channels Exist

@@ -474,10 +474,28 @@ fn claim_slot(slots: &Slots) -> Option<usize> {
 /// `claim_slot` won't hand the slot out until the deadline passes,
 /// giving the guest time to clean up any sessions the departing
 /// client owned.
-fn release_slot(slots: &Slots, idx: usize) {
+///
+/// `had_owned`: did the client own any guest sessions when it
+/// disconnected? Cooldown is only needed when SIGKILL fan-out
+/// happened — active exec corr_ids must drain on the guest before
+/// slot reuse, otherwise a new client claiming the same slot would
+/// reuse the same id_offset range and collide with still-alive
+/// sessions. For clean disconnects with empty `owned_ids` (every
+/// FS trigger after its terminal frame, every cleanly-exited
+/// exec), the slot returns directly to `Free` — no SIGKILL was
+/// sent so there's nothing to drain. Without this distinction,
+/// a tight burst of 16+ fast sequential triggers exhausts all
+/// `MAX_CLIENTS=16` slot cooldowns simultaneously and the listener
+/// rejects further connects with `early eof on handshake`, which
+/// surfaces as `S216` on the host side.
+fn release_slot(slots: &Slots, idx: usize, had_owned: bool) {
     let mut guard = slots.lock().expect("slots mutex poisoned");
     if idx < guard.len() {
-        guard[idx] = SlotState::Cooldown(Instant::now() + SLOT_COOLDOWN);
+        guard[idx] = if had_owned {
+            SlotState::Cooldown(Instant::now() + SLOT_COOLDOWN)
+        } else {
+            SlotState::Free
+        };
     }
 }
 
@@ -498,7 +516,9 @@ async fn client_session(
     // Handshake: 4-byte id_offset (BE) so the client knows its range.
     if let Err(e) = client_write.write_all(&id_offset.to_be_bytes()).await {
         tracing::debug!("shell_relay: handshake write failed: {e}");
-        release_slot(&slots, slot_idx);
+        // Handshake failed before any work — no owned sessions, no
+        // SIGKILL fan-out, no cooldown needed. Free immediately.
+        release_slot(&slots, slot_idx, false);
         return;
     }
 
@@ -693,7 +713,12 @@ async fn client_session(
         map.remove(id);
     }
     drop(map);
-    release_slot(&slots, slot_idx);
+    // Cooldown only when SIGKILL fan-out actually happened. For the
+    // common case (every FS trigger after its terminal frame, every
+    // cleanly-exited exec) `ids` is empty and the slot returns
+    // straight to Free — keeps tight burst patterns from exhausting
+    // the slot pool.
+    release_slot(&slots, slot_idx, !ids.is_empty());
 }
 
 /// Read one full frame (length prefix + body). `Ok(None)` on EOF at
@@ -974,6 +999,59 @@ mod tests {
             .expect("frame");
         let reply_corr = u32::from_be_bytes([reply[4], reply[5], reply[6], reply[7]]);
         assert_eq!(reply_corr, valid_id, "valid frame must still route");
+    }
+
+    /// REGRESSION: a tight burst of clean (no owned-id) disconnects
+    /// must NOT exhaust the slot pool.
+    ///
+    /// Prior bug: every disconnect put the slot into a 250 ms
+    /// `Cooldown` window unconditionally. With `MAX_CLIENTS=16`, a
+    /// burst of 17+ fast sequential connections (tens of ms each)
+    /// finished before slot 0 cooled, so the 17th claim_slot found
+    /// every slot still cooling and the listener refused with
+    /// `early eof on handshake` → host saw S216
+    /// (`relay rejected connection (uid mismatch?)`). Real-world
+    /// repro: `fs-example.mjs` running ~14 happy-path triggers then
+    /// a few adversarial-section setup triggers in <250 ms.
+    ///
+    /// Fix: only enter Cooldown when SIGKILL fan-out actually
+    /// happened (owned_ids non-empty at session end). Clean
+    /// disconnects — every FS trigger that received its terminal
+    /// frame, every cleanly-exited exec — drop straight to Free,
+    /// so back-to-back trigger bursts don't burn slot capacity.
+    ///
+    /// This test fires 32 sequential connect/handshake/disconnect
+    /// cycles — twice MAX_CLIENTS — and asserts every one received
+    /// its 4-byte handshake. Under the old behavior the 17th would
+    /// time out on read; under the fix all 32 succeed.
+    #[tokio::test]
+    async fn burst_of_clean_disconnects_does_not_exhaust_slots() {
+        let (sock, _vm_guest_sim, _tmp) = boot().await;
+
+        // 2 × MAX_CLIENTS sequential connect → read handshake → drop.
+        // Each cycle's UnixStream goes out of scope at end-of-iteration
+        // so the relay sees a clean EOF on read_frame, exits the
+        // session, and (with the fix) returns the slot to Free.
+        for i in 0..(MAX_CLIENTS as usize * 2) {
+            let mut s = tokio::net::UnixStream::connect(&sock)
+                .await
+                .unwrap_or_else(|e| panic!("connect on iteration {i} failed: {e}"));
+            let mut buf = [0u8; 4];
+            tokio::time::timeout(Duration::from_millis(500), s.read_exact(&mut buf))
+                .await
+                .unwrap_or_else(|_| panic!("iteration {i}: handshake read timed out"))
+                .unwrap_or_else(|e| panic!("iteration {i}: handshake failed: {e}"));
+            // Drop here — the UnixStream's Drop closes both halves,
+            // the relay's reader_fut sees EOF, client_session exits
+            // with empty owned_ids, slot returns to Free.
+            drop(s);
+            // Tiny yield so the relay's per-session cleanup actually
+            // schedules before we open the next connection. Without
+            // this the test stays correct but exercises a different
+            // race (claim_slot vs release_slot ordering on the same
+            // tokio task) — keeping it deterministic helps.
+            tokio::task::yield_now().await;
+        }
     }
 
     #[tokio::test]

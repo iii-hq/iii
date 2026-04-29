@@ -1,0 +1,8 @@
+iii: v1
+name: iii-pubsub
+type: engine
+description: Topic-based publish/subscribe messaging for real-time event distribution.
+repo: https://github.com/iii-hq/iii
+config:
+  adapter:
+    name: local

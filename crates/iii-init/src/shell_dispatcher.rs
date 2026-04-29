@@ -67,6 +67,15 @@ struct SessionHandle {
 
 type SessionRegistry = Arc<Mutex<HashMap<u32, SessionHandle>>>;
 
+/// Registry for in-flight `WriteStart` streaming sessions.
+///
+/// Key: `corr_id`. Value: a sender that the dispatcher uses to forward
+/// `FsChunk` / `FsEnd` frames to the write handler thread. The write
+/// thread removes its own entry from the registry when it finishes
+/// (success or error) so subsequent frames for that id fall through to
+/// the catch-all `_ => {}` arm silently.
+type FsWriteRegistry = Arc<Mutex<HashMap<u32, std::sync::mpsc::SyncSender<ShellMessage>>>>;
+
 /// Writer handle shared by every thread that emits frames. A single
 /// dedicated writer thread drains this channel onto the virtio-console
 /// port, so no caller ever blocks across a virtio write. If the guest
@@ -74,7 +83,7 @@ type SessionRegistry = Arc<Mutex<HashMap<u32, SessionHandle>>>;
 /// channel saturates at [`WRITER_CHANNEL_CAPACITY`] and further
 /// `try_send`s drop frames with a log line — session threads keep
 /// running instead of freezing under a shared mutex.
-type Writer = SyncSender<Vec<u8>>;
+pub(crate) type Writer = SyncSender<Vec<u8>>;
 
 /// Bound on queued frames between session threads and the writer
 /// thread. Roughly 1024 × 8 KiB worst case ≈ 8 MiB in flight. Large
@@ -101,12 +110,15 @@ pub fn run(port_path: &Path) -> anyhow::Result<()> {
     let reader_file = writer_file.try_clone()?;
     let writer = spawn_writer_thread(writer_file);
     let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+    // Registry for in-flight WriteStart sessions. Keyed by corr_id;
+    // value is a sender that forwards FsChunk/FsEnd to the write thread.
+    let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
 
     let mut reader = BufReader::new(reader_file);
     loop {
         match sp::read_frame_blocking(&mut reader) {
             Ok(Some((corr_id, _flags, msg))) => {
-                handle_frame(corr_id, msg, &sessions, &writer);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
             }
             Ok(None) => break,
             Err(e) => {
@@ -150,7 +162,13 @@ fn spawn_writer_thread(mut file: File) -> Writer {
     tx
 }
 
-fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, writer: &Writer) {
+fn handle_frame(
+    corr_id: u32,
+    msg: ShellMessage,
+    sessions: &SessionRegistry,
+    writer: &Writer,
+    fs_writes: &FsWriteRegistry,
+) {
     match msg {
         ShellMessage::Request {
             cmd,
@@ -252,6 +270,26 @@ fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, wri
                     libc::kill(-(pid as libc::pid_t), signal as libc::c_int);
                 }
             }
+
+            // SIGKILL on a corr_id is also the relay's "host
+            // disconnected, abandon any in-flight session" signal
+            // (see shell_relay.rs::client_session cleanup, which
+            // fans out Signal{9} for every owned corr_id when the
+            // host disconnects). For exec sessions the libc::kill
+            // above terminates the child; for in-flight FS write
+            // sessions we drop the chunk_tx so handle_write_start's
+            // recv() returns Disconnected, unlinks the temp file,
+            // and returns S218 promptly. Without this, the temp
+            // leaks for up to WRITE_IDLE_TIMEOUT (30s) before
+            // streaming.rs's safety valve fires — too late for any
+            // caller-side test that asserts cleanup at trigger
+            // timeout.
+            if signal == libc::SIGKILL {
+                let _ = fs_writes
+                    .lock()
+                    .expect("fs_writes mutex poisoned")
+                    .remove(&corr_id);
+            }
         }
         ShellMessage::Resize { rows, cols } => {
             let master = {
@@ -277,11 +315,238 @@ fn handle_frame(corr_id: u32, msg: ShellMessage, sessions: &SessionRegistry, wri
                 }
             }
         }
+        // ── Filesystem ops ────────────────────────────────────────────────
+        ShellMessage::FsRequest(op) => {
+            use iii_shell_proto::FsOp;
+            use iii_shell_proto::flags::FLAG_TERMINAL;
+
+            match op {
+                // ── WriteStart: streaming upload ─────────────────────────
+                FsOp::WriteStart {
+                    path,
+                    mode,
+                    parents,
+                } => {
+                    // Create a sync channel for this write session and
+                    // register the sender so FsChunk/FsEnd frames can
+                    // be forwarded to the write thread.
+                    let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<ShellMessage>(64);
+                    fs_writes
+                        .lock()
+                        .expect("fs_writes mutex poisoned")
+                        .insert(corr_id, chunk_tx);
+
+                    let writer = writer.clone();
+                    let fs_writes = fs_writes.clone();
+                    thread::Builder::new()
+                        .name(format!("iii-fs-write-{corr_id}"))
+                        .spawn(move || {
+                            let result = crate::fs_handler::streaming::handle_write_start(
+                                path, mode, parents, chunk_rx,
+                            );
+                            // Always remove the registry entry when done.
+                            fs_writes
+                                .lock()
+                                .expect("fs_writes mutex poisoned")
+                                .remove(&corr_id);
+                            match result {
+                                Ok(fs_result) => {
+                                    send_frame(
+                                        &writer,
+                                        corr_id,
+                                        FLAG_TERMINAL,
+                                        &ShellMessage::FsResponse(fs_result),
+                                    );
+                                }
+                                Err(e) => {
+                                    send_frame(
+                                        &writer,
+                                        corr_id,
+                                        FLAG_TERMINAL,
+                                        &ShellMessage::FsError {
+                                            code: e.code.to_string(),
+                                            message: e.message,
+                                        },
+                                    );
+                                }
+                            }
+                        })
+                        .ok();
+                }
+
+                // ── ReadStart: streaming download ─────────────────────────
+                FsOp::ReadStart { path } => {
+                    let writer = writer.clone();
+                    thread::Builder::new()
+                        .name(format!("iii-fs-read-{corr_id}"))
+                        .spawn(move || {
+                            let result = crate::fs_handler::streaming::handle_read_start(
+                                path, &writer, corr_id,
+                            );
+                            // handle_read_start only returns Err for
+                            // pre-FsMeta failures; emit the terminal
+                            // FsError here.
+                            if let Err(e) = result {
+                                send_frame(
+                                    &writer,
+                                    corr_id,
+                                    FLAG_TERMINAL,
+                                    &ShellMessage::FsError {
+                                        code: e.code.to_string(),
+                                        message: e.message,
+                                    },
+                                );
+                            }
+                        })
+                        .ok();
+                }
+
+                // ── One-shot ops ──────────────────────────────────────────
+                one_shot => {
+                    let writer = writer.clone();
+                    thread::Builder::new()
+                        .name(format!("iii-fs-op-{corr_id}"))
+                        .spawn(move || {
+                            let result = dispatch_one_shot(one_shot);
+                            match result {
+                                Ok(fs_result) => {
+                                    send_frame(
+                                        &writer,
+                                        corr_id,
+                                        FLAG_TERMINAL,
+                                        &ShellMessage::FsResponse(fs_result),
+                                    );
+                                }
+                                Err(e) => {
+                                    send_frame(
+                                        &writer,
+                                        corr_id,
+                                        FLAG_TERMINAL,
+                                        &ShellMessage::FsError {
+                                            code: e.code.to_string(),
+                                            message: e.message,
+                                        },
+                                    );
+                                }
+                            }
+                        })
+                        .ok();
+                }
+            }
+        }
+
+        // ── FsChunk / FsEnd: forward to active write session ──────────────
+        ShellMessage::FsChunk { .. } | ShellMessage::FsEnd => {
+            let sender = fs_writes
+                .lock()
+                .expect("fs_writes mutex poisoned")
+                .get(&corr_id)
+                .cloned();
+            if let Some(tx) = sender {
+                // try_send mirrors the existing pattern for Stdin: if
+                // the write thread is saturated we drop the frame and
+                // log, rather than blocking the dispatcher loop.
+                if let Err(e) = tx.try_send(msg) {
+                    use std::sync::mpsc::TrySendError;
+                    match e {
+                        TrySendError::Full(_) => {
+                            eprintln!(
+                                "iii-init: fs write channel full, \
+                                 dropping chunk for corr_id={corr_id}"
+                            );
+                        }
+                        TrySendError::Disconnected(_) => {
+                            // Write thread already exited — ignore.
+                        }
+                    }
+                }
+            }
+            // If no entry exists the write session already finished or
+            // was never started — silently drop.
+        }
+
         // Host-only variants received from the host are ignored; only
-        // Request/Stdin/Signal/Resize make sense as inbound. Anything
-        // else is a peer protocol error — dropping is less noisy
-        // than responding with Error and keeps the channel alive.
+        // Request/Stdin/Signal/Resize/FsRequest/FsChunk/FsEnd make sense
+        // as inbound. Anything else is a peer protocol error — dropping
+        // is less noisy than responding with Error and keeps the channel
+        // alive.
         _ => {}
+    }
+}
+
+/// Dispatch a one-shot `FsOp` variant to the corresponding handler.
+/// `WriteStart` and `ReadStart` are handled by the streaming path and
+/// must never reach this function.
+fn dispatch_one_shot(op: iii_shell_proto::FsOp) -> crate::fs_handler::FsCallResult {
+    use iii_shell_proto::FsOp;
+    match op {
+        FsOp::Ls { path } => crate::fs_handler::ops::ls(path),
+        FsOp::Stat { path } => crate::fs_handler::ops::stat(path),
+        FsOp::Mkdir {
+            path,
+            mode,
+            parents,
+        } => crate::fs_handler::ops::mkdir(path, mode, parents),
+        FsOp::Rm { path, recursive } => crate::fs_handler::ops::rm(path, recursive),
+        FsOp::Chmod {
+            path,
+            mode,
+            uid,
+            gid,
+            recursive,
+        } => crate::fs_handler::ops::chmod(path, mode, uid, gid, recursive),
+        FsOp::Mv {
+            src,
+            dst,
+            overwrite,
+        } => crate::fs_handler::ops::mv(src, dst, overwrite),
+        FsOp::Grep {
+            path,
+            pattern,
+            recursive,
+            ignore_case,
+            include_glob,
+            exclude_glob,
+            max_matches,
+            max_line_bytes,
+        } => crate::fs_handler::ops::grep(
+            path,
+            pattern,
+            recursive,
+            ignore_case,
+            include_glob,
+            exclude_glob,
+            max_matches,
+            max_line_bytes,
+        ),
+        FsOp::Sed {
+            files,
+            path,
+            recursive,
+            include_glob,
+            exclude_glob,
+            pattern,
+            replacement,
+            regex,
+            first_only,
+            ignore_case,
+        } => crate::fs_handler::ops::sed(
+            files,
+            path,
+            recursive,
+            include_glob,
+            exclude_glob,
+            pattern,
+            replacement,
+            regex,
+            first_only,
+            ignore_case,
+        ),
+        // Streaming ops are dispatched before this function is called.
+        FsOp::WriteStart { .. } | FsOp::ReadStart { .. } => Err(crate::fs_handler::FsError::new(
+            "S219",
+            "streaming ops must not reach dispatch_one_shot",
+        )),
     }
 }
 
@@ -697,7 +962,7 @@ fn stream_fd<R: Read>(writer: Writer, corr_id: u32, mut src: R, kind: OutputKind
     }
 }
 
-fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) {
+pub(crate) fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) {
     let frame = match sp::encode_frame(corr_id, flags, msg) {
         Ok(f) => f,
         Err(e) => {
@@ -831,9 +1096,10 @@ mod tests {
             };
             let writer = spawn_writer_thread(guest_file);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
             let mut reader = BufReader::new(guest_clone);
             while let Ok(Some((corr_id, _f, msg))) = sp::read_frame_blocking(&mut reader) {
-                handle_frame(corr_id, msg, &sessions, &writer);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
             }
         });
 
@@ -923,9 +1189,10 @@ mod tests {
             };
             let writer = spawn_writer_thread(guest_file);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
             let mut reader = BufReader::new(guest_clone);
             while let Ok(Some((corr_id, _f, msg))) = sp::read_frame_blocking(&mut reader) {
-                handle_frame(corr_id, msg, &sessions, &writer);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
             }
         });
 
@@ -1010,9 +1277,10 @@ mod tests {
             };
             let writer = spawn_writer_thread(guest_file);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
             let mut reader = BufReader::new(guest_clone);
             while let Ok(Some((corr_id, _f, msg))) = sp::read_frame_blocking(&mut reader) {
-                handle_frame(corr_id, msg, &sessions, &writer);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
             }
         });
 
@@ -1193,9 +1461,10 @@ mod tests {
                 };
                 let w = spawn_writer_thread(f);
                 let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+                let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
                 let mut r = BufReader::new(g_clone);
                 while let Ok(Some((id, _f, msg))) = sp::read_frame_blocking(&mut r) {
-                    handle_frame(id, msg, &sessions, &w);
+                    handle_frame(id, msg, &sessions, &w, &fs_writes);
                 }
             });
             (h, 0u8)
@@ -1212,9 +1481,10 @@ mod tests {
             };
             let w = spawn_writer_thread(f);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
             let mut r = BufReader::new(g_clone);
             while let Ok(Some((id, _f, msg))) = sp::read_frame_blocking(&mut r) {
-                handle_frame(id, msg, &sessions, &w);
+                handle_frame(id, msg, &sessions, &w, &fs_writes);
             }
         });
 

@@ -548,6 +548,45 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
+  # Publish builtin (engine) workers to the workers registry.
+  # Runs on every release including prereleases; 409 (already
+  # published) is treated as a no-op so re-runs are safe.
+  # ──────────────────────────────────────────────────────────────
+
+  publish-builtin-workers:
+    name: Publish builtin workers
+    needs: [setup, create-iii-release, engine-release]
+    if: needs.setup.outputs.dry_run != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - worker: iii-http
+            worker_dir: engine/src/workers/rest_api
+          - worker: iii-stream
+            worker_dir: engine/src/workers/stream
+          - worker: iii-state
+            worker_dir: engine/src/workers/state
+          - worker: iii-queue
+            worker_dir: engine/src/workers/queue
+          - worker: iii-pubsub
+            worker_dir: engine/src/workers/pubsub
+          - worker: iii-cron
+            worker_dir: engine/src/workers/cron
+          - worker: iii-observability
+            worker_dir: engine/src/workers/observability
+          - worker: iii-exec
+            worker_dir: engine/src/workers/shell
+          - worker: iii-bridge
+            worker_dir: engine/src/workers/bridge_client
+    uses: ./.github/workflows/_publish-engine-workers.yml
+    with:
+      worker: ${{ matrix.worker }}
+      worker_dir: ${{ matrix.worker_dir }}
+      registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
+    secrets: inherit
+
+  # ──────────────────────────────────────────────────────────────
   # Notification: Complete
   # ──────────────────────────────────────────────────────────────
 
@@ -568,6 +607,7 @@ jobs:
       - docker-engine
       - homebrew-engine
       - homebrew-console
+      - publish-builtin-workers
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -590,6 +630,7 @@ jobs:
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
+          BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
         run: |
           icon() {
             case "$1" in
@@ -612,6 +653,7 @@ jobs:
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
           LINES="$LINES$(icon "$SDK_RUST_RESULT") SDK Rust\n"
+          LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
@@ -619,7 +661,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$CLI_TOOLS_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$CLI_TOOLS_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$BUILTIN_WORKERS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

@@ -121,6 +121,22 @@ mod tests {
     }
 
     #[test]
+    fn state_event_data_serializes_runtime_message_type() {
+        let data = StateEventData {
+            message_type: "state".to_string(),
+            event_type: StateEventType::Created,
+            scope: "users".to_string(),
+            key: "user-1".to_string(),
+            old_value: None,
+            new_value: json!({"name": "Alice"}),
+        };
+
+        let json = serde_json::to_value(data).unwrap();
+        assert_eq!(json["type"], "state");
+        assert_eq!(json["event_type"], "state:created");
+    }
+
+    #[test]
     fn state_get_delete_group_roundtrip() {
         let _get: StateGetInput =
             serde_json::from_value(json!({"scope": "s", "key": "k"})).unwrap();

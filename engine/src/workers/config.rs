@@ -56,6 +56,7 @@ impl EngineConfig {
             match env::var(var_name) {
                 Ok(value) => value,
                 Err(_) => match default_value {
+                    Some("__III_ENGINE_VERSION__") => env!("CARGO_PKG_VERSION").to_string(),
                     Some(default) => default.to_string(),
                     None => {
                         tracing::error!(
@@ -702,6 +703,35 @@ impl Default for EngineBuilder {
 mod tests {
     use super::*;
 
+    fn restore_env_var(name: &str, value: Option<std::ffi::OsString>) {
+        unsafe {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+    }
+
+    struct EnvVarGuard {
+        name: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn capture(name: &'static str) -> Self {
+            Self {
+                name,
+                value: env::var_os(name),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            restore_env_var(self.name, self.value.clone());
+        }
+    }
+
     #[test]
     fn test_env_var_expansion() {
         unsafe {
@@ -766,6 +796,29 @@ mod tests {
         let expected = "redis: redis://localhost:6379/0";
         let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_uses_engine_version_placeholder() {
+        let _guard = EnvVarGuard::capture("III_TEST_ENGINE_VERSION_MISSING");
+        unsafe {
+            env::remove_var("III_TEST_ENGINE_VERSION_MISSING");
+        }
+        let input = "service_version: ${III_TEST_ENGINE_VERSION_MISSING:__III_ENGINE_VERSION__}";
+        let expected = format!("service_version: {}", env!("CARGO_PKG_VERSION"));
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_service_version_overrides_engine_version_placeholder() {
+        let _guard = EnvVarGuard::capture("III_TEST_ENGINE_VERSION_OVERRIDE");
+        unsafe {
+            env::set_var("III_TEST_ENGINE_VERSION_OVERRIDE", "user-version");
+        }
+        let input = "service_version: ${III_TEST_ENGINE_VERSION_OVERRIDE:__III_ENGINE_VERSION__}";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "service_version: user-version");
     }
 
     #[test]

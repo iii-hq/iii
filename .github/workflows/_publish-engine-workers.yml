@@ -1,0 +1,126 @@
+name: Publish engine worker to registry
+
+on:
+  workflow_call:
+    inputs:
+      worker:
+        description: 'Worker name (e.g. iii-http)'
+        required: true
+        type: string
+      worker_dir:
+        description: 'Path to the worker source directory containing iii.worker.yaml'
+        required: true
+        type: string
+      version:
+        description: 'Expected iii engine semver version'
+        required: false
+        type: string
+        default: ''
+      registry_tag:
+        description: 'Registry tag (latest, next, ...)'
+        required: false
+        type: string
+        default: latest
+      api_url:
+        description: 'Workers registry base URL'
+        required: false
+        type: string
+        default: 'https://api.workers.iii.dev'
+
+jobs:
+  publish:
+    name: POST /publish (${{ inputs.worker }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Build payload
+        id: payload
+        env:
+          WORKER: ${{ inputs.worker }}
+          WORKER_DIR: ${{ inputs.worker_dir }}
+          VERSION: ${{ inputs.version }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys, tomllib, yaml
+
+          worker = os.environ["WORKER"]
+          worker_dir = pathlib.Path(os.environ["WORKER_DIR"])
+          expected_version = os.environ["VERSION"]
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          reg_tag = os.environ["REGISTRY_TAG"] or "latest"
+          repo_url = os.environ["REPO_URL"]
+
+          engine_manifest = pathlib.Path("engine/Cargo.toml")
+          if not engine_manifest.exists():
+              print("::error::engine/Cargo.toml not found")
+              sys.exit(1)
+          version = tomllib.loads(engine_manifest.read_text())["package"]["version"]
+          if not expected_version and ref_name.startswith("iii/v"):
+              expected_version = ref_name.removeprefix("iii/v")
+          if expected_version and expected_version != version:
+              print(f"::error::engine worker version mismatch: workflow input is {expected_version}, engine/Cargo.toml is {version}")
+              sys.exit(1)
+
+          manifest_path = worker_dir / "iii.worker.yaml"
+          if not manifest_path.exists():
+              print(f"::error::{manifest_path} not found")
+              sys.exit(1)
+
+          meta = yaml.safe_load(manifest_path.read_text()) or {}
+
+          if meta.get("type") != "engine":
+              print(f"::error::{worker}: iii.worker.yaml type must be 'engine' (got {meta.get('type')!r})")
+              sys.exit(1)
+
+          readme_path = worker_dir / "README.md"
+          readme = readme_path.read_text() if readme_path.exists() else ""
+
+          payload = {
+              "worker_name": worker,
+              "version": version,
+              "tag": reg_tag,
+              "type": "engine",
+              "readme": readme,
+              "repo": repo_url,
+              "description": meta.get("description", ""),
+          }
+
+          out = pathlib.Path("payload.json")
+          out.write_text(json.dumps(payload, indent=2))
+          if github_output := os.environ.get("GITHUB_OUTPUT"):
+              with open(github_output, "a", encoding="utf-8") as handle:
+                  handle.write(f"version={version}\n")
+          print(json.dumps({k: payload[k] for k in payload if k != "readme"}, indent=2))
+          PY
+
+      - name: POST /publish
+        env:
+          API_URL: ${{ inputs.api_url }}
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+        run: |
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          http=$(curl -sS -o response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -X POST "$API_URL/publish" \
+            --data-binary @payload.json)
+          echo "HTTP $http"
+          cat response.json
+          if [[ "$http" != "200" && "$http" != "409" ]]; then
+            echo "::error::publish failed with HTTP $http"
+            exit 1
+          fi
+          if [[ "$http" == "409" ]]; then
+            echo "::notice::${{ inputs.worker }} v${{ steps.payload.outputs.version }} already published (409) — skipping"
+          fi

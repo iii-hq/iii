@@ -48,7 +48,7 @@ iii.registerTrigger({
   type: 'http',
   function_id: 'orders::premium',
   config: {
-    api_path: 'orders/premium',
+    api_path: '/orders/premium',
     http_method: 'POST',
     condition_function_id: 'conditions::is_premium',
   },
@@ -80,7 +80,7 @@ iii.register_trigger({
     "type": "http",
     "function_id": "orders::premium",
     "config": {
-        "api_path": "orders/premium",
+        "api_path": "/orders/premium",
         "http_method": "POST",
         "condition_function_id": "conditions::is_premium",
     },
@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     iii.register_function((RegisterFunctionMessage::with_id("orders::premium".into()), |input| async move {
-        let logger = Logger());
+        let logger = Logger();
 
         let amount = input["body"]["amount"].as_f64().unwrap_or(0.0);
         logger.info("Processing premium order", Some(json!({ "amount": amount })));
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "orders::premium".into(), config: json!({
-        "api_path": "orders/premium",
+        "api_path": "/orders/premium",
         "http_method": "POST",
         "condition_function_id": "conditions::is_premium",
     }), metadata: None })?;
@@ -213,7 +213,7 @@ iii.register_function((RegisterFunctionMessage::with_id("conditions::is_high_val
 });
 
 iii.register_function((RegisterFunctionMessage::with_id("orders::high_value".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     let amount = input["amount"].as_f64().unwrap_or(0.0);
     logger.info("Processing high-value order", Some(json!({ "amount": amount })));
@@ -304,7 +304,7 @@ iii.register_function((RegisterFunctionMessage::with_id("conditions::is_update".
 });
 
 iii.register_function((RegisterFunctionMessage::with_id("orders::on_update".into()), |input| async move {
-    let logger = Logger());
+    let logger = Logger();
 
     logger.info("Order updated", Some(json!({
         "scope": input["scope"],

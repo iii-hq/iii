@@ -123,7 +123,7 @@ iii-observability
 </ResponseField>
 
 <ResponseField name="logs_enabled" type="boolean">
-  Whether structured log storage is enabled. When not set, log storage is always initialized by the module.
+  Whether structured log storage is enabled. When not set, log storage is always initialized by the worker.
 </ResponseField>
 
 <ResponseField name="logs_exporter" type="string">
@@ -406,7 +406,7 @@ iii-observability
 
 ## Trigger Type
 
-This module adds a new Trigger Type: `log`.
+This worker adds a new Trigger Type: `log`.
 
 Register a function to react to log entries as they are produced.
 

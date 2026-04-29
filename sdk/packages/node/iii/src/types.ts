@@ -112,7 +112,7 @@ export interface ISdk {
    * const trigger = iii.registerTrigger({
    *   type: 'cron',
    *   function_id: 'my-service::process-batch',
-   *   config: { schedule: '*\/5 * * * *' },
+   *   config: { expression: '0 *\/5 * * * * *' },
    * })
    *
    * // Later, remove the trigger
@@ -206,13 +206,13 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * type CronConfig = { schedule: string }
+   * type CronConfig = { expression: string }
    *
    * iii.registerTriggerType<CronConfig>(
    *   { id: 'cron', description: 'Fires on a cron schedule' },
    *   {
    *     async registerTrigger({ id, function_id, config }) {
-   *       startCronJob(id, config.schedule, () =>
+   *       startCronJob(id, config.expression, () =>
    *         iii.trigger({ function_id, payload: {} }),
    *       )
    *     },
@@ -343,7 +343,7 @@ export type FunctionRef = {
  *
  * @example
  * ```typescript
- * type CronConfig = { schedule: string }
+ * type CronConfig = { expression: string }
  *
  * const cron = iii.registerTriggerType<CronConfig>(
  *   { id: 'cron', description: 'Fires on a cron schedule' },
@@ -351,12 +351,13 @@ export type FunctionRef = {
  * )
  *
  * // Register a trigger — type is inferred as CronConfig
- * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
+ * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
  *
  * // Register a function and bind a trigger in one call
  * cron.registerFunction(
- *   'my-fn',
+ *   'my::fn',
  *   async (data) => { return { ok: true } },
+ *   { expression: '0 *\/5 * * * * *' },
  * )
  * ```
  */

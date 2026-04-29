@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>iii / manifesto</title>
+
+    <!-- Google Tag Manager -->
+    <script>
+      (function (w, d, s, l, i) {
+        w[l] = w[l] || [];
+        w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+        var f = d.getElementsByTagName(s)[0],
+          j = d.createElement(s),
+          dl = l != 'dataLayer' ? '&l=' + l : '';
+        j.async = true;
+        j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+        f.parentNode.insertBefore(j, f);
+      })(window, document, 'script', 'dataLayer', 'GTM-N8DCTFB8');
+    </script>
+    <!-- End Google Tag Manager -->
+
+    <!-- Common Room signals -->
+    <script>
+      (function () {
+        if (typeof window === 'undefined') return;
+        if (typeof window.signals !== 'undefined') return;
+        var script = document.createElement('script');
+        script.src =
+          'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+        script.async = true;
+        window.signals = Object.assign(
+          [],
+          { _opts: { apiHost: 'https://api.cr-relay.com' } },
+          ['page', 'identify', 'form'].reduce(function (acc, method) {
+            acc[method] = function () {
+              signals.push([method, arguments]);
+              return signals;
+            };
+            return acc;
+          }, {}),
+        );
+        document.head.appendChild(script);
+      })();
+    </script>
+    <!-- End Common Room signals -->
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+
+    <!-- SEO Meta Tags -->
+    <meta
+      name="description"
+      content="The iii manifesto. Software engineering keeps adding categories — queues, cron, RPC, state, streams — each with its own semantics. iii collapses them into three primitives: Worker, Trigger, Function. Linear scaling, zero integration cost, agent-native by default."
+    />
+    <meta
+      name="keywords"
+      content="iii, manifesto, three primitives, worker, trigger, function, distributed systems, paradigm shift, AI agents, polyglot, integration cost, durable execution, live discovery, ontology"
+    />
+    <meta name="author" content="III, Inc." />
+    <meta name="theme-color" content="#0a0a0a" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="article" />
+    <meta property="og:url" content="https://iii.dev/manifesto" />
+    <meta
+      property="og:title"
+      content="iii / manifesto — collapse the categories"
+    />
+    <meta
+      property="og:description"
+      content="iii bets that simplification beats complexity. Worker, Trigger, Function is the whole interface. Add a worker and the system absorbs it — live, discoverable, observable."
+    />
+    <meta property="og:image" content="https://iii.dev/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://iii.dev/manifesto" />
+    <meta
+      name="twitter:title"
+      content="iii / manifesto — collapse the categories"
+    />
+    <meta
+      name="twitter:description"
+      content="iii bets that simplification beats complexity. Worker, Trigger, Function is the whole interface. Add a worker and the system absorbs it — live, discoverable, observable."
+    />
+    <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+    <style>
+      @font-face {
+        font-family: 'Chivo Mono';
+        src: url('fonts/ChivoMono-VariableFont_wght.ttf')
+          format('truetype-variations');
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'Chivo Mono';
+        src: url('fonts/ChivoMono-Italic-VariableFont_wght.ttf')
+          format('truetype-variations');
+        font-weight: 100 900;
+        font-style: italic;
+        font-display: swap;
+      }
+
+      :root {
+        --bg: #f2f0ed;
+        --panel: #e9e6e2;
+        --ink: #0a0a0a;
+        --ink-2: #1a1a1a;
+        --ink-soft: #1a1a1a;
+        --ink-faint: #6b6865;
+        --ink-ghost: #a3a09c;
+        --mute: #6b6865;
+        --mute-2: #a3a09c;
+        --rule: #d8d5d0;
+        --rule-2: #e6e3df;
+        --accent: #ff5a1f;
+        --accent-2: #1a5fbf;
+      }
+      :root[data-theme='dark'] {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-weight: 400;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      * {
+        font-variant-ligatures: none;
+        font-feature-settings:
+          'liga' 0,
+          'clig' 0,
+          'calt' 0,
+          'dlig' 0;
+      }
+      ::selection {
+        background: var(--ink);
+        color: var(--bg);
+      }
+
+      .page {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .sheet {
+        position: relative;
+        width: min(1200px, 100%);
+        background: var(--bg);
+        border-left: 1px solid var(--rule);
+        border-right: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+      }
+
+      /* ===== NAV ===== */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: var(--bg);
+        border-bottom: 1px solid var(--rule);
+        padding: 18px 28px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .logo-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        text-decoration: none;
+        color: var(--ink);
+      }
+      .logo-mark {
+        width: 24px;
+        height: 24px;
+        color: var(--ink);
+        flex: none;
+      }
+      .logo-mark rect {
+        fill: currentColor;
+      }
+      .logo-word {
+        font-weight: 600;
+        font-size: 17px;
+        letter-spacing: -0.02em;
+        color: var(--ink);
+        text-transform: lowercase;
+        line-height: 1;
+      }
+      .nav-mid {
+        font-size: 14px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .nav-mid .dot {
+        width: 5px;
+        height: 5px;
+        background: var(--accent);
+        display: inline-block;
+      }
+      .nav-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .nav-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--rule);
+        background: var(--bg);
+        padding: 7px 12px;
+        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-weight: 500;
+        font-size: 12px;
+        color: var(--ink);
+        text-decoration: none;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .nav-back:hover {
+        border-color: var(--ink);
+        background: var(--panel);
+      }
+      .nav-back svg {
+        width: 12px;
+        height: 12px;
+      }
+      .theme-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border: 1px solid var(--rule);
+        background: var(--bg);
+        color: var(--ink-faint);
+        cursor: pointer;
+        transition:
+          color 0.15s,
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .theme-btn:hover {
+        color: var(--ink);
+        border-color: var(--ink);
+      }
+      .theme-btn svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      /* ===== HERO ===== */
+      .hero {
+        padding: 96px 36px 88px;
+        border-bottom: 1px solid var(--rule);
+        position: relative;
+      }
+      .hero-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-bottom: 32px;
+      }
+      .hero-eyebrow .ix {
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+        display: inline-block;
+      }
+      .hero-title {
+        font-family: 'Chivo Mono', ui-monospace, monospace;
+        margin: 0;
+        font-weight: 500;
+        font-size: clamp(36px, 6.4vw, 80px);
+        line-height: 1.05;
+        letter-spacing: -0.035em;
+        text-transform: none;
+        color: var(--ink-2);
+        max-width: 1080px;
+        text-wrap: balance;
+      }
+      .hero-title .problem {
+        color: var(--ink-faint);
+      }
+      .hero-title .verb {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .hero-title .answer {
+        color: var(--accent);
+      }
+      .hero-title .punct {
+        color: var(--accent);
+      }
+
+      /* ===== MANIFESTO SECTIONS ===== */
+      .m {
+        padding: 0;
+      }
+
+      .m-sec {
+        padding: 64px 36px 64px;
+        border-bottom: 1px solid var(--rule);
+      }
+      .m-sec:last-child {
+        border-bottom: 0;
+      }
+
+      .m-title {
+        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-weight: 500;
+        font-size: clamp(24px, 3.2vw, 34px);
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+        color: var(--ink-2);
+        margin: 0;
+        max-width: 920px;
+        text-transform: none;
+        text-wrap: pretty;
+      }
+      .m-title .accent {
+        color: var(--accent);
+      }
+      .m-title .accent.code {
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        padding: 0.05em 0.3em;
+        font-size: 0.88em;
+        border-radius: 3px;
+        vertical-align: 0.04em;
+      }
+      .m-title .heavy {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .m-title .ghost {
+        color: var(--accent-2);
+      }
+
+      .m-body {
+        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 1.75;
+        color: var(--ink-2);
+        margin: 28px 0 0;
+        max-width: 680px;
+        text-wrap: pretty;
+      }
+      .m-body i {
+        color: var(--ink);
+        font-style: italic;
+      }
+
+      /* ===== PAGE FOOT ===== */
+      .pfoot {
+        padding: 32px 36px;
+        border-top: 1px solid var(--rule);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .pfoot a {
+        color: var(--ink-faint);
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+      }
+      .pfoot a:hover {
+        color: var(--ink);
+      }
+      .pfoot a svg {
+        width: 11px;
+        height: 11px;
+      }
+
+      @media (max-width: 720px) {
+        .nav {
+          padding: 14px 16px;
+          gap: 12px;
+        }
+        .nav-mid {
+          display: none;
+        }
+        .hero {
+          padding: 64px 18px 56px;
+        }
+        .m-sec {
+          padding: 48px 18px 48px;
+        }
+        .pfoot {
+          padding: 24px 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript
+      ><iframe
+        src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8"
+        height="0"
+        width="0"
+        style="display: none; visibility: hidden"
+      ></iframe
+    ></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    <div class="page">
+      <main class="sheet">
+        <!-- NAV -->
+        <nav class="nav">
+          <a class="logo-link" href="/" aria-label="iii home">
+            <svg
+              class="logo-mark"
+              viewBox="0 0 1075.74 1075.74"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <rect x="0" y="0.05" width="268.94" height="268.94" />
+              <rect x="0" y="403.45" width="268.94" height="672.24" />
+              <rect x="403.4" y="0.05" width="268.94" height="268.94" />
+              <rect x="403.4" y="403.45" width="268.94" height="672.24" />
+              <rect x="806.81" y="0.05" width="268.94" height="268.94" />
+              <rect x="806.81" y="403.45" width="268.94" height="672.24" />
+            </svg>
+          </a>
+          <div class="nav-mid">
+            <span>manifesto</span>
+          </div>
+          <div class="nav-right">
+            <a class="nav-back" href="/">
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M10 3 L5 8 L10 13" />
+              </svg>
+              back
+            </a>
+            <button id="theme-btn" class="theme-btn" aria-label="Toggle theme">
+              <svg
+                id="theme-icon"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"
+                />
+              </svg>
+            </button>
+          </div>
+        </nav>
+
+        <!-- HERO -->
+        <header class="hero">
+          <h1 class="hero-title">
+            <span class="problem"
+              >software complexity continues to grow<span class="punct"
+                >.</span
+              ></span
+            >
+            <br />
+            <span class="verb">remove it<span class="punct">.</span></span>
+            <br />
+            <span class="answer">add a worker<span class="punct">.</span></span>
+          </h1>
+        </header>
+
+        <!-- MANIFESTO -->
+        <article class="m">
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">systems engineering</span>
+              <span class="heavy">is integrations.</span>
+            </h2>
+            <p class="m-body">
+              and integrations have been growing in complexity for forty years.
+              every new capability arrives as its own product category, with its
+              own semantics, its own operational model, and its own integration
+              tax against everything already in your stack. we believe this
+              pattern is ending. a paradigm shift is here, and we are building
+              for it.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">three primitives</span>
+              <span class="heavy">are enough.</span>
+            </h2>
+            <p class="m-body">
+              worker. trigger. function. a worker is any process that joins the
+              system. a trigger is anything that causes work to run. a function
+              is the unit of work. every capability (queues, cron, streaming,
+              sandboxing, observability, agents, business logic, devices, UIs,
+              and everything not yet imagined) is built from these three things.
+              the primitives are small enough to hold in your head. everything
+              else is a property of the engine, or a worker someone published.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">paradigms win</span>
+              <span class="heavy">by collapsing categories.</span>
+            </h2>
+            <p class="m-body">
+              unix won on <i>everything is a file</i>. react won on
+              <i>everything is a component</i>. http won on
+              <i>request and response</i>. every paradigm that compounded for
+              decades did so because the primitive was small enough to fit in
+              your head. iii makes that bet for the entire software stack.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">have a need?</span>
+              <span class="heavy">add a worker.</span>
+            </h2>
+            <p class="m-body">
+              need a queue? add a worker. need real-time streaming, scheduling,
+              sandboxing, observability, an agent, a CRM integration, a browser
+              tab as a first-class participant? add a worker. some workers are
+              deterministic code. some are stochastic agents. most real systems
+              are a mix. the semantics live in the functions, not in the
+              category.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">quadratic</span>
+              <span class="heavy">to linear.</span>
+            </h2>
+            <p class="m-body">
+              four services means six possible integrations. twenty means 190.
+              each new addition compounds the coordination cost of everything
+              that came before. iii ends this. a new worker joins by opening a
+              single connection. adding four workers, or twenty, takes the same
+              effort: zero. each worker is immediately available to every other
+              worker the moment it registers. the architecture stops paying
+              compound interest on complexity.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">same contract,</span>
+              <span class="heavy">both sides of the house.</span>
+            </h2>
+            <p class="m-body">
+              application teams register functions and declare triggers, focused
+              entirely on business logic. platform teams publish workers,
+              focused entirely on the capabilities they provide. both sides
+              fulfill the exact same contract. no bespoke SDKs. no internal
+              client libraries. no per-service API contracts. no integration
+              consulting. the work that used to live between teams disappears.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">live</span>
+              <span class="heavy">by default.</span>
+            </h2>
+            <p class="m-body">
+              when a worker registers, its functions become visible and callable
+              across the entire system in real time. when it unregisters, they
+              are gone. traces span every worker, across every language, across
+              every process. the engine is the registry. the protocol is the
+              wire. observability is the wire protocol. there are no stale
+              specs, no propagation delays, and no disconnected log streams to
+              grep across.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">any language. any runtime.</span>
+              <span class="heavy">one system.</span>
+            </h2>
+            <p class="m-body">
+              a typescript worker calls a python worker the same way it calls
+              another typescript worker. the engine handles serialization and
+              routing. a worker in docker, on kubernetes, on the edge, in a
+              browser tab, on a raspberry pi, or inside a hardware-isolated
+              microVM is the same kind of worker. moving a workload is a
+              redeploy, not a rewrite.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">humans and agents share</span>
+              <span class="heavy">one mental model.</span>
+            </h2>
+            <p class="m-body">
+              a new engineer is productive on day one because their mental model
+              never changes from one capability to the next. an LLM can reason
+              about the entire system in a single context window because there
+              is one set of primitives to learn and one always-accurate source
+              of truth for what exists. as agents do more of the work of
+              building and operating software, small primitives compound:
+              cheaper to onboard, cheaper to prompt, cheaper to extend.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">agents</span>
+              <span class="heavy">are workers.</span>
+            </h2>
+            <p class="m-body">
+              an agent's tools are functions. its memory is state. its
+              orchestration is triggers. the harness is the system. an agent
+              that hits a task outside its current capabilities can register a
+              worker at runtime and use its functions immediately. this is the
+              difference between scripted LLM calls and real autonomy.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent code">iii worker add</span>
+              <span class="heavy">is the npm moment for systems.</span>
+            </h2>
+            <p class="m-body">
+              what you install is not a library. it is a running participant. a
+              queue worker. a sandbox worker. a classifier. a CRM integration.
+              one command, complete capability, immediately available to every
+              other worker in the system. capabilities that used to require
+              vendor evaluation, procurement, and integration become a single
+              line.
+            </p>
+          </section>
+
+          <section class="m-sec">
+            <h2 class="m-title">
+              <span class="accent">add a worker.</span>
+              <span class="heavy">add a worker.</span>
+              <span class="ghost" style="font-weight: 700">add a worker.</span>
+            </h2>
+            <p class="m-body">
+              AI is the forcing function. simplicity beats complexity. the
+              category-shopping era of software engineering (evaluate, procure,
+              integrate, repeat) is ending. what replaces it is one protocol,
+              three primitives, and a registry of workers that compose without
+              coordination. anything can participate. everything composes.
+              software becomes unreasonably simple to create, extend, and
+              modify.
+            </p>
+          </section>
+        </article>
+
+        <footer class="pfoot">
+          <span>© Motia LLC</span>
+          <a href="/">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M13 8 L3 8 M7 4 L3 8 L7 12" />
+            </svg>
+            back to iii.dev
+          </a>
+        </footer>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        const btn = document.getElementById('theme-btn');
+        const icon = document.getElementById('theme-icon');
+        let isDark = false;
+        function apply(dark) {
+          const r = document.documentElement.style;
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+          if (dark) {
+            r.setProperty('--bg', '#111110');
+            r.setProperty('--panel', '#1a1916');
+            r.setProperty('--ink', '#f2f0ed');
+            r.setProperty('--ink-2', '#e2dfd9');
+            r.setProperty('--ink-soft', '#e2dfd9');
+            r.setProperty('--ink-faint', '#9c9893');
+            r.setProperty('--ink-ghost', '#5d5a55');
+            r.setProperty('--mute', '#9c9893');
+            r.setProperty('--mute-2', '#5d5a55');
+            r.setProperty('--rule', '#2a2926');
+            r.setProperty('--rule-2', '#1f1e1c');
+            r.setProperty('--accent', '#3ea8ff');
+            r.setProperty('--accent-2', '#ff5a1f');
+            icon.innerHTML =
+              '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+          } else {
+            r.setProperty('--bg', '#f2f0ed');
+            r.setProperty('--panel', '#e9e6e2');
+            r.setProperty('--ink', '#0a0a0a');
+            r.setProperty('--ink-2', '#1a1a1a');
+            r.setProperty('--ink-soft', '#1a1a1a');
+            r.setProperty('--ink-faint', '#6b6865');
+            r.setProperty('--ink-ghost', '#a3a09c');
+            r.setProperty('--mute', '#6b6865');
+            r.setProperty('--mute-2', '#a3a09c');
+            r.setProperty('--rule', '#d8d5d0');
+            r.setProperty('--rule-2', '#e6e3df');
+            r.setProperty('--accent', '#ff5a1f');
+            r.setProperty('--accent-2', '#1a5fbf');
+            icon.innerHTML =
+              '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
+          }
+        }
+        btn.addEventListener('click', () => {
+          isDark = !isDark;
+          apply(isDark);
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -103,8 +103,8 @@ Instead of passing a handler, you can register an external HTTP endpoint as a fu
 makes the HTTP call when the function is triggered — no client-side HTTP code needed. This is useful
 for delegating work to external services like webhooks, serverless functions, or third-party APIs.
 
-<Warning title="Engine module required">
-HTTP-invoked functions require `HttpFunctionsModule` to be enabled in your engine config.
+<Warning title="Engine worker required">
+HTTP-invoked functions require the `iii-http-functions` worker to be enabled in your engine config.
 See the [engine configuration guide](/how-to/configure-engine) for details.
 </Warning>
 
@@ -838,8 +838,8 @@ Publish-subscribe messaging for event broadcasting.
 
 Internal engine functions for introspection and management.
 
-<Info title="Engine module is always loaded">
-The Engine module is mandatory and always loaded.
+<Info title="Engine built-ins are always loaded">
+The engine built-ins are mandatory and always loaded.
 </Info>
 
 | Function | Purpose | Parameters |
@@ -852,7 +852,7 @@ The Engine module is mandatory and always loaded.
 
 ### Observability
 
-Logging, tracing, and metrics. The Observability module is disabled by default and must be enabled in engine config.
+Logging, tracing, and metrics. The Observability worker is disabled by default and must be enabled in engine config.
 
 | Function | Purpose | Parameters |
 |----------|---------|------------|

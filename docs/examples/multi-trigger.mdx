@@ -24,7 +24,7 @@ import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'orders.handle', description: 'Handles orders from API, queue, or cron' },
+  { id: 'orders::handle', description: 'Handles orders from API, queue, or cron' },
   async (input) => {
     const logger = new Logger()
 
@@ -103,19 +103,19 @@ iii.registerFunction(
 // Bind all three trigger types to the same function ID
 iii.registerTrigger({
   type: 'http',
-  function_id: 'orders.handle',
-  config: { api_path: 'orders/manual', http_method: 'POST' },
+  function_id: 'orders::handle',
+  config: { api_path: '/orders/manual', http_method: 'POST' },
 })
 
 iii.registerTrigger({
   type: 'durable:subscriber',
-  function_id: 'orders.handle',
+  function_id: 'orders::handle',
   config: { topic: 'order.created' },
 })
 
 iii.registerTrigger({
   type: 'cron',
-  function_id: 'orders.handle',
+  function_id: 'orders::handle',
   config: { expression: '* * * * * * *' },
 })
 ```
@@ -205,13 +205,13 @@ def orders_handle(data) -> dict | None:
     logger.info("Batch complete", {"count": len(pending)})
     return None
 
-iii.register_function("orders.handle", orders_handle)
+iii.register_function("orders::handle", orders_handle)
 
-iii.register_trigger({"type": "http", "function_id": "orders.handle",
-                      "config": {"api_path": "orders/manual", "http_method": "POST"}})
-iii.register_trigger({"type": "durable:subscriber", "function_id": "orders.handle",
+iii.register_trigger({"type": "http", "function_id": "orders::handle",
+                      "config": {"api_path": "/orders/manual", "http_method": "POST"}})
+iii.register_trigger({"type": "durable:subscriber", "function_id": "orders::handle",
                       "config": {"topic": "order.created"}})
-iii.register_trigger({"type": "cron", "function_id": "orders.handle",
+iii.register_trigger({"type": "cron", "function_id": "orders::handle",
                       "config": {"expression": "* * * * * * *"}})
 ```
 
@@ -229,7 +229,7 @@ let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
 iii.register_function(
-    RegisterFunctionMessage::with_id("orders.handle".into()).with_description("Handles orders from API, queue, or cron".into()),
+    RegisterFunctionMessage::with_id("orders::handle".into()).with_description("Handles orders from API, queue, or cron".into()),
     move |input: Value| {
         let iii = iii_clone.clone();
         async move {
@@ -318,19 +318,19 @@ iii.register_function(
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
-    function_id: "orders.handle".into(),
-    config: json!({ "api_path": "orders/manual", "http_method": "POST" }),
+    function_id: "orders::handle".into(),
+    config: json!({ "api_path": "/orders/manual", "http_method": "POST" }),
     metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "durable:subscriber".into(),
-    function_id: "orders.handle".into(),
+    function_id: "orders::handle".into(),
     config: json!({ "topic": "order.created" }),
     metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
-    function_id: "orders.handle".into(),
+    function_id: "orders::handle".into(),
     config: json!({ "expression": "* * * * * * *" }),
     metadata: None,
 })?;
@@ -347,16 +347,16 @@ When you only need two trigger types, the pattern is identical — just skip the
   <Tab title="Node / TypeScript">
 
 ```typescript
-iii.registerTrigger({ type: 'durable:subscriber', function_id: 'my.fn', config: { topic: 'events' } })
-iii.registerTrigger({ type: 'http', function_id: 'my.fn', config: { api_path: 'events', http_method: 'POST' } })
+iii.registerTrigger({ type: 'durable:subscriber', function_id: 'my::fn', config: { topic: 'events' } })
+iii.registerTrigger({ type: 'http', function_id: 'my::fn', config: { api_path: '/events', http_method: 'POST' } })
 ```
 
   </Tab>
   <Tab title="Python">
 
 ```python
-iii.register_trigger({"type": "durable:subscriber", "function_id": "my.fn", "config": {"topic": "events"}})
-iii.register_trigger({"type": "http", "function_id": "my.fn", "config": {"api_path": "events", "http_method": "POST"}})
+iii.register_trigger({"type": "durable:subscriber", "function_id": "my::fn", "config": {"topic": "events"}})
+iii.register_trigger({"type": "http", "function_id": "my::fn", "config": {"api_path": "/events", "http_method": "POST"}})
 ```
 
   </Tab>
@@ -365,14 +365,14 @@ iii.register_trigger({"type": "http", "function_id": "my.fn", "config": {"api_pa
 ```rust
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "durable:subscriber".into(),
-    function_id: "my.fn".into(),
+    function_id: "my::fn".into(),
     config: json!({ "topic": "events" }),
     metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
-    function_id: "my.fn".into(),
-    config: json!({ "api_path": "events", "http_method": "POST" }),
+    function_id: "my::fn".into(),
+    config: json!({ "api_path": "/events", "http_method": "POST" }),
     metadata: None,
 })?;
 ```

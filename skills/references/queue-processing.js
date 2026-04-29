@@ -19,7 +19,7 @@
  *       concurrency: 1
  *
  * How-to references:
- *   - Queues: https://iii.dev/docs/how-to/use-queues
+ *   - Queues: https://iii.dev/docs/workers/iii-queue
  */
 
 import { registerWorker, Logger, TriggerAction } from 'iii-sdk'

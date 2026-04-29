@@ -451,6 +451,7 @@ mod tests {
                 update_result: UpdateResult {
                     old_value: None,
                     new_value: serde_json::json!({"ok": true}),
+                    errors: Vec::new(),
                 },
                 list_values: Vec::new(),
                 groups: Vec::new(),

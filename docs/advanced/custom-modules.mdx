@@ -73,7 +73,7 @@ Developing a custom worker typically involves defining an adapter interface, imp
 
 ### Step 1: Define the Adapter Trait
 
-Define an `async_trait` that specifies the behavior your module's backend must implement. This allows users to switch implementations via configuration.
+Define an `async_trait` that specifies the behavior your worker's backend must implement. This allows users to switch implementations via configuration.
 
 ```rust
 use async_trait::async_trait;
@@ -311,7 +311,7 @@ When registering a function, you must provide a `RegisterFunctionRequest`.
 | `response_format` | `Option<Value>`  | JSON Schema defining the expected output       |
 
 <Note>
-When using the `#[service]` macro with `#[function]` attributes, `request_format` and `response_format` are **auto-generated** as standard JSON Schema from your Rust types (via [`schemars`](https://docs.rs/schemars)). Your input/output types must derive `JsonSchema`. Manual schema specification is only needed for custom module registration.
+When using the `#[service]` macro with `#[function]` attributes, `request_format` and `response_format` are **auto-generated** as standard JSON Schema from your Rust types (via [`schemars`](https://docs.rs/schemars)). Your input/output types must derive `JsonSchema`. Manual schema specification is only needed for custom worker registration.
 </Note>
 
 ### Example Registration
@@ -677,7 +677,7 @@ workers:
   </Accordion>
 
   <Accordion title="Implement Graceful Shutdown">
-    Handle cleanup in the module's drop implementation or provide shutdown hooks.
+    Handle cleanup in the worker's drop implementation or provide shutdown hooks.
 
     ```rust
     impl Drop for CustomEventModule {

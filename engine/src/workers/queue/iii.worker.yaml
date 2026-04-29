@@ -1,0 +1,8 @@
+iii: v1
+name: iii-queue
+type: engine
+description: Queue worker for async job processing with named queues, retries, and dead-letter support.
+repo: https://github.com/iii-hq/iii
+config:
+  adapter:
+    name: builtin

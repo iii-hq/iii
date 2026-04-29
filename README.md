@@ -39,7 +39,7 @@ Get started with iii by following the [Quickstart guide](https://iii.dev/docs/qu
 
 | Language | Package                                            | Install               |
 | -------- | -------------------------------------------------- | --------------------- |
-| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `npm install iii-sdk` |
+| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk` |
 | Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk` |
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`   |
 
@@ -55,7 +55,7 @@ Skills covering every iii primitive — HTTP endpoints, queues, cron, state, str
 
 ## Console
 
-The [iii-console](console/) is a developer and operations dashboard for inspecting functions, triggers, traces, and real-time state. See the [Console docs](https://iii.dev/docs/console) for setup and usage.
+The [iii-console](console/) is a developer and operations console for inspecting workers, functions, triggers, queues, traces, logs, and real-time state. See the [Console docs](https://iii.dev/docs/console) for setup and usage.
 
 ## Repository Structure
 
@@ -63,7 +63,7 @@ The [iii-console](console/) is a developer and operations dashboard for inspecti
 | ------------- | ------------------------------------------------------- | -------------------------------------- |
 | `engine/`     | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
 | `sdk/`        | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)         |
-| `console/`    | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md) |
+| `console/`    | Developer console (React + Rust)                        | [console/README.md](console/README.md) |
 | `skills/`     | Agent skills for AI coding agents                       | [skills/README.md](skills/README.md)   |
 | `website/`    | iii website                                             | [website/](website/)                   |
 | `docs/`       | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
@@ -90,7 +90,6 @@ The iii is licensed as such:
 | ------------- | ---------------------------------------------- |
 | `engine/`     | [Elastic License 2.0](engine/LICENSE)          |
 | `sdk/`        | [Apache License 2.0](sdk/LICENSE)              |
-| `cli/`        | [Apache License 2.0](cli/LICENSE)              |
 | `console/`    | [Apache License 2.0](console/LICENSE)          |
 | `docs/`       | [Apache License 2.0](docs/LICENSE)             |
 | `website/`    | [Apache License 2.0](website/LICENSE)          |

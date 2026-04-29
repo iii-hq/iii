@@ -44,6 +44,12 @@ pub struct OciWorkerResponse {
     pub image_url: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct EngineWorkerResponse {
+    pub name: String,
+    pub version: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum WorkerInfoResponse {
@@ -51,6 +57,8 @@ pub enum WorkerInfoResponse {
     Binary(BinaryWorkerResponse),
     #[serde(rename = "image")]
     Oci(OciWorkerResponse),
+    #[serde(rename = "engine")]
+    Engine(EngineWorkerResponse),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,6 +166,13 @@ pub async fn fetch_worker_info(
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(format!("Worker '{}' not found", name));
+        }
+        // Engine workers return 204 — no artifact body, just metadata.
+        if resp.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(WorkerInfoResponse::Engine(EngineWorkerResponse {
+                name: name.to_string(),
+                version: version.unwrap_or("latest").to_string(),
+            }));
         }
         if !resp.status().is_success() {
             return Err(format!("Failed to resolve worker: HTTP {}", resp.status()));

@@ -1,8 +1,32 @@
 ---
 title: 'Engine'
-description: 'The central orchestrator of a iii system — routes triggers to workers, manages modules, and tracks all registered functions.'
+description: 'The iii engine runtime and routing model.'
 ---
 
+The iii engine is the runtime that connects workers, stores registrations, and routes invocations.
+
+## Responsibilities
+
+| Area | Description |
+|------|-------------|
+| Worker connections | Accepts WebSocket connections from SDK workers and managed workers. |
+| Function registry | Tracks which connected workers can execute each function ID. |
+| Trigger registry | Stores trigger bindings and trigger type metadata. |
+| Invocation routing | Sends each function invocation to an eligible worker and returns the result. |
+| Built-in workers | Starts configured built-in workers such as `iii-http`, `iii-queue`, `iii-state`, `iii-stream`, and `iii-observability`. |
+| Configuration | Loads `iii-config.yaml` or built-in defaults. |
+
+## Ports
+
+| Port | Default | Purpose |
+|------|---------|---------|
+| HTTP API | `3111` | HTTP triggers, health, and console proxy requests. |
+| Streams | `3112` | Stream and browser-facing WebSocket APIs. |
+| Worker WebSocket | `49134` | SDK worker and managed worker connections. |
+
+<Info title="Engine and SDK versions">
+  Engine and SDK patch versions can differ. Keep them on the same minor version line, for example `0.11.x`, unless a release note says otherwise.
+</Info>
 The Engine is the central orchestrator of a iii system. It maintains a registry of every connected Worker and every registered Function, and routes `trigger()` calls to the correct Worker — regardless of language, location, or runtime.
 
 ```mermaid

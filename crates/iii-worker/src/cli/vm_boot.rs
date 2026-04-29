@@ -123,6 +123,19 @@ pub struct VmBootArgs {
     /// error rather than silently hanging on a missing socket.
     #[arg(long)]
     pub shell_sock: Option<String>,
+
+    /// Enable network egress for the guest. When false, the smoltcp
+    /// userspace TCP/IP stack is not initialized and no virtio-net
+    /// device is attached, so the VM has no network interface — useful
+    /// for fully-isolated build steps. When true, the host runs an
+    /// `iii_network::SmoltcpNetwork` instance and proxies guest TCP
+    /// connections to the host (gateway IP rewrites to 127.0.0.1, see
+    /// `iii-network/src/proxy.rs`); guest-side `iii-init` reads
+    /// `III_INIT_IP` / `III_INIT_GW` / `III_INIT_CIDR` and configures
+    /// `eth0`. The host-side adapter (`sandbox::create`) passes
+    /// `--network` only when the request's `network` field is true.
+    #[arg(long, default_value = "false")]
+    pub network: bool,
 }
 
 /// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
@@ -253,6 +266,22 @@ pub fn build_worker_cmd(exec: &str, args: &[String]) -> String {
 pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
     s.replace("://localhost:", &format!("://{}:", gateway_ip))
         .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
+}
+
+/// Conditionally rewrite localhost/loopback URLs.
+///
+/// `None` means networking is disabled — no virtio-net device is attached,
+/// so there is no gateway and `localhost`/`127.0.0.1` resolve correctly via
+/// the guest's loopback. The rewrite is skipped to avoid mangling URLs into
+/// `://:PORT`.
+///
+/// `Some(gw)` mirrors the original behaviour: replace `://localhost:` and
+/// `://127.0.0.1:` with `://gw:`.
+pub fn maybe_rewrite_localhost(s: &str, gateway_ip: Option<&str>) -> String {
+    match gateway_ip {
+        Some(gw) => rewrite_localhost(s, gw),
+        None => s.to_string(),
+    }
 }
 
 /// Identity of a bound control socket: path plus (dev, ino) of the
@@ -664,17 +693,34 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         .build()
         .map_err(|e| format!("tokio runtime failed: {}", e))?;
 
-    let mut network =
-        iii_network::SmoltcpNetwork::new(iii_network::NetworkConfig::default(), args.slot);
-    network.start(tokio_rt.handle().clone());
+    // Network plumbing is gated on `--network`. When disabled, no virtio-net
+    // device is attached and the III_INIT_* env vars are left unset, so
+    // iii-init's `configure_network()` short-circuits (network.rs:42-44).
+    //
+    // The triple is `Option<String>` so absence is explicit at the type level:
+    // empty-string sentinels would silently turn `://localhost:` into `://:`
+    // when the rewrite below ran with networking off (see `rewrite_localhost`).
+    let (dns_nameserver, guest_ip, gateway_ip): (Option<String>, Option<String>, Option<String>) =
+        if args.network {
+            let mut network =
+                iii_network::SmoltcpNetwork::new(iii_network::NetworkConfig::default(), args.slot);
+            network.start(tokio_rt.handle().clone());
+            builder =
+                builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));
+            (
+                Some(network.gateway_ipv4().to_string()),
+                Some(network.guest_ipv4().to_string()),
+                Some(network.gateway_ipv4().to_string()),
+            )
+        } else {
+            (None, None, None)
+        };
 
-    builder = builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));
-
-    let dns_nameserver = network.gateway_ipv4().to_string();
-    let guest_ip = network.guest_ipv4().to_string();
-    let gateway_ip = network.gateway_ipv4().to_string();
-
-    let rewrite_localhost = |s: &str| -> String { rewrite_localhost(s, &gateway_ip) };
+    // Skip the rewrite entirely when networking is off — no gateway exists,
+    // and `localhost`/`127.0.0.1` resolve via the guest's loopback interface
+    // unchanged.
+    let rewrite_localhost =
+        |s: &str| -> String { maybe_rewrite_localhost(s, gateway_ip.as_deref()) };
     let worker_cmd = rewrite_localhost(&worker_cmd);
 
     let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);
@@ -738,10 +784,18 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             e = e.rlimit("RLIMIT_NOFILE", nofile_limit, nofile_limit);
         }
         e = e.env("III_WORKER_CMD", &worker_cmd);
-        e = e.env("III_INIT_DNS", &dns_nameserver);
-        e = e.env("III_INIT_IP", &guest_ip);
-        e = e.env("III_INIT_GW", &gateway_ip);
-        e = e.env("III_INIT_CIDR", "30");
+        // III_INIT_* are only meaningful when the smoltcp stack is wired up.
+        // Leaving them unset makes iii-init's configure_network() a no-op.
+        if let (Some(dns), Some(ip), Some(gw)) = (
+            dns_nameserver.as_deref(),
+            guest_ip.as_deref(),
+            gateway_ip.as_deref(),
+        ) {
+            e = e.env("III_INIT_DNS", dns);
+            e = e.env("III_INIT_IP", ip);
+            e = e.env("III_INIT_GW", gw);
+            e = e.env("III_INIT_CIDR", "30");
+        }
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
         if control_port_env {
             e = e.env(

@@ -9,6 +9,8 @@ members = [
   "crates/iii-init",
   "crates/iii-filesystem",
   "crates/iii-network",
+  "crates/iii-shell-client",
+  "crates/iii-shell-proto",
   "crates/iii-supervisor",
   "crates/iii-worker",
   "crates/scaffolder-core",
@@ -17,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.11.4-next.3"
+version = "0.11.4-next.5"
 edition = "2024"
 authors = ["Motia LLC"]
 repository = "https://github.com/iii-hq/iii"

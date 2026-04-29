@@ -1,6 +1,6 @@
 ---
 title: 'Stream Real-Time Data'
-description: 'How to push live updates to connected clients using the Stream module.'
+description: 'How to push live updates to connected clients using the Stream worker.'
 ---
 
 ## Goal
@@ -413,5 +413,5 @@ iii.register_trigger(
 Any data written to the stream via `stream::set` is immediately pushed to all connected WebSocket clients subscribed to that stream and group. Server-side triggers let you react to joins, leaves, and data changes without polling.
 
 <Info title="See also">
-  For all stream operations, trigger payload shapes, and authentication, see the [Stream module reference](/workers/iii-stream).
+  For all stream operations, trigger payload shapes, and authentication, see the [Stream worker reference](/workers/iii-stream).
 </Info>

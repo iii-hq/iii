@@ -26,6 +26,17 @@ anyhow = "1"
 # Shell-channel stdout/stderr/stdin frames carry bytes as base64 inside
 # JSON. `0.22` matches the engine's version so cargo resolves one copy.
 base64 = "0.22"
+# Used by fs_handler::ops::grep / sed for native regex matching. Pure
+# Rust, cross-compiles cleanly to linux-musl alongside the rest of
+# this binary.
+regex = "1"
+# Used by fs_handler::ops::grep / chmod --recursive for tree walking.
+walkdir = "2"
+# Used by fs_handler streaming-write/sed temp-file naming.
+uuid = { version = "1", features = ["v4"] }
+# Shell-protocol message types and frame codec — fs_handler decodes
+# FsRequest variants and encodes FsResponse / FsChunk / FsEnd / FsError.
+iii-shell-proto = { path = "../iii-shell-proto" }
 
 [dev-dependencies]
 # Used by root_pivot's unit tests to build a fake rootfs under a

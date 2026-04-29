@@ -93,7 +93,7 @@ iii.registerTrigger({
   type: 'http',
   function_id: 'api::secret-data',
   config: {
-    api_path: 'secret',
+    api_path: '/secret',
     http_method: 'GET',
     middleware_function_ids: ['middleware::require-api-key'],
   },
@@ -106,7 +106,7 @@ iii.register_trigger({
     "type": "http",
     "function_id": "api::secret-data",
     "config": {
-        "api_path": "secret",
+        "api_path": "/secret",
         "http_method": "GET",
         "middleware_function_ids": ["middleware::require-api-key"],
     },
@@ -136,7 +136,7 @@ iii.registerTrigger({
   type: 'http',
   function_id: 'api::admin-dashboard',
   config: {
-    api_path: 'admin/dashboard',
+    api_path: '/admin/dashboard',
     http_method: 'GET',
     middleware_function_ids: [
       'middleware::request-logger',    // runs first

@@ -42,9 +42,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 use base64::Engine;
-use iii_supervisor::shell_protocol::{
-    FRAME_HEADER_SIZE, MAX_FRAME_SIZE, ShellMessage, encode_frame, flags::FLAG_TERMINAL,
-};
+use iii_shell_client::read_frame_async;
+use iii_supervisor::shell_protocol::{ShellMessage, encode_frame, flags::FLAG_TERMINAL};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex as TokioMutex;
@@ -347,15 +346,17 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
         let frame_opt = match deadline {
             Some(dl) => {
                 let remaining = dl.saturating_duration_since(Instant::now());
-                match tokio::time::timeout(remaining, read_one_frame(&mut reader)).await {
-                    Ok(v) => v?,
+                match tokio::time::timeout(remaining, read_frame_async(&mut reader)).await {
+                    Ok(v) => v.map_err(|e| anyhow!("read frame: {e}"))?,
                     Err(_) => {
                         timed_out = true;
                         break EXIT_TIMEOUT;
                     }
                 }
             }
-            None => read_one_frame(&mut reader).await?,
+            None => read_frame_async(&mut reader)
+                .await
+                .map_err(|e| anyhow!("read frame: {e}"))?,
         };
         let (got_corr, flags, msg) = match frame_opt {
             Some(v) => v,
@@ -472,62 +473,8 @@ where
             }
         }
         ShellMessage::Exited { code } => Ok(ResponseOutcome::Exited(code)),
-        _ => {
-            // Guest-originated message we don't care about. Ignore.
-            Ok(ResponseOutcome::Continue)
-        }
+        _ => Ok(ResponseOutcome::Continue),
     }
-}
-
-/// Read one complete frame from the socket. Returns `Ok(None)` on
-/// clean EOF at a frame boundary.
-async fn read_one_frame(
-    reader: &mut tokio::net::unix::OwnedReadHalf,
-) -> anyhow::Result<Option<(u32, u8, ShellMessage)>> {
-    let mut len_buf = [0u8; 4];
-    if read_exact_or_eof(reader, &mut len_buf).await?.is_none() {
-        return Ok(None);
-    }
-    let frame_len = u32::from_be_bytes(len_buf) as usize;
-    if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {
-        bail!("frame length {frame_len} out of range");
-    }
-    // Skip zero-fill; read_exact overwrites every byte. See
-    // shell_relay::read_frame for the SAFETY rationale.
-    let mut body: Vec<u8> = Vec::with_capacity(frame_len);
-    unsafe { body.set_len(frame_len) };
-    if let Err(e) = reader
-        .read_exact(&mut body)
-        .await
-        .context("short read on frame body")
-    {
-        body.truncate(0);
-        return Err(e);
-    }
-    let corr_id = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
-    let flags = body[4];
-    let msg: ShellMessage =
-        serde_json::from_slice(&body[FRAME_HEADER_SIZE..]).context("decoding ShellMessage")?;
-    Ok(Some((corr_id, flags, msg)))
-}
-
-async fn read_exact_or_eof(
-    reader: &mut tokio::net::unix::OwnedReadHalf,
-    buf: &mut [u8],
-) -> anyhow::Result<Option<()>> {
-    let mut read = 0;
-    while read < buf.len() {
-        match reader.read(&mut buf[read..]).await? {
-            0 => {
-                if read == 0 {
-                    return Ok(None);
-                }
-                bail!("partial read");
-            }
-            n => read += n,
-        }
-    }
-    Ok(Some(()))
 }
 
 /// Forward host stdin to the guest. Sends chunks as `Stdin` frames

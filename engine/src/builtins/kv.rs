@@ -455,7 +455,7 @@ impl BuiltinKvStore {
         let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
 
         let old_value = index_map.get(&key).cloned();
-        let updated_value = crate::update_ops::apply_update_ops(old_value.clone(), &ops);
+        let (updated_value, errors) = crate::update_ops::apply_update_ops(old_value.clone(), &ops);
 
         // Write the updated value back to the store
         index_map.insert(key.clone(), updated_value.clone());
@@ -472,6 +472,7 @@ impl BuiltinKvStore {
         UpdateResult {
             old_value,
             new_value: updated_value,
+            errors,
         }
     }
 

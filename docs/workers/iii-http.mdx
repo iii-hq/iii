@@ -81,7 +81,7 @@ iii-http
 
 ## Trigger Type
 
-This module adds a new Trigger Type: `http`.
+This worker adds a new Trigger Type: `http`.
 
 <Expandable title="Trigger Config">
   <ResponseField name="api_path" type="string" required>
@@ -180,7 +180,7 @@ Functions must return an `ApiResponse` object:
 
 ## Middleware
 
-The HTTP module supports middleware functions that run before the handler. There are two types:
+The HTTP worker supports middleware functions that run before the handler. There are two types:
 
 - **Per-route middleware** — attached to a specific trigger via `middleware_function_ids` in trigger config
 - **Global middleware** — configured in `iii-config.yaml`, runs on all HTTP routes

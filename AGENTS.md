@@ -16,7 +16,7 @@ cargo build --release             # engine + Rust SDK + console
 # Test
 pnpm test                        # all JS/TS tests
 cargo test                       # all Rust tests
-cargo test -p iii-engine          # engine only
+cargo test -p iii                 # engine only
 cargo test -p iii-sdk             # Rust SDK only
 cd sdk/packages/python/iii && uv sync --extra dev && uv run pytest  # Python SDK
 
@@ -45,10 +45,10 @@ iii cloud delete <deployment-id>  # delete a deployment
 ```
 engine/                          Rust engine — runtime, modules, protocol, CLI
 sdk/packages/node/iii/           TypeScript SDK (npm: iii-sdk)
-sdk/packages/node/iii-browser/   Browser SDK (npm: iii-sdk-browser)
+sdk/packages/node/iii-browser/   Browser SDK (npm: iii-browser-sdk)
 sdk/packages/python/iii/         Python SDK (PyPI: iii-sdk)
 sdk/packages/rust/iii/           Rust SDK (crates.io: iii-sdk)
-console/                         Developer dashboard (React + Rust)
+console/                         Developer console (React + Rust)
 skills/                          26 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website

@@ -18,11 +18,15 @@ pub mod pidfile;
 pub mod project;
 pub mod registry;
 pub mod rootfs;
+pub mod rootfs_cache;
+pub mod sandbox;
+pub mod sandbox_daemon;
 pub mod shell_client;
 pub mod shell_relay;
 pub mod source_watcher;
 pub mod status;
 pub mod supervisor_ctl;
+pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod vm_boot;
