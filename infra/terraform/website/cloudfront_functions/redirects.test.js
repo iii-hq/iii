@@ -93,10 +93,28 @@ test('/some/client/route → rewrite uri to /index.html', () => {
   assert.equal(result.uri, '/index.html')
 })
 
-test('/manifesto → rewrite uri to /index.html', () => {
+test('/manifesto → rewrite uri to /manifesto.html (cleanUrls allowlist)', () => {
   const result = handler(buildEvent('/manifesto', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.equal(result.uri, '/manifesto.html')
+})
+
+test('/manifesto.html → pass through unchanged', () => {
+  const result = handler(buildEvent('/manifesto.html', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/manifesto.html')
+})
+
+test('/manifesto/ trailing slash → pass through (cleanUrls only matches exact extensionless path)', () => {
+  const result = handler(buildEvent('/manifesto/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/manifesto/')
+})
+
+test('cleanUrls applies under www→apex redirect (host-redirect runs first)', () => {
+  const result = handler(buildEvent('/manifesto', 'www.iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/manifesto')
 })
 
 test('/foo/ trailing slash → pass through unchanged (no SPA rewrite)', () => {

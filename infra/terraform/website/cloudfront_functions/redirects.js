@@ -11,6 +11,13 @@ function redirect(location) {
   }
 }
 
+// cleanUrls allowlist: extensionless paths that map to a real .html file in S3.
+// Mirrors `cleanUrls: true` from website/vercel.json, which was lost in the
+// migration from Vercel to S3+CloudFront. Add new static-page slugs here.
+var CLEAN_URL_PAGES = {
+  '/manifesto': '/manifesto.html',
+}
+
 // biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point
 // biome-ignore lint/complexity/useOptionalChain: cloudfront-js-2.0 does NOT support optional chaining
 function handler(event) {
@@ -21,6 +28,11 @@ function handler(event) {
   if (host === 'www.iii.dev') return redirect(`https://iii.dev${uri}`)
 
   if (uri.indexOf('/.well-known/') === 0) return request
+
+  if (CLEAN_URL_PAGES[uri]) {
+    request.uri = CLEAN_URL_PAGES[uri]
+    return request
+  }
 
   // SPA fallback: extensionless path not ending in /
   if (uri !== '/' && uri.charAt(uri.length - 1) !== '/') {
