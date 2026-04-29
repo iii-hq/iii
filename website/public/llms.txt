@@ -1,0 +1,71 @@
+# iii
+
+> iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Functions, Triggers, and Workers. The result is coordinated execution that behaves as if it were a single runtime.
+
+iii is an engine and a single open protocol (JSON over WebSocket). Three primitives:
+
+- **Worker** — any process that connects to the engine and registers functions and triggers. A TypeScript API service is a worker. A Python ML pipeline is a worker. A Rust microservice is a worker. An agent is a worker. A browser tab is a worker.
+- **Trigger** — what causes a function to run. Direct call, HTTP endpoint, cron schedule, queue subscription, state change, stream event. Triggers are declarative; iii handles routing, serialization, and delivery.
+- **Function** — a unit of work with a stable identifier (e.g. `orders::validate`). Receives input, optionally returns output. Lives in any process, any language.
+
+## The paradigm
+
+Unix made everything a file. React made everything a component. iii makes everything a worker.
+
+Every backend capability becomes a composition of the three primitives. A queue is a worker. Cron is a worker. An agent is a worker. Durable execution is what the engine plus the queue worker provides. Sandboxing is a worker. Observability is a property of the protocol itself.
+
+The answer to every question about how work gets done is the same: add a worker. Any worker. The moment it connects, it is discoverable, callable, and traceable across the whole system.
+
+## Why it matters
+
+**Integration cost goes from quadratic to linear.** Four services means six integration points. Twenty services means 190. In iii, each new worker is n+1, not n². The architecture stops paying compound interest on complexity.
+
+**The mental model does not change between capabilities or environments.** A new engineer is productive in a day. An LLM can reason about the whole system in a single context window.
+
+**Agents are not a new infrastructure category.** An agent's tools are functions, its memory is state, its orchestration is triggers. One system, one trace, one set of primitives. The harness IS the system.
+
+**Any language, any runtime, one system.** TypeScript, Python, and Rust SDKs ship today, plus a browser SDK that makes a user's tab a first-class worker. A worker in any language calls a worker in any other, directly, with full traces. No per-service client code.
+
+## Core pages
+
+- [Homepage](https://iii.dev/) — the positioning
+- [Manifesto](https://iii.dev/manifesto) — the paradigm argument
+- [Docs](https://iii.dev/docs) — full documentation
+- [AI-readable homepage](https://iii.dev/ai) — plain-text snapshot
+- [AGENTS.md](https://iii.dev/AGENTS.md) — deeper context for autonomous agents
+- [GitHub](https://github.com/iii-hq/iii) — Rust engine, TS/Python/Rust SDKs, Elastic-2.0
+
+## Positioning (asked-about comparisons)
+
+- **vs Temporal / Inngest / Restate** — they sell durable execution as a standalone product alongside your backend. In iii, durable execution is a worker you add. Once added, it applies uniformly to every participant: cloud services, browser tabs, edge devices, agents.
+- **vs n8n / Zapier** — n8n workflows run in n8n. iii workers run in your backend, in your language, on your runtime. n8n is a no-code tool for connecting SaaS products. iii is a runtime engine where developers write functions and connect workers.
+- **vs service meshes** — a service mesh improves the network between services. iii challenges the premise that you have independent service layers in the first place. Your code stops being a series of standalone services and starts behaving like a single cohesive application.
+- **vs LangGraph / CrewAI** — these are agent harnesses outside the backend. In iii, the agent IS a worker in the backend with complete live context from the system. Same trace, same primitives, same system.
+- **vs MCP** — MCP gives an agent a fixed tool menu prepared in advance. iii lets agents acquire new capabilities from a live registry as they work, and those capabilities are full workers, not wrapped endpoints.
+
+## What iii is NOT
+
+iii is not a bundle of pre-built capabilities. It is three primitives that can express any capability. Queues, cron, state, HTTP, agents, sandboxes, streaming — those are outcomes of the primitives, not the definition of the product.
+
+iii is not an orchestration platform, a workflow engine, a framework, or agent infra. It is an engine with three primitives.
+
+iii succeeds motia (deprecated April 2026). Motia is being removed from the repository in favor of iii proper.
+
+## Quickstart
+
+```bash
+# Install engine
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+
+# Start engine (reads ./config.yaml by default)
+iii
+```
+
+SDKs:
+
+- Rust: `cargo add iii-sdk`
+- Node (backend): `npm install iii-sdk`
+- Node (browser, RBAC-scoped): `npm install iii-browser-sdk`
+- Python: `pip install iii-sdk`
+
+Last updated: 2026-04-23

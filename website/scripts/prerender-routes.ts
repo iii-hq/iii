@@ -96,6 +96,12 @@ function injectSeo({ template, title, description, canonical, ogTitle, indexable
     "robots",
   );
 
+  const lastmod = new Date().toISOString().slice(0, 10);
+  out = out.replace(
+    "</head>",
+    `    <meta name="article:modified_time" content="${lastmod}" />\n    <meta property="og:updated_time" content="${lastmod}" />\n  </head>`,
+  );
+
   return out;
 }
 

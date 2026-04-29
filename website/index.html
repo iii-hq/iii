@@ -56,6 +56,49 @@
     <!-- Global Styles -->
     <link rel="stylesheet" href="/globals.css" />
 
+    <!-- JSON-LD: Organization -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "iii",
+        "legalName": "III, Inc.",
+        "url": "https://iii.dev/",
+        "logo": "https://iii.dev/favicon.svg",
+        "description": "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Functions, Triggers, and Workers. Any process that speaks the open iii protocol joins as a worker and becomes discoverable and callable across the system.",
+        "sameAs": [
+          "https://github.com/iii-hq/iii"
+        ]
+      }
+    </script>
+
+    <!-- JSON-LD: SoftwareApplication -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "iii",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "description": "An engine and a single open protocol (JSON over WebSocket) built on three primitives: Function, Trigger, Worker. Any process, in any language, on any runtime, that speaks the protocol joins as a worker. Unix made everything a file. React made everything a component. iii makes everything a worker.",
+        "url": "https://iii.dev/",
+        "downloadUrl": "https://github.com/iii-hq/iii",
+        "softwareVersion": "0.11.3",
+        "license": "https://www.elastic.co/licensing/elastic-license",
+        "programmingLanguage": ["Rust", "TypeScript", "Python"],
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "author": {
+          "@type": "Organization",
+          "name": "III, Inc.",
+          "url": "https://iii.dev/"
+        }
+      }
+    </script>
+
     <!-- Fonts: ChivoMono (local brand font) -->
 
     <script>
