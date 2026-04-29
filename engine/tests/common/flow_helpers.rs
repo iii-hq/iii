@@ -70,6 +70,18 @@ pub struct HttpStreamPathSpec {
     pub stream_observer_function_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct HttpPubSubPathSpec {
+    pub id: String,
+    pub name: String,
+    pub method: String,
+    pub path: String,
+    pub entry_function_id: String,
+    pub topic: String,
+    pub expected_event: Value,
+    pub subscriber_function_id: String,
+}
+
 impl HttpQueueStatePathSpec {
     pub async fn wait_for_validated_asset(
         &self,
@@ -347,6 +359,114 @@ impl HttpStreamPathSpec {
     }
 }
 
+impl HttpPubSubPathSpec {
+    pub async fn wait_for_validated_asset(
+        &self,
+        pubsub_event: &Value,
+        timeout: Duration,
+    ) -> anyhow::Result<ValidatedFlowGraphAsset> {
+        let deadline = Instant::now() + timeout;
+        let mut last_error: Option<anyhow::Error> = None;
+
+        loop {
+            match self.try_build_asset(pubsub_event) {
+                Ok(asset) => return Ok(asset),
+                Err(err) if Instant::now() < deadline => {
+                    last_error = Some(err);
+                    sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => {
+                    let last_error = last_error.unwrap_or(err);
+                    return Err(
+                        last_error.context("timed out waiting for validated pubsub flow asset")
+                    );
+                }
+            }
+        }
+    }
+
+    fn try_build_asset(&self, pubsub_event: &Value) -> anyhow::Result<ValidatedFlowGraphAsset> {
+        validate_pubsub_event(pubsub_event, &self.expected_event)?;
+
+        let storage =
+            get_span_storage().ok_or_else(|| anyhow!("span storage is not initialized"))?;
+        let spans = storage.get_spans();
+
+        let http_root = spans
+            .iter()
+            .find(|span| span.name == format!("{} {}", self.method, self.path))
+            .ok_or_else(|| anyhow!("missing HTTP span for {} {}", self.method, self.path))?;
+
+        let entry_call = find_child_span(
+            &spans,
+            http_root,
+            &format!("call {}", self.entry_function_id),
+            None,
+        )?;
+        let publish_call = find_child_span(&spans, entry_call, "call publish", None)?;
+        let _subscriber_call = find_span_after(
+            &spans,
+            &format!("call {}", self.subscriber_function_id),
+            publish_call.start_time_unix_nano,
+        )?;
+
+        let http_node_id = format!("http:{}:{}", self.method, self.path);
+        let entry_node_id = self.entry_function_id.clone();
+        let topic_node_id = format!("pubsub:{}", self.topic);
+        let subscriber_node_id = self.subscriber_function_id.clone();
+
+        Ok(ValidatedFlowGraphAsset {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            nodes: vec![
+                FlowGraphNode {
+                    id: http_node_id.clone(),
+                    kind: "http_trigger".to_string(),
+                    label: format!("{} {}", self.method, self.path),
+                },
+                FlowGraphNode {
+                    id: entry_node_id.clone(),
+                    kind: "function".to_string(),
+                    label: self.entry_function_id.clone(),
+                },
+                FlowGraphNode {
+                    id: topic_node_id.clone(),
+                    kind: "pubsub_topic".to_string(),
+                    label: self.topic.clone(),
+                },
+                FlowGraphNode {
+                    id: subscriber_node_id.clone(),
+                    kind: "function".to_string(),
+                    label: self.subscriber_function_id.clone(),
+                },
+            ],
+            edges: vec![
+                FlowGraphEdge {
+                    id: format!("{http_node_id}->{entry_node_id}"),
+                    kind: "http_trigger".to_string(),
+                    source: http_node_id,
+                    target: entry_node_id.clone(),
+                    label: format!("{} {}", self.method, self.path),
+                },
+                FlowGraphEdge {
+                    id: format!("{entry_node_id}->{topic_node_id}"),
+                    kind: "pubsub_publish".to_string(),
+                    source: entry_node_id,
+                    target: topic_node_id.clone(),
+                    label: self.topic.clone(),
+                },
+                FlowGraphEdge {
+                    id: format!("{topic_node_id}->{subscriber_node_id}"),
+                    kind: "subscribe_trigger".to_string(),
+                    source: topic_node_id,
+                    target: subscriber_node_id,
+                    label: self.topic.clone(),
+                },
+            ],
+        })
+    }
+}
+
 pub async fn ensure_flow_test_tracing() -> FlowTracingGuard {
     let guard = FLOW_TRACING_LOCK.lock().await;
 
@@ -458,6 +578,18 @@ fn validate_stream_event(
     Ok(())
 }
 
+fn validate_pubsub_event(pubsub_event: &Value, expected_event: &Value) -> anyhow::Result<()> {
+    if pubsub_event != expected_event {
+        bail!(
+            "pubsub event mismatch: expected {}, got {}",
+            expected_event,
+            pubsub_event
+        );
+    }
+
+    Ok(())
+}
+
 fn find_child_span<'a>(
     spans: &'a [StoredSpan],
     parent: &StoredSpan,
@@ -478,6 +610,26 @@ fn find_child_span<'a>(
                 "missing child span '{}' under parent '{}'",
                 expected_name,
                 parent.name
+            )
+        })
+}
+
+fn find_span_after<'a>(
+    spans: &'a [StoredSpan],
+    expected_name: &str,
+    min_start_time_unix_nano: u64,
+) -> anyhow::Result<&'a StoredSpan> {
+    spans
+        .iter()
+        .filter(|span| {
+            span.name == expected_name && span.start_time_unix_nano >= min_start_time_unix_nano
+        })
+        .min_by_key(|span| span.start_time_unix_nano)
+        .ok_or_else(|| {
+            anyhow!(
+                "missing span '{}' after {}",
+                expected_name,
+                min_start_time_unix_nano
             )
         })
 }

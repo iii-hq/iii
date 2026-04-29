@@ -14,12 +14,14 @@ use iii::{
     function::FunctionResult,
     trigger::Trigger,
     workers::{
-        queue::QueueWorker, rest_api::HttpWorker, state::StateWorker, stream::StreamWorker,
-        traits::Worker,
+        pubsub::PubSubWorker, queue::QueueWorker, rest_api::HttpWorker, state::StateWorker,
+        stream::StreamWorker, traits::Worker,
     },
 };
 
-use common::flow_helpers::{HttpQueueStatePathSpec, HttpStreamPathSpec, ensure_flow_test_tracing};
+use common::flow_helpers::{
+    HttpPubSubPathSpec, HttpQueueStatePathSpec, HttpStreamPathSpec, ensure_flow_test_tracing,
+};
 use common::queue_helpers::builtin_queue_config;
 
 fn reserve_local_port() -> u16 {
@@ -594,6 +596,225 @@ async fn validated_flow_helper_builds_graph_asset_from_real_http_stream_path() {
                     "source": "stream:validated-flow.stream:orders:item-123",
                     "target": "flow_poc::stream_observer",
                     "label": "validated-flow.stream"
+                }
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn validated_flow_helper_builds_graph_asset_from_real_http_pubsub_path() {
+    let _flow_tracing = ensure_flow_test_tracing().await;
+
+    let engine = Arc::new(Engine::new());
+
+    let pubsub_module = PubSubWorker::create(engine.clone(), None)
+        .await
+        .expect("PubSubWorker::create should succeed");
+    pubsub_module.register_functions(engine.clone());
+    pubsub_module
+        .initialize()
+        .await
+        .expect("PubSubWorker::initialize should succeed");
+
+    let port = reserve_local_port();
+    let base_url = start_http_worker(engine.clone(), port).await;
+
+    let topic = "validated-flow.broadcasts";
+    let expected_order_id = "order-456";
+    let expected_event = json!({
+        "order_id": expected_order_id,
+        "status": "broadcast"
+    });
+
+    let (pubsub_event_tx, mut pubsub_event_rx) = mpsc::unbounded_channel::<Value>();
+
+    let engine_for_http = engine.clone();
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: "flow_poc::pubsub_http_entry".to_string(),
+            description: Some("Entry function for validated pubsub flow POC".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |input: Value| {
+            let engine = engine_for_http.clone();
+            async move {
+                let order_id = input
+                    .get("body")
+                    .and_then(|body| body.get("order_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing-order-id")
+                    .to_string();
+
+                match engine
+                    .call(
+                        "publish",
+                        json!({
+                            "topic": topic,
+                            "data": {
+                                "order_id": order_id,
+                                "status": "broadcast"
+                            }
+                        }),
+                    )
+                    .await
+                {
+                    Ok(_) => FunctionResult::Success(Some(json!({
+                        "status_code": 202,
+                        "body": {
+                            "accepted": true,
+                            "topic": topic
+                        }
+                    }))),
+                    Err(err) => FunctionResult::Failure(err),
+                }
+            }
+        }),
+    );
+
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: "flow_poc::pubsub_subscriber".to_string(),
+            description: Some("Subscriber for validated pubsub flow POC".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |input: Value| {
+            let tx = pubsub_event_tx.clone();
+            async move {
+                tx.send(input)
+                    .expect("pubsub event receiver should remain available");
+                FunctionResult::Success(Some(json!({ "observed": true })))
+            }
+        }),
+    );
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: "validated-pubsub-http".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "flow_poc::pubsub_http_entry".to_string(),
+            config: json!({
+                "api_path": "/validated-pubsub-flow",
+                "http_method": "POST"
+            }),
+            worker_id: None,
+            metadata: None,
+        })
+        .await
+        .expect("HTTP trigger should register");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: "validated-pubsub-subscribe".to_string(),
+            trigger_type: "subscribe".to_string(),
+            function_id: "flow_poc::pubsub_subscriber".to_string(),
+            config: json!({
+                "topic": topic,
+            }),
+            worker_id: None,
+            metadata: None,
+        })
+        .await
+        .expect("subscribe trigger should register");
+
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/validated-pubsub-flow");
+    wait_for_route(&client, &url).await;
+
+    let response = client
+        .post(&url)
+        .json(&json!({ "order_id": expected_order_id }))
+        .send()
+        .await
+        .expect("HTTP request should succeed");
+
+    assert_eq!(response.status().as_u16(), 202);
+
+    let response_body: Value = response
+        .json()
+        .await
+        .expect("response should be valid JSON");
+    assert_eq!(response_body["accepted"], true);
+    assert_eq!(response_body["topic"], topic);
+
+    let pubsub_event = timeout(Duration::from_secs(5), pubsub_event_rx.recv())
+        .await
+        .expect("timed out waiting for pubsub subscriber")
+        .expect("pubsub subscriber channel should remain open");
+
+    assert_eq!(pubsub_event, expected_event);
+
+    let spec = HttpPubSubPathSpec {
+        id: "validated-http-pubsub".to_string(),
+        name: "Validated HTTP PubSub Path".to_string(),
+        method: "POST".to_string(),
+        path: "/validated-pubsub-flow".to_string(),
+        entry_function_id: "flow_poc::pubsub_http_entry".to_string(),
+        topic: topic.to_string(),
+        expected_event: expected_event.clone(),
+        subscriber_function_id: "flow_poc::pubsub_subscriber".to_string(),
+    };
+
+    let asset = spec
+        .wait_for_validated_asset(&pubsub_event, Duration::from_secs(5))
+        .await
+        .expect("validated pubsub flow asset should be generated");
+
+    assert_eq!(
+        serde_json::to_value(&asset).expect("asset should serialize"),
+        json!({
+            "id": "validated-http-pubsub",
+            "name": "Validated HTTP PubSub Path",
+            "nodes": [
+                {
+                    "id": "http:POST:/validated-pubsub-flow",
+                    "kind": "http_trigger",
+                    "label": "POST /validated-pubsub-flow"
+                },
+                {
+                    "id": "flow_poc::pubsub_http_entry",
+                    "kind": "function",
+                    "label": "flow_poc::pubsub_http_entry"
+                },
+                {
+                    "id": "pubsub:validated-flow.broadcasts",
+                    "kind": "pubsub_topic",
+                    "label": "validated-flow.broadcasts"
+                },
+                {
+                    "id": "flow_poc::pubsub_subscriber",
+                    "kind": "function",
+                    "label": "flow_poc::pubsub_subscriber"
+                }
+            ],
+            "edges": [
+                {
+                    "id": "http:POST:/validated-pubsub-flow->flow_poc::pubsub_http_entry",
+                    "kind": "http_trigger",
+                    "source": "http:POST:/validated-pubsub-flow",
+                    "target": "flow_poc::pubsub_http_entry",
+                    "label": "POST /validated-pubsub-flow"
+                },
+                {
+                    "id": "flow_poc::pubsub_http_entry->pubsub:validated-flow.broadcasts",
+                    "kind": "pubsub_publish",
+                    "source": "flow_poc::pubsub_http_entry",
+                    "target": "pubsub:validated-flow.broadcasts",
+                    "label": "validated-flow.broadcasts"
+                },
+                {
+                    "id": "pubsub:validated-flow.broadcasts->flow_poc::pubsub_subscriber",
+                    "kind": "subscribe_trigger",
+                    "source": "pubsub:validated-flow.broadcasts",
+                    "target": "flow_poc::pubsub_subscriber",
+                    "label": "validated-flow.broadcasts"
                 }
             ]
         })
