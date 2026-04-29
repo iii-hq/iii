@@ -304,11 +304,51 @@ config:
         The value now stored in the stream after applying the operations.
       </ResponseField>
       <ResponseField name="errors" type="UpdateOpError[]">
-        Per-op validation errors. Currently emitted only by `merge` for inputs that violate validation bounds. Field is omitted when empty.
+        Per-op validation errors. Field is omitted when empty. Each entry has `op_index`, `code`, `message`, and an optional `doc_url`.
       </ResponseField>
     </Accordion>
   </AccordionGroup>
 </ResponseField>
+
+## Error codes
+
+`stream::update` uses the same update engine as [`state::update`](/workers/iii-state#error-codes). Each op may add an entry to the response `errors` array. Operations are best-effort: successfully applied ops still reflect in `new_value`, and failed ops are skipped.
+
+| Code | Triggered when | Fix |
+|------|----------------|-----|
+| `set.target_not_object` | `set` tried to write a field while the current value is not an object | Set the root to an object first, or use `path: ""` to replace the root. |
+| `append.target_not_object` | `append` used a field path while the current value is not an object | Set the root to an object first, or append at `path: ""`. |
+| `append.type_mismatch` | `append` targeted an incompatible existing value, such as appending to a number or appending a non-string to a string | Match the appended value to the existing field type, or initialize the field to an array, string, or null. |
+| `increment.target_not_object` | `increment` used a field path while the current value is not an object | Set the root to an object first. |
+| `increment.not_number` | `increment` targeted an existing field that is not a number | Initialize the field as a number first, for example with `set` to `0`. |
+| `decrement.target_not_object` | `decrement` used a field path while the current value is not an object | Set the root to an object first. |
+| `decrement.not_number` | `decrement` targeted an existing field that is not a number | Initialize the field as a number first, for example with `set` to `0`. |
+| `remove.target_not_object` | `remove` used a field path while the current value is not an object | Set the root to an object first. Removing a missing field from an object remains silent. |
+| `<op>.path.proto_polluted` | A path segment is `__proto__`, `constructor`, or `prototype` | Use a different field name. |
+| `<op>.path.segment_too_long` | A path segment is longer than 256 bytes | Shorten the field name or merge path segment. |
+| `merge.path.too_deep` | A nested merge path has more than 32 segments | Reduce the nested path depth. |
+| `merge.path.empty_segment` | A nested merge path array contains an empty segment | Remove the empty segment. |
+| `merge.value.not_an_object` | `merge` value is not a JSON object | Pass an object as the merge value. |
+| `merge.value.too_deep` | `merge` value has JSON nesting deeper than 16 levels | Flatten the value. |
+| `merge.value.too_many_keys` | `merge` value has more than 1024 top-level keys | Split the write into smaller updates. |
+| `merge.value.proto_polluted` | A top-level key in the merge value is `__proto__`, `constructor`, or `prototype` | Use a different key name. |
+
+Each error includes `op_index`, `code`, and `message`; `doc_url` is optional.
+
+```json
+{
+  "old_value": { "count": 1 },
+  "new_value": { "count": 1 },
+  "errors": [
+    {
+      "op_index": 0,
+      "code": "append.type_mismatch",
+      "message": "Cannot append at path 'count': target is number, expected array, string, null, or missing field.",
+      "doc_url": "https://iii.dev/docs/workers/iii-state#error-codes"
+    }
+  ]
+}
+```
 
 ## Authentication
 

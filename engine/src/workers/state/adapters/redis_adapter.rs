@@ -322,4 +322,145 @@ mod tests {
 
         let _ = adapter.delete(scope, key).await;
     }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    async fn test_update_structured_errors_redis() {
+        let adapter = setup_test_adapter().await;
+        let scope = "test_error_scope";
+        let key = "error_item";
+
+        let _ = adapter.delete(scope, key).await;
+        adapter
+            .set(
+                scope,
+                key,
+                json!({"bad": "value", "events": {"nested": true}}),
+            )
+            .await
+            .unwrap();
+
+        let result = adapter
+            .update(
+                scope,
+                key,
+                vec![
+                    UpdateOp::increment("bad", 1),
+                    UpdateOp::Set {
+                        path: "__proto__".into(),
+                        value: Some(json!(true)),
+                    },
+                    UpdateOp::append("events", json!("chunk")),
+                    UpdateOp::Set {
+                        path: "ok".into(),
+                        value: Some(json!(true)),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.new_value,
+            json!({"bad": "value", "events": {"nested": true}, "ok": true})
+        );
+        assert_eq!(result.errors.len(), 3);
+        assert_eq!(result.errors[0].op_index, 0);
+        assert_eq!(result.errors[0].code, "increment.not_number");
+        assert_eq!(result.errors[1].op_index, 1);
+        assert_eq!(result.errors[1].code, "set.path.proto_polluted");
+        assert_eq!(result.errors[2].op_index, 2);
+        assert_eq!(result.errors[2].code, "append.type_mismatch");
+
+        let _ = adapter.delete(scope, key).await;
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    async fn test_update_root_null_and_numeric_null_errors_redis() {
+        let adapter = setup_test_adapter().await;
+        let scope = "test_null_scope";
+        let key = "null_item";
+
+        let _ = adapter.delete(scope, key).await;
+        adapter
+            .set(scope, key, json!({"": "empty-field", "keep": true}))
+            .await
+            .unwrap();
+
+        let result = adapter
+            .update(
+                scope,
+                key,
+                vec![UpdateOp::Set {
+                    path: "".into(),
+                    value: None,
+                }],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(null));
+        assert!(result.errors.is_empty());
+
+        adapter
+            .set(scope, key, json!({"inc": null, "dec": null}))
+            .await
+            .unwrap();
+
+        let result = adapter
+            .update(
+                scope,
+                key,
+                vec![UpdateOp::increment("inc", 1), UpdateOp::decrement("dec", 1)],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!({"inc": null, "dec": null}));
+        assert_eq!(result.errors.len(), 2);
+        assert_eq!(result.errors[0].op_index, 0);
+        assert_eq!(result.errors[0].code, "increment.not_number");
+        assert_eq!(result.errors[1].op_index, 1);
+        assert_eq!(result.errors[1].code, "decrement.not_number");
+
+        let _ = adapter.delete(scope, key).await;
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    async fn test_update_empty_path_numeric_and_remove_ops_target_root_redis() {
+        let adapter = setup_test_adapter().await;
+        let scope = "test_root_ops_scope";
+        let key = "root_ops_item";
+
+        let _ = adapter.delete(scope, key).await;
+        adapter.set(scope, key, json!(2)).await.unwrap();
+
+        let result = adapter
+            .update(scope, key, vec![UpdateOp::increment("", 3)])
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(5));
+        assert!(result.errors.is_empty());
+
+        let result = adapter
+            .update(scope, key, vec![UpdateOp::decrement("", 2)])
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(3));
+        assert!(result.errors.is_empty());
+
+        let result = adapter
+            .update(scope, key, vec![UpdateOp::remove("")])
+            .await
+            .unwrap();
+
+        assert_eq!(result.new_value, json!(null));
+        assert!(result.errors.is_empty());
+
+        let _ = adapter.delete(scope, key).await;
+    }
 }
