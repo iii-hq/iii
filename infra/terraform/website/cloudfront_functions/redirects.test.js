@@ -9,7 +9,7 @@ const path = require('node:path')
 const source = fs.readFileSync(path.join(__dirname, 'redirects.js'), 'utf8')
 const handler = new Function(source + '\nreturn handler;')()
 
-function buildEvent(uri, host) {
+function buildEvent(uri, host, querystring) {
   return {
     version: '1.0',
     context: {},
@@ -17,7 +17,7 @@ function buildEvent(uri, host) {
     request: {
       method: 'GET',
       uri: uri,
-      querystring: {},
+      querystring: querystring || {},
       headers: host ? { host: { value: host } } : {},
       cookies: {},
     },
@@ -57,7 +57,7 @@ test('/docsfoo → NOT redirected (not under /docs/)', () => {
   assert.equal(result.uri, '/index.html')
 })
 
-test('/llms.txt → pass through unchanged (matches current 404 behavior)', () => {
+test('/llms.txt → pass through unchanged (static file)', () => {
   const result = handler(buildEvent('/llms.txt', 'iii.dev'))
   assert.ok(!isRedirect(result))
   assert.equal(result.uri, '/llms.txt')
@@ -81,6 +81,52 @@ test('www.iii.dev/docs/foo → 301 https://iii.dev/docs/foo', () => {
   assert.equal(locationOf(result), 'https://iii.dev/docs/foo')
 })
 
+test('www.iii.dev preserves querystring with multiValue and empty params', () => {
+  // Mirrors the CloudFront Functions querystring shape: repeated keys spill into
+  // multiValue, value-less keys arrive as empty strings, and special chars must
+  // be re-encoded.
+  const result = handler(
+    buildEvent('/some/page', 'www.iii.dev', {
+      a: { value: '1', multiValue: [{ value: '2' }] },
+      empty: { value: '' },
+      ref: { value: 'hello world' },
+    }),
+  )
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/some/page?a=1&a=2&empty=&ref=hello%20world')
+})
+
+test('www.iii.dev with no querystring → no trailing ?', () => {
+  const result = handler(buildEvent('/some/page', 'www.iii.dev', {}))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/some/page')
+})
+
+test('www.iii.dev percent-encodes reserved chars in keys and values', () => {
+  // Values containing &, =, #, + would otherwise corrupt the redirect target
+  // (& splits params, # ends the URL into a fragment, + flips to space on parse,
+  // = confuses some clients). Keys with spaces must also be encoded.
+  const result = handler(
+    buildEvent('/p', 'www.iii.dev', {
+      'weird key': { value: 'a&b=c+d#e' },
+    }),
+  )
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/p?weird%20key=a%26b%3Dc%2Bd%23e')
+})
+
+test('SPA fallback preserves querystring on the request object (no rewrite)', () => {
+  // The handler mutates request.uri but returns the same request object, so
+  // CloudFront forwards the original querystring untouched. Pin the no-op so
+  // a future refactor doesn't accidentally clear it.
+  const qs = { utm_source: { value: 'twitter' }, ref: { value: 'launch' } }
+  const event = buildEvent('/some/route', 'iii.dev', qs)
+  const result = handler(event)
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/index.html')
+  assert.equal(result.querystring, qs)
+})
+
 test('/ (root) → pass through unchanged', () => {
   const result = handler(buildEvent('/', 'iii.dev'))
   assert.ok(!isRedirect(result))
@@ -93,7 +139,7 @@ test('/some/client/route → rewrite uri to /index.html', () => {
   assert.equal(result.uri, '/index.html')
 })
 
-test('/manifesto → rewrite uri to /manifesto.html (cleanUrls allowlist)', () => {
+test('/manifesto → rewrite uri to /manifesto.html (flat HTML, Option A)', () => {
   const result = handler(buildEvent('/manifesto', 'iii.dev'))
   assert.ok(!isRedirect(result))
   assert.equal(result.uri, '/manifesto.html')
@@ -105,16 +151,22 @@ test('/manifesto.html → pass through unchanged', () => {
   assert.equal(result.uri, '/manifesto.html')
 })
 
-test('/manifesto/ trailing slash → pass through (cleanUrls only matches exact extensionless path)', () => {
+test('/manifesto/ trailing slash → pass through (pretty-URL rewrite only matches exact extensionless path)', () => {
   const result = handler(buildEvent('/manifesto/', 'iii.dev'))
   assert.ok(!isRedirect(result))
   assert.equal(result.uri, '/manifesto/')
 })
 
-test('cleanUrls applies under www→apex redirect (host-redirect runs first)', () => {
+test('www.iii.dev/manifesto → 301 https://iii.dev/manifesto (host-redirect runs before pretty-URL rewrite)', () => {
   const result = handler(buildEvent('/manifesto', 'www.iii.dev'))
   assert.ok(isRedirect(result))
   assert.equal(locationOf(result), 'https://iii.dev/manifesto')
+})
+
+test('/AGENTS.md → pass through unchanged', () => {
+  const result = handler(buildEvent('/AGENTS.md', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/AGENTS.md')
 })
 
 test('/foo/ trailing slash → pass through unchanged (no SPA rewrite)', () => {
@@ -129,10 +181,10 @@ test('/missing.jpg → pass through unchanged (S3 returns 404)', () => {
   assert.equal(result.uri, '/missing.jpg')
 })
 
-test('/ai/index.html → pass through unchanged', () => {
-  const result = handler(buildEvent('/ai/index.html', 'iii.dev'))
+test('/ai → SPA fallback to /index.html', () => {
+  const result = handler(buildEvent('/ai', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/ai/index.html')
+  assert.equal(result.uri, '/index.html')
 })
 
 test('/assets/main.abc123.js → pass through unchanged', () => {

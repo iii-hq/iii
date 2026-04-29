@@ -321,6 +321,37 @@ fn rewrite_localhost_no_port_unchanged() {
     );
 }
 
+// Regression: with networking disabled, `gateway_ip` is `None` and the
+// rewrite must be a no-op. Empty-string sentinels previously turned
+// `://localhost:9000` into `://:9000` (vm_boot.rs:683-698 pre-fix).
+#[test]
+fn maybe_rewrite_localhost_skips_when_networking_disabled() {
+    use iii_worker::cli::vm_boot::maybe_rewrite_localhost;
+
+    assert_eq!(
+        maybe_rewrite_localhost("http://localhost:9000/api", None),
+        "http://localhost:9000/api"
+    );
+    assert_eq!(
+        maybe_rewrite_localhost("ws://127.0.0.1:8080/ws", None),
+        "ws://127.0.0.1:8080/ws"
+    );
+}
+
+#[test]
+fn maybe_rewrite_localhost_rewrites_when_gateway_present() {
+    use iii_worker::cli::vm_boot::maybe_rewrite_localhost;
+
+    assert_eq!(
+        maybe_rewrite_localhost("http://localhost:3000/api", Some("192.168.1.1")),
+        "http://192.168.1.1:3000/api"
+    );
+    assert_eq!(
+        maybe_rewrite_localhost("ws://127.0.0.1:8080/ws", Some("10.0.0.1")),
+        "ws://10.0.0.1:8080/ws"
+    );
+}
+
 #[test]
 fn build_container_spec_managed_with_resources() {
     let mut env = HashMap::new();

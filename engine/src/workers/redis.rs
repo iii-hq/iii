@@ -24,7 +24,7 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
     local MAX_VALUE_DEPTH = 16
     local MAX_VALUE_KEYS = 1024
     local PROTO = { __proto__ = true, constructor = true, prototype = true }
-    local DOC_URL = 'https://iii.dev/docs/workers/iii-state#merge-bounds'
+    local DOC_URL = 'https://iii.dev/docs/workers/iii-state#error-codes'
 
     local key = KEYS[1]
     local field = ARGV[1]
@@ -85,6 +85,33 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         }
     end
 
+    local function path_error_code(op_name, reason)
+        return op_name .. '.path.' .. reason
+    end
+
+    local function json_type_name(value)
+        if value == cjson.null then return 'null' end
+        local value_type = type(value)
+        if value_type == 'boolean' then return 'boolean' end
+        if value_type == 'number' then return 'number' end
+        if value_type == 'string' then return 'string' end
+        if value_type == 'table' then
+            if value[1] ~= nil then return 'array' end
+            return 'object'
+        end
+        return value_type
+    end
+
+    local function path_label(path)
+        if path == nil or path == '' then return 'root' end
+        return path
+    end
+
+    local function field_path_segments(path)
+        if path == nil or path == '' then return {} end
+        return { path }
+    end
+
     local function json_depth(value)
         if type(value) ~= 'table' then return 0 end
         local max = 0
@@ -95,30 +122,34 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         return 1 + max
     end
 
-    local function validate_merge_path(op_index, segments)
+    local function validate_op_path(op_name, op_index, segments)
         if #segments > MAX_PATH_DEPTH then
-            push_error(op_index, 'merge.path.too_deep',
+            push_error(op_index, path_error_code(op_name, 'too_deep'),
                 'Path depth ' .. #segments .. ' exceeds maximum of ' .. MAX_PATH_DEPTH)
             return false
         end
         for _, seg in ipairs(segments) do
             if type(seg) ~= 'string' or seg == '' then
-                push_error(op_index, 'merge.path.empty_segment',
+                push_error(op_index, path_error_code(op_name, 'empty_segment'),
                     'Path contains an empty or non-string segment')
                 return false
             end
             if #seg > MAX_SEGMENT_BYTES then
-                push_error(op_index, 'merge.path.segment_too_long',
+                push_error(op_index, path_error_code(op_name, 'segment_too_long'),
                     'Path segment of ' .. #seg .. ' bytes exceeds maximum of ' .. MAX_SEGMENT_BYTES)
                 return false
             end
             if PROTO[seg] then
-                push_error(op_index, 'merge.path.proto_polluted',
-                    'Path segment "' .. seg .. '" is a prototype-pollution sink')
+                push_error(op_index, path_error_code(op_name, 'proto_polluted'),
+                    "Path segment '" .. seg .. "' is not allowed (prototype pollution).")
                 return false
             end
         end
         return true
+    end
+
+    local function validate_merge_path(op_index, segments)
+        return validate_op_path('merge', op_index, segments)
     end
 
     local function validate_merge_value(op_index, value)
@@ -195,10 +226,10 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
             end
             count = count + 1
         end
-        return count > 0 and count == max
+        return count == max
     end
 
-    local function append_to_target(target, value)
+    local function append_to_target(target, value, path, op_index)
         if target == nil or target == cjson.null then
             return true, initial_append_value(value)
         end
@@ -206,12 +237,16 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
             if type(value) == 'string' then
                 return true, target .. value
             end
+            push_error(op_index, 'append.type_mismatch',
+                "Expected string append value at path '" .. path_label(path) .. "', got " .. json_type_name(value) .. ".")
             return false, target
         end
         if is_array(target) then
             table.insert(target, value)
             return true, target
         end
+        push_error(op_index, 'append.type_mismatch',
+            "Cannot append at path '" .. path_label(path) .. "': target is " .. json_type_name(target) .. ", expected array, string, null, or missing field.")
         return false, target
     end
 
@@ -220,19 +255,21 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         local zero_index = op_index - 1
         if op.type == 'set' then
             local path = get_path(op.path)
-            if (path == '' or path == nil) and op.value ~= nil then
+            if validate_op_path('set', zero_index, field_path_segments(path)) then
+              if (path == '' or path == nil) and op.value ~= nil then
                 current = op.value
                 using_missing_default = false
-            else
-                if type(current) ~= 'table' or current == nil then
-                    current = {}
-                end
+              elseif type(current) == 'table' and current ~= cjson.null then
                 if op.value == nil then
                     current[path] = cjson.null
                 else
                     current[path] = op.value
                 end
                 using_missing_default = false
+              else
+                push_error(zero_index, 'set.target_not_object',
+                    "Cannot set at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              end
             end
         elseif op.type == 'merge' then
             local segments = merge_path_segments(op.path)
@@ -261,50 +298,99 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
             end
         elseif op.type == 'increment' then
             local path = get_path(op.path)
-            if type(current) ~= 'table' or current == nil then
-                current = {}
+            if validate_op_path('increment', zero_index, field_path_segments(path)) then
+              if path == '' or path == nil then
+                if using_missing_default then
+                    current = op.by
+                    using_missing_default = false
+                elseif type(current) == 'number' then
+                    current = current + op.by
+                    using_missing_default = false
+                else
+                    push_error(zero_index, 'increment.not_number',
+                        "Expected number at path '" .. path_label(path) .. "', got " .. json_type_name(current) .. ".")
+                end
+              elseif type(current) == 'table' and current ~= cjson.null then
+                local val = current[path]
+                if val == nil then
+                    current[path] = op.by
+                    using_missing_default = false
+                elseif type(val) == 'number' then
+                    current[path] = val + op.by
+                    using_missing_default = false
+                else
+                    push_error(zero_index, 'increment.not_number',
+                        "Expected number at path '" .. path_label(path) .. "', got " .. json_type_name(val) .. ".")
+                end
+              else
+                push_error(zero_index, 'increment.target_not_object',
+                    "Cannot increment at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              end
             end
-            local val = current[path]
-            if type(val) == 'number' then
-                current[path] = val + op.by
-            else
-                current[path] = op.by
-            end
-            using_missing_default = false
         elseif op.type == 'decrement' then
             local path = get_path(op.path)
-            if type(current) ~= 'table' or current == nil then
-                current = {}
+            if validate_op_path('decrement', zero_index, field_path_segments(path)) then
+              if path == '' or path == nil then
+                if using_missing_default then
+                    current = -op.by
+                    using_missing_default = false
+                elseif type(current) == 'number' then
+                    current = current - op.by
+                    using_missing_default = false
+                else
+                    push_error(zero_index, 'decrement.not_number',
+                        "Expected number at path '" .. path_label(path) .. "', got " .. json_type_name(current) .. ".")
+                end
+              elseif type(current) == 'table' and current ~= cjson.null then
+                local val = current[path]
+                if val == nil then
+                    current[path] = -op.by
+                    using_missing_default = false
+                elseif type(val) == 'number' then
+                    current[path] = val - op.by
+                    using_missing_default = false
+                else
+                    push_error(zero_index, 'decrement.not_number',
+                        "Expected number at path '" .. path_label(path) .. "', got " .. json_type_name(val) .. ".")
+                end
+              else
+                push_error(zero_index, 'decrement.target_not_object',
+                    "Cannot decrement at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              end
             end
-            local val = current[path]
-            if type(val) == 'number' then
-                current[path] = val - op.by
-            else
-                current[path] = -op.by
-            end
-            using_missing_default = false
         elseif op.type == 'append' then
             local path = get_path(op.path)
-            if path == '' or path == nil then
-                local changed, next_value = append_to_target(using_missing_default and cjson.null or current, op.value)
+            if validate_op_path('append', zero_index, field_path_segments(path)) then
+              if path == '' or path == nil then
+                local changed, next_value = append_to_target(using_missing_default and cjson.null or current, op.value, 'root', zero_index)
                 if changed then
                     current = next_value
                     using_missing_default = false
                 end
-            else
-                if type(current) == 'table' and current ~= nil then
-                    local changed, next_value = append_to_target(current[path], op.value)
+              elseif type(current) == 'table' and current ~= cjson.null then
+                    local changed, next_value = append_to_target(current[path], op.value, path, zero_index)
                     if changed then
                         current[path] = next_value
                         using_missing_default = false
                     end
-                end
+              else
+                push_error(zero_index, 'append.target_not_object',
+                    "Cannot append at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              end
             end
         elseif op.type == 'remove' then
             local path = get_path(op.path)
-            if type(current) == 'table' and current ~= nil then
+            if validate_op_path('remove', zero_index, field_path_segments(path)) then
+              if path == '' or path == nil then
+                current = cjson.null
+                using_missing_default = false
+              elseif type(current) == 'table' and current ~= cjson.null then
                 current[path] = nil
                 using_missing_default = false
+              else
+                push_error(zero_index, 'remove.target_not_object',
+                    "Cannot remove at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              end
             end
         end
     end

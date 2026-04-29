@@ -20,30 +20,42 @@
     </script>
     <!-- End Google Tag Manager -->
 
-    <!-- Common Room signals -->
+    <!-- Common Room: loads only after analytics consent (see cookie banner below) -->
     <script>
       (function () {
-        if (typeof window === 'undefined') return;
-        if (typeof window.signals !== 'undefined') return;
-        var script = document.createElement('script');
-        script.src =
-          'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
-        script.async = true;
-        window.signals = Object.assign(
-          [],
-          { _opts: { apiHost: 'https://api.cr-relay.com' } },
-          ['page', 'identify', 'form'].reduce(function (acc, method) {
-            acc[method] = function () {
-              signals.push([method, arguments]);
-              return signals;
-            };
-            return acc;
-          }, {}),
-        );
-        document.head.appendChild(script);
+        var STORAGE_KEY = 'iii_cookie_consent';
+        window.iiiLoadCommonRoomSignals = function () {
+          if (typeof window.signals !== 'undefined') return;
+          var script = document.createElement('script');
+          script.src =
+            'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+          script.async = true;
+          window.signals = Object.assign(
+            [],
+            { _opts: { apiHost: 'https://api.cr-relay.com' } },
+            ['page', 'identify', 'form'].reduce(function (acc, method) {
+              acc[method] = function () {
+                signals.push([method, arguments]);
+                return signals;
+              };
+              return acc;
+            }, {}),
+          );
+          document.head.appendChild(script);
+        };
+        window.iiiNotifyCommonRoomEmail = function (email) {
+          try {
+            if (!email || localStorage.getItem(STORAGE_KEY) !== 'accepted') return;
+            if (typeof window.signals === 'undefined' || !window.signals.form) return;
+            window.signals.form({ email: email });
+          } catch (_) {}
+        };
+        try {
+          if (localStorage.getItem(STORAGE_KEY) === 'accepted')
+            window.iiiLoadCommonRoomSignals();
+        } catch (_) {}
       })();
     </script>
-    <!-- End Common Room signals -->
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -433,6 +445,71 @@
           padding: 24px 18px;
         }
       }
+
+      .cookie-consent-wrap {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 10050;
+        padding: 16px;
+        display: flex;
+        justify-content: center;
+        box-sizing: border-box;
+        pointer-events: none;
+      }
+      .cookie-consent-wrap:not([hidden]) {
+        pointer-events: auto;
+      }
+      .cookie-consent-panel {
+        pointer-events: auto;
+        max-width: 36rem;
+        width: 100%;
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-radius: 10px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+        padding: 18px 20px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--ink-faint);
+        font-family: 'Chivo Mono', ui-monospace, monospace;
+      }
+      .cookie-consent-panel .cc-strong {
+        color: var(--ink-soft);
+      }
+      .cookie-consent-actions {
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .cookie-consent-actions button {
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        border-radius: 6px;
+        padding: 8px 14px;
+      }
+      .cookie-consent-actions .cc-decline {
+        border: 1px solid var(--rule);
+        background: transparent;
+        color: var(--ink-soft);
+      }
+      .cookie-consent-actions .cc-decline:hover {
+        border-color: var(--ink-ghost);
+        color: var(--ink);
+      }
+      .cookie-consent-actions .cc-accept {
+        border: none;
+        background: var(--accent);
+        color: var(--bg);
+        font-weight: 600;
+      }
+      .cookie-consent-actions .cc-accept:hover {
+        filter: brightness(1.06);
+      }
     </style>
   </head>
   <body>
@@ -446,6 +523,53 @@
       ></iframe
     ></noscript>
     <!-- End Google Tag Manager (noscript) -->
+
+    <div id="cookie-consent-banner" class="cookie-consent-wrap" hidden>
+      <div class="cookie-consent-panel">
+        <p style="margin: 0">
+          This site uses cookies to understand how visitors find us.
+          <span class="cc-strong">You can accept or decline non-essential cookies.</span>
+        </p>
+        <div class="cookie-consent-actions">
+          <button type="button" class="cc-decline" data-consent-reject>Decline</button>
+          <button type="button" class="cc-accept" data-consent-accept>Accept</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var STORAGE_KEY = 'iii_cookie_consent';
+        var banner = document.getElementById('cookie-consent-banner');
+        if (!banner) return;
+        try {
+          var stored = localStorage.getItem(STORAGE_KEY);
+          if (stored === 'accepted' || stored === 'rejected') {
+            banner.remove();
+            return;
+          }
+        } catch (_) {}
+        banner.removeAttribute('hidden');
+        var accept = banner.querySelector('[data-consent-accept]');
+        var reject = banner.querySelector('[data-consent-reject]');
+        if (accept) {
+          accept.addEventListener('click', function () {
+            try {
+              localStorage.setItem(STORAGE_KEY, 'accepted');
+            } catch (_) {}
+            banner.remove();
+            if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
+          });
+        }
+        if (reject) {
+          reject.addEventListener('click', function () {
+            try {
+              localStorage.setItem(STORAGE_KEY, 'rejected');
+            } catch (_) {}
+            banner.remove();
+          });
+        }
+      })();
+    </script>
 
     <div class="page">
       <main class="sheet">

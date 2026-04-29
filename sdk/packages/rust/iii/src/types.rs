@@ -194,10 +194,7 @@ impl UpdateOp {
     }
 }
 
-/// Per-op error reported by an atomic update operation. Currently
-/// emitted only for the `merge` op when input violates the new
-/// validation bounds (depth/size/proto-pollution); the other ops
-/// retain warn-and-skip semantics for backward compatibility.
+/// Per-op error reported by an atomic update operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateOpError {
     /// Index of the offending op within the original `ops` array.

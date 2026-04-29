@@ -20,10 +20,11 @@
 </script>
 <!-- End Google Tag Manager -->
 
-<!-- Common Room signals -->
+<!-- Common Room: loads only after analytics consent (see cookie banner below) -->
 <script>
-  (function() {
-    if (typeof window === 'undefined') return;
+(function () {
+  var STORAGE_KEY = 'iii_cookie_consent';
+  window.iiiLoadCommonRoomSignals = function () {
     if (typeof window.signals !== 'undefined') return;
     var script = document.createElement('script');
     script.src = 'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
@@ -31,18 +32,28 @@
     window.signals = Object.assign(
       [],
       { _opts: { apiHost: 'https://api.cr-relay.com' } },
-      ['page', 'identify', 'form'].reduce(function (acc, method){
+      ['page', 'identify', 'form'].reduce(function (acc, method) {
         acc[method] = function () {
           signals.push([method, arguments]);
           return signals;
         };
-       return acc;
+        return acc;
       }, {})
     );
     document.head.appendChild(script);
-  })();
+  };
+  window.iiiNotifyCommonRoomEmail = function (email) {
+    try {
+      if (!email || localStorage.getItem(STORAGE_KEY) !== 'accepted') return;
+      if (typeof window.signals === 'undefined' || !window.signals.form) return;
+      window.signals.form({ email: email });
+    } catch (_) {}
+  };
+  try {
+    if (localStorage.getItem(STORAGE_KEY) === 'accepted') window.iiiLoadCommonRoomSignals();
+  } catch (_) {}
+})();
 </script>
-<!-- End Common Room signals -->
 
 <!-- Favicon -->
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -51,8 +62,10 @@
 <!-- SEO Meta Tags -->
 <meta name="description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
 <meta name="keywords" content="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox" />
-<meta name="author" content="Motia, LLC" />
+<meta name="author" content="III, Inc." />
 <meta name="theme-color" content="#0a0a0a" />
+<link rel="canonical" href="https://iii.dev/" />
+<meta name="robots" content="index,follow" />
 
 <!-- Open Graph / Facebook -->
 <meta property="og:type" content="website" />
@@ -70,6 +83,48 @@
 <meta name="twitter:title" content="iii — Three primitives. Zero integration cost." />
 <meta name="twitter:description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
 <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+
+<!-- JSON-LD: Organization -->
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "iii",
+    "legalName": "III, Inc.",
+    "url": "https://iii.dev/",
+    "logo": "https://iii.dev/favicon.svg",
+    "description": "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Functions, Triggers, and Workers. Any process that speaks the open iii protocol joins as a worker and becomes discoverable and callable across the system.",
+    "sameAs": [
+      "https://github.com/iii-hq/iii"
+    ]
+  }
+</script>
+
+<!-- JSON-LD: SoftwareApplication -->
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "iii",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "description": "An engine and a single open protocol (JSON over WebSocket) built on three primitives: Function, Trigger, Worker. Any process, in any language, on any runtime, that speaks the protocol joins as a worker. Unix made everything a file. React made everything a component. iii makes everything a worker.",
+    "url": "https://iii.dev/",
+    "downloadUrl": "https://github.com/iii-hq/iii",
+    "license": "https://www.elastic.co/licensing/elastic-license",
+    "programmingLanguage": ["Rust", "TypeScript", "Python"],
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "III, Inc.",
+      "url": "https://iii.dev/"
+    }
+  }
+</script>
 
 <!-- Mailmodo form URL. Public-client-safe (no secret material), so it lives
      in source. Edit content="" to change the destination per environment, or
@@ -165,7 +220,7 @@
   :root[data-theme="dark"] .ag-node-group.is-agent .hv-node-ring{ fill: var(--bg); }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth;}
-  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:'Chivo Mono', ui-monospace, monospace;font-weight:400;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-variant-ligatures:none;font-feature-settings:"liga" 0, "clig" 0, "calt" 0, "dlig" 0;text-rendering:geometricPrecision;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:'Chivo Mono', ui-monospace, monospace;font-weight:400;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-variant-ligatures:none;font-feature-settings:"liga" 0, "clig" 0, "calt" 0, "dlig" 0;text-rendering:geometricPrecision;overflow-x:hidden;overflow-x:clip;}
   /* Anchored sections land below the sticky navbar */
   #experience, #nutshell, #workers, #hello, #footer, #install, #primitives{
     scroll-margin-top:90px;
@@ -678,6 +733,11 @@
     align-self:start;
     position:relative;
   }
+  @media (min-width: 881px){
+    .hero-viz:not([data-design="triptych"]){
+      grid-template-rows: auto 1fr auto auto;
+    }
+  }
   .hero-viz-head{
     display:flex; align-items:center; justify-content:space-between;
     gap:12px;
@@ -719,7 +779,7 @@
 
   .hero-viz-canvas{
     position:relative;
-    aspect-ratio: 1 / 1;
+    aspect-ratio: 5 / 4;
     width:100%;
     overflow:hidden;
   }
@@ -802,7 +862,119 @@
   }
   .hv-count{ color:var(--ink); font-weight:500; font-variant-numeric: tabular-nums; }
   .hv-count.accent{ color:var(--accent); }
-  .hv-formula{ color:var(--ink-faint); }
+  .hv-formula{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size:18px;
+    letter-spacing:0.02em;
+    color:var(--ink);
+    font-weight:500;
+    text-transform:none;
+    transition: opacity .35s ease;
+    line-height:1;
+  }
+  .hv-formula math{
+    font-family: 'Latin Modern Math', 'STIX Two Math', 'Cambria Math', serif;
+    font-size: 1.15em;
+  }
+  .hv-formula math mtext{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size: 0.7em;
+    color: var(--ink-faint);
+  }
+  .hv-formula-sub{
+    margin-left:8px;
+    font-size:10px;
+    font-weight:400;
+    letter-spacing:0.04em;
+    color:var(--ink-faint);
+    text-transform:lowercase;
+  }
+
+  /* Complexity chart — desktop classic hero only */
+  .hero-viz-complexity{
+    display:none;
+    border-top:1px solid var(--rule);
+    padding:10px 18px 12px 18px;
+    gap:2px;
+    flex-direction:column;
+    align-items:stretch;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+  }
+  .hv-complex-chart{
+    width:100%;
+    height:80px;
+    display:block;
+    overflow:visible;
+  }
+  .hv-complex-copy{
+    text-align:center;
+  }
+  .hv-cc-axis{
+    stroke:var(--ink-faint);
+    stroke-width:1;
+    fill:none;
+    opacity:.65;
+  }
+  .hv-cc-q, .hv-cc-l, .hv-cc-f{
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+    vector-effect:non-scaling-stroke;
+    transition: opacity .45s ease, stroke-width .35s ease;
+  }
+  .hero-viz[data-stage="mesh"] .hv-cc-q{
+    stroke:var(--ink);
+    opacity:1;
+    stroke-width:1.35;
+  }
+  .hero-viz[data-stage="mesh"] .hv-cc-l{
+    stroke:var(--ink-faint);
+    opacity:.32;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="mesh"] .hv-cc-f{
+    stroke:var(--ink-ghost);
+    opacity:0;
+    stroke-width:1;
+  }
+
+  .hero-viz[data-stage="actual"] .hv-cc-q{
+    stroke:var(--ink-faint);
+    opacity:.28;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="actual"] .hv-cc-l{
+    stroke:var(--ink);
+    opacity:1;
+    stroke-width:1.35;
+  }
+  .hero-viz[data-stage="actual"] .hv-cc-f{
+    stroke:var(--ink-ghost);
+    opacity:0;
+    stroke-width:1;
+  }
+
+  .hero-viz[data-stage="iii"] .hv-cc-q{
+    stroke:var(--ink-faint);
+    opacity:.2;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="iii"] .hv-cc-l{
+    stroke:var(--ink-faint);
+    opacity:.22;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="iii"] .hv-cc-f{
+    stroke:var(--accent);
+    opacity:1;
+    stroke-width:1.45;
+  }
+
+  @media (min-width: 881px){
+    .hero-viz:not([data-design="triptych"]) .hero-viz-complexity{
+      display:flex;
+    }
+  }
 
   /* Triptych variant: stacked mini circles */
   .hero-viz[data-design="triptych"]{
@@ -940,7 +1112,9 @@
     .hero-headline{ letter-spacing:-0.02em; }
     .hero-cta{ gap:28px; order: 2; }
     .hero-left{ order: 1; }
-    .hero-viz{ order: 3; }
+    .hero-viz{ order: 3; min-width:0; max-width:100%; overflow:hidden; }
+    .hero-viz-canvas{ overflow:hidden; max-width:100%; }
+    .hero-viz-head .label{ display:none; }
     .email-row input{ width:100%; }
     .email-form{ width:100%; max-width:none; }
   }
@@ -3026,8 +3200,8 @@
     /* frame stacks: chip rail on top, main below */
     .cs-frame{
       grid-template-columns: 1fr;
-      grid-template-rows: auto 1fr;
-      min-height:640px;
+      grid-template-rows: auto auto auto;
+      min-height:0;
     }
 
     /* rail becomes a horizontal chip row */
@@ -3081,34 +3255,123 @@
     }
     .cs-mast-hint .arr{ color:var(--ink); }
 
-    /* one panel at a time */
+    /* Horizontal scroll-snap carousel (panels slide like desktop translate track) */
     .cs-stage{
-      min-height:540px;
-      touch-action: pan-y;
+      height:clamp(420px, 70vh, 540px);
+      min-height:0;
+      overflow:hidden;
+      touch-action:manipulation;
     }
     .cs-track{
-      display:block;
+      display:flex;
       width:100%;
       height:100%;
+      min-height:0;
       transform:none !important;
       transition:none;
       position:relative;
+      overflow-x:auto;
+      overflow-y:hidden;
+      scroll-snap-type:x mandatory;
+      -webkit-overflow-scrolling:touch;
+      scrollbar-width:none;
+      -ms-overflow-style:none;
+      touch-action:pan-x;
+      align-items:stretch;
     }
+    .cs-track::-webkit-scrollbar{ display:none; }
     .cs-panel{
-      position:absolute;
-      inset:0;
+      position:relative;
+      inset:auto;
+      flex:0 0 100%;
       width:100%;
+      min-width:0;
       height:100%;
-      flex:initial;
+      min-height:0;
       padding:14px 14px 16px;
-      display:none;
-      opacity:0;
-      transition: opacity .18s ease;
-    }
-    .cs-panel.is-active{
       display:flex;
+      flex-direction:column;
+      gap:10px;
       opacity:1;
+      scroll-snap-align:start;
+      scroll-snap-stop:always;
+      box-sizing:border-box;
+      overflow-x:hidden;
+      overflow-y:hidden;
     }
+    .cs-panel .cs-card{
+      min-height:0;
+      flex:1 1 auto;
+    }
+    .cs-panel .cs-card-body,
+    .cs-panel .cs-fn-list,
+    .cs-panel .cs-fn-side,
+    .cs-panel .cs-states-groups,
+    .cs-panel .cs-states-table,
+    .cs-panel .cs-streams-body,
+    .cs-panel .cs-queues-body,
+    .cs-panel .cs-traces-body,
+    .cs-panel .cs-logs-body,
+    .cs-panel .cs-config-body{
+      overflow-x:hidden;
+      overflow-y:auto;
+      touch-action:pan-y;
+    }
+    .cs-panel pre,
+    .cs-panel .cs-fn-side-input{
+      white-space:pre-wrap;
+      word-break:break-word;
+      overflow-x:hidden;
+    }
+  }
+
+  /* ============= CONSOLE — mobile per-panel decluttering ============= */
+  @media (max-width: 1024px){
+    /* Workers: hide right-side metadata (host · pid · fn count · age) */
+    .cs-panel[data-idx="0"] .cs-row-worker .cs-row-meta{ display:none; }
+
+    /* Functions: hide right-side invoke dialog, list spans full width */
+    .cs-panel[data-idx="1"] .cs-card-split{ grid-template-columns: 1fr; }
+    .cs-panel[data-idx="1"] .cs-fn-side{ display:none; }
+
+    /* Triggers: same pattern as Functions */
+    .cs-panel[data-idx="2"] .cs-card-split{ grid-template-columns: 1fr; }
+    .cs-panel[data-idx="2"] .cs-fn-side{ display:none; }
+
+    /* States: hide groups column AND right-side detail aside */
+    .cs-panel[data-idx="3"] .cs-card-split.states{ grid-template-columns: 1fr; }
+    .cs-panel[data-idx="3"] .cs-states-groups,
+    .cs-panel[data-idx="3"] .cs-fn-side{ display:none; }
+
+    /* Streams: drop the ws://… address chip, let stats wrap */
+    .cs-panel[data-idx="4"] .cs-card-bar.streams{ gap:12px; flex-wrap:wrap; }
+    .cs-panel[data-idx="4"] .cs-card-bar.streams .cs-card-bar-right{ display:none; }
+
+    /* Queues: progress meter onto its own row below name/meta */
+    .cs-panel[data-idx="5"] .cs-row-queue{
+      grid-template-columns: 24px 1fr auto;
+      grid-template-areas:
+        "ico  name chev"
+        "ico  meta chev"
+        "meter meter meter";
+      row-gap:6px;
+    }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-glyph  { grid-area:ico; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-name   { grid-area:name; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-meta   { grid-area:meta; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-chev   { grid-area:chev; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-queue-meter{ grid-area:meter; width:100%; }
+
+    /* Traces: hide colored span bars, give name + ts the room */
+    .cs-panel[data-idx="6"] .cs-trace-row{ grid-template-columns: 14px 1fr auto; }
+    .cs-panel[data-idx="6"] .cs-trace-bars{ display:none; }
+
+    /* Logs: hide the toolbar row (filters + search + severity legend) */
+    .cs-panel[data-idx="7"] .cs-card-bar{ display:none; }
+
+    /* Config: keep stats strip + worker-pools; hide service URL cards and trigger-type pills */
+    .cs-panel[data-idx="8"] .cs-config-row{ display:none; }
+    .cs-panel[data-idx="8"] .cs-config-section:first-of-type{ display:none; }
   }
 
   /* ============= FOOTER ============= */
@@ -3146,10 +3409,13 @@
   .foot-row{
     display:grid; grid-template-columns:1fr 1fr;
     gap:16px;
-    max-width:680px; margin:0 auto 28px;
+    margin:0 auto 28px;
+    max-width:100%;
   }
   .foot-row > *{
     border:1px solid var(--rule);
+    min-width:0;
+    max-width:100%;
   }
   /* On the inverted CTA, lift the borders so cards are visible */
   .foot-cta .foot-row > *{ border-color:rgba(255,255,255,0.18); }
@@ -3166,8 +3432,10 @@
     text-align:left;
     color:var(--ink);
     font-family:'Chivo Mono', ui-monospace, monospace;
-    font-size:13px;
+    font-size:clamp(11px, 2.85vw, 13px);
     width:100%;
+    min-width:0;
+    max-width:100%;
   }
   .foot-install:hover{ background:var(--rule-2); }
   .foot-install .prompt{ color:var(--ink); flex-shrink:0; }
@@ -3176,39 +3444,55 @@
   .foot-install .copy-ico svg{ width:14px; height:14px; }
   .foot-install.copied .copy-ico{ color:var(--accent); }
   .foot-email{
-    display:flex; align-items:center;
-    background:var(--bg);
+    position:relative;
+    display:flex; flex-direction:column; justify-content:center;
+    background:transparent;
     padding:0;
+    min-width:0;
+    max-width:100%;
   }
+  /* Override .foot-row > * card border so email is underline-only, like the hero form */
+  .foot-row > .foot-email,
+  .foot-cta .foot-row > .foot-email,
+  :root[data-theme="dark"] .foot-cta .foot-row > .foot-email{ border:none; }
+  .foot-email .row{
+    display:flex; align-items:center; width:100%; max-width:100%;
+    min-width:0;
+    position:relative;
+    border-bottom:1px solid color-mix(in srgb, var(--bg) 32%, transparent);
+    transition: border-color .15s;
+  }
+  .foot-email .row:focus-within{ border-bottom-color:var(--accent); }
   .foot-email input{
     flex:1; min-width:0;
-    border:none; outline:none; background:transparent;
-    padding:14px 14px 14px 18px;
+    appearance:none; border:0; outline:none; background:transparent;
+    padding:10px 32px 10px 2px;
     font-family:'Chivo Mono', ui-monospace, monospace;
-    font-size:13px;
-    color:var(--ink);
+    font-size:clamp(11px, 2.85vw, 13px);
+    color:var(--bg);
   }
-  .foot-email input::placeholder{ color:var(--ink); opacity:.55; }
-  .foot-cta .foot-email input,
-  .foot-cta .foot-email input::placeholder{ color:var(--ink); }
-  .foot-cta .foot-email input::placeholder{ opacity:.55; }
+  .foot-email input::placeholder{ color:color-mix(in srgb, var(--bg) 50%, transparent); }
+  .foot-cta .foot-email input{ color:var(--bg); }
+  .foot-cta .foot-email input::placeholder{ color:color-mix(in srgb, var(--bg) 50%, transparent); }
   .foot-email button{
-    background:transparent; border:none; cursor:pointer;
-    padding:0 18px; height:100%;
+    position:absolute; right:0; top:50%; transform:translateY(-50%);
+    appearance:none; background:transparent; border:0; cursor:pointer;
+    padding:6px 4px; height:auto;
     display:flex; align-items:center; justify-content:center;
-    color:var(--ink);
+    color:var(--bg);
+    transition: color .15s;
   }
   .foot-email button:hover{ color:var(--accent); }
   .foot-email button svg{ width:16px; height:16px; }
-  .foot-email.submitted{ justify-content:center; padding:14px 18px; color:var(--ink-faint); font-size:13px; }
+  .foot-email.submitted{ padding:10px 2px; color:color-mix(in srgb, var(--bg) 65%, transparent); font-size:13px; }
   .foot-email.submitted .row{ display:none; }
-  .foot-email.submitted .thanks{ display:flex; align-items:center; gap:8px; }
+  .foot-email.submitted .thanks{ display:flex; align-items:center; gap:8px; justify-content:center; }
   .foot-email .thanks{ display:none; }
   .foot-email .thanks svg{ width:14px; height:14px; color:var(--accent); }
 
   .foot-social{
     display:grid; grid-template-columns:1fr 1fr; gap:16px;
-    max-width:680px; margin:0 auto;
+    margin:0 auto;
   }
   .foot-gh{ display:flex; }
   .foot-discord{ display:flex; }
@@ -3417,6 +3701,11 @@
     -webkit-overflow-scrolling:touch;
     scrollbar-width:none;
   }
+  .hello-mflow-body{
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
   .hello-mflow-track::-webkit-scrollbar{ display:none; }
   .hello-mflow-slide{
     flex:0 0 100%;
@@ -3427,6 +3716,8 @@
     border-right:1px solid var(--rule);
     background:var(--bg);
     transition:background .3s;
+    min-width:0;
+    overflow-x:hidden;
   }
   .hello-mflow-slide:last-child{ border-right:none; }
   .hello-mflow-slide.is-active{
@@ -3439,6 +3730,7 @@
     color:var(--ink);
     text-transform:lowercase;
     letter-spacing:.01em;
+    overflow-x:hidden;
   }
   .hello-mflow-caption .step{
     display:inline-block;
@@ -3454,6 +3746,8 @@
     background:transparent;
     display:flex; flex-direction:column;
     min-height:0;
+    min-width:0;
+    overflow-x:hidden;
   }
   .hello-mflow-slide .hello-chead{
     padding:14px 16px;
@@ -3463,11 +3757,11 @@
     padding:14px 16px 18px;
     margin:0;
     background:transparent;
-    overflow-x:auto;
-    overflow-y:hidden;
+    overflow:hidden;
     font-size:11px;
     line-height:1.7;
-    white-space:pre;
+    white-space:pre-wrap;
+    word-break:break-word;
     scrollbar-width:none;
     -ms-overflow-style:none;
   }
@@ -3544,11 +3838,15 @@
   }
   @media (max-width: 880px){
     .foot{ padding:48px 14px 48px; }
+    .foot-cta{
+      padding:48px clamp(20px, 5vw, 48px) 40px;
+    }
     .nut-panel{ min-height:0; }
-    .foot-row{ grid-template-columns:1fr; }
+    .foot-row{ grid-template-columns:1fr; gap:14px; }
     .foot-row > *{ border-right:none; border-bottom:1px solid var(--rule); }
     .foot-row > *:last-child{ border-bottom:none; }
-    .foot-social{ grid-template-columns:1fr; }
+    .foot-install{ gap:8px; padding:12px 14px; }
+    .foot-social{ grid-template-columns:1fr; gap:14px; }
     .foot-cols{ grid-template-columns:1fr 1fr; gap:32px; margin-top:48px; padding-top:32px; }
     .foot-col-brand{ grid-column:1 / -1; }
     .foot-bottom{ font-size:11px; }
@@ -3901,12 +4199,125 @@
     .agent-c-foot{ grid-template-columns: repeat(2, 1fr); }
   }
 
+  /* Cookie consent (Common Room gated until accepted; matches prior React site behavior) */
+  .cookie-consent-wrap{
+    position:fixed;
+    bottom:0;
+    left:0;
+    right:0;
+    z-index:10050;
+    padding:16px;
+    display:flex;
+    justify-content:center;
+    box-sizing:border-box;
+    pointer-events:none;
+  }
+  .cookie-consent-wrap:not([hidden]){
+    pointer-events:auto;
+  }
+  .cookie-consent-panel{
+    pointer-events:auto;
+    max-width:36rem;
+    width:100%;
+    background:var(--panel);
+    border:1px solid var(--rule);
+    border-radius:10px;
+    box-shadow:0 12px 40px rgba(0,0,0,.12);
+    padding:18px 20px;
+    font-size:13px;
+    line-height:1.45;
+    color:var(--ink-faint);
+    font-family:'Chivo Mono', ui-monospace, monospace;
+  }
+  .cookie-consent-panel .cc-strong{
+    color:var(--ink-soft);
+  }
+  .cookie-consent-actions{
+    display:flex;
+    gap:12px;
+    justify-content:flex-end;
+    flex-wrap:wrap;
+    margin-top:14px;
+  }
+  .cookie-consent-actions button{
+    font-family:inherit;
+    font-size:12px;
+    cursor:pointer;
+    border-radius:6px;
+    padding:8px 14px;
+  }
+  .cookie-consent-actions .cc-decline{
+    border:1px solid var(--rule);
+    background:transparent;
+    color:var(--ink-soft);
+  }
+  .cookie-consent-actions .cc-decline:hover{
+    border-color:var(--ink-ghost);
+    color:var(--ink);
+  }
+  .cookie-consent-actions .cc-accept{
+    border:none;
+    background:var(--accent);
+    color:var(--bg);
+    font-weight:600;
+  }
+  .cookie-consent-actions .cc-accept:hover{
+    filter:brightness(1.06);
+  }
+
 </style>
 </head>
 <body>
 <!-- Google Tag Manager (noscript) -->
 <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <!-- End Google Tag Manager (noscript) -->
+
+<div id="cookie-consent-banner" class="cookie-consent-wrap" hidden>
+  <div class="cookie-consent-panel">
+    <p style="margin:0;">
+      This site uses cookies to understand how visitors find us.
+      <span class="cc-strong">You can accept or decline non-essential cookies.</span>
+    </p>
+    <div class="cookie-consent-actions">
+      <button type="button" class="cc-decline" data-consent-reject>Decline</button>
+      <button type="button" class="cc-accept" data-consent-accept>Accept</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var STORAGE_KEY = 'iii_cookie_consent';
+  var banner = document.getElementById('cookie-consent-banner');
+  if (!banner) return;
+  try {
+    var stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === 'accepted' || stored === 'rejected') {
+      banner.remove();
+      return;
+    }
+  } catch (_) {}
+  banner.removeAttribute('hidden');
+  var accept = banner.querySelector('[data-consent-accept]');
+  var reject = banner.querySelector('[data-consent-reject]');
+  if (accept) {
+    accept.addEventListener('click', function () {
+      try {
+        localStorage.setItem(STORAGE_KEY, 'accepted');
+      } catch (_) {}
+      banner.remove();
+      if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
+    });
+  }
+  if (reject) {
+    reject.addEventListener('click', function () {
+      try {
+        localStorage.setItem(STORAGE_KEY, 'rejected');
+      } catch (_) {}
+      banner.remove();
+    });
+  }
+})();
+</script>
 
 <div class="sheet">
 
@@ -4073,20 +4484,37 @@
           </svg>
         </div>
 
+        <div class="hero-viz-complexity" aria-live="polite">
+          <svg class="hv-complex-chart" viewBox="22 0 186 118" preserveAspectRatio="none" aria-hidden="true">
+            <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94"/>
+            <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14"/>
+            <!-- n(n-1)/2: full pairwise growth -->
+            <path class="hv-cc-q" d="M 22 94 Q 118 18 208 20"/>
+            <!-- (n(n-1)/2) / tolerance: proportionally damped curve -->
+            <path class="hv-cc-l" d="M 22 94 Q 118 60 208 61"/>
+            <!-- 0: constant on the axis -->
+            <path class="hv-cc-f" d="M 22 94 L 208 94"/>
+          </svg>
+          <div class="hv-complex-copy">
+            <span class="hv-formula" id="hv-formula"><math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>&#x2212;</mo><mn>1</mn><mo>)</mo></mrow><mn>2</mn></mfrac><mo>)</mo></math></span>
+            <span class="hv-formula-sub" id="hv-formula-sub"></span>
+          </div>
+        </div>
+
         <div class="hero-viz-foot">
           <span><span id="hv-count" class="hv-count">45</span> <span>integrations</span></span>
         </div>
       </aside>
 
       <div class="hero-cta">
-        <a class="hero-btn" href="#install">
+        <a class="hero-btn" href="https://iii.dev/docs/install">
           <span>get started</span>
           <span class="arrow">→</span>
         </a>
 
         <form class="email-form" id="email-form" novalidate>
           <div class="email-row">
-            <input type="email" id="email-input" placeholder="your@email.here" required />
+            <input type="email" name="email" id="email-input" placeholder="your@email.here" required />
             <button class="submit" type="submit" aria-label="Submit email">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M3 10 H17 M12 5 L17 10 L12 15"/>
@@ -4170,9 +4598,9 @@
 
 
   <!-- HELLO WORLD -->
-  <section class="hello" id="hello" aria-label="One protocol. Any language.">
+  <section class="hello" id="hello" aria-label="any language. one protocol.">
     <header class="hello-head">
-      <h2 class="hello-title"><span class="accent">any language.</span> <span class="mute"><b style="color:var(--ink); font-weight:500">one protocol.</b> python registers a function. rust registers a function. node consumes both.</span></h2>
+      <h2 class="hello-title"><span class="accent">any language.</span> <span class="mute"><b style="color:var(--ink); font-weight:500">one protocol.</b><br>python registers a function. rust registers a function. node consumes both.</span></h2>
     </header>
 
     <div class="hello-grid" data-mode="flow">
@@ -4344,8 +4772,10 @@ iii.register_function(
     <!-- Mobile: swipe-the-flow (one slide per step). Built from the desktop cards by JS. -->
     <div class="hello-mflow" id="helloMFlow" aria-label="Hello world execution flow (mobile)">
       <div class="hello-mflow-trace" id="helloMFlowTrace"></div>
-      <div class="hello-mflow-track" id="helloMFlowTrack"></div>
-      <div class="hello-mflow-dots" id="helloMFlowDots"></div>
+      <div class="hello-mflow-body" id="helloMFlowBody">
+        <div class="hello-mflow-track" id="helloMFlowTrack"></div>
+        <div class="hello-mflow-dots" id="helloMFlowDots"></div>
+      </div>
       <div class="hello-mflow-controls">
         <button id="helloMFlowPrev" type="button">&larr; prev</button>
         <button id="helloMFlowPlay" type="button">play</button>
@@ -5208,7 +5638,7 @@ iii.register_function(
   <section class="foot" id="footer" aria-label="Get started">
     <div class="foot-cta">
       <h2 class="foot-title">get started.</h2>
-      <p class="foot-sub">install the engine, check out the code, or subscribe for updates.</p>
+      <p class="foot-sub">install the engine, check out the code, chat with us, or subscribe for updates.</p>
 
       <div class="foot-row">
         <button class="foot-install" id="foot-install" type="button" aria-label="Copy install command">
@@ -5223,7 +5653,7 @@ iii.register_function(
         </button>
         <form class="foot-email" id="foot-email" novalidate>
           <div class="row" style="display:flex; align-items:center; width:100%;">
-            <input type="email" id="foot-email-input" placeholder="your@email.here" required />
+            <input type="email" name="email" id="foot-email-input" placeholder="your@email.here" required />
             <button type="submit" aria-label="Submit email">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M3 10 H17 M12 5 L17 10 L12 15"/>
@@ -5277,7 +5707,6 @@ iii.register_function(
         <ul>
           <li><a href="https://iii.dev/docs">docs</a></li>
           <li><a href="https://iii.dev/docs/quickstart">quickstart</a></li>
-          <li><a href="https://iii.dev/blog">blog</a></li>
           <li><a href="https://github.com/iii-hq/iii">github</a></li>
         </ul>
       </div>
@@ -5285,8 +5714,8 @@ iii.register_function(
         <h5>contact</h5>
         <ul>
           <li><a href="https://discord.gg/motia" target="_blank" rel="noopener noreferrer">discord</a></li>
-          <li><a href="#">twitter / X</a></li>
-          <li><a href="#">linkedin</a></li>
+          <li><a href="https://x.com/iiidevs">twitter / X</a></li>
+          <li><a href="https://www.linkedin.com/company/iii-dev">linkedin</a></li>
         </ul>
       </div>
     </div>
@@ -6066,32 +6495,29 @@ iii.register_function(
   const installLabel = document.getElementById('install-label');
   const installBtnM = document.getElementById('install-btn-m');
   const installLabelM = document.getElementById('install-label-m');
-  const heroInstallBtn = document.getElementById('hero-install');
-  const heroInstallCmd = document.getElementById('hero-install-cmd');
-  const HERO_INSTALL_DEFAULT = heroInstallCmd ? heroInstallCmd.textContent : '';
-  const HERO_COPY_DEFAULT = heroInstallBtn ? heroInstallBtn.textContent : '';
+  const footInstallBtn = document.getElementById('foot-install');
+  const footInstallCmd = footInstallBtn ? footInstallBtn.querySelector('.cmd') : null;
+  const FOOT_INSTALL_DEFAULT = footInstallCmd ? footInstallCmd.textContent : '';
+  const COPIED_TEXT = 'copied';
+  const COPIED_MS = 4000;
 
   let copyTimer = null;
   function flashCopied(){
-    installBtn.classList.add('copied');
-    installBtnM.classList.add('copied');
-    installLabel.textContent = INSTALL_CMD;
-    installLabelM.textContent = 'Copied!';
-    if (heroInstallBtn){
-      heroInstallBtn.classList.add('copied');
-      heroInstallBtn.textContent = 'copied ✓';
-    }
+    if (installBtn) installBtn.classList.add('copied');
+    if (installLabel) installLabel.textContent = COPIED_TEXT;
+    if (installBtnM) installBtnM.classList.add('copied');
+    if (installLabelM) installLabelM.textContent = COPIED_TEXT;
+    if (footInstallBtn) footInstallBtn.classList.add('copied');
+    if (footInstallCmd) footInstallCmd.textContent = COPIED_TEXT;
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
-      installBtn.classList.remove('copied');
-      installBtnM.classList.remove('copied');
-      installLabel.textContent = 'install.sh';
-      installLabelM.textContent = 'install.sh';
-      if (heroInstallBtn){
-        heroInstallBtn.classList.remove('copied');
-        heroInstallBtn.textContent = HERO_COPY_DEFAULT;
-      }
-    }, 3000);
+      if (installBtn) installBtn.classList.remove('copied');
+      if (installLabel) installLabel.textContent = 'install.sh';
+      if (installBtnM) installBtnM.classList.remove('copied');
+      if (installLabelM) installLabelM.textContent = 'install.sh';
+      if (footInstallBtn) footInstallBtn.classList.remove('copied');
+      if (footInstallCmd) footInstallCmd.textContent = FOOT_INSTALL_DEFAULT;
+    }, COPIED_MS);
   }
   function copyInstall(){
     if (navigator.clipboard && navigator.clipboard.writeText){
@@ -6100,9 +6526,8 @@ iii.register_function(
       flashCopied();
     }
   }
-  installBtn.addEventListener('click', copyInstall);
-  installBtnM.addEventListener('click', copyInstall);
-  if (heroInstallBtn) heroInstallBtn.addEventListener('click', copyInstall);
+  if (installBtn) installBtn.addEventListener('click', copyInstall);
+  if (installBtnM) installBtnM.addEventListener('click', copyInstall);
 
   // ============= Hero rotating descriptor =============
   const rotatingDescriptors = [
@@ -6138,6 +6563,7 @@ iii.register_function(
       });
       // Mailmodo returns 409 for already-subscribed; treat as success.
       if (!res.ok && res.status !== 409) throw new Error('mailmodo submission failed');
+      if (typeof window.iiiNotifyCommonRoomEmail === 'function') window.iiiNotifyCommonRoomEmail(email);
     } catch (_) {
       // Swallow — we still mark the form submitted so users aren't blocked.
     }
@@ -6482,18 +6908,10 @@ iii.register_function(
   })();
 
   // ============= Footer install copy =============
-  (function footInstall(){
-    const btn = document.getElementById('foot-install');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const cmd = btn.querySelector('.cmd').textContent.trim();
-      try {
-        await navigator.clipboard.writeText(cmd);
-        btn.classList.add('copied');
-        setTimeout(() => btn.classList.remove('copied'), 1400);
-      } catch(_) {}
-    });
-  })();
+  // Always copies the full install command (same as the navbar). The button's
+  // visible '.cmd' text is intentionally an abbreviated display version and is
+  // restored after the shared `copied` flash reverts.
+  if (footInstallBtn) footInstallBtn.addEventListener('click', copyInstall);
 
   // ============= Footer email signup =============
   (function footEmail(){
@@ -6526,6 +6944,9 @@ iii.register_function(
 
     const GUILD_ID = '1322278831184281721';
     const URL = `https://discord.com/api/guilds/${GUILD_ID}/widget.json`;
+    // Public invite endpoint exposes approximate_member_count (total members),
+    // which the widget endpoint does not. Used for the navbar/mobile total.
+    const INVITE_URL = 'https://discord.com/api/v10/invites/motia?with_counts=true';
 
     function formatCount(n){
       if (n >= 1000) return (n/1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k';
@@ -6608,18 +7029,30 @@ iii.register_function(
 
     async function fetchData(){
       try {
-        const r = await fetch(URL, { cache:'no-store' });
-        if (!r.ok) throw new Error('http ' + r.status);
-        const data = await r.json();
-        const n = Number(data.presence_count || 0);
-        const formatted = formatCount(n);
-        countEl.textContent = formatted;
-        // Also update the navbar Discord button
+        const [widgetRes, inviteRes] = await Promise.all([
+          fetch(URL, { cache:'no-store' }),
+          fetch(INVITE_URL, { cache:'no-store' }).catch(() => null),
+        ]);
+        if (!widgetRes.ok) throw new Error('http ' + widgetRes.status);
+        const data = await widgetRes.json();
+        const presence = Number(data.presence_count || 0);
+        // Footer keeps the "online" presence count (label says "online").
+        countEl.textContent = formatCount(presence);
+        if (liveEl) liveEl.setAttribute('title', presence + ' online now');
+
+        // Navbar + mobile menu show total members (more representative).
+        // Fall back to presence count if the invite endpoint failed.
+        let total = presence;
+        if (inviteRes && inviteRes.ok){
+          const inviteData = await inviteRes.json();
+          total = Number(inviteData.approximate_member_count || presence);
+        }
+        const totalFormatted = formatCount(total);
         const navCount = document.getElementById('dc-count');
-        if (navCount) navCount.textContent = formatted;
+        if (navCount) navCount.textContent = totalFormatted;
         const mCount = document.getElementById('dc-count-m');
-        if (mCount) mCount.textContent = formatted;
-        if (liveEl) liveEl.setAttribute('title', n + ' online now');
+        if (mCount) mCount.textContent = totalFormatted;
+
         renderAvatars(data.members || []);
         root.classList.remove('is-loading');
         root.classList.remove('is-error');
@@ -6874,6 +7307,7 @@ iii.register_function(
 
     /* ============= MOBILE FLOW (swipe-the-flow) ============= */
     const mTrack    = document.getElementById('helloMFlowTrack');
+    const mBody     = document.getElementById('helloMFlowBody');
     const mTraceEl  = document.getElementById('helloMFlowTrace');
     const mDotsEl   = document.getElementById('helloMFlowDots');
     const mPrev     = document.getElementById('helloMFlowPrev');
@@ -6886,7 +7320,7 @@ iii.register_function(
     let mDots = [];
     let mScrollSyncing = false; // suppress scroll handler when WE drive scroll
 
-    if (mTrack && mTraceEl && mDotsEl){
+    if (mTrack && mBody && mTraceEl && mDotsEl){
       // Map step index -> which worker card to show on its slide.
       const stepWorker = (step) => step.active; // 'ts' | 'rs' | 'py'
 
@@ -6950,10 +7384,39 @@ iii.register_function(
         else startFlow();
       });
 
-      // Pause autoplay the moment a finger touches the carousel
-      // (don't wait for the scroll-debounce; the user is clearly engaging).
-      mTrack.addEventListener('touchstart', () => { if (flowPlaying) stopFlow(); }, { passive:true });
       mTraceEl.addEventListener('touchstart', () => { if (flowPlaying) stopFlow(); }, { passive:true });
+
+      const SWIPE_MIN = 48;
+      let mSwipe0 = null;
+      let mSwipeStartedOnTrack = false;
+      mBody.addEventListener('touchstart', (e) => {
+        if (flowPlaying) stopFlow();
+        if (e.touches.length !== 1) { mSwipe0 = null; return; }
+        const t = e.touches[0];
+        mSwipe0 = { x: t.clientX, y: t.clientY };
+        mSwipeStartedOnTrack = !!(e.target.closest && e.target.closest('.hello-mflow-track'));
+      }, { passive: true });
+      mBody.addEventListener('touchend', (e) => {
+        if (!mSwipe0 || !e.changedTouches[0]) { mSwipe0 = null; return; }
+        const t = e.changedTouches[0];
+        const dx = t.clientX - mSwipe0.x;
+        const dy = t.clientY - mSwipe0.y;
+        const ax = Math.abs(dx);
+        const ay = Math.abs(dy);
+        mSwipe0 = null;
+        if (ax < SWIPE_MIN && ay < SWIPE_MIN) return;
+        if (ax < ay) return;
+        if (mSwipeStartedOnTrack) return;
+
+        stopFlow();
+        const n = FLOW_STEPS.length;
+        const w = mTrack.clientWidth;
+        if (!w) return;
+        let nextIdx = dx < 0 ? (flowIdx + 1) % n : (flowIdx - 1 + n) % n;
+        mScrollSyncing = true;
+        mTrack.scrollTo({ left: nextIdx * w, behavior: 'smooth' });
+        setTimeout(() => { mScrollSyncing = false; }, 450);
+      }, { passive: true });
 
       // Scroll → seek (debounced; ignore programmatic scrolls).
       let mScrollTimer = null;
@@ -7474,7 +7937,8 @@ iii.register_function(
 
     // ---------- MOBILE/TABLET: tap + swipe ----------
     let mIdx = 0;
-    function setPanel(i){
+    let csScrollSync = false;
+    function applyPanelChrome(i){
       i = Math.max(0, Math.min(N - 1, i));
       mIdx = i;
       panels.forEach((p, k) => p.classList.toggle('is-active', k === i));
@@ -7493,6 +7957,14 @@ iii.register_function(
         }
       }
     }
+    function setPanel(i){
+      applyPanelChrome(i);
+      if (isMobile() && track && track.clientWidth){
+        csScrollSync = true;
+        track.scrollTo({ left: mIdx * track.clientWidth, behavior: 'smooth' });
+        window.setTimeout(() => { csScrollSync = false; }, 400);
+      }
+    }
     // clear all .is-active panel states (used when leaving mobile mode)
     function clearMobileState(){
       panels.forEach(p => p.classList.remove('is-active'));
@@ -7501,9 +7973,15 @@ iii.register_function(
     // ---------- mode switch ----------
     function applyMode(){
       if (isMobile()){
-        // remove desktop transform; let CSS @media handle layout
         track.style.transform = '';
-        setPanel(mIdx);
+        const syncIdx = lastIdx >= 0 ? lastIdx : mIdx;
+        applyPanelChrome(syncIdx);
+        const w = track.clientWidth;
+        if (w){
+          csScrollSync = true;
+          track.scrollLeft = mIdx * w;
+          csScrollSync = false;
+        }
       } else {
         clearMobileState();
         updateScroll();
@@ -7518,6 +7996,19 @@ iii.register_function(
     }
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', () => { applyMode(); });
+
+    let csScrollTimer = null;
+    track.addEventListener('scroll', () => {
+      if (!isMobile() || csScrollSync) return;
+      window.clearTimeout(csScrollTimer);
+      csScrollTimer = window.setTimeout(() => {
+        const w = track.clientWidth;
+        if (!w) return;
+        const i = Math.round(track.scrollLeft / w);
+        if (i === mIdx || i < 0 || i >= N) return;
+        applyPanelChrome(i);
+      }, 120);
+    }, { passive: true });
 
     // chip clicks: behave per-mode
     navItems.forEach((el, i) => {
@@ -7730,14 +8221,15 @@ iii.register_function(
 
   // ---- Stage management ----
   const STAGES = {
-    mesh:   { name: 'problem space', count: '45', accentCount: false },
-    actual: { name: 'implementation', count: String(actualEdges.length), accentCount: false },
-    iii:    { name: 'iii',            count: '0',  accentCount: true }
+    mesh:   { name: 'problem space', count: '45', accentCount: false, formula: '<math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>\u2212</mo><mn>1</mn><mo>)</mo></mrow><mn>2</mn></mfrac><mo>)</mo></math>', formulaSub: '' },
+    actual: { name: 'implementation', count: String(actualEdges.length), accentCount: false, formula: '<math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>\u2212</mo><mn>1</mn><mo>)</mo></mrow><mrow><mn>2</mn><mo>\u00b7</mo><mtext>your tolerance for integrations</mtext></mrow></mfrac><mo>)</mo></math>', formulaSub: '' },
+    iii:    { name: 'iii', count: '0', accentCount: true, formula: '<math><mi>O</mi><mo>(</mo><mn>0</mn><mo>)</mo></math>', formulaSub: '' }
   };
   const stageOrder = ['mesh', 'actual', 'iii'];
   const $stageName = document.getElementById('hv-stage-name');
   const $count = document.getElementById('hv-count');
-  const $formula = document.getElementById('hv-formula'); // removed from DOM
+  const $formula = document.getElementById('hv-formula');
+  const $formulaSub = document.getElementById('hv-formula-sub');
   const $tabs = root.querySelectorAll('.hero-viz-tabs button');
 
   let currentStage = 'mesh';
@@ -7751,7 +8243,8 @@ iii.register_function(
     $stageName.textContent = s.name;
     $count.textContent = s.count;
     $count.classList.toggle('accent', s.accentCount);
-    if ($formula) $formula.textContent = s.formula || '';
+    if ($formula) $formula.innerHTML = s.formula || '';
+    if ($formulaSub) $formulaSub.textContent = s.formulaSub || '';
     $tabs.forEach(b => b.classList.toggle('on', b.dataset.stage === stage));
   }
 
@@ -8178,6 +8671,9 @@ iii.register_function(
   };
 
   let agentG = null, agentLabel = null;
+  // Hoisted so setAgentPos() can position the "agent" label relative to the
+  // harness frame in portrait without re-deriving the dimensions.
+  let harnessW = 0, harnessH = 0;
 
   // Build the static SVG geometry for the given stage. In landscape this
   // doesn't actually depend on stage (only the agent moves), but in portrait
@@ -8263,8 +8759,8 @@ iii.register_function(
 
       // Minimal harness representation around the agent.
       const harnessG = mk('g', { class: 'ag-harness' });
-      const harnessW = useLadder ? 76 : 70;
-      const harnessH = useLadder ? 64 : 56;
+      harnessW = useLadder ? 76 : 70;
+      harnessH = useLadder ? 64 : 56;
       harnessG.appendChild(mk('rect', {
         x: agentToday.x - harnessW/2, y: agentToday.y - harnessH/2,
         width: harnessW, height: harnessH,
@@ -8276,7 +8772,7 @@ iii.register_function(
         class: 'ag-harness-tag',
         'text-anchor': 'middle',
       });
-      hLbl.textContent = 'harness';
+      hLbl.textContent = 'agent harness';
       harnessG.appendChild(hLbl);
       $eH.appendChild(harnessG);
     }
@@ -8303,17 +8799,11 @@ iii.register_function(
   function setAgentPos(stage){
     if (stage === 'today') {
       agentG.setAttribute('transform', `translate(${agentToday.x}, ${agentToday.y})`);
-      // In portrait the agent sits inside the harness; the "agent" label goes
-      // INSIDE the harness frame, centered on the node.
-      if (layout.portrait) {
-        agentLabel.setAttribute('x', agentToday.x);
-        agentLabel.setAttribute('y', agentToday.y + 4);
-        agentLabel.setAttribute('text-anchor', 'middle');
-      } else {
-        agentLabel.setAttribute('x', agentToday.x + 16);
-        agentLabel.setAttribute('y', agentToday.y - 14);
-        agentLabel.setAttribute('text-anchor', 'start');
-      }
+      // Place the "agent" label above the dot, just inside the harness top
+      // edge, so it never overlaps the node mark (portrait OR landscape).
+      agentLabel.setAttribute('x', agentToday.x);
+      agentLabel.setAttribute('y', agentToday.y - harnessH/2 + 10);
+      agentLabel.setAttribute('text-anchor', 'middle');
     } else {
       agentG.setAttribute('transform', `translate(${agentIii.x}, ${agentIii.y})`);
       // Slot 0 in the ring is at the TOP — push the label above it.

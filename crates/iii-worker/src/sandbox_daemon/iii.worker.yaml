@@ -1,0 +1,14 @@
+iii: v1
+name: iii-sandbox
+type: engine
+description: Spawn ephemeral microVMs and expose 14 sandbox::* triggers (lifecycle + filesystem) for isolated command execution and file ops.
+repo: https://github.com/iii-hq/iii
+config:
+  auto_install: true
+  image_allowlist:
+    - python
+    - node
+  default_idle_timeout_secs: 300
+  max_concurrent_sandboxes: 32
+  default_cpus: 1
+  default_memory_mb: 512

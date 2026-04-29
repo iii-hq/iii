@@ -17,9 +17,9 @@ pnpm install
 pnpm dev
 ```
 
-The site is served at http://localhost:3000.
+The site is served at http://localhost:3000 with **live reload** — edits to any `.html`, `.css`, or font file refresh the browser automatically.
 
-> Note: `pnpm dev` runs [`serve`](https://www.npmjs.com/package/serve), which honors `vercel.json`'s `cleanUrls` setting, so `/manifesto` resolves to `manifesto.html` locally just as it does in production.
+> Note: `pnpm dev` runs [`browser-sync`](https://www.npmjs.com/package/browser-sync). Vercel's `cleanUrls` is a production-only feature, so locally you'll need to visit `/manifesto.html` (with the extension) — in production the same path also works as `/manifesto`.
 
 ## Deploying to Vercel
 
@@ -42,11 +42,7 @@ The hero and footer email forms POST to a Mailmodo form endpoint configured via 
 />
 ```
 
-The endpoint is checked into source. Mailmodo form endpoints are public-client-safe (the same URL is what would be embedded in any front-end form), so there's no secret material in this value. To change it per environment:
-
-- **Production**: edit the `content` attribute in `index.html` and redeploy.
-- **Locally / per-branch**: edit the same attribute on a feature branch.
-- **To disable submission entirely**: clear the `content` attribute. The form will still show the "Thanks for subscribing!" success state and persist to `localStorage`, but no request goes to Mailmodo.
+The endpoint is checked into source. Mailmodo form endpoints are public-client-safe (the same URL is what would be embedded in any front-end form), so there's no secret material in this value. To change it edit the `content` attribute in `index.html` and redeploy.
 
 ## Editing the site
 
