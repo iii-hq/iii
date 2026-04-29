@@ -733,6 +733,11 @@
     align-self:start;
     position:relative;
   }
+  @media (min-width: 881px){
+    .hero-viz:not([data-design="triptych"]){
+      grid-template-rows: auto 1fr auto auto;
+    }
+  }
   .hero-viz-head{
     display:flex; align-items:center; justify-content:space-between;
     gap:12px;
@@ -774,7 +779,7 @@
 
   .hero-viz-canvas{
     position:relative;
-    aspect-ratio: 1 / 1;
+    aspect-ratio: 5 / 4;
     width:100%;
     overflow:hidden;
   }
@@ -857,7 +862,119 @@
   }
   .hv-count{ color:var(--ink); font-weight:500; font-variant-numeric: tabular-nums; }
   .hv-count.accent{ color:var(--accent); }
-  .hv-formula{ color:var(--ink-faint); }
+  .hv-formula{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size:18px;
+    letter-spacing:0.02em;
+    color:var(--ink);
+    font-weight:500;
+    text-transform:none;
+    transition: opacity .35s ease;
+    line-height:1;
+  }
+  .hv-formula math{
+    font-family: 'Latin Modern Math', 'STIX Two Math', 'Cambria Math', serif;
+    font-size: 1.15em;
+  }
+  .hv-formula math mtext{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size: 0.7em;
+    color: var(--ink-faint);
+  }
+  .hv-formula-sub{
+    margin-left:8px;
+    font-size:10px;
+    font-weight:400;
+    letter-spacing:0.04em;
+    color:var(--ink-faint);
+    text-transform:lowercase;
+  }
+
+  /* Complexity chart — desktop classic hero only */
+  .hero-viz-complexity{
+    display:none;
+    border-top:1px solid var(--rule);
+    padding:10px 18px 12px 18px;
+    gap:2px;
+    flex-direction:column;
+    align-items:stretch;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+  }
+  .hv-complex-chart{
+    width:100%;
+    height:80px;
+    display:block;
+    overflow:visible;
+  }
+  .hv-complex-copy{
+    text-align:center;
+  }
+  .hv-cc-axis{
+    stroke:var(--ink-faint);
+    stroke-width:1;
+    fill:none;
+    opacity:.65;
+  }
+  .hv-cc-q, .hv-cc-l, .hv-cc-f{
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+    vector-effect:non-scaling-stroke;
+    transition: opacity .45s ease, stroke-width .35s ease;
+  }
+  .hero-viz[data-stage="mesh"] .hv-cc-q{
+    stroke:var(--ink);
+    opacity:1;
+    stroke-width:1.35;
+  }
+  .hero-viz[data-stage="mesh"] .hv-cc-l{
+    stroke:var(--ink-faint);
+    opacity:.32;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="mesh"] .hv-cc-f{
+    stroke:var(--ink-ghost);
+    opacity:0;
+    stroke-width:1;
+  }
+
+  .hero-viz[data-stage="actual"] .hv-cc-q{
+    stroke:var(--ink-faint);
+    opacity:.28;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="actual"] .hv-cc-l{
+    stroke:var(--ink);
+    opacity:1;
+    stroke-width:1.35;
+  }
+  .hero-viz[data-stage="actual"] .hv-cc-f{
+    stroke:var(--ink-ghost);
+    opacity:0;
+    stroke-width:1;
+  }
+
+  .hero-viz[data-stage="iii"] .hv-cc-q{
+    stroke:var(--ink-faint);
+    opacity:.2;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="iii"] .hv-cc-l{
+    stroke:var(--ink-faint);
+    opacity:.22;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="iii"] .hv-cc-f{
+    stroke:var(--accent);
+    opacity:1;
+    stroke-width:1.45;
+  }
+
+  @media (min-width: 881px){
+    .hero-viz:not([data-design="triptych"]) .hero-viz-complexity{
+      display:flex;
+    }
+  }
 
   /* Triptych variant: stacked mini circles */
   .hero-viz[data-design="triptych"]{
@@ -4308,6 +4425,23 @@
             <g id="hv-nodes"></g>
             <g id="hv-labels"></g>
           </svg>
+        </div>
+
+        <div class="hero-viz-complexity" aria-live="polite">
+          <svg class="hv-complex-chart" viewBox="22 0 186 118" preserveAspectRatio="none" aria-hidden="true">
+            <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94"/>
+            <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14"/>
+            <!-- n(n-1)/2: full pairwise growth -->
+            <path class="hv-cc-q" d="M 22 94 Q 118 18 208 20"/>
+            <!-- (n(n-1)/2) / tolerance: proportionally damped curve -->
+            <path class="hv-cc-l" d="M 22 94 Q 118 60 208 61"/>
+            <!-- 0: constant on the axis -->
+            <path class="hv-cc-f" d="M 22 94 L 208 94"/>
+          </svg>
+          <div class="hv-complex-copy">
+            <span class="hv-formula" id="hv-formula"><math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>&#x2212;</mo><mn>1</mn><mo>)</mo></mrow><mn>2</mn></mfrac><mo>)</mo></math></span>
+            <span class="hv-formula-sub" id="hv-formula-sub"></span>
+          </div>
         </div>
 
         <div class="hero-viz-foot">
@@ -7970,14 +8104,15 @@ iii.register_function(
 
   // ---- Stage management ----
   const STAGES = {
-    mesh:   { name: 'problem space', count: '45', accentCount: false },
-    actual: { name: 'implementation', count: String(actualEdges.length), accentCount: false },
-    iii:    { name: 'iii',            count: '0',  accentCount: true }
+    mesh:   { name: 'problem space', count: '45', accentCount: false, formula: '<math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>\u2212</mo><mn>1</mn><mo>)</mo></mrow><mn>2</mn></mfrac><mo>)</mo></math>', formulaSub: '' },
+    actual: { name: 'implementation', count: String(actualEdges.length), accentCount: false, formula: '<math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>\u2212</mo><mn>1</mn><mo>)</mo></mrow><mrow><mn>2</mn><mo>\u00b7</mo><mtext>your tolerance for integrations</mtext></mrow></mfrac><mo>)</mo></math>', formulaSub: '' },
+    iii:    { name: 'iii', count: '0', accentCount: true, formula: '<math><mi>O</mi><mo>(</mo><mn>0</mn><mo>)</mo></math>', formulaSub: '' }
   };
   const stageOrder = ['mesh', 'actual', 'iii'];
   const $stageName = document.getElementById('hv-stage-name');
   const $count = document.getElementById('hv-count');
-  const $formula = document.getElementById('hv-formula'); // removed from DOM
+  const $formula = document.getElementById('hv-formula');
+  const $formulaSub = document.getElementById('hv-formula-sub');
   const $tabs = root.querySelectorAll('.hero-viz-tabs button');
 
   let currentStage = 'mesh';
@@ -7991,7 +8126,8 @@ iii.register_function(
     $stageName.textContent = s.name;
     $count.textContent = s.count;
     $count.classList.toggle('accent', s.accentCount);
-    if ($formula) $formula.textContent = s.formula || '';
+    if ($formula) $formula.innerHTML = s.formula || '';
+    if ($formulaSub) $formulaSub.textContent = s.formulaSub || '';
     $tabs.forEach(b => b.classList.toggle('on', b.dataset.stage === stage));
   }
 
