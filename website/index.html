@@ -3157,6 +3157,55 @@
     }
   }
 
+  /* ============= CONSOLE — mobile per-panel decluttering ============= */
+  @media (max-width: 1024px){
+    /* Workers: hide right-side metadata (host · pid · fn count · age) */
+    .cs-panel[data-idx="0"] .cs-row-worker .cs-row-meta{ display:none; }
+
+    /* Functions: hide right-side invoke dialog, list spans full width */
+    .cs-panel[data-idx="1"] .cs-card-split{ grid-template-columns: 1fr; }
+    .cs-panel[data-idx="1"] .cs-fn-side{ display:none; }
+
+    /* Triggers: same pattern as Functions */
+    .cs-panel[data-idx="2"] .cs-card-split{ grid-template-columns: 1fr; }
+    .cs-panel[data-idx="2"] .cs-fn-side{ display:none; }
+
+    /* States: hide groups column AND right-side detail aside */
+    .cs-panel[data-idx="3"] .cs-card-split.states{ grid-template-columns: 1fr; }
+    .cs-panel[data-idx="3"] .cs-states-groups,
+    .cs-panel[data-idx="3"] .cs-fn-side{ display:none; }
+
+    /* Streams: drop the ws://… address chip, let stats wrap */
+    .cs-panel[data-idx="4"] .cs-card-bar.streams{ gap:12px; flex-wrap:wrap; }
+    .cs-panel[data-idx="4"] .cs-card-bar.streams .cs-card-bar-right{ display:none; }
+
+    /* Queues: progress meter onto its own row below name/meta */
+    .cs-panel[data-idx="5"] .cs-row-queue{
+      grid-template-columns: 24px 1fr auto;
+      grid-template-areas:
+        "ico  name chev"
+        "ico  meta chev"
+        "meter meter meter";
+      row-gap:6px;
+    }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-glyph  { grid-area:ico; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-name   { grid-area:name; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-meta   { grid-area:meta; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-row-chev   { grid-area:chev; }
+    .cs-panel[data-idx="5"] .cs-row-queue > .cs-queue-meter{ grid-area:meter; width:100%; }
+
+    /* Traces: hide colored span bars, give name + ts the room */
+    .cs-panel[data-idx="6"] .cs-trace-row{ grid-template-columns: 14px 1fr auto; }
+    .cs-panel[data-idx="6"] .cs-trace-bars{ display:none; }
+
+    /* Logs: hide the toolbar row (filters + search + severity legend) */
+    .cs-panel[data-idx="7"] .cs-card-bar{ display:none; }
+
+    /* Config: keep stats strip + worker-pools; hide service URL cards and trigger-type pills */
+    .cs-panel[data-idx="8"] .cs-config-row{ display:none; }
+    .cs-panel[data-idx="8"] .cs-config-section:first-of-type{ display:none; }
+  }
+
   /* ============= FOOTER ============= */
   .foot{
     position:relative;
@@ -3234,7 +3283,7 @@
   .foot-email .row{
     display:flex; align-items:center; width:100%;
     position:relative;
-    border-bottom:1px solid rgba(255,255,255,0.32);
+    border-bottom:1px solid color-mix(in srgb, var(--bg) 32%, transparent);
     transition: border-color .15s;
   }
   .foot-email .row:focus-within{ border-bottom-color:var(--accent); }
@@ -3246,9 +3295,9 @@
     font-size:13px;
     color:var(--bg);
   }
-  .foot-email input::placeholder{ color:rgba(255,255,255,0.5); }
+  .foot-email input::placeholder{ color:color-mix(in srgb, var(--bg) 50%, transparent); }
   .foot-cta .foot-email input{ color:var(--bg); }
-  .foot-cta .foot-email input::placeholder{ color:rgba(255,255,255,0.5); }
+  .foot-cta .foot-email input::placeholder{ color:color-mix(in srgb, var(--bg) 50%, transparent); }
   .foot-email button{
     position:absolute; right:0; top:50%; transform:translateY(-50%);
     appearance:none; background:transparent; border:0; cursor:pointer;
@@ -3259,7 +3308,7 @@
   }
   .foot-email button:hover{ color:var(--accent); }
   .foot-email button svg{ width:16px; height:16px; }
-  .foot-email.submitted{ padding:10px 2px; color:rgba(255,255,255,0.65); font-size:13px; }
+  .foot-email.submitted{ padding:10px 2px; color:color-mix(in srgb, var(--bg) 65%, transparent); font-size:13px; }
   .foot-email.submitted .row{ display:none; }
   .foot-email.submitted .thanks{ display:flex; align-items:center; gap:8px; justify-content:center; }
   .foot-email .thanks{ display:none; }
