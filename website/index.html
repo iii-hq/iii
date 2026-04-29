@@ -4117,7 +4117,10 @@
   if (!banner) return;
   try {
     var stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'accepted' || stored === 'rejected') return;
+    if (stored === 'accepted' || stored === 'rejected') {
+      banner.remove();
+      return;
+    }
   } catch (_) {}
   banner.removeAttribute('hidden');
   var accept = banner.querySelector('[data-consent-accept]');
