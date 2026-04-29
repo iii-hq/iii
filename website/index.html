@@ -3200,8 +3200,8 @@
     /* frame stacks: chip rail on top, main below */
     .cs-frame{
       grid-template-columns: 1fr;
-      grid-template-rows: auto 1fr;
-      min-height:640px;
+      grid-template-rows: auto auto auto;
+      min-height:0;
     }
 
     /* rail becomes a horizontal chip row */
@@ -3255,33 +3255,73 @@
     }
     .cs-mast-hint .arr{ color:var(--ink); }
 
-    /* one panel at a time */
+    /* Horizontal scroll-snap carousel (panels slide like desktop translate track) */
     .cs-stage{
-      min-height:540px;
-      touch-action: pan-y;
+      height:clamp(420px, 70vh, 540px);
+      min-height:0;
+      overflow:hidden;
+      touch-action:manipulation;
     }
     .cs-track{
-      display:block;
+      display:flex;
       width:100%;
       height:100%;
+      min-height:0;
       transform:none !important;
       transition:none;
       position:relative;
+      overflow-x:auto;
+      overflow-y:hidden;
+      scroll-snap-type:x mandatory;
+      -webkit-overflow-scrolling:touch;
+      scrollbar-width:none;
+      -ms-overflow-style:none;
+      touch-action:pan-x;
+      align-items:stretch;
     }
+    .cs-track::-webkit-scrollbar{ display:none; }
     .cs-panel{
-      position:absolute;
-      inset:0;
+      position:relative;
+      inset:auto;
+      flex:0 0 100%;
       width:100%;
+      min-width:0;
       height:100%;
-      flex:initial;
+      min-height:0;
       padding:14px 14px 16px;
-      display:none;
-      opacity:0;
-      transition: opacity .18s ease;
-    }
-    .cs-panel.is-active{
       display:flex;
+      flex-direction:column;
+      gap:10px;
       opacity:1;
+      scroll-snap-align:start;
+      scroll-snap-stop:always;
+      box-sizing:border-box;
+      overflow-x:hidden;
+      overflow-y:hidden;
+    }
+    .cs-panel .cs-card{
+      min-height:0;
+      flex:1 1 auto;
+    }
+    .cs-panel .cs-card-body,
+    .cs-panel .cs-fn-list,
+    .cs-panel .cs-fn-side,
+    .cs-panel .cs-states-groups,
+    .cs-panel .cs-states-table,
+    .cs-panel .cs-streams-body,
+    .cs-panel .cs-queues-body,
+    .cs-panel .cs-traces-body,
+    .cs-panel .cs-logs-body,
+    .cs-panel .cs-config-body{
+      overflow-x:hidden;
+      overflow-y:auto;
+      touch-action:pan-y;
+    }
+    .cs-panel pre,
+    .cs-panel .cs-fn-side-input{
+      white-space:pre-wrap;
+      word-break:break-word;
+      overflow-x:hidden;
     }
   }
 
@@ -3370,9 +3410,12 @@
     display:grid; grid-template-columns:1fr 1fr;
     gap:16px;
     margin:0 auto 28px;
+    max-width:100%;
   }
   .foot-row > *{
     border:1px solid var(--rule);
+    min-width:0;
+    max-width:100%;
   }
   /* On the inverted CTA, lift the borders so cards are visible */
   .foot-cta .foot-row > *{ border-color:rgba(255,255,255,0.18); }
@@ -3389,8 +3432,10 @@
     text-align:left;
     color:var(--ink);
     font-family:'Chivo Mono', ui-monospace, monospace;
-    font-size:13px;
+    font-size:clamp(11px, 2.85vw, 13px);
     width:100%;
+    min-width:0;
+    max-width:100%;
   }
   .foot-install:hover{ background:var(--rule-2); }
   .foot-install .prompt{ color:var(--ink); flex-shrink:0; }
@@ -3403,13 +3448,16 @@
     display:flex; flex-direction:column; justify-content:center;
     background:transparent;
     padding:0;
+    min-width:0;
+    max-width:100%;
   }
   /* Override .foot-row > * card border so email is underline-only, like the hero form */
   .foot-row > .foot-email,
   .foot-cta .foot-row > .foot-email,
   :root[data-theme="dark"] .foot-cta .foot-row > .foot-email{ border:none; }
   .foot-email .row{
-    display:flex; align-items:center; width:100%;
+    display:flex; align-items:center; width:100%; max-width:100%;
+    min-width:0;
     position:relative;
     border-bottom:1px solid color-mix(in srgb, var(--bg) 32%, transparent);
     transition: border-color .15s;
@@ -3420,7 +3468,7 @@
     appearance:none; border:0; outline:none; background:transparent;
     padding:10px 32px 10px 2px;
     font-family:'Chivo Mono', ui-monospace, monospace;
-    font-size:13px;
+    font-size:clamp(11px, 2.85vw, 13px);
     color:var(--bg);
   }
   .foot-email input::placeholder{ color:color-mix(in srgb, var(--bg) 50%, transparent); }
@@ -3594,11 +3642,6 @@
     .hello > .hello-trace,
     .hello > .hello-flow-controls{ display:none !important; }
     .hello-mflow{ display:flex !important; }
-    /* Let horizontal swipe on the code area page the carousel instead of
-       getting trapped in the inner code scroller. */
-    .hello-mflow-slide .hello-code{ overflow-x:hidden; touch-action:pan-y; white-space:pre-wrap; word-break:break-word; }
-    .hello-mflow-slide .hello-card,
-    .hello-mflow-caption{ touch-action:pan-y; }
   }
   @media (min-width: 881px){
     .hello-mflow{ display:none !important; }
@@ -3658,6 +3701,11 @@
     -webkit-overflow-scrolling:touch;
     scrollbar-width:none;
   }
+  .hello-mflow-body{
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
   .hello-mflow-track::-webkit-scrollbar{ display:none; }
   .hello-mflow-slide{
     flex:0 0 100%;
@@ -3668,6 +3716,8 @@
     border-right:1px solid var(--rule);
     background:var(--bg);
     transition:background .3s;
+    min-width:0;
+    overflow-x:hidden;
   }
   .hello-mflow-slide:last-child{ border-right:none; }
   .hello-mflow-slide.is-active{
@@ -3680,6 +3730,7 @@
     color:var(--ink);
     text-transform:lowercase;
     letter-spacing:.01em;
+    overflow-x:hidden;
   }
   .hello-mflow-caption .step{
     display:inline-block;
@@ -3695,6 +3746,8 @@
     background:transparent;
     display:flex; flex-direction:column;
     min-height:0;
+    min-width:0;
+    overflow-x:hidden;
   }
   .hello-mflow-slide .hello-chead{
     padding:14px 16px;
@@ -3704,11 +3757,11 @@
     padding:14px 16px 18px;
     margin:0;
     background:transparent;
-    overflow-x:auto;
-    overflow-y:hidden;
+    overflow:hidden;
     font-size:11px;
     line-height:1.7;
-    white-space:pre;
+    white-space:pre-wrap;
+    word-break:break-word;
     scrollbar-width:none;
     -ms-overflow-style:none;
   }
@@ -3785,11 +3838,15 @@
   }
   @media (max-width: 880px){
     .foot{ padding:48px 14px 48px; }
+    .foot-cta{
+      padding:48px clamp(20px, 5vw, 48px) 40px;
+    }
     .nut-panel{ min-height:0; }
-    .foot-row{ grid-template-columns:1fr; }
+    .foot-row{ grid-template-columns:1fr; gap:14px; }
     .foot-row > *{ border-right:none; border-bottom:1px solid var(--rule); }
     .foot-row > *:last-child{ border-bottom:none; }
-    .foot-social{ grid-template-columns:1fr; }
+    .foot-install{ gap:8px; padding:12px 14px; }
+    .foot-social{ grid-template-columns:1fr; gap:14px; }
     .foot-cols{ grid-template-columns:1fr 1fr; gap:32px; margin-top:48px; padding-top:32px; }
     .foot-col-brand{ grid-column:1 / -1; }
     .foot-bottom{ font-size:11px; }
@@ -4715,8 +4772,10 @@ iii.register_function(
     <!-- Mobile: swipe-the-flow (one slide per step). Built from the desktop cards by JS. -->
     <div class="hello-mflow" id="helloMFlow" aria-label="Hello world execution flow (mobile)">
       <div class="hello-mflow-trace" id="helloMFlowTrace"></div>
-      <div class="hello-mflow-track" id="helloMFlowTrack"></div>
-      <div class="hello-mflow-dots" id="helloMFlowDots"></div>
+      <div class="hello-mflow-body" id="helloMFlowBody">
+        <div class="hello-mflow-track" id="helloMFlowTrack"></div>
+        <div class="hello-mflow-dots" id="helloMFlowDots"></div>
+      </div>
       <div class="hello-mflow-controls">
         <button id="helloMFlowPrev" type="button">&larr; prev</button>
         <button id="helloMFlowPlay" type="button">play</button>
@@ -7248,6 +7307,7 @@ iii.register_function(
 
     /* ============= MOBILE FLOW (swipe-the-flow) ============= */
     const mTrack    = document.getElementById('helloMFlowTrack');
+    const mBody     = document.getElementById('helloMFlowBody');
     const mTraceEl  = document.getElementById('helloMFlowTrace');
     const mDotsEl   = document.getElementById('helloMFlowDots');
     const mPrev     = document.getElementById('helloMFlowPrev');
@@ -7260,7 +7320,7 @@ iii.register_function(
     let mDots = [];
     let mScrollSyncing = false; // suppress scroll handler when WE drive scroll
 
-    if (mTrack && mTraceEl && mDotsEl){
+    if (mTrack && mBody && mTraceEl && mDotsEl){
       // Map step index -> which worker card to show on its slide.
       const stepWorker = (step) => step.active; // 'ts' | 'rs' | 'py'
 
@@ -7324,10 +7384,39 @@ iii.register_function(
         else startFlow();
       });
 
-      // Pause autoplay the moment a finger touches the carousel
-      // (don't wait for the scroll-debounce; the user is clearly engaging).
-      mTrack.addEventListener('touchstart', () => { if (flowPlaying) stopFlow(); }, { passive:true });
       mTraceEl.addEventListener('touchstart', () => { if (flowPlaying) stopFlow(); }, { passive:true });
+
+      const SWIPE_MIN = 48;
+      let mSwipe0 = null;
+      let mSwipeStartedOnTrack = false;
+      mBody.addEventListener('touchstart', (e) => {
+        if (flowPlaying) stopFlow();
+        if (e.touches.length !== 1) { mSwipe0 = null; return; }
+        const t = e.touches[0];
+        mSwipe0 = { x: t.clientX, y: t.clientY };
+        mSwipeStartedOnTrack = !!(e.target.closest && e.target.closest('.hello-mflow-track'));
+      }, { passive: true });
+      mBody.addEventListener('touchend', (e) => {
+        if (!mSwipe0 || !e.changedTouches[0]) { mSwipe0 = null; return; }
+        const t = e.changedTouches[0];
+        const dx = t.clientX - mSwipe0.x;
+        const dy = t.clientY - mSwipe0.y;
+        const ax = Math.abs(dx);
+        const ay = Math.abs(dy);
+        mSwipe0 = null;
+        if (ax < SWIPE_MIN && ay < SWIPE_MIN) return;
+        if (ax < ay) return;
+        if (mSwipeStartedOnTrack) return;
+
+        stopFlow();
+        const n = FLOW_STEPS.length;
+        const w = mTrack.clientWidth;
+        if (!w) return;
+        let nextIdx = dx < 0 ? (flowIdx + 1) % n : (flowIdx - 1 + n) % n;
+        mScrollSyncing = true;
+        mTrack.scrollTo({ left: nextIdx * w, behavior: 'smooth' });
+        setTimeout(() => { mScrollSyncing = false; }, 450);
+      }, { passive: true });
 
       // Scroll → seek (debounced; ignore programmatic scrolls).
       let mScrollTimer = null;
@@ -7848,7 +7937,8 @@ iii.register_function(
 
     // ---------- MOBILE/TABLET: tap + swipe ----------
     let mIdx = 0;
-    function setPanel(i){
+    let csScrollSync = false;
+    function applyPanelChrome(i){
       i = Math.max(0, Math.min(N - 1, i));
       mIdx = i;
       panels.forEach((p, k) => p.classList.toggle('is-active', k === i));
@@ -7867,6 +7957,14 @@ iii.register_function(
         }
       }
     }
+    function setPanel(i){
+      applyPanelChrome(i);
+      if (isMobile() && track && track.clientWidth){
+        csScrollSync = true;
+        track.scrollTo({ left: mIdx * track.clientWidth, behavior: 'smooth' });
+        window.setTimeout(() => { csScrollSync = false; }, 400);
+      }
+    }
     // clear all .is-active panel states (used when leaving mobile mode)
     function clearMobileState(){
       panels.forEach(p => p.classList.remove('is-active'));
@@ -7875,9 +7973,15 @@ iii.register_function(
     // ---------- mode switch ----------
     function applyMode(){
       if (isMobile()){
-        // remove desktop transform; let CSS @media handle layout
         track.style.transform = '';
-        setPanel(mIdx);
+        const syncIdx = lastIdx >= 0 ? lastIdx : mIdx;
+        applyPanelChrome(syncIdx);
+        const w = track.clientWidth;
+        if (w){
+          csScrollSync = true;
+          track.scrollLeft = mIdx * w;
+          csScrollSync = false;
+        }
       } else {
         clearMobileState();
         updateScroll();
@@ -7892,6 +7996,19 @@ iii.register_function(
     }
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', () => { applyMode(); });
+
+    let csScrollTimer = null;
+    track.addEventListener('scroll', () => {
+      if (!isMobile() || csScrollSync) return;
+      window.clearTimeout(csScrollTimer);
+      csScrollTimer = window.setTimeout(() => {
+        const w = track.clientWidth;
+        if (!w) return;
+        const i = Math.round(track.scrollLeft / w);
+        if (i === mIdx || i < 0 || i >= N) return;
+        applyPanelChrome(i);
+      }, 120);
+    }, { passive: true });
 
     // chip clicks: behave per-mode
     navItems.forEach((el, i) => {
