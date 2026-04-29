@@ -43,6 +43,11 @@ output "github_tf_plan_role_arn" {
   value       = aws_iam_role.github_tf_plan.arn
 }
 
+output "github_tf_apply_role_arn" {
+  description = "Admin IAM role ARN assumed by the tf-apply GitHub Actions workflow on push to main — set as repo-level GitHub secret AWS_TF_APPLY_ROLE_ARN"
+  value       = aws_iam_role.github_tf_apply.arn
+}
+
 output "sns_alarms_topic_arn" {
   description = "SNS topic ARN that receives production alarms"
   value       = aws_sns_topic.alarms.arn

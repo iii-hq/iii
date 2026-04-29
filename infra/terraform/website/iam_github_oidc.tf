@@ -101,6 +101,44 @@ resource "aws_iam_role_policy_attachment" "github_deploy_website" {
   policy_arn = aws_iam_policy.github_deploy_website.arn
 }
 
+data "aws_iam_policy_document" "github_tf_apply_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        "repo:${var.github_repo}:environment:${var.github_tf_apply_environment}",
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_tf_apply" {
+  name                 = "iii-website-prod-github-tf-apply"
+  description          = "Assumed by GitHub Actions from the ${var.github_tf_apply_environment} environment to run `terraform apply` against infra/terraform/website. Configure that environment with required reviewers in repo settings to gate applies."
+  assume_role_policy   = data.aws_iam_policy_document.github_tf_apply_trust.json
+  max_session_duration = 3600
+}
+
+resource "aws_iam_role_policy_attachment" "github_tf_apply_admin" {
+  role       = aws_iam_role.github_tf_apply.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
 # Read-only role for `tf-plan.yml`. Separate from the deploy role so a malicious
 # PR can't accidentally run `terraform apply` with write permissions.
 data "aws_iam_policy_document" "github_tf_plan_trust" {

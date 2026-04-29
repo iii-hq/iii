@@ -58,6 +58,14 @@ variable "github_environment" {
   default     = "iii-website-prod"
 }
 
+variable "github_tf_apply_environment" {
+  # Distinct from github_environment so the apply env can be configured with
+  # required reviewers without gating routine S3 deploys.
+  description = "GitHub environment scoping the tf-apply role. Configure required reviewers on this env in repo settings to gate applies."
+  type        = string
+  default     = "iii-website-prod-tf-apply"
+}
+
 variable "csp_report_only" {
   description = "Send CSP as report-only instead of enforcing."
   type        = bool
