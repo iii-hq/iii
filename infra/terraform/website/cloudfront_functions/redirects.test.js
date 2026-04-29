@@ -9,7 +9,7 @@ const path = require('node:path')
 const source = fs.readFileSync(path.join(__dirname, 'redirects.js'), 'utf8')
 const handler = new Function(source + '\nreturn handler;')()
 
-function buildEvent(uri, host) {
+function buildEvent(uri, host, querystring) {
   return {
     version: '1.0',
     context: {},
@@ -17,7 +17,7 @@ function buildEvent(uri, host) {
     request: {
       method: 'GET',
       uri: uri,
-      querystring: {},
+      querystring: querystring || {},
       headers: host ? { host: { value: host } } : {},
       cookies: {},
     },
@@ -79,6 +79,30 @@ test('www.iii.dev/docs/foo → 301 https://iii.dev/docs/foo', () => {
   const result = handler(buildEvent('/docs/foo', 'www.iii.dev'))
   assert.ok(isRedirect(result))
   assert.equal(locationOf(result), 'https://iii.dev/docs/foo')
+})
+
+test('www.iii.dev preserves querystring with multiValue and empty params', () => {
+  // Mirrors the CloudFront Functions querystring shape: repeated keys spill into
+  // multiValue, value-less keys arrive as empty strings, and special chars must
+  // be re-encoded.
+  const result = handler(
+    buildEvent('/some/page', 'www.iii.dev', {
+      a: { value: '1', multiValue: [{ value: '2' }] },
+      empty: { value: '' },
+      ref: { value: 'hello world' },
+    }),
+  )
+  assert.ok(isRedirect(result))
+  assert.equal(
+    locationOf(result),
+    'https://iii.dev/some/page?a=1&a=2&empty=&ref=hello%20world',
+  )
+})
+
+test('www.iii.dev with no querystring → no trailing ?', () => {
+  const result = handler(buildEvent('/some/page', 'www.iii.dev', {}))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/some/page')
 })
 
 test('/ (root) → pass through unchanged', () => {
