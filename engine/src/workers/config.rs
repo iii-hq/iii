@@ -145,6 +145,62 @@ struct WorkerInfo {
     factory: WorkerFactory,
 }
 
+struct ExternalProcessWorker {
+    inner: Box<dyn Worker>,
+}
+
+impl ExternalProcessWorker {
+    fn new(inner: Box<dyn Worker>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl Worker for ExternalProcessWorker {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    async fn create(_engine: Arc<Engine>, _config: Option<Value>) -> anyhow::Result<Box<dyn Worker>>
+    where
+        Self: Sized,
+    {
+        Err(anyhow::anyhow!(
+            "ExternalProcessWorker::create should not be called directly"
+        ))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
+        self.inner.initialize().await
+    }
+
+    async fn start_background_tasks(
+        &self,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        shutdown_tx: tokio::sync::watch::Sender<bool>,
+    ) -> anyhow::Result<()> {
+        self.inner
+            .start_background_tasks(shutdown_rx, shutdown_tx)
+            .await
+    }
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        self.inner.destroy().await
+    }
+
+    async fn is_alive(&self) -> bool {
+        self.inner.is_alive().await
+    }
+
+    fn is_external_process(&self) -> bool {
+        true
+    }
+
+    fn register_functions(&self, engine: Arc<Engine>) {
+        self.inner.register_functions(engine);
+    }
+}
+
 // =============================================================================
 // WorkerRegistry (unified registry for modules and adapters)
 // =============================================================================
@@ -242,7 +298,7 @@ impl WorkerRegistry {
                 info.binary_path.display()
             );
             let module = super::external::ExternalWorker::new(info, config);
-            return Ok(Box::new(module));
+            return Ok(Box::new(ExternalProcessWorker::new(Box::new(module))));
         }
 
         // 4. Delegate to iii-worker start (handles registry lookup, binary
@@ -318,6 +374,78 @@ pub fn assign_instance_ids(entries: &mut Vec<WorkerEntry>) {
             entry.name = format!("{}#{}", base, count);
         }
         *count += 1;
+    }
+}
+
+fn mandatory_worker_names() -> HashSet<&'static str> {
+    inventory::iter::<WorkerRegistration>
+        .into_iter()
+        .filter(|registration| registration.mandatory)
+        .map(|registration| registration.name)
+        .collect()
+}
+
+pub(crate) fn runtime_worker_info_from_registration(
+    entry: &WorkerEntry,
+    worker: &dyn Worker,
+    registrations: &super::reload::WorkerRegistrations,
+) -> Option<crate::worker_connections::RuntimeWorkerInfo> {
+    if worker.is_external_process() {
+        return None;
+    }
+
+    let worker_type = entry.worker_type().to_string();
+    let mut function_ids = registrations.function_ids.clone();
+    function_ids.sort();
+    function_ids.dedup();
+
+    Some(crate::worker_connections::RuntimeWorkerInfo {
+        id: entry.name.clone(),
+        name: worker_type.clone(),
+        worker_type: worker_type.clone(),
+        connected_at: chrono::Utc::now(),
+        function_ids,
+        internal: mandatory_worker_names().contains(worker_type.as_str()),
+    })
+}
+
+fn remove_runtime_worker_after_start_failure(engine: &Engine, rw: &super::reload::RunningWorker) {
+    engine.remove_runtime_worker(&rw.entry.name);
+}
+
+async fn destroy_running_workers(
+    engine: Arc<Engine>,
+    running: &[super::reload::RunningWorker],
+) -> anyhow::Result<()> {
+    let mut first_error = None;
+
+    for rw in running.iter() {
+        tracing::debug!("Destroying worker: {}", rw.worker.name());
+        let _ = rw.shutdown_tx.send(true);
+        let destroy_result = rw.worker.destroy().await;
+        engine.remove_worker_registrations(&rw.registrations);
+        engine.remove_runtime_worker(&rw.entry.name);
+
+        if let Err(err) = destroy_result {
+            tracing::error!(
+                worker = %rw.entry.name,
+                error = %err,
+                "Failed to destroy worker"
+            );
+            if first_error.is_none() {
+                first_error = Some(anyhow::anyhow!(
+                    "failed to destroy worker '{}': {}",
+                    rw.entry.name,
+                    err
+                ));
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        Err(err)
+    } else {
+        Ok(())
     }
 }
 
@@ -514,6 +642,12 @@ impl EngineBuilder {
             let (shutdown_tx, _) = tokio::sync::watch::channel(false);
             let worker_arc: Arc<dyn Worker> = Arc::from(worker);
 
+            if let Some(runtime_worker) =
+                runtime_worker_info_from_registration(&entry, worker_arc.as_ref(), &registrations)
+            {
+                self.engine.upsert_runtime_worker(runtime_worker);
+            }
+
             self.running.push(super::reload::RunningWorker {
                 entry,
                 worker: worker_arc,
@@ -527,12 +661,7 @@ impl EngineBuilder {
 
     pub async fn destroy(self) -> anyhow::Result<()> {
         tracing::warn!("Shutting down engine and destroying workers");
-        for rw in self.running.iter() {
-            tracing::debug!("Destroying worker: {}", rw.worker.name());
-            let _ = rw.shutdown_tx.send(true);
-            rw.worker.destroy().await?;
-            self.engine.remove_worker_registrations(&rw.registrations);
-        }
+        destroy_running_workers(self.engine.clone(), &self.running).await?;
         tracing::warn!("Engine shutdown complete");
         Ok(())
     }
@@ -567,6 +696,7 @@ impl EngineBuilder {
                     error = %e,
                     "Failed to start background tasks for worker"
                 );
+                remove_runtime_worker_after_start_failure(engine.as_ref(), rw);
             }
         }
 
@@ -672,16 +802,13 @@ impl EngineBuilder {
         // Teardown -- inline version of the old `destroy()`. Operates on the
         // local `running` Vec directly so we don't have to reconstruct `self`.
         tracing::warn!("Shutting down engine and destroying workers");
-        for rw in running.iter() {
-            tracing::debug!("Destroying worker: {}", rw.worker.name());
-            let _ = rw.shutdown_tx.send(true);
-            rw.worker.destroy().await?;
-            engine.remove_worker_registrations(&rw.registrations);
-        }
+        let destroy_result = destroy_running_workers(engine.clone(), &running).await;
         tracing::warn!("Engine shutdown complete");
 
         // Drop `global_shutdown_tx` last so the relay task unblocks.
         drop(global_shutdown_tx);
+
+        destroy_result?;
 
         // If the shutdown was caused by a reload failure, propagate the error
         // so the process exits with a non-zero status code.
@@ -1577,6 +1704,236 @@ modules:
 
         builder.destroy().await.expect("destroy engine");
         assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn engine_builder_tracks_in_process_runtime_workers() {
+        use async_trait::async_trait;
+
+        use crate::engine::{EngineTrait, Handler, RegisterFunctionRequest};
+
+        struct ListedWorker;
+
+        #[async_trait]
+        impl Worker for ListedWorker {
+            fn name(&self) -> &'static str {
+                "ListedWorker"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Worker>> {
+                Ok(Box::new(ListedWorker))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn register_functions(&self, engine: Arc<Engine>) {
+                engine.register_function_handler(
+                    RegisterFunctionRequest {
+                        function_id: "listed::fn".to_string(),
+                        description: None,
+                        request_format: None,
+                        response_format: None,
+                        metadata: None,
+                    },
+                    Handler::new(|_input| async { crate::function::FunctionResult::NoResult }),
+                );
+            }
+        }
+
+        let builder = EngineBuilder::new()
+            .register_worker::<ListedWorker>("test::Listed")
+            .add_worker("test::Listed", None)
+            .build()
+            .await
+            .expect("build engine");
+        let engine = builder.engine_handle();
+
+        let mut listed_workers = engine
+            .list_runtime_workers()
+            .into_iter()
+            .filter(|worker| worker.id == "test::Listed")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed_workers.len(),
+            1,
+            "expected exactly one runtime snapshot for test::Listed"
+        );
+
+        let listed = listed_workers.pop().expect("listed worker snapshot");
+        assert_eq!(listed.name, "test::Listed");
+        assert_eq!(listed.worker_type, "test::Listed");
+        assert_eq!(listed.function_ids, vec!["listed::fn"]);
+        assert!(!listed.internal);
+
+        builder.destroy().await.expect("destroy engine");
+
+        assert!(
+            engine.list_runtime_workers().is_empty(),
+            "runtime snapshots should be removed on destroy"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_background_task_failure_removes_runtime_worker_snapshot() {
+        use async_trait::async_trait;
+
+        struct BackgroundStartFailsWorker;
+
+        #[async_trait]
+        impl Worker for BackgroundStartFailsWorker {
+            fn name(&self) -> &'static str {
+                "BackgroundStartFailsWorker"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Worker>> {
+                Ok(Box::new(BackgroundStartFailsWorker))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn start_background_tasks(
+                &self,
+                _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+                _shutdown_tx: tokio::sync::watch::Sender<bool>,
+            ) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!("background start failed"))
+            }
+        }
+
+        let builder = EngineBuilder::new()
+            .register_worker::<BackgroundStartFailsWorker>("test::BackgroundStartFails")
+            .add_worker("test::BackgroundStartFails", None)
+            .build()
+            .await
+            .expect("build engine");
+        let engine = builder.engine_handle();
+        assert!(
+            engine
+                .list_runtime_workers()
+                .iter()
+                .any(|worker| worker.id == "test::BackgroundStartFails"),
+            "runtime snapshot should exist after build"
+        );
+
+        let rw = builder
+            .running()
+            .iter()
+            .find(|rw| rw.entry.name == "test::BackgroundStartFails")
+            .expect("running worker");
+        let (global_shutdown_tx, _) = tokio::sync::watch::channel(false);
+        rw.worker
+            .start_background_tasks(rw.shutdown_tx.subscribe(), global_shutdown_tx)
+            .await
+            .expect_err("background start should fail");
+        remove_runtime_worker_after_start_failure(engine.as_ref(), rw);
+
+        assert!(
+            engine
+                .list_runtime_workers()
+                .iter()
+                .all(|worker| worker.id != "test::BackgroundStartFails"),
+            "runtime snapshot should be removed after background start failure"
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[tokio::test]
+    async fn destroy_continues_cleanup_after_worker_destroy_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use async_trait::async_trait;
+
+        static FAILING_DESTROYS: AtomicUsize = AtomicUsize::new(0);
+        static SUCCESSFUL_DESTROYS: AtomicUsize = AtomicUsize::new(0);
+
+        struct DestroyFailsWorker;
+        struct DestroySucceedsWorker;
+
+        #[async_trait]
+        impl Worker for DestroyFailsWorker {
+            fn name(&self) -> &'static str {
+                "DestroyFailsWorker"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Worker>> {
+                Ok(Box::new(DestroyFailsWorker))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn destroy(&self) -> anyhow::Result<()> {
+                FAILING_DESTROYS.fetch_add(1, Ordering::SeqCst);
+                Err(anyhow::anyhow!("destroy failed"))
+            }
+        }
+
+        #[async_trait]
+        impl Worker for DestroySucceedsWorker {
+            fn name(&self) -> &'static str {
+                "DestroySucceedsWorker"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Worker>> {
+                Ok(Box::new(DestroySucceedsWorker))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn destroy(&self) -> anyhow::Result<()> {
+                SUCCESSFUL_DESTROYS.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        FAILING_DESTROYS.store(0, Ordering::SeqCst);
+        SUCCESSFUL_DESTROYS.store(0, Ordering::SeqCst);
+
+        let builder = EngineBuilder::new()
+            .register_worker::<DestroyFailsWorker>("test::DestroyFails")
+            .register_worker::<DestroySucceedsWorker>("test::DestroySucceeds")
+            .add_worker("test::DestroyFails", None)
+            .add_worker("test::DestroySucceeds", None)
+            .build()
+            .await
+            .expect("build engine");
+        let engine = builder.engine_handle();
+
+        let err = builder
+            .destroy()
+            .await
+            .expect_err("destroy should return the first worker destroy error");
+        let message = err.to_string();
+        assert!(
+            message.contains("test::DestroyFails"),
+            "destroy error should include worker context, got: {message}"
+        );
+        assert_eq!(FAILING_DESTROYS.load(Ordering::SeqCst), 1);
+        assert_eq!(SUCCESSFUL_DESTROYS.load(Ordering::SeqCst), 1);
+        assert!(
+            engine.list_runtime_workers().is_empty(),
+            "all runtime snapshots should be removed even after a destroy failure"
+        );
     }
 
     #[tokio::test]
