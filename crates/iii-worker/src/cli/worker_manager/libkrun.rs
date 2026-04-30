@@ -130,6 +130,11 @@ pub async fn run_dev(
     cmd.arg("--ram").arg(ram_mib.to_string());
     cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
     cmd.arg("--shell-sock").arg(rootfs.join("shell.sock"));
+    // See `LibkrunAdapter::start` for the rationale — `iii dev` source
+    // workers boot a libkrun VM the same way and need the engine URL
+    // (`ws://localhost:{port}`) rewritten to the smoltcp gateway IP, or
+    // the in-VM SDK loops on EPIPE forever.
+    cmd.arg(VM_BOOT_NETWORK_FLAG);
 
     for (key, value) in &env {
         cmd.arg("--env").arg(format!("{}={}", key, value));
@@ -259,6 +264,14 @@ pub async fn run_dev(
 }
 
 use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
+
+/// `__vm-boot` flag that enables virtio-net + smoltcp + localhost rewrite.
+/// Must match the `--network` flag in `crate::cli::vm_boot::VmBootArgs`;
+/// `vm_boot_network_flag_matches_clap` couples both ends so a rename in
+/// vm_boot.rs without updating this constant fails the build. Used by
+/// every libkrun launch path so the SDK's `ws://localhost:{port}` URL
+/// reaches the engine via the smoltcp gateway.
+const VM_BOOT_NETWORK_FLAG: &str = "--network";
 
 pub struct LibkrunAdapter;
 
@@ -590,6 +603,18 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // handles requests. Absent => exec refuses with a clear error.
         cmd.arg("--shell-sock").arg(worker_dir.join("shell.sock"));
 
+        // Bring up smoltcp + virtio-net so the OCI-image worker process
+        // can reach the engine on the host. The engine URL handed to the
+        // worker is `ws://localhost:{port}`; without networking, that
+        // resolves to the guest's own loopback (no engine there) and the
+        // SDK's iii + OTel WebSockets loop forever on EPIPE writes while
+        // libkrun's vsock-TSI half-proxies the connect (see
+        // `msb_krun_devices::virtio::vsock::muxer_thread` "deferring proxy
+        // removal" warnings). vm_boot.rs:704-724 enables smoltcp and
+        // rewrites localhost → gateway IP only when --network is set.
+        // sandbox_daemon/adapters.rs:189 passes the same flag.
+        cmd.arg(VM_BOOT_NETWORK_FLAG);
+
         let image_env = read_oci_env(&worker_rootfs);
         let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
         for (key, value) in &spec.env {
@@ -747,6 +772,46 @@ mod tests {
         assert!(
             dir.to_string_lossy()
                 .contains(".iii/managed/test-worker/logs")
+        );
+    }
+
+    /// Regression: every libkrun launch path (`LibkrunAdapter::start` for
+    /// OCI managed workers, `run_dev` for `iii dev` source workers) must
+    /// boot the VM with networking enabled. Without it,
+    /// `ws://localhost:{port}` resolves to the guest's loopback (no
+    /// engine), libkrun's vsock-TSI half-proxies the connect, and both
+    /// `[iii]` and `[OTel]` channels loop forever on EPIPE writes
+    /// ("deferring proxy removal" muxer warnings).
+    ///
+    /// Couples the constant to clap's actual flag name in `VmBootArgs` —
+    /// renaming `--network` in vm_boot.rs without updating
+    /// `VM_BOOT_NETWORK_FLAG` here breaks this test.
+    #[test]
+    fn vm_boot_network_flag_matches_clap() {
+        use clap::Parser;
+
+        use crate::cli::vm_boot::VmBootArgs;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+
+        let parsed = Wrapper::parse_from([
+            "test",
+            "--rootfs",
+            "/tmp/rootfs",
+            "--exec",
+            "/bin/sh",
+            VM_BOOT_NETWORK_FLAG,
+        ]);
+
+        assert!(
+            parsed.args.network,
+            "{} must enable networking in VmBootArgs; otherwise managed/dev \
+             workers boot without virtio-net and the SDK WebSocket EPIPEs",
+            VM_BOOT_NETWORK_FLAG
         );
     }
 
