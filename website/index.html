@@ -148,10 +148,24 @@
     font-display: swap;
   }
 </style>
+<script>
+// Theme detection: stored preference > system preference > light
+(function(){
+  var THEME_KEY = 'iii_theme';
+  var stored = null;
+  try { stored = localStorage.getItem(THEME_KEY); } catch(e){}
+  var prefersDark = stored === 'dark' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  if (prefersDark) {
+    document.documentElement.dataset.theme = 'dark';
+    document.documentElement.style.cssText = '--bg:#111110;--panel:#1a1916;--paper:#111110;--paper-2:#222220;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:#3ea8ff';
+  }
+  window.__iiiThemeInit = prefersDark;
+})();
+</script>
 <style>
   :root{
     /* tokens — matched to v1-mono reference */
-    --bg:#f2f0ed;
+    --bg:#f5f3ee;
     --panel:#e9e6e2;
     --ink:#0a0a0a;
     --ink-2:#1a1a1a;
@@ -160,10 +174,10 @@
     --ink-ghost:#a3a09c;
     --mute:#6b6865;
     --mute-2:#a3a09c;
-    --rule:#d8d5d0;
+    --rule:#d8d4cb;
     --rule-2:#e6e3df;
     --accent:#ff5a1f;
-    --paper:#f2f0ed;
+    --paper:#f5f3ee;
     --paper-2:#ebe8e3;
   }
 
@@ -6600,11 +6614,17 @@ iii.register_function(
   // ============= Theme toggle (light/dark hint via accent + bg swap) =============
   const themeBtn = document.getElementById('theme-btn');
   const themeIcon = document.getElementById('theme-icon');
-  let isDark = false;
+  const THEME_KEY = 'iii_theme';
+  let isDark = window.__iiiThemeInit || false;
   // theme-default accents — swap with light/dark unless user pinned one in Tweaks
   const THEME_ACCENT = { light: '#ff5a1f', dark: '#3ea8ff' };
+  // Sync icon if loaded in dark mode
+  if (isDark) {
+    themeIcon.innerHTML = '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+  }
   themeBtn.addEventListener('click', () => {
     isDark = !isDark;
+    try { localStorage.setItem(THEME_KEY, isDark ? 'dark' : 'light'); } catch(e){}
     document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
     const r = document.documentElement.style;
     if (isDark){
@@ -6622,12 +6642,11 @@ iii.register_function(
       r.setProperty('--rule',      '#2a2926');
       r.setProperty('--rule-2',    '#1f1e1c');
       r.setProperty('--accent',    THEME_ACCENT.dark);
-      // sun icon
       themeIcon.innerHTML = '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
     } else {
-      r.setProperty('--bg',        '#f2f0ed');
+      r.setProperty('--bg',        '#f5f3ee');
       r.setProperty('--panel',     '#e9e6e2');
-      r.setProperty('--paper',     '#f2f0ed');
+      r.setProperty('--paper',     '#f5f3ee');
       r.setProperty('--paper-2',   '#ebe8e3');
       r.setProperty('--ink',       '#0a0a0a');
       r.setProperty('--ink-2',     '#1a1a1a');
@@ -6636,7 +6655,7 @@ iii.register_function(
       r.setProperty('--ink-ghost', '#a3a09c');
       r.setProperty('--mute',      '#6b6865');
       r.setProperty('--mute-2',    '#a3a09c');
-      r.setProperty('--rule',      '#d8d5d0');
+      r.setProperty('--rule',      '#d8d4cb');
       r.setProperty('--rule-2',    '#e6e3df');
       r.setProperty('--accent',    THEME_ACCENT.light);
       themeIcon.innerHTML = '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';

@@ -118,9 +118,24 @@
         font-style: italic;
         font-display: swap;
       }
-
+    </style>
+    <script>
+    // Theme detection: stored preference > system preference > light
+    (function(){
+      var THEME_KEY = 'iii_theme';
+      var stored = null;
+      try { stored = localStorage.getItem(THEME_KEY); } catch(e){}
+      var prefersDark = stored === 'dark' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      if (prefersDark) {
+        document.documentElement.dataset.theme = 'dark';
+        document.documentElement.style.cssText = '--bg:#111110;--panel:#1a1916;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:#3ea8ff;--accent-2:#ff5a1f';
+      }
+      window.__iiiThemeInit = prefersDark;
+    })();
+    </script>
+    <style>
       :root {
-        --bg: #f2f0ed;
+        --bg: #f5f3ee;
         --panel: #e9e6e2;
         --ink: #0a0a0a;
         --ink-2: #1a1a1a;
@@ -129,7 +144,7 @@
         --ink-ghost: #a3a09c;
         --mute: #6b6865;
         --mute-2: #a3a09c;
-        --rule: #d8d5d0;
+        --rule: #d8d4cb;
         --rule-2: #e6e3df;
         --accent: #ff5a1f;
         --accent-2: #1a5fbf;
@@ -853,7 +868,8 @@
       (function () {
         const btn = document.getElementById('theme-btn');
         const icon = document.getElementById('theme-icon');
-        let isDark = false;
+        const THEME_KEY = 'iii_theme';
+        let isDark = window.__iiiThemeInit || false;
         function apply(dark) {
           const r = document.documentElement.style;
           document.documentElement.dataset.theme = dark ? 'dark' : 'light';
@@ -874,7 +890,7 @@
             icon.innerHTML =
               '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
           } else {
-            r.setProperty('--bg', '#f2f0ed');
+            r.setProperty('--bg', '#f5f3ee');
             r.setProperty('--panel', '#e9e6e2');
             r.setProperty('--ink', '#0a0a0a');
             r.setProperty('--ink-2', '#1a1a1a');
@@ -883,7 +899,7 @@
             r.setProperty('--ink-ghost', '#a3a09c');
             r.setProperty('--mute', '#6b6865');
             r.setProperty('--mute-2', '#a3a09c');
-            r.setProperty('--rule', '#d8d5d0');
+            r.setProperty('--rule', '#d8d4cb');
             r.setProperty('--rule-2', '#e6e3df');
             r.setProperty('--accent', '#ff5a1f');
             r.setProperty('--accent-2', '#1a5fbf');
@@ -891,8 +907,14 @@
               '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
           }
         }
+        // Sync icon on load if dark
+        if (isDark) {
+          icon.innerHTML =
+            '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+        }
         btn.addEventListener('click', () => {
           isDark = !isDark;
+          try { localStorage.setItem(THEME_KEY, isDark ? 'dark' : 'light'); } catch(e){}
           apply(isDark);
         });
       })();
