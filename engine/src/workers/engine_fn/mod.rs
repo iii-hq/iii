@@ -795,6 +795,57 @@ mod tests {
         assert_eq!(direct.len(), 1);
     }
 
+    #[tokio::test]
+    async fn test_list_worker_infos_includes_runtime_worker_snapshots() {
+        let (engine, module) = setup_engine_and_module();
+
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string(), "state::set".to_string()],
+            internal: false,
+        });
+
+        let workers = module.list_worker_infos(None).await;
+
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "iii-state");
+        assert_eq!(workers[0].name.as_deref(), Some("iii-state"));
+        assert_eq!(workers[0].runtime.as_deref(), Some("engine"));
+        assert_eq!(workers[0].isolation.as_deref(), Some("in-process"));
+        assert_eq!(workers[0].status, "available");
+        assert_eq!(workers[0].function_count, 2);
+        assert_eq!(
+            workers[0].functions,
+            vec!["state::get".to_string(), "state::set".to_string()]
+        );
+        assert!(!workers[0].internal);
+    }
+
+    #[tokio::test]
+    async fn test_list_worker_infos_hides_pidless_socket_but_shows_runtime_snapshot() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let socket_worker = crate::worker_connections::WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(socket_worker);
+
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-stream".to_string(),
+            name: "iii-stream".to_string(),
+            worker_type: "iii-stream".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["stream::list".to_string()],
+            internal: false,
+        });
+
+        let workers = module.list_worker_infos(None).await;
+
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "iii-stream");
+    }
+
     // ---- register_worker_metadata tests ----
 
     #[tokio::test]
