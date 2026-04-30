@@ -63,7 +63,7 @@
 <meta name="description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
 <meta name="keywords" content="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox" />
 <meta name="author" content="III, Inc." />
-<meta name="theme-color" content="#0a0a0a" />
+<meta name="theme-color" content="#f5f3ee" />
 <link rel="canonical" href="https://iii.dev/" />
 <meta name="robots" content="index,follow" />
 
@@ -155,11 +155,14 @@
   var stored = null;
   try { stored = localStorage.getItem(THEME_KEY); } catch(e){}
   var prefersDark = stored === 'dark' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  var accent = prefersDark ? '#3ea8ff' : '#ff5a1f';
   if (prefersDark) {
     document.documentElement.dataset.theme = 'dark';
-    document.documentElement.style.cssText = '--bg:#111110;--panel:#1a1916;--paper:#111110;--paper-2:#222220;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:#3ea8ff';
+    document.documentElement.style.cssText = '--bg:#111110;--panel:#1a1916;--paper:#111110;--paper-2:#222220;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:' + accent;
   }
-  window.__iiiThemeInit = prefersDark;
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = prefersDark ? '#111110' : '#f5f3ee';
+  window.__iiiThemeInit = { dark: prefersDark, accent: accent };
 })();
 </script>
 <style>
@@ -6615,7 +6618,7 @@ iii.register_function(
   const themeBtn = document.getElementById('theme-btn');
   const themeIcon = document.getElementById('theme-icon');
   const THEME_KEY = 'iii_theme';
-  let isDark = window.__iiiThemeInit || false;
+  let isDark = (window.__iiiThemeInit && window.__iiiThemeInit.dark) || false;
   // theme-default accents — swap with light/dark unless user pinned one in Tweaks
   const THEME_ACCENT = { light: '#ff5a1f', dark: '#3ea8ff' };
   // Sync icon if loaded in dark mode
@@ -6660,6 +6663,9 @@ iii.register_function(
       r.setProperty('--accent',    THEME_ACCENT.light);
       themeIcon.innerHTML = '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
     }
+    // Update meta theme-color
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = isDark ? '#111110' : '#f5f3ee';
     // Notify the Tweaks panel so its swatch state and persisted value stay in sync
     window.dispatchEvent(new CustomEvent('iii:theme-change', {
       detail: { theme: isDark ? 'dark' : 'light', accent: isDark ? THEME_ACCENT.dark : THEME_ACCENT.light }
@@ -9278,6 +9284,11 @@ iii.register_function(
     "modeToggle": "show",
     "vizDesign": "classic"
   }/*EDITMODE-END*/;
+
+  // Seed accent from initial theme so we don't overwrite dark mode's blue with light mode's orange
+  if (window.__iiiThemeInit && window.__iiiThemeInit.accent) {
+    TWEAKS.accent = window.__iiiThemeInit.accent;
+  }
 
   const panel = document.getElementById('tweaks-panel');
   const closeBtn = document.getElementById('tweaks-close');
