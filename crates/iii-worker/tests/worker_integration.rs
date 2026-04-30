@@ -85,6 +85,7 @@ fn start_subcommand_matches_engine_spawn_args() {
             worker_name,
             no_wait,
             port,
+            config,
         } => {
             assert_eq!(worker_name, "image-resize");
             assert!(!no_wait, "bare human invocation keeps default wait=true");
@@ -93,6 +94,7 @@ fn start_subcommand_matches_engine_spawn_args() {
                 iii_worker::DEFAULT_PORT,
                 "bare form must default to DEFAULT_PORT"
             );
+            assert!(config.is_none(), "bare human form has no --config");
         }
         _ => panic!("expected Start"),
     }
@@ -122,10 +124,40 @@ fn start_subcommand_accepts_port_flag_from_engine_spawn() {
             worker_name,
             no_wait,
             port,
+            config,
         } => {
             assert_eq!(worker_name, "pdfkit");
             assert!(no_wait, "engine auto-spawn must pass --no-wait");
             assert_eq!(port, 49199, "--port must surface the custom port");
+            assert!(config.is_none(), "no --config in this spawn form");
+        }
+        _ => panic!("expected Start"),
+    }
+}
+
+#[test]
+fn start_subcommand_accepts_engine_config_flag() {
+    let cli = Cli::try_parse_from([
+        "iii-worker",
+        "start",
+        "pdfkit",
+        "--port",
+        "49134",
+        "--no-wait",
+        "--config",
+        "/tmp/iii-pdfkit-config.yaml",
+    ])
+    .expect("engine's --config spawn form must parse");
+    match cli.command {
+        Commands::Start {
+            config,
+            ..
+        } => {
+            assert_eq!(
+                config.as_deref().and_then(|p| p.to_str()),
+                Some("/tmp/iii-pdfkit-config.yaml"),
+                "--config must surface the engine-supplied path"
+            );
         }
         _ => panic!("expected Start"),
     }

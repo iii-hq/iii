@@ -34,6 +34,7 @@ pub mod workers {
     pub mod registry_worker;
     pub mod reload;
     pub mod rest_api;
+    pub mod secure_temp;
     pub mod shell;
     pub mod state;
     pub mod stream;

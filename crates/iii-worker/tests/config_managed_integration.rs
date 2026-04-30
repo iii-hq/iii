@@ -170,6 +170,7 @@ async fn handle_managed_start_builtin_short_circuits() {
             "iii-http",
             false,
             iii_worker::DEFAULT_PORT,
+            None,
         )
         .await;
         assert!(
@@ -197,6 +198,7 @@ async fn handle_managed_start_unconfigured_builtin_fails() {
             "iii-http",
             false,
             iii_worker::DEFAULT_PORT,
+            None,
         )
         .await;
         assert_ne!(
@@ -218,6 +220,7 @@ async fn handle_managed_start_unconfigured_optional_builtin_fails() {
             "iii-exec",
             false,
             iii_worker::DEFAULT_PORT,
+            None,
         )
         .await;
         assert_ne!(
@@ -447,6 +450,7 @@ async fn handle_managed_restart_invalid_name_fails_fast() {
             "bad name with spaces",
             false,
             iii_worker::DEFAULT_PORT,
+            None,
         )
         .await;
         assert_eq!(
@@ -479,6 +483,7 @@ async fn handle_managed_restart_on_not_running_surfaces_start_rc() {
             "iii-http",
             false,
             iii_worker::DEFAULT_PORT,
+            None,
         )
         .await;
         // Builtin start short-circuits with rc=0 or rc=1 depending on whether

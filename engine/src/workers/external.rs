@@ -221,15 +221,12 @@ impl Worker for ExternalWorker {
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
-        // Write config to a temp file if we have config
         let config_path = if let Some(ref config) = self.config {
-            let yaml = serde_yaml::to_string(config)?;
-            let temp_dir = std::env::temp_dir();
-            let config_path = temp_dir.join(format!("iii-{}-config.yaml", self.name));
-            std::fs::write(&config_path, &yaml)?;
-            tracing::debug!("Wrote external worker config to {}", config_path.display());
-            *self.config_file.lock().await = Some(config_path.clone());
-            Some(config_path)
+            let path = crate::workers::secure_temp::write_engine_config_temp(&self.name, config)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            tracing::debug!("Wrote external worker config to {}", path.display());
+            *self.config_file.lock().await = Some(path.clone());
+            Some(path)
         } else {
             None
         };

@@ -2705,7 +2705,12 @@ async fn wait_for_ready(worker_name: &str, port: u16) {
 /// auto-spawn path in `registry_worker::ExternalWorkerProcess::spawn` passes
 /// the configured `iii-worker-manager` port so non-default manager ports
 /// don't silently break connectivity for external workers.
-pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i32 {
+pub async fn handle_managed_start(
+    worker_name: &str,
+    wait: bool,
+    port: u16,
+    config: Option<&std::path::Path>,
+) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -2743,6 +2748,12 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
     }
     let local_outcome = match super::config_file::resolve_worker_type(worker_name) {
         ResolvedWorkerType::Oci { image, env } => {
+            if config.is_some() {
+                tracing::warn!(
+                    worker = %worker_name,
+                    "--config ignored for OCI workers (requires VM-mount support)"
+                );
+            }
             let worker_def = WorkerDef::Managed {
                 image,
                 env,
@@ -2750,11 +2761,19 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
             };
             StartOutcome::Exit(start_oci_worker(worker_name, &worker_def, port).await)
         }
-        ResolvedWorkerType::Local { worker_path } => StartOutcome::Exit(
-            super::local_worker::start_local_worker(worker_name, &worker_path, port).await,
-        ),
+        ResolvedWorkerType::Local { worker_path } => {
+            if config.is_some() {
+                tracing::warn!(
+                    worker = %worker_name,
+                    "--config ignored for local-source workers"
+                );
+            }
+            StartOutcome::Exit(
+                super::local_worker::start_local_worker(worker_name, &worker_path, port).await,
+            )
+        }
         ResolvedWorkerType::Binary { binary_path } => {
-            StartOutcome::Exit(start_binary_worker(worker_name, &binary_path).await)
+            StartOutcome::Exit(start_binary_worker(worker_name, &binary_path, config).await)
         }
         ResolvedWorkerType::Config => StartOutcome::FallThrough,
     };
@@ -2796,7 +2815,7 @@ pub async fn handle_managed_start(worker_name: &str, wait: bool, port: u16) -> i
             match binary_download::download_and_install_binary(worker_name, binary_info).await {
                 Ok(installed_path) => {
                     eprintln!("  {} Installed successfully", "✓".green());
-                    let rc = start_binary_worker(worker_name, &installed_path).await;
+                    let rc = start_binary_worker(worker_name, &installed_path, config).await;
                     return finish_start(worker_name, rc, wait, port).await;
                 }
                 Err(e) => {
@@ -2891,7 +2910,12 @@ async fn finish_start(worker_name: &str, rc: i32, wait: bool, port: u16) -> i32 
 /// NOT abort the restart -- the most common reason stop "fails" here is
 /// "already not running," which returns 0. Start's exit code becomes the
 /// command's exit code.
-pub async fn handle_managed_restart(worker_name: &str, wait: bool, port: u16) -> i32 {
+pub async fn handle_managed_restart(
+    worker_name: &str,
+    wait: bool,
+    port: u16,
+    config: Option<&std::path::Path>,
+) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -2907,7 +2931,7 @@ pub async fn handle_managed_restart(worker_name: &str, wait: bool, port: u16) ->
         );
     }
 
-    handle_managed_start(worker_name, wait, port).await
+    handle_managed_start(worker_name, wait, port, config).await
 }
 
 async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) -> i32 {
@@ -2953,7 +2977,11 @@ async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) 
     }
 }
 
-async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -> i32 {
+async fn start_binary_worker(
+    worker_name: &str,
+    binary_path: &std::path::Path,
+    config: Option<&std::path::Path>,
+) -> i32 {
     // Kill any stale process from a previous engine run
     kill_stale_worker(worker_name).await;
 
@@ -2985,6 +3013,9 @@ async fn start_binary_worker(worker_name: &str, binary_path: &std::path::Path) -
     eprintln!("  Starting {} (binary)...", worker_name.bold());
 
     let mut cmd = tokio::process::Command::new(binary_path);
+    if let Some(cfg_path) = config {
+        cmd.arg("--config").arg(cfg_path);
+    }
     cmd.stdout(stdout_file).stderr(stderr_file);
 
     #[cfg(unix)]

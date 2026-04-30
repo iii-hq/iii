@@ -17,7 +17,10 @@ use std::{
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::{engine::Engine, workers::traits::Worker};
+use crate::{
+    engine::Engine,
+    workers::{secure_temp, traits::Worker},
+};
 
 // =============================================================================
 // Path helpers
@@ -106,20 +109,24 @@ fn read_pid_hardened(path: &std::path::Path) -> Option<u32> {
 ///
 /// Any drift here silently breaks the non-default `iii-worker-manager` port
 /// case — the exact bug this module exists to fix.
-fn spawn_args(worker_name: &str, port: u16) -> [String; 5] {
-    // `--no-wait` keeps the child process short-lived. Without it the default
-    // `wait=true` path pulls `wait_for_ready` → `watch_until_ready`, which
-    // eprintln's a 500ms status-panel redraw loop into the engine-redirected
-    // stderr.log. `iii worker logs -f` then tails that noise interleaved with
-    // the VM's actual console output. The engine already probes liveness via
-    // `is_alive`, so blocking the child on the panel loop is pure pollution.
-    [
+fn spawn_args(worker_name: &str, port: u16, config_path: Option<&std::path::Path>) -> Vec<String> {
+    // `--no-wait` keeps the child short-lived. Without it the default
+    // `wait_for_ready` → `watch_until_ready` path eprintln's a 500ms
+    // status-panel redraw loop into the engine-redirected stderr.log,
+    // which `iii worker logs -f` then tails as noise. Engine probes
+    // liveness via `is_alive`, so the panel loop is pure pollution.
+    let mut args: Vec<String> = vec![
         "start".into(),
         worker_name.into(),
         "--port".into(),
         port.to_string(),
         "--no-wait".into(),
-    ]
+    ];
+    if let Some(path) = config_path {
+        args.push("--config".into());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    args
 }
 
 // =============================================================================
@@ -164,6 +171,10 @@ pub struct ExternalWorkerProcess {
     /// this instant to cover the gap between `iii-worker start` exiting and
     /// the detached VM writing its pidfile.
     pub spawned_at: std::time::Instant,
+    /// Tracked so `stop` (and `Drop`, on panic) can unlink the temp config
+    /// written by `spawn`. `std::sync::Mutex` rather than `tokio::sync::Mutex`
+    /// because the lock is held for nanoseconds and `Drop` is not async.
+    pub config_file: std::sync::Mutex<Option<PathBuf>>,
 }
 
 /// How long after spawn we trust "still booting, no pidfile yet" as alive.
@@ -186,7 +197,7 @@ impl ExternalWorkerProcess {
     /// behavior; when it runs on a non-default port (e.g. SDK integration
     /// tests with multiple `iii-worker-manager` entries), the spawned worker
     /// no longer silently connects to the wrong port.
-    pub async fn spawn(name: &str, port: u16) -> Result<Self, String> {
+    pub async fn spawn(name: &str, port: u16, config: Option<&Value>) -> Result<Self, String> {
         let worker_binary = resolve_iii_worker_binary()
             .ok_or_else(|| {
                 "iii-worker binary not found. Install with `iii update worker` or place in ~/.local/bin/".to_string()
@@ -204,7 +215,12 @@ impl ExternalWorkerProcess {
         let stderr_file = std::fs::File::create(logs_dir.join("stderr.log"))
             .map_err(|e| format!("Failed to create stderr log: {}", e))?;
 
-        let args = spawn_args(name, port);
+        let config_path = match config {
+            Some(cfg) => Some(secure_temp::write_engine_config_temp(name, cfg)?),
+            None => None,
+        };
+
+        let args = spawn_args(name, port, config_path.as_deref());
         let mut cmd = tokio::process::Command::new(&worker_binary);
         cmd.args(&args).stdout(stdout_file).stderr(stderr_file);
 
@@ -216,6 +232,7 @@ impl ExternalWorkerProcess {
             worker = %name,
             pid = ?child.id(),
             port = port,
+            config = ?config_path.as_ref().map(|p| p.display().to_string()),
             "Worker starting via iii-worker (logs: `iii worker logs {}`)", name
         );
 
@@ -223,6 +240,7 @@ impl ExternalWorkerProcess {
             name: name.to_string(),
             child: Arc::new(Mutex::new(Some(child))),
             spawned_at: std::time::Instant::now(),
+            config_file: std::sync::Mutex::new(config_path),
         })
     }
 
@@ -308,8 +326,31 @@ impl ExternalWorkerProcess {
             tracing::warn!(worker = %self.name, "Cannot stop worker: iii-worker binary not found");
         }
 
-        // Clean up the child handle if it's still around
         let _ = self.child.lock().await.take();
+
+        if let Some(path) = self.config_file.lock().expect("poisoned").take() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!(
+                    worker = %self.name,
+                    config_path = %path.display(),
+                    error = %e,
+                    "failed to remove temp config"
+                );
+            }
+        }
+    }
+}
+
+/// Best-effort cleanup if the engine drops the process without calling
+/// `stop` (panic, abort during shutdown). `stop` already `take()`s the
+/// path so the happy path is a no-op here.
+impl Drop for ExternalWorkerProcess {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.config_file.lock() {
+            if let Some(path) = guard.take() {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 }
 
@@ -459,6 +500,7 @@ mod tests {
             name: name.to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at,
+            config_file: std::sync::Mutex::new(None),
         }
     }
 
@@ -537,6 +579,7 @@ mod tests {
             name: "booting-worker".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            config_file: std::sync::Mutex::new(None),
         };
         assert!(
             process.is_alive(),
@@ -550,6 +593,7 @@ mod tests {
             name: "test-worker".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            config_file: std::sync::Mutex::new(None),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
         assert_eq!(wrapper.name(), "ExternalWorker(test-worker)");
@@ -570,9 +614,49 @@ mod tests {
             name: "init-test".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            config_file: std::sync::Mutex::new(None),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
         assert!(wrapper.initialize().await.is_ok());
+    }
+
+    /// Drop catches the "panic before stop()" path. Without it, a panic
+    /// during engine shutdown leaks the secret-bearing temp config.
+    #[test]
+    fn drop_removes_tracked_temp_config_when_stop_was_skipped() {
+        let temp_path = std::env::temp_dir().join("iii-test-drop-cleanup-config.yaml");
+        std::fs::write(&temp_path, "stub: 1\n").unwrap();
+
+        {
+            let _process = ExternalWorkerProcess {
+                name: "test-drop-cleanup".to_string(),
+                child: Arc::new(Mutex::new(None)),
+                spawned_at: std::time::Instant::now(),
+                config_file: std::sync::Mutex::new(Some(temp_path.clone())),
+            };
+            // process drops here without stop() being called
+        }
+
+        assert!(!temp_path.exists());
+    }
+
+    #[tokio::test]
+    async fn stop_removes_tracked_temp_config() {
+        let name = "test-stop-cleanup";
+        let temp_path = std::env::temp_dir().join(format!("iii-{}-stop-config.yaml", name));
+        std::fs::write(&temp_path, "stub: 1\n").unwrap();
+
+        let process = ExternalWorkerProcess {
+            name: name.to_string(),
+            child: Arc::new(Mutex::new(None)),
+            spawned_at: std::time::Instant::now(),
+            config_file: std::sync::Mutex::new(Some(temp_path.clone())),
+        };
+
+        process.stop().await;
+
+        assert!(!temp_path.exists());
+        assert!(process.config_file.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -581,6 +665,7 @@ mod tests {
             name: "destroy-test".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            config_file: std::sync::Mutex::new(None),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
         assert!(wrapper.destroy().await.is_ok());
@@ -594,7 +679,7 @@ mod tests {
     /// regression this whole module exists to fix.
     #[test]
     fn spawn_args_emit_start_name_port_in_order() {
-        let args = spawn_args("pdfkit", 49199);
+        let args = spawn_args("pdfkit", 49199, None);
         assert_eq!(
             args,
             [
@@ -612,7 +697,7 @@ mod tests {
     /// `~/.iii/logs/<name>/stderr.log` (visible via `iii worker logs -f`).
     #[test]
     fn spawn_args_always_passes_no_wait() {
-        let args = spawn_args("anything", 1234);
+        let args = spawn_args("anything", 1234, None);
         assert!(
             args.iter().any(|a| a == "--no-wait"),
             "engine spawn must include --no-wait to avoid polluting stderr.log"
@@ -623,8 +708,35 @@ mod tests {
     fn spawn_args_default_port_serializes_as_digits() {
         // Pin that port formatting is decimal digits, not something clap
         // would reject like "0x1234". u16::MAX is the boundary case.
-        let args = spawn_args("x", u16::MAX);
+        let args = spawn_args("x", u16::MAX, None);
         assert_eq!(args[3], "65535");
+    }
+
+    #[test]
+    fn spawn_args_appends_config_path_when_present() {
+        let path = std::path::Path::new("/tmp/iii-pdfkit-config.yaml");
+        let args = spawn_args("pdfkit", 49134, Some(path));
+        assert_eq!(
+            args,
+            [
+                "start".to_string(),
+                "pdfkit".to_string(),
+                "--port".to_string(),
+                "49134".to_string(),
+                "--no-wait".to_string(),
+                "--config".to_string(),
+                "/tmp/iii-pdfkit-config.yaml".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn spawn_args_omits_config_flag_when_absent() {
+        let args = spawn_args("anything", 1234, None);
+        assert!(
+            !args.iter().any(|a| a == "--config"),
+            "no --config flag must be emitted when the engine has no config block"
+        );
     }
 
     /// Intern cache caps the Box::leak growth: the same worker name must

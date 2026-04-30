@@ -253,9 +253,10 @@ impl WorkerRegistry {
         //    back to DEFAULT_PORT via `worker_manager_port()`.
         let port = engine.worker_manager_port();
         tracing::info!(worker = %name, port = port, "Starting external worker via iii-worker");
-        let process = super::registry_worker::ExternalWorkerProcess::spawn(name, port)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
+        let process =
+            super::registry_worker::ExternalWorkerProcess::spawn(name, port, config.as_ref())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
         Ok(Box::new(
             super::registry_worker::ExternalWorkerWrapper::new(process),
         ))

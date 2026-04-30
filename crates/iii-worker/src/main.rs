@@ -98,7 +98,16 @@ async fn main() -> anyhow::Result<()> {
             worker_name,
             no_wait,
             port,
-        } => iii_worker::cli::managed::handle_managed_start(&worker_name, !no_wait, port).await,
+            config,
+        } => {
+            iii_worker::cli::managed::handle_managed_start(
+                &worker_name,
+                !no_wait,
+                port,
+                config.as_deref(),
+            )
+            .await
+        }
         Commands::Stop { worker_name } => {
             iii_worker::cli::managed::handle_managed_stop(&worker_name).await
         }
@@ -106,7 +115,16 @@ async fn main() -> anyhow::Result<()> {
             worker_name,
             no_wait,
             port,
-        } => iii_worker::cli::managed::handle_managed_restart(&worker_name, !no_wait, port).await,
+            config,
+        } => {
+            iii_worker::cli::managed::handle_managed_restart(
+                &worker_name,
+                !no_wait,
+                port,
+                config.as_deref(),
+            )
+            .await
+        }
         Commands::List => iii_worker::cli::managed::handle_worker_list().await,
         Commands::Sync { frozen } => iii_worker::cli::managed::handle_worker_sync(frozen).await,
         Commands::Verify { strict } => iii_worker::cli::managed::handle_worker_verify(strict).await,

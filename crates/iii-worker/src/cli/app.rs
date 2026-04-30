@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Default engine WebSocket port (must match engine's DEFAULT_PORT).
 pub const DEFAULT_PORT: u16 = 49134;
@@ -104,6 +105,11 @@ pub enum Commands {
         /// non-default manager ports don't silently break connectivity.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
+
+        /// YAML config forwarded to the spawned worker binary as `--config <path>`.
+        /// Binary workers only; OCI workers warn and ignore.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
 
     /// Stop a managed worker container
@@ -129,6 +135,10 @@ pub enum Commands {
         /// semantics as `start --port`.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
+
+        /// Same as `start --config`.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
 
     /// List all workers and their status
