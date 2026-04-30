@@ -9,31 +9,31 @@
     <script>
       (function (w, d, s, l, i) {
         w[l] = w[l] || [];
-        w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+        w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
         var f = d.getElementsByTagName(s)[0],
           j = d.createElement(s),
-          dl = l != 'dataLayer' ? '&l=' + l : '';
+          dl = l != "dataLayer" ? "&l=" + l : "";
         j.async = true;
-        j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+        j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl;
         f.parentNode.insertBefore(j, f);
-      })(window, document, 'script', 'dataLayer', 'GTM-N8DCTFB8');
+      })(window, document, "script", "dataLayer", "GTM-N8DCTFB8");
     </script>
     <!-- End Google Tag Manager -->
 
     <!-- Common Room: loads only after analytics consent (see cookie banner below) -->
     <script>
       (function () {
-        var STORAGE_KEY = 'iii_cookie_consent';
+        var STORAGE_KEY = "iii_cookie_consent";
         window.iiiLoadCommonRoomSignals = function () {
-          if (typeof window.signals !== 'undefined') return;
-          var script = document.createElement('script');
+          if (typeof window.signals !== "undefined") return;
+          var script = document.createElement("script");
           script.src =
-            'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+            "https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js";
           script.async = true;
           window.signals = Object.assign(
             [],
-            { _opts: { apiHost: 'https://api.cr-relay.com' } },
-            ['page', 'identify', 'form'].reduce(function (acc, method) {
+            { _opts: { apiHost: "https://api.cr-relay.com" } },
+            ["page", "identify", "form"].reduce(function (acc, method) {
               acc[method] = function () {
                 signals.push([method, arguments]);
                 return signals;
@@ -45,14 +45,13 @@
         };
         window.iiiNotifyCommonRoomEmail = function (email) {
           try {
-            if (!email || localStorage.getItem(STORAGE_KEY) !== 'accepted') return;
-            if (typeof window.signals === 'undefined' || !window.signals.form) return;
+            if (!email || localStorage.getItem(STORAGE_KEY) !== "accepted") return;
+            if (typeof window.signals === "undefined" || !window.signals.form) return;
             window.signals.form({ email: email });
           } catch (_) {}
         };
         try {
-          if (localStorage.getItem(STORAGE_KEY) === 'accepted')
-            window.iiiLoadCommonRoomSignals();
+          if (localStorage.getItem(STORAGE_KEY) === "accepted") window.iiiLoadCommonRoomSignals();
         } catch (_) {}
       })();
     </script>
@@ -76,10 +75,7 @@
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="article" />
     <meta property="og:url" content="https://iii.dev/manifesto" />
-    <meta
-      property="og:title"
-      content="iii / manifesto — collapse the categories"
-    />
+    <meta property="og:title" content="iii / manifesto — collapse the categories" />
     <meta
       property="og:description"
       content="iii bets that simplification beats complexity. Worker, Trigger, Function is the whole interface. Add a worker and the system absorbs it — live, discoverable, observable."
@@ -92,10 +88,7 @@
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:url" content="https://iii.dev/manifesto" />
-    <meta
-      name="twitter:title"
-      content="iii / manifesto — collapse the categories"
-    />
+    <meta name="twitter:title" content="iii / manifesto — collapse the categories" />
     <meta
       name="twitter:description"
       content="iii bets that simplification beats complexity. Worker, Trigger, Function is the whole interface. Add a worker and the system absorbs it — live, discoverable, observable."
@@ -103,35 +96,38 @@
     <meta name="twitter:image" content="https://iii.dev/og-image.png" />
     <style>
       @font-face {
-        font-family: 'Chivo Mono';
-        src: url('fonts/ChivoMono-VariableFont_wght.ttf')
-          format('truetype-variations');
+        font-family: "Chivo Mono";
+        src: url("fonts/ChivoMono-VariableFont_wght.ttf") format("truetype-variations");
         font-weight: 100 900;
         font-style: normal;
         font-display: swap;
       }
       @font-face {
-        font-family: 'Chivo Mono';
-        src: url('fonts/ChivoMono-Italic-VariableFont_wght.ttf')
-          format('truetype-variations');
+        font-family: "Chivo Mono";
+        src: url("fonts/ChivoMono-Italic-VariableFont_wght.ttf") format("truetype-variations");
         font-weight: 100 900;
         font-style: italic;
         font-display: swap;
       }
     </style>
     <script>
-    // Theme detection: stored preference > system preference > light
-    (function(){
-      var THEME_KEY = 'iii_theme';
-      var stored = null;
-      try { stored = localStorage.getItem(THEME_KEY); } catch(e){}
-      var prefersDark = stored === 'dark' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
-      if (prefersDark) {
-        document.documentElement.dataset.theme = 'dark';
-        document.documentElement.style.cssText = '--bg:#111110;--panel:#1a1916;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:#3ea8ff;--accent-2:#ff5a1f';
-      }
-      window.__iiiThemeInit = prefersDark;
-    })();
+      // Theme detection: stored preference > system preference > light
+      (function () {
+        var THEME_KEY = "iii_theme";
+        var stored = null;
+        try {
+          stored = localStorage.getItem(THEME_KEY);
+        } catch (e) {}
+        var prefersDark =
+          stored === "dark" ||
+          (stored === null && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (prefersDark) {
+          document.documentElement.dataset.theme = "dark";
+          document.documentElement.style.cssText =
+            "--bg:#111110;--panel:#1a1916;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:#3ea8ff;--accent-2:#ff5a1f";
+        }
+        window.__iiiThemeInit = prefersDark;
+      })();
     </script>
     <style>
       :root {
@@ -149,7 +145,7 @@
         --accent: #ff5a1f;
         --accent-2: #1a5fbf;
       }
-      :root[data-theme='dark'] {
+      :root[data-theme="dark"] {
         color-scheme: dark;
       }
 
@@ -165,7 +161,7 @@
         padding: 0;
         background: var(--bg);
         color: var(--ink);
-        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-family: "Chivo Mono", ui-monospace, monospace;
         font-weight: 400;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
@@ -173,10 +169,10 @@
       * {
         font-variant-ligatures: none;
         font-feature-settings:
-          'liga' 0,
-          'clig' 0,
-          'calt' 0,
-          'dlig' 0;
+          "liga" 0,
+          "clig" 0,
+          "calt" 0,
+          "dlig" 0;
       }
       ::selection {
         background: var(--ink);
@@ -262,7 +258,7 @@
         border: 1px solid var(--rule);
         background: var(--bg);
         padding: 7px 12px;
-        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-family: "Chivo Mono", ui-monospace, monospace;
         font-weight: 500;
         font-size: 12px;
         color: var(--ink);
@@ -326,7 +322,7 @@
         display: inline-block;
       }
       .hero-title {
-        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-family: "Chivo Mono", ui-monospace, monospace;
         margin: 0;
         font-weight: 500;
         font-size: clamp(36px, 6.4vw, 80px);
@@ -365,7 +361,7 @@
       }
 
       .m-title {
-        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-family: "Chivo Mono", ui-monospace, monospace;
         font-weight: 500;
         font-size: clamp(24px, 3.2vw, 34px);
         line-height: 1.25;
@@ -396,7 +392,7 @@
       }
 
       .m-body {
-        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-family: "Chivo Mono", ui-monospace, monospace;
         font-weight: 400;
         font-size: 14px;
         line-height: 1.75;
@@ -488,7 +484,7 @@
         font-size: 13px;
         line-height: 1.45;
         color: var(--ink-faint);
-        font-family: 'Chivo Mono', ui-monospace, monospace;
+        font-family: "Chivo Mono", ui-monospace, monospace;
       }
       .cookie-consent-panel .cc-strong {
         color: var(--ink-soft);
@@ -553,32 +549,32 @@
     </div>
     <script>
       (function () {
-        var STORAGE_KEY = 'iii_cookie_consent';
-        var banner = document.getElementById('cookie-consent-banner');
+        var STORAGE_KEY = "iii_cookie_consent";
+        var banner = document.getElementById("cookie-consent-banner");
         if (!banner) return;
         try {
           var stored = localStorage.getItem(STORAGE_KEY);
-          if (stored === 'accepted' || stored === 'rejected') {
+          if (stored === "accepted" || stored === "rejected") {
             banner.remove();
             return;
           }
         } catch (_) {}
-        banner.removeAttribute('hidden');
-        var accept = banner.querySelector('[data-consent-accept]');
-        var reject = banner.querySelector('[data-consent-reject]');
+        banner.removeAttribute("hidden");
+        var accept = banner.querySelector("[data-consent-accept]");
+        var reject = banner.querySelector("[data-consent-reject]");
         if (accept) {
-          accept.addEventListener('click', function () {
+          accept.addEventListener("click", function () {
             try {
-              localStorage.setItem(STORAGE_KEY, 'accepted');
+              localStorage.setItem(STORAGE_KEY, "accepted");
             } catch (_) {}
             banner.remove();
             if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
           });
         }
         if (reject) {
-          reject.addEventListener('click', function () {
+          reject.addEventListener("click", function () {
             try {
-              localStorage.setItem(STORAGE_KEY, 'rejected');
+              localStorage.setItem(STORAGE_KEY, "rejected");
             } catch (_) {}
             banner.remove();
           });
@@ -634,9 +630,7 @@
                 stroke-linejoin="round"
                 aria-hidden="true"
               >
-                <path
-                  d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"
-                />
+                <path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z" />
               </svg>
             </button>
           </div>
@@ -646,9 +640,7 @@
         <header class="hero">
           <h1 class="hero-title">
             <span class="problem"
-              >software complexity continues to grow<span class="punct"
-                >.</span
-              ></span
+              >software complexity continues to grow<span class="punct">.</span></span
             >
             <br />
             <span class="verb">remove it<span class="punct">.</span></span>
@@ -665,12 +657,10 @@
               <span class="heavy">is integrations.</span>
             </h2>
             <p class="m-body">
-              and integrations have been growing in complexity for forty years.
-              every new capability arrives as its own product category, with its
-              own semantics, its own operational model, and its own integration
-              tax against everything already in your stack. we believe this
-              pattern is ending. a paradigm shift is here, and we are building
-              for it.
+              and integrations have been growing in complexity for forty years. every new capability
+              arrives as its own product category, with its own semantics, its own operational
+              model, and its own integration tax against everything already in your stack. we
+              believe this pattern is ending. a paradigm shift is here, and we are building for it.
             </p>
           </section>
 
@@ -680,13 +670,12 @@
               <span class="heavy">are enough.</span>
             </h2>
             <p class="m-body">
-              worker. trigger. function. a worker is any process that joins the
-              system. a trigger is anything that causes work to run. a function
-              is the unit of work. every capability (queues, cron, streaming,
-              sandboxing, observability, agents, business logic, devices, UIs,
-              and everything not yet imagined) is built from these three things.
-              the primitives are small enough to hold in your head. everything
-              else is a property of the engine, or a worker someone published.
+              worker. trigger. function. a worker is any process that joins the system. a trigger is
+              anything that causes work to run. a function is the unit of work. every capability
+              (queues, cron, streaming, sandboxing, observability, agents, business logic, devices,
+              UIs, and everything not yet imagined) is built from these three things. the primitives
+              are small enough to hold in your head. everything else is a property of the engine, or
+              a worker someone published.
             </p>
           </section>
 
@@ -697,10 +686,9 @@
             </h2>
             <p class="m-body">
               unix won on <i>everything is a file</i>. react won on
-              <i>everything is a component</i>. http won on
-              <i>request and response</i>. every paradigm that compounded for
-              decades did so because the primitive was small enough to fit in
-              your head. iii makes that bet for the entire software stack.
+              <i>everything is a component</i>. http won on <i>request and response</i>. every
+              paradigm that compounded for decades did so because the primitive was small enough to
+              fit in your head. iii makes that bet for the entire software stack.
             </p>
           </section>
 
@@ -710,11 +698,10 @@
               <span class="heavy">add a worker.</span>
             </h2>
             <p class="m-body">
-              need a queue? add a worker. need real-time streaming, scheduling,
-              sandboxing, observability, an agent, a CRM integration, a browser
-              tab as a first-class participant? add a worker. some workers are
-              deterministic code. some are stochastic agents. most real systems
-              are a mix. the semantics live in the functions, not in the
+              need a queue? add a worker. need real-time streaming, scheduling, sandboxing,
+              observability, an agent, a CRM integration, a browser tab as a first-class
+              participant? add a worker. some workers are deterministic code. some are stochastic
+              agents. most real systems are a mix. the semantics live in the functions, not in the
               category.
             </p>
           </section>
@@ -725,13 +712,11 @@
               <span class="heavy">to linear.</span>
             </h2>
             <p class="m-body">
-              four services means six possible integrations. twenty means 190.
-              each new addition compounds the coordination cost of everything
-              that came before. iii ends this. a new worker joins by opening a
-              single connection. adding four workers, or twenty, takes the same
-              effort: zero. each worker is immediately available to every other
-              worker the moment it registers. the architecture stops paying
-              compound interest on complexity.
+              four services means six possible integrations. twenty means 190. each new addition
+              compounds the coordination cost of everything that came before. iii ends this. a new
+              worker joins by opening a single connection. adding four workers, or twenty, takes the
+              same effort: zero. each worker is immediately available to every other worker the
+              moment it registers. the architecture stops paying compound interest on complexity.
             </p>
           </section>
 
@@ -741,12 +726,11 @@
               <span class="heavy">both sides of the house.</span>
             </h2>
             <p class="m-body">
-              application teams register functions and declare triggers, focused
-              entirely on business logic. platform teams publish workers,
-              focused entirely on the capabilities they provide. both sides
-              fulfill the exact same contract. no bespoke SDKs. no internal
-              client libraries. no per-service API contracts. no integration
-              consulting. the work that used to live between teams disappears.
+              application teams register functions and declare triggers, focused entirely on
+              business logic. platform teams publish workers, focused entirely on the capabilities
+              they provide. both sides fulfill the exact same contract. no bespoke SDKs. no internal
+              client libraries. no per-service API contracts. no integration consulting. the work
+              that used to live between teams disappears.
             </p>
           </section>
 
@@ -756,13 +740,11 @@
               <span class="heavy">by default.</span>
             </h2>
             <p class="m-body">
-              when a worker registers, its functions become visible and callable
-              across the entire system in real time. when it unregisters, they
-              are gone. traces span every worker, across every language, across
-              every process. the engine is the registry. the protocol is the
-              wire. observability is the wire protocol. there are no stale
-              specs, no propagation delays, and no disconnected log streams to
-              grep across.
+              when a worker registers, its functions become visible and callable across the entire
+              system in real time. when it unregisters, they are gone. traces span every worker,
+              across every language, across every process. the engine is the registry. the protocol
+              is the wire. observability is the wire protocol. there are no stale specs, no
+              propagation delays, and no disconnected log streams to grep across.
             </p>
           </section>
 
@@ -772,12 +754,11 @@
               <span class="heavy">one system.</span>
             </h2>
             <p class="m-body">
-              a typescript worker calls a python worker the same way it calls
-              another typescript worker. the engine handles serialization and
-              routing. a worker in docker, on kubernetes, on the edge, in a
-              browser tab, on a raspberry pi, or inside a hardware-isolated
-              microVM is the same kind of worker. moving a workload is a
-              redeploy, not a rewrite.
+              a typescript worker calls a python worker the same way it calls another typescript
+              worker. the engine handles serialization and routing. a worker in docker, on
+              kubernetes, on the edge, in a browser tab, on a raspberry pi, or inside a
+              hardware-isolated microVM is the same kind of worker. moving a workload is a redeploy,
+              not a rewrite.
             </p>
           </section>
 
@@ -787,13 +768,12 @@
               <span class="heavy">one mental model.</span>
             </h2>
             <p class="m-body">
-              a new engineer is productive on day one because their mental model
-              never changes from one capability to the next. an LLM can reason
-              about the entire system in a single context window because there
-              is one set of primitives to learn and one always-accurate source
-              of truth for what exists. as agents do more of the work of
-              building and operating software, small primitives compound:
-              cheaper to onboard, cheaper to prompt, cheaper to extend.
+              a new engineer is productive on day one because their mental model never changes from
+              one capability to the next. ai agents can reliably reason about an entire system in a
+              single context window because there is one set of primitives to learn and one
+              always-accurate source of truth for what exists. as agents do more of the work of
+              building and operating software, small primitives compound: easier to onboard, cheaper
+              to prompt, faster to extend, simpler to maintain.
             </p>
           </section>
 
@@ -803,10 +783,9 @@
               <span class="heavy">are workers.</span>
             </h2>
             <p class="m-body">
-              an agent's tools are functions. its memory is state. its
-              orchestration is triggers. the harness is the system. an agent
-              that hits a task outside its current capabilities can register a
-              worker at runtime and use its functions immediately. this is the
+              an agent's tools are functions. its memory is state. its orchestration is triggers.
+              the harness is the system. an agent that hits a task outside its current capabilities
+              can register a worker at runtime and use its functions immediately. this is the
               difference between scripted LLM calls and real autonomy.
             </p>
           </section>
@@ -817,12 +796,10 @@
               <span class="heavy">is the npm moment for systems.</span>
             </h2>
             <p class="m-body">
-              what you install is not a library. it is a running participant. a
-              queue worker. a sandbox worker. a classifier. a CRM integration.
-              one command, complete capability, immediately available to every
-              other worker in the system. capabilities that used to require
-              vendor evaluation, procurement, and integration become a single
-              line.
+              what you install is not a library. it is a running participant. a queue worker. a
+              sandbox worker. a classifier. a CRM integration. one command, complete capability,
+              immediately available to every other worker in the system. capabilities that used to
+              require vendor evaluation, procurement, and integration become a single line.
             </p>
           </section>
 
@@ -833,13 +810,11 @@
               <span class="ghost" style="font-weight: 700">add a worker.</span>
             </h2>
             <p class="m-body">
-              AI is the forcing function. simplicity beats complexity. the
-              category-shopping era of software engineering (evaluate, procure,
-              integrate, repeat) is ending. what replaces it is one protocol,
-              three primitives, and a registry of workers that compose without
-              coordination. anything can participate. everything composes.
-              software becomes unreasonably simple to create, extend, and
-              modify.
+              AI is the forcing function. simplicity beats complexity. the category-shopping era of
+              software engineering (evaluate, procure, integrate, repeat) is ending. what replaces
+              it is one protocol, three primitives, and a registry of workers that compose without
+              coordination. anything can participate. everything composes. software becomes
+              unreasonably simple to create, extend, and modify.
             </p>
           </section>
         </article>
@@ -866,45 +841,44 @@
 
     <script>
       (function () {
-        const btn = document.getElementById('theme-btn');
-        const icon = document.getElementById('theme-icon');
-        const THEME_KEY = 'iii_theme';
+        const btn = document.getElementById("theme-btn");
+        const icon = document.getElementById("theme-icon");
+        const THEME_KEY = "iii_theme";
         let isDark = window.__iiiThemeInit || false;
         function apply(dark) {
           const r = document.documentElement.style;
-          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
           if (dark) {
-            r.setProperty('--bg', '#111110');
-            r.setProperty('--panel', '#1a1916');
-            r.setProperty('--ink', '#f2f0ed');
-            r.setProperty('--ink-2', '#e2dfd9');
-            r.setProperty('--ink-soft', '#e2dfd9');
-            r.setProperty('--ink-faint', '#9c9893');
-            r.setProperty('--ink-ghost', '#5d5a55');
-            r.setProperty('--mute', '#9c9893');
-            r.setProperty('--mute-2', '#5d5a55');
-            r.setProperty('--rule', '#2a2926');
-            r.setProperty('--rule-2', '#1f1e1c');
-            r.setProperty('--accent', '#3ea8ff');
-            r.setProperty('--accent-2', '#ff5a1f');
+            r.setProperty("--bg", "#111110");
+            r.setProperty("--panel", "#1a1916");
+            r.setProperty("--ink", "#f2f0ed");
+            r.setProperty("--ink-2", "#e2dfd9");
+            r.setProperty("--ink-soft", "#e2dfd9");
+            r.setProperty("--ink-faint", "#9c9893");
+            r.setProperty("--ink-ghost", "#5d5a55");
+            r.setProperty("--mute", "#9c9893");
+            r.setProperty("--mute-2", "#5d5a55");
+            r.setProperty("--rule", "#2a2926");
+            r.setProperty("--rule-2", "#1f1e1c");
+            r.setProperty("--accent", "#3ea8ff");
+            r.setProperty("--accent-2", "#ff5a1f");
             icon.innerHTML =
               '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
           } else {
-            r.setProperty('--bg', '#f5f3ee');
-            r.setProperty('--panel', '#e9e6e2');
-            r.setProperty('--ink', '#0a0a0a');
-            r.setProperty('--ink-2', '#1a1a1a');
-            r.setProperty('--ink-soft', '#1a1a1a');
-            r.setProperty('--ink-faint', '#6b6865');
-            r.setProperty('--ink-ghost', '#a3a09c');
-            r.setProperty('--mute', '#6b6865');
-            r.setProperty('--mute-2', '#a3a09c');
-            r.setProperty('--rule', '#d8d4cb');
-            r.setProperty('--rule-2', '#e6e3df');
-            r.setProperty('--accent', '#ff5a1f');
-            r.setProperty('--accent-2', '#1a5fbf');
-            icon.innerHTML =
-              '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
+            r.setProperty("--bg", "#f5f3ee");
+            r.setProperty("--panel", "#e9e6e2");
+            r.setProperty("--ink", "#0a0a0a");
+            r.setProperty("--ink-2", "#1a1a1a");
+            r.setProperty("--ink-soft", "#1a1a1a");
+            r.setProperty("--ink-faint", "#6b6865");
+            r.setProperty("--ink-ghost", "#a3a09c");
+            r.setProperty("--mute", "#6b6865");
+            r.setProperty("--mute-2", "#a3a09c");
+            r.setProperty("--rule", "#d8d4cb");
+            r.setProperty("--rule-2", "#e6e3df");
+            r.setProperty("--accent", "#ff5a1f");
+            r.setProperty("--accent-2", "#1a5fbf");
+            icon.innerHTML = '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
           }
         }
         // Sync icon on load if dark
@@ -912,9 +886,11 @@
           icon.innerHTML =
             '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
         }
-        btn.addEventListener('click', () => {
+        btn.addEventListener("click", () => {
           isDark = !isDark;
-          try { localStorage.setItem(THEME_KEY, isDark ? 'dark' : 'light'); } catch(e){}
+          try {
+            localStorage.setItem(THEME_KEY, isDark ? "dark" : "light");
+          } catch (e) {}
           apply(isDark);
         });
       })();
