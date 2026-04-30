@@ -13,7 +13,8 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use super::oci::{expected_oci_arch, read_cached_rootfs_arch, read_oci_entrypoint, read_oci_env};
 use crate::cli::rootfs::clone_rootfs;
@@ -121,26 +122,25 @@ pub async fn run_dev(
         }
     }
 
+    let env_pairs: Vec<(String, String)> =
+        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let control_sock = rootfs.join("control.sock");
+    let shell_sock = rootfs.join("shell.sock");
+
     let mut cmd = tokio::process::Command::new(&self_exe);
     cmd.arg("__vm-boot");
-    cmd.arg("--rootfs").arg(&rootfs);
-    cmd.arg("--exec").arg(exec_path);
-    cmd.arg("--workdir").arg("/workspace");
-    cmd.arg("--vcpus").arg(vcpus.to_string());
-    cmd.arg("--ram").arg(ram_mib.to_string());
-    cmd.arg("--control-sock").arg(rootfs.join("control.sock"));
-    cmd.arg("--shell-sock").arg(rootfs.join("shell.sock"));
-
-    for (key, value) in &env {
-        cmd.arg("--env").arg(format!("{}={}", key, value));
-    }
-
-    for (host, guest) in mounts {
-        cmd.arg("--mount").arg(format!("{}:{}", host, guest));
-    }
-
-    for arg in args {
-        cmd.arg("--arg").arg(arg);
+    for boot_arg in vm_boot_args_dev(
+        &rootfs,
+        exec_path,
+        vcpus,
+        ram_mib,
+        &control_sock,
+        &shell_sock,
+        &env_pairs,
+        mounts,
+        args,
+    ) {
+        cmd.arg(boot_arg);
     }
 
     apply_vm_tuning_env(|flag, val| {
@@ -259,6 +259,94 @@ pub async fn run_dev(
 }
 
 use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
+
+const VM_BOOT_NETWORK_FLAG: &str = "--network";
+
+fn vm_boot_args_oci(
+    rootfs: &Path,
+    exec_path: &str,
+    workdir: &str,
+    vcpus: u32,
+    ram_mib: &str,
+    pid_file: &Path,
+    console_output: &Path,
+    control_sock: &Path,
+    shell_sock: &Path,
+    env: &[(String, String)],
+    exec_args: &[String],
+) -> Vec<OsString> {
+    let mut out: Vec<OsString> = Vec::new();
+    out.push(OsString::from("--rootfs"));
+    out.push(rootfs.as_os_str().to_owned());
+    out.push(OsString::from("--exec"));
+    out.push(OsString::from(exec_path));
+    out.push(OsString::from("--workdir"));
+    out.push(OsString::from(workdir));
+    out.push(OsString::from("--vcpus"));
+    out.push(OsString::from(vcpus.to_string()));
+    out.push(OsString::from("--ram"));
+    out.push(OsString::from(ram_mib));
+    out.push(OsString::from("--pid-file"));
+    out.push(pid_file.as_os_str().to_owned());
+    out.push(OsString::from("--console-output"));
+    out.push(console_output.as_os_str().to_owned());
+    out.push(OsString::from("--control-sock"));
+    out.push(control_sock.as_os_str().to_owned());
+    out.push(OsString::from("--shell-sock"));
+    out.push(shell_sock.as_os_str().to_owned());
+    out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
+    for (k, v) in env {
+        out.push(OsString::from("--env"));
+        out.push(OsString::from(format!("{}={}", k, v)));
+    }
+    for arg in exec_args {
+        out.push(OsString::from("--arg"));
+        out.push(OsString::from(arg.as_str()));
+    }
+    out
+}
+
+fn vm_boot_args_dev(
+    rootfs: &Path,
+    exec_path: &str,
+    vcpus: u32,
+    ram_mib: u32,
+    control_sock: &Path,
+    shell_sock: &Path,
+    env: &[(String, String)],
+    mounts: &[(String, String)],
+    exec_args: &[String],
+) -> Vec<OsString> {
+    let mut out: Vec<OsString> = Vec::new();
+    out.push(OsString::from("--rootfs"));
+    out.push(rootfs.as_os_str().to_owned());
+    out.push(OsString::from("--exec"));
+    out.push(OsString::from(exec_path));
+    out.push(OsString::from("--workdir"));
+    out.push(OsString::from("/workspace"));
+    out.push(OsString::from("--vcpus"));
+    out.push(OsString::from(vcpus.to_string()));
+    out.push(OsString::from("--ram"));
+    out.push(OsString::from(ram_mib.to_string()));
+    out.push(OsString::from("--control-sock"));
+    out.push(control_sock.as_os_str().to_owned());
+    out.push(OsString::from("--shell-sock"));
+    out.push(shell_sock.as_os_str().to_owned());
+    out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
+    for (k, v) in env {
+        out.push(OsString::from("--env"));
+        out.push(OsString::from(format!("{}={}", k, v)));
+    }
+    for (host, guest) in mounts {
+        out.push(OsString::from("--mount"));
+        out.push(OsString::from(format!("{}:{}", host, guest)));
+    }
+    for arg in exec_args {
+        out.push(OsString::from("--arg"));
+        out.push(OsString::from(arg.as_str()));
+    }
+    out
+}
 
 pub struct LibkrunAdapter;
 
@@ -552,43 +640,31 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let workdir =
             super::oci::read_oci_workdir(&worker_rootfs).unwrap_or_else(|| "/".to_string());
 
-        let mut cmd = std::process::Command::new(&self_exe);
-        cmd.arg("__vm-boot");
-        cmd.arg("--rootfs").arg(&worker_rootfs);
-        cmd.arg("--exec").arg(&exec_path);
-        cmd.arg("--workdir").arg(&workdir);
         let vcpus = spec
             .cpu_limit
             .as_deref()
             .and_then(|s| s.parse::<f64>().ok())
             .map(|v| v.ceil().max(1.0) as u32)
             .unwrap_or(2);
-        cmd.arg("--vcpus").arg(vcpus.to_string());
-        cmd.arg("--ram").arg(
-            spec.memory_limit
-                .as_deref()
-                .and_then(k8s_mem_to_mib)
-                .unwrap_or_else(|| "2048".to_string()),
-        );
+        let ram_mib = spec
+            .memory_limit
+            .as_deref()
+            .and_then(k8s_mem_to_mib)
+            .unwrap_or_else(|| "2048".to_string());
 
         let pid_file_path = Self::pid_file(&spec.name);
-        cmd.arg("--pid-file").arg(&pid_file_path);
-
-        cmd.arg("--console-output")
-            .arg(Self::stdout_log(&spec.name));
-
+        let console_output_path = Self::stdout_log(&spec.name);
         // Control channel for host-driven fast restarts. The socket is
         // colocated with the pid file under ~/.iii/managed/<name>/ so
         // supervisor_ctl::control_socket_path resolves to the same place
         // the watcher and stop handler use. Without this, iii-init's
         // supervisor mode stays dormant and every source edit falls back
         // to a full VM restart.
-        cmd.arg("--control-sock")
-            .arg(worker_dir.join("control.sock"));
+        let control_sock_path = worker_dir.join("control.sock");
         // Shell-exec channel alongside the control channel. `iii worker
         // exec` connects to shell.sock; the in-VM dispatcher thread
         // handles requests. Absent => exec refuses with a clear error.
-        cmd.arg("--shell-sock").arg(worker_dir.join("shell.sock"));
+        let shell_sock_path = worker_dir.join("shell.sock");
 
         let image_env = read_oci_env(&worker_rootfs);
         let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
@@ -596,12 +672,24 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             caller_env.insert(key.clone(), value.clone());
         }
         let merged_env = build_vm_env(caller_env);
+        let env_pairs: Vec<(String, String)> = merged_env.into_iter().collect();
 
-        for (key, value) in &merged_env {
-            cmd.arg("--env").arg(format!("{}={}", key, value));
-        }
-        for arg in &exec_args {
-            cmd.arg("--arg").arg(arg);
+        let mut cmd = std::process::Command::new(&self_exe);
+        cmd.arg("__vm-boot");
+        for boot_arg in vm_boot_args_oci(
+            &worker_rootfs,
+            &exec_path,
+            &workdir,
+            vcpus,
+            &ram_mib,
+            &pid_file_path,
+            &console_output_path,
+            &control_sock_path,
+            &shell_sock_path,
+            &env_pairs,
+            &exec_args,
+        ) {
+            cmd.arg(boot_arg);
         }
 
         // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
@@ -748,6 +836,84 @@ mod tests {
             dir.to_string_lossy()
                 .contains(".iii/managed/test-worker/logs")
         );
+    }
+
+    fn parse_vm_boot_args(boot_args: Vec<OsString>) -> crate::cli::vm_boot::VmBootArgs {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: crate::cli::vm_boot::VmBootArgs,
+        }
+
+        let mut argv: Vec<OsString> = vec![OsString::from("test")];
+        argv.extend(boot_args);
+        Wrapper::parse_from(argv).args
+    }
+
+    #[test]
+    fn vm_boot_args_oci_enables_network_and_roundtrips() {
+        let env = vec![("III_URL".to_string(), "ws://localhost:3111".to_string())];
+        let exec_args = vec!["--url".to_string(), "ws://localhost:3111".to_string()];
+
+        let parsed = parse_vm_boot_args(vm_boot_args_oci(
+            Path::new("/tmp/rootfs"),
+            "/bin/sh",
+            "/",
+            4,
+            "2048",
+            Path::new("/tmp/vm.pid"),
+            Path::new("/tmp/console.log"),
+            Path::new("/tmp/control.sock"),
+            Path::new("/tmp/shell.sock"),
+            &env,
+            &exec_args,
+        ));
+
+        assert!(parsed.network);
+        assert_eq!(parsed.rootfs, "/tmp/rootfs");
+        assert_eq!(parsed.exec, "/bin/sh");
+        assert_eq!(parsed.workdir, "/");
+        assert_eq!(parsed.vcpus, 4);
+        assert_eq!(parsed.ram, 2048);
+        assert_eq!(parsed.pid_file.as_deref(), Some("/tmp/vm.pid"));
+        assert_eq!(parsed.console_output.as_deref(), Some("/tmp/console.log"));
+        assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
+        assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
+        assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
+        assert_eq!(parsed.arg, exec_args);
+    }
+
+    #[test]
+    fn vm_boot_args_dev_enables_network_and_roundtrips() {
+        let env = vec![("III_URL".to_string(), "ws://localhost:3111".to_string())];
+        let mounts = vec![("/host/src".to_string(), "/guest/src".to_string())];
+        let exec_args = vec!["-c".to_string(), "exec bash /run.sh".to_string()];
+
+        let parsed = parse_vm_boot_args(vm_boot_args_dev(
+            Path::new("/tmp/rootfs"),
+            "/bin/sh",
+            2,
+            2048,
+            Path::new("/tmp/control.sock"),
+            Path::new("/tmp/shell.sock"),
+            &env,
+            &mounts,
+            &exec_args,
+        ));
+
+        assert!(parsed.network);
+        assert_eq!(parsed.rootfs, "/tmp/rootfs");
+        assert_eq!(parsed.exec, "/bin/sh");
+        assert_eq!(parsed.workdir, "/workspace");
+        assert_eq!(parsed.vcpus, 2);
+        assert_eq!(parsed.ram, 2048);
+        assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
+        assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
+        assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
+        assert_eq!(parsed.mount, vec!["/host/src:/guest/src".to_string()]);
+        assert_eq!(parsed.arg, exec_args);
     }
 
     #[test]
