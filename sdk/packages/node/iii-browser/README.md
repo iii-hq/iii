@@ -1,7 +1,3 @@
-[![iii](https://iii.dev/og-image.png)](https://iii.dev)
-
-This is an SDK for [iii](https://iii.dev) — unreasonably simple backend development.
-
 # iii-browser-sdk
 
 Browser SDK for the [iii engine](https://github.com/iii-hq/iii) — WebSocket-based, no Node.js dependencies, no OpenTelemetry.
@@ -11,10 +7,10 @@ Browser SDK for the [iii engine](https://github.com/iii-hq/iii) — WebSocket-ba
 
 ## Why the browser SDK
 
-The browser SDK turns your frontend into a **first-class iii worker**:
+The browser SDK turns your frontend into an iii Worker enabling:
 
 - **Persistent connection** — one WebSocket replaces many HTTP round-trips.
-- **Bi-directional** — the engine can invoke functions registered in the browser. Backend workers push data to the frontend with `trigger()`, enabling real-time patterns without polling.
+- **Bi-directional communication** — the engine can invoke functions registered in the browser. Backend workers push data to the frontend with `trigger()`, enabling real-time patterns without polling.
 - **Same API** — `registerFunction`, `trigger`, `registerTrigger` — all the primitives you use server-side work identically in the browser.
 - **Zero Node.js dependencies** — runs in any browser environment with native `WebSocket`.
 
@@ -24,20 +20,23 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 npm install iii-browser-sdk
 ```
 
+## Add iii-worker-manager
+
+For the iii instance run: `iii worker add iii-worker-manager` to connect workers that run on untrusted clients like a user's browser.
+
+Refer to the [iii-worker-manager](https://workers.iii.dev/workers/iii-worker-manager) documentation for more information.
+
 ## Hello World
 
 ```typescript
 import { registerWorker } from 'iii-browser-sdk'
 
-const iii = registerWorker('ws://localhost:49135')
+const iii = registerWorker('ws://remotehost:3111')
 
-iii.registerFunction(
-  'ui::show-notification',
-  async (data: { title: string; body: string }) => {
-    showToast(data.title, data.body)
-    return { displayed: true }
-  },
-)
+iii.registerFunction('ui::show-notification', async (data: { title: string; body: string }) => {
+  showToast(data.title, data.body)
+  return { displayed: true }
+})
 
 const users = await iii.trigger({
   function_id: 'api::get::users',
@@ -47,30 +46,26 @@ const users = await iii.trigger({
 
 ## API
 
-| Operation                | Signature                                                             | Description                                                  |
-| ------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Initialize               | `registerWorker(url, options?)`                                       | Connect to the engine via browser WebSocket. Returns `ISdk`  |
-| Register function        | `iii.registerFunction(id, handler, options?)`                         | Register a function the engine (or backend) can invoke       |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })`                  | Bind a trigger to a function                                 |
-| Invoke (await)           | `await iii.trigger({ function_id, payload })`                         | Invoke a function and wait for the result                    |
-| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Invoke without waiting                                       |
-| Create channel           | `iii.createChannel()`                                                 | Create a streaming channel pair (writer + reader)            |
-| Shutdown                 | `iii.shutdown()`                                                      | Gracefully disconnect from the engine                        |
-
-For listing workers, functions, triggers, or subscribing to function availability events, see the [discovery concepts](https://iii.dev/docs/primitives-and-concepts/discovery).
+| Operation                | Signature                                                                         | Description                                                 |
+| ------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Initialize               | `registerWorker(url, options?)`                                                   | Connect to the engine via browser WebSocket. Returns `ISdk` |
+| Register function        | `iii.registerFunction(id, handler, options?)`                                     | Register a function the engine (or backend) can invoke      |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })`                              | Bind a trigger to a function                                |
+| Invoke (await)           | `await iii.trigger({ function_id, payload })`                                     | Invoke a function and wait for the result                   |
+| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })`             | Invoke without waiting                                      |
+| Invoke (enqueue)         | `iii.trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` | Route invocation through a named queue                      |
+| Create channel           | `iii.createChannel()`                                                             | Create a streaming channel pair (writer + reader)           |
+| Shutdown                 | `iii.shutdown()`                                                                  | Gracefully disconnect from the engine                       |
 
 ### Registering Functions
 
 Register a function in the browser that backend workers can call:
 
 ```typescript
-iii.registerFunction(
-  'ui::show-notification',
-  async (data: { title: string; body: string }) => {
-    showToast(data.title, data.body)
-    return { displayed: true }
-  },
-)
+iii.registerFunction('ui::show-notification', async (data: { title: string; body: string }) => {
+  showToast(data.title, data.body)
+  return { displayed: true }
+})
 ```
 
 ### Calling Backend Functions
@@ -89,24 +84,13 @@ const users = await iii.trigger({
 Backend workers can push data to the browser in real time. No polling required:
 
 ```typescript
-iii.registerFunction(
-  'ui::update-dashboard',
-  async (metrics: { cpu: number; memory: number; requests: number }) => {
-    document.getElementById('cpu')!.textContent = `${metrics.cpu}%`
-    document.getElementById('memory')!.textContent = `${metrics.memory}MB`
-    document.getElementById('requests')!.textContent = `${metrics.requests}/s`
-    return null
-  },
-)
+iii.registerFunction('ui::update-dashboard', async (metrics: { cpu: number; memory: number; requests: number }) => {
+  document.getElementById('cpu')!.textContent = `${metrics.cpu}%`
+  document.getElementById('memory')!.textContent = `${metrics.memory}MB`
+  document.getElementById('requests')!.textContent = `${metrics.requests}/s`
+  return null
+})
 ```
-
-## Exports
-
-| Import                   | What it provides                      |
-| ------------------------ | ------------------------------------- |
-| `iii-browser-sdk`        | Core SDK (`registerWorker`, types)    |
-| `iii-browser-sdk/stream` | Stream types for real-time state      |
-| `iii-browser-sdk/state`  | State types for key-value operations  |
 
 ## Resources
 

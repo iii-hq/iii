@@ -34,13 +34,14 @@ const result = await iii.trigger({ function_id: 'hello::greet', payload: { name:
 
 ## API
 
-| Operation                | Signature                                            | Description                                                  |
-| ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------ |
-| Initialize               | `registerWorker(url, options?)`                      | Create and connect to the engine. Returns an `ISdk` instance |
-| Register function        | `iii.registerFunction(id, handler, options?)`        | Register a function that can be invoked by name              |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | Bind a trigger (HTTP, cron, queue, etc.) to a function       |
-| Invoke (await)           | `await iii.trigger({ function_id, payload })`       | Invoke a function and wait for the result                    |
-| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Invoke without waiting |
+| Operation                | Signature                                                                         | Description                                                  |
+| ------------------------ | --------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Initialize               | `registerWorker(url, options?)`                                                   | Create and connect to the engine. Returns an `ISdk` instance |
+| Register function        | `iii.registerFunction(id, handler, options?)`                                     | Register a function that can be invoked by name              |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })`                              | Bind a trigger (HTTP, cron, queue, etc.) to a function       |
+| Invoke (await)           | `await iii.trigger({ function_id, payload })`                                     | Invoke a function and wait for the result                    |
+| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })`             | Invoke without waiting                                       |
+| Invoke (enqueue)         | `iii.trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` | Route invocation through a named queue                       |
 
 ### Registering Functions
 
@@ -71,19 +72,6 @@ const result = await iii.trigger({ function_id: 'orders::create', payload: { ite
 
 iii.trigger({ function_id: 'analytics::track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
 ```
-
-## Node Modules
-
-| Import              | What it provides                      |
-| ------------------- | ------------------------------------- |
-| `iii-sdk`           | Core SDK (`registerWorker`, types)    |
-| `iii-sdk/stream`    | Stream client for real-time state     |
-| `iii-sdk/state`     | State client for key-value operations |
-| `iii-sdk/telemetry` | OpenTelemetry integration             |
-
-## Removed methods
-
-`call`, `callVoid`, and `triggerVoid` have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
 
 ## Resources
 

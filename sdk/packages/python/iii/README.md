@@ -22,30 +22,31 @@ iii = register_worker("ws://localhost:49134")
 def greet(data):
     return {"message": f"Hello, {data['name']}!"}
 
-iii.register_function("greet", greet)
+iii.register_function("hello::greet", greet)
 
 iii.register_trigger({
     "type": "http",
-    "function_id": "greet",
+    "function_id": "hello::greet",
     "config": {"api_path": "/greet", "http_method": "POST"},
 })
 
 iii.connect()
 
-result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
+result = iii.trigger({"function_id": "hello::greet", "payload": {"name": "world"}})
 print(result)  # {"message": "Hello, world!"}
 ```
 
 ## API
 
-| Operation                | Signature                                         | Description                                            |
-| ------------------------ | ------------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `register_worker(url, options?)`                  | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function(id, handler)`              | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await result)    | `iii.trigger({"function_id": id, "payload": data})` | Invoke a function and wait for the result           |
-| Invoke (fire-and-forget) | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Void()})` | Fire-and-forget |
-| Shutdown                 | `iii.shutdown()`                                  | Disconnect and stop background thread                  |
+| Operation                | Signature                                                                              | Description                                            |
+| ------------------------ | -------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Initialize               | `register_worker(url, options?)`                                                       | Create an SDK instance and auto-connect                |
+| Register function        | `iii.register_function(id, handler)`                                                   | Register a function that can be invoked by name        |
+| Register trigger         | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})`               | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await result)    | `iii.trigger({"function_id": id, "payload": data})`                                    | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Void()})`                | Fire-and-forget                                        |
+| Invoke (enqueue)         | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Enqueue(queue="name")})` | Route invocation through a named queue                 |
+| Shutdown                 | `iii.shutdown()`                                                                       | Disconnect and stop background thread                  |
 
 `register_worker()` creates the SDK instance and auto-connects to the engine.
 
@@ -73,14 +74,6 @@ iii.register_trigger({
 ```python
 result = iii.trigger({"function_id": "orders::create", "payload": {"body": {"item": "widget"}}})
 ```
-
-## Modules
-
-| Import          | What it provides                  |
-| --------------- | --------------------------------- |
-| `iii`           | Core SDK (`III`, types)           |
-| `iii.stream`    | Stream client for real-time state |
-| `iii.telemetry` | OpenTelemetry integration         |
 
 ## Development
 

@@ -53,16 +53,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## API
 
-| Operation                | Signature                                                         | Description                                            |
-| ------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `register_worker(address, options)`                               | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function(id, \|input: Value\| ...)`                 | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger(type, fn_id, config)?`                      | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `iii.trigger(TriggerRequest { ... }).await?`                      | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Void), ... }).await?` | Fire-and-forget invocation                  |
-| Invoke (enqueue)         | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Enqueue { queue }), ... }).await?` | Route invocation through a named queue |
+| Operation                | Signature                                                                                    | Description                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Initialize               | `register_worker(address, options)`                                                          | Create an SDK instance and auto-connect                |
+| Register function        | `iii.register_function(id, \|input: Value\| ...)`                                            | Register a function that can be invoked by name        |
+| Register trigger         | `iii.register_trigger(type, fn_id, config)?`                                                 | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await)           | `iii.trigger(TriggerRequest { ... }).await?`                                                 | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Void), ... }).await?`              | Fire-and-forget invocation                             |
+| Invoke (enqueue)         | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Enqueue { queue }), ... }).await?` | Route invocation through a named queue                 |
 
-`register_worker()` spawns a background task that handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation.
+`register_worker()` spawns a background task that handles WebSocket communication, automatic
+reconnection, and OpenTelemetry instrumentation.
 
 ### Registering Functions
 
@@ -169,17 +170,8 @@ let logger = Logger::new(Some("my-function".to_string()));
 logger.info("Processing started", None);
 ```
 
-The `Logger` struct emits OTel `LogRecord`s, falling back to the `tracing` crate when OTel is not initialized.
-
-## Modules
-
-| Import               | What it provides                                            |
-| -------------------- | ----------------------------------------------------------- |
-| `iii_sdk`            | Core SDK (`III`, `register_worker`, `TriggerRequest`, etc.) |
-| `iii_sdk::stream`    | Stream update builder (`UpdateBuilder`)                     |
-| `iii_sdk::logger`    | Structured logging (`Logger`)                               |
-| `iii_sdk::telemetry` | OpenTelemetry integration                                   |
-| `iii_sdk::types`     | Shared types (`UpdateOp`, `Channel`, `ApiRequest`, etc.)    |
+The `Logger` struct emits OTel `LogRecord`s, falling back to the `tracing` crate when OTel is not
+initialized.
 
 ## Resources
 
