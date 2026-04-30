@@ -149,10 +149,7 @@ fn start_subcommand_accepts_engine_config_flag() {
     ])
     .expect("engine's --config spawn form must parse");
     match cli.command {
-        Commands::Start {
-            config,
-            ..
-        } => {
+        Commands::Start { config, .. } => {
             assert_eq!(
                 config.as_deref().and_then(|p| p.to_str()),
                 Some("/tmp/iii-pdfkit-config.yaml"),
