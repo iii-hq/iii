@@ -87,6 +87,8 @@ pub struct WorkerInfo {
     pub version: Option<String>,
     pub os: Option<String>,
     pub ip_address: Option<String>,
+    #[serde(default)]
+    pub internal: bool,
     pub status: String,
     pub connected_at_ms: u64,
     pub function_count: usize,
@@ -278,6 +280,7 @@ impl EngineFunctionsWorker {
                 version: w.version.clone(),
                 os: w.os.clone(),
                 ip_address,
+                internal: false,
                 status: w.status.as_str().to_string(),
                 connected_at_ms: w.connected_at.timestamp_millis() as u64,
                 function_count,
@@ -288,6 +291,43 @@ impl EngineFunctionsWorker {
                 isolation: w.isolation.clone(),
             });
         }
+
+        for runtime_worker in self.engine.list_runtime_workers() {
+            if let Some(filter_id) = filter_worker_id
+                && runtime_worker.id != filter_id
+            {
+                continue;
+            }
+
+            let functions = runtime_worker.function_ids.clone();
+            worker_infos.push(WorkerInfo {
+                id: runtime_worker.id,
+                name: Some(runtime_worker.name),
+                runtime: Some("engine".to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                os: None,
+                ip_address: None,
+                internal: runtime_worker.internal,
+                status: "available".to_string(),
+                connected_at_ms: runtime_worker.connected_at.timestamp_millis() as u64,
+                function_count: functions.len(),
+                functions,
+                active_invocations: 0,
+                latest_metrics: None,
+                pid: None,
+                isolation: Some("in-process".to_string()),
+            });
+        }
+
+        worker_infos.sort_by(|a, b| {
+            let a_display_name = a.name.as_deref().unwrap_or(a.id.as_str());
+            let b_display_name = b.name.as_deref().unwrap_or(b.id.as_str());
+
+            a_display_name
+                .cmp(b_display_name)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
         worker_infos
     }
 
