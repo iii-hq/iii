@@ -3150,7 +3150,11 @@ pub async fn handle_worker_list() -> i32 {
 }
 
 fn worker_list_type_label(name: &str) -> &'static str {
-    match super::config_file::resolve_worker_type(name) {
+    worker_list_type_label_from_resolved(name, super::config_file::resolve_worker_type(name))
+}
+
+fn worker_list_type_label_from_resolved(name: &str, resolved: ResolvedWorkerType) -> &'static str {
+    match resolved {
         ResolvedWorkerType::Local { .. } => "local",
         ResolvedWorkerType::Oci { .. } => "oci",
         ResolvedWorkerType::Binary { .. } => "binary",
@@ -3471,79 +3475,50 @@ mod tests {
 
     #[test]
     fn worker_list_type_label_marks_configured_builtin_as_engine() {
-        in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let home = dir.join("home");
-            std::fs::create_dir_all(&home).unwrap();
-            let _home_guard = set_env_var_for_test("HOME", &home);
-            std::fs::write(
-                "config.yaml",
-                "\
-workers:
-  - name: iii-stream
-    config:
-      port: 3112
-",
-            )
-            .unwrap();
-
-            assert_eq!(worker_list_type_label("iii-stream"), "engine");
-        });
+        assert_eq!(
+            worker_list_type_label_from_resolved("iii-stream", ResolvedWorkerType::Config),
+            "engine"
+        );
     }
 
     #[test]
     fn worker_list_type_label_keeps_non_builtin_config_as_config() {
-        in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let home = dir.join("home");
-            std::fs::create_dir_all(&home).unwrap();
-            let _home_guard = set_env_var_for_test("HOME", &home);
-            std::fs::write(
-                "config.yaml",
-                "\
-workers:
-  - name: custom-config-only
-    config:
-      enabled: true
-",
-            )
-            .unwrap();
-
-            assert_eq!(worker_list_type_label("custom-config-only"), "config");
-        });
+        assert_eq!(
+            worker_list_type_label_from_resolved("custom-config-only", ResolvedWorkerType::Config),
+            "config"
+        );
     }
 
     #[test]
     fn worker_list_type_label_preserves_local_oci_and_binary_labels() {
-        in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let home = dir.join("home");
-            let workers_dir = home.join(".iii/workers");
-            std::fs::create_dir_all(&workers_dir).unwrap();
-            let _home_guard = set_env_var_for_test("HOME", &home);
-            std::fs::write(
-                "config.yaml",
-                "\
-workers:
-  - name: local-dev
-    worker_path: ./worker
-  - name: external-image
-    image: ghcr.io/acme/external:1
-",
-            )
-            .unwrap();
-            std::fs::write(workers_dir.join("downloaded-worker"), "#!/bin/sh\n").unwrap();
-
-            assert_eq!(worker_list_type_label("local-dev"), "local");
-            assert_eq!(worker_list_type_label("external-image"), "oci");
-            assert_eq!(worker_list_type_label("downloaded-worker"), "binary");
-        });
+        assert_eq!(
+            worker_list_type_label_from_resolved(
+                "local-dev",
+                ResolvedWorkerType::Local {
+                    worker_path: "./worker".to_string(),
+                },
+            ),
+            "local"
+        );
+        assert_eq!(
+            worker_list_type_label_from_resolved(
+                "external-image",
+                ResolvedWorkerType::Oci {
+                    image: "ghcr.io/acme/external:1".to_string(),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
+            "oci"
+        );
+        assert_eq!(
+            worker_list_type_label_from_resolved(
+                "downloaded-worker",
+                ResolvedWorkerType::Binary {
+                    binary_path: std::path::PathBuf::from("/tmp/downloaded-worker"),
+                },
+            ),
+            "binary"
+        );
     }
 
     #[test]
