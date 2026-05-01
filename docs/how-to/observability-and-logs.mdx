@@ -7,11 +7,13 @@ description: 'How to use structured logging, configure observability, and inspec
 
 Make your iii application fully observable: correlate every log entry to the exact trace that produced it, inspect execution timelines to find bottlenecks, and optionally export all telemetry to third-party tools like Grafana, Jaeger, or Datadog.
 
-## Why use the iii Logger
+## The iii Logger
 
 Every iii SDK ships a `Logger` class that emits logs as OpenTelemetry LogRecords. Each log call automatically captures the active **trace ID** and **span ID**, linking the log entry to the distributed trace that produced it.
 
-Language-native logging functions — `console.log` in Node, `print()` in Python, `tracing::info!` in Rust — write to stdout but are **not connected to traces**. This means you cannot find them in the iii Console's trace detail view, and they are invisible to any OTLP-based observability backend.
+<Warning title="Native logging is not trace-correlated">
+  Language-native logging functions such as `console.log` in Node, `print()` in Python, `tracing::info!` in Rust write to stdout but are not connected to iii traces. This means you cannot find them in the iii Console's trace detail view, and they are invisible to any OTLP-based observability backend.
+</Warning>
 
 | Approach | Where it appears | Trace correlation |
 |---|---|---|
@@ -277,57 +279,21 @@ graph LR
   The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability worker reference](/workers/iii-observability) for the full list of configuration fields and environment variable overrides.
 </Info>
 
-## Using iii Console
+## Viewing Logs in iii Console
 
-The iii Console is a web UI for inspecting traces, logs, metrics, and more. It comes included with every iii installation — no separate setup required. It connects to a running iii engine and gives you full operational visibility.
+Once you've instrumented your code with the Logger, view trace-correlated logs in the iii Console.
 
-### Launch
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#inspect-a-trace) for step-by-step instructions on navigating traces and viewing span details.
+</Info>
 
-Start the console while your engine is running:
-
-```bash
-iii-console
-```
-
-Open [http://localhost:3113](http://localhost:3113) in your browser.
-
-<Warning>
-  The console connects to a running iii engine instance. Make sure your engine is started before launching the console. By default it expects the engine at `127.0.0.1:3111`.
-</Warning>
-
-### Inspecting traces
-
-Navigate to the **Traces** page to see all collected traces. Each trace shows its root operation, duration, service name, span count, and status.
-
-Click on a trace to open the detail view with four visualization modes:
-
-- **Waterfall Chart** — timeline showing every span by start time and duration. Best for understanding sequential and parallel flow.
-- **Flame Graph** — stack-based view where wider bars mean longer duration. Best for spotting time-consuming operations.
-- **Service Breakdown** — aggregate stats per service (total spans, average duration, error rate). Best for identifying bottleneck services.
-- **Trace Map** — topology graph showing cross-service communication patterns.
-- **Flow** — node graph showing parent-child span relationships for the selected trace.
-
-<img src="/assets/console-traces-waterfall.png" alt="iii Console Traces waterfall view showing span timing and selected span details" />
-
-<img src="/assets/console-traces-flame-graph.png" alt="iii Console Traces flame graph view showing relative span duration within a trace" />
-
-<img src="/assets/console-traces-map.png" alt="iii Console Traces map view showing service relationships in a selected trace" />
-
-<img src="/assets/console-traces-flow.png" alt="iii Console Traces flow view showing parent-child span relationships as connected nodes" />
-
-### Inspecting logs per trace
-
-Click on any span in the trace view to open the detail drawer. Switch to the **Logs** tab to see every log entry that was emitted during that span's execution. Each entry includes the severity level, timestamp, message, and structured attributes.
+Navigate to **Traces**, select a trace, and open the **Logs** tab on any span to see every log entry from that execution — with severity, timestamp, message, and structured attributes you attached.
 
 <img src="/assets/console-logs-detail.png" alt="Trace and log inspection in iii Console with structured log details and context data" />
 
-You can also use the dedicated **Logs** page for a full log viewer with severity filters, full-text search, and time-range controls. If a log entry has a `trace_id`, you can click it to jump directly to the corresponding trace.
+The dedicated **Logs** page provides a full log viewer with severity filters, full-text search, and time-range controls. If a log entry has a `trace_id`, click it to jump directly to the corresponding trace.
 
-### Identifying bottlenecks
-
-Use the waterfall chart to spot long-running spans. Switch to the flame graph to see which operations consume the most time relative to the total trace duration. The service breakdown view aggregates performance stats so you can identify which service needs optimization.
-
-For more details on all console features, see the [Console reference](/console/index).
+For the full console feature set, see the [Console reference](/console).
 
 ## Result
 

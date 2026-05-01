@@ -13,29 +13,15 @@ graph LR
     B[Browser] -->|HTTP :3113| C
 ```
 
-## Installation
-
-Install the console binary:
-
-```bash
-curl -fsSL https://install.iii.dev/console/main/install.sh | sh
-```
-
-Verify the installation:
-
-```bash
-iii-console --help
-```
-
 ## Quick Start
 
-Start the console while your iii engine is running:
+The console comes preinstalled with iii, start it with:
 
 ```bash
-iii-console
+iii console
 ```
 
-Then open your browser to [http://localhost:3113](http://localhost:3113).
+Then open your browser to [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 <Warning title="Engine must be running">
   The console connects to a running iii engine instance. Make sure your engine is started before launching the console.
@@ -61,7 +47,7 @@ The Workers page lists every worker process currently connected to the engine, w
 | Active     | Number of currently in-flight invocations                                |
 | Connected  | Time since the worker connected                                         |
 
-Click a worker to open a detail panel showing full metadata, telemetry (language, project, framework), live metrics, and the list of functions the worker has registered.
+The worker detail panel shows full metadata, telemetry (language, project, framework), live metrics, and the list of functions the worker has registered.
 
 <img src="/assets/console-workers-detail.png" alt="iii Console Workers page with a selected worker detail panel showing runtime, version, OS, metrics, and registered functions" />
 
@@ -88,28 +74,11 @@ Use the **search bar** at the top to filter functions by name.
 
 ### Invoking Functions
 
-You can invoke any function directly from the console:
+The detail panel includes a JSON editor for invoking functions directly. Enter a payload, click **Invoke**, and view the result inline. The console sends requests via `POST /_console/invoke`.
 
-1. Click on a function to open its detail panel
-2. Enter a JSON payload in the input editor
-3. Click **Invoke**
-4. View the result or error in real time
-
-This is useful for:
-
-- **Testing** a function during development without wiring up a trigger
-- **Debugging** by sending specific payloads to reproduce an issue
-- **Ad-hoc operations** like running a migration function manually
-
-For example, to invoke a function `users::getProfile`:
-
-```json
-{
-  "user_id": "user-123"
-}
-```
-
-The console sends the payload to the engine via `POST /_console/invoke` and displays the JSON response or error inline.
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#invoke-a-function) for step-by-step instructions.
+</Info>
 
 <Info title="Function must be registered">
   Only functions that are currently registered and connected via an active worker will appear in the list. If a function is missing, check that its worker process is running.
@@ -117,7 +86,7 @@ The console sends the payload to the engine via `POST /_console/invoke` and disp
 
 ## Triggers
 
-The Triggers page shows every trigger registered with the engine and provides interactive tools to test each trigger type. Triggers are grouped by kind (HTTP, CRON, QUEUE) with a total count badge and per-type filter tabs.
+The Triggers page shows every trigger registered with the engine and provides interactive tools to test each trigger type. Triggers are grouped by kind (`http`, `cron`, `event`, `state`) with a total count badge and per-type filter tabs.
 
 <img src="/assets/console-triggers-http-test.png" alt="iii Console Triggers page showing HTTP triggers and the request builder for testing a selected endpoint" />
 
@@ -128,32 +97,19 @@ The Triggers page shows every trigger registered with the engine and provides in
 | Path / Config | HTTP path, cron schedule, or event name                 |
 | Status       | Active, Error, or Inactive                               |
 
-### Testing HTTP Triggers
+### Testing Triggers
 
-For HTTP-type triggers, the console provides a built-in request builder:
+The console provides interactive testing tools for each trigger type:
 
-1. Select the **HTTP method** (GET, POST, PUT, DELETE, PATCH)
-2. The **path** is pre-filled from the trigger configuration
-3. Add **query parameters** as key-value pairs
-4. Enter a **request body** (for POST/PUT/PATCH) as JSON
-5. Click **Send** to execute the request
+| Trigger Type | Testing Tool |
+|--------------|--------------|
+| HTTP | Request builder with method selection, query params, and JSON body |
+| Cron | Schedule viewer with **Trigger Now** button for immediate execution |
+| Event | Event emitter with pre-filled event name and JSON payload input |
 
-The response is displayed inline with status code, headers, and body. For example, for a trigger registered at `POST /api/users`:
-
-```json
-{
-  "name": "Alice",
-  "email": "alice@example.com"
-}
-```
-
-### Testing Cron Triggers
-
-Cron triggers display their schedule expression (e.g. `0 */5 * * * * *`). You can view the configured schedule and click **Trigger Now** to manually fire the cron job immediately. This is useful for testing scheduled tasks without waiting for the next scheduled run.
-
-### Testing Event Triggers
-
-For event-type triggers, the console provides an event emitter: the event name is pre-filled, you enter a JSON payload, and click **Emit** to publish the event.
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#test-an-http-trigger) for step-by-step instructions on testing each trigger type.
+</Info>
 
 <Info title="Trigger types">
   The available trigger types depend on which workers are loaded in your engine configuration. See [Trigger Types](/architecture/trigger-types) and [Workers](/workers) for the full list.
@@ -174,9 +130,17 @@ Select a group from the left panel to see all its key-value items. Each item sho
 
 ### Managing State
 
-- **Add** — Click **Add Item**, enter the scope, key, and JSON value, then save. Persisted via `state::set`.
-- **Edit** — Click an existing item, modify the JSON value, and save. Fires `state:updated` triggers if registered.
-- **Delete** — Click the delete icon and confirm. Fires `state:deleted` triggers if registered.
+The console supports full CRUD operations on state entries:
+
+| Operation | Behavior |
+|-----------|----------|
+| Add | Persisted via `state::set` |
+| Edit | Fires `state:updated` triggers if registered |
+| Delete | Fires `state:deleted` triggers if registered |
+
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#manage-state-entries) for step-by-step instructions.
+</Info>
 
 <Info title="State persistence">
   State persistence depends on your engine's State worker configuration. With `in_memory` storage, state is lost on engine restart. With `file_based` or `RedisAdapter`, state persists across restarts. See [State Worker](/workers/iii-state) for configuration details.
@@ -215,7 +179,16 @@ The Queues page lists durable queue topics, subscriber counts, queued message co
 | Retries     | Messages scheduled for retry                     |
 | Dead Letters | Messages that exhausted retry handling          |
 
-Click a topic to open the detail panel. The **Overview** tab shows live topic stats and includes a JSON publisher for sending a test message. The **Dead Letters** tab shows failed messages for that topic and supports retrying or deleting individual entries.
+The topic detail panel has two tabs:
+
+| Tab | Content |
+|-----|---------|
+| Overview | Live topic stats and a JSON publisher for sending test messages |
+| Dead Letters | Failed messages with retry and delete options |
+
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#send-a-test-message-to-a-queue) for step-by-step instructions on testing queues and managing dead letters.
+</Info>
 
 ## Traces
 
@@ -241,13 +214,15 @@ The Traces page provides full OpenTelemetry trace visualization with multiple vi
 
 ### View Modes
 
-Click on a trace to open the detail view with four visualization modes:
+The trace detail view provides five visualization modes:
 
-- **Waterfall Chart** — Timeline view showing every span laid out horizontally by start time and duration. This is the default view and is best for understanding the sequential and parallel flow of operations.
-- **Flame Graph** — Stack-based visualization where each span is stacked on its parent. Wider bars indicate longer duration. Useful for identifying which operations consume the most time.
-- **Service Breakdown** — Groups spans by service name with aggregate statistics: total spans, average duration, and error rate. Useful for identifying which service is the bottleneck.
-- **Trace Map** — Topology graph showing how services communicate. Nodes represent services and edges represent span parent-child relationships across service boundaries. Useful for understanding distributed call patterns.
-- **Flow** — Node-based execution flow showing parent-child span relationships in the selected trace.
+| Mode | Description |
+|------|-------------|
+| Waterfall Chart | Timeline view with spans laid out by start time and duration. Default view for sequential/parallel flow analysis. |
+| Flame Graph | Stack-based view where each span is stacked on its parent. Wider bars indicate longer duration. |
+| Service Breakdown | Aggregate statistics grouped by service: total spans, average duration, error rate. |
+| Trace Map | Topology graph showing service communication via parent-child span relationships. |
+| Flow | Node-based execution flow showing parent-child span relationships. |
 
 <img src="/assets/console-traces-flame-graph.png" alt="iii Console Traces page showing the flame graph view for a selected trace" />
 
@@ -257,7 +232,7 @@ Click on a trace to open the detail view with four visualization modes:
 
 ### Span Details
 
-Click on any span to open the detail panel:
+The span detail panel includes the following tabs:
 
 | Tab       | Content                                             |
 |-----------|-----------------------------------------------------|
@@ -281,6 +256,10 @@ Click on any span to open the detail panel:
 
 Multiple filters are combined with AND logic. Pagination controls at the bottom allow browsing large result sets.
 
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#inspect-a-trace) for step-by-step instructions on inspecting traces and spans.
+</Info>
+
 ## Logs
 
 The Logs page provides a viewer for structured OpenTelemetry logs collected by the engine. Logs are displayed in reverse chronological order. Each entry shows a timestamp, severity level, service name, trace/span context, and message. A severity filter toggle, full-text search, and time-range controls let you zero in on specific log entries. The source breakdown at the bottom shows which services are contributing the most log volume.
@@ -289,6 +268,10 @@ The Logs page provides a viewer for structured OpenTelemetry logs collected by t
 
 <Info title="Observability worker required">
   Log collection requires the Observability worker with `logs_enabled: true`. See [Observability Worker](/workers/iii-observability) for configuration.
+</Info>
+
+<Info title="Console vs console output">
+  The iii Console (this web UI) is separate from the engine's `logs_console_output` setting. The `logs_console_output` option controls whether OTLP logs are also printed to the engine process's stdout — it does not affect the Logs page here.
 </Info>
 
 ### Log Viewer
@@ -300,7 +283,7 @@ The Logs page provides a viewer for structured OpenTelemetry logs collected by t
 | Service   | The service that produced the log          |
 | Message   | The log body/message content               |
 
-Click on a log entry to expand and see the full JSON payload, including attributes, trace/span IDs, and resource metadata.
+Expanding a log entry reveals the full JSON payload, including attributes, trace/span IDs, and resource metadata.
 
 ### Log Filtering
 
@@ -354,11 +337,11 @@ The flow diagram uses an auto-layout algorithm (Dagre) to arrange nodes and edge
 
 Edges show the data flow direction between components — from triggers to the functions they invoke, and from functions to the state or queues they interact with.
 
-- **Pan and zoom** — scroll to zoom, drag to pan
-- **Click a node** — view its details (function ID, trigger config, etc.)
-- **Auto-layout** — the graph arranges itself automatically using a directed-graph layout
+The graph uses auto-layout (Dagre) and supports pan, zoom, and node inspection. Layout configuration is saved to the engine's state store and restored on next visit.
 
-Layout configuration is saved to the engine's state store and restored on next visit.
+<Info title="How-to guide">
+  See [Use the Console](/how-to/use-console#navigate-the-flow-graph) for navigation instructions.
+</Info>
 
 ## Configuration
 

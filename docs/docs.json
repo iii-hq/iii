@@ -103,15 +103,15 @@
                       "how-to/developing-sandbox-workers"
                     ]
                   },
+                  {
+                    "group": "Console & Observability",
+                    "pages": ["how-to/use-console", "how-to/observability-and-logs"]
+                  },
                   "how-to/use-iii-in-the-browser",
                   "how-to/configure-engine",
-                  "how-to/observability-and-logs",
                   {
                     "group": "HTTP",
-                    "pages": [
-                      "how-to/expose-http-endpoint",
-                      "how-to/use-http-middleware"
-                    ]
+                    "pages": ["how-to/expose-http-endpoint", "how-to/use-http-middleware"]
                   },
                   {
                     "group": "Queues",
