@@ -11,7 +11,9 @@
 
 ## What is iii?
 
-> [!IMPORTANT] The best way to understand iii is to
+<!-- prettier-ignore -->
+> [!IMPORTANT]
+> The best way to understand iii is to
 > [try our Quickstart](https://iii.dev/docs/quickstart), it will take just two minutes and may
 > forever change how you build software. If you want an even shorter introduction the try the
 > simulated [iii experience](https://iii.dev/#experience).
