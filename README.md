@@ -11,22 +11,33 @@
 
 ## What is iii?
 
+> [!IMPORTANT] The best way to understand iii is to
+> [try our Quickstart](https://iii.dev/docs/quickstart), it will take just two minutes and may
+> forever change how you build software. If you want an even shorter introduction the try the
+> simulated [iii experience](https://iii.dev/#experience).
+
 Software engineering is an exercise in assembling categories of services. Each service has its own
 internals, its own lifecycle, its own integration story, and its own failure modes. The cost of
-every new service addition is quadratic. Every new service has potential integration points with
-every other service.
+every new service addition is quadratic as every new service has potential integration points with
+every existing service. In iii services roughly map to workers. Workers are explained in the next
+section.
 
-iii eliminates this integration effort by reducing every new addition to zero. Installing 4 workers
-or 20 workers is exactly the same. Each worker is simply able to interact with every other worker
-the moment it is registered with iii. The result is an infrastructure that behaves like a single
+iii eliminates this integration effort by reducing every new addition to zero. Adding 4 workers or
+20 workers is exactly the same. Each worker is simply able to interact with every other worker the
+moment it is registered with iii. The result is an infrastructure that behaves like a single
 application and composes effortlessly no matter how much it grows or changes over time.
 
-iii supports any language, and any runtime. It makes a new engineer productive on day one because
-their mental model never changes from one capability to the next. Likewise AI Agents can reliably
-reason about an entire system in a single context window because there is one set of primitives to
-learn and one always-accurate source of truth for what exists. As agents do more of the work of
-building and operating software, small primitives compound: easier to onboard, cheaper to prompt,
-faster to extend, simpler to maintain.
+We also ships workers with more being added all the time. You can browse our worker repository at
+[workers.iii.dev](https://workers.iii.dev/). Adding any of them to a system is as easy as installing
+a library or package and can be done with the command `iii worker add iii-sandbox`, or `iii-queue`,
+or `iii-stream`. New infrastructure-level and service-level workers are being added all of the time.
+
+The structure of workers enables iii to trivially support any language, and any runtime. It makes a
+new engineer productive on day one because their mental model never changes from one capability to
+the next. Likewise AI Agents can reliably reason about an entire system in a single context window
+because there is one set of primitives to learn and one always-accurate source of truth for what
+exists. As agents do more of the work of building and operating software, small primitives compound:
+easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
 
 ### Three Primitives
 
@@ -92,10 +103,6 @@ triggers, queues, traces, logs, and real-time state. See the
 | `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
 
 See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain, and CI/CD details.
-
-## Examples
-
-See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tutorials.
 
 ## Resources
 
