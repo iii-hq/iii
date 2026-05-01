@@ -15,7 +15,10 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use super::config::{EngineConfig, WorkerEntry, WorkerRegistry, assign_instance_ids};
+use super::config::{
+    EngineConfig, WorkerEntry, WorkerRegistry, assign_instance_ids,
+    runtime_worker_info_from_registration,
+};
 use super::registry::WorkerRegistration;
 use super::traits::Worker;
 use crate::engine::Engine;
@@ -238,6 +241,7 @@ impl ReloadManager {
                     );
                 }
                 engine.remove_worker_registrations(&old.registrations);
+                engine.remove_runtime_worker(&old.entry.name);
             }
 
             let rw =
@@ -259,6 +263,7 @@ impl ReloadManager {
                     );
                 }
                 engine.remove_worker_registrations(&removed.registrations);
+                engine.remove_runtime_worker(&removed.entry.name);
             }
         }
 
@@ -312,6 +317,12 @@ impl ReloadManager {
         engine.begin_worker_scope(&entry.name);
         worker_arc.register_functions(engine.clone());
         let registrations = engine.end_worker_scope();
+
+        if let Some(runtime_worker) =
+            runtime_worker_info_from_registration(entry, worker_arc.as_ref(), &registrations)
+        {
+            engine.upsert_runtime_worker(runtime_worker);
+        }
 
         Ok(RunningWorker {
             entry: entry.clone(),

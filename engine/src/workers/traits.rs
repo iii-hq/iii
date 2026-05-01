@@ -86,6 +86,10 @@ pub trait Worker: Send + Sync {
         true
     }
 
+    fn is_external_process(&self) -> bool {
+        false
+    }
+
     /// Registers functions to the engine
     #[allow(unused_variables)]
     fn register_functions(&self, engine: Arc<Engine>) {

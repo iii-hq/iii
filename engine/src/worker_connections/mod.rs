@@ -29,6 +29,16 @@ pub struct WorkerConnectionTelemetryMeta {
     pub framework: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RuntimeWorkerInfo {
+    pub id: String,
+    pub name: String,
+    pub worker_type: String,
+    pub connected_at: DateTime<Utc>,
+    pub function_ids: Vec<String>,
+    pub internal: bool,
+}
+
 impl std::fmt::Debug for WorkerConnectionTelemetryMeta {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerConnectionTelemetryMeta")

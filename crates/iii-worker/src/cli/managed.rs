@@ -3112,16 +3112,11 @@ pub async fn handle_worker_list() -> i32 {
     );
 
     for name in &config_names {
-        let worker_type = match super::config_file::resolve_worker_type(name) {
-            ResolvedWorkerType::Local { .. } => "local",
-            ResolvedWorkerType::Oci { .. } => "oci",
-            ResolvedWorkerType::Binary { .. } => "binary",
-            ResolvedWorkerType::Config => "config",
-        };
+        let worker_type = worker_list_type_label(name);
 
         let running = if is_worker_running(name) {
             "running".green().to_string()
-        } else if worker_type == "config" && engine_running {
+        } else if matches!(worker_type, "config" | "engine") && engine_running {
             "running".green().to_string()
         } else {
             "stopped".dimmed().to_string()
@@ -3152,6 +3147,20 @@ pub async fn handle_worker_list() -> i32 {
 
     eprintln!();
     0
+}
+
+fn worker_list_type_label(name: &str) -> &'static str {
+    worker_list_type_label_from_resolved(name, super::config_file::resolve_worker_type(name))
+}
+
+fn worker_list_type_label_from_resolved(name: &str, resolved: ResolvedWorkerType) -> &'static str {
+    match resolved {
+        ResolvedWorkerType::Local { .. } => "local",
+        ResolvedWorkerType::Oci { .. } => "oci",
+        ResolvedWorkerType::Binary { .. } => "binary",
+        ResolvedWorkerType::Config if is_any_builtin(name) => "engine",
+        ResolvedWorkerType::Config => "config",
+    }
 }
 
 /// Infers the TYPE label for an orphan worker from on-disk evidence alone.
@@ -3462,6 +3471,54 @@ mod tests {
     #[test]
     fn binary_config_yaml_omits_empty_registry_config() {
         assert_eq!(binary_config_yaml(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn worker_list_type_label_marks_configured_builtin_as_engine() {
+        assert_eq!(
+            worker_list_type_label_from_resolved("iii-stream", ResolvedWorkerType::Config),
+            "engine"
+        );
+    }
+
+    #[test]
+    fn worker_list_type_label_keeps_non_builtin_config_as_config() {
+        assert_eq!(
+            worker_list_type_label_from_resolved("custom-config-only", ResolvedWorkerType::Config),
+            "config"
+        );
+    }
+
+    #[test]
+    fn worker_list_type_label_preserves_local_oci_and_binary_labels() {
+        assert_eq!(
+            worker_list_type_label_from_resolved(
+                "local-dev",
+                ResolvedWorkerType::Local {
+                    worker_path: "./worker".to_string(),
+                },
+            ),
+            "local"
+        );
+        assert_eq!(
+            worker_list_type_label_from_resolved(
+                "external-image",
+                ResolvedWorkerType::Oci {
+                    image: "ghcr.io/acme/external:1".to_string(),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
+            "oci"
+        );
+        assert_eq!(
+            worker_list_type_label_from_resolved(
+                "downloaded-worker",
+                ResolvedWorkerType::Binary {
+                    binary_path: std::path::PathBuf::from("/tmp/downloaded-worker"),
+                },
+            ),
+            "binary"
+        );
     }
 
     #[test]

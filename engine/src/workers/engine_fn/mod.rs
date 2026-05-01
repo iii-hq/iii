@@ -87,6 +87,8 @@ pub struct WorkerInfo {
     pub version: Option<String>,
     pub os: Option<String>,
     pub ip_address: Option<String>,
+    #[serde(default)]
+    pub internal: bool,
     pub status: String,
     pub connected_at_ms: u64,
     pub function_count: usize,
@@ -278,6 +280,7 @@ impl EngineFunctionsWorker {
                 version: w.version.clone(),
                 os: w.os.clone(),
                 ip_address,
+                internal: false,
                 status: w.status.as_str().to_string(),
                 connected_at_ms: w.connected_at.timestamp_millis() as u64,
                 function_count,
@@ -288,6 +291,43 @@ impl EngineFunctionsWorker {
                 isolation: w.isolation.clone(),
             });
         }
+
+        for runtime_worker in self.engine.list_runtime_workers() {
+            if let Some(filter_id) = filter_worker_id
+                && runtime_worker.id != filter_id
+            {
+                continue;
+            }
+
+            let functions = runtime_worker.function_ids.clone();
+            worker_infos.push(WorkerInfo {
+                id: runtime_worker.id,
+                name: Some(runtime_worker.name),
+                runtime: Some("engine".to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                os: None,
+                ip_address: None,
+                internal: runtime_worker.internal,
+                status: "available".to_string(),
+                connected_at_ms: runtime_worker.connected_at.timestamp_millis() as u64,
+                function_count: functions.len(),
+                functions,
+                active_invocations: 0,
+                latest_metrics: None,
+                pid: None,
+                isolation: Some("in-process".to_string()),
+            });
+        }
+
+        worker_infos.sort_by(|a, b| {
+            let a_display_name = a.name.as_deref().unwrap_or(a.id.as_str());
+            let b_display_name = b.name.as_deref().unwrap_or(b.id.as_str());
+
+            a_display_name
+                .cmp(b_display_name)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
         worker_infos
     }
 
@@ -793,6 +833,57 @@ mod tests {
         // Direct lookup by id still returns it (debug escape hatch).
         let direct = module.list_worker_infos(Some(&worker_id)).await;
         assert_eq!(direct.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_worker_infos_includes_runtime_worker_snapshots() {
+        let (engine, module) = setup_engine_and_module();
+
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string(), "state::set".to_string()],
+            internal: false,
+        });
+
+        let workers = module.list_worker_infos(None).await;
+
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "iii-state");
+        assert_eq!(workers[0].name.as_deref(), Some("iii-state"));
+        assert_eq!(workers[0].runtime.as_deref(), Some("engine"));
+        assert_eq!(workers[0].isolation.as_deref(), Some("in-process"));
+        assert_eq!(workers[0].status, "available");
+        assert_eq!(workers[0].function_count, 2);
+        assert_eq!(
+            workers[0].functions,
+            vec!["state::get".to_string(), "state::set".to_string()]
+        );
+        assert!(!workers[0].internal);
+    }
+
+    #[tokio::test]
+    async fn test_list_worker_infos_hides_pidless_socket_but_shows_runtime_snapshot() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let socket_worker = crate::worker_connections::WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(socket_worker);
+
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-stream".to_string(),
+            name: "iii-stream".to_string(),
+            worker_type: "iii-stream".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["stream::list".to_string()],
+            internal: false,
+        });
+
+        let workers = module.list_worker_infos(None).await;
+
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "iii-stream");
     }
 
     // ---- register_worker_metadata tests ----

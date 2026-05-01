@@ -30,7 +30,7 @@ use crate::{
         inject_baggage_from_context, inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
-    worker_connections::{WorkerConnection, WorkerConnectionRegistry},
+    worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
     workers::worker::rbac_session::Session,
     workers::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
@@ -228,6 +228,7 @@ pub trait EngineTrait: Send + Sync {
 #[derive(Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerConnectionRegistry>,
+    pub runtime_workers: Arc<DashMap<String, RuntimeWorkerInfo>>,
     pub functions: Arc<FunctionsRegistry>,
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
@@ -276,6 +277,7 @@ impl Engine {
         let active_scope = Arc::new(std::sync::Mutex::new(None));
         Self {
             worker_registry: Arc::new(WorkerConnectionRegistry::new()),
+            runtime_workers: Arc::new(DashMap::new()),
             functions: Arc::new(FunctionsRegistry::with_scope(active_scope.clone())),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
@@ -310,6 +312,21 @@ impl Engine {
     /// drift mid-lifetime.
     pub fn set_worker_manager_port(&self, port: u16) {
         let _ = self.worker_manager_port.set(port);
+    }
+
+    pub fn upsert_runtime_worker(&self, worker: RuntimeWorkerInfo) {
+        self.runtime_workers.insert(worker.id.clone(), worker);
+    }
+
+    pub fn remove_runtime_worker(&self, worker_id: &str) {
+        self.runtime_workers.remove(worker_id);
+    }
+
+    pub fn list_runtime_workers(&self) -> Vec<RuntimeWorkerInfo> {
+        self.runtime_workers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Opens a scope so that registrations made between here and
@@ -1862,6 +1879,26 @@ mod tests {
         {
             Err(serde::ser::Error::custom("serialization exploded"))
         }
+    }
+
+    #[test]
+    fn runtime_worker_registry_upserts_lists_and_removes() {
+        let engine = Engine::new();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+
+        let workers = engine.list_runtime_workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "iii-state");
+
+        engine.remove_runtime_worker("iii-state");
+        assert!(engine.list_runtime_workers().is_empty());
     }
 
     #[tokio::test]

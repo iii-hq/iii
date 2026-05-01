@@ -438,6 +438,10 @@ impl Worker for ExternalWorkerWrapper {
         self.process.is_alive()
     }
 
+    fn is_external_process(&self) -> bool {
+        true
+    }
+
     fn register_functions(&self, _engine: Arc<Engine>) {
         // External workers register their own functions via the bridge protocol
     }
