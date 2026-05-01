@@ -3112,16 +3112,11 @@ pub async fn handle_worker_list() -> i32 {
     );
 
     for name in &config_names {
-        let worker_type = match super::config_file::resolve_worker_type(name) {
-            ResolvedWorkerType::Local { .. } => "local",
-            ResolvedWorkerType::Oci { .. } => "oci",
-            ResolvedWorkerType::Binary { .. } => "binary",
-            ResolvedWorkerType::Config => "config",
-        };
+        let worker_type = worker_list_type_label(name);
 
         let running = if is_worker_running(name) {
             "running".green().to_string()
-        } else if worker_type == "config" && engine_running {
+        } else if matches!(worker_type, "config" | "engine") && engine_running {
             "running".green().to_string()
         } else {
             "stopped".dimmed().to_string()
@@ -3152,6 +3147,16 @@ pub async fn handle_worker_list() -> i32 {
 
     eprintln!();
     0
+}
+
+fn worker_list_type_label(name: &str) -> &'static str {
+    match super::config_file::resolve_worker_type(name) {
+        ResolvedWorkerType::Local { .. } => "local",
+        ResolvedWorkerType::Oci { .. } => "oci",
+        ResolvedWorkerType::Binary { .. } => "binary",
+        ResolvedWorkerType::Config if is_any_builtin(name) => "engine",
+        ResolvedWorkerType::Config => "config",
+    }
 }
 
 /// Infers the TYPE label for an orphan worker from on-disk evidence alone.
@@ -3462,6 +3467,83 @@ mod tests {
     #[test]
     fn binary_config_yaml_omits_empty_registry_config() {
         assert_eq!(binary_config_yaml(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn worker_list_type_label_marks_configured_builtin_as_engine() {
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: iii-stream
+    config:
+      port: 3112
+",
+            )
+            .unwrap();
+
+            assert_eq!(worker_list_type_label("iii-stream"), "engine");
+        });
+    }
+
+    #[test]
+    fn worker_list_type_label_keeps_non_builtin_config_as_config() {
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: custom-config-only
+    config:
+      enabled: true
+",
+            )
+            .unwrap();
+
+            assert_eq!(worker_list_type_label("custom-config-only"), "config");
+        });
+    }
+
+    #[test]
+    fn worker_list_type_label_preserves_local_oci_and_binary_labels() {
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            let workers_dir = home.join(".iii/workers");
+            std::fs::create_dir_all(&workers_dir).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            std::fs::write(
+                "config.yaml",
+                "\
+workers:
+  - name: local-dev
+    worker_path: ./worker
+  - name: external-image
+    image: ghcr.io/acme/external:1
+",
+            )
+            .unwrap();
+            std::fs::write(workers_dir.join("downloaded-worker"), "#!/bin/sh\n").unwrap();
+
+            assert_eq!(worker_list_type_label("local-dev"), "local");
+            assert_eq!(worker_list_type_label("external-image"), "oci");
+            assert_eq!(worker_list_type_label("downloaded-worker"), "binary");
+        });
     }
 
     #[test]
