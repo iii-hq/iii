@@ -845,10 +845,12 @@ The engine built-ins are mandatory and always loaded.
 | Function | Purpose | Parameters |
 |----------|---------|------------|
 | `engine::functions::list` | List all registered functions | `include_internal` (optional, default: `false`) |
-| `engine::workers::list` | List all workers with metrics | `worker_id` (optional) |
+| `engine::workers::list` | List connected SDK workers and in-process engine workers with metrics where available | `worker_id` (optional) |
 | `engine::triggers::list` | List all triggers | `include_internal` (optional, default: `false`) |
 | `engine::workers::register` | Register worker metadata (internal worker call) | `_caller_worker_id`, `runtime` (optional), `version` (optional), `name` (optional), `os` (optional), `telemetry` (optional) |
 | `engine::channels::create` | Create a streaming channel pair | `buffer_size` (optional) |
+
+Built-in engine workers such as `iii-stream` and `iii-state` are included in worker list results. Rows with `internal: true` are mandatory engine internals and can be hidden in user-facing views.
 
 ### Observability
 
