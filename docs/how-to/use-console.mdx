@@ -9,6 +9,20 @@ The iii Console provides interactive tools for testing and debugging your iii en
   For a complete overview of all console pages and their features, see the [Console Reference](/console).
 </Info>
 
+## Start the Console
+
+The console comes preinstalled with iii. Start it with:
+
+```bash
+iii console
+```
+
+Then open your browser to [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+<Warning title="Engine must be running">
+  The console connects to a running iii engine instance. Make sure your engine is started before launching the console. By default it expects the engine at `127.0.0.1:3111`.
+</Warning>
+
 ## Invoke a Function
 
 You can invoke any registered function directly from the console without wiring up a trigger.
