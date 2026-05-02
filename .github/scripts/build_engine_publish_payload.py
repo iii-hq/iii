@@ -169,7 +169,10 @@ def build_payload(
     engine_manifest = repo_root / "engine" / "Cargo.toml"
     if not engine_manifest.exists():
         raise ValueError(f"{engine_manifest} not found")
-    engine_version = tomllib.loads(engine_manifest.read_text(encoding="utf-8"))["package"]["version"]
+    try:
+        engine_version = tomllib.loads(engine_manifest.read_text(encoding="utf-8"))["package"]["version"]
+    except KeyError as exc:
+        raise ValueError(f"{engine_manifest}: missing [package].version ({exc})") from exc
     if expected_version and expected_version != engine_version:
         raise ValueError(
             f"engine worker version mismatch: input is {expected_version}, engine/Cargo.toml is {engine_version}"
