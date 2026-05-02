@@ -51,6 +51,11 @@ jobs:
           export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
           iii --version
 
+      # Engine builtin workers (iii-http, iii-state, iii-stream, iii-queue,
+      # iii-pubsub, iii-cron, iii-observability, iii-exec, iii-bridge,
+      # iii-sandbox) are compiled into the iii binary and auto-load on start.
+      # `workers: []` only suppresses external worker config — builtins still
+      # appear in `engine::workers::list`, so no `iii worker add` is needed.
       - name: Start III engine
         run: |
           set -euo pipefail
@@ -123,6 +128,8 @@ jobs:
         env:
           API_URL: ${{ inputs.api_url }}
           API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          PUBLISHED_VERSION: ${{ steps.payload.outputs.version }}
         run: |
           if [[ -z "$API_KEY" ]]; then
             echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
@@ -140,7 +147,7 @@ jobs:
             exit 1
           fi
           if [[ "$http" == "409" ]]; then
-            echo "::notice::${{ inputs.worker }} v${{ steps.payload.outputs.version }} already published (409) — skipping"
+            echo "::notice::${WORKER} v${PUBLISHED_VERSION} already published (409) — skipping"
           fi
 
       - name: Dump III logs
