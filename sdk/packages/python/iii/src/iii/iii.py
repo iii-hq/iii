@@ -92,10 +92,12 @@ def _detect_project_name(cwd: str | None = None) -> str | None:
     try:
         manifest = os.path.join(cwd, "pyproject.toml")
         if os.path.isfile(manifest):
+            import importlib
+
             try:
-                import tomllib  # Python 3.11+
+                tomllib = importlib.import_module("tomllib")  # Python 3.11+
             except ImportError:
-                tomllib = None  # type: ignore[assignment]
+                tomllib = None
             if tomllib is not None:
                 with open(manifest, "rb") as fh:
                     data = tomllib.load(fh)
