@@ -472,10 +472,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
 
     let sdk_telemetry = best_telemetry.map(|(_, t)| t);
 
-    let client_type = sdk_telemetry
-        .as_ref()
-        .and_then(|t| t.framework.clone())
-        .unwrap_or_else(|| environment::detect_client_type().to_string());
+    let client_type = environment::detect_client_type().to_string();
 
     let sdk_languages: Vec<String> = runtime_counts
         .keys()
@@ -1894,6 +1891,7 @@ mod tests {
         let wd = collect_worker_data(&engine);
         assert_eq!(wd.worker_count_total, 1);
         assert_eq!(wd.worker_count_by_framework.get("motia"), Some(&1));
+        assert_eq!(wd.client_type, "iii_direct");
     }
 
     #[test]
