@@ -275,6 +275,8 @@ impl Default for WorkerMetadata {
             .filter(|s| !s.is_empty())
             .map(|s| s.split('.').next().unwrap_or(&s).to_string());
 
+        let project_name = detect_project_name(None);
+
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
@@ -283,6 +285,7 @@ impl Default for WorkerMetadata {
             pid: Some(pid),
             telemetry: Some(WorkerTelemetryMeta {
                 language,
+                project_name,
                 ..Default::default()
             }),
             isolation: std::env::var("III_ISOLATION")
@@ -290,6 +293,59 @@ impl Default for WorkerMetadata {
                 .filter(|s| !s.is_empty()),
         }
     }
+}
+
+/// Returns a project identifier for telemetry, derived from the current
+/// working directory. Reads `[package] name` from `Cargo.toml` if present at
+/// `cwd`; otherwise falls back to the basename of `cwd`. Returns `None`
+/// only when both signals are unavailable.
+///
+/// No directory walking — only inspects `cwd` itself, so the SDK never
+/// reads files outside the user's explicit working directory.
+pub(crate) fn detect_project_name(cwd: Option<std::path::PathBuf>) -> Option<String> {
+    let cwd = cwd.or_else(|| std::env::current_dir().ok())?;
+
+    let manifest = cwd.join("Cargo.toml");
+    if let Ok(content) = std::fs::read_to_string(&manifest)
+        && let Some(name) = parse_cargo_package_name(&content)
+    {
+        return Some(name);
+    }
+
+    cwd.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Minimal parser for the `name` key inside the `[package]` table of a
+/// `Cargo.toml` file. Avoids adding a TOML dependency for a single field.
+fn parse_cargo_package_name(content: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(stripped) = trimmed.strip_prefix('[') {
+            in_package = stripped.trim_end_matches(']').trim() == "package";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("name") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim().strip_prefix('"')?;
+        let end = rest.find('"')?;
+        let name = rest[..end].trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1835,5 +1891,71 @@ mod tests {
                 None => std::env::remove_var("III_ISOLATION"),
             }
         }
+    }
+
+    #[test]
+    fn parse_cargo_package_name_extracts_name_field() {
+        let toml = "[package]\nname = \"my-crate\"\nversion = \"1.0.0\"\n";
+        assert_eq!(parse_cargo_package_name(toml), Some("my-crate".to_string()));
+    }
+
+    #[test]
+    fn parse_cargo_package_name_ignores_other_tables() {
+        let toml = "[dependencies]\nname = \"not-the-package\"\n[package]\nname = \"the-pkg\"\n";
+        assert_eq!(parse_cargo_package_name(toml), Some("the-pkg".to_string()));
+    }
+
+    #[test]
+    fn parse_cargo_package_name_returns_none_when_missing() {
+        let toml = "[package]\nversion = \"1.0.0\"\n";
+        assert_eq!(parse_cargo_package_name(toml), None);
+    }
+
+    #[test]
+    fn parse_cargo_package_name_returns_none_when_blank() {
+        let toml = "[package]\nname = \"\"\n";
+        assert_eq!(parse_cargo_package_name(toml), None);
+    }
+
+    #[test]
+    fn detect_project_name_reads_cargo_toml_in_cwd() {
+        let tmp = std::env::temp_dir().join(format!("iii-rust-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"detected-crate\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_project_name(Some(tmp.clone())),
+            Some("detected-crate".to_string())
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn detect_project_name_falls_back_to_dir_basename_without_cargo_toml() {
+        let tmp = std::env::temp_dir().join(format!("iii-rust-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let basename = tmp.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(detect_project_name(Some(tmp.clone())), Some(basename));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn detect_project_name_falls_back_to_dir_basename_when_cargo_toml_lacks_name() {
+        let tmp =
+            std::env::temp_dir().join(format!("iii-rust-fallback-noname-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nversion = \"1.0.0\"\n").unwrap();
+
+        let basename = tmp.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(detect_project_name(Some(tmp.clone())), Some(basename));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

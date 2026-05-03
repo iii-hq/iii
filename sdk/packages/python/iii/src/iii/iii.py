@@ -77,6 +77,38 @@ def _resolve_format(fmt: Any) -> Any | None:
     return fmt
 
 
+def _detect_project_name(cwd: str | None = None) -> str | None:
+    """Return a project identifier for telemetry, derived from the current working directory.
+
+    Reads ``[project] name`` from ``pyproject.toml`` if present at ``cwd``;
+    otherwise falls back to the basename of ``cwd``. Returns ``None`` only
+    when both signals are unavailable (e.g. cwd is the filesystem root, or
+    the Python runtime has no TOML parser and no readable cwd basename).
+
+    No directory walking — only inspects ``cwd`` itself, so the SDK never
+    reads files outside the user's explicit working directory.
+    """
+    cwd = cwd or os.getcwd()
+    try:
+        manifest = os.path.join(cwd, "pyproject.toml")
+        if os.path.isfile(manifest):
+            try:
+                import tomllib  # Python 3.11+
+            except ImportError:
+                tomllib = None  # type: ignore[assignment]
+            if tomllib is not None:
+                with open(manifest, "rb") as fh:
+                    data = tomllib.load(fh)
+                name = data.get("project", {}).get("name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+    except Exception:
+        pass
+
+    base = os.path.basename(cwd).strip()
+    return base or None
+
+
 class _TraceContextError(Exception):
     """Wraps a handler exception with the response traceparent from the active span."""
 
@@ -1163,7 +1195,10 @@ class III:
 
         telemetry: dict[str, Any] = {
             "language": language,
-            "project_name": telemetry_opts.project_name if telemetry_opts else None,
+            "project_name": (
+                (telemetry_opts.project_name if telemetry_opts else None)
+                or _detect_project_name()
+            ),
             "framework": (telemetry_opts.framework if telemetry_opts else None) or "iii-py",
             "amplitude_api_key": (
                 telemetry_opts.amplitude_api_key if telemetry_opts else None

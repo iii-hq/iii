@@ -1,5 +1,34 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import type { StreamChannelRef } from './iii-types'
 import type { ApiResponse, HttpRequest, HttpResponse, InternalHttpRequest } from './types'
+
+/**
+ * Returns a project identifier for telemetry, derived from the current working
+ * directory. Reads `package.json` `name` if present at `cwd`; otherwise falls
+ * back to the basename of `cwd`. Returns `undefined` only when both signals
+ * are unavailable (e.g. cwd is the filesystem root).
+ *
+ * No directory walking — only inspects `cwd` itself, so the SDK never reads
+ * files outside the user's explicit working directory.
+ */
+export function detectProjectName(cwd: string = process.cwd()): string | undefined {
+  try {
+    const manifest = path.join(cwd, 'package.json')
+    if (fs.existsSync(manifest)) {
+      const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { name?: unknown }
+      if (typeof parsed.name === 'string') {
+        const trimmed = parsed.name.trim()
+        if (trimmed) return trimmed
+      }
+    }
+  } catch {
+    // fall through to directory-name fallback
+  }
+
+  const base = path.basename(cwd).trim()
+  return base || undefined
+}
 
 /**
  * Safely stringify a value, handling circular references, BigInt, and other edge cases.

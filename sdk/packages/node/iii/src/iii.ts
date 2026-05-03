@@ -29,6 +29,7 @@ import {
 } from './iii-types'
 import { registerWorkerGauges, stopWorkerGauges } from './otel-worker-gauges'
 import type { IStream } from './stream'
+import { detectProjectName } from './utils'
 import {
   extractContext,
   getLogger,
@@ -497,7 +498,7 @@ class Sdk implements ISdk {
         isolation: process.env.III_ISOLATION || null,
         telemetry: {
           language,
-          project_name: telemetryOpts?.project_name,
+          project_name: telemetryOpts?.project_name ?? detectProjectName(),
           framework: telemetryOpts?.framework?.trim() || 'iii-node',
           amplitude_api_key: telemetryOpts?.amplitude_api_key,
         },
