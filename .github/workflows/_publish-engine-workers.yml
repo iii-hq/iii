@@ -51,15 +51,54 @@ jobs:
           export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
           iii --version
 
-      # Engine builtin workers (iii-http, iii-state, iii-stream, iii-queue,
-      # iii-pubsub, iii-cron, iii-observability, iii-exec, iii-bridge,
-      # iii-sandbox) are compiled into the iii binary and auto-load on start.
-      # `workers: []` only suppresses external worker config — builtins still
-      # appear in `engine::workers::list`, so no `iii worker add` is needed.
+      - name: Setup Rust toolchain (iii-sandbox only)
+        if: inputs.worker == 'iii-sandbox'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies for iii-worker (iii-sandbox only)
+        if: inputs.worker == 'iii-sandbox'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      - name: Build and install iii-worker (iii-sandbox only)
+        if: inputs.worker == 'iii-sandbox'
+        run: |
+          set -euo pipefail
+          cargo build -p iii-worker
+          mkdir -p "$HOME/.local/bin"
+          cp target/debug/iii-worker "$HOME/.local/bin/iii-worker"
+          chmod +x "$HOME/.local/bin/iii-worker"
+          iii-worker --version || true
+
+      # Each builtin engine worker has different auto-load semantics
+      # (mandatory / enabled_by_default / external). Rather than rely on the
+      # ambient default, write a config that explicitly lists only the worker
+      # we are publishing, using its own iii.worker.yaml `config:` block as
+      # the worker's runtime config.
+      - name: Write engine config for ${{ inputs.worker }}
+        env:
+          WORKER: ${{ inputs.worker }}
+          WORKER_DIR: ${{ inputs.worker_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, yaml
+          worker = os.environ["WORKER"]
+          worker_dir = pathlib.Path(os.environ["WORKER_DIR"])
+          manifest = worker_dir / "iii.worker.yaml"
+          meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+          entry = {"name": worker}
+          if meta.get("config") is not None:
+              entry["config"] = meta["config"]
+          config = {"workers": [entry]}
+          pathlib.Path("config.yaml").write_text(yaml.dump(config, sort_keys=False), encoding="utf-8")
+          PY
+          cat config.yaml
+
       - name: Start III engine
         run: |
           set -euo pipefail
-          printf 'workers: []\n' > config.yaml
           iii --config config.yaml --no-update-check > iii-engine.log 2>&1 &
           echo "$!" > iii-engine.pid
 
