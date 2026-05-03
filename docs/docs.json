@@ -113,7 +113,7 @@
                     "group": "Functions",
                     "pages": [
                       "how-to/define-request-response-formats",
-                      "how-to/create-ephemeral-worker",
+                      "how-to/create-ephemeral-function",
                       "how-to/schedule-cron-task"
                     ]
                   },
@@ -130,9 +130,9 @@
                     "group": "Workers",
                     "pages": [
                       "how-to/worker-rbac",
-                      "how-to/managing-container-workers",
+                      "how-to/manage-container-workers",
                       "how-to/reproduce-worker-installs",
-                      "how-to/developing-sandbox-workers",
+                      "how-to/develop-sandbox-workers",
                       "how-to/use-sandbox",
                       "how-to/develop-custom-worker"
                     ]
