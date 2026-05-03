@@ -70,6 +70,7 @@
                 "group": "Primitives & Concepts",
                 "pages": [
                   "primitives-and-concepts/functions-triggers-workers",
+                  "primitives-and-concepts/trigger-actions",
                   "primitives-and-concepts/discovery"
                 ]
               },
@@ -100,7 +101,15 @@
                       "how-to/worker-rbac",
                       "how-to/managing-container-workers",
                       "how-to/reproduce-worker-installs",
-                      "how-to/developing-sandbox-workers"
+                      "how-to/developing-sandbox-workers",
+                      "how-to/use-sandbox",
+                      "how-to/develop-custom-worker"
+                    ]
+                  },
+                  {
+                    "group": "Deployment",
+                    "pages": [
+                      "how-to/deploy-engine"
                     ]
                   },
                   {
@@ -108,7 +117,6 @@
                     "pages": ["how-to/use-console", "how-to/observability-and-logs"]
                   },
                   "how-to/use-iii-in-the-browser",
-                  "how-to/configure-engine",
                   {
                     "group": "HTTP",
                     "pages": ["how-to/expose-http-endpoint", "how-to/use-http-middleware"]
@@ -170,8 +178,6 @@
                 "pages": [
                   "advanced/adapters",
                   "advanced/architecture",
-                  "advanced/custom-modules",
-                  "advanced/deployment",
                   "advanced/protocol",
                   "advanced/telemetry"
                 ]
@@ -193,17 +199,24 @@
           {
             "tab": "API Reference",
             "groups": [
-              {
-                "group": "SDKs",
-                "pages": [
-                  "api-reference/sdk-node",
-                  "api-reference/sdk-browser",
-                  "api-reference/sdk-python",
-                  "api-reference/sdk-rust",
-                  "api-reference/sandbox",
-                  "api-reference/disable-telemetry"
-                ]
-              }
+{
+              "group": "SDKs",
+              "pages": [
+                "api-reference/sdk-node",
+                "api-reference/sdk-browser",
+                "api-reference/sdk-python",
+                "api-reference/sdk-rust",
+                "api-reference/sandbox",
+                "api-reference/disable-telemetry"
+              ]
+            },
+            {
+              "group": "Engine",
+              "pages": [
+                "api-reference/engine-config",
+                "api-reference/built-in-functions"
+              ]
+            }
             ]
           },
           {

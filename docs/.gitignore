@@ -1,3 +1,4 @@
 .mintlify/
 .DS_Store
 node_modules/
+STATUS.md
