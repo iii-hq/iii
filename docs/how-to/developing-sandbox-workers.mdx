@@ -19,7 +19,7 @@ A sandbox is a hardware-isolated microVM powered by [libkrun](https://github.com
 
 ## Steps
 
-### 1. Create a Worker Project
+### Create a Worker Project
 
 The CLI auto-detects your project type from well-known files and infers setup, install, and start commands.
 
@@ -35,7 +35,7 @@ With auto-detection, you can add a worker immediately:
 iii worker add ./my-project
 ```
 
-### 2. Add a Manifest
+### Add a Manifest
 
 Create an `iii.worker.yaml` at the root of your worker folder to configure the sandbox:
 
@@ -152,7 +152,7 @@ Each distinct `base_image` gets its own cache directory under `~/.iii/rootfs/<sl
 
 If the `scripts` block is omitted entirely, commands are inferred from `runtime.kind`, `runtime.package_manager`, and `runtime.entry`. For example, `kind: typescript` + `package_manager: npm` + `entry: src/index.ts` infers `npm install` for install and `npx tsx src/index.ts` for start. `kind: bun` + `entry: src/index.ts` infers `bun install` + `bun run src/index.ts` (no `package_manager` needed).
 
-### 3. Add the Worker
+### Add the Worker
 
 ```bash
 iii worker add ./my-project
@@ -185,7 +185,7 @@ iii worker add ./my-project --force
 iii worker add ./my-project --force --reset-config
 ```
 
-### 4. Manage the Worker
+### Manage the Worker
 
 Local-path workers support the same lifecycle commands as container workers:
 
@@ -203,7 +203,7 @@ iii worker start my-worker
 iii worker remove my-worker
 ```
 
-### 5. Understand Dependency Caching
+### Understand Dependency Caching
 
 Each sandbox is cached at `~/.iii/managed/<worker-name>/`. The caching lifecycle works as follows:
 
@@ -217,7 +217,7 @@ Each sandbox is cached at `~/.iii/managed/<worker-name>/`. The caching lifecycle
   When copying your project into the sandbox, the following directories are excluded automatically: `node_modules`, `.git`, `target`, `__pycache__`, `.venv`, `dist`.
 </Info>
 
-### 6. Check Platform Requirements
+### Check Platform Requirements
 
 <Warning title="Platform support">
   Intel Macs are **not supported**. The microVM requires hardware virtualization only available on Apple Silicon or Linux with KVM.

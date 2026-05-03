@@ -13,7 +13,7 @@ Use cron triggers for scheduled tasks that run periodically. The Cron worker use
 
 ## Steps
 
-### 1. Enable the Cron worker
+### Enable the Cron worker
 
 ```yaml title="iii-config.yaml"
 workers:
@@ -23,7 +23,7 @@ workers:
         name: kv
 ```
 
-### 2. Register the Function
+### Register the Function
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-### 3. Register the Cron trigger
+### Register the Cron trigger
 
 <Tabs>
 <Tab title="Node / TypeScript">

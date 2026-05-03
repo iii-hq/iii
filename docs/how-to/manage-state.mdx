@@ -13,7 +13,7 @@ Use the State worker for lightweight key-value storage when you don't need a ful
 
 ## Steps
 
-### 1. Enable the State worker
+### Enable the State worker
 
 ```yaml title="iii-config.yaml"
 workers:
@@ -26,7 +26,7 @@ workers:
           file_path: ./data/state_store.db  # required for file_based
 ```
 
-### 2. Write state
+### Write state
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -146,7 +146,7 @@ println!("Created user: {}", result["userId"]);
 </Tab>
 </Tabs>
 
-### 3. Read state
+### Read state
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -237,7 +237,7 @@ println!("Retrieved user: {:?}", user);
 </Tab>
 </Tabs>
 
-### 4. Atomic updates
+### Atomic updates
 
 Use `state::update` with update operations for safe concurrent modifications:
 

@@ -25,14 +25,14 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 
 ## Steps
 
-### 1. Install the browser SDK
+### Install the browser SDK
 
 ```bash
 pnpm add iii-browser-sdk
 # or: npm install iii-browser-sdk
 ```
 
-### 2. Enable the Worker Manager with RBAC
+### Enable the Worker Manager with RBAC
 
 Browser workers connect through the RBAC port, not the internal bridge. Add an `iii-worker-manager` entry to your engine config:
 
@@ -54,7 +54,7 @@ workers:
   For production, add an `auth_function_id` to validate tokens from the browser. See [Worker RBAC](/how-to/worker-rbac) for full auth setup.
 </Info>
 
-### 3. Connect from the browser
+### Connect from the browser
 
 ```typescript title="iii.ts"
 import { registerWorker } from 'iii-browser-sdk'
@@ -64,7 +64,7 @@ const iii = registerWorker('ws://localhost:49135')
 export { iii }
 ```
 
-### 4. Register functions and triggers
+### Register functions and triggers
 
 ```typescript title="app.ts"
 import { iii } from './iii'

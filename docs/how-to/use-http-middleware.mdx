@@ -13,7 +13,7 @@ Use middleware for cross-cutting concerns like authentication, rate limiting, lo
 
 ## Steps
 
-### 1. Understand middleware
+### Understand middleware
 
 Middleware in iii is just a regular function. The engine calls it before the handler. The function returns either `{ action: "continue" }` to proceed, or `{ action: "respond", response: {...} }` to short-circuit.
 
@@ -26,7 +26,7 @@ There are two ways to attach middleware:
 
 ## Per-Route Middleware
 
-### 1. Register the middleware function
+### Register the middleware function
 
 Middleware functions receive a request object with `path_params`, `query_params`, `headers`, and `method` (no body).
 
@@ -88,7 +88,7 @@ iii.register_function("api::secret-data", get_secret_data)
 </Tab>
 </Tabs>
 
-### 2. Attach middleware to the trigger
+### Attach middleware to the trigger
 
 Include `middleware_function_ids` in the trigger config. Middleware runs in the order listed.
 
@@ -121,7 +121,7 @@ iii.register_trigger({
 </Tab>
 </Tabs>
 
-### 3. Test it
+### Test it
 
 ```bash
 # Without API key: 401

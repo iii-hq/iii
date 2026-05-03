@@ -11,7 +11,7 @@ Create a custom trigger type that fires functions in response to events iii does
 
 ## Steps
 
-### 1. Implement the trigger handler
+### Implement the trigger handler
 
 A trigger handler is an object (Node) or class/trait (Python, Rust) with two callbacks:
 
@@ -113,7 +113,7 @@ impl TriggerHandler for WebhookHandler {
 </Tab>
 </Tabs>
 
-### 2. Register the trigger type
+### Register the trigger type
 
 Call `registerTriggerType` with an `id`, a `description`, and the handler from above. The `id` is the string other workers will reference when they call `registerTrigger`.
 
@@ -172,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-### 3. Bind functions to the custom trigger
+### Bind functions to the custom trigger
 
 From any worker — including one written in a different language — functions can now bind to the `webhook` trigger type with `registerTrigger`. The config you pass in `config` is forwarded directly to your handler's `registerTrigger` callback.
 
@@ -252,7 +252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-### 4. Unregister the trigger type
+### Unregister the trigger type
 
 When the worker that owns the trigger type shuts down, call `unregisterTriggerType` to remove it from the engine. Any triggers still bound to the type will stop firing.
 

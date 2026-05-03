@@ -11,9 +11,7 @@ Stream binary data between functions that may run in different worker processes 
 
 Use channels when you need to transfer large files, stream HTTP responses progressively, or implement bidirectional communication between functions. Channels work across process and language boundaries. For pushing updates to connected clients, see [Stream Real-Time Data](/how-to/stream-realtime-data) instead. For channel architecture details, see [Architecture: Channels](/architecture/channels).
 
-## Steps
-
-### 1. Understand channels
+## How Channels Work
 
 Channels are a streaming primitive built into the iii engine. They let one function **write** data while another function **reads** it — in real time, across process and language boundaries.
 

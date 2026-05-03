@@ -13,7 +13,7 @@ Use conditions when you need to filter trigger invocations based on business rul
 
 ## Steps
 
-### 1. Register the handler and condition Functions
+### Register the handler and condition Functions
 
 Register a normal handler Function and a condition Function that returns `true` or `false`.
 
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-### 2. Register triggers with the correct condition key
+### Register triggers with the correct condition key
 
 Create a Trigger and specify its condition with `condition_function_id`.
 

@@ -13,7 +13,7 @@ This pattern is useful for executing resource-intensive or one-off tasks on serv
 
 ## Steps
 
-### 1. Initialize and Register
+### Initialize and Register
 
 Connect to iii and register the `reports::generate` function handler to process the heavy CPU task.
 
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-### 2. Trigger and Graceful Shutdown
+### Trigger and Graceful Shutdown
 
 The main thread connects, triggers the function, awaits its completion, then calls `shutdown()` (or `shutdown_async().await` in Rust for guaranteed telemetry flush) to cleanly close the WebSocket and exit the process.
 

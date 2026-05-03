@@ -13,7 +13,7 @@ Use this when you need to expose iii functions to HTTP clients (web apps, mobile
 
 ## Steps
 
-### 1. Enable the REST API worker
+### Enable the REST API worker
 
 Make sure `iii-config.yaml` has the REST API worker enabled:
 
@@ -37,7 +37,7 @@ Make sure `iii-config.yaml` has the REST API worker enabled:
           - OPTIONS
 ```
 
-### 2. Register the Function
+### Register the Function
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </Tab>
 </Tabs>
 
-### 3. Register the HTTP trigger
+### Register the HTTP trigger
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -143,7 +143,7 @@ iii.register_trigger(RegisterTriggerInput {
 </Tab>
 </Tabs>
 
-### 4. Try it
+### Try it
 
 ```bash
 curl -X POST http://127.0.0.1:3111/users \

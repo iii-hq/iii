@@ -17,7 +17,7 @@ Use this when you add workers by registry shorthand, such as `iii worker add ima
 
 ## Steps
 
-### 1. Add a Registry Worker
+### Add a Registry Worker
 
 Add the worker from the iii registry. You can pin a requested version with `@version`, or omit it to resolve the registry default.
 
@@ -48,7 +48,7 @@ workers:
 
 If the resolved worker depends on other workers, those dependencies are recorded in the same lockfile.
 
-### 2. Commit the Lockfile
+### Commit the Lockfile
 
 Commit `iii.lock` with `config.yaml` so every environment has the same worker set and source pins.
 
@@ -56,7 +56,7 @@ Commit `iii.lock` with `config.yaml` so every environment has the same worker se
 git add config.yaml iii.lock
 ```
 
-### 3. Verify the Lockfile in CI
+### Verify the Lockfile in CI
 
 Run `iii worker verify` anywhere you need to confirm that registry-managed workers in `config.yaml` are represented in `iii.lock`.
 
@@ -82,7 +82,7 @@ iii worker verify --strict
 
 Strict mode checks dependency ranges recorded in `iii.lock` and local `iii.worker.yaml` dependency blocks. It does not update pins; use `iii worker update` when you intentionally want new resolved versions.
 
-### 4. Replay the Pinned Set
+### Replay the Pinned Set
 
 Run `iii worker sync` after cloning a repo, changing machines, or restoring CI/deployment state. The command reads `iii.lock`, installs or repairs registry-managed workers for the current platform, and verifies binary artifacts by SHA-256 before activation.
 
@@ -92,7 +92,7 @@ iii worker sync
 
 `sync` does not contact the registry resolver, does not refresh versions, and does not rewrite `config.yaml` or `iii.lock`. It reports installed, already-current, repaired, skipped, and failed workers. Built-ins, direct OCI image references, local-path workers, and sandbox rootfs/base images are skipped because they are outside the v1 lockfile replay contract.
 
-### 5. Update Pins Intentionally
+### Update Pins Intentionally
 
 Update one locked worker by name:
 

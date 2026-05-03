@@ -13,7 +13,7 @@ Container workers are OCI images that the engine pulls, extracts, and runs in is
 
 ## Steps
 
-### 1. Add a Worker
+### Add a Worker
 
 Pull an image from a registry and register it in `config.yaml`:
 
@@ -37,7 +37,7 @@ If the image contains a `/iii/worker.yaml` manifest with `resources` hints, they
 
 Once defined in `config.yaml`, all workers start automatically when you run `iii`. If you make changes to the workers list, simply restart `iii` to pick them up — no extra commands needed.
 
-### 2. Configure Environment and Resources
+### Configure Environment and Resources
 
 Edit `config.yaml` to pass environment variables or set resource limits:
 
@@ -53,7 +53,7 @@ workers:
 
 Values under `config:` are flattened and injected as environment variables when the worker starts. Changes take effect the next time the worker starts (restart `iii` to apply).
 
-### 3. Remove a Worker
+### Remove a Worker
 
 Remove a worker and its entry from `config.yaml`:
 
@@ -63,7 +63,7 @@ iii worker remove image-resize
 
 The cached image layers remain on disk.
 
-### 4. Manage Individual Workers (Optional)
+### Manage Individual Workers (Optional)
 
 If you need fine-grained control over workers while `iii` is already running, the CLI provides commands to manage them individually. These are optional — restarting `iii` always starts every worker defined in `config.yaml`.
 
@@ -84,7 +84,7 @@ iii worker logs image-resize
 iii worker logs image-resize --follow
 ```
 
-### 5. Exec into a Running Worker
+### Exec into a Running Worker
 
 Run a command inside a running worker's microVM — useful for debugging crashed handlers, inspecting guest filesystem state, running ad-hoc scripts, or opening an interactive shell. Behaves like `docker exec`: stdin/stdout/stderr flow through, the child's exit code becomes the CLI's exit code.
 
@@ -118,7 +118,7 @@ iii worker exec image-resize -- sh
 | `--no-tty` | Force pipe mode, disabling auto-detection. |
 | `--timeout DURATION` | SIGKILL the child after `DURATION`; exit `124`. |
 
-### 6. Build and Publish Your Own Image
+### Build and Publish Your Own Image
 
 To distribute a custom worker as an OCI image, create a project that uses an iii SDK, package it with a Dockerfile, and push it to a registry.
 

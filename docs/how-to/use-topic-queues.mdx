@@ -13,7 +13,7 @@ Use topic queues for event-driven fan-out where multiple systems need to react t
 
 ## Steps
 
-### 1. Enable the Queue worker
+### Enable the Queue worker
 
 ```yaml title="iii-config.yaml"
 workers:
@@ -35,9 +35,7 @@ workers:
   For complete configuration options please refer to [Queue worker reference](/workers/iii-queue#configuration).
 </Info>
 
-## Steps
-
-### 1. Register consumers for a topic
+### Register consumers for a topic
 
 Subscribe one or more functions to the same topic. Each function gets its own internal queue.
 
@@ -146,7 +144,7 @@ iii.register_trigger(RegisterTriggerInput {
 
 Both `notify::email` and `audit::log` are now subscribed to `order.created`. Every message published to that topic reaches both functions.
 
-### 2. Publish events to the topic
+### Publish events to the topic
 
 From any function, publish a message using the builtin `iii::durable::publish` function. The engine fans it out to every subscribed function.
 
@@ -198,7 +196,7 @@ iii.trigger(TriggerRequest {
 
 The producer does not need to know which functions are subscribed — it only knows the topic name.
 
-### 3. Understand fan-out delivery
+### Understand fan-out delivery
 
 Topic-based queues use **fan-out per function**:
 
@@ -233,7 +231,7 @@ sequenceDiagram
 
 This gives you pub/sub-style event distribution with the durability and retry guarantees of a queue.
 
-### 4. Filter messages with conditions (optional)
+### Filter messages with conditions (optional)
 
 Attach a condition function to a queue trigger to filter which messages reach the handler. The condition receives the message data and returns `true` or `false`. If `false`, the handler is not called — no error is surfaced.
 

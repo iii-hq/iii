@@ -13,7 +13,7 @@ Use DLQs when processing critical work (payments, emails, webhooks) where you ne
 
 ## Steps
 
-### 1. Register the external endpoint as an HTTP-invoked function
+### Register the external endpoint as an HTTP-invoked function
 
 Register the payment API as an HTTP-invoked function. The engine makes the HTTP call — when the
 endpoint is down or returns a non-2xx status, the engine marks the invocation as failed. When this
@@ -82,7 +82,7 @@ iii.register_function((
 </Tab>
 </Tabs>
 
-### 2. Define a named queue with retry configuration
+### Define a named queue with retry configuration
 
 Declare the queue in `iii-config.yaml` with the retry and backoff settings. When the payment
 endpoint fails, the engine retries with exponential backoff until `max_retries` is exhausted — then
@@ -157,7 +157,7 @@ With this configuration, a failing job follows this timeline:
 | 4       | 16 s               |
 | 5       | — moved to DLQ     |
 
-### 3. What happens when a job lands in the DLQ
+### What happens when a job lands in the DLQ
 
 When the payment endpoint is down and all 5 retries exhaust, the engine:
 
@@ -171,7 +171,7 @@ WARN queue="payment_dlq" job_id="..." attempts=5 "Job exhausted, moved to DLQ"
 
 The job stays in the DLQ until the engine redrives it. No other jobs in the queue are blocked — processing continues normally for new messages.
 
-### 4. Queue configuration reference
+### Queue configuration reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

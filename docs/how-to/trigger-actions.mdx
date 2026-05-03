@@ -13,14 +13,14 @@ Use this guide when invoking functions with `iii.trigger()` and you need to deci
 
 ## Steps
 
-### 1. Determine your requirements
+### Determine your requirements
 
 Ask yourself:
 - **Do I need the return value?** → Use synchronous (no action)
 - **Must this work complete reliably?** → Use `Enqueue`
 - **Is this best-effort (analytics, logs)?** → Use `Void`
 
-### 2. Apply the appropriate action
+### Apply the appropriate action
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -111,7 +111,7 @@ let receipt = iii.trigger(TriggerRequest {
 </Tab>
 </Tabs>
 
-### 3. Combine actions in orchestrator functions
+### Combine actions in orchestrator functions
 
 A single function can use all three actions. This is common in orchestrator functions:
 

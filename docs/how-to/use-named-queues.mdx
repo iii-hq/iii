@@ -13,7 +13,7 @@ Use named queues when you need reliable async processing with retries and dead-l
 
 ## Steps
 
-### 1. Enable the Queue worker
+### Enable the Queue worker
 
 ```yaml title="iii-config.yaml"
 workers:
@@ -35,9 +35,7 @@ workers:
   For complete configuration options please refer to [Queue worker reference](/workers/iii-queue#configuration).
 </Info>
 
-## Steps
-
-### 1. Define named queues in config
+### Define named queues in config
 
 Declare one or more named queues under `queue_configs`. Each queue has independent retry, concurrency, and ordering settings.
 
@@ -73,7 +71,7 @@ workers:
   For full configuration options refer to the [Queue worker reference](/workers/iii-queue#queue-configuration).
 </Info>
 
-### 2. Enqueue work via trigger action
+### Enqueue work via trigger action
 
 From any function, enqueue a job by calling `trigger()` with `TriggerAction.Enqueue` and the target queue name. The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job — it does not wait for processing.
 
@@ -133,7 +131,7 @@ println!("{}", receipt["messageReceiptId"]);
 
 The target function receives the `payload` as its input — it does not need to know it was invoked via a queue.
 
-### 3. Handle the enqueue result
+### Handle the enqueue result
 
 The enqueue call can fail synchronously if the queue name is unknown or FIFO validation fails. Always handle the result.
 
@@ -186,7 +184,7 @@ Common rejection reasons:
 - The queue name does not exist in `queue_configs`
 - A FIFO queue's `message_group_field` is missing or `null` in the payload
 
-### 4. Use FIFO queues for ordered processing
+### Use FIFO queues for ordered processing
 
 When processing order matters — for example, financial transactions for the same account — set `type: fifo` and specify `message_group_field`. Jobs sharing the same group value are processed strictly in order.
 
@@ -240,7 +238,7 @@ iii.trigger(TriggerRequest {
 </Tab>
 </Tabs>
 
-### 5. Configure retries and backoff
+### Configure retries and backoff
 
 Every named queue retries failed jobs automatically. Backoff is exponential:
 
@@ -271,7 +269,7 @@ After all retries are exhausted, the job moves to a dead-letter queue (DLQ).
   See [Manage Failed Triggers](./dead-letter-queues) for DLQ inspection and redrive.
 </Info>
 
-### 6. Control concurrency
+### Control concurrency
 
 The `concurrency` field sets the maximum number of jobs the engine processes simultaneously from a single queue (per engine instance).
 

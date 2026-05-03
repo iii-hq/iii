@@ -13,7 +13,7 @@ Use streams when clients need live updates without polling. Clients connect to t
 
 ## Steps
 
-### 1. Enable the Stream worker
+### Enable the Stream worker
 
 ```yaml title="iii-config.yaml"
 workers:
@@ -31,7 +31,7 @@ workers:
         #   redis_url: redis://localhost:6379
 ```
 
-### 2. Write to a stream
+### Write to a stream
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -162,7 +162,7 @@ println!("Sent message: {}", result["messageId"]);
 </Tab>
 </Tabs>
 
-### 3. Read from a stream
+### Read from a stream
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -252,7 +252,7 @@ println!("Messages: {:?}", messages);
 </Tab>
 </Tabs>
 
-### 4. Connect a client
+### Connect a client
 
 Clients connect to the stream WebSocket endpoint to receive live updates:
 
@@ -265,7 +265,7 @@ ws.onmessage = (event) => {
 }
 ```
 
-### 5. React to stream events
+### React to stream events
 
 Register triggers to run server-side logic when clients join or when stream data changes.
 

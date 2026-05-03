@@ -77,7 +77,7 @@ sequenceDiagram
 
 Developing a custom worker typically involves defining an adapter interface, implementing specific adapters, and then wrapping them in a worker structure.
 
-### Step 1: Define the Adapter Trait
+### Define the Adapter Trait
 
 Define an `async_trait` that specifies the behavior your worker's backend must implement. This allows users to switch implementations via configuration.
 
@@ -95,7 +95,7 @@ pub trait CustomEventAdapter: Send + Sync + 'static {
 
 **Why async_trait?** Rust's async traits require this macro to handle the complexity of async function pointers.
 
-### Step 2: Implement Adapter Registration
+### Implement Adapter Registration
 
 To make adapters discoverable by the configuration system, you must define a registration struct and use the `inventory` crate.
 
@@ -131,7 +131,7 @@ inventory::collect!(CustomEventAdapterRegistration);
 
 **Purpose**: This registration system allows the engine to discover and instantiate adapters dynamically based on configuration.
 
-### Step 3: Create Adapter Factories
+### Create Adapter Factories
 
 Define factory functions that instantiate your specific adapter implementations (e.g., `InMemory` or `Logging`).
 
@@ -156,7 +156,7 @@ register_adapter!(
 );
 ```
 
-### Step 4: Implement Adapter Logic
+### Implement Adapter Logic
 
 Create the actual adapter implementations.
 
@@ -248,7 +248,7 @@ Create the actual adapter implementations.
   </Accordion>
 </AccordionGroup>
 
-### Step 5: Implement the Worker Logic
+### Implement the Worker Logic
 
 The worker struct holds the `Engine` reference and the injected `Adapter`.
 
