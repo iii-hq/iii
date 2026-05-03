@@ -65,16 +65,6 @@ def _slug(value: Any, fallback: str) -> str:
     return slug or fallback
 
 
-def _normalize_registry_function(function: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": function.get("name"),
-        "description": _string_or_empty(function.get("description")),
-        "request_schema": _schema_or_empty(function.get("request_schema")),
-        "response_schema": _schema_or_empty(function.get("response_schema")),
-        "metadata": _metadata_or_empty(function.get("metadata")),
-    }
-
-
 def _derive_trigger_name(trigger: dict[str, Any]) -> str:
     metadata = _metadata_or_empty(trigger.get("metadata"))
     for key in ("registry_name", "name"):
@@ -200,8 +190,8 @@ def build_payload(
         "description": meta.get("description", ""),
         "dependencies": normalize_dependencies(meta.get("dependencies")),
         "config": meta.get("config") or {},
-        "functions": [_normalize_registry_function(f) for f in interface.get("functions") or []],
-        "triggers": [_normalize_registry_trigger(t) for t in interface.get("triggers") or []],
+        "functions": interface.get("functions") or [],
+        "triggers": interface.get("triggers") or [],
     }
 
 
