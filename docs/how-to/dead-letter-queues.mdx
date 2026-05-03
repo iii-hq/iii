@@ -7,6 +7,10 @@ description: 'How to configure retries and let the engine route permanently fail
 
 Set up a queue consumer that retries on transient failures (e.g. an external endpoint being down) and automatically routes jobs to a dead letter queue (DLQ) when all retries are exhausted.
 
+## Context
+
+Use DLQs when processing critical work (payments, emails, webhooks) where you need visibility into failures and the ability to manually retry. Requires the `iii-queue` worker with named queues configured. See [Use Named Queues](/how-to/use-named-queues) for queue setup.
+
 ## Steps
 
 ### 1. Register the external endpoint as an HTTP-invoked function

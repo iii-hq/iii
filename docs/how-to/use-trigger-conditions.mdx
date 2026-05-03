@@ -7,6 +7,10 @@ description: 'How to run a condition Function before trigger handlers.'
 
 Run a condition Function before a Trigger runs, and only execute the handler Function when the condition passes.
 
+## Context
+
+Use conditions when you need to filter trigger invocations based on business rules (e.g., only process high-value orders, skip duplicate events, check feature flags). The condition function runs before the handler and gates execution.
+
 ## Steps
 
 ### 1. Register the handler and condition Functions

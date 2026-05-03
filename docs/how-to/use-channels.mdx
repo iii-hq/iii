@@ -5,9 +5,15 @@ description: 'How to stream binary data between functions using channels — inc
 
 ## Goal
 
-Stream binary data between functions that may run in different worker processes. Channels give you Node.js-style readable and writable streams backed by WebSocket connections through the engine, so you can move large payloads incrementally instead of cramming everything into a single JSON message.
+Stream binary data between functions that may run in different worker processes using Node.js-style readable/writable streams.
 
-## What Are Channels
+## Context
+
+Use channels when you need to transfer large files, stream HTTP responses progressively, or implement bidirectional communication between functions. Channels work across process and language boundaries. For pushing updates to connected clients, see [Stream Real-Time Data](/how-to/stream-realtime-data) instead. For channel architecture details, see [Architecture: Channels](/architecture/channels).
+
+## Steps
+
+### 1. Understand channels
 
 Channels are a streaming primitive built into the iii engine. They let one function **write** data while another function **reads** it — in real time, across process and language boundaries.
 

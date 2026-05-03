@@ -7,6 +7,10 @@ description: 'How to push live updates to connected clients using the Stream wor
 
 Push real-time updates (chat messages, notifications, live dashboards) to connected clients over WebSocket.
 
+## Context
+
+Use streams when clients need live updates without polling. Clients connect to the Stream worker via WebSocket and subscribe to groups (rooms, channels, user IDs). For binary data transfer between workers, see [Use Channels](/how-to/use-channels) instead.
+
 ## Steps
 
 ### 1. Enable the Stream worker

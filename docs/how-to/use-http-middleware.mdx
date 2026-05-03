@@ -7,7 +7,13 @@ description: 'How to run middleware functions before HTTP handlers for auth, log
 
 Run one or more middleware functions before an HTTP handler executes. Middleware can inspect the request and either continue to the handler or short-circuit with a response.
 
-## How It Works
+## Context
+
+Use middleware for cross-cutting concerns like authentication, rate limiting, logging, or request validation. Middleware runs before the handler and can block requests early. For worker-level RBAC, see [Worker RBAC](/how-to/worker-rbac).
+
+## Steps
+
+### 1. Understand middleware
 
 Middleware in iii is just a regular function. The engine calls it before the handler. The function returns either `{ action: "continue" }` to proceed, or `{ action: "respond", response: {...} }` to short-circuit.
 

@@ -5,9 +5,15 @@ description: 'Subscribe multiple functions to a topic so every published message
 
 ## Goal
 
-Subscribe multiple functions to a topic so that every published message fans out to all subscribers, with each function processing its copy independently. For help deciding between topic-based and named queues, see [When to use which](/workers/iii-queue#when-to-use-which).
+Subscribe multiple functions to a topic so that every published message fans out to all subscribers, with each function processing its copy independently.
 
-## Enable the Queue worker
+## Context
+
+Use topic queues for event-driven fan-out where multiple systems need to react to the same event (e.g., order placed triggers email, inventory, and analytics). Each subscriber gets its own copy with independent retries. For point-to-point queues, see [Use Named Queues](/how-to/use-named-queues).
+
+## Steps
+
+### 1. Enable the Queue worker
 
 ```yaml title="iii-config.yaml"
 workers:

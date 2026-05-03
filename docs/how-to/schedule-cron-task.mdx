@@ -7,6 +7,10 @@ description: 'How to run a Function on a recurring schedule.'
 
 Run a Function at regular intervals (cleanup jobs, report generation, health checks) using the Cron worker.
 
+## Context
+
+Use cron triggers for scheduled tasks that run periodically. The Cron worker uses 7-field expressions (including seconds and year). For one-time delayed execution, use queues with delay instead.
+
 ## Steps
 
 ### 1. Enable the Cron worker

@@ -7,14 +7,13 @@ description: 'How to invoke any registered function on a running iii engine usin
 
 Invoke a registered function on a running iii engine directly from the terminal, without writing application code or connecting an SDK.
 
-## When to Use This
+## Context
 
-- Redriving dead-letter queue messages after fixing a bug
-- Testing a function during development without wiring up a trigger
-- Running one-off operational tasks against a live engine
-- Scripting engine operations in CI/CD pipelines or shell scripts
+Use `iii trigger` for development testing, one-off operations, CI/CD scripts, or redriving dead-letter queue messages. The CLI connects to the engine via WebSocket, sends the invocation, and prints the result. For programmatic invocation, use the SDK's `trigger()` method instead.
 
-## Command Reference
+## Steps
+
+### 1. Run the command
 
 ```bash
 iii trigger \

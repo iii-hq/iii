@@ -5,13 +5,15 @@ description: 'Enqueue jobs to specific functions with configurable retries, conc
 
 ## Goal
 
-Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support. All named queues are defined centrally in `iii-config.yaml`. For help deciding between named and topic-based queues, see [When to use which](/workers/iii-queue#when-to-use-which).
+Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support.
 
-<Info title="Trigger actions primer">
-  Named queues use the `Enqueue` trigger action. Refer to [Trigger Actions](./trigger-actions) to learn more.
-</Info>
+## Context
 
-## Enable the Queue worker
+Use named queues when you need reliable async processing with retries and dead-letter support. Jobs are routed to a specific function defined in the queue config. For fan-out to multiple subscribers, see [Use Topic Queues](/how-to/use-topic-queues). For understanding trigger actions, see [Trigger Actions](/primitives-and-concepts/trigger-actions).
+
+## Steps
+
+### 1. Enable the Queue worker
 
 ```yaml title="iii-config.yaml"
 workers:
