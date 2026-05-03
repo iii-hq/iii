@@ -1,0 +1,114 @@
+---
+title: 'Built-in Functions'
+description: 'Reference for engine-provided functions: state, stream, queue, pubsub, observability, and engine introspection.'
+---
+
+The engine provides built-in functions that can be triggered like any registered function. These handle common operations like state management, streaming, messaging, and observability.
+
+## State
+
+Persistent key-value storage with scoped namespaces. Requires the `iii-state` worker.
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `state::set` | Store a value | `scope`, `key`, `value` |
+| `state::get` | Retrieve a value | `scope`, `key` |
+| `state::delete` | Remove a value | `scope`, `key` |
+| `state::update` | Atomic update with operations | `scope`, `key`, `ops` |
+| `state::list` | List all values in a scope | `scope` |
+| `state::list_groups` | List all state scopes | — |
+
+## Stream
+
+Real-time data streams with hierarchical organization. Requires the `iii-stream` worker.
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `stream::set` | Set a value in a stream | `stream_name`, `group_id`, `item_id`, `data` |
+| `stream::get` | Get a value from a stream | `stream_name`, `group_id`, `item_id` |
+| `stream::delete` | Delete a value from a stream | `stream_name`, `group_id`, `item_id` |
+| `stream::update` | Atomic update with operations | `stream_name`, `group_id`, `item_id`, `ops` |
+| `stream::list` | List items in a group | `stream_name`, `group_id` |
+| `stream::list_groups` | List groups in a stream | `stream_name` |
+| `stream::list_all` | List all streams | — |
+| `stream::send` | Send event to subscribers | `stream_name`, `group_id`, `id`, `event_type`, `data` |
+
+## Queue
+
+Durable message queue for async processing. Requires the `iii-queue` worker.
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `iii::durable::publish` | Publish a message to a topic | `topic`, `data` |
+
+## PubSub
+
+Publish-subscribe messaging for event broadcasting. Requires the `iii-pubsub` worker.
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `publish` | Publish an event to subscribers | `topic`, `data` |
+
+## Engine
+
+Internal engine functions for introspection and management. Always available.
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::functions::list` | List all registered functions | `include_internal` (optional, default: `false`) |
+| `engine::workers::list` | List connected workers with metrics | `worker_id` (optional) |
+| `engine::triggers::list` | List all triggers | `include_internal` (optional, default: `false`) |
+| `engine::channels::create` | Create a streaming channel pair | `buffer_size` (optional) |
+
+## Observability
+
+Logging, tracing, and metrics. Requires the `iii-observability` worker.
+
+### Logging
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::log::info` | Log info message | `message`, `data`, `service_name`, `trace_id`, `span_id` |
+| `engine::log::warn` | Log warning message | `message`, `data`, `service_name`, `trace_id`, `span_id` |
+| `engine::log::error` | Log error message | `message`, `data`, `service_name`, `trace_id`, `span_id` |
+| `engine::log::debug` | Log debug message | `message`, `data`, `service_name`, `trace_id`, `span_id` |
+| `engine::log::trace` | Log trace message | `message`, `data`, `service_name`, `trace_id`, `span_id` |
+
+### Baggage
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::baggage::get` | Get baggage item | `key` |
+| `engine::baggage::set` | Set baggage item | `key`, `value` |
+| `engine::baggage::get_all` | Get all baggage items | — |
+
+### Traces
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::traces::list` | List stored traces | `trace_id`, `service_name`, `name`, `status`, `offset`, `limit`, `min_duration_ms`, `max_duration_ms`, `start_time`, `end_time`, `sort_by`, `sort_order`, `attributes`, `include_internal` |
+| `engine::traces::tree` | Get trace tree | `trace_id` |
+| `engine::traces::clear` | Clear stored traces | — |
+
+### Metrics
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::metrics::list` | List current metrics | `start_time`, `end_time`, `metric_name`, `aggregate_interval` |
+| `engine::rollups::list` | Get pre-aggregated metrics | `start_time`, `end_time`, `level`, `metric_name` |
+
+### Logs
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::logs::list` | List stored logs | `start_time`, `end_time`, `trace_id`, `span_id`, `severity_min`, `severity_text`, `offset`, `limit` |
+| `engine::logs::clear` | Clear stored logs | — |
+
+### Health and Alerts
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `engine::health::check` | System health status | — |
+| `engine::alerts::list` | List alert states | — |
+| `engine::alerts::evaluate` | Manually evaluate alerts | — |
+| `engine::sampling::rules` | Get sampling rules | — |

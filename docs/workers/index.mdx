@@ -1,55 +1,39 @@
 ---
-title: 'Core Workers'
-description: 'The modular building blocks of the iii architecture — engine, workers, and adapters.'
+title: 'Workers Reference'
+description: 'Reference index for all iii engine workers — HTTP, Stream, State, Queue, PubSub, Cron, Observability, and more.'
 ---
 
-iii Architecture is very modular. Composed of a few Layers: Engine, Workers, Adapters.
+Workers are modular components that extend the iii engine with specific capabilities. Each worker registers functions and triggers with the engine.
 
-Let's break down each layer:
+For conceptual background on how workers fit into the iii architecture, see [Primitives: Functions, Triggers, Workers](/primitives-and-concepts/functions-triggers-workers). For engine configuration, see [Engine Configuration Reference](/api-reference/engine-config).
 
-- **Engine**: The core of iii. It is the engine that powers the iii architecture.
-- **Workers**: The core workers that make up the iii architecture.
-- **Adapters**: The adapters that connect the iii architecture to the outside world. See [Adapters](/advanced/adapters) for details.
+## Worker Index
 
-## Engine
+| Worker | Purpose |
+|--------|---------|
+| [iii-http](/workers/iii-http) | Expose functions as HTTP endpoints |
+| [iii-stream](/workers/iii-stream) | Durable streams for real-time data subscriptions |
+| [iii-state](/workers/iii-state) | Key-value state storage with scoped namespaces |
+| [iii-queue](/workers/iii-queue) | Topic-based message queuing with retries and DLQ |
+| [iii-pubsub](/workers/iii-pubsub) | Topic-based publish/subscribe for real-time events |
+| [iii-cron](/workers/iii-cron) | Schedule functions with cron expressions |
+| [iii-observability](/workers/iii-observability) | Traces, metrics, logs, and alerts (OpenTelemetry) |
+| [iii-exec](/workers/iii-exec) | Execute shell commands as functions |
+| [iii-bridge](/workers/iii-bridge) | Bridge external services into iii |
+| [iii-worker-manager](/workers/iii-worker-manager) | Manage SDK worker connections and RBAC |
 
-The engine is the orchestration layer. Responsible for connecting the workers to SDK workers.
+## Supporting Topics
 
-## Core Workers
+| Topic | Description |
+|-------|-------------|
+| [Managed Worker Lockfile](/workers/managed-worker-lockfile) | Lock worker dependencies for reproducible deployments |
 
-Built with Rust for exceptional speed and memory efficiency, Core Workers deliver top-tier performance.
+## Architecture
 
-Examples of Workers:
+Workers run in three modes:
 
-- **HTTP Worker**: Expose functions as HTTP endpoints.
-- **Stream Worker**: Durable streams for real-time data subscriptions.
-- **Queue Worker**: Topic-based message queuing with retries and DLQ.
-- **PubSub Worker**: Topic-based publish/subscribe for real-time events.
-- **Cron Worker**: Schedule functions with cron expressions.
-- **Observability Worker**: Traces, metrics, logs, and alerts (OpenTelemetry).
+- **Engine workers** (Rust): Compiled into the engine binary, highest performance
+- **SDK workers** (Node/Python/Rust): Connect via WebSocket, register functions
+- **Managed workers**: Engine-spawned processes with automatic lifecycle management
 
-Within these workers, there's an Adapter Layer, where we can configure external services to be used as their backend.
-For example: in the Queue Worker, you can configure Redis or RabbitMQ to manage queues.
-
-## How to configure the Engine
-
-Let's use the Stream Worker as an example. The following file is the main configuration file for iii.
-Add it to your project as `iii-config.yaml` and iii will automatically load the workers and adapters.
-
-```yaml
-workers:
-  - name: iii-stream
-    config:
-      port: ${STREAM_PORT:3112}
-      host: 0.0.0.0
-      adapter:
-        name: redis
-        config:
-          redis_url: ${REDIS_URL:redis://localhost:6379}
-```
-
-In the example above, we're configuring only the Stream Worker in the Engine.
-We can configure the port to listen on and the host to listen on.
-
-We're also configuring the adapter to use for the Stream Worker. In this case, we're using the `redis` adapter.
-We can configure the Redis URL to use for the Redis adapter.
+Each worker can configure adapters for external backends. For example, the Queue worker can use Redis or RabbitMQ as its message broker.

@@ -1,0 +1,186 @@
+---
+title: "Use Sandboxes"
+description: "Boot ephemeral microVMs, execute commands, and transfer files from your worker code."
+---
+
+## Goal
+
+Run untrusted code, AI-agent tool calls, or isolated scripts in ephemeral microVMs that boot in milliseconds and tear down cleanly.
+
+## Context
+
+Use sandboxes when you need per-request isolation where the filesystem is discarded after stop. For long-lived services, use regular workers. For durable stateful tasks, the sandbox overlay filesystem is wiped — use state or external storage instead.
+
+**Prerequisites:**
+- `iii-sandbox` worker enabled in engine config (see [Sandbox API Reference](/api-reference/sandbox#engine-setup))
+- macOS Apple Silicon or Linux with KVM enabled
+
+## One-Shot: Boot, Run, Stop
+
+From the terminal:
+
+```bash
+iii sandbox run python -- python3 -c 'print("hi")'
+```
+
+From your code — create, exec, then stop:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python' },
+  timeoutMs: 300_000,
+})
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print("hi")'] },
+  timeoutMs: 35_000,
+})
+console.log(out.stdout) // "hi\n"
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+result = await iii.trigger({
+    "function_id": "sandbox::create",
+    "payload": {"image": "python"},
+    "timeout_ms": 300_000,
+})
+sandbox_id = result["sandbox_id"]
+out = await iii.trigger({
+    "function_id": "sandbox::exec",
+    "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", 'print("hi")']},
+    "timeout_ms": 35_000,
+})
+print(out["stdout"])  # "hi\n"
+await iii.trigger({
+    "function_id": "sandbox::stop",
+    "payload": {"sandbox_id": sandbox_id, "wait": True},
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+let create_result: Value = iii.trigger(TriggerRequest {
+    function_id: "sandbox::create".into(),
+    payload: json!({ "image": "python" }),
+    action: None,
+    timeout_ms: Some(300_000),
+}).await?;
+let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+let out: Value = iii.trigger(TriggerRequest {
+    function_id: "sandbox::exec".into(),
+    payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(\"hi\")"] }),
+    action: None,
+    timeout_ms: Some(35_000),
+}).await?;
+println!("{}", out["stdout"].as_str().unwrap_or(""));
+iii.trigger(TriggerRequest {
+    function_id: "sandbox::stop".into(),
+    payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+</Tab>
+</Tabs>
+
+## Multi-Step: Keep Sandbox Alive
+
+For agent loops, REPLs, or multi-step flows where guest state carries across commands:
+
+```bash
+SB=$(iii sandbox create python --idle-timeout 300)
+iii sandbox exec "$SB" -- python3 -c 'print(2+2)'
+iii sandbox exec "$SB" -- python3 -c 'import sys; print(sys.version)'
+iii sandbox stop "$SB"
+```
+
+## Upload and Download Files
+
+Stream files without JSON envelope size caps:
+
+```bash
+# Upload
+iii sandbox upload "$SB" ./script.js /workspace/script.js
+
+# Upload from stdin
+echo "from stdin" | iii sandbox upload "$SB" - /workspace/file.txt
+
+# Download
+iii sandbox download "$SB" /workspace/output.json ./output.json
+
+# Download to stdout
+iii sandbox download "$SB" /workspace/result.json - | jq '.summary'
+```
+
+For SDK file operations (`fs::write`, `fs::read`, `fs::grep`, `fs::sed`, etc.), see the [Sandbox API Reference](/api-reference/sandbox#sdk-filesystem-operations).
+
+## Handle Errors
+
+Sandbox failures throw errors with a JSON envelope containing an S-code:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+try {
+  await iii.trigger({
+    function_id: 'sandbox::exec',
+    payload: { sandbox_id, cmd: 'python3', args: ['-c', 'while True: pass'], timeout_ms: 500 },
+    timeoutMs: 35_000,
+  })
+} catch (err) {
+  const match = err?.message?.match(/handler error:\s*(\{.*\})/)
+  const envelope = match ? JSON.parse(match[1]) : null
+  if (envelope?.code === 'S200') {
+    console.warn('timed out; raise timeout_ms or split the work')
+  } else if (envelope?.code === 'S101') {
+    console.error('pre-pull with: iii worker add iiidev/<image>')
+  }
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+import json, re
+
+try:
+    await iii.trigger({
+        "function_id": "sandbox::exec",
+        "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "while True: pass"], "timeout_ms": 500},
+        "timeout_ms": 35_000,
+    })
+except Exception as e:
+    m = re.search(r'handler error:\s*(\{.*\})', str(e))
+    envelope = json.loads(m.group(1)) if m else None
+    if envelope and envelope.get("code") == "S200":
+        print("timed out; raise timeout_ms or split the work")
+```
+</Tab>
+</Tabs>
+
+For the complete error code reference, see [S-codes](/api-reference/sandbox#s-codes).
+
+## Result
+
+You can now:
+- Boot ephemeral microVMs in milliseconds
+- Execute isolated commands with configurable timeouts
+- Transfer files via streaming channels
+- Handle failures with structured error codes
+
+## Next Steps
+
+- [Sandbox API Reference](/api-reference/sandbox) — full trigger payloads, configuration, and CLI
+- [Developing Sandbox Workers](/how-to/developing-sandbox-workers) — run worker processes in isolated microVMs

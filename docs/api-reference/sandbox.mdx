@@ -1,29 +1,14 @@
 ---
-title: "Sandbox"
-description: "Spawn ephemeral microVMs from your worker code or terminal with iii.trigger('sandbox::*', ...)."
+title: "Sandbox API Reference"
+description: "Complete reference for sandbox triggers, configuration, error codes, and CLI commands."
 ---
 
-## What is the sandbox API?
+Reference for the `sandbox::*` runtime API — ephemeral microVMs spawned via `iii.trigger()`.
 
-The sandbox API is a runtime interface for spawning short-lived microVMs from your
-worker code or from the terminal. Each sandbox boots in a few hundred
-milliseconds, runs commands in isolation from the host, and tears down
-cleanly. The filesystem is discarded on stop.
-
-**Use it for:**
-
-- Running untrusted code or AI-agent tool calls.
-- One-shot scripts that should not share state with your workers.
-- Per-request isolation where you want a fresh environment every time.
-
-**Don't use it for:**
-
-- Long-lived services — use a regular worker.
-- Durable stateful tasks — the overlay filesystem is wiped on stop.
+For procedural guidance on creating sandboxes and running commands, see [Use Sandboxes](/how-to/use-sandbox).
 
 <Note>
-This page is about the `sandbox::*` runtime API (called via `iii.trigger()`). If you're looking for
-how worker processes run inside isolated microVMs, see
+This page covers the `sandbox::*` runtime API. For worker process isolation, see
 [Developing Sandbox Workers](/how-to/developing-sandbox-workers).
 </Note>
 
@@ -1258,7 +1243,7 @@ const { sandbox_id } = await iii.trigger({
   the sandbox satisfies a managed worker boot of the same OCI ref, and
   vice versa. One pull, one cache entry.
 
-See [Configure the engine](/how-to/configure-engine) for the full
+See [Engine Configuration Reference](/api-reference/engine-config) for the full
 engine-level schema.
 
 ## Error handling

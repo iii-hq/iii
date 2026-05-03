@@ -1,9 +1,17 @@
 ---
 title: 'Use Functions & Triggers'
-description: 'Learn how to register Functions and Trigger them from anywhere within your backend across languages and from any service.'
+description: 'Register functions, bind them to triggers, and invoke them across language boundaries.'
 ---
 
-## Registering a Function and Triggering it
+## Goal
+
+Register functions with the engine and trigger them from other functions, workers, or external events.
+
+## Context
+
+Use this guide when building backend logic with iii. Functions are the unit of work; triggers are the events that invoke them. For conceptual background, see [Primitives: Functions, Triggers, Workers](/primitives-and-concepts/functions-triggers-workers). For trigger type configuration details, see [Triggers](/architecture/trigger-types).
+
+## Register and Trigger a Function
 
 Function registration is just passing a function, an `id` for the function to `registerFunction(id, func)`
 (or the equivalent in other languages). These functions can then be Triggered from anywhere else in the
@@ -105,7 +113,7 @@ for delegating work to external services like webhooks, serverless functions, or
 
 <Warning title="Engine worker required">
 HTTP-invoked functions require the `iii-http-functions` worker to be enabled in your engine config.
-See the [engine configuration guide](/how-to/configure-engine) for details.
+See the [Engine Configuration Reference](/api-reference/engine-config) for details.
 </Warning>
 
 Pass an `HttpInvocationConfig` as the second argument to `registerFunction` instead of a handler:
@@ -623,19 +631,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   See the [Queue worker](/workers/iii-queue) for details.
 </Info>
 
-## Trigger Types
-
-| Type | Fires when | Config fields | Worker |
-|------|-----------|---------------|--------|
-| `http` | HTTP request received | `api_path`, `http_method` | HTTP |
-| `cron` | Schedule fires | `expression` | Cron |
-| `durable:subscriber` | Message published to a topic | `topic` | Queue |
-| `subscribe` | PubSub message on a topic | `topic` | PubSub |
-| `state` | State value changes | `scope`, `key` | State |
-| `stream` | Stream value changes | `stream_name`, `group_id`, `item_id` | Stream |
-| `stream:join` | Client connects to stream | — | Stream |
-| `stream:leave` | Client disconnects from stream | — | Stream |
-| `log` | Log entry emitted | `level` | Observability |
+<Info title="Trigger Types">
+For a complete list of trigger types and their configuration options, see [Triggers](/architecture/trigger-types).
+</Info>
 
 ## Cross-language triggering
 
@@ -784,96 +782,8 @@ The `iii::` prefix is reserved for internal engine functions. Function IDs canno
 
 ## Built-in Functions
 
-{/* TODO: Check these in depth and have an LLM try each one as much as it can */}
-{/* TODO: Break these out into modules once those docs are ready and then have short higher level
-mentions with one or two noted functions each and then link to the detailed docs */}
+The engine provides built-in functions for state, streams, queues, pubsub, and observability. Trigger them like any other function.
 
-The engine provides built-in functions that can be triggered the same way any other Function would be triggered. These handle common operations like state management, streaming, messaging, and observability.
-
-### State
-
-Persistent key-value storage with scoped namespaces.
-
-| Function | Purpose | Parameters |
-|----------|---------|------------|
-| `state::set` | Store a value | `scope`, `key`, `value` |
-| `state::get` | Retrieve a value | `scope`, `key` |
-| `state::delete` | Remove a value | `scope`, `key` |
-| `state::update` | Atomic update with operations | `scope`, `key`, `ops` |
-| `state::list` | List all values in a scope | `scope` |
-| `state::list_groups` | List all state scopes | — |
-
-### Stream
-
-Real-time data streams with hierarchical organization.
-
-| Function | Purpose | Parameters |
-|----------|---------|------------|
-| `stream::set` | Set a value in a stream | `stream_name`, `group_id`, `item_id`, `data` |
-| `stream::get` | Get a value from a stream | `stream_name`, `group_id`, `item_id` |
-| `stream::delete` | Delete a value from a stream | `stream_name`, `group_id`, `item_id` |
-| `stream::update` | Atomic update with operations | `stream_name`, `group_id`, `item_id`, `ops` |
-| `stream::list` | List items in a group | `stream_name`, `group_id` |
-| `stream::list_groups` | List groups in a stream | `stream_name` |
-| `stream::list_all` | List all streams | — |
-| `stream::send` | Send event to subscribers | `stream_name`, `group_id`, `id`, `event_type`, `data` |
-
-### Queue
-
-Durable message queue for async processing.
-
-| Function | Purpose | Parameters |
-|----------|---------|------------|
-| `iii::durable::publish` | Publish a message | `topic`, `data` |
-
-### PubSub
-
-Publish-subscribe messaging for event broadcasting.
-
-| Function | Purpose | Parameters |
-|----------|---------|------------|
-| `publish` | Publish an event to subscribers | `topic`, `data` |
-
-### Engine
-
-Internal engine functions for introspection and management.
-
-<Info title="Engine built-ins are always loaded">
-The engine built-ins are mandatory and always loaded.
+<Info title="Built-in Functions Reference">
+For the complete list of built-in functions and their parameters, see [Built-in Functions Reference](/api-reference/built-in-functions).
 </Info>
-
-| Function | Purpose | Parameters |
-|----------|---------|------------|
-| `engine::functions::list` | List all registered functions | `include_internal` (optional, default: `false`) |
-| `engine::workers::list` | List connected SDK workers and in-process engine workers with metrics where available | `worker_id` (optional) |
-| `engine::triggers::list` | List all triggers | `include_internal` (optional, default: `false`) |
-| `engine::workers::register` | Register worker metadata (internal worker call) | `_caller_worker_id`, `runtime` (optional), `version` (optional), `name` (optional), `os` (optional), `telemetry` (optional) |
-| `engine::channels::create` | Create a streaming channel pair | `buffer_size` (optional) |
-
-Built-in engine workers such as `iii-stream` and `iii-state` are included in worker list results. Rows with `internal: true` are mandatory engine internals and can be hidden in user-facing views.
-
-### Observability
-
-Logging, tracing, and metrics. The Observability worker is disabled by default and must be enabled in engine config.
-
-| Function | Purpose | Parameters |
-|----------|---------|------------|
-| `engine::log::info` | Log info message | `message`, `data` (optional), `service_name` (optional), `trace_id` (optional), `span_id` (optional) |
-| `engine::log::warn` | Log warning message | `message`, `data` (optional), `service_name` (optional), `trace_id` (optional), `span_id` (optional) |
-| `engine::log::error` | Log error message | `message`, `data` (optional), `service_name` (optional), `trace_id` (optional), `span_id` (optional) |
-| `engine::log::debug` | Log debug message | `message`, `data` (optional), `service_name` (optional), `trace_id` (optional), `span_id` (optional) |
-| `engine::log::trace` | Log trace message | `message`, `data` (optional), `service_name` (optional), `trace_id` (optional), `span_id` (optional) |
-| `engine::baggage::get` | Get baggage item | `key` |
-| `engine::baggage::set` | Set baggage item | `key`, `value` |
-| `engine::baggage::get_all` | Get all baggage items | — |
-| `engine::traces::list` | List stored traces | `trace_id` (optional), `service_name` (optional), `name` (optional), `status` (optional), `offset` (optional), `limit` (optional), `min_duration_ms` (optional), `max_duration_ms` (optional), `start_time` (optional), `end_time` (optional), `sort_by` (optional), `sort_order` (optional), `attributes` (optional), `include_internal` (optional) |
-| `engine::traces::tree` | Get trace tree | `trace_id` |
-| `engine::traces::clear` | Clear stored traces | — |
-| `engine::metrics::list` | List current metrics | `start_time` (optional), `end_time` (optional), `metric_name` (optional), `aggregate_interval` (optional) |
-| `engine::logs::list` | List stored logs | `start_time` (optional), `end_time` (optional), `trace_id` (optional), `span_id` (optional), `severity_min` (optional), `severity_text` (optional), `offset` (optional), `limit` (optional) |
-| `engine::logs::clear` | Clear stored logs | — |
-| `engine::health::check` | System health status | — |
-| `engine::alerts::list` | List alert states | — |
-| `engine::alerts::evaluate` | Manually evaluate alerts | — |
-| `engine::rollups::list` | Get pre-aggregated metrics | `start_time` (optional), `end_time` (optional), `level` (optional), `metric_name` (optional) |
-| `engine::sampling::rules` | Get sampling rules | — |
