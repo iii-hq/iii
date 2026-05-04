@@ -43,37 +43,33 @@ jobs:
       - name: Install pyyaml
         run: pip install --quiet pyyaml
 
+      # Pin the iii CLI to the version we are publishing. Without this the
+      # install script picks "latest stable", which can be older than the
+      # tag being released and may lack features that the publish step
+      # depends on (for example `engine::workers::list` exposing engine
+      # internal workers landed in PR #1585). The install script also
+      # bundles `iii-worker`, which iii-sandbox needs at runtime.
       - name: Install iii CLI
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          expected="$VERSION_INPUT"
+          if [[ -z "$expected" && "${GITHUB_REF_NAME:-}" == iii/v* ]]; then
+            expected="${GITHUB_REF_NAME#iii/v}"
+          fi
+          install_args=()
+          if [[ "$expected" == *-* ]]; then
+            install_args+=("--next")
+          fi
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh
+          VERSION="$expected" sh /tmp/install-iii.sh "${install_args[@]}"
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
           } >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
           iii --version
-
-      - name: Setup Rust toolchain (iii-sandbox only)
-        if: inputs.worker == 'iii-sandbox'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies for iii-worker (iii-sandbox only)
-        if: inputs.worker == 'iii-sandbox'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
-
-      - name: Build and install iii-worker (iii-sandbox only)
-        if: inputs.worker == 'iii-sandbox'
-        run: |
-          set -euo pipefail
-          cargo build -p iii-worker
-          mkdir -p "$HOME/.local/bin"
-          cp target/debug/iii-worker "$HOME/.local/bin/iii-worker"
-          chmod +x "$HOME/.local/bin/iii-worker"
-          iii-worker --version || true
 
       # Each builtin engine worker has different auto-load semantics
       # (mandatory / enabled_by_default / external). Rather than rely on the
