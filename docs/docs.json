@@ -56,6 +56,16 @@
         "pages": ["expanding-iii/workers", "expanding-iii/registry"]
       },
       {
+        "group": "API Reference",
+        "pages": [
+          "api-reference/node-sdk",
+          "api-reference/python-sdk",
+          "api-reference/rust-sdk",
+          "api-reference/browser-sdk",
+          "api-reference/engine-sdk"
+        ]
+      },
+      {
         "group": "Tutorials",
         "pages": [
           {
