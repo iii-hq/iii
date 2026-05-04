@@ -48,7 +48,8 @@
           "using-iii/functions",
           "using-iii/triggers",
           "using-iii/console",
-          "using-iii/cli"
+          "using-iii/cli",
+          "using-iii/deployment"
         ]
       },
       {

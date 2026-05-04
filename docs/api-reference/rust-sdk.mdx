@@ -4,3 +4,12 @@ description: "Placeholder."
 owner: "engineering"
 type: "reference"
 ---
+
+<Note>
+  Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end.
+</Note>
+
+## Connection lifecycle
+
+How the SDK connects to the engine, registers functions, heartbeats, and reconnects with
+re-registration on disconnect.

@@ -4,3 +4,27 @@ description: "Placeholder."
 owner: "engineering"
 type: "reference"
 ---
+
+## Connection lifecycle
+
+How the SDK connects to the engine, registers functions, heartbeats, and reconnects with re-registration on disconnect.
+
+## Telemetry
+
+Auto-init of OpenTelemetry via `registerWorker` / `register_worker`, configured through `OtelConfig` and standard OTel environment variables.
+
+## Custom spans
+
+Wrapping handler logic with `withSpan` / `with_span` to emit application-level spans.
+
+## Worker metrics
+
+Built-in worker process metrics emitted as observable gauges (CPU, memory, event-loop lag, uptime).
+
+## Log emission and subscription
+
+Emitting structured logs and subscribing to engine-side log events.
+
+## Telemetry utilities
+
+`getTracer` / `getMeter` / `getLogger` / `currentTraceId` / `shutdownOtel` and language equivalents.

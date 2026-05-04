@@ -6,3 +6,35 @@ type: "reference"
 ---
 
 Raw websocket API
+
+## Message types
+
+The set of frame types exchanged over the engine WebSocket.
+
+## Connection flow
+
+What a worker sends after the WebSocket opens — registering its functions and triggers.
+
+## Invocation lifecycle
+
+Sync vs fire-and-forget call paths between client, engine, and worker.
+
+## Register function message
+
+Shape of `registerfunction` frames.
+
+## Register trigger message
+
+Shape of `registertrigger` frames, including per-trigger-type config.
+
+## Invoke function message
+
+Shape of `invokefunction` frames.
+
+## Invocation result message
+
+Success and error payload shapes for `invocationresult`.
+
+## Engine-collected invocation metrics
+
+Engine-side metrics emitted regardless of SDK language: `iii.invocations.total`, `iii.invocation.duration`, `iii.invocation.errors.total`.

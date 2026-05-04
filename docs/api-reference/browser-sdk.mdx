@@ -4,3 +4,146 @@ description: "Placeholder."
 owner: "engineering"
 type: "reference"
 ---
+
+<Note>
+  Logging and telemetry surfaces are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end. The browser SDK does not currently ship OpenTelemetry.
+</Note>
+
+## Installation
+
+How to add the browser SDK to a web project.
+
+## Initialization
+
+Connecting to the engine and obtaining the SDK handle. Always call the variable `worker` and not
+`iii` so when we do `worker.registerFunction()` it makes more contextual sense.
+
+## Connection lifecycle
+
+How the SDK connects to the engine, registers functions, and reconnects with re-registration on
+disconnect (exponential backoff with jitter, configured via `IIIReconnectionConfig`).
+
+## Methods
+
+### registerWorker
+
+Register this worker with an iii engine.
+
+#### InitOptions
+
+Options accepted when constructing the worker instance (worker name, timeouts,
+`reconnectionConfig`).
+
+### registerFunction
+
+Register a callable function on this worker, with optional request and response JSON Schema formats.
+
+### registerTrigger
+
+Bind a registered function to a configured trigger instance.
+
+### trigger
+
+Invoke a registered function or fire a trigger from the browser.
+
+### shutdown
+
+Disconnect from the engine and release resources.
+
+### registerTriggerType
+
+Declare a new trigger type that this worker can source events from. **Consider removing**
+
+### unregisterTriggerType
+
+Remove a previously registered trigger type. **Consider removing**
+
+## Types
+
+**Types should be visually separated from the functions in the docs**
+
+### MessageType
+
+Wire message-type discriminator used by the SDK.
+
+### FunctionRef
+
+Typed reference to a registered function.
+
+### IIIReconnectionConfig
+
+Engine-WebSocket reconnection behavior — `maxRetries`, `initialDelayMs`, `backoffMultiplier`,
+`maxDelayMs`, `jitterFactor`. The browser SDK only has this one; other SDKs additionally expose a
+`ReconnectionConfig` for their OTel exporter, but the browser SDK does not ship OpenTelemetry.
+
+### RegisterFunctionFormat
+
+JSON Schema shape used for `request_format` and `response_format` on registered functions.
+
+### RegisterFunctionMessage
+
+Wire shape sent when registering a function.
+
+### RegisterFunctionOptions
+
+Options passed alongside a function registration.
+
+### RegisterServiceInput
+
+Input shape for `registerService`.
+
+### RegisterTriggerInput
+
+Input shape for `registerTrigger`.
+
+### RegisterTriggerMessage
+
+Wire shape sent when binding a trigger.
+
+### RegisterTriggerTypeInput
+
+Input shape for `registerTriggerType`.
+
+### RegisterTriggerTypeMessage
+
+Wire shape sent when declaring a trigger type.
+
+### RemoteFunctionHandler
+
+Handler signature for functions invoked remotely.
+
+### StreamChannelRef
+
+Typed reference to a stream channel.
+
+### Trigger
+
+Configured trigger instance.
+
+### TriggerHandler
+
+Handler signature for trigger-driven invocations.
+
+### TriggerRequest
+
+Request payload delivered to a trigger handler.
+
+### TriggerTypeRef
+
+Typed reference to a registered trigger type.
+
+### IStream
+
+Stream consumer interface.
+
+### DeleteResult
+
+Result of a delete operation.
+
+### StreamSetResult
+
+Result of a stream set operation.
+
+### StreamUpdateResult
+
+Result of a stream update operation.

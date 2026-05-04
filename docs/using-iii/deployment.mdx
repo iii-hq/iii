@@ -1,0 +1,26 @@
+---
+title: "Deployment"
+description: "Placeholder."
+owner: "devrel"
+type: "how-to"
+---
+
+## Deploy with Docker
+
+Running iii via the official image — single container, Compose for development, Compose for production.
+
+## Configure a reverse proxy
+
+Terminate TLS in front of iii with Caddy or Nginx, routing HTTP, WebSocket, and stream traffic to the right ports.
+
+## Harden for production
+
+Read-only filesystem, dropped capabilities, no-new-privileges, and non-root user for the iii container.
+
+## Run multiple engine instances
+
+Load balancing, shared backing services, and distributed locks when scaling iii horizontally.
+
+## Check engine health
+
+Prometheus metrics endpoint and HTTP/WebSocket health checks for monitoring a running engine.
