@@ -33,7 +33,7 @@
     "groups": [
       {
         "group": "Getting Started",
-        "pages": ["index"]
+        "pages": ["welcome", "install", "quickstart", "understanding-iii"]
       }
     ]
   }
