@@ -3,7 +3,9 @@ Pattern: State Management
 Comparable to: Redis, DynamoDB, Memcached
 
 Persistent key-value state scoped by namespace. Supports set, get,
-list, delete, and partial update operations.
+list, delete, and atomic update operations (set, merge, append,
+increment, decrement, remove). The merge op accepts a nested-segment
+path for shallow-merging into auto-created intermediates.
 
 How-to references:
   - State management: https://iii.dev/docs/how-to/manage-state
@@ -114,10 +116,12 @@ async def products_remove(data):
 iii.register_function("products::remove", products_remove)
 
 # ---
-# state::update — Partial merge using ops array
+# state::update — Atomic ops over a record
 # Payload: { scope, key, ops }
-# ops: [{ type: "set", path, value }]
+# ops: [{ type: "set" | "merge" | "append" | "increment" | "decrement" | "remove", path, value?, by? }]
 # Use update instead of get-then-set for atomic partial changes.
+# Returns { old_value, new_value, errors? } — failed ops surface
+# structured entries in `errors` while later valid ops still apply.
 # ---
 
 
@@ -148,43 +152,40 @@ async def products_update_price(data):
 iii.register_function("products::update-price", products_update_price)
 
 # ---
-# Combining operations — inventory adjustment with update
+# state::update with merge — Nested shallow-merge for per-session structured state
+# `merge.path` accepts a string (first-level field) or a list of literal
+# segments. The engine walks the segments, auto-creating each intermediate
+# object. Sibling keys at every level are preserved.
+# Each segment is a literal key — ["a.b"] writes one key named "a.b",
+# not a → b.
 # ---
 
 
-async def products_adjust_stock(data):
-    logger = Logger()
-
-    product = await iii.trigger_async({
-        "function_id": "state::get",
-        "payload": {"scope": "products", "key": data["id"]},
-    })
-
-    if not product:
-        return {"error": "Product not found", "id": data["id"]}
-
-    new_stock = product["stock"] + data["adjustment"]
-
-    if new_stock < 0:
-        return {"error": "Insufficient stock", "current": product["stock"], "requested": data["adjustment"]}
+async def transcripts_record_chunk(data):
+    session_id = data["sessionId"]
+    chunk = data["chunk"]
+    author = data["author"]
+    timestamp = str(int(time.time() * 1000))
 
     await iii.trigger_async({
         "function_id": "state::update",
         "payload": {
-            "scope": "products",
-            "key": data["id"],
+            "scope": "audio::transcripts",
+            "key": session_id,
             "ops": [
-                {"type": "set", "path": "stock", "value": new_stock},
-                {"type": "set", "path": "last_stock_change", "value": datetime.now(timezone.utc).isoformat()},
+                # Nested path: walks session_id → "metadata", auto-creating
+                # each intermediate object if it doesn't exist yet.
+                {"type": "merge", "path": [session_id, "metadata"], "value": {"author": author}},
+                # First-level form (sugar for path: [session_id]).
+                {"type": "merge", "path": session_id, "value": {timestamp: chunk}},
             ],
         },
     })
 
-    logger.info("Stock adjusted", {"id": data["id"], "from": product["stock"], "to": new_stock})
-    return {"id": data["id"], "previousStock": product["stock"], "newStock": new_stock}
+    return {"sessionId": session_id, "timestamp": timestamp}
 
 
-iii.register_function("products::adjust-stock", products_adjust_stock)
+iii.register_function("transcripts::record-chunk", transcripts_record_chunk)
 
 # ---
 # HTTP triggers
@@ -194,7 +195,7 @@ iii.register_trigger({"type": "http", "function_id": "products::get", "config": 
 iii.register_trigger({"type": "http", "function_id": "products::list-all", "config": {"api_path": "/products", "http_method": "GET"}})
 iii.register_trigger({"type": "http", "function_id": "products::remove", "config": {"api_path": "/products/:id", "http_method": "DELETE"}})
 iii.register_trigger({"type": "http", "function_id": "products::update-price", "config": {"api_path": "/products/:id/price", "http_method": "PUT"}})
-iii.register_trigger({"type": "http", "function_id": "products::adjust-stock", "config": {"api_path": "/products/:id/stock", "http_method": "POST"}})
+iii.register_trigger({"type": "http", "function_id": "transcripts::record-chunk", "config": {"api_path": "/transcripts/:sessionId/chunks", "http_method": "POST"}})
 
 
 async def main():

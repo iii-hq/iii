@@ -2,11 +2,13 @@
 /// Comparable to: Redis, DynamoDB, Memcached
 ///
 /// Persistent key-value state scoped by namespace. Supports set, get,
-/// list, delete, and partial update operations.
+/// list, delete, and atomic update operations (set, merge, append,
+/// increment, decrement, remove). The merge op accepts a nested-segment
+/// path for shallow-merging into auto-created intermediates.
 
 use iii_sdk::{
     register_worker, InitOptions, RegisterFunction, TriggerRequest, TriggerAction,
-    builtin_triggers::*, IIITrigger, Logger,
+    builtin_triggers::*, IIITrigger,
 };
 use serde_json::json;
 
@@ -36,9 +38,11 @@ struct UpdatePriceInput {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-struct AdjustStockInput {
-    id: String,
-    adjustment: i64,
+struct RecordChunkInput {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    chunk: String,
+    author: String,
 }
 
 fn main() {
@@ -175,10 +179,12 @@ fn main() {
     );
 
     // ---
-    // state::update - Partial merge using ops array
+    // state::update - Atomic ops over a record
     // Payload: { scope, key, ops }
-    // ops: [{ type: "set", path, value }]
+    // ops: [{ type: "set" | "merge" | "append" | "increment" | "decrement" | "remove", path, value?, by? }]
     // Use update instead of get-then-set for atomic partial changes.
+    // Returns { old_value, new_value, errors? } - failed ops surface
+    // structured entries in `errors` while later valid ops still apply.
     // ---
     let iii_clone = iii.clone();
     iii.register_function(
@@ -222,48 +228,36 @@ fn main() {
     );
 
     // ---
-    // Combining operations - inventory adjustment with update
+    // state::update with merge - Nested shallow-merge for per-session structured state
+    // `merge.path` accepts a string (first-level field) or an array of literal
+    // segments. The engine walks the segments, auto-creating each intermediate
+    // object. Sibling keys at every level are preserved.
+    // Each segment is a literal key - ["a.b"] writes one key named "a.b",
+    // not a -> b.
     // ---
     let iii_clone = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async("products::adjust-stock", move |data: AdjustStockInput| {
+        RegisterFunction::new_async("transcripts::record-chunk", move |data: RecordChunkInput| {
             let iii = iii_clone.clone();
             async move {
-                let logger = Logger::new();
+                let timestamp = chrono::Utc::now().timestamp_millis().to_string();
 
-                let product = iii
-                    .trigger(TriggerRequest {
-                        function_id: "state::get".into(),
-                        payload: json!({ "scope": "products", "key": data.id }),
-                        action: None,
-                        timeout_ms: None,
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                if product.is_null() {
-                    return Ok(json!({ "error": "Product not found", "id": data.id }));
-                }
-
-                let current_stock = product["stock"].as_i64().unwrap_or(0);
-                let new_stock = current_stock + data.adjustment;
-
-                if new_stock < 0 {
-                    return Ok(json!({
-                        "error": "Insufficient stock",
-                        "current": current_stock,
-                        "requested": data.adjustment,
-                    }));
-                }
+                // Build `{ "<timestamp>": "<chunk>" }` for the timestamped merge,
+                // since serde_json::json! object keys must be string literals.
+                let mut chunk_obj = serde_json::Map::new();
+                chunk_obj.insert(timestamp.clone(), serde_json::Value::String(data.chunk));
 
                 iii.trigger(TriggerRequest {
                     function_id: "state::update".into(),
                     payload: json!({
-                        "scope": "products",
-                        "key": data.id,
+                        "scope": "audio::transcripts",
+                        "key": data.session_id,
                         "ops": [
-                            { "type": "set", "path": "stock", "value": new_stock },
-                            { "type": "set", "path": "last_stock_change", "value": chrono::Utc::now().to_rfc3339() },
+                            // Nested path: walks session_id -> "metadata", auto-creating
+                            // each intermediate object if it doesn't exist yet.
+                            { "type": "merge", "path": [&data.session_id, "metadata"], "value": { "author": data.author } },
+                            // First-level form (sugar for path: [session_id]).
+                            { "type": "merge", "path": &data.session_id, "value": chunk_obj },
                         ],
                     }),
                     action: None,
@@ -272,11 +266,10 @@ fn main() {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                logger.info("Stock adjusted", &json!({ "id": data.id, "from": current_stock, "to": new_stock }));
-                Ok(json!({ "id": data.id, "previousStock": current_stock, "newStock": new_stock }))
+                Ok(json!({ "sessionId": data.session_id, "timestamp": timestamp }))
             }
         })
-        .description("Adjust product stock"),
+        .description("Record a transcript chunk under a session"),
     );
 
     // ---
@@ -313,8 +306,8 @@ fn main() {
     .expect("failed");
 
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("/products/:id/stock").method(HttpMethod::Post))
-            .for_function("products::adjust-stock"),
+        IIITrigger::Http(HttpTriggerConfig::new("/transcripts/:sessionId/chunks").method(HttpMethod::Post))
+            .for_function("transcripts::record-chunk"),
     )
     .expect("failed");
 

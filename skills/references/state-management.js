@@ -3,7 +3,9 @@
  * Comparable to: Redis, DynamoDB, Memcached
  *
  * Persistent key-value state scoped by namespace. Supports set, get,
- * list, delete, and partial update operations.
+ * list, delete, and atomic update operations (set, merge, append,
+ * increment, decrement, remove). The merge op accepts a nested-segment
+ * path for shallow-merging into auto-created intermediates.
  *
  * How-to references:
  *   - State management: https://iii.dev/docs/how-to/manage-state
@@ -94,10 +96,12 @@ iii.registerFunction('products::remove', async (data) => {
 })
 
 // ---------------------------------------------------------------------------
-// state::update — Partial merge using ops array
+// state::update — Atomic ops over a record
 // Payload: { scope, key, ops }
-// ops: [{ type: 'set', path, value }]
+// ops: [{ type: 'set' | 'merge' | 'append' | 'increment' | 'decrement' | 'remove', path, value?, by? }]
 // Use update instead of get-then-set for atomic partial changes.
+// Returns { old_value, new_value, errors? } — failed ops surface
+// structured entries in `errors` while later valid ops still apply.
 // ---------------------------------------------------------------------------
 iii.registerFunction('products::update-price', async (data) => {
   const existing = await iii.trigger({
@@ -125,48 +129,65 @@ iii.registerFunction('products::update-price', async (data) => {
 })
 
 // ---------------------------------------------------------------------------
-// Combining operations — inventory adjustment with update
+// state::update with merge — Nested shallow-merge for per-session structured state
+// `merge.path` accepts a string (first-level field) or an array of literal
+// segments. The engine walks the segments, auto-creating each intermediate
+// object. Sibling keys at every level are preserved.
+// Each segment is a literal key — `["a.b"]` writes one key named "a.b",
+// not a → b.
 // ---------------------------------------------------------------------------
-iii.registerFunction('products::adjust-stock', async (data) => {
-  const logger = new Logger()
-
-  const product = await iii.trigger({
-    function_id: 'state::get',
-    payload: { scope: 'products', key: data.id },
-  })
-
-  if (!product) {
-    return { error: 'Product not found', id: data.id }
-  }
-
-  const newStock = product.stock + data.adjustment
-
-  if (newStock < 0) {
-    return { error: 'Insufficient stock', current: product.stock, requested: data.adjustment }
-  }
+iii.registerFunction('transcripts::record-chunk', async (data) => {
+  const { sessionId, chunk, author } = data
+  const timestamp = Date.now()
 
   await iii.trigger({
     function_id: 'state::update',
     payload: {
-      scope: 'products',
-      key: data.id,
+      scope: 'audio::transcripts',
+      key: sessionId,
       ops: [
-        { type: 'set', path: 'stock', value: newStock },
-        { type: 'set', path: 'last_stock_change', value: new Date().toISOString() },
+        // Nested path: walks sessionId → "metadata", auto-creating
+        // each intermediate object if it doesn't exist yet.
+        { type: 'merge', path: [sessionId, 'metadata'], value: { author } },
+        // First-level form (sugar for path: [sessionId]).
+        { type: 'merge', path: sessionId, value: { [timestamp]: chunk } },
       ],
     },
   })
 
-  logger.info('Stock adjusted', { id: data.id, from: product.stock, to: newStock })
-  return { id: data.id, previousStock: product.stock, newStock }
+  return { sessionId, timestamp }
 })
 
 // ---------------------------------------------------------------------------
 // HTTP triggers
 // ---------------------------------------------------------------------------
-iii.registerTrigger({ type: 'http', function_id: 'products::create', config: { api_path: '/products', http_method: 'POST' } })
-iii.registerTrigger({ type: 'http', function_id: 'products::get', config: { api_path: '/products/:id', http_method: 'GET' } })
-iii.registerTrigger({ type: 'http', function_id: 'products::list-all', config: { api_path: '/products', http_method: 'GET' } })
-iii.registerTrigger({ type: 'http', function_id: 'products::remove', config: { api_path: '/products/:id', http_method: 'DELETE' } })
-iii.registerTrigger({ type: 'http', function_id: 'products::update-price', config: { api_path: '/products/:id/price', http_method: 'PUT' } })
-iii.registerTrigger({ type: 'http', function_id: 'products::adjust-stock', config: { api_path: '/products/:id/stock', http_method: 'POST' } })
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'products::create',
+  config: { api_path: '/products', http_method: 'POST' },
+})
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'products::get',
+  config: { api_path: '/products/:id', http_method: 'GET' },
+})
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'products::list-all',
+  config: { api_path: '/products', http_method: 'GET' },
+})
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'products::remove',
+  config: { api_path: '/products/:id', http_method: 'DELETE' },
+})
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'products::update-price',
+  config: { api_path: '/products/:id/price', http_method: 'PUT' },
+})
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'transcripts::record-chunk',
+  config: { api_path: '/transcripts/:sessionId/chunks', http_method: 'POST' },
+})
