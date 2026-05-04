@@ -48,15 +48,16 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
     return workers_json
 
 
-def collect_trigger_types() -> dict[str, object] | None:
+def collect_trigger_types() -> dict[str, object]:
+    # Trigger types are the primary content for infrastructure workers
+    # (iii-http, iii-cron, iii-bridge, ...) — they register a trigger type
+    # and no RPC functions. Returning {} on failure would silently publish
+    # `triggers=[]` and the registry would accept it, masking the real
+    # surface of the worker. Fail closed instead.
     try:
         return run_iii("engine::trigger-types::list", {"include_internal": False})
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        print(
-            f"::warning::could not collect trigger types; publishing triggers=[]: {exc}",
-            file=sys.stderr,
-        )
-        return None
+        raise RuntimeError(f"could not collect trigger types: {exc}") from exc
 
 
 def main() -> int:
