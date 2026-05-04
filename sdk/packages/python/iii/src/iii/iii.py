@@ -88,8 +88,8 @@ def _detect_project_name(cwd: str | None = None) -> str | None:
     No directory walking — only inspects ``cwd`` itself, so the SDK never
     reads files outside the user's explicit working directory.
     """
-    cwd = cwd or os.getcwd()
     try:
+        cwd = cwd or os.getcwd()
         manifest = os.path.join(cwd, "pyproject.toml")
         if os.path.isfile(manifest):
             import importlib
@@ -107,6 +107,8 @@ def _detect_project_name(cwd: str | None = None) -> str | None:
     except Exception:
         pass
 
+    if not cwd:
+        return None
     base = os.path.basename(cwd).strip()
     return base or None
 

@@ -306,10 +306,10 @@ pub(crate) fn detect_project_name(cwd: Option<std::path::PathBuf>) -> Option<Str
     let cwd = cwd.or_else(|| std::env::current_dir().ok())?;
 
     let manifest = cwd.join("Cargo.toml");
-    if let Ok(content) = std::fs::read_to_string(&manifest)
-        && let Some(name) = parse_cargo_package_name(&content)
-    {
-        return Some(name);
+    if let Ok(content) = std::fs::read_to_string(&manifest) {
+        if let Some(name) = parse_cargo_package_name(&content) {
+            return Some(name);
+        }
     }
 
     cwd.file_name()

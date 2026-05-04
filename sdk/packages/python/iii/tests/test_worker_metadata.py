@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,14 @@ import pytest
 from iii import InitOptions
 from iii.iii import III, _detect_project_name
 from iii.iii_constants import TelemetryOptions
+
+# pyproject.toml parsing relies on stdlib tomllib (Python 3.11+).
+# On 3.10 the SDK intentionally falls back to the cwd basename, so
+# tests that assert the parsed name are skipped on that runtime.
+requires_tomllib = pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="pyproject.toml parsing requires stdlib tomllib (Python 3.11+)",
+)
 
 
 def _call_metadata_method(options: InitOptions | None = None) -> dict[str, object]:
@@ -38,6 +47,7 @@ def test_get_worker_metadata_forwards_iii_isolation_env_var(
     assert metadata["isolation"] == "docker"
 
 
+@requires_tomllib
 def test_detect_project_name_reads_pyproject_name(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "my-pkg"\n')
 
@@ -66,6 +76,7 @@ def test_detect_project_name_falls_back_to_cwd_basename_when_pyproject_malformed
     assert _detect_project_name(str(tmp_path)) == tmp_path.name
 
 
+@requires_tomllib
 def test_get_worker_metadata_auto_detects_project_name_from_pyproject(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
