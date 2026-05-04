@@ -66,6 +66,10 @@
         ]
       },
       {
+        "group": "How-to",
+        "pages": ["how-to/disable-telemetry"]
+      },
+      {
         "group": "Tutorials",
         "pages": [
           {
