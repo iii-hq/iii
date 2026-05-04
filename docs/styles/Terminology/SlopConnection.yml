@@ -1,5 +1,7 @@
 extends: existence
-message: "Avoid the connection metaphor '%s'. Describe how iii actually wires functions, triggers, or workers together (e.g. 'registers', 'invokes', 'subscribes')."
+message:
+  "Avoid the connection metaphor '%s'. Describe how iii actually wires functions, triggers, or
+  workers together (e.g. 'registers', 'invokes', 'subscribes')."
 level: error
 ignorecase: true
 tokens:
@@ -10,6 +12,7 @@ tokens:
   - fasten
   - fuse
   - glue
+  - glued
   - hook into
   - interlace
   - interlock
@@ -24,6 +27,7 @@ tokens:
   - solder
   - splice
   - stitch
+  - stitching
   - tether
   - weave
   - wire up

@@ -72,9 +72,9 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] how-to/configure-engine.mdx
 - [x] how-to/create-custom-trigger-type.mdx
 - [x] how-to/create-ephemeral-worker.mdx
-- [ ] how-to/dead-letter-queues.mdx
-- [ ] how-to/define-request-response-formats.mdx
-- [ ] how-to/developing-sandbox-workers.mdx
+- [x] how-to/dead-letter-queues.mdx
+- [x] how-to/define-request-response-formats.mdx
+- [x] how-to/developing-sandbox-workers.mdx
 - [ ] how-to/expose-http-endpoint.mdx
 - [ ] how-to/manage-state.mdx
 - [ ] how-to/managing-container-workers.mdx
@@ -127,6 +127,18 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Adapters are deprecated; remove the page in its current form.
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
+
+### how-to/developing-sandbox-workers.mdx — Move to Worker Docs (iii-sandbox / iii-worker-manager)
+- Sandbox is a worker; worker authoring belongs outside ideal-docs.
+- No stubs.
+
+### how-to/define-request-response-formats.mdx — Distribute and drop
+- Stub added to `using-iii/functions.mdx`: "Define request and response formats".
+- "Discover from CLI" piece already covered (`using-iii/cli.mdx`, `api-reference/engine-sdk.mdx` discovery functions).
+- Drops: code blocks, "Why this matters" framing, auto-extraction vs explicit comparison (lives on SDK pages), "Next steps" card.
+
+### how-to/dead-letter-queues.mdx — Move to Worker Docs (iii-queue)
+- DLQ inspection and redrive (`iii::queue::redrive`) belong with iii-queue.
 
 ### how-to/create-ephemeral-worker.mdx — Distribute and drop
 - Stub added to `using-iii/deployment.mdx`: "Run an ephemeral worker" — one-shot SDK process pattern for serverless containers / k8s Jobs.

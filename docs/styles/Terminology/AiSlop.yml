@@ -1,5 +1,7 @@
 extends: existence
-message: "Avoid AI-slop / hand-wavy phrasing: '%s'. Describe the actual mechanism by which iii connects to workers, functions, or triggers."
+message:
+  "Avoid AI-slop / hand-wavy phrasing: '%s'. Describe the actual mechanism by which iii connects to
+  workers, functions, or triggers."
 level: warning
 ignorecase: true
 tokens:
@@ -39,6 +41,7 @@ tokens:
   - fuse
   - game-changing
   - glue
+  - glued
   - handles everything
   - harmonize
   - holistic
@@ -82,6 +85,7 @@ tokens:
   - solder
   - splice
   - stitch
+  - stitching
   - stream effortlessly
   - supercharge
   - synergize
