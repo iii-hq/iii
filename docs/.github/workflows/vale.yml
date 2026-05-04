@@ -1,0 +1,30 @@
+name: Vale
+
+on:
+  pull_request:
+    paths:
+      - "**/*.mdx"
+      - "**/*.md"
+      - ".vale.ini"
+      - "styles/**"
+      - ".github/workflows/vale.yml"
+  push:
+    branches: [main]
+
+jobs:
+  vale:
+    name: Lint prose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Vale
+        uses: errata-ai/vale-action@reviewdog
+        with:
+          version: 3.9.1
+          fail_on_error: true
+          filter_mode: nofilter
+          reporter: github-pr-check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

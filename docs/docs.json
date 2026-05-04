@@ -30,62 +30,46 @@
     "codeblocks": "system"
   },
   "navigation": {
-    "pages": ["index", "changelog/index"],
-    "groups": [
+    "pages": ["index"],
+    "tabs": [
       {
-        "group": "Getting Started",
-        "pages": ["getting-started/install", "getting-started/quickstart"]
-      },
-      {
-        "group": "Understanding iii",
-        "pages": [
-          "understanding-iii/index",
-          "understanding-iii/workers",
-          "understanding-iii/functions",
-          "understanding-iii/triggers",
-          "understanding-iii/engine"
+        "tab": "Docs",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": ["getting-started/install", "getting-started/quickstart"]
+          },
+          {
+            "group": "Understanding iii",
+            "pages": [
+              "understanding-iii/index",
+              "understanding-iii/workers",
+              "understanding-iii/functions",
+              "understanding-iii/triggers",
+              "understanding-iii/engine"
+            ]
+          },
+          {
+            "group": "Using iii",
+            "pages": [
+              "using-iii/workers",
+              "using-iii/engine",
+              "using-iii/functions",
+              "using-iii/triggers",
+              "using-iii/console",
+              "using-iii/cli",
+              "using-iii/deployment"
+            ]
+          },
+          {
+            "group": "Expanding iii",
+            "pages": ["expanding-iii/workers", "expanding-iii/registry"]
+          }
         ]
       },
       {
-        "group": "Using iii",
-        "pages": [
-          "using-iii/workers",
-          "using-iii/engine",
-          "using-iii/functions",
-          "using-iii/triggers",
-          "using-iii/console",
-          "using-iii/cli",
-          "using-iii/deployment"
-        ]
-      },
-      {
-        "group": "Expanding iii",
-        "pages": ["expanding-iii/workers", "expanding-iii/registry"]
-      },
-      {
-        "group": "API Reference",
-        "pages": [
-          "api-reference/node-sdk",
-          "api-reference/python-sdk",
-          "api-reference/rust-sdk",
-          "api-reference/browser-sdk",
-          "api-reference/engine-sdk"
-        ]
-      },
-      {
-        "group": "How-to",
-        "pages": ["how-to/disable-telemetry"]
-      },
-      {
-        "group": "Patterns",
-        "pages": [
-          "patterns/adapter-pattern",
-          "patterns/reactive-state-pattern"
-        ]
-      },
-      {
-        "group": "Tutorials",
-        "pages": [
+        "tab": "Tutorials",
+        "groups": [
           {
             "group": "Build a Reactive CRUD backend",
             "pages": [
@@ -114,6 +98,46 @@
             ]
           }
         ]
+      },
+      {
+        "tab": "How-tos",
+        "groups": [
+          {
+            "group": "How-to",
+            "pages": ["how-to/disable-telemetry", "how-to/build-a-realtime-todo-app"]
+          }
+        ]
+      },
+      {
+        "tab": "Patterns",
+        "groups": [
+          {
+            "group": "Patterns",
+            "pages": [
+              "patterns/adapter-pattern",
+              "patterns/reactive-state-pattern"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "SDKs",
+            "pages": [
+              "api-reference/node-sdk",
+              "api-reference/python-sdk",
+              "api-reference/rust-sdk",
+              "api-reference/browser-sdk",
+              "api-reference/engine-sdk"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Changelog",
+        "pages": ["changelog/index"]
       }
     ]
   }

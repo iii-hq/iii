@@ -10,7 +10,7 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - **Config files:** the engine config is `config.yaml` (not `iii-config.yaml`). Worker-level config is `iii.worker.yaml`. Reference accordingly per scope.
 - **Migrated content is minimal:** when moving content into an ideal-docs page, write only the section title plus at most one sentence describing what the section *should* contain. Do not paste original prose, tables, or code blocks. The point is to mark the slot, not to author the page.
 - **Logger and telemetry surfaces belong with the iii-observability worker.** Strip them from SDK reference pages and leave a callout pointing readers to the iii-observability worker docs. Drop telemetry-related SDK types (`OtelConfig`, OTel-specific `ReconnectionConfig`, `TelemetryOptions`, etc.) from SDK type lists.
-- **Channels are a worker.** The whole channel surface (concept, lifecycle, writer/reader/refs, examples) belongs in Worker Docs (the channels worker / iii-worker-manager). Strip channel-related types (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`) from SDK reference pages and add a callout pointing readers to the channels worker docs.
+- **Channels belong to iii-worker-manager.** The whole channel surface (concept, lifecycle, writer/reader/refs, examples) belongs in the iii-worker-manager Worker Docs. Strip channel-related types (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`) from SDK reference pages and add a callout pointing readers to iii-worker-manager.
 - **No "external vs built-in" worker distinction.** A worker is a worker. Don't introduce conceptual splits between SDK-driven processes and engine-bundled workers in ideal-docs. If source content draws that distinction, drop or flatten it.
 - **Auto-reconnect / re-registration is SDK behavior, not a worker concept.** All current SDKs implement it (Node, Python, Rust, browser). Document it on the per-SDK reference pages (already covered by each page's "Connection lifecycle" stub), not on `understanding-iii/workers.mdx`.
 - **`expanding-iii/` scope:** "Expanding iii" means expanding an iii *system* with more workers and functionality (deploying / wiring up / integrating additional workers). It is **not** about adding code to the iii engine itself. All iii expansion is worker expansion. Content about *authoring* a worker (implementing engine traits, building a custom worker package) does not belong in expanding-iii.
@@ -60,18 +60,18 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] console/index.mdx
 
 ### examples/
-- [ ] examples/conditions.mdx
-- [ ] examples/cron.mdx
-- [ ] examples/hello-world.mdx
-- [ ] examples/multi-trigger.mdx
-- [ ] examples/observability.mdx
-- [ ] examples/state-management.mdx
-- [ ] examples/todo-app.mdx
+- [x] examples/conditions.mdx
+- [x] examples/cron.mdx
+- [x] examples/hello-world.mdx
+- [x] examples/multi-trigger.mdx
+- [x] examples/observability.mdx
+- [x] examples/state-management.mdx
+- [x] examples/todo-app.mdx
 
 ### how-to/
-- [ ] how-to/configure-engine.mdx
-- [ ] how-to/create-custom-trigger-type.mdx
-- [ ] how-to/create-ephemeral-worker.mdx
+- [x] how-to/configure-engine.mdx
+- [x] how-to/create-custom-trigger-type.mdx
+- [x] how-to/create-ephemeral-worker.mdx
 - [ ] how-to/dead-letter-queues.mdx
 - [ ] how-to/define-request-response-formats.mdx
 - [ ] how-to/developing-sandbox-workers.mdx
@@ -128,6 +128,45 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
 
+### how-to/create-ephemeral-worker.mdx — Distribute and drop
+- Stub added to `using-iii/deployment.mdx`: "Run an ephemeral worker" — one-shot SDK process pattern for serverless containers / k8s Jobs.
+
+### how-to/create-custom-trigger-type.mdx — Drop entirely
+- Worker-author flow that pairs with the SDK's `registerTriggerType` / `unregisterTriggerType` methods, both already marked "Consider removing" on each SDK page.
+- If trigger-type registration becomes worker-author / worker-internal, this how-to belongs outside ideal-docs.
+- No stubs.
+
+### how-to/configure-engine.mdx — Drop, restore as generated content (post-outline)
+- Generic engine-config concepts already covered: `using-iii/engine.mdx` (Configuration file structure, Environment variable expansion, Built-in defaults), `using-iii/cli.mdx` (CLI arguments).
+- Per-worker config schemas (HTTP, Stream, State, Queue, Cron, Observability, etc.) → flagged for Worker Docs; with "everything is a worker," much of what looked like engine config is really per-worker config.
+- See Hanging pieces for the auto-generation restoration plan.
+
+### examples/todo-app.mdx — New how-to
+- Created `how-to/build-a-realtime-todo-app.mdx` with section stubs lifted from the source: Engine configuration, Backend (Worker setup, Auth function/RBAC, Stream wrapper, Functions), Frontend (Connection, Real-time hook), Key concepts.
+- Wired into nav under the How-to group.
+- Verified app is genuinely reactive (single browser WebSocket, iii-stream change events, per-session RBAC namespacing).
+
+### examples/state-management.mdx — Move to Worker Docs (iii-state)
+- State is a worker.
+
+### examples/observability.mdx — Move to Worker Docs (iii-observability)
+- Observability is a worker; per existing ground rule, logger/telemetry surfaces and examples belong with iii-observability.
+
+### examples/multi-trigger.mdx — Drop entirely
+- Concept already covered: `understanding-iii/triggers.mdx` "Multiple triggers per function" + `using-iii/triggers.mdx` "Bind multiple triggers to one function".
+
+### examples/hello-world.mdx — Drop entirely
+- Overlaps with `getting-started/quickstart.mdx` (the canonical first-build) and `tutorials/reactive-crud/*`.
+- No stubs.
+
+### examples/cron.mdx — Move to Worker Docs (iii-cron)
+- Cron is a worker. Entire page (cron trigger type, scheduled-job patterns) → iii-cron Worker Docs.
+- No stubs in ideal-docs.
+
+### examples/conditions.mdx — Drop entirely
+- Concept already covered: `understanding-iii/triggers.mdx` "Trigger conditions" + `using-iii/triggers.mdx` "Gate a trigger with a condition".
+- Code-heavy single-purpose example; doesn't fit ideal-docs structure.
+
 ### console/index.mdx — Heavy stubs on using-iii/console
 - Heavy stubs added on `using-iii/console.mdx` covering each console UI section: Launch, Workers, Functions, Triggers, States, Streams, Queues, Traces, Logs, Flow, Configuration.
 - Drops: screenshots, code blocks, all info/how-to cross-reference callouts, console-vs-console-output disambiguation, system Mermaid diagram (covered by `understanding-iii/index.mdx`).
@@ -166,11 +205,11 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Ports table and per-worker YAML snippets — flagged for Worker Docs (each port/config belongs to its built-in worker).
 - Drops: duplicate Responsibilities table, `iii-config.yaml` refs (should be `config.yaml`), adapter YAML, version-skew advisory, reload log-line examples, "See also" linkrot card.
 
-### architecture/channels.mdx — Move to Worker Docs (channels)
-- Channels are a worker. Entire page (concept, lifecycle, writer/reader/refs, examples) → Worker Docs.
+### architecture/channels.mdx — Move to Worker Docs (iii-worker-manager)
+- Channels belong to iii-worker-manager. Entire page (concept, lifecycle, writer/reader/refs, examples) → iii-worker-manager Worker Docs.
 - Stripped channel types from SDK pages (`StreamChannelRef` was the only one still present, in browser-sdk and node-sdk; removed from both).
-- Added a channels callout to all four SDK pages alongside the observability callout.
-- New ground rule recorded.
+- Added a channels callout to all four SDK pages alongside the observability callout, pointing at iii-worker-manager.
+- Ground rule corrected.
 
 ### architecture/index.mdx — New pages in understanding-iii
 - Created `understanding-iii/index.mdx` (stubs: "The three primitives", "System overview").
@@ -240,6 +279,12 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 ## Hanging pieces
 
 (Content with no clear home — track here so we don't lose it.)
+
+- **Restore auto-generated config reference (post-outline engineering task).** Pre-Mintlify, `how-to/configure-engine.mdx` was generated from a commented `iii-config.yaml` by a build-time parser + React component (commit `0f925fd2` in iii-mono, files: `docs/content/how-to/iii-config.yaml`, `docs/src/lib/config-parser.ts`, `docs/src/lib/config-toc.ts`, `docs/src/lib/components/ConfigReference.tsx`). Lost in the `feat: mintlify` migration (`79bdd94d`).
+  - Goal: regenerate the configuration reference and surface it inside `using-iii/engine.mdx` (or wherever fits best after final structure).
+  - Implementation sketch: (1) author a fresh commented `config.yaml` in iii-mono colocated with the engine — current naming (`name: iii-http`, etc.), no deprecated adapter sections; (2) write a generator that emits a Mintlify MDX fragment (pre-build script committing `using-iii/engine.config-reference.generated.mdx`, or a `_snippets/config-reference.mdx` consumed via `<Snippet file="..." />`); (3) transclude into the host page.
+  - **Open question — much of this may belong to Worker Docs, not ideal-docs.** With "everything is a worker," what used to read as engine config is largely per-worker config (HTTP host/port/CORS → iii-http; stream auth_function → iii-stream; etc.). Decide during post-outline review whether the reference is one cross-cutting page in ideal-docs or split across each Worker Docs surface.
+  - Don't attempt during this migration pass.
 
 - **Source-doc gap:** iii-mono `api-reference/sdk-browser.mdx` omits `IIIReconnectionConfig` and `RegisterFunctionFormat` types — both exist in browser SDK source. Stubs included here; flag for the source author.
 
