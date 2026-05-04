@@ -1,0 +1,15 @@
+extends: existence
+message: "Tutorials should provide one clear path. '%s' suggests alternatives—remove and guide the learner directly."
+level: warning
+scope: sentence
+ignorecase: true
+tokens:
+  - alternatively
+  - or you could
+  - another option
+  - you might also
+  - you could also
+  - optionally
+  - if you prefer
+  - another way
+  - one approach is

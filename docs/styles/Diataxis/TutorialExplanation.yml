@@ -1,0 +1,14 @@
+extends: existence
+message: "Tutorials should minimize explanation. '%s' signals digression—link to Explanation docs instead."
+level: suggestion
+scope: sentence
+ignorecase: true
+tokens:
+  - the reason is
+  - this works because historically
+  - the philosophy behind
+  - to understand why
+  - the rationale for
+  - this is due to the fact
+  - it's worth noting that
+  - as a side note

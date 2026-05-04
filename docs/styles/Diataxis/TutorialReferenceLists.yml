@@ -1,0 +1,12 @@
+extends: existence
+message: "Tutorials should not list all options. '%s' belongs in Reference docs—link there instead."
+level: suggestion
+scope: sentence
+ignorecase: true
+tokens:
+  - the full list of options
+  - all available options
+  - the complete list
+  - for a full reference
+  - see the reference for all
+  - here are all the

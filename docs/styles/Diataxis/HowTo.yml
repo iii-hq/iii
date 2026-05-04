@@ -1,0 +1,13 @@
+extends: existence
+message: "How-to guides solve problems, not teach. '%s' is teaching language—remove or rephrase as goal-focused."
+level: warning
+scope: sentence
+ignorecase: true
+tokens:
+  - in this guide you will learn
+  - this teaches you
+  - you will learn how
+  - this guide will teach
+  - by the end of this guide you will understand
+  - this guide explains
+  - let's learn
