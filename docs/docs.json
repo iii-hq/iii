@@ -37,8 +37,12 @@
         "pages": ["getting-started/install", "getting-started/quickstart"]
       },
       {
+        "group": "Understanding iii",
+        "pages": ["understanding-iii/engine", "understanding-iii/workers"]
+      },
+      {
         "group": "Using iii",
-        "pages": ["using-iii/understanding-iii", "using-iii/understanding-workers"]
+        "pages": ["using-iii/workers"]
       }
     ]
   }
