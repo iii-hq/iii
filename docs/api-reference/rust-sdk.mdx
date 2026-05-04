@@ -7,8 +7,8 @@ type: "reference"
 
 <Note>
   Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics,
-  log emission/subscription) are documented with the [iii-observability worker](#) — they live
-  there because that worker owns logging and telemetry end-to-end.
+  log emission/subscription) are documented with the [iii-observability worker](#) — they live there
+  because that worker owns logging and telemetry end-to-end.
 </Note>
 
 ## Installation
@@ -47,7 +47,8 @@ Bind a registered function to a configured trigger instance.
 
 ### trigger
 
-Invoke a registered function or fire a trigger from Rust.
+Invoke a registered function or fire a trigger from Rust. _Python has trigger_async but not Rust?
+Rust still has shutdown_async_
 
 ### shutdown
 
