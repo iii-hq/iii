@@ -30,18 +30,15 @@
     "codeblocks": "system"
   },
   "navigation": {
+    "pages": ["index"],
     "groups": [
       {
         "group": "Getting Started",
-        "pages": [
-          "getting-started/welcome",
-          "getting-started/install",
-          "getting-started/quickstart"
-        ]
+        "pages": ["getting-started/install", "getting-started/quickstart"]
       },
       {
         "group": "Using iii",
-        "pages": ["using-iii/understanding-iii"]
+        "pages": ["using-iii/understanding-iii", "using-iii/understanding-workers"]
       }
     ]
   }
