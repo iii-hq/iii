@@ -1,0 +1,329 @@
+@import url("https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&display=swap");
+
+:root {
+  --iii-bg: #f2f0ed;
+  --iii-panel: #e9e6e2;
+  --iii-paper-2: #ebe8e3;
+  --iii-ink: #0a0a0a;
+  --iii-ink-faint: #6b6865;
+  --iii-ink-ghost: #a3a09c;
+  --iii-rule: #d8d5d0;
+  --iii-rule-2: #e6e3df;
+  --iii-accent: #ff5a1f;
+  --iii-accent-fg: #f2f0ed;
+  --iii-alert: #c43e1c;
+  --iii-warn: #a87a00;
+}
+
+html.dark,
+[data-theme="dark"] {
+  --iii-bg: #111110;
+  --iii-panel: #1a1916;
+  --iii-paper-2: #1f1e1c;
+  --iii-ink: #f2f0ed;
+  --iii-ink-faint: #9c9893;
+  --iii-ink-ghost: #5d5a55;
+  --iii-rule: #2a2926;
+  --iii-rule-2: #1f1e1c;
+  --iii-accent: #3ea8ff;
+  --iii-accent-fg: #111110;
+}
+
+html,
+body {
+  background: var(--iii-bg) !important;
+  color: var(--iii-ink) !important;
+  font-family:
+    "Chivo Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace !important;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0, "dlig" 0;
+  scrollbar-gutter: stable;
+}
+
+* {
+  border-radius: 0 !important;
+}
+
+::selection {
+  background: var(--iii-accent);
+  color: var(--iii-accent-fg);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--iii-rule);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--iii-ink-ghost);
+}
+
+body,
+button,
+input,
+textarea,
+select,
+code,
+pre {
+  font-family:
+    "Chivo Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace !important;
+}
+
+a {
+  color: var(--iii-ink) !important;
+  text-decoration-color: var(--iii-rule);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--iii-accent) !important;
+  text-decoration-color: var(--iii-accent);
+}
+
+header,
+nav,
+aside,
+main,
+article {
+  background-color: var(--iii-bg) !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--iii-ink) !important;
+  font-family:
+    "Chivo Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace !important;
+  letter-spacing: -0.02em;
+}
+
+p,
+li,
+td,
+dd {
+  color: var(--iii-ink-faint) !important;
+  line-height: 1.7;
+}
+
+strong,
+th {
+  color: var(--iii-ink) !important;
+  font-weight: 600;
+}
+
+hr {
+  border-color: var(--iii-rule) !important;
+}
+
+pre,
+kbd {
+  background-color: var(--iii-bg) !important;
+  color: var(--iii-ink) !important;
+  border-color: var(--iii-rule) !important;
+}
+
+pre {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+pre code,
+pre code * {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+pre code {
+  color: inherit !important;
+}
+
+.code-block {
+  background: var(--iii-bg) !important;
+  border: 1px solid var(--iii-rule) !important;
+  box-shadow: none !important;
+}
+
+.code-block [data-component-part="code-block-root"] {
+  background: transparent !important;
+  padding: 14px 16px !important;
+}
+
+.code-block [data-component-part="code-block-root"] > pre {
+  background: transparent !important;
+}
+
+.code-block [data-line],
+.code-block .line,
+.code-block [class*="line"] {
+  background: transparent !important;
+}
+
+:not(pre) > code {
+  background-color: var(--iii-bg) !important;
+  border: 1px solid var(--iii-rule-2) !important;
+  color: var(--iii-ink) !important;
+  padding: 0.08rem 0.28rem;
+}
+
+table {
+  border-collapse: collapse !important;
+  border: 1px solid var(--iii-rule) !important;
+  font-variant-numeric: tabular-nums;
+  width: 100%;
+}
+
+thead {
+  background: var(--iii-panel) !important;
+}
+
+th,
+td {
+  border-color: var(--iii-rule-2) !important;
+  padding: 0.9rem 1rem !important;
+  vertical-align: top;
+}
+
+th:first-child,
+td:first-child {
+  min-width: 11rem;
+  padding-left: 1.25rem !important;
+}
+
+#table-of-contents {
+  background: transparent !important;
+  border-left: 0 !important;
+  color: var(--iii-ink-faint) !important;
+  margin-top: 0 !important;
+  padding: 0 !important;
+  width: 16.5rem !important;
+}
+
+#table-of-contents > div:first-child {
+  color: var(--iii-ink) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  gap: 0.45rem !important;
+  margin-bottom: 0.75rem !important;
+}
+
+#table-of-contents-content {
+  border-left: 1px solid var(--iii-rule) !important;
+  margin: 0 !important;
+  padding-left: 0.875rem !important;
+  position: relative;
+}
+
+#table-of-contents .toc-item {
+  margin: 0 !important;
+  position: relative;
+}
+
+#table-of-contents .toc-item:has(> a[aria-current="true"])::before,
+#table-of-contents .toc-item:has(> a[data-active="true"])::before,
+#table-of-contents .toc-item:has(> a[class*="text-primary"])::before {
+  background: var(--iii-accent);
+  content: "";
+  height: calc(100% - 0.35rem);
+  left: -0.9375rem;
+  position: absolute;
+  top: 0.175rem;
+  width: 1px;
+}
+
+#table-of-contents a {
+  background: transparent !important;
+  border-left: 0 !important;
+  color: var(--iii-ink-faint) !important;
+  display: flex !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+  padding: 0.28rem 0 !important;
+  text-decoration: none !important;
+  transition:
+    color 150ms ease;
+  white-space: normal !important;
+}
+
+#table-of-contents a:hover,
+#table-of-contents a[aria-current="true"],
+#table-of-contents a[data-active="true"],
+#table-of-contents a[class*="text-primary"] {
+  background: transparent !important;
+  color: var(--iii-ink) !important;
+}
+
+blockquote {
+  background: var(--iii-bg) !important;
+  border-left: 2px solid var(--iii-accent) !important;
+  color: var(--iii-ink-faint) !important;
+}
+
+input,
+textarea,
+select {
+  background: var(--iii-bg) !important;
+  border-color: var(--iii-rule) !important;
+  color: var(--iii-ink) !important;
+}
+
+button {
+  box-shadow: none !important;
+}
+
+a > span.bg-primary-dark {
+  background: var(--iii-ink) !important;
+  border-radius: 0 !important;
+}
+
+a:hover > span.bg-primary-dark {
+  background: var(--iii-bg) !important;
+  opacity: 1 !important;
+}
+
+a:has(> span.bg-primary-dark) span.text-white,
+a:has(> span.bg-primary-dark) svg {
+  color: var(--iii-bg) !important;
+}
+
+a:has(> span.bg-primary-dark):hover span.text-white,
+a:has(> span.bg-primary-dark):hover svg {
+  color: var(--iii-ink) !important;
+}

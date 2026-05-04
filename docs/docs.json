@@ -1,0 +1,40 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Docs",
+  "theme": "mint",
+  "appearance": {
+    "default": "light"
+  },
+  "colors": {
+    "primary": "#ff5a1f",
+    "light": "#ff7a45",
+    "dark": "#3ea8ff"
+  },
+  "fonts": {
+    "family": "Chivo Mono",
+    "heading": {
+      "family": "Chivo Mono"
+    },
+    "body": {
+      "family": "Chivo Mono"
+    }
+  },
+  "background": {
+    "color": {
+      "light": "#f2f0ed",
+      "dark": "#111110"
+    }
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs",
+    "codeblocks": "system"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": ["index"]
+      }
+    ]
+  }
+}
