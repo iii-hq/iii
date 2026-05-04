@@ -42,7 +42,7 @@
       },
       {
         "group": "Using iii",
-        "pages": ["using-iii/workers"]
+        "pages": ["using-iii/workers", "using-iii/functions", "using-iii/triggers"]
       }
     ]
   }
