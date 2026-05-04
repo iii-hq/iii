@@ -38,11 +38,44 @@
       },
       {
         "group": "Understanding iii",
-        "pages": ["understanding-iii/engine", "understanding-iii/workers"]
+        "pages": ["understanding-iii/workers", "understanding-iii/engine"]
       },
       {
         "group": "Using iii",
         "pages": ["using-iii/workers", "using-iii/functions", "using-iii/triggers"]
+      },
+      {
+        "group": "Expanding iii",
+        "pages": ["expanding-iii/workers", "expanding-iii/registry"]
+      },
+      {
+        "group": "Tutorials",
+        "pages": [
+          {
+            "group": "Build a Reactive CRUD backend",
+            "pages": [
+              "tutorials/reactive-crud/model-and-store",
+              "tutorials/reactive-crud/crud-endpoints",
+              "tutorials/reactive-crud/realtime-subscriptions"
+            ]
+          },
+          {
+            "group": "Incremental adoption",
+            "pages": [
+              "tutorials/incremental-adoption/wrap-existing-api",
+              "tutorials/incremental-adoption/offload-to-queue",
+              "tutorials/incremental-adoption/migrate-persistence"
+            ]
+          },
+          {
+            "group": "Build an Agent",
+            "pages": [
+              "tutorials/build-an-agent/define-tools",
+              "tutorials/build-an-agent/orchestration-loop",
+              "tutorials/build-an-agent/memory-and-state"
+            ]
+          }
+        ]
       }
     ]
   }
