@@ -48,12 +48,12 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
     return workers_json
 
 
-def collect_triggers() -> dict[str, object] | None:
+def collect_trigger_types() -> dict[str, object] | None:
     try:
-        return run_iii("engine::triggers::list", {"include_internal": True})
+        return run_iii("engine::trigger-types::list", {"include_internal": False})
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         print(
-            f"::warning::could not collect triggers; publishing triggers=[]: {exc}",
+            f"::warning::could not collect trigger types; publishing triggers=[]: {exc}",
             file=sys.stderr,
         )
         return None
@@ -68,13 +68,13 @@ def main() -> int:
 
     workers_json = wait_for_worker(args.worker, args.wait_seconds)
     functions_json = run_iii("engine::functions::list", {"include_internal": True})
-    triggers_json = collect_triggers()
+    trigger_types_json = collect_trigger_types()
 
     interface = normalize_worker_interface(
         worker_name=args.worker,
         workers_json=workers_json,
         functions_json=functions_json,
-        triggers_json=triggers_json,
+        trigger_types_json=trigger_types_json,
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))

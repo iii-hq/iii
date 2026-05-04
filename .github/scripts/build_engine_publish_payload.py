@@ -2,7 +2,6 @@
 import argparse
 import json
 import pathlib
-import re
 import sys
 import tomllib
 from typing import Any
@@ -24,8 +23,6 @@ def derive_registry_function_name(function_id: str, metadata: dict[str, Any] | N
         value = metadata.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    if "::" in function_id:
-        return function_id.rsplit("::", 1)[1]
     return function_id
 
 
@@ -59,46 +56,13 @@ def _string_or_empty(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _slug(value: Any, fallback: str) -> str:
-    raw = value if isinstance(value, str) else fallback
-    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
-    return slug or fallback
-
-
-def _derive_trigger_name(trigger: dict[str, Any]) -> str:
-    metadata = _metadata_or_empty(trigger.get("metadata"))
-    for key in ("registry_name", "name"):
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            return _slug(value, "trigger")
-    config = trigger.get("config") if isinstance(trigger.get("config"), dict) else {}
-    api_path = config.get("api_path")
-    if isinstance(api_path, str) and api_path.strip():
-        return _slug(api_path, "trigger")
-    function_id = trigger.get("function_id")
-    if isinstance(function_id, str) and function_id.strip():
-        return _slug(function_id.rsplit("::", 1)[-1], "trigger")
-    return _slug(trigger.get("trigger_type") or trigger.get("name"), "trigger")
-
-
-def _normalize_registry_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
-    config = trigger.get("config") if isinstance(trigger.get("config"), dict) else {}
-    metadata = _metadata_or_empty(trigger.get("metadata")).copy()
-    for source_key, metadata_key in (
-        ("id", "engine_id"),
-        ("trigger_type", "trigger_type"),
-        ("function_id", "function_id"),
-    ):
-        if trigger.get(source_key) is not None:
-            metadata.setdefault(metadata_key, trigger.get(source_key))
-    if config:
-        metadata.setdefault("config", config)
+def _normalize_registry_trigger_type(trigger_type: dict[str, Any]) -> dict[str, Any]:
     return {
-        "name": _derive_trigger_name(trigger),
-        "description": _string_or_empty(trigger.get("description")),
-        "invocation_schema": _schema_or_empty(trigger.get("invocation_schema")),
-        "return_schema": _schema_or_empty(trigger.get("return_schema")),
-        "metadata": metadata,
+        "name": _string_or_empty(trigger_type.get("id")),
+        "description": _string_or_empty(trigger_type.get("description")),
+        "invocation_schema": _schema_or_empty(trigger_type.get("trigger_request_format")),
+        "return_schema": _schema_or_empty(trigger_type.get("call_request_format")),
+        "metadata": {},
     }
 
 
@@ -107,7 +71,7 @@ def normalize_worker_interface(
     worker_name: str,
     workers_json: dict[str, Any],
     functions_json: dict[str, Any],
-    triggers_json: dict[str, Any] | None = None,
+    trigger_types_json: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
     matches = [w for w in workers if w.get("name") == worker_name or w.get("id") == worker_name]
@@ -136,13 +100,13 @@ def normalize_worker_interface(
                 "metadata": _metadata_or_empty(metadata),
             }
         )
-    worker_ids = set(worker_function_ids)
     triggers = []
-    if triggers_json:
-        for trigger in _extract_array(triggers_json, "triggers"):
-            if trigger.get("function_id") not in worker_ids:
+    if trigger_types_json:
+        for trigger_type in _extract_array(trigger_types_json, "trigger_types"):
+            tt_id = trigger_type.get("id")
+            if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
                 continue
-            triggers.append(_normalize_registry_trigger(trigger))
+            triggers.append(_normalize_registry_trigger_type(trigger_type))
     return {"functions": functions, "triggers": triggers}
 
 

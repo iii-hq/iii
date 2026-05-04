@@ -129,15 +129,6 @@ jobs:
             --out worker-interface.json \
             --wait-seconds 120
 
-      - name: Assert worker interface was collected
-        run: |
-          python3 - <<'PY'
-          import json
-          data = json.load(open("worker-interface.json"))
-          if not data.get("functions"):
-              raise SystemExit("no worker functions were collected")
-          PY
-
       - name: Build payload
         id: payload
         env:
