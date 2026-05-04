@@ -10,6 +10,9 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - **Config files:** the engine config is `config.yaml` (not `iii-config.yaml`). Worker-level config is `iii.worker.yaml`. Reference accordingly per scope.
 - **Migrated content is minimal:** when moving content into an ideal-docs page, write only the section title plus at most one sentence describing what the section *should* contain. Do not paste original prose, tables, or code blocks. The point is to mark the slot, not to author the page.
 - **Logger and telemetry surfaces belong with the iii-observability worker.** Strip them from SDK reference pages and leave a callout pointing readers to the iii-observability worker docs. Drop telemetry-related SDK types (`OtelConfig`, OTel-specific `ReconnectionConfig`, `TelemetryOptions`, etc.) from SDK type lists.
+- **Channels are a worker.** The whole channel surface (concept, lifecycle, writer/reader/refs, examples) belongs in Worker Docs (the channels worker / iii-worker-manager). Strip channel-related types (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`) from SDK reference pages and add a callout pointing readers to the channels worker docs.
+- **No "external vs built-in" worker distinction.** A worker is a worker. Don't introduce conceptual splits between SDK-driven processes and engine-bundled workers in ideal-docs. If source content draws that distinction, drop or flatten it.
+- **Auto-reconnect / re-registration is SDK behavior, not a worker concept.** All current SDKs implement it (Node, Python, Rust, browser). Document it on the per-SDK reference pages (already covered by each page's "Connection lifecycle" stub), not on `understanding-iii/workers.mdx`.
 - **`expanding-iii/` scope:** "Expanding iii" means expanding an iii *system* with more workers and functionality (deploying / wiring up / integrating additional workers). It is **not** about adding code to the iii engine itself. All iii expansion is worker expansion. Content about *authoring* a worker (implementing engine traits, building a custom worker package) does not belong in expanding-iii.
 
 ## Status legend
@@ -37,24 +40,24 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] api-reference/sdk-rust.mdx
 
 ### architecture/
-- [ ] architecture/index.mdx
-- [ ] architecture/channels.mdx
-- [ ] architecture/engine.mdx
-- [ ] architecture/external-workers.mdx
-- [ ] architecture/queues.mdx
-- [ ] architecture/trigger-types.mdx
-- [ ] architecture/workers.mdx
+- [x] architecture/index.mdx
+- [x] architecture/channels.mdx
+- [x] architecture/engine.mdx
+- [x] architecture/external-workers.mdx
+- [x] architecture/queues.mdx
+- [x] architecture/trigger-types.mdx
+- [x] architecture/workers.mdx
 
 ### changelog/
-- [ ] changelog.mdx
-- [ ] changelog/0-11-0/everything-is-a-worker.mdx
-- [ ] changelog/0-11-0/migrated-examples.mdx
-- [ ] changelog/0-11-0/migrating-from-motia-js.mdx
-- [ ] changelog/0-11-0/migrating-from-motia-py.mdx
-- [ ] changelog/0-11-0/remove-dict-form-from-register-function.mdx
+- [x] changelog.mdx
+- [x] changelog/0-11-0/everything-is-a-worker.mdx
+- [x] changelog/0-11-0/migrated-examples.mdx
+- [x] changelog/0-11-0/migrating-from-motia-js.mdx
+- [x] changelog/0-11-0/migrating-from-motia-py.mdx
+- [x] changelog/0-11-0/remove-dict-form-from-register-function.mdx
 
 ### console/
-- [ ] console/index.mdx
+- [x] console/index.mdx
 
 ### examples/
 - [ ] examples/conditions.mdx
@@ -124,6 +127,57 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Adapters are deprecated; remove the page in its current form.
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
+
+### console/index.mdx — Heavy stubs on using-iii/console
+- Heavy stubs added on `using-iii/console.mdx` covering each console UI section: Launch, Workers, Functions, Triggers, States, Streams, Queues, Traces, Logs, Flow, Configuration.
+- Drops: screenshots, code blocks, all info/how-to cross-reference callouts, console-vs-console-output disambiguation, system Mermaid diagram (covered by `understanding-iii/index.mdx`).
+- No Worker Docs flag (the console is its own surface, not a worker).
+
+### changelog.mdx + changelog/0-11-0/*.mdx — Stub only
+- Created `changelog.mdx` at the root with a one-line description; no per-version content.
+- All 0-11-0 detail pages skipped. Per-version migration content (Motia migration guides, "everything is a worker" rename, `registerFunction` signature change, etc.) is not migrated to ideal-docs.
+- Wired into nav as a top-level page next to `index`.
+
+### architecture/workers.mdx — Drop (mostly)
+- No new stubs added (per user decision).
+- Built-in workers enumeration table → flagged for Worker Docs.
+- Drops: "external vs built-in vs managed" types table (no meaningful distinction), adapter YAML, `iii-config.yaml` reference, Custom Workers callout (target page being dropped), terminology note, all code snippets.
+
+### architecture/trigger-types.mdx — Distribute and drop
+- Stubs added to `understanding-iii/triggers.mdx`: Trigger components, Trigger pipeline, Trigger lifecycle, Multiple triggers per function, Trigger conditions.
+- Stubs added to `using-iii/triggers.mdx`: Register a trigger, Bind multiple triggers to one function, Gate a trigger with a condition, Unregister a trigger.
+- Per-trigger-type sections (http, durable:subscriber/queue, cron, log, stream:join/leave) → flagged for their respective workers (iii-http, iii-queue, iii-cron, iii-observability, iii-stream).
+- HTTP `http()` wrapper, file-download, SSE → flagged for iii-http.
+- Drops: code blocks, Best Practices accordion, Custom Trigger Types Rust snippet, "Next Steps" card, Trigger Type Comparison matrix (per-worker behaviors).
+
+### architecture/queues.mdx — Move to Worker Docs (iii-queue)
+- Queues are a worker. Whole page (models, RabbitMQ topology, retry, DLQ, `iii::queue::redrive`, adapter comparison) → Worker Docs.
+- No stubs in ideal-docs. No new pages.
+
+### architecture/external-workers.mdx — Distribute and drop
+- New ground rules added: no external/built-in worker distinction; auto-reconnect is SDK behavior (already on each SDK's "Connection lifecycle" stub).
+- Stubs added to `understanding-iii/workers.mdx`: Worker lifecycle states, Worker isolation.
+- `engine::workers::register` added to the existing engine-discovery-functions stub on `api-reference/engine-sdk.mdx`.
+- Drops: SDK package table, code snippets, InitOptions table (covered on SDK pages), Reconnection Config field detail (covered by SDK type entries), Python snake_case note, both diagrams, "See also" card.
+
+### architecture/engine.mdx — Distribute and drop
+- Stubs added to `understanding-iii/engine.mdx`: Engine responsibilities, Worker disconnect cleanup, Config hot-reload, Architecture-agnostic routing.
+- Stub added to `api-reference/engine-sdk.mdx`: Engine discovery functions (`engine::functions::list`, `engine::workers::list`, `engine::workers-available`).
+- Ports table and per-worker YAML snippets — flagged for Worker Docs (each port/config belongs to its built-in worker).
+- Drops: duplicate Responsibilities table, `iii-config.yaml` refs (should be `config.yaml`), adapter YAML, version-skew advisory, reload log-line examples, "See also" linkrot card.
+
+### architecture/channels.mdx — Move to Worker Docs (channels)
+- Channels are a worker. Entire page (concept, lifecycle, writer/reader/refs, examples) → Worker Docs.
+- Stripped channel types from SDK pages (`StreamChannelRef` was the only one still present, in browser-sdk and node-sdk; removed from both).
+- Added a channels callout to all four SDK pages alongside the observability callout.
+- New ground rule recorded.
+
+### architecture/index.mdx — New pages in understanding-iii
+- Created `understanding-iii/index.mdx` (stubs: "The three primitives", "System overview").
+- Created `understanding-iii/functions.mdx` (stubs: "What a function is", "Function identifiers").
+- Created `understanding-iii/triggers.mdx` (stubs: "What a trigger is", "Trigger types").
+- Wired all three into `docs.json` under the Understanding iii group.
+- Dropped the contradictory "four components" line and per-built-in-worker module enumeration.
 
 ### api-reference/sdk-rust.mdx — Heavy stubs on rust-sdk
 - Source verified against `sdk/packages/rust/iii/src/`.
@@ -203,3 +257,4 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
   - **Rust adds (vs Node/Python):** `IIIError`, `IIIConnectionState`, `HttpMethod`, `ChannelDirection`, `FunctionInfo`, `TriggerInfo`, `WorkerInfo`, `WorkerMetadata`, `RegisterServiceMessage`, `register_function_with` (builder variant), `set_headers` method.
   - **Rust expresses Python's `TriggerActionEnqueue`/`TriggerActionVoid` as variants of a single `TriggerAction` enum** — equivalent at the type level; flagged here for cross-language alignment.
   - **Method differences:** Rust has `set_headers` (unique), `register_function_with` (Rust-only builder), and `shutdown_async` (matches Python; Node lacks).
+  - **Why no `trigger_async` in Rust:** Rust's `trigger` is already declared `pub async fn trigger(...)` (verified in `sdk/packages/rust/iii/src/iii.rs:1132`), so a separate async variant isn't needed. `shutdown` has both sync and async forms because the sync drop path can be called from non-async contexts; `trigger` cannot. This is consistent with Rust idioms but a real cross-SDK shape difference.

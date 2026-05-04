@@ -57,6 +57,8 @@ Remove a previously registered trigger type. **Consider removing**
 
 <Note>
   Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end.
+
+  Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`, `createChannel`) are documented with the [channels worker](#) — channels are managed by that worker end-to-end.
 </Note>
 
 ## Subpath exports
@@ -123,10 +125,6 @@ Wire shape sent when declaring a trigger type.
 ### RemoteFunctionHandler
 
 Handler signature for functions invoked remotely.
-
-### StreamChannelRef
-
-Typed reference to a stream channel.
 
 ### Trigger
 

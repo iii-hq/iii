@@ -4,3 +4,19 @@ description: "Placeholder."
 owner: "devrel"
 type: "how-to"
 ---
+
+## Register a trigger
+
+The function-then-trigger workflow: register a function first, then register a trigger that routes to it.
+
+## Bind multiple triggers to one function
+
+Re-using a single function across multiple trigger types (HTTP, queue, cron, etc.).
+
+## Gate a trigger with a condition
+
+Wiring up `condition_function_id` so a separate condition function decides whether the handler runs.
+
+## Unregister a trigger
+
+Removing a trigger dynamically via the handle returned from registration.

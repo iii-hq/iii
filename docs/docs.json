@@ -30,7 +30,7 @@
     "codeblocks": "system"
   },
   "navigation": {
-    "pages": ["index"],
+    "pages": ["index", "changelog/index"],
     "groups": [
       {
         "group": "Getting Started",
@@ -38,7 +38,13 @@
       },
       {
         "group": "Understanding iii",
-        "pages": ["understanding-iii/workers", "understanding-iii/engine"]
+        "pages": [
+          "understanding-iii/index",
+          "understanding-iii/workers",
+          "understanding-iii/functions",
+          "understanding-iii/triggers",
+          "understanding-iii/engine"
+        ]
       },
       {
         "group": "Using iii",
@@ -69,6 +75,13 @@
       {
         "group": "How-to",
         "pages": ["how-to/disable-telemetry"]
+      },
+      {
+        "group": "Patterns",
+        "pages": [
+          "patterns/adapter-pattern",
+          "patterns/reactive-state-pattern"
+        ]
       },
       {
         "group": "Tutorials",

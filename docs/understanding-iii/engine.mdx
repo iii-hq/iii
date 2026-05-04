@@ -10,3 +10,19 @@ To use iii you need to first understand it. iii's surface is very simple but its
 ## Startup flow
 
 How the engine boots — argument parsing, config loading, worker application, and serving.
+
+## Engine responsibilities
+
+Worker connections, function and trigger registries, and invocation routing across all connected workers.
+
+## Worker disconnect cleanup
+
+What the engine does when a worker drops — removing its functions and triggers, cancelling in-flight invocations, and firing `engine::workers-available` for the rest of the system.
+
+## Config hot-reload
+
+How config file changes are picked up — parse, diff, validate, commit. Unchanged workers stay running through the reload; an invalid config exits the engine.
+
+## Architecture-agnostic routing
+
+Function-to-worker routing is independent of language, runtime, and location.

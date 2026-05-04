@@ -5,4 +5,18 @@ owner: "devrel"
 type: "explanation"
 ---
 
+## What a worker is
+
 Workers are what actually do things. Understanding iii means understanding workers.
+
+_TODO: Consider combining w/ Functions and Triggers into one doc_
+
+## Worker lifecycle states
+
+The states a worker moves through after connecting —
+`connecting → connected → available / busy → disconnected`.
+
+## Worker isolation
+
+Workers are intended and designed to be independent processes; one worker crashing does not affect
+others.

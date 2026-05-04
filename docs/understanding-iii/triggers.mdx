@@ -1,0 +1,35 @@
+---
+title: "Triggers"
+description: "Placeholder."
+owner: "devrel"
+type: "explanation"
+---
+
+## What a trigger is
+
+A binding that tells iii when to invoke a function HTTP requests, cron schedules, queue messages,
+state changes, log events, and stream events are all examples of triggers.
+
+## Trigger types
+
+How trigger types are declared by workers and bound to functions.
+
+## Trigger components
+
+The three parts of a trigger — trigger type, config, and function ID.
+
+## Trigger pipeline
+
+How a registered trigger fires and routes to its function, including the optional condition gate before the handler runs.
+
+## Trigger lifecycle
+
+The states a trigger moves through — registered, active, invoked, unregistered.
+
+## Multiple triggers per function
+
+One function can be invoked by many triggers, mixing HTTP, queue, cron, and other types.
+
+## Trigger conditions
+
+Optional `condition_function_id` that runs before the handler; the handler only fires if the condition returns truthy.
