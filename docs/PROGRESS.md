@@ -9,6 +9,7 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - **Adapters are deprecated.** The default recommendation for adapter content is remove, or salvage the concept into a future "Adapter Pattern" page under a new "Patterns" section if the framing is broadly useful.
 - **Config files:** the engine config is `config.yaml` (not `iii-config.yaml`). Worker-level config is `iii.worker.yaml`. Reference accordingly per scope.
 - **Migrated content is minimal:** when moving content into an ideal-docs page, write only the section title plus at most one sentence describing what the section *should* contain. Do not paste original prose, tables, or code blocks. The point is to mark the slot, not to author the page.
+- **Logger and telemetry surfaces belong with the iii-observability worker.** Strip them from SDK reference pages and leave a callout pointing readers to the iii-observability worker docs. Drop telemetry-related SDK types (`OtelConfig`, OTel-specific `ReconnectionConfig`, `TelemetryOptions`, etc.) from SDK type lists.
 - **`expanding-iii/` scope:** "Expanding iii" means expanding an iii *system* with more workers and functionality (deploying / wiring up / integrating additional workers). It is **not** about adding code to the iii engine itself. All iii expansion is worker expansion. Content about *authoring* a worker (implementing engine traits, building a custom worker package) does not belong in expanding-iii.
 
 ## Status legend
@@ -32,8 +33,8 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] api-reference/sandbox.mdx
 - [x] api-reference/sdk-browser.mdx
 - [x] api-reference/sdk-node.mdx
-- [ ] api-reference/sdk-python.mdx
-- [ ] api-reference/sdk-rust.mdx
+- [x] api-reference/sdk-python.mdx
+- [x] api-reference/sdk-rust.mdx
 
 ### architecture/
 - [ ] architecture/index.mdx
@@ -124,6 +125,18 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
 
+### api-reference/sdk-rust.mdx — Heavy stubs on rust-sdk
+- Source verified against `sdk/packages/rust/iii/src/`.
+- Logger + Telemetry stripped; observability callout in place.
+- Methods trimmed to the cross-SDK pattern: register_worker (with InitOptions), register_function, register_trigger, trigger, shutdown, shutdown_async, register_trigger_type / unregister_trigger_type ("Consider removing"). Dropped: `set_headers`, `register_function_with`, `register_service`, `create_channel`, `get_connection_state`.
+- Types: kept Rust-relevant ones (IIIError, IIIConnectionState, HttpAuthConfig, HttpInvocationConfig, HttpMethod, TriggerAction, TriggerRequest, Trigger, FunctionRef, FunctionInfo, TriggerInfo, WorkerInfo, WorkerMetadata, RegisterFunctionMessage, RegisterServiceMessage). Dropped OtelConfig + OTel `ReconnectionConfig` per observability rule.
+- Cross-SDK mismatches recorded in Hanging pieces.
+
+### api-reference/sdk-python.mdx — Heavy stubs on python-sdk
+- Source verified: Python SDK only has one `ReconnectionConfig` (engine WS); no separate OTel reconnection config.
+- Logger and Telemetry surfaces stripped from all SDK pages with a callout pointing to iii-observability worker docs (per new ground rule).
+- Heavy stubs added on `api-reference/python-sdk.mdx`: Installation, Initialization (with `worker` convention), Connection lifecycle, Methods (register_worker w/ InitOptions, register_function, register_trigger, trigger + trigger_async, shutdown + shutdown_async, register_trigger_type / unregister_trigger_type marked "Consider removing"), Types (ReconnectionConfig, HttpInvocationConfig, RegisterFunctionFormat, RegisterServiceInput, RegisterTriggerInput, RegisterTriggerTypeInput, TriggerActionEnqueue, TriggerActionVoid, TriggerRequest, TriggerHandler, IStream).
+
 ### api-reference/sdk-node.mdx — Heavy stubs on node-sdk
 - Source verified: `IIIReconnectionConfig` (engine WS) and `ReconnectionConfig` (OTel telemetry-system) are both real and distinct in node SDK; `OtelConfig`, `HttpAuthConfig`, `HttpInvocationConfig` all exist.
 - Heavy stubs added on `api-reference/node-sdk.mdx`: Installation, Initialization, Connection lifecycle, all 9 methods, Subpath exports, Logger (debug/info/warn/error), Telemetry suite, full type list.
@@ -175,3 +188,18 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 (Content with no clear home — track here so we don't lose it.)
 
 - **Source-doc gap:** iii-mono `api-reference/sdk-browser.mdx` omits `IIIReconnectionConfig` and `RegisterFunctionFormat` types — both exist in browser SDK source. Stubs included here; flag for the source author.
+
+- **SDK type-list mismatches (Node vs Python, per source docs):**
+  - **In Node, missing from Python:** `MessageType`, `FunctionRef`, `HttpAuthConfig`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerTypeRef`, `DeleteResult`, `StreamSetResult`, `StreamUpdateResult`.
+  - **In Python, missing from Node:** `TriggerActionEnqueue`, `TriggerActionVoid` (Python-specific trigger action variants).
+  - **Naming difference:** Python `ReconnectionConfig` ≡ Node `IIIReconnectionConfig`. Python has only one (engine WS); Node has two (`IIIReconnectionConfig` for engine WS, `ReconnectionConfig` for OTel exporter), so the prefix disambiguates.
+  - **Method difference:** Python exposes async variants (`trigger_async`, `shutdown_async`) that Node does not. Flagged in source by user with "This differs from node, is this okay?" — open question for SDK authors.
+  - **Unverified — could be a doc gap or genuine SDK gap.** When authoring Rust SDK, verify each Node-side type against Python source code (not just docs) to determine which mismatches are real and which are doc omissions.
+
+- **SDK type-list mismatches (Rust vs Node/Python, source-verified against `sdk/packages/rust/iii/src/`):**
+  - **Rust does not expose `IIIReconnectionConfig` or any user-facing engine-WS reconnection config.** Reconnection happens internally (`IIIConnectionState::Reconnecting`) but is not configurable. Node and Python both expose this. Genuine SDK gap.
+  - **Rust does not expose `RegisterFunctionFormat`** — uses `schemars::JsonSchema` derive directly on request/response types instead. Equivalent capability via different mechanism.
+  - **Rust does not expose `MessageType`** — internal to the protocol module, not part of the public API. Node exports it.
+  - **Rust adds (vs Node/Python):** `IIIError`, `IIIConnectionState`, `HttpMethod`, `ChannelDirection`, `FunctionInfo`, `TriggerInfo`, `WorkerInfo`, `WorkerMetadata`, `RegisterServiceMessage`, `register_function_with` (builder variant), `set_headers` method.
+  - **Rust expresses Python's `TriggerActionEnqueue`/`TriggerActionVoid` as variants of a single `TriggerAction` enum** — equivalent at the type level; flagged here for cross-language alignment.
+  - **Method differences:** Rust has `set_headers` (unique), `register_function_with` (Rust-only builder), and `shutdown_async` (matches Python; Node lacks).

@@ -6,10 +6,126 @@ type: "reference"
 ---
 
 <Note>
-  Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end.
+  Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics,
+  log emission/subscription) are documented with the [iii-observability worker](#) — they live
+  there because that worker owns logging and telemetry end-to-end.
 </Note>
+
+## Installation
+
+How to add the Rust SDK (`iii-sdk`) to a project.
+
+## Initialization
+
+Connecting to the engine and obtaining the SDK handle. Always call the variable `worker` and not
+`iii` so when we do `worker.register_function()` it makes more contextual sense.
 
 ## Connection lifecycle
 
-How the SDK connects to the engine, registers functions, heartbeats, and reconnects with
-re-registration on disconnect.
+How the SDK connects to the engine, registers functions, and reconnects with re-registration on
+disconnect. Reconnection is internal in Rust — there is no user-facing reconnection config struct
+(unlike Node/Python).
+
+## Methods
+
+### register_worker
+
+Register this worker with an iii engine.
+
+#### InitOptions
+
+Options accepted when constructing the worker (worker name, timeouts).
+
+### register_function
+
+Register a callable function on this worker, with request and response types deriving
+`schemars::JsonSchema`.
+
+### register_trigger
+
+Bind a registered function to a configured trigger instance.
+
+### trigger
+
+Invoke a registered function or fire a trigger from Rust.
+
+### shutdown
+
+Disconnect from the engine and release resources.
+
+### shutdown_async
+
+Async variant of `shutdown` for use within an async context.
+
+### register_trigger_type
+
+Declare a new trigger type that this worker can source events from. **Consider removing**
+
+### unregister_trigger_type
+
+Remove a previously registered trigger type. **Consider removing**
+
+## Types
+
+**Types should be visually separated from the functions in the docs**
+
+### IIIError
+
+Error type returned by SDK operations.
+
+### IIIConnectionState
+
+Enum representing the current engine-WebSocket connection state.
+
+### HttpAuthConfig
+
+Auth configuration accepted by HTTP-invoked function registrations.
+
+### HttpInvocationConfig
+
+Config used when registering an external HTTP endpoint as an iii function.
+
+### HttpMethod
+
+Enum for HTTP methods accepted by HTTP triggers and HTTP-invoked functions.
+
+### TriggerAction
+
+Enum of trigger actions (`Enqueue`, `Void`) — Rust expresses both Python `TriggerActionEnqueue` and
+`TriggerActionVoid` as variants of one enum.
+
+### TriggerRequest
+
+Request payload delivered to a trigger handler.
+
+### Trigger
+
+Configured trigger instance.
+
+### FunctionRef
+
+Typed reference to a registered function.
+
+### FunctionInfo
+
+Metadata describing a registered function.
+
+### TriggerInfo
+
+Metadata describing a registered trigger.
+
+### WorkerInfo
+
+Metadata describing a connected worker.
+
+### WorkerMetadata
+
+User-supplied metadata attached to a worker.
+
+### RegisterFunctionMessage
+
+Wire shape sent when registering a function.
+
+### RegisterServiceMessage
+
+Wire shape sent when registering a service.

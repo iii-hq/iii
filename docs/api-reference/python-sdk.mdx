@@ -5,26 +5,113 @@ owner: "engineering"
 type: "reference"
 ---
 
+<Note>
+  Logging and telemetry surfaces are documented with the [iii-observability worker](#) — they live
+  there because that worker owns logging and telemetry end-to-end.
+</Note>
+
+## Installation
+
+How to add the Python SDK (`iii`) to a project.
+
+## Initialization
+
+Connecting to the engine and obtaining the SDK handle. Always call the variable `worker` and not
+`iii` so when we do `worker.register_function()` it makes more contextual sense.
+
 ## Connection lifecycle
 
-How the SDK connects to the engine, registers functions, heartbeats, and reconnects with re-registration on disconnect.
+How the SDK connects to the engine, registers functions, heartbeats, and reconnects with
+re-registration on disconnect (configured via `ReconnectionConfig`).
 
-## Telemetry
+## Methods
 
-Auto-init of OpenTelemetry via `registerWorker` / `register_worker`, configured through `OtelConfig` and standard OTel environment variables.
+### register_worker
 
-## Custom spans
+Register this worker with an iii engine.
 
-Wrapping handler logic with `withSpan` / `with_span` to emit application-level spans.
+#### InitOptions
 
-## Worker metrics
+Options accepted when constructing the worker (worker name, timeouts, `reconnection_config`).
 
-Built-in worker process metrics emitted as observable gauges (CPU, memory, event-loop lag, uptime).
+### register_function
 
-## Log emission and subscription
+Register a callable function on this worker, with optional request and response JSON Schema formats.
 
-Emitting structured logs and subscribing to engine-side log events.
+### register_trigger
 
-## Telemetry utilities
+Bind a registered function to a configured trigger instance.
 
-`getTracer` / `getMeter` / `getLogger` / `currentTraceId` / `shutdownOtel` and language equivalents.
+### trigger
+
+Invoke a registered function or fire a trigger from Python.
+
+### trigger_async
+
+Async variant of `trigger` for use within an async context. _This differs from node, is this okay?_
+
+### shutdown
+
+Disconnect from the engine and release resources.
+
+### shutdown_async
+
+Async variant of `shutdown` for use within an async context. _This differs from node, is this okay?_
+
+### register_trigger_type
+
+Declare a new trigger type that this worker can source events from. **Consider removing**
+
+### unregister_trigger_type
+
+Remove a previously registered trigger type. **Consider removing**
+
+## Types
+
+**Types should be visually separated from the functions in the docs**
+
+### ReconnectionConfig
+
+Engine-WebSocket reconnection behavior — `max_retries`, `initial_delay_ms`, `backoff_multiplier`,
+`max_delay_ms`, `jitter_factor`. The Python SDK only has this one; other SDKs may additionally
+expose an OTel-exporter reconnection config.
+
+### HttpInvocationConfig
+
+Config used when registering an external HTTP endpoint as an iii function.
+
+### RegisterFunctionFormat
+
+JSON Schema shape used for `request_format` and `response_format` on registered functions.
+
+### RegisterServiceInput
+
+Input shape for service-style registration.
+
+### RegisterTriggerInput
+
+Input shape for `register_trigger`.
+
+### RegisterTriggerTypeInput
+
+Input shape for `register_trigger_type`.
+
+### TriggerActionEnqueue
+
+Trigger action that enqueues an invocation onto a named queue.
+
+### TriggerActionVoid
+
+Trigger action that performs a fire-and-forget invocation.
+
+### TriggerRequest
+
+Request payload delivered to a trigger handler.
+
+### TriggerHandler
+
+Handler signature for trigger-driven invocations.
+
+### IStream
+
+Stream consumer interface.
