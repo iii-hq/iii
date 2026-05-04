@@ -42,7 +42,14 @@
       },
       {
         "group": "Using iii",
-        "pages": ["using-iii/workers", "using-iii/functions", "using-iii/triggers"]
+        "pages": [
+          "using-iii/workers",
+          "using-iii/engine",
+          "using-iii/functions",
+          "using-iii/triggers",
+          "using-iii/console",
+          "using-iii/cli"
+        ]
       },
       {
         "group": "Expanding iii",
