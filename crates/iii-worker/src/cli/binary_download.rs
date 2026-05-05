@@ -168,13 +168,20 @@ pub fn validate_locked_artifact_url(url: &str) -> Result<(), String> {
         ));
     }
 
-    if !is_trusted_registry_host(host) {
+    if !is_trusted_registry_artifact(&parsed) {
         return Err(format!(
             "artifact URL `{url}` is not trusted: expected a iii registry artifact host"
         ));
     }
 
     Ok(())
+}
+
+fn is_trusted_registry_artifact(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    is_trusted_registry_host(host) || is_trusted_iii_hq_github_release(host, url.path())
 }
 
 fn is_trusted_registry_host(host: &str) -> bool {
@@ -188,6 +195,14 @@ fn is_trusted_registry_host(host: &str) -> bool {
         return false;
     };
     !prefix.is_empty() && prefix.split('.').all(|label| !label.is_empty())
+}
+
+/// Allow GitHub Releases for the iii-hq/workers repo. Path-prefixed so we
+/// don't trust arbitrary GitHub-hosted content under `github.com`. SHA256
+/// verification on the locked digest is what protects against tampering;
+/// this check just bounds *who* can serve the artifact.
+fn is_trusted_iii_hq_github_release(host: &str, path: &str) -> bool {
+    host == "github.com" && path.starts_with("/iii-hq/workers/releases/download/")
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -489,6 +504,32 @@ mod tests {
     fn validate_locked_artifact_url_rejects_untrusted_host() {
         let err = validate_locked_artifact_url("https://example.com/worker.tar.gz").unwrap_err();
         assert!(err.contains("not trusted"));
+    }
+
+    #[test]
+    fn validate_locked_artifact_url_accepts_iii_hq_github_release() {
+        validate_locked_artifact_url(
+            "https://github.com/iii-hq/workers/releases/download/skills/v0.1.4/skills-x86_64-unknown-linux-gnu.tar.gz",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_locked_artifact_url_rejects_other_github_paths() {
+        for url in [
+            "https://github.com/other-org/workers/releases/download/skills/v0.1.4/skills.tar.gz",
+            "https://github.com/iii-hq/iii/releases/download/v1.0.0/iii.tar.gz",
+            "https://github.com/iii-hq/workers/archive/main.tar.gz",
+            "https://github.com/",
+        ] {
+            let err = validate_locked_artifact_url(url)
+                .err()
+                .unwrap_or_else(|| panic!("expected {url} to be rejected"));
+            assert!(
+                err.contains("not trusted"),
+                "expected `not trusted` for {url}, got: {err}",
+            );
+        }
     }
 
     #[test]
