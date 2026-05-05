@@ -16,6 +16,28 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - **`expanding-iii/` scope:** "Expanding iii" means expanding an iii *system* with more workers and functionality (deploying / wiring up / integrating additional workers). It is **not** about adding code to the iii engine itself. All iii expansion is worker expansion. Content about *authoring* a worker (implementing engine traits, building a custom worker package) does not belong in expanding-iii.
 - **`iii worker` CLI is iii-level tooling.** All `iii worker` subcommands — `add/remove/list/start/stop/exec/update/verify` — plus the `iii.lock` lockfile and worker image build/publish flow are part of iii itself, analogous to `npm`/`cargo`. They live in ideal-docs (primarily `using-iii/workers.mdx`), not Worker Docs.
 
+## Migration summary
+
+All 73 files from `iii-mono/docs/` analyzed and routed.
+
+**Outcomes:**
+- **Ideal-docs stubbed (~30):** distributed into existing or new pages as section-title + ≤1-sentence stubs.
+- **Flagged for Worker Docs (~25):** worker-specific content noted for the relevant worker (iii-http, iii-queue, iii-state, iii-stream, iii-cron, iii-observability, iii-pubsub, iii-bridge, iii-exec, iii-worker-manager). Never moved — that exercise is left to the Worker Docs authors.
+- **Dropped entirely (~18):** already absorbed elsewhere, code-heavy single-purpose examples, redundant hubs.
+
+**New ideal-docs pages created during analysis:**
+- `understanding-iii/index.mdx`, `understanding-iii/functions.mdx`, `understanding-iii/triggers.mdx`
+- `using-iii/deployment.mdx`
+- `how-to/build-a-realtime-todo-app.mdx`
+- `changelog/index.mdx`
+
+**Hanging pieces logged below:**
+- Auto-generated config reference (post-outline engineering project; see commit `0f925fd2` for the deleted prior implementation).
+- Auto-generated SDK reference docs need pre/post-append slots for narrative content.
+- Source-doc gaps in iii-mono `sdk-browser.mdx` (missing types).
+
+**Ground rules established and recorded above.**
+
 ## Status legend
 
 - [ ] pending
@@ -109,18 +131,18 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] tutorials/index.mdx
 
 ### workers/
-- [ ] workers/index.mdx
-- [ ] workers/iii-bridge.mdx
-- [ ] workers/iii-cron.mdx
-- [ ] workers/iii-exec.mdx
-- [ ] workers/iii-http.mdx
-- [ ] workers/iii-observability.mdx
-- [ ] workers/iii-pubsub.mdx
-- [ ] workers/iii-queue.mdx
-- [ ] workers/iii-state.mdx
-- [ ] workers/iii-stream.mdx
-- [ ] workers/iii-worker-manager.mdx
-- [ ] workers/managed-worker-lockfile.mdx
+- [x] workers/index.mdx
+- [x] workers/iii-bridge.mdx
+- [x] workers/iii-cron.mdx
+- [x] workers/iii-exec.mdx
+- [x] workers/iii-http.mdx
+- [x] workers/iii-observability.mdx
+- [x] workers/iii-pubsub.mdx
+- [x] workers/iii-queue.mdx
+- [x] workers/iii-state.mdx
+- [x] workers/iii-stream.mdx
+- [x] workers/iii-worker-manager.mdx
+- [x] workers/managed-worker-lockfile.mdx
 
 ## Decisions log
 
@@ -128,6 +150,21 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Adapters are deprecated; remove the page in its current form.
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
+
+### workers/* — Move to Worker Docs (batch)
+- All 11 worker pages are per-worker config / functions / triggers / protocol detail; flagged for their respective Worker Docs:
+  - `workers/index.mdx` → workers hub
+  - `workers/iii-bridge.mdx` → iii-bridge
+  - `workers/iii-cron.mdx` → iii-cron
+  - `workers/iii-exec.mdx` → iii-exec
+  - `workers/iii-http.mdx` → iii-http
+  - `workers/iii-observability.mdx` → iii-observability
+  - `workers/iii-pubsub.mdx` → iii-pubsub
+  - `workers/iii-queue.mdx` → iii-queue
+  - `workers/iii-state.mdx` → iii-state
+  - `workers/iii-stream.mdx` → iii-stream
+  - `workers/iii-worker-manager.mdx` → iii-worker-manager
+- **Special case:** `workers/managed-worker-lockfile.mdx` covers `iii.lock` — under the corrected ground rule (iii-level tooling), this is already absorbed by the lockfile / pinning / verify / update stubs on `using-iii/workers.mdx`. No additional ideal-docs work needed; the worker-side equivalent (if any) belongs in iii-worker-manager.
 
 ### tutorials/index.mdx — Drop entirely
 - Single-paragraph hub; Mintlify Tutorials tab + group structure already serves as the hub.
