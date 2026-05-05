@@ -86,27 +86,27 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] how-to/stream-realtime-data.mdx
 - [x] how-to/trigger-actions.mdx
 - [x] how-to/trigger-functions-from-cli.mdx
-- [ ] how-to/use-channels.mdx
-- [ ] how-to/use-console.mdx
-- [ ] how-to/use-functions-and-triggers.mdx
-- [ ] how-to/use-http-middleware.mdx
-- [ ] how-to/use-iii-in-the-browser.mdx
-- [ ] how-to/use-named-queues.mdx
-- [ ] how-to/use-topic-queues.mdx
-- [ ] how-to/use-trigger-conditions.mdx
-- [ ] how-to/worker-rbac.mdx
+- [x] how-to/use-channels.mdx
+- [x] how-to/use-console.mdx
+- [x] how-to/use-functions-and-triggers.mdx
+- [x] how-to/use-http-middleware.mdx
+- [x] how-to/use-iii-in-the-browser.mdx
+- [x] how-to/use-named-queues.mdx
+- [x] how-to/use-topic-queues.mdx
+- [x] how-to/use-trigger-conditions.mdx
+- [x] how-to/worker-rbac.mdx
 
 ### primitives-and-concepts/
-- [ ] primitives-and-concepts/discovery.mdx
-- [ ] primitives-and-concepts/functions-triggers-workers.mdx
+- [x] primitives-and-concepts/discovery.mdx
+- [x] primitives-and-concepts/functions-triggers-workers.mdx
 
 ### root pages
-- [ ] index.mdx
-- [ ] install.mdx
-- [ ] quickstart.mdx
+- [x] index.mdx
+- [x] install.mdx
+- [x] quickstart.mdx
 
 ### tutorials/
-- [ ] tutorials/index.mdx
+- [x] tutorials/index.mdx
 
 ### workers/
 - [ ] workers/index.mdx
@@ -128,6 +128,59 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Adapters are deprecated; remove the page in its current form.
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
+
+### tutorials/index.mdx — Drop entirely
+- Single-paragraph hub; Mintlify Tutorials tab + group structure already serves as the hub.
+
+### quickstart.mdx — Distribute and drop
+- Stubs added to `getting-started/quickstart.mdx` covering all 10 steps: Scaffold the project, Start the engine, Start a Python worker, Start a TypeScript worker, Call across languages, Add state, Add HTTP endpoints, How it works, Explore with the console, Agent skills (heading only).
+- Drops: code blocks, long inline explanations.
+
+### install.mdx — Distribute and drop
+- Stubs added to `getting-started/install.mdx`: Install iii, Verify installation, VS Code extension, Agent skills (heading only — acquisition flow is changing).
+- Drops: code blocks, "Next steps" cards.
+
+### index.mdx — Stub on root
+- Stub added to root `index.mdx`: "What makes iii different" — the six system-trait highlights.
+- Drops: multi-paragraph positioning prose, three-primitives intro (covered in `understanding-iii/index.mdx`), React-analogy callout, Getting Started / Next Steps cards (tabs handle nav).
+
+### primitives-and-concepts/functions-triggers-workers.mdx — Drop entirely
+- Already absorbed by `understanding-iii/index.mdx` ("The three primitives", "System overview") and the per-primitive pages (`understanding-iii/functions.mdx`, `triggers.mdx`, `workers.mdx`).
+
+### primitives-and-concepts/discovery.mdx — Distribute and drop
+- Stub added to `understanding-iii/engine.mdx`: "Discovery and the live registry".
+- `sdk-reference/engine-sdk.mdx` "Engine discovery functions" stub expanded to include `engine::triggers::list`, `engine::trigger-types::list`, and the `engine::functions-available` trigger.
+- Drops: "Why this matters" / "What this enables" framing, comparison-with-other-systems passage (config files / DNS / registries / service meshes), code blocks, CardGroup.
+
+### how-to/worker-rbac.mdx — Move to Worker Docs (iii-worker-manager)
+- Auth functions, middleware, per-session namespacing, allow/deny lists, trigger-registration RBAC are all iii-worker-manager surface.
+
+### how-to/use-trigger-conditions.mdx — Drop entirely
+- Already covered by `understanding-iii/triggers.mdx` "Trigger conditions" + `using-iii/triggers.mdx` "Gate a trigger with a condition".
+
+### how-to/use-topic-queues.mdx — Move to Worker Docs (iii-queue)
+- `durable:subscriber` trigger and `iii::durable::publish` are iii-queue surface.
+
+### how-to/use-named-queues.mdx — Move to Worker Docs (iii-queue)
+- Named-queue mechanics are iii-queue surface.
+- Cross-cutting `TriggerAction.Enqueue` callout already on `using-iii/functions.mdx` and `understanding-iii/functions.mdx`.
+
+### how-to/use-iii-in-the-browser.mdx — Drop, with hanging-piece note
+- "Steps" / install / init / examples already covered by `sdk-reference/browser-sdk.mdx` and `how-to/build-a-realtime-todo-app.mdx`.
+- "Why use the browser SDK over HTTP" framing has no home in auto-generated SDK reference docs — logged as a hanging piece for the auto-gen tooling design (pre/post-append slots).
+
+### how-to/use-http-middleware.mdx — Move to Worker Docs (iii-http)
+- HTTP middleware is iii-http surface.
+
+### how-to/use-functions-and-triggers.mdx — Distribute and drop
+- Stub added to `using-iii/functions.mdx`: "Register a function" — explicit symmetry with `using-iii/triggers.mdx` "Register a trigger".
+- Function and trigger workflows already covered by existing stubs.
+
+### how-to/use-console.mdx — Drop entirely
+- Already absorbed by `using-iii/console.mdx` stubs covering each console UI page.
+
+### how-to/use-channels.mdx — Move to Worker Docs (iii-worker-manager)
+- Per channels ground rule.
 
 ### how-to/trigger-functions-from-cli.mdx — Already mapped
 - Existing stub on `using-iii/cli.mdx` ("Invoking functions through the cli") absorbs this. Expanded to a one-line description naming `iii trigger --function-id/--payload` and `--address`/`--port` for remote engines.
@@ -338,6 +391,11 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
   - Don't attempt during this migration pass.
 
 - **Source-doc gap:** iii-mono `sdk-reference/sdk-browser.mdx` omits `IIIReconnectionConfig` and `RegisterFunctionFormat` types — both exist in browser SDK source. Stubs included here; flag for the source author.
+
+- **Auto-generated SDK reference docs need pre/post-append slots for narrative content.** SDK reference pages will be auto-generated from code (analogous to the planned config-reference generator). Auto-generation captures the surface — methods, types, signatures — but not motivational/positioning content like "why use the browser SDK over HTTP," migration guidance, when-to-pick-this-SDK, or cross-SDK comparisons.
+  - Affected so far: the "why this SDK" framing from `how-to/use-iii-in-the-browser.mdx` has no home in pure auto-gen `sdk-reference/browser-sdk.mdx`.
+  - Plan: each SDK reference page should support a hand-written prefix (above auto-gen content) and/or suffix (below) — frontmatter slot, separate `_prefix.mdx`/`_suffix.mdx` partials, or a leading paragraph the generator preserves.
+  - Decide during the auto-gen tooling design (same project shape as the config-reference restoration above).
 
 - **SDK type-list mismatches (Node vs Python, per source docs):**
   - **In Node, missing from Python:** `MessageType`, `FunctionRef`, `HttpAuthConfig`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerTypeRef`, `DeleteResult`, `StreamSetResult`, `StreamUpdateResult`.

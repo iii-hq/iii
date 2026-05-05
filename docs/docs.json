@@ -40,16 +40,6 @@
             "pages": ["getting-started/install", "getting-started/quickstart"]
           },
           {
-            "group": "Understanding iii",
-            "pages": [
-              "understanding-iii/index",
-              "understanding-iii/workers",
-              "understanding-iii/functions",
-              "understanding-iii/triggers",
-              "understanding-iii/engine"
-            ]
-          },
-          {
             "group": "Using iii",
             "pages": [
               "using-iii/workers",
@@ -59,6 +49,17 @@
               "using-iii/console",
               "using-iii/cli",
               "using-iii/deployment"
+            ]
+          },
+          {
+            "group": "Understanding iii",
+            "expanded": false,
+            "pages": [
+              "understanding-iii/index",
+              "understanding-iii/workers",
+              "understanding-iii/functions",
+              "understanding-iii/triggers",
+              "understanding-iii/engine"
             ]
           },
           {

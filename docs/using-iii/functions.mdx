@@ -5,6 +5,10 @@ owner: "devrel"
 type: "how-to"
 ---
 
+## Register a function
+
+`worker.registerFunction(id, handler, options?)` registers a callable function with the engine, optionally with request/response JSON Schema formats and metadata.
+
 ## Define request and response formats
 
 Wiring `request_format` and `response_format` JSON Schemas onto a function so the engine validates calls at registration time and at invocation time.
