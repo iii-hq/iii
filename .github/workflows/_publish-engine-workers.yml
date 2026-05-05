@@ -197,7 +197,11 @@ jobs:
         if: failure()
         run: |
           echo "::group::iii engine log"
-          tail -n 200 iii-engine.log || true
+          # Full log instead of tail: iii-sandbox spawns iii-worker as a
+          # subprocess whose stderr is forwarded into this file, and the
+          # interesting output is at the start (initial spawn) — a tail
+          # would only show the post-mortem reconnect loop.
+          cat iii-engine.log || true
           echo "::endgroup::"
 
       - name: Stop III engine
