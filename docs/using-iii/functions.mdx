@@ -8,3 +8,15 @@ type: "how-to"
 ## Define request and response formats
 
 Wiring `request_format` and `response_format` JSON Schemas onto a function so the engine validates calls at registration time and at invocation time.
+
+## Invoke a function synchronously
+
+Call `trigger()` without an `action` — the call blocks until the target function returns a result or the timeout expires.
+
+## Fire-and-forget with `TriggerAction.Void`
+
+Pass `TriggerAction.Void()` to return immediately without waiting for the target function to run.
+
+<Note>
+  Workers can provide their own `TriggerAction`s. The built-in iii-queue worker provides `TriggerAction.Enqueue({ queue })`, which routes the invocation through a named queue with retries — see iii-queue for the queue mechanics.
+</Note>

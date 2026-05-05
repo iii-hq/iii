@@ -31,3 +31,31 @@ functionality
 High-level, link out to triggers, and functions docs in using-iii
 
 ## Registering triggers
+
+## Managing workers from the CLI
+
+`iii worker add`, `remove`, `list`, `start`, `stop` for the worker set in your project.
+
+## Pinning workers in `iii.lock`
+
+Committing the resolved worker graph to a lockfile so installs are reproducible across machines.
+
+## Verifying the lockfile against config
+
+`iii worker verify` checks that `config.yaml` is represented in the lockfile.
+
+## Updating pinned workers
+
+`iii worker update [worker]` refreshes locked pins intentionally.
+
+## Pinning binary worker artifacts across platforms
+
+Multi-platform target tracking for binary workers.
+
+## Exec into a running worker
+
+`iii worker exec <name> -- <cmd>` runs an arbitrary command inside a running worker (think `docker exec` for iii workers).
+
+## Build and publish a worker image
+
+Building an OCI image for a worker and publishing it to a registry that `iii worker add <image>` can resolve.

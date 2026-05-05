@@ -113,24 +113,26 @@
         "groups": [
           {
             "group": "Patterns",
-            "pages": [
-              "patterns/adapter-pattern",
-              "patterns/reactive-state-pattern"
-            ]
+            "pages": ["patterns/adapter-pattern", "patterns/reactive-state-pattern"]
           }
         ]
       },
       {
-        "tab": "API Reference",
+        "tab": "SDK & Engine Reference",
         "groups": [
           {
-            "group": "SDKs",
+            "group": "Engine",
             "pages": [
-              "api-reference/node-sdk",
-              "api-reference/python-sdk",
-              "api-reference/rust-sdk",
-              "api-reference/browser-sdk",
-              "api-reference/engine-sdk"
+              "sdk-reference/engine-sdk"
+            ]
+          },
+          {
+            "group": "Language SDKs",
+            "pages": [
+              "sdk-reference/node-sdk",
+              "sdk-reference/python-sdk",
+              "sdk-reference/rust-sdk",
+              "sdk-reference/browser-sdk"
             ]
           }
         ]

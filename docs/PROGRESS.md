@@ -14,6 +14,7 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - **No "external vs built-in" worker distinction.** A worker is a worker. Don't introduce conceptual splits between SDK-driven processes and engine-bundled workers in ideal-docs. If source content draws that distinction, drop or flatten it.
 - **Auto-reconnect / re-registration is SDK behavior, not a worker concept.** All current SDKs implement it (Node, Python, Rust, browser). Document it on the per-SDK reference pages (already covered by each page's "Connection lifecycle" stub), not on `understanding-iii/workers.mdx`.
 - **`expanding-iii/` scope:** "Expanding iii" means expanding an iii *system* with more workers and functionality (deploying / wiring up / integrating additional workers). It is **not** about adding code to the iii engine itself. All iii expansion is worker expansion. Content about *authoring* a worker (implementing engine traits, building a custom worker package) does not belong in expanding-iii.
+- **`iii worker` CLI is iii-level tooling.** All `iii worker` subcommands — `add/remove/list/start/stop/exec/update/verify` — plus the `iii.lock` lockfile and worker image build/publish flow are part of iii itself, analogous to `npm`/`cargo`. They live in ideal-docs (primarily `using-iii/workers.mdx`), not Worker Docs.
 
 ## Status legend
 
@@ -31,13 +32,13 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] advanced/protocol.mdx
 - [x] advanced/telemetry.mdx
 
-### api-reference/
-- [x] api-reference/disable-telemetry.mdx
-- [x] api-reference/sandbox.mdx
-- [x] api-reference/sdk-browser.mdx
-- [x] api-reference/sdk-node.mdx
-- [x] api-reference/sdk-python.mdx
-- [x] api-reference/sdk-rust.mdx
+### sdk-reference/
+- [x] sdk-reference/disable-telemetry.mdx
+- [x] sdk-reference/sandbox.mdx
+- [x] sdk-reference/sdk-browser.mdx
+- [x] sdk-reference/sdk-node.mdx
+- [x] sdk-reference/sdk-python.mdx
+- [x] sdk-reference/sdk-rust.mdx
 
 ### architecture/
 - [x] architecture/index.mdx
@@ -75,16 +76,16 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - [x] how-to/dead-letter-queues.mdx
 - [x] how-to/define-request-response-formats.mdx
 - [x] how-to/developing-sandbox-workers.mdx
-- [ ] how-to/expose-http-endpoint.mdx
-- [ ] how-to/manage-state.mdx
-- [ ] how-to/managing-container-workers.mdx
-- [ ] how-to/observability-and-logs.mdx
-- [ ] how-to/react-to-state-changes.mdx
-- [ ] how-to/reproduce-worker-installs.mdx
-- [ ] how-to/schedule-cron-task.mdx
-- [ ] how-to/stream-realtime-data.mdx
-- [ ] how-to/trigger-actions.mdx
-- [ ] how-to/trigger-functions-from-cli.mdx
+- [x] how-to/expose-http-endpoint.mdx
+- [x] how-to/manage-state.mdx
+- [x] how-to/managing-container-workers.mdx
+- [x] how-to/observability-and-logs.mdx
+- [x] how-to/react-to-state-changes.mdx
+- [x] how-to/reproduce-worker-installs.mdx
+- [x] how-to/schedule-cron-task.mdx
+- [x] how-to/stream-realtime-data.mdx
+- [x] how-to/trigger-actions.mdx
+- [x] how-to/trigger-functions-from-cli.mdx
 - [ ] how-to/use-channels.mdx
 - [ ] how-to/use-console.mdx
 - [ ] how-to/use-functions-and-triggers.mdx
@@ -128,13 +129,48 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
 
+### how-to/trigger-actions.mdx — Distribute and drop
+- "Trigger actions" are function-invocation modes despite the name.
+- Stubs added to `understanding-iii/functions.mdx`: Invocation modes (sync + void) with a callout noting that workers can provide their own `TriggerAction`s and pointing at iii-queue's `TriggerAction.Enqueue` for queue-routed invocations.
+- Stubs added to `using-iii/functions.mdx`: Invoke a function synchronously, Fire-and-forget with `TriggerAction.Void`, plus the same custom-actions / iii-queue callout.
+- Drops: code blocks, real-world scenarios, decision flowchart, combining-actions example, common-mistakes section, SDK syntax reference (covered on each SDK page), "Next steps" card.
+
+### how-to/stream-realtime-data.mdx — Move to Worker Docs (iii-stream)
+- Stream set/update/delete and change events are iii-stream surface.
+
+### how-to/schedule-cron-task.mdx — Move to Worker Docs (iii-cron)
+- Cron trigger type and expression syntax belong with iii-cron.
+
+### how-to/reproduce-worker-installs.mdx — Distribute and drop
+- Stubs added to `using-iii/workers.mdx`: Managing workers from the CLI, Pinning workers in `iii.lock`, Verifying the lockfile against config, Updating pinned workers, Pinning binary worker artifacts across platforms.
+- Callout added to `using-iii/cli.mdx` pointing to `using-iii/workers` for `iii worker ...` subcommands.
+- New ground rule: `iii worker` CLI is iii-level tooling, not Worker Docs.
+
+### how-to/react-to-state-changes.mdx — Move to Worker Docs (iii-state)
+- `state:updated` / `state:deleted` triggers are surfaced by iii-state.
+
+### how-to/observability-and-logs.mdx — Move to Worker Docs (iii-observability)
+- Per existing ground rule.
+
+### how-to/managing-container-workers.mdx — Distribute and drop (revised)
+- Originally flagged for Worker Docs; revised after the `iii worker` CLI ground-rule clarification — these are iii-level tooling.
+- Stubs added to `using-iii/workers.mdx`: Managing workers from the CLI (covers add/remove/list/start/stop), Exec into a running worker, Build and publish a worker image.
+- Lifecycle / packaging is iii-level; nothing flagged for Worker Docs from this page anymore.
+
+### how-to/manage-state.mdx — Move to Worker Docs (iii-state)
+- `state::get` / `state::set` / `state::delete` and scopes belong with iii-state.
+
+### how-to/expose-http-endpoint.mdx — Move to Worker Docs (iii-http)
+- iii-http worker config schema + the HTTP trigger type both belong with iii-http.
+- Cross-cutting "register a trigger" workflow already stubbed in `using-iii/triggers.mdx`.
+
 ### how-to/developing-sandbox-workers.mdx — Move to Worker Docs (iii-sandbox / iii-worker-manager)
 - Sandbox is a worker; worker authoring belongs outside ideal-docs.
 - No stubs.
 
 ### how-to/define-request-response-formats.mdx — Distribute and drop
 - Stub added to `using-iii/functions.mdx`: "Define request and response formats".
-- "Discover from CLI" piece already covered (`using-iii/cli.mdx`, `api-reference/engine-sdk.mdx` discovery functions).
+- "Discover from CLI" piece already covered (`using-iii/cli.mdx`, `sdk-reference/engine-sdk.mdx` discovery functions).
 - Drops: code blocks, "Why this matters" framing, auto-extraction vs explicit comparison (lives on SDK pages), "Next steps" card.
 
 ### how-to/dead-letter-queues.mdx — Move to Worker Docs (iii-queue)
@@ -208,12 +244,12 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 ### architecture/external-workers.mdx — Distribute and drop
 - New ground rules added: no external/built-in worker distinction; auto-reconnect is SDK behavior (already on each SDK's "Connection lifecycle" stub).
 - Stubs added to `understanding-iii/workers.mdx`: Worker lifecycle states, Worker isolation.
-- `engine::workers::register` added to the existing engine-discovery-functions stub on `api-reference/engine-sdk.mdx`.
+- `engine::workers::register` added to the existing engine-discovery-functions stub on `sdk-reference/engine-sdk.mdx`.
 - Drops: SDK package table, code snippets, InitOptions table (covered on SDK pages), Reconnection Config field detail (covered by SDK type entries), Python snake_case note, both diagrams, "See also" card.
 
 ### architecture/engine.mdx — Distribute and drop
 - Stubs added to `understanding-iii/engine.mdx`: Engine responsibilities, Worker disconnect cleanup, Config hot-reload, Architecture-agnostic routing.
-- Stub added to `api-reference/engine-sdk.mdx`: Engine discovery functions (`engine::functions::list`, `engine::workers::list`, `engine::workers-available`).
+- Stub added to `sdk-reference/engine-sdk.mdx`: Engine discovery functions (`engine::functions::list`, `engine::workers::list`, `engine::workers-available`).
 - Ports table and per-worker YAML snippets — flagged for Worker Docs (each port/config belongs to its built-in worker).
 - Drops: duplicate Responsibilities table, `iii-config.yaml` refs (should be `config.yaml`), adapter YAML, version-skew advisory, reload log-line examples, "See also" linkrot card.
 
@@ -230,43 +266,43 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Wired all three into `docs.json` under the Understanding iii group.
 - Dropped the contradictory "four components" line and per-built-in-worker module enumeration.
 
-### api-reference/sdk-rust.mdx — Heavy stubs on rust-sdk
+### sdk-reference/sdk-rust.mdx — Heavy stubs on rust-sdk
 - Source verified against `sdk/packages/rust/iii/src/`.
 - Logger + Telemetry stripped; observability callout in place.
 - Methods trimmed to the cross-SDK pattern: register_worker (with InitOptions), register_function, register_trigger, trigger, shutdown, shutdown_async, register_trigger_type / unregister_trigger_type ("Consider removing"). Dropped: `set_headers`, `register_function_with`, `register_service`, `create_channel`, `get_connection_state`.
 - Types: kept Rust-relevant ones (IIIError, IIIConnectionState, HttpAuthConfig, HttpInvocationConfig, HttpMethod, TriggerAction, TriggerRequest, Trigger, FunctionRef, FunctionInfo, TriggerInfo, WorkerInfo, WorkerMetadata, RegisterFunctionMessage, RegisterServiceMessage). Dropped OtelConfig + OTel `ReconnectionConfig` per observability rule.
 - Cross-SDK mismatches recorded in Hanging pieces.
 
-### api-reference/sdk-python.mdx — Heavy stubs on python-sdk
+### sdk-reference/sdk-python.mdx — Heavy stubs on python-sdk
 - Source verified: Python SDK only has one `ReconnectionConfig` (engine WS); no separate OTel reconnection config.
 - Logger and Telemetry surfaces stripped from all SDK pages with a callout pointing to iii-observability worker docs (per new ground rule).
-- Heavy stubs added on `api-reference/python-sdk.mdx`: Installation, Initialization (with `worker` convention), Connection lifecycle, Methods (register_worker w/ InitOptions, register_function, register_trigger, trigger + trigger_async, shutdown + shutdown_async, register_trigger_type / unregister_trigger_type marked "Consider removing"), Types (ReconnectionConfig, HttpInvocationConfig, RegisterFunctionFormat, RegisterServiceInput, RegisterTriggerInput, RegisterTriggerTypeInput, TriggerActionEnqueue, TriggerActionVoid, TriggerRequest, TriggerHandler, IStream).
+- Heavy stubs added on `sdk-reference/python-sdk.mdx`: Installation, Initialization (with `worker` convention), Connection lifecycle, Methods (register_worker w/ InitOptions, register_function, register_trigger, trigger + trigger_async, shutdown + shutdown_async, register_trigger_type / unregister_trigger_type marked "Consider removing"), Types (ReconnectionConfig, HttpInvocationConfig, RegisterFunctionFormat, RegisterServiceInput, RegisterTriggerInput, RegisterTriggerTypeInput, TriggerActionEnqueue, TriggerActionVoid, TriggerRequest, TriggerHandler, IStream).
 
-### api-reference/sdk-node.mdx — Heavy stubs on node-sdk
+### sdk-reference/sdk-node.mdx — Heavy stubs on node-sdk
 - Source verified: `IIIReconnectionConfig` (engine WS) and `ReconnectionConfig` (OTel telemetry-system) are both real and distinct in node SDK; `OtelConfig`, `HttpAuthConfig`, `HttpInvocationConfig` all exist.
-- Heavy stubs added on `api-reference/node-sdk.mdx`: Installation, Initialization, Connection lifecycle, all 9 methods, Subpath exports, Logger (debug/info/warn/error), Telemetry suite, full type list.
+- Heavy stubs added on `sdk-reference/node-sdk.mdx`: Installation, Initialization, Connection lifecycle, all 9 methods, Subpath exports, Logger (debug/info/warn/error), Telemetry suite, full type list.
 
-### api-reference/sdk-browser.mdx — Heavy stubs on browser-sdk
+### sdk-reference/sdk-browser.mdx — Heavy stubs on browser-sdk
 - Verified against `sdk/packages/node/iii-browser` source: browser SDK does **not** ship OpenTelemetry. Removed the 5 telemetry stubs incorrectly added during the file 6 pass (Telemetry, Custom spans, Worker metrics, Log emission and subscription, Telemetry utilities).
-- Heavy stubs added on `api-reference/browser-sdk.mdx`: Installation, Initialization, Connection lifecycle, all 9 methods, Subpath exports, and full type list.
+- Heavy stubs added on `sdk-reference/browser-sdk.mdx`: Installation, Initialization, Connection lifecycle, all 9 methods, Subpath exports, and full type list.
 - **Source-doc inaccuracy noted (hanging piece):** iii-mono `sdk-browser.mdx` omits `IIIReconnectionConfig` and `RegisterFunctionFormat` types even though both exist in the browser SDK source.
 
-### api-reference/sandbox.mdx — Move to Worker Docs (sandbox)
+### sdk-reference/sandbox.mdx — Move to Worker Docs (sandbox)
 - Entire page is sandbox-worker-specific (SDK calls, engine config, images, errors, `iii sandbox` CLI subcommands).
 - Flagged for Worker Docs. No stubs in ideal-docs.
 
-### api-reference/disable-telemetry.mdx — Already mapped
+### sdk-reference/disable-telemetry.mdx — Already mapped
 - 1:1 with existing `how-to/disable-telemetry.mdx`. No changes needed.
 - When the page is authored, distinguish `III_TELEMETRY_ENABLED` (anonymous usage) from `OTEL_ENABLED` (observability instrumentation).
 
 ### advanced/telemetry.mdx — Distribute and drop
 - Stubs added to each client SDK page (node, python, rust, browser): Telemetry, Custom spans, Worker metrics, Log emission and subscription, Telemetry utilities.
-- Stub added to `api-reference/engine-sdk.mdx`: Engine-collected invocation metrics.
+- Stub added to `sdk-reference/engine-sdk.mdx`: Engine-collected invocation metrics.
 - iii-observability worker config + OTel data-flow diagram → flagged for Worker Docs (iii-observability).
 - Cross-SDK Comparison matrix dropped.
 
 ### advanced/protocol.mdx — Distribute and drop
-- Stubs added to `api-reference/engine-sdk.mdx`: Message types, Connection flow, Invocation lifecycle, Register function/trigger/invoke/result messages.
+- Stubs added to `sdk-reference/engine-sdk.mdx`: Message types, Connection flow, Invocation lifecycle, Register function/trigger/invoke/result messages.
 - Stream Protocol section (Join/Leave/Sync/Create/Update/Delete) — flagged for iii-stream Worker Docs.
 
 ### advanced/deployment.mdx — Distribute and drop
@@ -286,7 +322,7 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - Per-worker architecture sections (HTTP / Streams / Queue / Cron) — flagged for Worker Docs.
 - "Custom Adapters" subsection — drop (deprecated).
 - "Package Architecture" diagram — drop (redundant with SDK Connection Flow).
-- "SDK Connection Flow" (lifecycle / heartbeat / reconnect / re-registration) — add stub section in each client SDK reference page (`api-reference/node-sdk.mdx`, `python-sdk.mdx`, `rust-sdk.mdx`, `browser-sdk.mdx`).
+- "SDK Connection Flow" (lifecycle / heartbeat / reconnect / re-registration) — add stub section in each client SDK reference page (`sdk-reference/node-sdk.mdx`, `python-sdk.mdx`, `rust-sdk.mdx`, `browser-sdk.mdx`).
 
 ## Hanging pieces
 
@@ -298,7 +334,7 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
   - **Open question — much of this may belong to Worker Docs, not ideal-docs.** With "everything is a worker," what used to read as engine config is largely per-worker config (HTTP host/port/CORS → iii-http; stream auth_function → iii-stream; etc.). Decide during post-outline review whether the reference is one cross-cutting page in ideal-docs or split across each Worker Docs surface.
   - Don't attempt during this migration pass.
 
-- **Source-doc gap:** iii-mono `api-reference/sdk-browser.mdx` omits `IIIReconnectionConfig` and `RegisterFunctionFormat` types — both exist in browser SDK source. Stubs included here; flag for the source author.
+- **Source-doc gap:** iii-mono `sdk-reference/sdk-browser.mdx` omits `IIIReconnectionConfig` and `RegisterFunctionFormat` types — both exist in browser SDK source. Stubs included here; flag for the source author.
 
 - **SDK type-list mismatches (Node vs Python, per source docs):**
   - **In Node, missing from Python:** `MessageType`, `FunctionRef`, `HttpAuthConfig`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerTypeRef`, `DeleteResult`, `StreamSetResult`, `StreamUpdateResult`.
