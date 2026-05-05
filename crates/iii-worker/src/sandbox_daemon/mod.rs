@@ -23,17 +23,28 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, InitOptions, OtelConfig, RegisterFunctionMessage, register_worker};
+use iii_sdk::{
+    IIIError, InitOptions, OtelConfig, RegisterFunctionMessage, WorkerMetadata, register_worker,
+};
 use serde_json::Value;
 
 use crate::sandbox_daemon::config::SandboxConfig;
 
 pub async fn run(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> {
     tracing::info!(url = %engine_url, "connecting to III engine");
+    // Identify ourselves as `iii-sandbox` so the engine surfaces this
+    // worker by its config-yaml name (and not the auto-detected
+    // `<hostname>:<pid>`) in `engine::workers::list` and friends. The
+    // publish workflow polls by this name to decide when the worker is
+    // ready for interface collection.
     let iii = register_worker(
         engine_url,
         InitOptions {
             otel: Some(OtelConfig::default()),
+            metadata: Some(WorkerMetadata {
+                name: "iii-sandbox".to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     );
