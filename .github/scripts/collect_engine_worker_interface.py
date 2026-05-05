@@ -65,7 +65,14 @@ def main() -> int:
     parser.add_argument("--worker", required=True)
     parser.add_argument("--out", default="worker-interface.json")
     parser.add_argument("--wait-seconds", type=int, default=0)
+    parser.add_argument("--trigger-types-baseline", default="")
     args = parser.parse_args()
+
+    baseline_json = None
+    if args.trigger_types_baseline:
+        baseline_path = pathlib.Path(args.trigger_types_baseline)
+        if baseline_path.exists():
+            baseline_json = json.loads(baseline_path.read_text(encoding="utf-8"))
 
     workers_json = wait_for_worker(args.worker, args.wait_seconds)
     functions_json = run_iii("engine::functions::list", {"include_internal": True})
@@ -76,6 +83,7 @@ def main() -> int:
         workers_json=workers_json,
         functions_json=functions_json,
         trigger_types_json=trigger_types_json,
+        baseline_trigger_types_json=baseline_json,
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))

@@ -71,34 +71,14 @@ jobs:
           export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
           iii --version
 
-      # Each builtin engine worker has different auto-load semantics
-      # (mandatory / enabled_by_default / external). Rather than rely on the
-      # ambient default, write a config that explicitly lists only the worker
-      # we are publishing, using its own iii.worker.yaml `config:` block as
-      # the worker's runtime config.
-      - name: Write engine config for ${{ inputs.worker }}
-        env:
-          WORKER: ${{ inputs.worker }}
-          WORKER_DIR: ${{ inputs.worker_dir }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os, pathlib, yaml
-          worker = os.environ["WORKER"]
-          worker_dir = pathlib.Path(os.environ["WORKER_DIR"])
-          manifest = worker_dir / "iii.worker.yaml"
-          meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
-          entry = {"name": worker}
-          if meta.get("config") is not None:
-              entry["config"] = meta["config"]
-          config = {"workers": [entry]}
-          pathlib.Path("config.yaml").write_text(yaml.dump(config, sort_keys=False), encoding="utf-8")
-          PY
-          cat config.yaml
-
+      # Boot the engine with no workers so we can snapshot the trigger
+      # types registered by `mandatory` workers (e.g. iii-observability's
+      # `log` trigger type). The collect step diffs those out so the target
+      # worker's payload only carries the types it actually contributes.
       - name: Start III engine
         run: |
           set -euo pipefail
+          printf 'workers: []\n' > config.yaml
           iii --config config.yaml --no-update-check > iii-engine.log 2>&1 &
           echo "$!" > iii-engine.pid
 
@@ -120,6 +100,38 @@ jobs:
           cat iii-engine.log || true
           exit 1
 
+      - name: Snapshot engine trigger types baseline
+        run: |
+          set -euo pipefail
+          iii trigger \
+            --function-id='engine::trigger-types::list' \
+            --payload='{"include_internal": false}' \
+            > trigger-types-baseline.json
+          cat trigger-types-baseline.json
+
+      # Reload the engine with the target worker by overwriting config.yaml.
+      # The engine watches config.yaml and reloads on change, so the target
+      # worker registers without restarting.
+      - name: Reload engine with target worker (${{ inputs.worker }})
+        env:
+          WORKER: ${{ inputs.worker }}
+          WORKER_DIR: ${{ inputs.worker_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, yaml
+          worker = os.environ["WORKER"]
+          worker_dir = pathlib.Path(os.environ["WORKER_DIR"])
+          manifest = worker_dir / "iii.worker.yaml"
+          meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+          entry = {"name": worker}
+          if meta.get("config") is not None:
+              entry["config"] = meta["config"]
+          config = {"workers": [entry]}
+          pathlib.Path("config.yaml").write_text(yaml.dump(config, sort_keys=False), encoding="utf-8")
+          PY
+          cat config.yaml
+
       - name: Collect worker interface
         env:
           WORKER: ${{ inputs.worker }}
@@ -127,7 +139,8 @@ jobs:
           python3 .github/scripts/collect_engine_worker_interface.py \
             --worker "$WORKER" \
             --out worker-interface.json \
-            --wait-seconds 120
+            --wait-seconds 120 \
+            --trigger-types-baseline trigger-types-baseline.json
 
       - name: Build payload
         id: payload

@@ -72,6 +72,7 @@ def normalize_worker_interface(
     workers_json: dict[str, Any],
     functions_json: dict[str, Any],
     trigger_types_json: dict[str, Any] | None = None,
+    baseline_trigger_types_json: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
     matches = [w for w in workers if w.get("name") == worker_name or w.get("id") == worker_name]
@@ -100,11 +101,25 @@ def normalize_worker_interface(
                 "metadata": _metadata_or_empty(metadata),
             }
         )
+
+    # Trigger types are global to the engine — `engine::trigger-types::list`
+    # cannot scope by worker today (see PR #1601 discussion). To keep the
+    # target worker's payload free of types contributed by `mandatory`
+    # workers (notably iii-observability's `log`), diff against a baseline
+    # snapshot taken before the target worker reloaded into the engine.
+    baseline_ids = {
+        tt["id"]
+        for tt in _extract_array(baseline_trigger_types_json or {}, "trigger_types")
+        if isinstance(tt.get("id"), str)
+    }
+
     triggers = []
     if trigger_types_json:
         for trigger_type in _extract_array(trigger_types_json, "trigger_types"):
             tt_id = trigger_type.get("id")
             if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
+                continue
+            if tt_id in baseline_ids:
                 continue
             triggers.append(_normalize_registry_trigger_type(trigger_type))
     return {"functions": functions, "triggers": triggers}
