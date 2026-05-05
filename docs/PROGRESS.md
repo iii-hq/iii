@@ -129,6 +129,9 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 - No new ideal-docs page needed. No "Choosing an Adapter" matrix.
 - Per-worker adapter sections (Queue/State/Stream/Cron/PubSub) are worker-specific — flagged for Worker Docs, not migrated here.
 
+### how-to/trigger-functions-from-cli.mdx — Already mapped
+- Existing stub on `using-iii/cli.mdx` ("Invoking functions through the cli") absorbs this. Expanded to a one-line description naming `iii trigger --function-id/--payload` and `--address`/`--port` for remote engines.
+
 ### how-to/trigger-actions.mdx — Distribute and drop
 - "Trigger actions" are function-invocation modes despite the name.
 - Stubs added to `understanding-iii/functions.mdx`: Invocation modes (sync + void) with a callout noting that workers can provide their own `TriggerAction`s and pointing at iii-queue's `TriggerAction.Enqueue` for queue-routed invocations.
