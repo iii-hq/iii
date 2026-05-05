@@ -3839,7 +3839,8 @@ mod tests {
         binaries.insert(
             "aarch64-apple-darwin".to_string(),
             cli_registry::BinaryInfo {
-                url: "https://example.com/h.tar.gz".to_string(),
+                // Non-HTTPS — still rejected by `validate_locked_artifact_url`.
+                url: "http://example.com/h.tar.gz".to_string(),
                 sha256: "c".repeat(64),
             },
         );
@@ -5054,7 +5055,8 @@ dependencies:
                     dependencies: Default::default(),
                     source: locked_binary_source(
                         binary_download::current_target(),
-                        "https://example.com/untrusted-worker.tar.gz",
+                        // Non-HTTPS — still rejected by `validate_locked_artifact_url`.
+                        "http://example.com/untrusted-worker.tar.gz",
                         "a".repeat(64),
                     ),
                 },
