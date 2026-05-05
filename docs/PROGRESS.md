@@ -38,6 +38,50 @@ All 73 files from `iii-mono/docs/` analyzed and routed.
 
 **Ground rules established and recorded above.**
 
+## Process notes for next pass
+
+Capturing what worked, what surprised us, and what to assume up front when reusing this file structure for a similar exercise (e.g., walking the rest of iii-mono — engine, SDKs, console — to align with `ideal-docs`).
+
+### Workflow that worked
+- **Per-file pause-and-decide cadence.** Skim section list → propose stubs / drops / Worker-Docs flags → wait for "yes" / refinement → apply → mark done + log decision. Going faster (proposing multiple files at once) lost detail.
+- **Ground rules emerge iteratively.** Several major rules (channels belong to iii-worker-manager, no external/built-in distinction, `iii worker` CLI is iii-level, logger/telemetry belong to iii-observability) only became clear partway through and required revisiting earlier decisions. Expect this; revise old entries explicitly when a new rule lands.
+- **Compare across siblings before stubbing.** SDK pages were the clearest example: comparing Node vs Python vs Rust type lists *before* stubbing each surfaced real gaps (missing types) and naming inconsistencies.
+- **Verify source code, not just source docs.** Source docs contained genuine inaccuracies (browser SDK telemetry stubs that didn't reflect the code; sdk-browser.mdx omitting real types). Default to grepping the SDK source when types or methods are listed.
+- **Hanging pieces parking lot.** Worked well as a low-friction place to stash "this doesn't fit anywhere yet" without blocking forward progress.
+
+### Inline markup conventions used
+- `**Consider removing**` — flagged surfaces that may leave the public API.
+- `_Confused on this one_` / `_This differs from node, is this okay?_` — italic hand-written reviewer notes embedded in stubs as questions.
+- `<Note>` callouts at the top of SDK pages — used to point at the worker that owns a stripped surface (observability, worker-manager).
+- `{/* TODO(skills/auto-gen): ... */}` — MDX comment markers for content that needs hand-authored prefix/suffix once auto-gen lands.
+
+These conventions are useful breadcrumbs; preserve them in any future pass.
+
+### Things to assume going in (already true about iii)
+- A worker is a worker — no external/built-in distinction.
+- All worker-specific content (config, functions, triggers, protocol, error codes) belongs in Worker Docs.
+- Logger and telemetry belong to iii-observability.
+- Channels belong to iii-worker-manager.
+- `iii worker` CLI subcommands and `iii.lock` are iii-level tooling, not Worker Docs.
+- Engine config is `config.yaml`. Worker-level config is `iii.worker.yaml`.
+- Adapters are deprecated.
+- Auto-reconnect is SDK behavior.
+- Worker authoring (implementing engine traits, building worker packages) is outside ideal-docs.
+- The three primitives are Worker, Function, Trigger — that framing should anchor any new conceptual content.
+
+### Pitfalls observed
+- **Naming drift.** `api-reference/` was renamed to `sdk-reference/` mid-pass; `iii-config.yaml` became `config.yaml`. When source docs use older names, normalize to current naming in stubs and note the rename in the decisions log.
+- **The "examples" pattern is a trap.** Code-heavy standalone example files almost always either (a) duplicate a tutorial, (b) duplicate a reference page, or (c) belong in Worker Docs. Default to drop unless a unique pattern surfaces.
+- **Per-version changelog detail decays fast.** Stubbed at the level of "there is a changelog page" rather than per-version; that scales.
+- **"Why this SDK" / "Why this matters" framing has no auto-gen home.** SDK and config-reference pages will be auto-generated; the motivational/positioning prose needs explicit pre/post-append slots in the generator design. Logged in Hanging pieces.
+
+### Adapting this file for the engine/sdks/console pass
+The current shape (file list with checkboxes + decisions log + hanging pieces + ground rules) transfers cleanly. Suggestions:
+- Replace "every `.mdx` file in `iii-mono/docs/`" with "every public-API surface in `iii-mono/{engine,sdk,console}/`" or whichever scope the next pass picks.
+- Likely groupings: per crate/package; per public module; per CLI command; per trigger type; per worker. Group early so decisions can batch when patterns repeat (much like `workers/* — Move to Worker Docs (batch)` here).
+- The "Decision log entry" template that emerged: `### <source> — <verdict>\n- <bullets describing where stubs landed, what was dropped, what was flagged>`.
+- The status legend (`[ ]` / `[x]` / `[~]`) is the right granularity. Don't add more states.
+
 ## Status legend
 
 - [ ] pending
