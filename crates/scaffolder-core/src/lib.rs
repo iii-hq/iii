@@ -10,6 +10,7 @@
 //! - **Workflow orchestration:** `ProductConfig` trait describing each product
 //! - **CLI/TUI interface:** cliclack-based prompts exposed via `run`
 
+pub mod iii;
 pub mod product;
 pub mod runtime;
 pub mod telemetry;
@@ -17,6 +18,7 @@ pub mod templates;
 pub mod tui;
 
 // Re-export main types for convenience
+pub use iii::IiiConfig;
 pub use product::ProductConfig;
 pub use runtime::{Language, RuntimeInfo, check_runtimes};
 pub use templates::{

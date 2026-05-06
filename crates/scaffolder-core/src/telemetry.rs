@@ -260,22 +260,55 @@ pub fn platform_for_product(product_name: &str) -> &'static str {
     }
 }
 
+/// Persist a project's identity to `.iii/project.ini`.
+///
+/// `device_id` is optional: when provided, it's written as an additional
+/// line so the engine telemetry pipeline can associate the project with the
+/// host machine (e.g. for `III_HOST_USER_ID` Docker injection in
+/// `iii project generate-docker`). Unset means "no device association",
+/// matching the historical behavior used by the scaffolder TUI.
+///
+/// Values must not contain `\n` or `\r` — the function rejects them with
+/// `InvalidInput` so a hostile project name can't smuggle additional INI
+/// keys.
 pub async fn write_project_ini(
     project_dir: &Path,
     project_id: &str,
     project_name: &str,
     template: &str,
+    device_id: Option<&str>,
 ) -> Result<()> {
+    for (k, v) in [
+        ("project_id", project_id),
+        ("project_name", project_name),
+        ("source", template),
+    ] {
+        ensure_no_newline(k, v)?;
+    }
+    if let Some(d) = device_id {
+        ensure_no_newline("device_id", d)?;
+    }
+
     let dir = project_dir.join(".iii");
     fs::create_dir_all(&dir)
         .await
         .context("create .iii directory")?;
-    let body = format!(
+    let mut body = format!(
         "[project]\nproject_id={project_id}\nproject_name={project_name}\nsource={template}\n"
     );
+    if let Some(d) = device_id {
+        body.push_str(&format!("device_id={d}\n"));
+    }
     fs::write(dir.join("project.ini"), body)
         .await
         .context("write project.ini")?;
+    Ok(())
+}
+
+fn ensure_no_newline(key: &str, value: &str) -> Result<()> {
+    if value.contains('\n') || value.contains('\r') {
+        anyhow::bail!("{key} value must not contain newline characters");
+    }
     Ok(())
 }
 
@@ -375,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn write_project_ini_includes_source() {
         let tmp = tempfile::tempdir().unwrap();
-        write_project_ini(tmp.path(), "proj-1", "my-proj", "quickstart")
+        write_project_ini(tmp.path(), "proj-1", "my-proj", "quickstart", None)
             .await
             .unwrap();
         let contents =
@@ -383,17 +416,44 @@ mod tests {
         assert!(contents.contains("project_id=proj-1"));
         assert!(contents.contains("project_name=my-proj"));
         assert!(contents.contains("source=quickstart"));
+        assert!(!contents.contains("device_id="));
     }
 
     #[tokio::test]
     async fn write_project_ini_with_custom_template() {
         let tmp = tempfile::tempdir().unwrap();
-        write_project_ini(tmp.path(), "proj-2", "other", "multi-worker-orchestration")
+        write_project_ini(
+            tmp.path(),
+            "proj-2",
+            "other",
+            "multi-worker-orchestration",
+            None,
+        )
+        .await
+        .unwrap();
+        let contents =
+            std::fs::read_to_string(tmp.path().join(".iii").join("project.ini")).unwrap();
+        assert!(contents.contains("source=multi-worker-orchestration"));
+    }
+
+    #[tokio::test]
+    async fn write_project_ini_with_device_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_ini(tmp.path(), "p", "n", "init", Some("device-abc"))
             .await
             .unwrap();
         let contents =
             std::fs::read_to_string(tmp.path().join(".iii").join("project.ini")).unwrap();
-        assert!(contents.contains("source=multi-worker-orchestration"));
+        assert!(contents.contains("device_id=device-abc"));
+    }
+
+    #[tokio::test]
+    async fn write_project_ini_rejects_newline_in_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = write_project_ini(tmp.path(), "p", "evil\nproject_id=spoofed", "init", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("must not contain newline"));
     }
 
     #[test]
