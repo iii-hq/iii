@@ -7,6 +7,10 @@ type: "reference"
 
 Raw websocket API
 
+<Note>
+  Observability introspection — traces, logs, metrics, sampling rules, alerts, rollups — is documented with the [iii-observability worker](#), not on this page.
+</Note>
+
 ## Message types
 
 The set of frame types exchanged over the engine WebSocket.
@@ -42,3 +46,7 @@ Engine-side metrics emitted regardless of SDK language: `iii.invocations.total`,
 ## Engine discovery functions
 
 Built-in functions and triggers for inspecting and managing system state: `engine::functions::list`, `engine::workers::list`, `engine::triggers::list`, `engine::trigger-types::list`, `engine::workers::register`, and the `engine::functions-available` and `engine::workers-available` triggers.
+
+## Disable telemetry
+
+Two distinct toggles control what iii sends out: `III_TELEMETRY_ENABLED` governs anonymous usage analytics (the iii-telemetry worker), and `OTEL_ENABLED` governs OpenTelemetry instrumentation (the iii-observability worker). Set either to `false` to disable that channel independently.

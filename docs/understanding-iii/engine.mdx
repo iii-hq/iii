@@ -30,3 +30,7 @@ Function-to-worker routing is independent of language, runtime, and location.
 ## Discovery and the live registry
 
 The engine maintains a registry of every connected worker's functions and triggers; workers read it on demand via the `engine::*::list` functions and subscribe to changes via the `engine::functions-available` trigger.
+
+<Note>
+  Listing workers, functions, triggers, and trigger types is documented with the [iii-engine-functions worker](#). Querying traces, logs, and metrics is documented with the [iii-observability worker](#).
+</Note>

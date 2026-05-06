@@ -9,6 +9,8 @@ precedes the verb (what you're doing).
 
 Examples that conform:
 
+- `iii project init`
+- `iii worker init`
 - `iii worker add`
 - `iii worker remove`
 - `iii worker list`
@@ -18,15 +20,16 @@ Examples that conform:
 - `iii worker update`
 - `iii worker verify`
 
-When you encounter a command that doesn't follow this pattern (e.g., `iii trigger ...` where
-`trigger` is the verb), flag it — either the command name should change, or the doc should clarify
-the noun.
+**Recognized exemption — `iii trigger`:** The syntax `iii trigger <function-path> [argA="value" argB=5 ...]` is the canonical way to invoke any registered function from the CLI (e.g., `iii trigger sandbox::run`, `iii trigger state::set`, `iii trigger iii::durable::publish`). The `function-path` follows the worker-namespaced `noun::verb` scheme.
+
+When you encounter another command that doesn't follow `iii noun verb`, flag it — either the
+command name should change, or the doc should clarify the noun.
 
 ## `iii worker` CLI is iii-level tooling
 
 All `iii worker` subcommands — `add/remove/list/start/stop/exec/update/verify` — plus the `iii.lock`
 lockfile and worker image build/publish flow are part of iii itself, analogous to `npm`/`cargo`.
-They live in the iii docs (primarily `using-iii/workers.mdx`), not Worker Docs.
+They are documented in the iii docs (primarily `using-iii/workers.mdx`), not Worker Docs.
 
 `using-iii/cli.mdx` should reference `using-iii/workers.mdx` for `iii worker` subcommand details
 rather than duplicate them.
@@ -40,5 +43,5 @@ The CLI page covers:
   that survives).
 - A pointer to `using-iii/workers.mdx` for `iii worker` subcommands.
 
-It does **not** enumerate every `iii worker` subcommand — those live with the noun's primary page
+It does **not** enumerate every `iii worker` subcommand — those are on the noun's primary page
 (`using-iii/workers.mdx`).

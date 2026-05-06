@@ -25,9 +25,11 @@ Connecting to the engine and obtaining the SDK handle. Always call the variable 
 ## Connection lifecycle
 
 How the SDK connects to the engine, registers functions, and reconnects with re-registration on
-disconnect (exponential backoff with jitter, configured via `IIIReconnectionConfig`).
+disconnect (exponential backoff with jitter, configured via the reconnection options on `InitOptions`).
 
 ## Methods
+
+The functions exposed by the browser SDK for registering, invoking, and tearing down workers.
 
 ### registerWorker
 
@@ -73,16 +75,6 @@ Wire message-type discriminator used by the SDK.
 ### FunctionRef
 
 Typed reference to a registered function.
-
-### IIIReconnectionConfig
-
-Engine-WebSocket reconnection behavior — `maxRetries`, `initialDelayMs`, `backoffMultiplier`,
-`maxDelayMs`, `jitterFactor`. The browser SDK only has this one; other SDKs additionally expose a
-`ReconnectionConfig` for their OTel exporter, but the browser SDK does not ship OpenTelemetry.
-
-### RegisterFunctionFormat
-
-JSON Schema shape used for `request_format` and `response_format` on registered functions.
 
 ### RegisterFunctionMessage
 

@@ -13,6 +13,8 @@ The `config.yaml` workers needed to support a browser-driven reactive app.
 
 ## Backend
 
+The worker, auth, stream wrapper, and CRUD functions that power the app server-side.
+
 ### Worker setup
 
 Connect a worker, register the functions the app needs, and bind triggers.
@@ -30,6 +32,8 @@ A typed wrapper class over `stream::get` / `stream::set` / `stream::list` / `str
 The CRUD functions the browser calls (create, toggle, delete, list) wired to write through the stream wrapper.
 
 ## Frontend
+
+The browser-side WebSocket connection and reactive hook that render live updates.
 
 ### Connection
 

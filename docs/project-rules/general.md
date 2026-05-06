@@ -14,3 +14,9 @@ not migrate them. Drop or flag for the relevant Worker Docs.
 
 Do not refer to coding or process terms within iii workers or docs as a "step" or "steps". The
 generic term such as in a tutorial's "step 1", "step 2" is okay.
+
+## `motia-tools` is out of scope
+
+`crates/motia-tools` (the `motia` binary) is a separate product surface that predates the iii
+rename. Its docs are at motia.dev, not ideal-docs. When auditing the crates monorepo, do not
+flag `motia-tools` as a missing docs target.

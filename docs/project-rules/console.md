@@ -4,7 +4,7 @@ Rules for documenting the iii Console — the standalone web UI that connects to
 
 ## The Console is its own surface
 
-The Console is **not** a worker. It's a standalone application that talks to a running iii engine. Its documentation lives in the iii docs (`using-iii/console.mdx`), not Worker Docs.
+The Console is **not** a worker. It's a standalone application that connects to a running iii engine. Its documentation is in the iii docs (`using-iii/console.mdx`), not Worker Docs.
 
 ## Per-page content is console-owned
 

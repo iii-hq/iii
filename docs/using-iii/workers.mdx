@@ -8,29 +8,57 @@ type: "how-to"
 Note: everything in using-iii is about using existing functionality in workers, not creating new
 functionality
 
+<Note>
+  **Did you know?** You can query anything a worker is doing — its registered functions, its triggers, its in-flight invocations, its traces and logs — via the [iii-engine-functions worker](#) and [iii-observability worker](#). Or open the [console](/using-iii/console) for the visual view.
+</Note>
+
 ## Getting current workers from a iii system
+
+Querying the engine for the set of workers currently connected at runtime.
 
 ## Finding workers in the registry
 
+Looking up a specific worker in the live registry by name or metadata.
+
 ## Retrieving worker skills
+
+Fetching the skills metadata a worker advertises so agents and tools know what it can do.
 
 ## Listing available functions
 
+Enumerating every function registered across connected workers.
+
 ## Listing available triggers
+
+Enumerating every trigger bound across connected workers.
 
 ## Connecting workers
 
+Pointing a worker at an engine address so it joins the system.
+
 ## Starting workers
+
+Launching declared workers from the project's `config.yaml`.
 
 ## Using functions
 
+Invoking a registered function from a connected worker or client.
+
 ## Using triggers
+
+Firing a registered trigger to drive its bound function.
 
 ## Registering functions
 
 High-level, link out to triggers, and functions docs in using-iii
 
 ## Registering triggers
+
+How to wire a configured trigger to an existing function — see the [Triggers](/using-iii/triggers) guide for full mechanics.
+
+## Scaffold a new worker
+
+`iii worker init` (default base template) or `iii worker init --template <template_name>` (specific template) generates a new worker package alongside your project.
 
 ## Managing workers from the CLI
 

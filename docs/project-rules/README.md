@@ -6,6 +6,7 @@ Canonical rules for updating and maintaining `iii`.
 
 - [`general.md`](./general.md) — cross-cutting authoring and content rules.
 - [`docs.md`](./docs.md) — iii docs page authoring and structure rules.
+- [`voice.md`](./voice.md) — voice and tone for prose across iii docs pages.
 - [`workers.md`](./workers.md) — Worker Docs routing and worker concepts.
 - [`sdks.md`](./sdks.md) — SDK reference page conventions.
 - [`cli.md`](./cli.md) — CLI naming and scope.

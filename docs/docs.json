@@ -37,7 +37,7 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": ["getting-started/install", "getting-started/quickstart"]
+            "pages": ["install", "quickstart"]
           },
           {
             "group": "Using iii",
@@ -105,7 +105,7 @@
         "groups": [
           {
             "group": "How-to",
-            "pages": ["how-to/disable-telemetry", "how-to/build-a-realtime-todo-app"]
+            "pages": ["how-to/build-a-realtime-todo-app"]
           }
         ]
       },
