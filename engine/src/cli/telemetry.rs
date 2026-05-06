@@ -164,6 +164,32 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
     }
 }
 
+pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
+    if let Some(event) = build_event(
+        "project_init_succeeded",
+        serde_json::json!({
+            "with_docker": with_docker,
+            "project_id": project_id,
+        }),
+        None,
+    ) {
+        send_fire_and_forget(event);
+    }
+}
+
+pub fn send_project_init_failed(stage: &str, error: &str) {
+    if let Some(event) = build_event(
+        "project_init_failed",
+        serde_json::json!({
+            "stage": stage,
+            "error": error,
+        }),
+        None,
+    ) {
+        send_fire_and_forget(event);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
