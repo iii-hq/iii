@@ -154,14 +154,21 @@ async fn run_init(args: InitArgs) -> i32 {
         .and_then(|n| n.to_str())
         .unwrap_or("iii-project")
         .to_string();
-    let project_id = uuid::Uuid::new_v4().to_string();
 
-    let ini = project_ini::ProjectIni {
-        project_id: Some(project_id.clone()),
-        project_name: Some(project_name.clone()),
-        source: Some("init".to_string()),
-        device_id: Some(device_id.clone()),
-    };
+    // Preserve any existing project identity. Re-running `iii project init`
+    // in the same directory must not rotate `project_id` or wipe fields the
+    // user (or a prior run) already set — that would break telemetry
+    // continuity.
+    let mut ini = project_ini::ProjectIni::read(&root).unwrap_or_default();
+    if ini.project_id.is_none() {
+        ini.project_id = Some(uuid::Uuid::new_v4().to_string());
+    }
+    if ini.project_name.is_none() {
+        ini.project_name = Some(project_name.clone());
+    }
+    ini.source.get_or_insert_with(|| "init".to_string());
+    ini.device_id.get_or_insert_with(|| device_id.clone());
+    let project_id = ini.project_id.clone().unwrap_or_default();
     if let Err(e) = ini.write(&root) {
         crate::cli::telemetry::send_project_init_failed("write_project_ini", &e.to_string());
         return print_err(
@@ -261,9 +268,10 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
 
     // If a target directory was provided (--directory or positional) we
     // know where the project landed; persist device_id into .iii/project.ini
-    // so the engine telemetry pipeline can associate runs with this project.
-    // For interactive directory selection we skip this — the user can run
-    // `iii project init` afterwards if they want a project.ini.
+    // so the engine telemetry pipeline can associate runs with this project,
+    // and honor --docker by writing the engine's Dockerfile/compose/.env on
+    // top of the templated project. For interactive directory selection we
+    // skip both — the user can re-run with --directory afterwards.
     let project_id_for_event = if let Some(root) = target_dir.as_ref() {
         if root.is_dir() {
             let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
@@ -272,7 +280,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
                 .and_then(|n| n.to_str())
                 .unwrap_or("iii-project")
                 .to_string();
-            let mut ini = project_ini::ProjectIni::read(&root).unwrap_or_default();
+            let mut ini = project_ini::ProjectIni::read(root).unwrap_or_default();
             if ini.project_id.is_none() {
                 ini.project_id = Some(uuid::Uuid::new_v4().to_string());
             }
@@ -281,28 +289,42 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
             }
             ini.source
                 .get_or_insert_with(|| "init-template".to_string());
-            ini.device_id.get_or_insert(device_id);
+            ini.device_id.get_or_insert_with(|| device_id.clone());
             let id = ini.project_id.clone().unwrap_or_default();
-            if let Err(e) = ini.write(&root) {
+            if let Err(e) = ini.write(root) {
                 eprintln!(
                     "  {} could not persist .iii/project.ini: {}",
                     "warning:".yellow().bold(),
                     e
                 );
             }
+
+            if args.docker {
+                if let Err(e) = docker::write_docker_assets(root, &device_id) {
+                    crate::cli::telemetry::send_project_init_failed("write_docker", &e.to_string());
+                    return print_err(
+                        "could not write Docker assets",
+                        &e.to_string(),
+                        "remove existing Dockerfile/docker-compose.yml or check write permissions",
+                    );
+                }
+            }
+
             id
         } else {
             String::new()
         }
     } else {
         // Interactive flow — emit a generic success event without project_id.
+        // We can't reliably retrofit Docker assets when the directory was
+        // chosen interactively by the scaffolder.
         String::new()
     };
 
     // The conversion event fires whenever the scaffolder succeeded, even if
     // the post-process project.ini write failed. The user got a working
     // project; the missing project.ini just means metrics won't link back.
-    crate::cli::telemetry::send_project_init_succeeded(false, &project_id_for_event);
+    crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id_for_event);
 
     0
 }
@@ -374,6 +396,7 @@ fn warn_missing_project_ini(root: &std::path::Path, problem: &str) {
 
 fn resolve_root(dir: Option<&str>) -> Result<std::path::PathBuf, String> {
     match dir {
+        Some(d) if d.trim().is_empty() => Err("directory argument cannot be empty".to_string()),
         Some(d) => Ok(std::path::PathBuf::from(d)),
         None => std::env::current_dir().map_err(|e| format!("cannot read cwd: {}", e)),
     }

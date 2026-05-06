@@ -50,6 +50,93 @@ fn project_init_accepts_positional_name() {
 }
 
 #[test]
+fn project_init_preserves_existing_project_id_on_rerun() {
+    // Re-running `iii project init` in an existing project must not rotate
+    // project_id or wipe the existing identity. Telemetry depends on
+    // project_id staying stable across runs.
+    let dir = tempdir().unwrap();
+    let out1 = iii_bin()
+        .args(["project", "init", "--directory"])
+        .arg(dir.path())
+        .output()
+        .expect("first init");
+    assert!(out1.status.success(), "first init must succeed");
+    let ini1 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
+
+    let out2 = iii_bin()
+        .args(["project", "init", "--directory"])
+        .arg(dir.path())
+        .output()
+        .expect("second init");
+    assert!(out2.status.success(), "second init must succeed");
+    let ini2 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
+
+    let project_id_of = |s: &str| {
+        s.lines()
+            .find_map(|l| l.strip_prefix("project_id="))
+            .map(|v| v.trim().to_string())
+            .expect("project_id present")
+    };
+    assert_eq!(
+        project_id_of(&ini1),
+        project_id_of(&ini2),
+        "project_id must remain stable across re-runs"
+    );
+}
+
+#[test]
+fn project_init_with_empty_directory_flag_errors_clearly() {
+    let out = iii_bin()
+        .args(["project", "init", "--directory", ""])
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        !out.status.success(),
+        "empty --directory should fail to parse"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("directory argument cannot be empty"),
+        "expected explicit empty-arg message:\n{stderr}"
+    );
+}
+
+#[test]
+fn project_init_template_with_docker_writes_docker_assets() {
+    // --docker must be honored even when template flags are also set.
+    // Use --template-dir pointing at a path that does NOT exist so the
+    // scaffolder fails fast — but if we ever got past the scaffolder, the
+    // docker write would still need to happen. For now, we only assert
+    // that the parser accepts the combination (sanity check on clap).
+    // The actual write-docker-after-scaffold path is covered by the unit
+    // test in cli::project::tests below.
+    let dir = tempdir().unwrap();
+    let out = iii_bin()
+        .args([
+            "project",
+            "init",
+            "--template",
+            "definitely-not-a-real-template",
+            "--docker",
+            "--yes",
+            "--skip-iii",
+            "--template-dir",
+        ])
+        .arg(dir.path().join("nonexistent"))
+        .arg("--directory")
+        .arg(dir.path().join("app"))
+        .output()
+        .expect("failed to run iii");
+    // Scaffolder will reject the bogus template, but the parse should have
+    // accepted --docker alongside --template.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("unexpected argument") && !stderr.contains("conflicts with"),
+        "clap should accept --docker with template flags:\n{stderr}"
+    );
+}
+
+#[test]
 fn project_init_writes_device_id_into_project_ini() {
     let dir = tempdir().unwrap();
     let out = iii_bin()

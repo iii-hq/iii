@@ -76,15 +76,21 @@ fn sanitize_error(error: &str) -> String {
     let mut buf = String::new();
     while let Some(c) = chars.next() {
         buf.push(c);
-        // Detect /Users/<name>/ and /home/<name>/ prefixes and replace them
-        // with a redaction marker. We do this character-by-character so we
-        // don't allocate a clone of the whole error string.
-        if buf.ends_with("/Users/") || buf.ends_with("/home/") {
+        // Detect /Users/<name>/ and /home/<name>/ (Unix) or \Users\<name>\
+        // (Windows) prefixes and replace the username segment with a marker.
+        // We work character-by-character so we don't allocate a clone of
+        // the whole error string.
+        if buf.ends_with("/Users/")
+            || buf.ends_with("/home/")
+            || buf.ends_with("\\Users\\")
+            || buf.ends_with("\\home\\")
+        {
             out.push_str(&buf);
             buf.clear();
-            // skip the username segment up to next '/' or whitespace
+            // skip the username segment up to the next path separator
+            // (forward or back slash) or whitespace.
             while let Some(&peek) = chars.peek() {
-                if peek == '/' || peek.is_whitespace() {
+                if peek == '/' || peek == '\\' || peek.is_whitespace() {
                     break;
                 }
                 chars.next();
@@ -358,5 +364,15 @@ mod tests {
     fn sanitize_error_passes_through_safe_strings() {
         let s = sanitize_error("HTTP 500: Internal Server Error");
         assert_eq!(s, "HTTP 500: Internal Server Error");
+    }
+
+    #[test]
+    fn sanitize_error_redacts_windows_users_path() {
+        let s = sanitize_error("open C:\\Users\\alice\\secret.txt failed");
+        assert!(!s.contains("alice"), "username should be redacted: {s}");
+        assert!(
+            s.contains("\\Users\\<redacted>\\"),
+            "expected redacted Windows path: {s}"
+        );
     }
 }
