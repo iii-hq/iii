@@ -14,7 +14,6 @@ members = [
   "crates/iii-supervisor",
   "crates/iii-worker",
   "crates/scaffolder-core",
-  "crates/iii-tools",
   "crates/motia-tools",
 ]
 
