@@ -32,6 +32,30 @@ test('rss feed exists and references the canonical post URL', async () => {
 // has regressed.
 const PARENT_SITE_PATHS = new Set(['/', '/docs', '/favicon.svg'])
 
+// Analytics + consent — must mirror website/index.html so the localStorage
+// 'iii_cookie_consent' key is shared across iii.dev and /blog. If any of
+// these regress, the blog will either lose tracking or the marketing site's
+// consent state will silently desync.
+async function assertAnalyticsAndConsent(html: string, where: string) {
+  assert.match(html, /GTM-N8DCTFB8/, `${where}: GTM container ID missing`)
+  assert.match(html, /googletagmanager\.com\/ns\.html\?id=GTM-N8DCTFB8/, `${where}: GTM <noscript> iframe missing`)
+  assert.match(html, /iiiLoadCommonRoomSignals/, `${where}: Common Room loader missing`)
+  assert.match(html, /iiiNotifyCommonRoomEmail/, `${where}: Common Room email hook missing`)
+  assert.match(html, /cdn\.cr-relay\.com\/v1\/site\/da18833a-8f00-4ad0-9833-6608b59a713a\/signals\.js/, `${where}: Common Room signals script URL missing`)
+  assert.match(html, /id="cookie-consent-banner"/, `${where}: cookie consent banner DOM missing`)
+  assert.match(html, /'iii_cookie_consent'/, `${where}: shared consent storage key missing`)
+}
+
+test('blog index includes GTM, Common Room loader, and cookie consent banner', async () => {
+  const html = await read('index.html')
+  await assertAnalyticsAndConsent(html, 'index.html')
+})
+
+test('blog post page includes GTM, Common Room loader, and cookie consent banner', async () => {
+  const html = await read('hello-world/index.html')
+  await assertAnalyticsAndConsent(html, 'hello-world/index.html')
+})
+
 test('all internal links and assets are scoped under /blog/ (or the parent site allowlist)', async () => {
   const html = await read('index.html')
   const matches = [...html.matchAll(/(?:href|src)="(\/[^"]*)"/g)].map((m) => m[1])

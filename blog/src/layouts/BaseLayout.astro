@@ -1,5 +1,7 @@
 ---
 import '../styles/global.css'
+import AnalyticsHead from '../components/AnalyticsHead.astro'
+import CookieBanner from '../components/CookieBanner.astro'
 
 interface Props {
   title: string
@@ -16,6 +18,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site).toString()
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="generator" content={Astro.generator} />
+    <AnalyticsHead />
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
@@ -28,6 +31,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site).toString()
     <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
+    <CookieBanner />
     <header class="site">
       <div class="inner">
         <a class="logo" href="/blog/">iii / blog</a>
