@@ -1,10 +1,11 @@
 ---
 
-## title: 'The Harness Is the Backend'  
+title: 'The Harness Is the Backend'  
 description: 'The agent harness debate takes for granted that the harness is its own world, separate from the backend. iii makes a different bet: the harness is the backend.'  
 pubDate: 2026-05-06  
 author: 'Mike Piccolo, Founder & CEO of iii'  
 tags: ['agents', 'architecture', 'harness', 'backend']
+---
 
 The most important architectural question in AI infrastructure right now isn't
 which model to use. It's how much infrastructure is required to build something
