@@ -4,6 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod project_ini;
+
 use clap::{Args, Subcommand};
 
 #[derive(Args, Debug, Clone)]
