@@ -110,25 +110,9 @@ body {
   height: 28px;
   display: block;
 }
-.logo-mark .bar {
-  fill: var(--ink);
-}
+.logo-mark .bar,
 .logo-mark .accent {
-  fill: var(--accent);
-}
-
-.logo-wordmark {
-  font-size: 0.95rem;
-  letter-spacing: 0.04em;
-  color: var(--ink-faint);
-}
-.logo-wordmark .slash {
-  margin: 0 0.4em;
-  color: var(--ink-ghost);
-}
-.logo-wordmark .here {
-  color: var(--ink);
-  font-weight: 600;
+  fill: var(--ink);
 }
 
 .nav-right {
