@@ -36,17 +36,24 @@ in the base path or content collection setup fail loudly.
 
 ## Deployment
 
-Not wired up yet. The next step (tracked separately) will:
+The blog ships with the rest of `iii.dev` via
+[`.github/workflows/deploy-website.yml`](../.github/workflows/deploy-website.yml).
+On every push to `main` that touches `blog/**`, `website/**`, or
+`infra/terraform/website/**`, CI:
 
-1. Add a CloudFront cache behavior for `/blog*` that serves `blog/dist/` from
-   the existing site S3 bucket under the `blog/` prefix.
-2. Update the CloudFront viewer-request function so its SPA fallback does
-   not collide with `/blog/<slug>/` URLs.
-3. Sync `blog/dist/` to `s3://<site-bucket>/blog/` from CI.
-4. Optionally add a Vercel `rewrites` entry for environments that still use
-   Vercel.
+1. Builds with `pnpm --filter iii-blog build` → `blog/dist/`.
+2. Syncs `blog/dist/` to `s3://<site-bucket>/blog/`. Hashed assets get a
+   long `immutable` cache; `*.html` and `*.xml` get `must-revalidate`.
+3. Invalidates the CloudFront distribution at `/*`.
 
-See `infra/terraform/website/cloudfront.tf` for the current routing.
+Routing under `/blog/*` is handled in
+[`infra/terraform/website/cloudfront_functions/redirects.js`](../infra/terraform/website/cloudfront_functions/redirects.js)
+— see the unit tests there for the exact behavior. In short:
+
+- `/blog` → 301 `/blog/`
+- `/blog/<slug>/` → S3 key `blog/<slug>/index.html`
+- `/blog/<slug>` → 301 `/blog/<slug>/`
+- `/blog/<file.ext>` → pass through
 
 ## Adding a post
 
