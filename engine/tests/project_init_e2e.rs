@@ -30,6 +30,26 @@ fn project_init_creates_minimum_scaffold() {
 }
 
 #[test]
+fn project_init_accepts_positional_name() {
+    // `iii project init myapp` should produce the same scaffold as
+    // `iii project init --directory myapp`.
+    let parent = tempdir().unwrap();
+    let out = iii_bin()
+        .args(["project", "init", "myapp"])
+        .current_dir(parent.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        out.status.success(),
+        "init <name> failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let project = parent.path().join("myapp");
+    assert!(project.join(".iii").join("project.ini").exists());
+    assert!(project.join("config.yaml").exists());
+}
+
+#[test]
 fn project_init_writes_device_id_into_project_ini() {
     let dir = tempdir().unwrap();
     let out = iii_bin()

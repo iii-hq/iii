@@ -26,7 +26,11 @@ pub enum ProjectAction {
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
-    /// Target directory (defaults to current directory)
+    /// Project directory (positional). Equivalent to --directory.
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Target directory (defaults to current directory). Takes precedence over the positional name.
     #[arg(short, long)]
     pub directory: Option<String>,
 
@@ -55,6 +59,13 @@ pub struct InitArgs {
     /// Auto-confirm all prompts (non-interactive mode).
     #[arg(short, long)]
     pub yes: bool,
+}
+
+impl InitArgs {
+    /// Resolved target directory: --directory wins, positional name is fallback.
+    fn target_dir(&self) -> Option<&str> {
+        self.directory.as_deref().or(self.name.as_deref())
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -103,7 +114,8 @@ async fn run_init(args: InitArgs) -> i32 {
         return run_init_with_template(args).await;
     }
 
-    let root = match resolve_root(args.directory.as_deref()) {
+    let target = args.target_dir().map(|s| s.to_string());
+    let root = match resolve_root(target.as_deref()) {
         Ok(p) => p,
         Err(e) => {
             return print_err(
@@ -177,7 +189,7 @@ async fn run_init(args: InitArgs) -> i32 {
     );
     eprintln!();
     eprintln!("  Next steps:");
-    if args.directory.is_some() {
+    if target.is_some() {
         eprintln!("    {}", format!("cd {}", project_name).bold());
     }
     eprintln!("    {}    # add a worker", "iii worker add <package>".bold());
@@ -203,10 +215,11 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         std::process::exit(130);
     });
 
+    let target_dir = args.target_dir().map(std::path::PathBuf::from);
     let create_args = scaffolder_core::tui::CreateArgs {
         template_dir: args.template_dir.as_ref().map(std::path::PathBuf::from),
         template: args.template.clone(),
-        directory: args.directory.as_ref().map(std::path::PathBuf::from),
+        directory: target_dir.clone(),
         languages: args.languages.clone(),
         skip_tool_check: args.skip_iii,
         yes: args.yes,
@@ -224,13 +237,12 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         );
     }
 
-    // If --directory was provided we know where the project landed; persist
-    // device_id into .iii/project.ini so the engine telemetry pipeline can
-    // associate runs with this project. For interactive directory selection
-    // we skip this — the user can run `iii project init` afterwards if they
-    // want a project.ini.
-    if let Some(dir) = args.directory.as_deref() {
-        let root = std::path::PathBuf::from(dir);
+    // If a target directory was provided (--directory or positional) we
+    // know where the project landed; persist device_id into .iii/project.ini
+    // so the engine telemetry pipeline can associate runs with this project.
+    // For interactive directory selection we skip this — the user can run
+    // `iii project init` afterwards if they want a project.ini.
+    if let Some(root) = target_dir.as_ref() {
         if root.is_dir() {
             let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
             let project_name = root

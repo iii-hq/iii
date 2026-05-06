@@ -577,6 +577,22 @@ mod tests {
     }
 
     #[test]
+    fn project_init_with_positional_name_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "myapp"])
+            .expect("should parse project init <name>");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => {
+                    assert_eq!(init.name.as_deref(), Some("myapp"));
+                    assert!(init.directory.is_none());
+                }
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
     fn project_init_with_directory_parses() {
         let cli = Cli::try_parse_from(["iii", "project", "init", "--directory", "myapp"])
             .expect("should parse project init --directory");
