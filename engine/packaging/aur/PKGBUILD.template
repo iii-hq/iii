@@ -1,4 +1,4 @@
-# Maintainer: III Team <support@motia.dev>
+# Maintainer: III Team <team@iii.dev>
 pkgname=iii-bin
 pkgver={{VERSION}}
 pkgrel=1
