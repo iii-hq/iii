@@ -641,4 +641,50 @@ mod tests {
             _ => panic!("expected Project subcommand"),
         }
     }
+
+    #[test]
+    fn project_init_with_template_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "--template", "node-pdfkit"])
+            .expect("should parse project init --template");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => {
+                    assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
+                    assert!(!init.yes);
+                    assert!(!init.skip_iii);
+                }
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_template_full_arg_set_parses() {
+        let cli = Cli::try_parse_from([
+            "iii", "project", "init",
+            "--template", "node-pdfkit",
+            "--directory", "myapp",
+            "--languages", "ts,py",
+            "--skip-iii",
+            "--yes",
+        ])
+        .expect("should parse full template arg set");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => {
+                    assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
+                    assert_eq!(init.directory.as_deref(), Some("myapp"));
+                    assert_eq!(
+                        init.languages.as_ref().map(|v| v.as_slice()),
+                        Some(&["ts".to_string(), "py".to_string()][..])
+                    );
+                    assert!(init.skip_iii);
+                    assert!(init.yes);
+                }
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
 }

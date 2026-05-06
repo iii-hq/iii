@@ -33,6 +33,28 @@ pub struct InitArgs {
     /// Also generate Docker assets (Dockerfile, docker-compose.yml, .env)
     #[arg(long)]
     pub docker: bool,
+
+    /// Scaffold from a named template (e.g. "node-pdfkit"). Triggers the
+    /// interactive template flow and supersedes the bare scaffold.
+    #[arg(short, long)]
+    pub template: Option<String>,
+
+    /// Local directory to use for templates instead of fetching from remote
+    /// (for template development).
+    #[arg(long = "template-dir")]
+    pub template_dir: Option<String>,
+
+    /// Languages to include (comma-separated: ts,js,py).
+    #[arg(short, long, value_delimiter = ',')]
+    pub languages: Option<Vec<String>>,
+
+    /// Skip the iii-engine version compatibility check.
+    #[arg(long = "skip-iii")]
+    pub skip_iii: bool,
+
+    /// Auto-confirm all prompts (non-interactive mode).
+    #[arg(short, long)]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -43,6 +65,31 @@ pub struct GenerateDockerArgs {
 }
 
 use colored::Colorize;
+use scaffolder_core::ProductConfig;
+
+#[derive(Clone)]
+struct IiiConfig;
+
+impl ProductConfig for IiiConfig {
+    fn name(&self) -> &'static str { "iii" }
+    fn display_name(&self) -> &'static str { "iii" }
+    fn default_template_url(&self) -> &'static str {
+        "https://github.com/iii-hq/templates.git"
+    }
+    fn template_url_env(&self) -> &'static str { "III_TEMPLATE_URL" }
+    fn requires_iii(&self) -> bool { true }
+    fn docs_url(&self) -> &'static str { "https://iii.dev/docs" }
+    fn cli_description(&self) -> &'static str { "CLI for scaffolding iii projects" }
+    fn upgrade_command(&self) -> &'static str { "iii update" }
+}
+
+fn template_flow_requested(args: &InitArgs) -> bool {
+    args.template.is_some()
+        || args.template_dir.is_some()
+        || args.languages.is_some()
+        || args.skip_iii
+        || args.yes
+}
 
 pub async fn run(args: ProjectArgs) -> i32 {
     match args.action {
@@ -52,6 +99,10 @@ pub async fn run(args: ProjectArgs) -> i32 {
 }
 
 async fn run_init(args: InitArgs) -> i32 {
+    if template_flow_requested(&args) {
+        return run_init_with_template(args).await;
+    }
+
     let root = match resolve_root(args.directory.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -136,6 +187,82 @@ async fn run_init(args: InitArgs) -> i32 {
     }
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
+    0
+}
+
+async fn run_init_with_template(args: InitArgs) -> i32 {
+    // Restore terminal cursor on panic and on Ctrl+C — scaffolder runs an
+    // interactive TUI via cliclack and we don't want to leave the cursor hidden.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = console::Term::stderr().show_cursor();
+        default_panic(info);
+    }));
+    let _ = ctrlc::set_handler(move || {
+        let _ = console::Term::stderr().show_cursor();
+        std::process::exit(130);
+    });
+
+    let create_args = scaffolder_core::tui::CreateArgs {
+        template_dir: args.template_dir.as_ref().map(std::path::PathBuf::from),
+        template: args.template.clone(),
+        directory: args.directory.as_ref().map(std::path::PathBuf::from),
+        languages: args.languages.clone(),
+        skip_tool_check: args.skip_iii,
+        yes: args.yes,
+    };
+
+    let result = scaffolder_core::run(&IiiConfig, create_args, env!("CARGO_PKG_VERSION")).await;
+    let _ = console::Term::stderr().show_cursor();
+
+    if let Err(e) = result {
+        crate::cli::telemetry::send_project_init_failed("scaffolder", &e.to_string());
+        return print_err(
+            "template scaffold failed",
+            &e.to_string(),
+            "see scaffolder output above; re-run with --template <name> --yes to skip prompts",
+        );
+    }
+
+    // If --directory was provided we know where the project landed; persist
+    // device_id into .iii/project.ini so the engine telemetry pipeline can
+    // associate runs with this project. For interactive directory selection
+    // we skip this — the user can run `iii project init` afterwards if they
+    // want a project.ini.
+    if let Some(dir) = args.directory.as_deref() {
+        let root = std::path::PathBuf::from(dir);
+        if root.is_dir() {
+            let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
+            let project_name = root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("iii-project")
+                .to_string();
+            let mut ini = project_ini::ProjectIni::read(&root).unwrap_or_default();
+            if ini.project_id.is_none() {
+                ini.project_id = Some(uuid::Uuid::new_v4().to_string());
+            }
+            if ini.project_name.is_none() {
+                ini.project_name = Some(project_name);
+            }
+            ini.source.get_or_insert_with(|| "init-template".to_string());
+            ini.device_id.get_or_insert(device_id);
+            let project_id_for_event = ini.project_id.clone().unwrap_or_default();
+            if let Err(e) = ini.write(&root) {
+                eprintln!(
+                    "  {} could not persist .iii/project.ini: {}",
+                    "warning:".yellow().bold(),
+                    e
+                );
+            } else {
+                crate::cli::telemetry::send_project_init_succeeded(false, &project_id_for_event);
+            }
+        }
+    } else {
+        // Interactive flow — emit a generic success event without project_id.
+        crate::cli::telemetry::send_project_init_succeeded(false, "");
+    }
+
     0
 }
 
