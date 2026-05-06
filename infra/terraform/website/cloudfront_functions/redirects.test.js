@@ -211,6 +211,94 @@ test('/.well-known/foo (no extension) → pass through, NOT SPA rewritten', () =
   assert.equal(result.uri, '/.well-known/foo', '.well-known is an explicit exemption from SPA fallback')
 })
 
+// ---------------------------------------------------------------------------
+// /blog/* — Astro blog at iii.dev/blog. Astro emits with trailingSlash: 'always'
+// and build.format: 'directory', so each post is a key like
+// blog/<slug>/index.html in S3. CloudFront's default_root_object only applies
+// to the apex, so /blog/<slug>/ must be rewritten to .../index.html and
+// extensionless paths must 301 to the canonical trailing-slash form.
+// ---------------------------------------------------------------------------
+
+test('/blog → 301 https://iii.dev/blog/ (canonical trailing slash)', () => {
+  const result = handler(buildEvent('/blog', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/')
+})
+
+test('/blog/ → rewrite to /blog/index.html', () => {
+  const result = handler(buildEvent('/blog/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/index.html')
+})
+
+test('/blog/hello-world/ → rewrite to /blog/hello-world/index.html', () => {
+  const result = handler(buildEvent('/blog/hello-world/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/hello-world/index.html')
+})
+
+test('/blog/hello-world (no trailing slash) → 301 to /blog/hello-world/', () => {
+  const result = handler(buildEvent('/blog/hello-world', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/')
+})
+
+test('/blog/foo/bar/ → rewrite to /blog/foo/bar/index.html (nested)', () => {
+  const result = handler(buildEvent('/blog/foo/bar/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/foo/bar/index.html')
+})
+
+test('/blog/rss.xml → pass through unchanged (file with extension)', () => {
+  const result = handler(buildEvent('/blog/rss.xml', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/rss.xml')
+})
+
+test('/blog/_astro/style.abc123.css → pass through unchanged (hashed asset)', () => {
+  const result = handler(buildEvent('/blog/_astro/style.abc123.css', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/_astro/style.abc123.css')
+})
+
+test('/blogfoo → NOT matched as /blog/, falls through to SPA rewrite', () => {
+  // Boundary check: the /blog/ prefix must require the trailing slash so
+  // unrelated top-level paths like /blogfoo or /blogfest are not hijacked.
+  const result = handler(buildEvent('/blogfoo', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/index.html')
+})
+
+test('/blog/hello-world/ preserves querystring on rewrite', () => {
+  const qs = { utm_source: { value: 'rss' } }
+  const result = handler(buildEvent('/blog/hello-world/', 'iii.dev', qs))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/hello-world/index.html')
+  assert.equal(result.querystring, qs)
+})
+
+test('/blog/hello-world (no slash) preserves querystring on 301', () => {
+  const result = handler(
+    buildEvent('/blog/hello-world', 'iii.dev', { utm_source: { value: 'rss' } }),
+  )
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/?utm_source=rss')
+})
+
+test('www.iii.dev/blog/hello-world/ → 301 apex (host check runs first)', () => {
+  const result = handler(buildEvent('/blog/hello-world/', 'www.iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/')
+})
+
+test('preview-host /blog/foo → 301 to same preview host (preserves origin)', () => {
+  // Don't lock /blog/* redirects to apex — preview deploys must redirect to
+  // the same hostname so reviewers stay on the preview environment.
+  const result = handler(buildEvent('/blog/foo', 'preview.iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://preview.iii.dev/blog/foo/')
+})
+
 test('missing host header → SPA fallback still applies for extensionless paths', () => {
   const event = buildEvent('/some/page', undefined)
   delete event.request.headers.host
