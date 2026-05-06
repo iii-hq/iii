@@ -1,0 +1,17 @@
+---
+interface Props {
+  className?: string
+  ariaLabel?: string
+}
+
+const { className = 'logo-mark', ariaLabel = 'iii' } = Astro.props
+---
+
+<svg class={className} viewBox="0 0 1075.74 1075.74" xmlns="http://www.w3.org/2000/svg" aria-label={ariaLabel} role="img">
+  <rect class="bar" x="0" y="0.05" width="268.94" height="268.94" />
+  <rect class="bar" x="0" y="403.45" width="268.94" height="672.24" />
+  <rect class="accent" x="403.4" y="0.05" width="268.94" height="268.94" />
+  <rect class="accent" x="403.4" y="403.45" width="268.94" height="672.24" />
+  <rect class="bar" x="806.81" y="0.05" width="268.94" height="268.94" />
+  <rect class="bar" x="806.81" y="403.45" width="268.94" height="672.24" />
+</svg>
