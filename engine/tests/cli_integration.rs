@@ -49,6 +49,7 @@ fn help_flag_shows_all_subcommands() {
     assert!(stdout.contains("console"), "help should list console");
     assert!(stdout.contains("create"), "help should list create");
     assert!(stdout.contains("worker"), "help should list worker");
+    assert!(stdout.contains("project"), "help should list project");
     assert!(stdout.contains("update"), "help should list update");
 }
 
