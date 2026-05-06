@@ -64,6 +64,43 @@ fn build_user_properties(install_method_override: Option<&str>) -> serde_json::V
     })
 }
 
+/// Redact home-directory paths and cap length before sending error strings to
+/// the telemetry backend. Errors often contain absolute paths like
+/// `/Users/<name>/...` or `/home/<name>/...` and may also be unbounded
+/// (panic backtraces, walk-of-the-tree messages). This keeps the payload
+/// small and avoids leaking the local username.
+fn sanitize_error(error: &str) -> String {
+    const MAX_LEN: usize = 256;
+    let mut out = String::with_capacity(error.len().min(MAX_LEN));
+    let mut chars = error.chars().peekable();
+    let mut buf = String::new();
+    while let Some(c) = chars.next() {
+        buf.push(c);
+        // Detect /Users/<name>/ and /home/<name>/ prefixes and replace them
+        // with a redaction marker. We do this character-by-character so we
+        // don't allocate a clone of the whole error string.
+        if buf.ends_with("/Users/") || buf.ends_with("/home/") {
+            out.push_str(&buf);
+            buf.clear();
+            // skip the username segment up to next '/' or whitespace
+            while let Some(&peek) = chars.peek() {
+                if peek == '/' || peek.is_whitespace() {
+                    break;
+                }
+                chars.next();
+            }
+            out.push_str("<redacted>");
+        }
+    }
+    out.push_str(&buf);
+    if out.chars().count() > MAX_LEN {
+        let truncated: String = out.chars().take(MAX_LEN).collect();
+        format!("{truncated}…")
+    } else {
+        out
+    }
+}
+
 fn build_event(
     event_type: &str,
     properties: serde_json::Value,
@@ -155,7 +192,7 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
         serde_json::json!({
             "target_binary": target_binary,
             "from_version": from_version,
-            "error": error,
+            "error": sanitize_error(error),
             "install_method": environment::detect_install_method(),
         }),
         None,
@@ -182,7 +219,8 @@ pub fn send_project_init_failed(stage: &str, error: &str) {
         "project_init_failed",
         serde_json::json!({
             "stage": stage,
-            "error": error,
+            "error": sanitize_error(error),
+            "install_method": environment::detect_install_method(),
         }),
         None,
     ) {
@@ -288,5 +326,34 @@ mod tests {
         let e1 = build_event("evt", serde_json::json!({}), None).expect("event");
         let e2 = build_event("evt", serde_json::json!({}), None).expect("event");
         assert_ne!(e1.insert_id, e2.insert_id);
+    }
+
+    #[test]
+    fn sanitize_error_redacts_users_path() {
+        let s = sanitize_error("failed to open /Users/alice/secret.txt: not found");
+        assert!(!s.contains("alice"), "username should be redacted: {s}");
+        assert!(s.contains("/Users/<redacted>/"));
+    }
+
+    #[test]
+    fn sanitize_error_redacts_home_path() {
+        let s = sanitize_error("permission denied for /home/bob/.ssh/id_rsa");
+        assert!(!s.contains("bob"), "username should be redacted: {s}");
+        assert!(s.contains("/home/<redacted>/"));
+    }
+
+    #[test]
+    fn sanitize_error_truncates_long_strings() {
+        let long = "x".repeat(1024);
+        let s = sanitize_error(&long);
+        let len = s.chars().count();
+        assert!(len <= 257, "truncated length should be <= 257, got {len}");
+        assert!(s.ends_with("…"), "truncated output should end with ellipsis");
+    }
+
+    #[test]
+    fn sanitize_error_passes_through_safe_strings() {
+        let s = sanitize_error("HTTP 500: Internal Server Error");
+        assert_eq!(s, "HTTP 500: Internal Server Error");
     }
 }

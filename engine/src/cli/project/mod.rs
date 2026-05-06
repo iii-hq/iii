@@ -109,11 +109,10 @@ impl ProductConfig for IiiConfig {
 }
 
 fn template_flow_requested(args: &InitArgs) -> bool {
-    args.template.is_some()
-        || args.template_dir.is_some()
-        || args.languages.is_some()
-        || args.skip_iii
-        || args.yes
+    // Template flow is triggered by template-specific flags only.
+    // --yes and --skip-iii are pass-through args that modify scaffolder
+    // behavior but do not by themselves indicate intent to use templates.
+    args.template.is_some() || args.template_dir.is_some() || args.languages.is_some()
 }
 
 pub async fn run(args: ProjectArgs) -> i32 {
@@ -204,7 +203,7 @@ async fn run_init(args: InitArgs) -> i32 {
     eprintln!();
     eprintln!("  Next steps:");
     if target.is_some() {
-        eprintln!("    {}", format!("cd {}", project_name).bold());
+        eprintln!("    {}", format!("cd {}", root.display()).bold());
     }
     eprintln!(
         "    {}    # add a worker",
@@ -265,7 +264,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
     // so the engine telemetry pipeline can associate runs with this project.
     // For interactive directory selection we skip this — the user can run
     // `iii project init` afterwards if they want a project.ini.
-    if let Some(root) = target_dir.as_ref() {
+    let project_id_for_event = if let Some(root) = target_dir.as_ref() {
         if root.is_dir() {
             let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
             let project_name = root
@@ -283,21 +282,27 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
             ini.source
                 .get_or_insert_with(|| "init-template".to_string());
             ini.device_id.get_or_insert(device_id);
-            let project_id_for_event = ini.project_id.clone().unwrap_or_default();
+            let id = ini.project_id.clone().unwrap_or_default();
             if let Err(e) = ini.write(&root) {
                 eprintln!(
                     "  {} could not persist .iii/project.ini: {}",
                     "warning:".yellow().bold(),
                     e
                 );
-            } else {
-                crate::cli::telemetry::send_project_init_succeeded(false, &project_id_for_event);
             }
+            id
+        } else {
+            String::new()
         }
     } else {
         // Interactive flow — emit a generic success event without project_id.
-        crate::cli::telemetry::send_project_init_succeeded(false, "");
-    }
+        String::new()
+    };
+
+    // The conversion event fires whenever the scaffolder succeeded, even if
+    // the post-process project.ini write failed. The user got a working
+    // project; the missing project.ini just means metrics won't link back.
+    crate::cli::telemetry::send_project_init_succeeded(false, &project_id_for_event);
 
     0
 }

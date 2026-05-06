@@ -21,21 +21,34 @@ impl ProjectIni {
         let path = dir.join("project.ini");
 
         let mut out = String::new();
-        if let Some(v) = &self.project_id {
-            out.push_str(&format!("project_id={}\n", v));
-        }
-        if let Some(v) = &self.project_name {
-            out.push_str(&format!("project_name={}\n", v));
-        }
-        if let Some(v) = &self.source {
-            out.push_str(&format!("source={}\n", v));
-        }
-        if let Some(v) = &self.device_id {
-            out.push_str(&format!("device_id={}\n", v));
-        }
+        write_field(&mut out, "project_id", self.project_id.as_deref())?;
+        write_field(&mut out, "project_name", self.project_name.as_deref())?;
+        write_field(&mut out, "source", self.source.as_deref())?;
+        write_field(&mut out, "device_id", self.device_id.as_deref())?;
         std::fs::write(path, out)
     }
 
+}
+
+/// Append a `key=value\n` line to the buffer, rejecting values that contain
+/// newline characters. The flat ini format we use parses one field per line,
+/// so embedded `\n` or `\r` would silently corrupt subsequent fields.
+fn write_field(out: &mut String, key: &str, value: Option<&str>) -> std::io::Result<()> {
+    let Some(v) = value else { return Ok(()) };
+    if v.contains('\n') || v.contains('\r') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{key} value must not contain newline characters"),
+        ));
+    }
+    out.push_str(key);
+    out.push('=');
+    out.push_str(v);
+    out.push('\n');
+    Ok(())
+}
+
+impl ProjectIni {
     pub fn read(project_root: &Path) -> std::io::Result<Self> {
         let path = project_root.join(".iii").join("project.ini");
         let contents = std::fs::read_to_string(path)?;
@@ -99,5 +112,27 @@ mod tests {
         assert!(contents.contains("project_id=p"));
         assert!(!contents.contains("project_name="));
         assert!(!contents.contains("device_id="));
+    }
+
+    #[test]
+    fn write_rejects_newline_in_value() {
+        let dir = tempdir().unwrap();
+        let ini = ProjectIni {
+            project_name: Some("evil\nproject_id=spoofed".to_string()),
+            ..Default::default()
+        };
+        let err = ini.write(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn write_rejects_carriage_return_in_value() {
+        let dir = tempdir().unwrap();
+        let ini = ProjectIni {
+            device_id: Some("with\rcr".to_string()),
+            ..Default::default()
+        };
+        let err = ini.write(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }
