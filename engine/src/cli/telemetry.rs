@@ -4,36 +4,16 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use serde::Serialize;
+//! CLI telemetry helpers.
+//!
+//! All Amplitude HTTP transport, retry behavior, and PII sanitization live in
+//! `iii::workers::telemetry::amplitude`. This module is the CLI-side glue:
+//! gating (`is_telemetry_disabled`), event-property construction
+//! (`build_user_properties`), and the named event helpers
+//! (`send_cli_update_*`, `send_project_init_*`, `send_install_lifecycle_event`).
 
+use iii::workers::telemetry::amplitude::{API_KEY, AmplitudeClient, AmplitudeEvent};
 use iii::workers::telemetry::environment;
-
-const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
-const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
-
-#[derive(Serialize)]
-struct AmplitudeEvent {
-    device_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_id: Option<String>,
-    event_type: String,
-    event_properties: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_properties: Option<serde_json::Value>,
-    platform: String,
-    os_name: String,
-    app_version: String,
-    time: i64,
-    insert_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ip: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AmplitudePayload<'a> {
-    api_key: &'a str,
-    events: Vec<AmplitudeEvent>,
-}
 
 fn is_telemetry_disabled() -> bool {
     if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
@@ -64,49 +44,6 @@ fn build_user_properties(install_method_override: Option<&str>) -> serde_json::V
     })
 }
 
-/// Redact home-directory paths and cap length before sending error strings to
-/// the telemetry backend. Errors often contain absolute paths like
-/// `/Users/<name>/...` or `/home/<name>/...` and may also be unbounded
-/// (panic backtraces, walk-of-the-tree messages). This keeps the payload
-/// small and avoids leaking the local username.
-fn sanitize_error(error: &str) -> String {
-    const MAX_LEN: usize = 256;
-    let mut out = String::with_capacity(error.len().min(MAX_LEN));
-    let mut chars = error.chars().peekable();
-    let mut buf = String::new();
-    while let Some(c) = chars.next() {
-        buf.push(c);
-        // Detect /Users/<name>/ and /home/<name>/ (Unix) or \Users\<name>\
-        // (Windows) prefixes and replace the username segment with a marker.
-        // We work character-by-character so we don't allocate a clone of
-        // the whole error string.
-        if buf.ends_with("/Users/")
-            || buf.ends_with("/home/")
-            || buf.ends_with("\\Users\\")
-            || buf.ends_with("\\home\\")
-        {
-            out.push_str(&buf);
-            buf.clear();
-            // skip the username segment up to the next path separator
-            // (forward or back slash) or whitespace.
-            while let Some(&peek) = chars.peek() {
-                if peek == '/' || peek == '\\' || peek.is_whitespace() {
-                    break;
-                }
-                chars.next();
-            }
-            out.push_str("<redacted>");
-        }
-    }
-    out.push_str(&buf);
-    if out.chars().count() > MAX_LEN {
-        let truncated: String = out.chars().take(MAX_LEN).collect();
-        format!("{truncated}…")
-    } else {
-        out
-    }
-}
-
 fn build_event(
     event_type: &str,
     properties: serde_json::Value,
@@ -127,23 +64,16 @@ fn build_event(
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         time: chrono::Utc::now().timestamp_millis(),
-        insert_id: uuid::Uuid::new_v4().to_string(),
+        insert_id: Some(uuid::Uuid::new_v4().to_string()),
+        country: None,
+        language: None,
         ip: Some("$remote".to_string()),
     })
 }
 
 async fn send_direct(event: AmplitudeEvent) {
-    let payload = AmplitudePayload {
-        api_key: API_KEY,
-        events: vec![event],
-    };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build();
-
-    if let Ok(client) = client {
-        let _ = client.post(AMPLITUDE_ENDPOINT).json(&payload).send().await;
-    }
+    let client = AmplitudeClient::new(API_KEY.to_string());
+    let _ = client.send_event(event).await;
 }
 
 fn send_fire_and_forget(event: AmplitudeEvent) {
@@ -198,7 +128,7 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
         serde_json::json!({
             "target_binary": target_binary,
             "from_version": from_version,
-            "error": sanitize_error(error),
+            "error": error,
             "install_method": environment::detect_install_method(),
         }),
         None,
@@ -225,7 +155,7 @@ pub fn send_project_init_failed(stage: &str, error: &str) {
         "project_init_failed",
         serde_json::json!({
             "stage": stage,
-            "error": sanitize_error(error),
+            "error": error,
             "install_method": environment::detect_install_method(),
         }),
         None,
@@ -313,7 +243,7 @@ mod tests {
         assert_eq!(event.app_version, env!("CARGO_PKG_VERSION"));
         assert!(!event.device_id.is_empty());
         assert_eq!(event.user_id, None);
-        assert!(!event.insert_id.is_empty());
+        assert!(event.insert_id.as_deref().map(str::is_empty) == Some(false));
         assert_eq!(event.event_properties["target_binary"], "iii");
         let user_props = event
             .user_properties
@@ -332,47 +262,5 @@ mod tests {
         let e1 = build_event("evt", serde_json::json!({}), None).expect("event");
         let e2 = build_event("evt", serde_json::json!({}), None).expect("event");
         assert_ne!(e1.insert_id, e2.insert_id);
-    }
-
-    #[test]
-    fn sanitize_error_redacts_users_path() {
-        let s = sanitize_error("failed to open /Users/alice/secret.txt: not found");
-        assert!(!s.contains("alice"), "username should be redacted: {s}");
-        assert!(s.contains("/Users/<redacted>/"));
-    }
-
-    #[test]
-    fn sanitize_error_redacts_home_path() {
-        let s = sanitize_error("permission denied for /home/bob/.ssh/id_rsa");
-        assert!(!s.contains("bob"), "username should be redacted: {s}");
-        assert!(s.contains("/home/<redacted>/"));
-    }
-
-    #[test]
-    fn sanitize_error_truncates_long_strings() {
-        let long = "x".repeat(1024);
-        let s = sanitize_error(&long);
-        let len = s.chars().count();
-        assert!(len <= 257, "truncated length should be <= 257, got {len}");
-        assert!(
-            s.ends_with("…"),
-            "truncated output should end with ellipsis"
-        );
-    }
-
-    #[test]
-    fn sanitize_error_passes_through_safe_strings() {
-        let s = sanitize_error("HTTP 500: Internal Server Error");
-        assert_eq!(s, "HTTP 500: Internal Server Error");
-    }
-
-    #[test]
-    fn sanitize_error_redacts_windows_users_path() {
-        let s = sanitize_error("open C:\\Users\\alice\\secret.txt failed");
-        assert!(!s.contains("alice"), "username should be redacted: {s}");
-        assert!(
-            s.contains("\\Users\\<redacted>\\"),
-            "expected redacted Windows path: {s}"
-        );
     }
 }
