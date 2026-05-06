@@ -11,6 +11,10 @@ use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
 use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
+#[cfg(test)]
+#[allow(unused_imports)]
+use cli::project::{InitArgs, ProjectAction};
+
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
 struct Cli {
@@ -117,6 +121,9 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Manage iii projects (init, generate-docker)
+    Project(crate::cli::project::ProjectArgs),
+
     /// Update iii and managed binaries to their latest versions
     Update {
         /// Specific command or binary to update (e.g., "console", "self").
@@ -199,6 +206,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Sandbox { args }) => {
             let exit_code = cli::handle_dispatch("sandbox", args, cli_args.no_update_check).await;
+            std::process::exit(exit_code);
+        }
+        Some(Commands::Project(args)) => {
+            let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Update { target }) => {
@@ -577,5 +588,57 @@ mod tests {
             !error_source.contains("iii-cli"),
             "error.rs should not contain 'iii-cli' references — the binary is now 'iii'"
         );
+    }
+
+    #[test]
+    fn project_init_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init"])
+            .expect("should parse project init");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(_) => {}
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_with_directory_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "--directory", "myapp"])
+            .expect("should parse project init --directory");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => assert_eq!(init.directory.as_deref(), Some("myapp")),
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_with_docker_flag_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "--docker"])
+            .expect("should parse project init --docker");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => assert!(init.docker),
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_generate_docker_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "generate-docker"])
+            .expect("should parse project generate-docker");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::GenerateDocker(_) => {}
+                _ => panic!("expected GenerateDocker action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
     }
 }

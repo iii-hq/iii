@@ -10,6 +10,7 @@ pub mod error;
 pub mod exec;
 pub mod github;
 pub mod platform;
+pub mod project;
 pub mod registry;
 pub mod state;
 pub mod telemetry;
