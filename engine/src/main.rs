@@ -77,17 +77,6 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Create a new iii project from a template
-    #[command(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Create {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
-    },
-
     /// Manage iii Cloud deployments
     #[command(
         trailing_var_arg = true,
@@ -190,10 +179,6 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Trigger(args)) => cli_trigger::run_trigger(args).await,
         Some(Commands::Console { args }) => {
             let exit_code = cli::handle_dispatch("console", args, cli_args.no_update_check).await;
-            std::process::exit(exit_code);
-        }
-        Some(Commands::Create { args }) => {
-            let exit_code = cli::handle_dispatch("create", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Cloud { args }) => {
@@ -325,26 +310,14 @@ mod tests {
     }
 
     #[test]
-    fn create_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "create", "my-project", "--template", "default"])
-            .expect("should parse create with args");
-        match cli.command {
-            Some(Commands::Create { args }) => {
-                assert_eq!(args, vec!["my-project", "--template", "default"]);
-            }
-            _ => panic!("expected Create subcommand"),
-        }
-    }
-
-    #[test]
-    fn create_parses_with_no_args() {
-        let cli = Cli::try_parse_from(["iii", "create"]).expect("should parse create with no args");
-        match cli.command {
-            Some(Commands::Create { args }) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Create subcommand"),
-        }
+    fn create_is_no_longer_a_subcommand() {
+        // `iii create` was removed in favor of `iii project init --template`.
+        // Bare `iii create` should now fail to parse.
+        let result = Cli::try_parse_from(["iii", "create"]);
+        assert!(
+            result.is_err(),
+            "\"create\" should no longer be a valid subcommand"
+        );
     }
 
     #[test]
