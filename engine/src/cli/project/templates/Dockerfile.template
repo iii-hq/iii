@@ -11,5 +11,5 @@ COPY config.yaml /app/config.yaml
 COPY iii.lock /app/iii.lock
 
 EXPOSE 49134 3111 3112 9464
-ENTRYPOINT ["iii"]
+ENTRYPOINT ["/app/iii"]
 CMD ["--config", "/app/config.yaml"]
