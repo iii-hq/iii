@@ -5,7 +5,7 @@ import FormattedDate from '../components/FormattedDate.astro'
 
 type Props = CollectionEntry<'blog'>['data']
 
-const { title, description, pubDate, updatedDate } = Astro.props
+const { title, description, pubDate, updatedDate, author } = Astro.props
 ---
 
 <BaseLayout title={title} description={description}>
@@ -14,6 +14,12 @@ const { title, description, pubDate, updatedDate } = Astro.props
       <h1>{title}</h1>
       <p class="meta">
         <FormattedDate date={pubDate} />
+        {author && (
+          <>
+            {' · '}
+            {author}
+          </>
+        )}
         {updatedDate && (
           <>
             {' · updated '}
