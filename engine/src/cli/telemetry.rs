@@ -348,7 +348,10 @@ mod tests {
         let s = sanitize_error(&long);
         let len = s.chars().count();
         assert!(len <= 257, "truncated length should be <= 257, got {len}");
-        assert!(s.ends_with("…"), "truncated output should end with ellipsis");
+        assert!(
+            s.ends_with("…"),
+            "truncated output should end with ellipsis"
+        );
     }
 
     #[test]

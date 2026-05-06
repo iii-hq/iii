@@ -27,7 +27,6 @@ impl ProjectIni {
         write_field(&mut out, "device_id", self.device_id.as_deref())?;
         std::fs::write(path, out)
     }
-
 }
 
 /// Append a `key=value\n` line to the buffer, rejecting values that contain
