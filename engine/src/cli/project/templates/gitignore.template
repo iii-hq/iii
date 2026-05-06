@@ -1,0 +1,31 @@
+# iii
+.iii/
+data/
+*.lock.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# TypeScript / Node
+node_modules/
+dist/
+*.tsbuildinfo
+.npm/
+
+# Rust
+target/
+Cargo.lock.tmp
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.local

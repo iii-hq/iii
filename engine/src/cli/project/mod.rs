@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod project_ini;
+pub mod scaffold;
 
 use clap::{Args, Subcommand};
 
