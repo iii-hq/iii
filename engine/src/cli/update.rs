@@ -621,11 +621,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_command_for_binary_resolves_tools() {
-        assert_eq!(cli_command_for_binary("iii-tools"), Some("create"));
-    }
-
-    #[test]
     fn cli_command_for_binary_returns_none_for_unknown() {
         assert!(cli_command_for_binary("unknown-binary").is_none());
     }

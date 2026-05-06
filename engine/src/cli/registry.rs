@@ -79,23 +79,6 @@ pub static REGISTRY: &[BinarySpec] = &[
         tag_prefix: Some("iii"),
     },
     BinarySpec {
-        name: "iii-tools",
-        repo: "iii-hq/iii",
-        has_checksum: true,
-        supported_targets: &[
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-        ],
-        commands: &[CommandMapping {
-            cli_command: "create",
-            binary_subcommand: Some("create"),
-        }],
-        tag_prefix: Some("iii"),
-    },
-    BinarySpec {
         name: "iii-cloud",
         repo: "iii-hq/iii-cloud-cli",
         has_checksum: true,
@@ -191,12 +174,11 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_create() {
-        let (spec, sub) = resolve_command("create").unwrap();
-        assert_eq!(spec.name, "iii-tools");
-        assert_eq!(spec.repo, "iii-hq/iii");
-        assert_eq!(spec.tag_prefix, Some("iii"));
-        assert_eq!(sub, Some("create"));
+    fn test_create_no_longer_resolves() {
+        // `create` was a managed-binary dispatch to iii-tools; the command
+        // has moved to `iii project init --template`, and iii-tools is gone
+        // from the registry.
+        assert!(resolve_command("create").is_err());
     }
 
     #[test]
@@ -214,9 +196,6 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_for_update() {
-        let spec = resolve_binary_for_update("create").unwrap();
-        assert_eq!(spec.name, "iii-tools");
-
         let spec = resolve_binary_for_update("iii-console").unwrap();
         assert_eq!(spec.name, "iii-console");
     }
@@ -231,12 +210,6 @@ mod tests {
     fn test_console_has_checksum() {
         let (spec, _) = resolve_command("console").unwrap();
         assert!(spec.has_checksum);
-    }
-
-    #[test]
-    fn test_iii_tools_has_checksum() {
-        let (spec, _) = resolve_command("create").unwrap();
-        assert!(spec.has_checksum, "iii-tools should have checksums enabled");
     }
 
     #[test]
