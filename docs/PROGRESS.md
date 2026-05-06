@@ -4,17 +4,7 @@ Tracking the analysis of every `.mdx` file from `iii-mono/docs/` against the new
 
 **Skip:** files under `0-10-0/` (legacy).
 
-**Ground rules:**
-- Specific iii workers (state, queue, stream, cron, pubsub, http, observability, bridge, exec, worker-manager, etc.) will have their own dedicated **Worker Docs** outside this project. Worker-specific content must be recommended for **Move to Worker Docs** — but we never actually move it; that's someone else's exercise. Just note it in the decision log.
-- **Adapters are deprecated.** The default recommendation for adapter content is remove, or salvage the concept into a future "Adapter Pattern" page under a new "Patterns" section if the framing is broadly useful.
-- **Config files:** the engine config is `config.yaml` (not `iii-config.yaml`). Worker-level config is `iii.worker.yaml`. Reference accordingly per scope.
-- **Migrated content is minimal:** when moving content into an ideal-docs page, write only the section title plus at most one sentence describing what the section *should* contain. Do not paste original prose, tables, or code blocks. The point is to mark the slot, not to author the page.
-- **Logger and telemetry surfaces belong with the iii-observability worker.** Strip them from SDK reference pages and leave a callout pointing readers to the iii-observability worker docs. Drop telemetry-related SDK types (`OtelConfig`, OTel-specific `ReconnectionConfig`, `TelemetryOptions`, etc.) from SDK type lists.
-- **Channels belong to iii-worker-manager.** The whole channel surface (concept, lifecycle, writer/reader/refs, examples) belongs in the iii-worker-manager Worker Docs. Strip channel-related types (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`) from SDK reference pages and add a callout pointing readers to iii-worker-manager.
-- **No "external vs built-in" worker distinction.** A worker is a worker. Don't introduce conceptual splits between SDK-driven processes and engine-bundled workers in ideal-docs. If source content draws that distinction, drop or flatten it.
-- **Auto-reconnect / re-registration is SDK behavior, not a worker concept.** All current SDKs implement it (Node, Python, Rust, browser). Document it on the per-SDK reference pages (already covered by each page's "Connection lifecycle" stub), not on `understanding-iii/workers.mdx`.
-- **`expanding-iii/` scope:** "Expanding iii" means expanding an iii *system* with more workers and functionality (deploying / wiring up / integrating additional workers). It is **not** about adding code to the iii engine itself. All iii expansion is worker expansion. Content about *authoring* a worker (implementing engine traits, building a custom worker package) does not belong in expanding-iii.
-- **`iii worker` CLI is iii-level tooling.** All `iii worker` subcommands — `add/remove/list/start/stop/exec/update/verify` — plus the `iii.lock` lockfile and worker image build/publish flow are part of iii itself, analogous to `npm`/`cargo`. They live in ideal-docs (primarily `using-iii/workers.mdx`), not Worker Docs.
+**Ground rules:** canonical rules now live in [`project-rules/`](./project-rules/) — split by domain (`general`, `workers`, `sdks`, `cli`, `console`, `config`). Refer to those when authoring or reviewing pages. Decisions in this log assume the rules in `project-rules/` apply.
 
 ## Migration summary
 
