@@ -178,7 +178,10 @@ fn project_generate_docker_warns_when_no_project_ini() {
         .arg(dir.path())
         .output()
         .expect("failed to run iii");
-    assert!(out.status.success(), "generate-docker should still succeed, just warn");
+    assert!(
+        out.status.success(),
+        "generate-docker should still succeed, just warn"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("warning:"),
@@ -210,7 +213,19 @@ fn project_init_failure_emits_problem_cause_fix() {
         "init should fail when target dir cannot be created"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("error:"), "stderr should contain 'error:':\n{}", stderr);
-    assert!(stderr.contains("cause:"), "stderr should contain 'cause:':\n{}", stderr);
-    assert!(stderr.contains("fix:"), "stderr should contain 'fix:':\n{}", stderr);
+    assert!(
+        stderr.contains("error:"),
+        "stderr should contain 'error:':\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("cause:"),
+        "stderr should contain 'cause:':\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("fix:"),
+        "stderr should contain 'fix:':\n{}",
+        stderr
+    );
 }

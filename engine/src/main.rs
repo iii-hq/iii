@@ -565,8 +565,8 @@ mod tests {
 
     #[test]
     fn project_init_parses() {
-        let cli = Cli::try_parse_from(["iii", "project", "init"])
-            .expect("should parse project init");
+        let cli =
+            Cli::try_parse_from(["iii", "project", "init"]).expect("should parse project init");
         match cli.command {
             Some(Commands::Project(args)) => match args.action {
                 ProjectAction::Init(_) => {}
@@ -651,10 +651,15 @@ mod tests {
     #[test]
     fn project_init_template_full_arg_set_parses() {
         let cli = Cli::try_parse_from([
-            "iii", "project", "init",
-            "--template", "node-pdfkit",
-            "--directory", "myapp",
-            "--languages", "ts,py",
+            "iii",
+            "project",
+            "init",
+            "--template",
+            "node-pdfkit",
+            "--directory",
+            "myapp",
+            "--languages",
+            "ts,py",
             "--skip-iii",
             "--yes",
         ])

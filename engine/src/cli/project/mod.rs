@@ -82,16 +82,30 @@ use scaffolder_core::ProductConfig;
 struct IiiConfig;
 
 impl ProductConfig for IiiConfig {
-    fn name(&self) -> &'static str { "iii" }
-    fn display_name(&self) -> &'static str { "iii" }
+    fn name(&self) -> &'static str {
+        "iii"
+    }
+    fn display_name(&self) -> &'static str {
+        "iii"
+    }
     fn default_template_url(&self) -> &'static str {
         "https://github.com/iii-hq/templates.git"
     }
-    fn template_url_env(&self) -> &'static str { "III_TEMPLATE_URL" }
-    fn requires_iii(&self) -> bool { true }
-    fn docs_url(&self) -> &'static str { "https://iii.dev/docs" }
-    fn cli_description(&self) -> &'static str { "CLI for scaffolding iii projects" }
-    fn upgrade_command(&self) -> &'static str { "iii update" }
+    fn template_url_env(&self) -> &'static str {
+        "III_TEMPLATE_URL"
+    }
+    fn requires_iii(&self) -> bool {
+        true
+    }
+    fn docs_url(&self) -> &'static str {
+        "https://iii.dev/docs"
+    }
+    fn cli_description(&self) -> &'static str {
+        "CLI for scaffolding iii projects"
+    }
+    fn upgrade_command(&self) -> &'static str {
+        "iii update"
+    }
 }
 
 fn template_flow_requested(args: &InitArgs) -> bool {
@@ -192,10 +206,19 @@ async fn run_init(args: InitArgs) -> i32 {
     if target.is_some() {
         eprintln!("    {}", format!("cd {}", project_name).bold());
     }
-    eprintln!("    {}    # add a worker", "iii worker add <package>".bold());
-    eprintln!("    {}                          # start the engine", "iii".bold());
+    eprintln!(
+        "    {}    # add a worker",
+        "iii worker add <package>".bold()
+    );
+    eprintln!(
+        "    {}                          # start the engine",
+        "iii".bold()
+    );
     if args.docker {
-        eprintln!("    {}           # or start in Docker", "docker compose up".bold());
+        eprintln!(
+            "    {}           # or start in Docker",
+            "docker compose up".bold()
+        );
     }
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
@@ -257,7 +280,8 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
             if ini.project_name.is_none() {
                 ini.project_name = Some(project_name);
             }
-            ini.source.get_or_insert_with(|| "init-template".to_string());
+            ini.source
+                .get_or_insert_with(|| "init-template".to_string());
             ini.device_id.get_or_insert(device_id);
             let project_id_for_event = ini.project_id.clone().unwrap_or_default();
             if let Err(e) = ini.write(&root) {
@@ -327,9 +351,20 @@ fn resolve_device_id_for_docker(root: &std::path::Path) -> String {
 }
 
 fn warn_missing_project_ini(root: &std::path::Path, problem: &str) {
-    eprintln!("  {} {} at {}", "warning:".yellow().bold(), problem, root.display());
-    eprintln!("  {} using a fresh device_id; metrics will not link to a project.", "impact:".dimmed());
-    eprintln!("  {} run `iii project init` here to persist a project identity.", "fix:".dimmed());
+    eprintln!(
+        "  {} {} at {}",
+        "warning:".yellow().bold(),
+        problem,
+        root.display()
+    );
+    eprintln!(
+        "  {} using a fresh device_id; metrics will not link to a project.",
+        "impact:".dimmed()
+    );
+    eprintln!(
+        "  {} run `iii project init` here to persist a project identity.",
+        "fix:".dimmed()
+    );
 }
 
 fn resolve_root(dir: Option<&str>) -> Result<std::path::PathBuf, String> {

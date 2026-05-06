@@ -94,7 +94,8 @@ mod tests {
             ..Default::default()
         };
         ini.write(dir.path()).unwrap();
-        let contents = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
+        let contents =
+            std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
         assert!(contents.contains("project_id=p"));
         assert!(!contents.contains("project_name="));
         assert!(!contents.contains("device_id="));

@@ -111,7 +111,10 @@ mod tests {
         let dir = tempdir().unwrap();
         write_docker_assets(dir.path(), "d").unwrap();
         let df = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
-        assert!(df.contains("III_HOST_USER_ID"), "Dockerfile must wire III_HOST_USER_ID");
+        assert!(
+            df.contains("III_HOST_USER_ID"),
+            "Dockerfile must wire III_HOST_USER_ID"
+        );
     }
 
     #[test]
