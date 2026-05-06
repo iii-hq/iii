@@ -5,3 +5,4 @@ packages:
   - console/packages/*
   - docs
   - website
+  - blog

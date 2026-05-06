@@ -1,0 +1,45 @@
+---
+import '../styles/global.css'
+
+interface Props {
+  title: string
+  description: string
+}
+
+const { title, description } = Astro.props
+const canonical = new URL(Astro.url.pathname, Astro.site).toString()
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="alternate" type="application/rss+xml" title="iii blog" href="/blog/rss.xml" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <header class="site">
+      <div class="inner">
+        <a class="logo" href="/blog/">iii / blog</a>
+        <nav>
+          <a href="/">iii.dev</a>
+          <a href="/docs">docs</a>
+          <a href="/blog/rss.xml">rss</a>
+        </nav>
+      </div>
+    </header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>

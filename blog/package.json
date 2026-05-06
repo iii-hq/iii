@@ -1,0 +1,25 @@
+{
+  "name": "iii-blog",
+  "private": true,
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "iii.dev/blog — static blog built with Astro",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "type-check": "astro check",
+    "test": "astro build && tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@astrojs/mdx": "^5.0.4",
+    "@astrojs/rss": "^4.0.18",
+    "astro": "^6.2.2"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.2"
+  }
+}
