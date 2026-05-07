@@ -509,8 +509,12 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "update", "console"])
             .expect("should parse update with target");
         match cli.command {
-            Some(Commands::Update { target }) => {
+            Some(Commands::Update {
+                target,
+                list_targets,
+            }) => {
                 assert_eq!(target.as_deref(), Some("console"));
+                assert!(!list_targets);
             }
             _ => panic!("expected Update subcommand"),
         }
@@ -521,11 +525,41 @@ mod tests {
         let cli =
             Cli::try_parse_from(["iii", "update"]).expect("should parse update without target");
         match cli.command {
-            Some(Commands::Update { target }) => {
+            Some(Commands::Update {
+                target,
+                list_targets,
+            }) => {
                 assert!(target.is_none());
+                assert!(!list_targets);
             }
             _ => panic!("expected Update subcommand"),
         }
+    }
+
+    #[test]
+    fn update_parses_with_list_targets_flag() {
+        let cli = Cli::try_parse_from(["iii", "update", "--list-targets"])
+            .expect("should parse update --list-targets");
+        match cli.command {
+            Some(Commands::Update {
+                target,
+                list_targets,
+            }) => {
+                assert!(target.is_none());
+                assert!(list_targets);
+            }
+            _ => panic!("expected Update subcommand"),
+        }
+    }
+
+    #[test]
+    fn update_target_and_list_targets_conflict() {
+        let result =
+            Cli::try_parse_from(["iii", "update", "console", "--list-targets"]);
+        assert!(
+            result.is_err(),
+            "--list-targets should conflict with positional target"
+        );
     }
 
     #[test]
@@ -588,7 +622,10 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "update", "iii-cli"])
             .expect("should parse 'update iii-cli' for backward compat");
         match cli.command {
-            Some(Commands::Update { target }) => {
+            Some(Commands::Update {
+                target,
+                list_targets: _,
+            }) => {
                 assert_eq!(target.as_deref(), Some("iii-cli"));
             }
             _ => panic!("expected Update subcommand"),
