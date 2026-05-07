@@ -212,47 +212,14 @@ mod tests {
     use iii::workers::worker::DEFAULT_PORT;
 
     #[test]
-    fn trigger_parses_all_arguments() {
-        let cli = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "--function-id",
-            "iii::queue::redrive",
-            "--payload",
-            r#"{"queue":"payment"}"#,
-            "--address",
-            "10.0.0.1",
-            "--port",
-            "9999",
-        ])
-        .expect("should parse valid trigger args");
-
+    fn trigger_parses_with_positional_fn_path_only() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn"])
+            .expect("should parse trigger with fn path only");
         match cli.command {
             Some(Commands::Trigger(args)) => {
-                assert_eq!(args.function_id, "iii::queue::redrive");
-                assert_eq!(args.payload, r#"{"queue":"payment"}"#);
-                assert_eq!(args.address, "10.0.0.1");
-                assert_eq!(args.port, 9999);
-                assert_eq!(args.timeout_ms, 30_000);
-            }
-            _ => panic!("expected Trigger subcommand"),
-        }
-    }
-
-    #[test]
-    fn trigger_uses_defaults_for_address_and_port() {
-        let cli = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "--function-id",
-            "test::fn",
-            "--payload",
-            "{}",
-        ])
-        .expect("should parse with defaults");
-
-        match cli.command {
-            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert!(args.kv.is_empty());
+                assert!(args.json.is_none());
                 assert_eq!(args.address, "localhost");
                 assert_eq!(args.port, DEFAULT_PORT);
                 assert_eq!(args.timeout_ms, 30_000);
@@ -262,9 +229,74 @@ mod tests {
     }
 
     #[test]
-    fn trigger_requires_function_id() {
-        let result = Cli::try_parse_from(["iii", "trigger", "--payload", "{}"]);
-        assert!(result.is_err(), "should fail without --function-id");
+    fn trigger_parses_with_kv_pairs() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "a=10", "b=hello"])
+            .expect("should parse trigger with kv args");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.kv, vec!["a=10", "b=hello"]);
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_parses_with_json_flag() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "--json", r#"{"a":1}"#])
+            .expect("should parse trigger --json");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.json.as_deref(), Some(r#"{"a":1}"#));
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_parses_with_json_and_kv_together() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "trigger",
+            "my::fn",
+            "--json",
+            r#"{"a":1,"b":2}"#,
+            "a=99",
+        ])
+        .expect("should parse trigger with --json and kv simultaneously");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.kv, vec!["a=99"]);
+                assert_eq!(args.json.as_deref(), Some(r#"{"a":1,"b":2}"#));
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_legacy_function_id_flag_rejected() {
+        let result = Cli::try_parse_from(["iii", "trigger", "--function-id", "my::fn"]);
+        assert!(
+            result.is_err(),
+            "--function-id should fail to parse (removed in MOT-3239)"
+        );
+    }
+
+    #[test]
+    fn trigger_legacy_payload_flag_rejected() {
+        let result = Cli::try_parse_from([
+            "iii",
+            "trigger",
+            "my::fn",
+            "--payload",
+            r#"{"a":1}"#,
+        ]);
+        assert!(
+            result.is_err(),
+            "--payload should fail to parse (removed in MOT-3239)"
+        );
     }
 
     #[test]
