@@ -68,6 +68,14 @@ pub struct InitArgs {
     /// Auto-confirm all prompts (non-interactive mode).
     #[arg(short, long)]
     pub yes: bool,
+
+    /// Allow scaffolding into a non-empty directory. Without this flag, init
+    /// errors out if the target dir contains anything other than hidden
+    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`).
+    /// Re-running init in a directory with `.iii/project.ini` is always
+    /// allowed (idempotent re-init).
+    #[arg(long = "allow-non-empty")]
+    pub allow_non_empty: bool,
 }
 
 impl InitArgs {
@@ -128,6 +136,15 @@ async fn run_init(args: InitArgs) -> i32 {
             &format!("could not create {}", root.display()),
             &e.to_string(),
             "check parent directory permissions or pick a different --directory",
+        );
+    }
+
+    if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
+        crate::cli::telemetry::send_project_init_failed("non_empty_dir", &e);
+        return print_err(
+            "target directory is not empty",
+            &e,
+            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory",
         );
     }
 
@@ -429,26 +446,28 @@ async fn persist_project_ini(
 }
 
 fn read_existing_project_id(root: &Path) -> Option<String> {
+    read_project_ini_field(root, "project_id")
+}
+
+/// Read a single key from `.iii/project.ini` (flat or `[project]`-prefixed
+/// format), returning `None` when the file is absent, unreadable, or the key
+/// is missing/empty. The format-tolerant parser is shared between
+/// `read_existing_project_id` (used by re-init) and
+/// `resolve_device_id_for_docker` (used by the docker generator).
+fn read_project_ini_field(root: &Path, key: &str) -> Option<String> {
     let path = root.join(".iii").join("project.ini");
     let contents = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("{key}=");
     contents
         .lines()
-        .find_map(|l| l.trim().strip_prefix("project_id="))
+        .find_map(|l| l.trim().strip_prefix(&prefix))
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
 
 fn resolve_device_id_for_docker(root: &Path) -> String {
-    let path = root.join(".iii").join("project.ini");
-    let ini_exists = path.exists();
-    let contents = std::fs::read_to_string(&path).ok();
-    let device_id = contents.as_ref().and_then(|s| {
-        s.lines()
-            .find_map(|l| l.trim().strip_prefix("device_id="))
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    });
-    match device_id {
+    let ini_exists = root.join(".iii").join("project.ini").exists();
+    match read_project_ini_field(root, "device_id") {
         Some(id) => id,
         None => {
             if ini_exists {
@@ -485,6 +504,59 @@ fn resolve_root(dir: Option<&str>) -> Result<PathBuf, String> {
         Some(d) if d.trim().is_empty() => Err("directory argument cannot be empty".to_string()),
         Some(d) => Ok(PathBuf::from(d)),
         None => std::env::current_dir().map_err(|e| format!("cannot read cwd: {}", e)),
+    }
+}
+
+/// Reject scaffolding into a non-empty directory unless the user opted in via
+/// `--allow-non-empty`, OR the directory is already an iii project (has
+/// `.iii/project.ini`). Hidden dotfiles (`.git/`, `.gitignore`, etc.) and
+/// the `data/` runtime directory are not considered "non-empty content" —
+/// they're either dev tooling or iii-managed state.
+fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+    if !root.is_dir() {
+        return Err(format!("{} exists but is not a directory", root.display()));
+    }
+    // Idempotent re-init: an existing project.ini means we're scaffolding
+    // into a directory we previously initialized. Always allowed.
+    if root.join(".iii").join("project.ini").exists() {
+        return Ok(());
+    }
+    if allow_non_empty {
+        return Ok(());
+    }
+    let entries: Vec<String> = match std::fs::read_dir(root) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                // Hidden files/dirs (.git, .env.example, etc.) and iii's
+                // own runtime data directory are not "user content" for
+                // the purpose of this check.
+                !name.starts_with('.') && name != "data"
+            })
+            .collect(),
+        Err(e) => return Err(format!("read {}: {e}", root.display())),
+    };
+    if entries.is_empty() {
+        Ok(())
+    } else {
+        let mut sample = entries.clone();
+        sample.sort();
+        let preview: Vec<String> = sample.iter().take(5).cloned().collect();
+        let suffix = if sample.len() > 5 {
+            format!(", and {} more", sample.len() - 5)
+        } else {
+            String::new()
+        };
+        Err(format!(
+            "{} contains {}{}",
+            root.display(),
+            preview.join(", "),
+            suffix
+        ))
     }
 }
 

@@ -206,9 +206,12 @@ fn project_generate_docker_uses_existing_project_ini_device_id() {
 }
 
 #[test]
-fn project_init_does_not_clobber_existing_config() {
+fn project_init_errors_on_non_empty_dir_without_override() {
+    // A pre-existing user file in the target directory should make init
+    // refuse to scaffold (we'd otherwise silently overwrite it via
+    // scaffolder-core's copy_template).
     let dir = tempdir().unwrap();
-    std::fs::write(dir.path().join("config.yaml"), "existing: yes\n").unwrap();
+    std::fs::write(dir.path().join("README.md"), "# my project\n").unwrap();
     let out = iii_bin()
         .args(["project", "init", "--template-dir"])
         .arg(fixtures())
@@ -216,12 +219,64 @@ fn project_init_does_not_clobber_existing_config() {
         .arg(dir.path())
         .output()
         .expect("failed to run iii");
-    assert!(out.status.success());
-    // copy_template uses fs::write which overwrites, so a stale fixture
-    // would clobber. We assert the file is non-empty (the bare template
-    // should always produce something).
-    let cfg = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
-    assert!(!cfg.is_empty());
+    assert!(
+        !out.status.success(),
+        "init should refuse a non-empty directory without --allow-non-empty"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not empty"),
+        "expected non-empty error message:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--allow-non-empty"),
+        "error should suggest --allow-non-empty:\n{stderr}"
+    );
+    let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
+    assert_eq!(readme, "# my project\n", "user file must be untouched");
+}
+
+#[test]
+fn project_init_with_allow_non_empty_succeeds() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# my project\n").unwrap();
+    let out = iii_bin()
+        .args(["project", "init", "--allow-non-empty", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        out.status.success(),
+        "init --allow-non-empty failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join(".iii").join("project.ini").exists());
+    assert!(dir.path().join("config.yaml").exists());
+    // README.md isn't in the bare template's file list, so the user's copy
+    // is left in place.
+    assert!(dir.path().join("README.md").exists());
+}
+
+#[test]
+fn project_init_into_dir_with_only_hidden_files_succeeds() {
+    // A directory that only contains hidden dotfiles (e.g. a freshly
+    // `git init`'d project) should not trigger the non-empty guard.
+    let dir = tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    let out = iii_bin()
+        .args(["project", "init", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        out.status.success(),
+        "init in a dir with only .git/ should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
