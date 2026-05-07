@@ -209,32 +209,14 @@ fn worker_remove_requires_worker_name() {
 // ── Trigger subcommand ──────────────────────────────────────────────
 
 #[test]
-fn trigger_requires_function_id() {
+fn trigger_without_fn_path_fails() {
     let output = iii_bin()
-        .args(["trigger", "--payload", "{}"])
+        .args(["trigger"])
         .output()
         .expect("failed to execute");
     assert!(
         !output.status.success(),
-        "trigger without --function-id should fail"
-    );
-}
-
-#[test]
-fn trigger_help_shows_options() {
-    let output = iii_bin()
-        .args(["trigger", "--help"])
-        .output()
-        .expect("failed to execute");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("function-id"),
-        "trigger help should show --function-id"
-    );
-    assert!(
-        stdout.contains("payload"),
-        "trigger help should show --payload"
+        "trigger with no FUNCTION_PATH should fail"
     );
 }
 
@@ -352,5 +334,70 @@ fn old_info_command_is_not_valid() {
     assert!(
         !output.status.success(),
         "\"iii info\" should not be valid (use \"iii worker info\")"
+    );
+}
+
+#[test]
+fn trigger_help_shows_function_path_positional() {
+    let output = iii_bin()
+        .args(["trigger", "--help"])
+        .output()
+        .expect("failed to execute");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FUNCTION_PATH"),
+        "trigger --help should show positional FUNCTION_PATH:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--json"),
+        "trigger --help should show --json flag:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("--function-id"),
+        "trigger --help must NOT show removed --function-id:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn trigger_legacy_function_id_rejected_at_runtime() {
+    let output = iii_bin()
+        .args(["trigger", "--function-id", "test::fn"])
+        .output()
+        .expect("failed to execute");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("--function-id"),
+        "stderr should reference unexpected --function-id:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn trigger_kv_with_json_merge_parses() {
+    let output = iii_bin()
+        .args([
+            "trigger",
+            "test::fn",
+            "--json",
+            r#"{"a":1,"b":2}"#,
+            "a=99",
+            "--port",
+            "19999",
+            "--timeout-ms",
+            "200",
+        ])
+        .output()
+        .expect("failed to execute");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("expected key=value")
+            && !stderr.contains("must be an object"),
+        "kv+json merge should parse cleanly:\n{}",
+        stderr
     );
 }
