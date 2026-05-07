@@ -17,15 +17,14 @@ Invoke a registered function on a running iii engine directly from the terminal,
 ## Command Reference
 
 ```bash
-iii trigger \
-  --function-id='<function_id>' \
-  --payload='<json>'
+iii trigger <function-path> [key=value ...] [--json '<obj>']
 ```
 
-| Flag | Required | Default | Description |
-|------|----------|---------|-------------|
-| `--function-id` | Yes | — | The ID of the function to invoke (e.g. `iii::queue::redrive`, `orders::process`) |
-| `--payload` | No | `{}` | A JSON string passed as the function's input |
+| Argument / Flag | Required | Default | Description |
+|---|---|---|---|
+| `<function-path>` (positional) | Yes | — | The ID of the function to invoke (e.g. `iii::queue::redrive`, `orders::process`) |
+| `key=value` (positional, repeated) | No | — | Payload tokens. Values are JSON-decoded when possible (`count=10` → `10`), otherwise treated as strings |
+| `--json` | No | — | JSON payload. Combinable with `key=value`: when both are given, `--json` provides the base object and key=value tokens override individual keys |
 | `--address` | No | `localhost` | The hostname or IP of the engine |
 | `--port` | No | `49134` | The engine's WebSocket port |
 | `--timeout-ms` | No | `30000` | Max time in milliseconds to wait for the invocation result |
@@ -36,35 +35,47 @@ iii trigger \
   <Step title="Ensure the engine is running">
     The `iii trigger` command connects to a running engine instance. If you don't have one running yet, follow the [Quickstart](/quickstart) to get started.
   </Step>
-  <Step title="Identify the function ID">
-    Every function registered with the engine has a unique ID. Builtin functions use the `iii::` prefix. User-defined functions use the ID you specified during registration.
+  <Step title="Identify the function path">
+    Every function registered with the engine has a unique path. Builtin functions use the `iii::` prefix. User-defined functions use the ID you specified during registration.
 
-    Examples of function IDs:
+    Examples of function paths:
     - `iii::queue::redrive` — builtin DLQ redrive
     - `orders::process-payment` — a user-defined function
     - `iii::durable::publish` — the builtin topic-based publish function
   </Step>
   <Step title="Build the payload">
-    The `--payload` flag accepts a JSON string. This JSON becomes the function's input — the same data it would receive if invoked via an SDK `trigger()` call.
+    Pass payload fields as `key=value` tokens after the function path. Values are JSON-decoded when possible.
 
     ```bash
-    # Simple object
-    --payload='{"queue": "payment"}'
+    # Numbers and booleans are decoded as JSON
+    iii trigger orders::process amount=149.99 currency=USD active=true
 
-    # Nested payload
-    --payload='{"orderId": "ord_789", "amount": 149.99, "currency": "USD"}'
+    # Strings with spaces require quoting
+    iii trigger orders::process name="Alice Smith"
 
     # Empty payload (for functions that don't require input)
-    --payload='{}'
+    iii trigger iii::queue::redrive
     ```
 
-    The CLI validates that the payload is valid JSON before connecting to the engine. Invalid JSON produces an immediate error.
+    For nested or complex payloads, use `--json` with a literal JSON object:
+
+    ```bash
+    iii trigger orders::process \
+      --json '{"orderId": "ord_789", "items": [{"sku": "A", "qty": 2}]}'
+    ```
+
+    The two forms are combinable. When both are supplied, `--json` provides the base object and `key=value` tokens override individual keys (shallow merge):
+
+    ```bash
+    iii trigger orders::process \
+      --json '{"orderId": "ord_789", "amount": 100}' \
+      amount=149.99
+    # → {"orderId": "ord_789", "amount": 149.99}
+    ```
   </Step>
   <Step title="Run the command">
     ```bash
-    iii trigger \
-      --function-id='iii::queue::redrive' \
-      --payload='{"queue": "payment"}'
+    iii trigger iii::queue::redrive queue=payment
     ```
 
     The CLI connects to the engine over WebSocket, sends the invocation, and waits for the result. On success, the function's return value is printed to stdout as pretty-printed JSON:
@@ -85,11 +96,9 @@ iii trigger \
 By default, `iii trigger` connects to `localhost:49134`. Use `--address` and `--port` to target a different engine instance:
 
 ```bash
-iii trigger \
-  --function-id='iii::queue::redrive' \
-  --payload='{"queue": "payment"}' \
-  --address='10.0.1.5' \
-  --port=49134
+iii trigger iii::queue::redrive queue=payment \
+  --address 10.0.1.5 \
+  --port 49134
 ```
 
 ## How It Works
@@ -122,9 +131,7 @@ The CLI connects to the engine's WebSocket endpoint (the same protocol SDKs use)
 Move all failed messages from the `payment` queue's DLQ back to the main queue:
 
 ```bash
-iii trigger \
-  --function-id='iii::queue::redrive' \
-  --payload='{"queue": "payment"}'
+iii trigger iii::queue::redrive queue=payment
 ```
 
 ```json
@@ -143,19 +150,16 @@ iii trigger \
 Trigger any function registered by your workers:
 
 ```bash
-iii trigger \
-  --function-id='orders::process-payment' \
-  --payload='{"orderId": "ord_789", "amount": 149.99, "currency": "USD"}'
+iii trigger orders::process-payment orderId=ord_789 amount=149.99 currency=USD
 ```
 
 ### Publish to a topic-based queue
 
-Use the builtin `iii::durable::publish` function to publish a message to a topic:
+Use the builtin `iii::durable::publish` function to publish a message to a topic. The nested `data` object makes `--json` the cleanest form:
 
 ```bash
-iii trigger \
-  --function-id='iii::durable::publish' \
-  --payload='{"topic": "order.created", "data": {"orderId": "ord_789"}}'
+iii trigger iii::durable::publish \
+  --json '{"topic": "order.created", "data": {"orderId": "ord_789"}}'
 ```
 
 ### Use in a shell script
@@ -166,9 +170,7 @@ QUEUES=("payment" "email" "notifications")
 
 for queue in "${QUEUES[@]}"; do
   echo "Redriving $queue..."
-  iii trigger \
-    --function-id='iii::queue::redrive' \
-    --payload="{\"queue\": \"$queue\"}"
+  iii trigger iii::queue::redrive queue="$queue"
 done
 ```
 
@@ -176,7 +178,9 @@ done
 
 | Scenario | Behavior |
 |----------|----------|
-| Invalid JSON in `--payload` | Error printed immediately, no connection attempted |
+| Missing function path | Error printed immediately, no connection attempted |
+| Invalid JSON in `--json` | Error printed immediately, no connection attempted |
+| `--json` not an object combined with `key=value` tokens | Error printed immediately |
 | Engine not running (connection refused) | Error with the target address and port |
 | Function not found | Engine returns a `function_not_found` error, printed to stderr |
 | Function returns an error | Error body printed to stderr, exit code 1 |
