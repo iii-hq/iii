@@ -1,4 +1,5 @@
 import type { ChannelReader, ChannelWriter } from './channels'
+import type { IIIConnectionState } from './iii-constants'
 import type {
   RegisterFunctionMessage,
   RegisterServiceMessage,
@@ -242,6 +243,23 @@ export interface ISdk {
    * ```
    */
   shutdown(): Promise<void>
+
+  /**
+   * Subscribe to connection-state transitions. The handler is fired immediately
+   * with the current state, then on every transition. Multiple listeners are
+   * supported. Returns an unsubscribe function.
+   *
+   * @example
+   * ```typescript
+   * const unsub = iii.addConnectionStateListener((state) => {
+   *   console.log('connection state:', state)
+   * })
+   *
+   * // Later, stop receiving updates
+   * unsub()
+   * ```
+   */
+  addConnectionStateListener(handler: (state: IIIConnectionState) => void): () => void
 }
 
 /**
