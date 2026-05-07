@@ -70,7 +70,7 @@ impl UpdateBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::FieldPath;
+    use crate::types::MergePath;
 
     use super::*;
 
@@ -82,11 +82,14 @@ mod tests {
 
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            UpdateOp::Append { path, value } => {
-                assert_eq!(path, &FieldPath("chunks".to_string()));
+            UpdateOp::Append {
+                path: Some(MergePath::Single(s)),
+                value,
+            } => {
+                assert_eq!(s, "chunks");
                 assert_eq!(value, &serde_json::json!("hello"));
             }
-            other => panic!("expected append op, got {other:?}"),
+            other => panic!("expected single-string append, got {other:?}"),
         }
     }
 }
