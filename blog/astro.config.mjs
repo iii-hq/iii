@@ -10,5 +10,12 @@ export default defineConfig({
   build: {
     format: 'directory',
   },
+  markdown: {
+    syntaxHighlight: 'shiki',
+    shikiConfig: {
+      theme: 'github-dark-dimmed',
+      wrap: false,
+    },
+  },
   integrations: [mdx()],
 })

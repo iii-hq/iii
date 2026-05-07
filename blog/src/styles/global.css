@@ -129,6 +129,31 @@ body {
   color: var(--accent);
 }
 
+/* Theme toggle — matches website navbar control */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--ink-faint);
+  cursor: pointer;
+  font: inherit;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.theme-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.theme-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ============= MAIN ============= */
 main {
   max-width: 760px;
@@ -228,14 +253,53 @@ code {
   border: 1px solid var(--rule);
   padding: 1px 6px;
   border-radius: 4px;
+  white-space: nowrap;
 }
 pre {
-  background: var(--paper-2);
+  background: #0e0e0e;
   border: 1px solid var(--rule);
   padding: 1rem 1.15rem;
   border-radius: 6px;
   overflow-x: auto;
   line-height: 1.55;
+  margin: 1.4rem 0;
+}
+pre > code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 0.85em;
+  white-space: pre;
+}
+pre.astro-code,
+pre.shiki {
+  background: var(--shiki-bg, #0e0e0e) !important;
+}
+
+article ul,
+article ol {
+  margin: 0 0 1.25em;
+  padding-left: 1.4em;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+article ul {
+  list-style: disc;
+}
+article ul li::marker {
+  color: var(--accent);
+}
+article li {
+  margin: 0.45em 0;
+  padding-left: 0.25em;
+}
+article li > p {
+  margin: 0 0 0.4em;
+}
+article li > ul,
+article li > ol {
+  margin-top: 0.35em;
+  margin-bottom: 0.35em;
 }
 
 blockquote {
