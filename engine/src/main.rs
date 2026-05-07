@@ -118,8 +118,12 @@ enum Commands {
         /// Specific command or binary to update (e.g., "console", "self").
         /// Use "self" or "iii" to update only iii.
         /// If omitted, updates iii and all installed binaries.
-        #[arg(name = "command")]
+        #[arg(name = "command", conflicts_with = "list_targets")]
         target: Option<String>,
+
+        /// List the targets you can pass to `iii update <target>` and exit.
+        #[arg(long = "list-targets")]
+        list_targets: bool,
     },
 }
 
@@ -197,7 +201,14 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Update { target }) => {
+        Some(Commands::Update {
+            target,
+            list_targets,
+        }) => {
+            if *list_targets {
+                cli::update::print_targets();
+                std::process::exit(0);
+            }
             let exit_code = cli::handle_update(target.as_deref()).await;
             std::process::exit(exit_code);
         }

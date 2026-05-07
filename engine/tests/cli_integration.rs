@@ -378,6 +378,36 @@ fn trigger_legacy_function_id_rejected_at_runtime() {
 }
 
 #[test]
+fn update_list_targets_prints_targets() {
+    let output = iii_bin()
+        .args(["update", "--list-targets"])
+        .output()
+        .expect("failed to execute");
+    assert!(output.status.success(), "exit: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("self") && (stdout.contains("console") || stdout.contains("worker")),
+        "expected list-targets to mention self + a managed binary:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn update_unknown_target_hints_list_targets() {
+    let output = iii_bin()
+        .args(["update", "definitely-not-a-real-binary"])
+        .output()
+        .expect("failed to execute");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--list-targets"),
+        "unknown target should hint --list-targets:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn trigger_kv_with_json_merge_parses() {
     let output = iii_bin()
         .args([

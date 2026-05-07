@@ -207,6 +207,10 @@ pub async fn handle_update(target: Option<&str>) -> i32 {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{} {}", "error:".red(), e);
+                    eprintln!(
+                        "  {} run `iii update --list-targets` to see valid targets.",
+                        "hint:".dimmed()
+                    );
                     return 1;
                 }
             };
