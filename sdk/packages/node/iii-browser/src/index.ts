@@ -1,6 +1,7 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
 export { EngineFunctions, EngineTriggers } from './iii-constants'
+export type { IIIConnectionState } from './iii-constants'
 
 export { type InitOptions, registerWorker, TriggerAction } from './iii'
 

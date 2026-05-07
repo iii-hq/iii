@@ -79,6 +79,7 @@ class Sdk implements ISdk {
   private reconnectionConfig: IIIReconnectionConfig
   private reconnectAttempt = 0
   private connectionState: IIIConnectionState = 'disconnected'
+  private connectionListeners = new Set<(state: IIIConnectionState) => void>()
   private isShuttingDown = false
 
   constructor(
@@ -435,11 +436,35 @@ class Sdk implements ISdk {
     this.setConnectionState('disconnected')
   }
 
+  /**
+   * Subscribe to connection-state transitions. The handler is fired immediately
+   * with the current state, then on every transition. Multiple listeners are
+   * supported. Returns an unsubscribe function.
+   */
+  addConnectionStateListener = (handler: (state: IIIConnectionState) => void): (() => void) => {
+    this.connectionListeners.add(handler)
+    try {
+      handler(this.connectionState)
+    } catch (e) {
+      console.error('[iii] connection listener threw on initial fire', e)
+    }
+    return () => {
+      this.connectionListeners.delete(handler)
+    }
+  }
+
   // private methods
 
   private setConnectionState(state: IIIConnectionState): void {
     if (this.connectionState !== state) {
       this.connectionState = state
+      for (const handler of this.connectionListeners) {
+        try {
+          handler(state)
+        } catch (e) {
+          console.error('[iii] connection listener threw', e)
+        }
+      }
     }
   }
 
