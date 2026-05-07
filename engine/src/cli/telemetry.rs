@@ -143,6 +143,7 @@ pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
         serde_json::json!({
             "with_docker": with_docker,
             "project_id": project_id,
+            "install_method": environment::detect_install_method(),
         }),
         None,
     ) {

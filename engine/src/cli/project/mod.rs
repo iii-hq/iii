@@ -242,12 +242,12 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
                 let mut fetcher = match build_fetcher(args.template_dir.as_deref()) {
                     Ok(f) => f,
                     Err(e) => {
-                        eprintln!(
-                            "  {} could not build template fetcher: {}",
-                            "warning:".yellow().bold(),
-                            e
+                        crate::cli::telemetry::send_project_init_failed("fetcher", &e.to_string());
+                        return print_err(
+                            "could not build template fetcher for docker assets",
+                            &e.to_string(),
+                            "check III_TEMPLATE_URL or pass --template-dir <path>",
                         );
-                        return 0;
                     }
                 };
                 if let Err(e) = apply_docker(&mut fetcher, root, &device_id).await {
@@ -440,6 +440,7 @@ fn read_existing_project_id(root: &Path) -> Option<String> {
 
 fn resolve_device_id_for_docker(root: &Path) -> String {
     let path = root.join(".iii").join("project.ini");
+    let ini_exists = path.exists();
     let contents = std::fs::read_to_string(&path).ok();
     let device_id = contents.as_ref().and_then(|s| {
         s.lines()
@@ -450,7 +451,18 @@ fn resolve_device_id_for_docker(root: &Path) -> String {
     match device_id {
         Some(id) => id,
         None => {
-            warn_missing_project_ini(root);
+            if ini_exists {
+                // Legacy project.ini that pre-dates the device_id field
+                // (e.g. created by the old iii-tools or the interactive
+                // TUI flow without a --directory). Don't claim the
+                // project is uninitialized — it isn't.
+                eprintln!(
+                    "  {} no device_id in .iii/project.ini; generating a fresh one.",
+                    "note:".dimmed()
+                );
+            } else {
+                warn_missing_project_ini(root);
+            }
             iii::workers::telemetry::environment::get_or_create_device_id()
         }
     }
