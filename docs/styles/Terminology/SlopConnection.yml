@@ -5,7 +5,12 @@ message:
 level: error
 ignorecase: true
 tokens:
+  - bolt on
   - bolt together
+  - bolt-on
+  - bolted on
+  - bolted together
+  - bolted-on
   - bridge
   - cement
   - couple together
