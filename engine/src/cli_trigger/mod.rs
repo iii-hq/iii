@@ -4,6 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod payload;
+
 use clap::Parser;
 use iii::workers::worker::DEFAULT_PORT;
 use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
