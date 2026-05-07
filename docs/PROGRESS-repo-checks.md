@@ -346,6 +346,8 @@ Removed `how-to/disable-telemetry.mdx` (was a placeholder-only stub). Added a `#
 
 ## Introspection routing (added 2026-05-06)
 
+Source: Slack thread, Mike + Anthony, 2026-05-06 — <https://motia-workspace.slack.com/archives/D0A0C30776K/p1778095916525539>.
+
 Introspection of a running iii instance — listing workers / functions / triggers / trigger types, querying traces / logs / metrics, streaming activity — is critical for humans and agent skills alike. Per `workers.md`, the content belongs in Worker Docs (iii-engine-functions for lists/discovery; iii-observability for traces/logs/metrics). User concern was that this surface is too important to be invisible from ideal-docs.
 
 **Resolution 2026-05-06:**

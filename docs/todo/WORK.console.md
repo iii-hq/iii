@@ -60,6 +60,18 @@ be improved gui can add to it"):
   console's perspective ("how do I use the States page"), not from the worker's
   perspective ("how does iii-state work" — link out for that).
 
+## Dead code detection
+
+See [`WORK.dead-code.md`](./WORK.dead-code.md) for the cross-cutting initiative.
+Console-specific items:
+
+- [ ] **`console-frontend`:** add `knip` with a baseline ignore list; drive to
+  zero. Add `@typescript-eslint/no-unused-vars` to ESLint.
+- [ ] **`console-rust`:** enable `#![warn(dead_code, unused_imports,
+  unused_variables)]` at the crate root; add `cargo machete` to CI.
+- [ ] After any worker rename (see "Watch items"), audit the frontend for stale
+  worker-name string constants.
+
 ## Notes / dependencies
 
 - No active work blocked on the console.

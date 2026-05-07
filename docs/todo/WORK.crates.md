@@ -94,6 +94,21 @@ stubbed in `using-iii/workers.mdx`).
 
 If any of these become user-facing in the future, add to a WORK file at that point.
 
+## 6. Dead code detection
+
+See [`WORK.dead-code.md`](./WORK.dead-code.md) for the cross-cutting initiative.
+Crates-specific items:
+
+- [ ] Enable `#![warn(dead_code, unused_imports, unused_variables, unused_must_use)]`
+  at every crate root in `crates/*`.
+- [ ] Add `cargo machete` to the workspace CI; backstop with weekly
+  `cargo +nightly udeps` over the whole workspace.
+- [ ] After §1 / §2 (`init` rename), confirm the legacy `create` command code
+  path is fully removed from `iii-tools` and not re-exported from
+  `scaffolder-core`.
+- [ ] If §4 resolves to remove `motia-tools`, confirm `scaffolder-core` drops the
+  product-agnostic abstraction and any now-dead trait impls.
+
 ## Notes / dependencies
 
 - `iii-tools` and `iii-worker` rename work (§1, §2) is coordinated with

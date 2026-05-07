@@ -18,48 +18,63 @@ Docs pages:
 ## 1. Strip forbidden surfaces from SDK packages
 
 Per `project-rules/sdks.md` and `project-rules/workers.md`, logger / channels / OTel
-surfaces belong in iii-observability and iii-worker-manager Worker Docs respectively. The
-docs pages are already aligned with the rule (callouts in place; type entries stripped).
-The SDK packages still export these symbols. Punch list (per package):
+surfaces belong in iii-observability and iii-worker-manager Worker Docs respectively.
+The docs pages are already aligned with the rule (callouts in place; type entries
+stripped). The SDK packages still export these symbols.
 
-### Node SDK (`sdk/packages/node/iii/src/index.ts`)
-- [ ] Drop `ChannelReader`
-- [ ] Drop `ChannelWriter`
-- [ ] Drop `Logger`
-- [ ] Drop `StreamChannelRef`
-- [ ] Drop `otel?: TelemetryOptions` from `InitOptions`
+**Important — split per static analysis (2026-05-07):** several "drop these" items
+are actually in active cross-crate / cross-package use. Don't remove them blindly.
+See [`WORK.dead-code.md`](./WORK.dead-code.md) §5 for the full classification with
+file:line citations. Two categories:
 
-### Python SDK (`sdk/packages/python/iii/src/iii/__init__.py`)
-- [ ] Drop `ChannelReader`
-- [ ] Drop `ChannelWriter`
-- [ ] Drop `Logger`
-- [ ] Drop `StreamChannelRef`
-- [ ] Drop `OtelConfig`
-- [ ] Drop `TelemetryOptions`
+### A. Demote (in active cross-crate use, not user-facing)
 
-### Rust SDK (`sdk/packages/rust/iii/src/lib.rs:114-127`)
-- [ ] Drop the entire `telemetry` module re-export (`init_otel`, `shutdown_otel`,
-  `with_span`, all baggage / traceparent helpers, OTel `SpanKind`, OTel `Status`,
-  `execute_traced_request`, etc.)
-- [ ] Drop `ChannelDirection`
-- [ ] Drop `ChannelItem`
-- [ ] Drop `ChannelReader`
-- [ ] Drop `ChannelWriter`
-- [ ] Drop `StreamChannelRef`
-- [ ] Drop `extract_channel_refs`
-- [ ] Drop `is_channel_ref`
-- [ ] Drop `Logger`
-- [ ] Drop `OtelConfig`
-- [ ] Drop `ReconnectionConfig` (the OTel one)
-- [ ] Remove `register_function_with` (`iii.rs:951`) — previously flagged for removal
+Pick Option A (make internal) or Option B (hide from docs, move to `__internal`
+subspacing, plan future removal) per the decision framework in
+[`WORK.dead-code.md`](./WORK.dead-code.md) §5. Per language:
+- Rust: `pub(crate)` if same-crate; otherwise `#[doc(hidden)] pub` and relocate to
+  `__internal` module.
+- TypeScript: drop `export` keyword OR move to `__internal/` subdir + `@internal`
+  JSDoc.
+- Python: prefix with `_` and remove from `__init__.py`.
 
-### Browser SDK (`sdk/packages/node/iii-browser/src/index.ts`)
-- [ ] Drop `ChannelReader`
-- [ ] Drop `ChannelWriter`
-- [ ] Drop `TelemetryOptions` from `InitOptions`
+Affected:
+- **Rust SDK:** `register_function_with`, `ChannelReader`, `ChannelWriter`,
+  `StreamChannelRef`, `create_channel`, `ChannelDirection`, `ChannelItem`,
+  `extract_channel_refs`, `is_channel_ref`, `OtelConfig`. (Cross-crate consumers:
+  `iii-worker` sandbox daemon, `console-rust`.)
+- **Python SDK:** `Logger`, `register_trigger_type`, `unregister_trigger_type`.
+  (Cross-package consumers: `skills/references/*.py`. May need to migrate skills
+  first.)
+- **Rust SDK:** `register_trigger_type` (SDK method). (Used by
+  `skills/references/custom-triggers.rs`.)
 
-After cleanup: re-run a survey against `sdk-reference/*.mdx` to confirm the docs and
-packages stay aligned.
+### B. Drop (public exports, completely unused internally)
+
+These have the `pub` / `export` keyword but no callers anywhere in iii-temp.
+**Confirm with SDK consumers / external users that they aren't relied on outside
+iii-temp** before removal — public-API removal is a breaking change. Question to
+ask: "is this of any use to you?"
+
+- **Rust SDK:** `set_headers`, `set_metadata`, `set_otel_config`, `Logger`
+  re-export, `ReconnectionConfig` (OTel), the entire `telemetry` module
+  re-export (`init_otel`, `shutdown_otel`, `with_span`, baggage / traceparent
+  helpers, OTel `SpanKind`, OTel `Status`, `execute_traced_request`).
+- **Node SDK:** `TelemetryOptions`, `LoggerParams`, `Context`,
+  `InternalFunctionHandler`, `RemoteServiceFunctionData`,
+  `UnregisterTriggerTypeMessage`, `UnregisterTriggerMessage`,
+  `UnregisterFunctionMessage`. Also `ChannelReader`, `ChannelWriter`, `Logger`,
+  `StreamChannelRef` if no external consumers depend on them.
+- **Python SDK:** `ChannelReader`, `ChannelWriter`, `StreamChannelRef`,
+  `TelemetryOptions`, `OtelConfig` (after confirming no external use).
+- **Browser SDK:** `safeStringify`, `TelemetryOptions`, `InternalFunctionHandler`,
+  `RemoteServiceFunctionData`, `UnregisterTriggerTypeMessage`,
+  `UnregisterTriggerMessage`, `UnregisterFunctionMessage`,
+  `RegisterFunctionFormat` (only used in declaring file). Also `ChannelReader`,
+  `ChannelWriter` if no external consumers depend on them.
+
+After cleanup: re-run the analysis (per [`WORK.dead-code.md`](./WORK.dead-code.md)
+§5 methodology) to confirm the docs and packages stay aligned.
 
 ## 2. Browser SDK exports decision
 
@@ -74,23 +89,30 @@ re-exported from `index.ts`. Docs currently strip both Types entries.
 
 ## 3. Cross-SDK method confirmations
 
-Methods present in some SDKs but not others. Decide whether each is a primary surface
-(stub on docs + add to other SDKs for parity) or an internal helper (keep undocumented;
-mark `pub(crate)` / non-public in code).
+Methods present in some SDKs but not others. Static analysis on 2026-05-07 narrowed
+the findings (see [`WORK.dead-code.md`](./WORK.dead-code.md) §5):
 
-### `get_connection_state`
-- Python (`iii.py:678`): public
-- Rust (`iii.rs:1182`): public
-- Node, Browser: not public (Node has internal `IIIConnectionState` tracking only)
-- [ ] SDK author decision: primary surface or internal? If primary, add to all four.
+### `get_connection_state` (engineering judgment — §C)
+- Python (`iii.py:678`): public; vulture flags unused intra-package.
+- Rust (`iii.rs:1182`): public; called only in 4 SDK tests, no production callers.
+- Node, Browser: not public.
+- [ ] SDK author decision: `pub(crate)` for test-only / introspection-only, demote
+  per §A of WORK.dead-code.md, or stub on docs and add Node/Browser parity.
 
-### Rust-only methods
-- `set_headers` (`iii.rs:776`)
-- `set_metadata` (`iii.rs:771`)
-- `set_otel_config` (`iii.rs:781`) — additionally subject to the observability-stripping
-  rule; if kept public, joins the forbidden-surface cleanup list.
-- [ ] SDK author decision: primary surface or internal? If primary, stub on `rust-sdk.mdx`
-  with reviewer notes and consider Node / Python parity.
+### Rust-only `set_*` methods (confirmed unused — drop after consumer confirmation)
+- `set_headers` (`iii.rs:776`) — zero callers in iii-temp.
+- `set_metadata` (`iii.rs:771`) — zero callers in iii-temp.
+- `set_otel_config` (`iii.rs:781`) — zero SDK-method callers (the same-named
+  function in observability worker is internal to that worker).
+- [ ] SDK author decision: confirm no external user dependence, then drop. See
+  [`WORK.dead-code.md`](./WORK.dead-code.md) §5 — these are in category B
+  (public exports, completely unused internally).
+
+### Rust-only `register_function_with` (UPDATE 2026-05-07 — DEMOTE, do not remove)
+- (`iii.rs:951`): heavily used by `crates/iii-worker/src/sandbox_daemon/*` (15+
+  sites) and `skills/references/http-invoked-functions.rs`.
+- [ ] Demote per [`WORK.dead-code.md`](./WORK.dead-code.md) §5 §A. Earlier "remove"
+  intent was inconsistent with current heavy use.
 
 ## 4. Cross-SDK type-list mismatches
 
@@ -142,12 +164,24 @@ migration guidance, or when-to-pick-this-SDK.
 worker-author / worker-internal, [the create-custom-trigger-type how-to] belongs outside
 ideal-docs." The how-to was dropped on that basis.
 
-- [ ] SDK author decision: keep these as user-facing methods, or remove from public
-  exports and treat trigger-type registration as a worker-internal concern?
-- [ ] If removed: drop the `## registerTriggerType` and `## unregisterTriggerType`
-  stubs from all four SDK reference pages and the corresponding `RegisterTriggerTypeInput`
-  / `RegisterTriggerTypeMessage` types.
-- [ ] If kept: remove the **Consider removing** markers; author the stubs.
+**Update 2026-05-07 (static analysis):** these methods are in active use by skill
+references — the **Consider removing** markers may be wrong:
+- Rust SDK `register_trigger_type` — `skills/references/custom-triggers.rs:201,209`.
+- Python SDK `register_trigger_type` — `skills/references/custom-triggers.py:60,131`.
+
+The wire-level `Unregister*Message` types ARE confirmed unused by knip (Node and
+Browser). So:
+
+- [ ] SDK author decision: keep the methods (skills depend on them) but consider
+  whether the wire-level `Unregister*Message` types are actually invoked or are
+  dead remnants — would mean unregistration is a docs / skills concept that
+  doesn't roundtrip to the engine.
+- [ ] If keeping: remove the **Consider removing** markers from all four SDK pages.
+- [ ] If removing: migrate `skills/references/custom-triggers.{rs,py}` first; only
+  then drop the SDK methods.
+
+See [`WORK.dead-code.md`](./WORK.dead-code.md) §5 §A (skill consumers) and §B
+(unused wire types) for full classification.
 
 ## 7. Cross-SDK alignment guardrails
 
@@ -167,6 +201,22 @@ rounds and resolve only when the underlying question is resolved:
 - `<Note>` callouts at the top pointing to the worker that owns a stripped surface.
 - `{/* TODO(skills/auto-gen): ... */}` — MDX comment markers for content that needs
   hand-authored prefix/suffix once auto-gen lands (see §5).
+
+## 9. Dead code detection
+
+See [`WORK.dead-code.md`](./WORK.dead-code.md) for the cross-cutting initiative.
+SDK-specific items:
+
+- [ ] **Node + Browser:** add `knip` per package with a baseline ignore list;
+  drive the list to zero. Add `@typescript-eslint/no-unused-vars` to ESLint.
+- [ ] **Python:** add `vulture` and `ruff` (`F401`, `F841`, `ARG`); add `deptry`
+  for unused dependencies in `pyproject.toml`.
+- [ ] **Rust:** enable `#![warn(dead_code, unused_imports, unused_variables)]` at
+  each SDK crate root; add `cargo machete` to CI.
+- [ ] After §1 (forbidden-surface cleanup) lands, confirm no internal-only
+  channel / logger / OTel symbols linger as private dead code.
+- [ ] After §6 (`registerTriggerType` decision) lands, run detectors to remove any
+  resulting dead helpers / message types.
 
 ## Notes / dependencies
 

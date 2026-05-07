@@ -136,6 +136,17 @@ one-line stub.
 - [ ] Author each section on `using-iii/workers.mdx` once the surface stabilizes (the
   init rename should land before authoring to avoid rewrites).
 
+## 8. Dead code detection
+
+See [`WORK.dead-code.md`](./WORK.dead-code.md) for the cross-cutting initiative.
+CLI-specific items:
+
+- [ ] After §2 (`iii create` removal) and §4 (`iii sandbox` removal), confirm no
+  orphaned dispatcher arms, help-text strings, or unused argument-parsing modules
+  remain in `engine/src/main.rs`.
+- [ ] After §5 (`iii trigger` syntax propagation) lands in docs, confirm no docs
+  page still references the old `--function-id` / `--payload` flag form.
+
 ## Notes / dependencies
 
 - §1 (iii cloud) is blocked on the surface clarification.

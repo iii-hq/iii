@@ -170,6 +170,20 @@ prior implementation) needs:
 
 See [`WORK.auto-gen.md`](./WORK.auto-gen.md) for the full design.
 
+## 7. Dead code detection
+
+See [`WORK.dead-code.md`](./WORK.dead-code.md) for the cross-cutting initiative.
+Engine-specific items:
+
+- [ ] Enable `#![warn(dead_code, unused_imports, unused_variables, unused_must_use)]`
+  at the engine crate root and gate release CI with `RUSTFLAGS="-D warnings"`.
+- [ ] Add `cargo machete` to engine CI; backstop with weekly `cargo +nightly udeps`.
+- [ ] After §2 (adapter cleanup) lands, confirm no orphaned `mod.rs` / config
+  references remain.
+- [ ] After §1 (`iii create` / `iii sandbox` removal) lands, confirm no dead
+  dispatcher arms or unused helper modules linger in `engine/src/main.rs` and
+  `engine/src/cli/`.
+
 ## Notes / dependencies
 
 - Adapter cleanup (§2) and `iii-config.yaml` normalization (§3) are independent and can
