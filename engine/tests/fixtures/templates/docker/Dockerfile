@@ -8,7 +8,11 @@ ENV III_HOST_USER_ID=${III_HOST_USER_ID}
 
 WORKDIR /app
 COPY config.yaml /app/config.yaml
-COPY iii.lock /app/iii.lock
+# iii.lock is engine-managed runtime state (worker registration); the engine
+# creates it on first run if missing, so we don't COPY it from the host.
+# (Doing so would also fail `docker build` for fresh projects that haven't
+# generated one yet, and `iiidev/iii:latest` is distroless so `RUN touch`
+# isn't an option.)
 
 EXPOSE 49134 3111 3112 9464
 ENTRYPOINT ["/app/iii"]

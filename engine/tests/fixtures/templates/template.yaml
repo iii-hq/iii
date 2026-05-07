@@ -3,8 +3,8 @@ templates:
   - bare
   - docker
   - quickstart
-  - multi-worker-orchestration
-  - quickstart-ai-agents
+  # - multi-worker-orchestration
+  # - quickstart-ai-agents
   - starter
 
 # Shared files from this directory included in every template
