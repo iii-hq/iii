@@ -11,20 +11,20 @@ async function read(rel: string): Promise<string> {
 
 test('blog index emits at /blog/ and links to sample post', async () => {
   const html = await read('index.html')
-  assert.match(html, /href="\/blog\/hello-world\/"/, 'index should link to /blog/hello-world/')
-  assert.match(html, /Hello, world/i, 'index should render the sample post title')
+  assert.match(html, /href="\/blog\/add-a-worker\/"/, 'index should link to /blog/add-a-worker/')
+  assert.match(html, /Add a worker/i, 'index should render the sample post title')
 })
 
-test('sample post emits at /blog/hello-world/index.html', async () => {
-  const html = await read('hello-world/index.html')
-  assert.match(html, /Hello, world/i)
+test('sample post emits at /blog/add-a-worker/index.html', async () => {
+  const html = await read('add-a-worker/index.html')
+  assert.match(html, /Add a worker/i)
   assert.match(html, /<article/i, 'post page should render an <article>')
 })
 
 test('rss feed exists and references the canonical post URL', async () => {
   const xml = await read('rss.xml')
   assert.match(xml, /<rss/i)
-  assert.match(xml, /https:\/\/iii\.dev\/blog\/hello-world\//, 'rss should use absolute /blog/ URLs')
+  assert.match(xml, /https:\/\/iii\.dev\/blog\/add-a-worker\//, 'rss should use absolute /blog/ URLs')
 })
 
 // Links to the parent iii.dev site that are allowed to escape the /blog/
@@ -59,8 +59,8 @@ test('blog index includes GTM, Common Room loader, and cookie consent banner', a
 })
 
 test('blog post page includes GTM, Common Room loader, and cookie consent banner', async () => {
-  const html = await read('hello-world/index.html')
-  await assertAnalyticsAndConsent(html, 'hello-world/index.html')
+  const html = await read('add-a-worker/index.html')
+  await assertAnalyticsAndConsent(html, 'add-a-worker/index.html')
 })
 
 // Theme + branding parity with iii.dev: the same 'iii_theme' localStorage key
