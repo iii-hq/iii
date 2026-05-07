@@ -208,7 +208,7 @@ name: bridge
 
         **Append at a nested missing leaf is always an array.** When `append` walks to a missing leaf at the end of an array-form path, it creates `[value]` regardless of the value's type — including string values, which would be kept as a string under the legacy single-string path's string-concat tier. This is the core fix for [issue #1552](https://github.com/iii-hq/iii/issues/1552).
 
-        **Behavior change worth noting (issue #1552 case 2):** `append` at a path whose existing leaf is a JSON object or scalar (number/boolean) — i.e. a value that can't be appended to — now returns a structured `append.type_mismatch` error in the response `errors` array. Previously this would silently no-op when reached via the single-string path. Existing callers using `path: ""` or `path: "field"` against array, string, null, or missing-field leaves are unaffected.
+        **Note on `append.type_mismatch` for nested paths:** the structured `append.type_mismatch` error for object/scalar leaves shipped in #1555 for the single-string-path case. The nested-path form added here returns the same error code with the same shape, so consumers parsing `errors[]` need no new branches. Callers using `path: ""` or `path: "field"` against array, string, null, or missing-field leaves are unaffected.
 
         Validation: invalid update inputs are rejected with a structured error in the response's `errors` array. Reasons include path depth > 32 segments, segment > 256 bytes, value depth > 16, > 1024 top-level keys, type mismatches, non-object targets, or any segment / top-level key matching `__proto__` / `constructor` / `prototype`. Successfully applied ops still reflect in `new_value`.
       </ResponseField>
