@@ -1381,19 +1381,13 @@ mod tests {
         // error and leaves state unchanged.
         let (updated, errors) = apply_update_ops(
             Some(json!({ "entityId": { "buffer": { "x": "y" } } })),
-            &[UpdateOp::append_at_path(
-                ["entityId", "buffer"],
-                json!("z"),
-            )],
+            &[UpdateOp::append_at_path(["entityId", "buffer"], json!("z"))],
         );
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, super::ERR_APPEND_TYPE_MISMATCH);
         // State unchanged: the object at the leaf was not mutated.
-        assert_eq!(
-            updated,
-            json!({ "entityId": { "buffer": { "x": "y" } } })
-        );
+        assert_eq!(updated, json!({ "entityId": { "buffer": { "x": "y" } } }));
     }
 
     #[test]
@@ -1430,7 +1424,10 @@ mod tests {
     fn append_proto_polluted_at_intermediate_segment_rejected() {
         let (updated, errors) = apply_update_ops(
             Some(json!({})),
-            &[UpdateOp::append_at_path(["a", "constructor", "b"], json!("x"))],
+            &[UpdateOp::append_at_path(
+                ["a", "constructor", "b"],
+                json!("x"),
+            )],
         );
 
         assert_eq!(errors.len(), 1);
