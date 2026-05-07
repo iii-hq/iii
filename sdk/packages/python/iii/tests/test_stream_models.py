@@ -11,6 +11,50 @@ def test_update_append_model_serializes() -> None:
     assert op.model_dump() == {"type": "append", "path": "chunks", "value": {"text": "hello"}}
 
 
+def test_update_append_with_array_path_round_trips() -> None:
+    """Closes issue #1552 case 3: nested-path array form is the new happy path."""
+    op = UpdateAppend(path=["entityId", "buffer"], value="chunk")
+    dumped = op.model_dump()
+    assert dumped == {
+        "type": "append",
+        "path": ["entityId", "buffer"],
+        "value": "chunk",
+    }
+    parsed = UpdateAppend.model_validate(json.loads(json.dumps(dumped)))
+    assert parsed.path == ["entityId", "buffer"]
+
+
+def test_update_append_without_path_round_trips() -> None:
+    """Path is now optional. Omitted -> None on both sides; mirrors UpdateMerge."""
+    op = UpdateAppend(value="first")
+    dumped = op.model_dump()
+    assert dumped == {"type": "append", "path": None, "value": "first"}
+    parsed = UpdateAppend.model_validate(json.loads(json.dumps(dumped)))
+    assert parsed.path is None
+
+
+def test_update_append_with_explicit_none_path() -> None:
+    """Symmetric with Rust's serde-default: explicit None and missing field both yield None."""
+    op = UpdateAppend(path=None, value=42)
+    assert op.path is None
+    parsed = UpdateAppend.model_validate({"type": "append", "value": 42})
+    assert parsed.path is None
+
+
+def test_update_append_with_empty_string_path() -> None:
+    """Empty string is preserved as `Single("")` — engine maps it to root append."""
+    op = UpdateAppend(path="", value="x")
+    dumped = op.model_dump()
+    assert dumped["path"] == ""
+
+
+def test_update_append_with_dotted_string_keeps_literal_segment() -> None:
+    """`"a.b"` is a single literal key, never traversed as `a -> b`."""
+    op = UpdateAppend(path="entityId.buffer", value="literal")
+    parsed = UpdateAppend.model_validate(json.loads(json.dumps(op.model_dump())))
+    assert parsed.path == "entityId.buffer"
+
+
 def test_update_merge_with_string_path_round_trips() -> None:
     op = UpdateMerge(path="session-abc", value={"author": "alice"})
     dumped = op.model_dump()

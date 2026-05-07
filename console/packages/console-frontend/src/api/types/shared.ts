@@ -12,6 +12,11 @@ export type StreamUpdateOp =
   // array of literal segments (nested path). Path may be omitted to
   // target the root value.
   | { type: 'merge'; path?: string | string[]; value: unknown }
+  // Append (issue #1552) mirrors merge's path shape — single string
+  // for first-level keys, array for nested paths, omitted for root.
+  // Per-op errors include `append.path.*` (validation), `append.target_not_object`,
+  // and `append.type_mismatch` (case-2: existing object/scalar at the leaf).
+  | { type: 'append'; path?: string | string[]; value: unknown }
 
 export type StreamUpdateOpError = {
   op_index: number
@@ -23,8 +28,10 @@ export type StreamUpdateOpError = {
 export type StreamUpdateResult = {
   old_value?: unknown
   new_value: unknown
-  // Per-op errors. Currently emitted only by `merge` for validation
-  // rejections (depth/size/proto-pollution). Field omitted when empty.
+  // Per-op errors. Emitted by `merge` and `append` for validation
+  // rejections (depth/size/proto-pollution) and by `append` for the
+  // case-2 `append.type_mismatch` and `append.target_not_object`
+  // surfaces. Field omitted when empty.
   errors?: StreamUpdateOpError[]
 }
 

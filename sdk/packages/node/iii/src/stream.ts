@@ -139,11 +139,41 @@ export type UpdateDecrement = {
   by: number
 }
 
-/** Append an element to an array or concatenate a string. */
+/**
+ * Append an element to an array, concatenate a string, or push a new
+ * value at a nested path. The target is the root (when `path` is
+ * omitted, empty, or `[]`), a single first-level key (when `path` is
+ * a non-empty string), or an arbitrary nested location (when `path`
+ * is an array of literal segments).
+ *
+ * Engine semantics:
+ *   - Missing or non-object intermediates along a nested path are
+ *     auto-replaced with `{}` so a stray `null` or scalar never blocks
+ *     future appends.
+ *   - At the leaf:
+ *       - missing/null + nested path → `[value]` (always an array)
+ *       - missing/null + single-string path → string-as-string for the
+ *         string-concat tier, otherwise `[value]`
+ *       - existing array → push
+ *       - existing string + string value → concatenate
+ *       - existing object/scalar at the leaf → `append.type_mismatch`
+ *   - Each path segment is a literal key. `["a.b"]` targets a single
+ *     key named `"a.b"`, not `a → b`.
+ *
+ * Validation: invalid paths (depth > 32 segments, segment > 256
+ * bytes, or any `__proto__`/`constructor`/`prototype` segment) are
+ * rejected with a structured error in the `errors` field of the
+ * `state::update` / `stream::update` response. The append does not
+ * apply when an error is returned for that op.
+ */
 export type UpdateAppend = {
   type: 'append'
-  /** First-level field path. Use an empty string to target the root value. */
-  path: string
+  /**
+   * Optional path to the append target. Accepts a single first-level
+   * key (legacy `string`) or an array of literal segments for nested
+   * append. See {@link MergePath} (the same shape is reused).
+   */
+  path?: MergePath
   /** Value to append. String targets only accept string values. */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
   value: any

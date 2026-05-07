@@ -156,10 +156,44 @@ class UpdateDecrement(BaseModel):
 
 
 class UpdateAppend(BaseModel):
-    """Append operation for stream update."""
+    """Append an element to an array, concatenate a string, or push at a nested path.
+
+    The target is the root (when ``path`` is omitted, an empty string,
+    or an empty list), a single first-level key (when ``path`` is a
+    non-empty string), or an arbitrary nested location (when ``path``
+    is a list of literal segments).
+
+    Path forms accepted (mirrors :class:`UpdateMerge` after #1547):
+      - ``None`` / ``""`` / ``[]``: append at the root.
+      - ``"foo"``: append at the first-level key ``foo``. A dotted
+        string like ``"a.b"`` is the literal key ``"a.b"``, *not*
+        traversed as ``a -> b``.
+      - ``["a", "b", "c"]``: nested path; each element is a literal
+        segment.
+
+    Engine semantics:
+      - Missing/non-object intermediates along a nested path are
+        auto-created/replaced with ``{}``.
+      - At the leaf:
+          - missing/null + nested path -> ``[value]`` (always an array)
+          - missing/null + single-string path -> string-as-string for
+            the string-concat tier, otherwise ``[value]``
+          - existing array -> push
+          - existing string + string value -> concatenate
+          - existing object/scalar at the leaf -> ``append.type_mismatch``
+
+    Validation: invalid paths (depth > 32 segments, segment > 256
+    bytes, or any ``__proto__`` / ``constructor`` / ``prototype``
+    segment) are rejected with a structured error in the ``errors``
+    field of the ``state::update`` / ``stream::update`` response. The
+    append does not apply when an error is returned for that op.
+    """
 
     type: str = "append"
-    path: str
+    # Optional. Accepts a single string (legacy / first-level key) or
+    # a list of literal segments (nested append). ``None`` / ``""`` /
+    # ``[]`` all route to root append.
+    path: str | list[str] | None = None
     value: Any
 
 
