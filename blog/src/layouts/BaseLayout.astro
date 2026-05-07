@@ -5,6 +5,7 @@ import CookieBanner from '../components/CookieBanner.astro'
 import Footer from '../components/Footer.astro'
 import Logo from '../components/Logo.astro'
 import ThemeInit from '../components/ThemeInit.astro'
+import ThemeToggle from '../components/ThemeToggle.astro'
 
 interface Props {
   title: string
@@ -50,6 +51,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site).toString()
           <a href="/blog/">all posts</a>
           <a href="/docs">docs</a>
           <a href="/blog/rss.xml" aria-label="RSS feed">rss</a>
+          <ThemeToggle />
         </div>
       </nav>
       <main>

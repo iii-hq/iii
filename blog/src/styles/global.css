@@ -129,6 +129,31 @@ body {
   color: var(--accent);
 }
 
+/* Theme toggle — matches website navbar control */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--ink-faint);
+  cursor: pointer;
+  font: inherit;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.theme-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.theme-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ============= MAIN ============= */
 main {
   max-width: 760px;

@@ -13,6 +13,7 @@ test('blog index emits at /blog/ and links to sample post', async () => {
   const html = await read('index.html')
   assert.match(html, /href="\/blog\/add-a-worker\/"/, 'index should link to /blog/add-a-worker/')
   assert.match(html, /Add a worker/i, 'index should render the sample post title')
+  assert.match(html, /id="theme-btn"/, 'index should include theme toggle (parity with iii.dev)')
 })
 
 test('sample post emits at /blog/add-a-worker/index.html', async () => {
