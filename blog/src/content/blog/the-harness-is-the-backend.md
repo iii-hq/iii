@@ -2,7 +2,7 @@
 
 title: 'The Harness Is the Backend'  
 description: 'The agent harness debate takes for granted that the harness is its own world, separate from the backend. iii makes a different bet: the harness is the backend.'  
-pubDate: 2026-05-06  
+pubDate: 2026-04-28  
 author: 'Mike Piccolo, Founder & CEO of iii'  
 tags: ['agents', 'architecture', 'harness', 'backend']
 ---
@@ -39,6 +39,8 @@ another: "the backend".
 
 I believe that this is temporary and it's just a small step along the way to
 true adoption and acceptance of agentic infrastructure into "the backend".
+
+![Today: point-to-point integrations between workers versus one shared iii runtime, live capability discovery, and zero-integration.](../../assets/blog/the-harness-is-the-backend/point-to-point-vs-shared-runtime.png)
 
 ## How Agents Work Today
 

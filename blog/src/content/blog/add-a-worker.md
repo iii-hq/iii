@@ -1,7 +1,7 @@
 ---
 title: 'Add a worker'
 description: 'The cloud is a bazaar, and that was okay until agents arrived and had to contend with 10,000 shops. Three primitives, one engine, and one answer to every question.'
-pubDate: 2026-05-05
+pubDate: 2026-05-07
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'workers', 'cloudflare']
 ---
