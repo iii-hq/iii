@@ -107,6 +107,14 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         return path
     end
 
+    -- Bracket-notation label for nested-segment paths. Mirrors the Rust
+    -- helper `path_label_segments` in `engine/src/update_ops.rs` so the
+    -- error messages produced by the two adapters match byte-for-byte.
+    local function path_label_segments(segments)
+        if segments == nil or #segments == 0 then return 'root' end
+        return '[' .. table.concat(segments, ', ') .. ']'
+    end
+
     local function field_path_segments(path)
         if path == nil or path == '' then return {} end
         return { path }
@@ -359,23 +367,63 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
               end
             end
         elseif op.type == 'append' then
-            local path = get_path(op.path)
-            if validate_op_path('append', zero_index, field_path_segments(path)) then
-              if path == '' or path == nil then
-                local changed, next_value = append_to_target(using_missing_default and cjson.null or current, op.value, 'root', zero_index)
+            -- Validation order is load-bearing (mirror of update_ops.rs):
+            --   1. validate_op_path  (bounds + proto-pollution)
+            --   2. root-is-object    (before walk_or_create can mutate)
+            --   3. walk_or_create    (nested only)
+            --   4. leaf-type matrix  (FR-11)
+            local segments = merge_path_segments(op.path)
+            if validate_op_path('append', zero_index, segments) then
+              if #segments == 0 then
+                -- Root append: legacy semantics preserved.
+                local target_root = using_missing_default and cjson.null or current
+                local changed, next_value = append_to_target(target_root, op.value, 'root', zero_index)
                 if changed then
                     current = next_value
                     using_missing_default = false
                 end
-              elseif type(current) == 'table' and current ~= cjson.null then
-                    local changed, next_value = append_to_target(current[path], op.value, path, zero_index)
-                    if changed then
-                        current[path] = next_value
-                        using_missing_default = false
-                    end
-              else
+              elseif type(current) ~= 'table' or current == cjson.null or is_array(current) then
+                -- Non-empty path requires object root (IMP-003).
                 push_error(zero_index, 'append.target_not_object',
-                    "Cannot append at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+                    "Cannot append at path '" .. path_label_segments(segments) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              elseif #segments == 1 then
+                -- Single-segment path: back-compat with the legacy
+                -- single-string `FieldPath` semantics — `initial_append_value`
+                -- keeps the string-concat tier for missing leaves.
+                local leaf_key = segments[1]
+                local existing_val = current[leaf_key]
+                if existing_val ~= nil and existing_val ~= cjson.null then
+                    local changed, next_value = append_to_target(existing_val, op.value, leaf_key, zero_index)
+                    if changed then
+                        current[leaf_key] = next_value
+                    end
+                else
+                    current[leaf_key] = initial_append_value(op.value)
+                end
+                using_missing_default = false
+              else
+                -- Nested path: walk parent (creating intermediates), then
+                -- operate on the leaf key. FR-11 nested-path rule: missing
+                -- leaf is ALWAYS an array (no string-concat tier).
+                local parent_segments = {}
+                for i = 1, #segments - 1 do
+                    parent_segments[i] = segments[i]
+                end
+                local leaf_key = segments[#segments]
+                local parent_map = walk_or_create(current, parent_segments)
+                if parent_map ~= nil then
+                    local existing_val = parent_map[leaf_key]
+                    if existing_val ~= nil and existing_val ~= cjson.null then
+                        local changed, next_value = append_to_target(existing_val, op.value, leaf_key, zero_index)
+                        if changed then
+                            parent_map[leaf_key] = next_value
+                        end
+                    else
+                        -- FR-11: nested-path missing leaf is always an array.
+                        parent_map[leaf_key] = { op.value }
+                    end
+                    using_missing_default = false
+                end
               end
             end
         elseif op.type == 'remove' then
