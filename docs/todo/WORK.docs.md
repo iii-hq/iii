@@ -153,7 +153,28 @@ question is resolved.
 ### Auto-generated SDK reference docs need pre/post-append slots
 - [ ] Design and implement. See [`WORK.auto-gen.md`](./WORK.auto-gen.md).
 
-## 7. Mintlify deployment
+## 7. Deferred: canonical "compose from the registry" showcase
+
+- [ ] Author one flagship piece — either a single big tutorial, or a canonical example
+  project — that visibly composes most of the main registry workers into a robust,
+  interesting system. The point is to make the registry-composition theme concrete
+  instead of abstract.
+- Until that exists, do the work via hinting / telling in prose per the new
+  "Recurring theme: compose from the registry" section in
+  [`project-rules/voice.md`](../project-rules/voice.md).
+- Decide tutorial vs. example project when picking it up; pick a use case that
+  exercises workers across categories (auth, storage, queue, AI, observability, etc.)
+  rather than one vertical.
+
+## 8. Styling follow-ups
+
+- [ ] Inline `` `code` `` spans should have a background distinct from the page
+  background so they stand out. Today `:not(pre) > code` in `custom.css` uses
+  `--iii-bg` (same as body) with only a thin `--iii-rule-2` border, which
+  reads as flat. Pick a slightly contrasting fill (e.g. `--iii-panel` /
+  `--iii-paper-2`) for both light and dark themes.
+
+## 9. Mintlify deployment
 
 - Site is deployed to `iii-docs.vercel.app`, proxied from website `/docs/*`.
 - Doc paths now match website (`/install`, `/quickstart` at root) — no redirects needed.
