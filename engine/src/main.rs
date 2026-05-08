@@ -289,19 +289,13 @@ mod tests {
     #[test]
     fn trigger_legacy_function_id_flag_rejected() {
         let result = Cli::try_parse_from(["iii", "trigger", "--function-id", "my::fn"]);
-        assert!(
-            result.is_err(),
-            "--function-id should fail to parse (removed in MOT-3239)"
-        );
+        assert!(result.is_err(), "--function-id should fail to parse");
     }
 
     #[test]
     fn trigger_legacy_payload_flag_rejected() {
         let result = Cli::try_parse_from(["iii", "trigger", "my::fn", "--payload", r#"{"a":1}"#]);
-        assert!(
-            result.is_err(),
-            "--payload should fail to parse (removed in MOT-3239)"
-        );
+        assert!(result.is_err(), "--payload should fail to parse");
     }
 
     #[test]
