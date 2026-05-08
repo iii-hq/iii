@@ -58,3 +58,4 @@ User-agent: CCBot
 Disallow: /
 
 Sitemap: https://iii.dev/sitemap.xml
+Sitemap: https://iii.dev/docs/sitemap.xml

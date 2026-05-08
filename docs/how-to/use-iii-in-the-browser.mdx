@@ -20,7 +20,7 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 
 ## Prerequisites
 
-- A running iii engine with the **iii-worker-manager** enabled and RBAC configured (see [Worker RBAC](/how-to/worker-rbac)).
+- A running iii engine with the **iii-worker-manager** enabled and RBAC configured (see [Worker RBAC](/docs/how-to/worker-rbac)).
 - `iii-browser-sdk` installed in your frontend project.
 
 ## Steps
@@ -51,7 +51,7 @@ workers:
 ```
 
 <Info title="Security">
-  For production, add an `auth_function_id` to validate tokens from the browser. See [Worker RBAC](/how-to/worker-rbac) for full auth setup.
+  For production, add an `auth_function_id` to validate tokens from the browser. See [Worker RBAC](/docs/how-to/worker-rbac) for full auth setup.
 </Info>
 
 ### 3. Connect from the browser
@@ -218,5 +218,5 @@ Every browser tab connected to the engine sees task changes the moment they happ
 Your browser is a full iii worker. It registers functions, calls backend functions with `trigger()`, and receives live invocations over a single WebSocket connection. No REST endpoints, no polling, no separate real-time layer.
 
 <Info title="API Reference">
-  The browser SDK exposes the same `ISdk` interface as the Node SDK. See the [Browser SDK Reference](/api-reference/sdk-browser) for the full API.
+  The browser SDK exposes the same `ISdk` interface as the Node SDK. See the [Browser SDK Reference](/docs/api-reference/sdk-browser) for the full API.
 </Info>

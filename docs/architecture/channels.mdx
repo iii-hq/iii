@@ -17,7 +17,7 @@ Channels provide WebSocket-backed pipes for moving data between workers without 
 Use channels when the payload is large, binary, or naturally stream-shaped. Use triggers when the payload is a discrete event that should invoke a function.
 
 <Info title="Worker reference">
-  Channel endpoints are served by the [Worker Manager](/workers/iii-worker-manager). For SDK APIs, see the Node, Python, and Rust API references.
+  Channel endpoints are served by the [Worker Manager](/docs/workers/iii-worker-manager). For SDK APIs, see the Node, Python, and Rust API references.
 </Info>
 Data channels provide a streaming primitive for moving binary data between functions — even when those functions run in different worker processes. Instead of serializing an entire payload into a single invocation message, channels let producers write data incrementally while consumers read it as a stream.
 

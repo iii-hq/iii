@@ -11,6 +11,24 @@ function redirect(location) {
   }
 }
 
+// Return a real 404 for unknown extensionless paths instead of the previous
+// SPA fallback to /index.html. The old behavior served homepage HTML with
+// status 200 for any unknown path (e.g. /workers/iii-queue from broken docs
+// links), which Google indexed as soft-duplicate-of-homepage. Returning 404
+// here lets Search Console's "Not found (404)" bucket reflect reality and
+// stops generating "Duplicate without user-selected canonical" entries.
+function notFound() {
+  return {
+    statusCode: 404,
+    statusDescription: 'Not Found',
+    headers: {
+      'content-type': { value: 'text/html; charset=utf-8' },
+      'cache-control': { value: 'public, max-age=300' },
+    },
+    body: '<!doctype html><meta charset="utf-8"><title>404 — iii</title><meta name="robots" content="noindex"><style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#1a1a1a}a{color:#1a5fbf}</style><h1>404 — page not found</h1><p>That URL doesn\'t exist on iii.dev.</p><p><a href="/">home</a> · <a href="/docs">docs</a> · <a href="/blog/">blog</a> · <a href="/manifesto">manifesto</a></p>',
+  }
+}
+
 // CloudFront Functions deliver request.querystring as
 //   { key: { value: string, multiValue?: [{ value: string }, ...] } }
 // where repeated params spill into multiValue. We re-encode and rejoin so the
@@ -84,13 +102,14 @@ function handler(event) {
     return request
   }
 
-  // SPA fallback: extensionless path not ending in /
+  // Real 404 for extensionless paths not in the pretty-URL map. Previously
+  // this rewrote to /index.html (soft-404 cloning the homepage) — see
+  // notFound() comment above for the SEO impact.
   if (uri !== '/' && uri.charAt(uri.length - 1) !== '/') {
     const lastSlash = uri.lastIndexOf('/')
     const lastSegment = uri.substring(lastSlash + 1)
     if (lastSegment.indexOf('.') === -1) {
-      request.uri = '/index.html'
-      return request
+      return notFound()
     }
   }
 

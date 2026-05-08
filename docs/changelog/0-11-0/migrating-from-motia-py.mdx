@@ -8,7 +8,7 @@ Motia was a higher-level framework built on top of `iii-sdk`. It handled file sc
 By moving to `iii-sdk` directly, you unlock the full power of the engine:
 
 - **Add new workers** that register their own functions and triggers, enabling multi-worker orchestration across services, languages, and runtimes.
-- **Connect from the browser** using `iii-browser-sdk` with [Worker RBAC](/how-to/worker-rbac) for secure, real-time frontends — no REST layer needed. See [Use iii in the browser](/how-to/use-iii-in-the-browser).
+- **Connect from the browser** using `iii-browser-sdk` with [Worker RBAC](/docs/how-to/worker-rbac) for secure, real-time frontends — no REST layer needed. See [Use iii in the browser](/docs/how-to/use-iii-in-the-browser).
 - **Treat Motia as one worker among many** instead of a standalone monolith. Your existing Motia code becomes just another worker in a larger iii deployment.
 - **Understand the primitives directly.** Working with `register_function`, `register_trigger`, and `register_worker` builds a mental model that transfers across all iii SDKs and documentation.
 
@@ -63,7 +63,7 @@ Motia auto-registered functions and triggers from exported `config` objects. Wit
 
 Continue to Step 4 to see the handler patterns.
 
-<Callout type="info">`iii-sdk` Python supports engine-native HTTP middleware via `middleware_function_ids`. See [Use HTTP middleware](/how-to/use-http-middleware) for the full pattern.</Callout>
+<Callout type="info">`iii-sdk` Python supports engine-native HTTP middleware via `middleware_function_ids`. See [Use HTTP middleware](/docs/how-to/use-http-middleware) for the full pattern.</Callout>
 
 ---
 
@@ -147,7 +147,7 @@ iii.register_trigger({
 </Tab>
 </Tabs>
 
-<Callout type="info">`iii-sdk` Python uses engine-native middleware registered as regular functions with a `middleware::` prefix. See [Use HTTP middleware](/how-to/use-http-middleware) for the full pattern.</Callout>
+<Callout type="info">`iii-sdk` Python uses engine-native middleware registered as regular functions with a `middleware::` prefix. See [Use HTTP middleware](/docs/how-to/use-http-middleware) for the full pattern.</Callout>
 
 ### Cron
 
@@ -314,7 +314,7 @@ iii.register_trigger({
 
 ### Stream and State operations
 
-In Motia, you used the `Stream` class and `stateManager` singleton to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/workers/iii-stream) and [State](/workers/iii-state) worker docs for the full list of operations.
+In Motia, you used the `Stream` class and `stateManager` singleton to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/docs/workers/iii-stream) and [State](/docs/workers/iii-state) worker docs for the full list of operations.
 
 <Tabs>
 <Tab title="Stream">

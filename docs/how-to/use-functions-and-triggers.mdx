@@ -105,7 +105,7 @@ for delegating work to external services like webhooks, serverless functions, or
 
 <Warning title="Engine worker required">
 HTTP-invoked functions require the `iii-http-functions` worker to be enabled in your engine config.
-See the [engine configuration guide](/how-to/configure-engine) for details.
+See the [engine configuration guide](/docs/how-to/configure-engine) for details.
 </Warning>
 
 Pass an `HttpInvocationConfig` as the second argument to `registerFunction` instead of a handler:
@@ -311,7 +311,7 @@ iii.register_function(reg);
 
 ### Enqueue — `trigger` with `TriggerAction.Enqueue({ queue })`
 
-Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Named Queues](/how-to/use-named-queues).
+Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Named Queues](/docs/how-to/use-named-queues).
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -620,7 +620,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   Node `trigger({ function_id: 'iii::durable::publish', payload: { topic: 'user.created', data: {...} } })`,
   Python `trigger({'function_id': 'iii::durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
   Rust `trigger(TriggerRequest::new("iii::durable::publish", json!({"topic": "user.created", "data": {...}})))`.
-  See the [Queue worker](/workers/iii-queue) for details.
+  See the [Queue worker](/docs/workers/iii-queue) for details.
 </Info>
 
 ## Trigger Types
@@ -688,7 +688,7 @@ iii.register_function(reg);
 
 The triggering Function doesn't know what language the target is written in or where it's running.
 
-Once a Function is registered, every other part of the system can discover and trigger it. See [Discovery](/primitives-and-concepts/discovery) for how this works, including built-in functions the engine provides.
+Once a Function is registered, every other part of the system can discover and trigger it. See [Discovery](/docs/primitives-and-concepts/discovery) for how this works, including built-in functions the engine provides.
 
 ## Unregistering Functions and Triggers
 

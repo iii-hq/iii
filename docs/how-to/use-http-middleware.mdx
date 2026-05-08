@@ -215,7 +215,7 @@ Middleware receives a lightweight request object (no body, for performance):
 ```
 
 <Info title="No request body in middleware">
-Middleware does not receive the request body. This is intentional: global middleware runs before body parsing, so auth checks and rate limiting skip the expensive JSON parse for rejected requests. Use [conditions](/how-to/use-trigger-conditions) for body-based validation.
+Middleware does not receive the request body. This is intentional: global middleware runs before body parsing, so auth checks and rate limiting skip the expensive JSON parse for rejected requests. Use [conditions](/docs/how-to/use-trigger-conditions) for body-based validation.
 </Info>
 
 ## Request Lifecycle
