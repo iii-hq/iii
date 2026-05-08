@@ -10,7 +10,10 @@ use serde_json::Value;
 /// Resolve a payload from CLI tokens and an optional `--json` value.
 ///
 /// Resolution order:
-/// 1. If neither is provided, return `null`.
+/// 1. If neither is provided, return an empty object `{}`. This matches the
+///    old `--payload='{}'` default and lets engine functions whose input is
+///    a struct (with all-optional fields) deserialize from a bare
+///    `iii trigger <fn-path>` invocation.
 /// 2. If only `--json` is provided, parse it and return as-is (any JSON value).
 /// 3. If only kv pairs are provided, build an object from them.
 /// 4. If both are provided: `--json` must be an object. kv pairs override
@@ -45,7 +48,7 @@ pub fn parse(kv_tokens: &[String], json_override: Option<&str>) -> Result<Value>
     };
 
     match (json_value, kv_obj) {
-        (None, None) => Ok(Value::Null),
+        (None, None) => Ok(Value::Object(serde_json::Map::new())),
         (None, Some(obj)) => Ok(Value::Object(obj)),
         (Some(v), None) => Ok(v),
         (Some(Value::Object(mut base)), Some(overrides)) => {
@@ -70,8 +73,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_returns_null() {
-        assert_eq!(parse(&[], None).unwrap(), Value::Null);
+    fn empty_returns_empty_object() {
+        assert_eq!(parse(&[], None).unwrap(), json!({}));
     }
 
     #[test]
