@@ -220,6 +220,12 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
     end
 
     local function is_array(value)
+        -- cjson loses the empty-array vs. empty-object distinction across
+        -- the encode/decode roundtrip (both materialize as a `{}` Lua
+        -- table). Treat empty tables as objects here so that an empty
+        -- document root passes the nested-append IMP-003 gate (matching
+        -- the Rust path's `Value::Object({})` initialization), and so
+        -- `json_type_name` and `is_array` agree on the empty-table case.
         if type(value) ~= 'table' then
             return false
         end
@@ -234,7 +240,7 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
             end
             count = count + 1
         end
-        return count == max
+        return count == max and count > 0
     end
 
     local function append_to_target(target, value, path, op_index)

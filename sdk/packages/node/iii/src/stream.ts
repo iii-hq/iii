@@ -102,11 +102,13 @@ export type StreamUpdateResult<TData> = {
   /** New value after the update. */
   new_value: TData
   /**
-   * Per-op errors. Currently emitted only by the `merge` op when input
-   * violates the validation bounds (path depth/size, value depth, or
-   * a `__proto__`/`constructor`/`prototype` segment or top-level key).
-   * Successfully applied ops are still reflected in `new_value`. The
-   * field is omitted from the JSON wire when empty.
+   * Per-op errors. Emitted by `merge` and `append` for validation
+   * rejections (path depth/size, value depth, or a
+   * `__proto__`/`constructor`/`prototype` segment or top-level key)
+   * and by `append` for the case-2 `append.type_mismatch` and
+   * `append.target_not_object` surfaces. Successfully applied ops are
+   * still reflected in `new_value`. The field is omitted from the
+   * JSON wire when empty.
    */
   errors?: UpdateOpError[]
 }

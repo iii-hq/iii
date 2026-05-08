@@ -117,11 +117,13 @@ class StreamUpdateResult(BaseModel, Generic[TData]):
 
     old_value: TData | None = None
     new_value: TData
-    # Per-op errors. Currently emitted only by the ``merge`` op for
-    # validation rejections. Field is omitted from the JSON wire when
-    # empty. ``default_factory`` is used (not ``= []``) to keep
-    # Pydantic's parameterized-Generic + default handling well-behaved
-    # across Python versions.
+    # Per-op errors. Emitted by ``merge`` and ``append`` for validation
+    # rejections (path/value bounds, proto-pollution segments) and by
+    # ``append`` for the ``append.type_mismatch`` and
+    # ``append.target_not_object`` surfaces. Field is omitted from the
+    # JSON wire when empty. ``default_factory`` is used (not ``= []``)
+    # to keep Pydantic's parameterized-Generic + default handling
+    # well-behaved across Python versions.
     errors: list[UpdateOpError] = Field(default_factory=list)
 
 

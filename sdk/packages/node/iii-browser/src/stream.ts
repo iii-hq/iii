@@ -102,8 +102,10 @@ export type StreamUpdateResult<TData> = {
   /** New value after the update. */
   new_value: TData
   /**
-   * Per-op errors. Currently emitted only by the `merge` op when
-   * input violates validation bounds. Field omitted when empty.
+   * Per-op errors. Emitted by `merge` and `append` for validation
+   * rejections (path/value bounds, proto-pollution segments) and by
+   * `append` for the `append.type_mismatch` and
+   * `append.target_not_object` surfaces. Field omitted when empty.
    */
   errors?: UpdateOpError[]
 }
