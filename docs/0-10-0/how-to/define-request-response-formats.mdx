@@ -12,7 +12,7 @@ Register functions with **`request_format`** and **`response_format`** (JSON Sch
 When you register a function, the iii engine stores metadata for discovery. The built-in **`engine::functions::list`** function returns every registered function with its `request_format` and `response_format`.
 
 - **AI and automation** — Agents can read that list and construct valid `payload` objects without guessing field names or types.
-- **CLI and scripts** — The same schemas document how to build `--payload` for [`iii trigger`](trigger-functions-from-cli).
+- **CLI and scripts** — The same schemas document how to build `--payload` for [`iii trigger`](./trigger-functions-from-cli).
 - **Contracts** — Formats are a machine-readable contract between your implementation and anything that triggers it.
 
 If you omit formats, discovery still lists your function, but **`request_format` / `response_format` may be `null`**, leaving callers without a structured contract.
