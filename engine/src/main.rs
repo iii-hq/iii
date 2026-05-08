@@ -12,11 +12,13 @@ use cli_trigger::TriggerArgs;
 use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
 /// Walk the clap Command tree to find the deepest matching subcommand for the
-/// given argv. Skips flags. Falls back to the root command on miss.
+/// given argv. Skips flags and the auto-generated `help` token (so
+/// `iii help update` resolves to the same Command as `iii update --help`).
+/// Falls back to the root command on miss.
 fn resolve_help_target<'a>(root: &'a clap::Command, argv: &[String]) -> &'a clap::Command {
     let mut cmd = root;
     for token in argv.iter().skip(1) {
-        if token.starts_with('-') {
+        if token.starts_with('-') || token == "help" {
             continue;
         }
         match cmd.find_subcommand(token) {
