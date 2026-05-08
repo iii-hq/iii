@@ -91,18 +91,28 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    println!("{} {}", "iii trigger".bold(), fn_path.bold());
-    if !description.is_empty() {
-        println!();
-        println!("  {}", description);
+    // Render the clap-help-styled header (title, about, usage, options table)
+    // for the trigger subcommand, with the function path baked into the name
+    // and the engine's description swapped in as the `about`. The two
+    // positional clap args (FUNCTION_PATH, KV) are suppressed because we are
+    // about to render a richer Parameters table sourced from the schema.
+    let usage_template = "\n**Usage: ** `${name} [key=value ...] [--json '<obj>']`\n".to_string();
+    if let Some(trigger) = crate::cli_subcommand("trigger") {
+        let mut printer = clap_help::Printer::new(trigger.clone());
+        printer.set_template("author", "");
+        printer.set_template("positionals", "");
+        printer
+            .expander_mut()
+            .set("name", format!("iii trigger {}", fn_path));
+        if !description.is_empty() {
+            printer.expander_mut().set("about", description.to_string());
+            printer.set_template("introduction", "\n${about}\n");
+        }
+        printer.set_template("usage", &usage_template);
+        printer.print_help();
     }
 
-    println!();
-    println!("{}", "Usage:".bold());
-    println!("  iii trigger {} [key=value ...] [--json '<obj>']", fn_path);
-
     let request_format = meta.get("request_format");
-    println!();
     println!("{}", "Parameters:".bold());
 
     let Some(schema) = request_format.filter(|v| !v.is_null()) else {
@@ -198,15 +208,9 @@ fn schema_type(schema: &Value) -> String {
 }
 
 fn print_static_help() {
-    println!("Invoke a function on a running iii engine.");
-    println!();
-    println!("{}", "Usage:".bold());
-    println!("  iii trigger [OPTIONS] [FUNCTION_PATH] [KV]... [--json '<obj>']");
-    println!();
-    println!("{}", "Arguments:".bold());
-    println!("  [FUNCTION_PATH]  Function path (e.g. `my::fn`). Positional.");
-    println!("  [KV]...          Key=value payload tokens (`a=10 b=\"hello\"`).");
-    println!();
+    if let Some(trigger) = crate::cli_subcommand("trigger") {
+        crate::render_clap_help(trigger);
+    }
     println!(
         "{} `iii trigger <fn-path> --help` queries a running engine for the",
         "Tip:".bold()

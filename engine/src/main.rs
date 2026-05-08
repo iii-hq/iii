@@ -32,6 +32,15 @@ fn print_help_and_exit(argv: &[String]) -> ! {
     let mut root = Cli::command();
     root.build();
     let target = resolve_help_target(&root, argv).clone();
+    render_clap_help(target);
+    std::process::exit(0);
+}
+
+/// Render a clap Command's help via clap-help with our shared styling
+/// (suppress the empty author stub, surface `about` under the title, and
+/// append a Commands listing because clap-help 1.x has no subcommand
+/// section). Does not exit.
+pub fn render_clap_help(target: clap::Command) {
     let mut printer = clap_help::Printer::new(target.clone());
     // Author line is rendered as a useless "by " stub when no author is set.
     printer.set_template("author", "");
@@ -43,7 +52,13 @@ fn print_help_and_exit(argv: &[String]) -> ! {
     }
     printer.print_help();
     print_subcommands_section(&target);
-    std::process::exit(0);
+}
+
+/// Look up a subcommand on the Cli command tree by name.
+pub fn cli_subcommand(name: &str) -> Option<clap::Command> {
+    let mut root = Cli::command();
+    root.build();
+    root.find_subcommand(name).cloned()
 }
 
 /// clap-help 1.x does not render subcommand listings; print our own table.
