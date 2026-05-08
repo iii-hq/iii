@@ -265,18 +265,6 @@
                 ]
               },
               {
-                "group": "Architecture",
-                "pages": [
-                  "0-10-0/architecture/index",
-                  "0-10-0/architecture/engine",
-                  "0-10-0/architecture/workers",
-                  "0-10-0/architecture/modules",
-                  "0-10-0/architecture/trigger-types",
-                  "0-10-0/architecture/channels",
-                  "0-10-0/architecture/queues"
-                ]
-              },
-              {
                 "group": "Modules",
                 "pages": [
                   "0-10-0/modules/index",
