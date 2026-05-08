@@ -65,7 +65,7 @@ async fn fetch_fn_meta(
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::functions::list".to_string(),
-            payload: json!({}),
+            payload: json!({ "include_internal": true }),
             action: None,
             timeout_ms: Some(timeout_ms),
         })
@@ -126,23 +126,63 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    for (name, prop) in props {
-        let ty = schema_type(prop);
-        let req_label = if required.contains(&name.as_str()) {
-            "required".red().to_string()
+    // Collect rows so we can compute column widths up front and align everything.
+    let rows: Vec<Row> = props
+        .iter()
+        .map(|(name, prop)| Row {
+            name: name.clone(),
+            ty: schema_type(prop),
+            required: required.contains(&name.as_str()),
+            desc: prop
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string(),
+        })
+        .collect();
+
+    // Display name carries a trailing `*` for required fields, so include that
+    // in the width calc to keep the type column aligned.
+    let max_name = rows
+        .iter()
+        .map(|r| r.name.len() + if r.required { 1 } else { 0 })
+        .max()
+        .unwrap_or(0);
+    let max_ty = rows.iter().map(|r| r.ty.len()).max().unwrap_or(0);
+
+    let mut has_required = false;
+    for row in &rows {
+        let display_name = if row.required {
+            has_required = true;
+            format!("{}*", row.name)
         } else {
-            "optional".dimmed().to_string()
+            row.name.clone()
         };
-        let desc = prop
-            .get("description")
-            .and_then(|d| d.as_str())
-            .unwrap_or("");
-        print!("  {}={}  ({})", name.bold(), ty, req_label);
-        if !desc.is_empty() {
-            print!("  {}", desc);
+        let padded_name = format!("{:<width$}", display_name, width = max_name);
+        let padded_ty = format!("{:<width$}", row.ty, width = max_ty);
+        if row.desc.is_empty() {
+            println!("  {}  {}", padded_name.bold(), padded_ty.dimmed());
+        } else {
+            println!(
+                "  {}  {}  {}",
+                padded_name.bold(),
+                padded_ty.dimmed(),
+                row.desc
+            );
         }
-        println!();
     }
+
+    if has_required {
+        println!();
+        println!("  {} required", "*".bold());
+    }
+}
+
+struct Row {
+    name: String,
+    ty: String,
+    required: bool,
+    desc: String,
 }
 
 fn schema_type(schema: &Value) -> String {
