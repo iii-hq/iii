@@ -91,43 +91,51 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    // Render the clap-help-styled header (title, about, usage, options table)
-    // for the trigger subcommand, with the function path baked into the name
-    // and the engine's description swapped in as the `about`. The two
-    // positional clap args (FUNCTION_PATH, KV) are suppressed because we are
-    // about to render a richer Parameters table sourced from the schema.
+    // Drive sections individually via print_template so we can place the
+    // schema-driven Parameters table BEFORE the generic Options table that
+    // clap-help builds from the trigger flags.
+    let Some(trigger) = crate::cli_subcommand("trigger") else {
+        return;
+    };
+
     let usage_template = "\n**Usage: ** `${name} [key=value ...] [--json '<obj>']`\n".to_string();
-    if let Some(trigger) = crate::cli_subcommand("trigger") {
-        let mut printer = clap_help::Printer::new(trigger.clone());
-        printer.set_template("author", "");
-        printer.set_template("positionals", "");
-        printer
-            .expander_mut()
-            .set("name", format!("iii trigger {}", fn_path));
-        if !description.is_empty() {
-            printer.expander_mut().set("about", description.to_string());
-            printer.set_template("introduction", "\n${about}\n");
-        }
-        printer.set_template("usage", &usage_template);
-        printer.print_help();
+    let parameters_md = parameters_md(meta);
+
+    let mut printer = clap_help::Printer::new(trigger);
+    printer
+        .expander_mut()
+        .set("name", format!("iii trigger {}", fn_path));
+    if !description.is_empty() {
+        printer.expander_mut().set("about", description.to_string());
     }
 
-    let request_format = meta.get("request_format");
-    println!("{}", "Parameters:".bold());
+    // Title.
+    printer.print_template(clap_help::TEMPLATE_TITLE);
+    println!();
+    // About.
+    if !description.is_empty() {
+        printer.print_template("\n${about}\n");
+    }
+    // Usage.
+    printer.print_template(&usage_template);
+    // Parameters (custom, schema-driven).
+    if let Some(md) = &parameters_md {
+        printer.print_template(md);
+    } else {
+        printer.print_template("\n**Parameters:**\n\n  *(no request schema published)*\n");
+    }
+    // Options (clap-help default table for the trigger flags).
+    printer.print_template(clap_help::TEMPLATE_OPTIONS);
+}
 
-    let Some(schema) = request_format.filter(|v| !v.is_null()) else {
-        println!("  (no request schema published)");
-        return;
-    };
-
-    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
-        println!("  (request body is {})", schema_type(schema));
-        return;
-    };
-
+/// Render the schema-driven parameters as a markdown table that termimad
+/// can display in the same style as clap-help's Options table. Returns
+/// `None` when there is nothing useful to show.
+fn parameters_md(meta: &Value) -> Option<String> {
+    let schema = meta.get("request_format").filter(|v| !v.is_null())?;
+    let props = schema.get("properties").and_then(|p| p.as_object())?;
     if props.is_empty() {
-        println!("  (none)");
-        return;
+        return None;
     }
 
     let required: Vec<&str> = schema
@@ -136,63 +144,27 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    // Collect rows so we can compute column widths up front and align everything.
-    let rows: Vec<Row> = props
-        .iter()
-        .map(|(name, prop)| Row {
-            name: name.clone(),
-            ty: schema_type(prop),
-            required: required.contains(&name.as_str()),
-            desc: prop
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
-        .collect();
-
-    // Display name carries a trailing `*` for required fields, so include that
-    // in the width calc to keep the type column aligned.
-    let max_name = rows
-        .iter()
-        .map(|r| r.name.len() + if r.required { 1 } else { 0 })
-        .max()
-        .unwrap_or(0);
-    let max_ty = rows.iter().map(|r| r.ty.len()).max().unwrap_or(0);
-
-    let mut has_required = false;
-    for row in &rows {
-        let display_name = if row.required {
-            has_required = true;
-            format!("{}*", row.name)
+    let mut md = String::from(
+        "\n**Parameters:**\n|:-:|:-:|:-:|:-|\n|name|type|required|description|\n|:-:|:-|:-:|:-|\n",
+    );
+    for (name, prop) in props {
+        // Escape `|` so multi-type values like `string|null` do not split the
+        // markdown row into extra columns.
+        let ty = schema_type(prop).replace('|', "\\|");
+        let req = if required.contains(&name.as_str()) {
+            "yes"
         } else {
-            row.name.clone()
+            "no"
         };
-        let padded_name = format!("{:<width$}", display_name, width = max_name);
-        let padded_ty = format!("{:<width$}", row.ty, width = max_ty);
-        if row.desc.is_empty() {
-            println!("  {}  {}", padded_name.bold(), padded_ty.dimmed());
-        } else {
-            println!(
-                "  {}  {}  {}",
-                padded_name.bold(),
-                padded_ty.dimmed(),
-                row.desc
-            );
-        }
+        let desc = prop
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .replace('|', "\\|");
+        md.push_str(&format!("|`{}`|{}|{}|{}|\n", name, ty, req, desc));
     }
-
-    if has_required {
-        println!();
-        println!("  {} required", "*".bold());
-    }
-}
-
-struct Row {
-    name: String,
-    ty: String,
-    required: bool,
-    desc: String,
+    md.push_str("|-\n");
+    Some(md)
 }
 
 fn schema_type(schema: &Value) -> String {
