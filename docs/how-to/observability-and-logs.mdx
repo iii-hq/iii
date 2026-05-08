@@ -276,7 +276,7 @@ graph LR
 ```
 
 <Info>
-  The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability worker reference](/docs/workers/iii-observability) for the full list of configuration fields and environment variable overrides.
+  The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability worker reference](/workers/iii-observability) for the full list of configuration fields and environment variable overrides.
 </Info>
 
 ## Viewing Logs in iii Console
@@ -284,7 +284,7 @@ graph LR
 Once you've instrumented your code with the Logger, view trace-correlated logs in the iii Console.
 
 <Info title="How-to guide">
-  See [Use the Console](/docs/how-to/use-console#inspect-a-trace) for step-by-step instructions on navigating traces and viewing span details.
+  See [Use the Console](/how-to/use-console#inspect-a-trace) for step-by-step instructions on navigating traces and viewing span details.
 </Info>
 
 Navigate to **Traces**, select a trace, and open the **Logs** tab on any span to see every log entry from that execution — with severity, timestamp, message, and structured attributes you attached.
@@ -310,13 +310,13 @@ Your iii application is now fully observable:
   <Card title="Console" href="/console" icon="desktop">
     Full iii Console feature reference
   </Card>
-  <Card title="OpenTelemetry Integration" href="/docs/advanced/telemetry" icon="signal">
+  <Card title="OpenTelemetry Integration" href="/advanced/telemetry" icon="signal">
     Custom spans, metrics, and telemetry utilities
   </Card>
-  <Card title="Observability Worker" href="/docs/workers/iii-observability" icon="gear">
+  <Card title="Observability Worker" href="/workers/iii-observability" icon="gear">
     Full configuration reference for traces, logs, metrics, alerts, and sampling
   </Card>
-  <Card title="Observability Example" href="/docs/examples/observability" icon="code">
+  <Card title="Observability Example" href="/examples/observability" icon="code">
     End-to-end multi-step workflow with trace correlation
   </Card>
 </CardGroup>

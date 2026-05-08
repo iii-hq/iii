@@ -467,5 +467,5 @@ If the engine rejects a `merge` op (path > 32 segments, segment > 256 bytes, val
 State is shared across all Functions in the system. Any Function can read or write to any scope/key pair. The Engine handles consistency and persistence based on the configured adapter.
 
 <Info title="Production adapters">
-  The default `file_based` adapter works for single-instance use. For production with multiple replicas, use a persistent adapter like Redis. See the [State worker reference](/docs/workers/iii-state).
+  The default `file_based` adapter works for single-instance use. For production with multiple replicas, use a persistent adapter like Redis. See the [State worker reference](/workers/iii-state).
 </Info>

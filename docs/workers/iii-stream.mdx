@@ -293,7 +293,7 @@ config:
         The item ID in the stream to update.
       </ResponseField>
       <ResponseField name="ops" type="UpdateOp[]" required>
-        The list of atomic operations to apply. Each operation is a tagged object with a `type` field (`set`, `merge`, `increment`, `decrement`, `append`, or `remove`) and associated fields (`path`, `value`, `by`). For `set` / `increment` / `decrement` / `append` / `remove`, paths are first-level field names. For `merge`, `path` accepts either a single string (legacy / first-level field) or an array of literal segments for nested merge — see the [state worker docs](/docs/workers/iii-state) for the full contract and validation rules. Use `path: ""` (or omit `path`) to target the root value.
+        The list of atomic operations to apply. Each operation is a tagged object with a `type` field (`set`, `merge`, `increment`, `decrement`, `append`, or `remove`) and associated fields (`path`, `value`, `by`). For `set` / `increment` / `decrement` / `append` / `remove`, paths are first-level field names. For `merge`, `path` accepts either a single string (legacy / first-level field) or an array of literal segments for nested merge — see the [state worker docs](/workers/iii-state) for the full contract and validation rules. Use `path: ""` (or omit `path`) to target the root value.
       </ResponseField>
     </Accordion>
     <Accordion title="Returns">
@@ -312,7 +312,7 @@ config:
 
 ## Error codes
 
-`stream::update` uses the same update engine as [`state::update`](/docs/workers/iii-state#error-codes). Each op may add an entry to the response `errors` array. Operations are best-effort: successfully applied ops still reflect in `new_value`, and failed ops are skipped.
+`stream::update` uses the same update engine as [`state::update`](/workers/iii-state#error-codes). Each op may add an entry to the response `errors` array. Operations are best-effort: successfully applied ops still reflect in `new_value`, and failed ops are skipped.
 
 | Code | Triggered when | Fix |
 |------|----------------|-----|

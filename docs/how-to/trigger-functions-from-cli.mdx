@@ -112,7 +112,7 @@ sequenceDiagram
 The CLI connects to the engine's WebSocket endpoint (the same protocol SDKs use), waits for the `WorkerRegistered` handshake, sends an `InvokeFunction` message with the function ID and payload, and prints the `InvocationResult` when it arrives.
 
 <Info title="Protocol details">
-  The WebSocket protocol is documented in the [Protocol reference](/docs/advanced/protocol). The `iii trigger` command uses the same `InvokeFunction` / `InvocationResult` message pair that all SDKs use.
+  The WebSocket protocol is documented in the [Protocol reference](/advanced/protocol). The `iii trigger` command uses the same `InvokeFunction` / `InvocationResult` message pair that all SDKs use.
 </Info>
 
 ## Examples
@@ -135,7 +135,7 @@ iii trigger \
 ```
 
 <Info title="DLQ guide">
-  For the full workflow of inspecting and redriving failed messages, see [Use Dead Letter Queues](/docs/how-to/dead-letter-queues#redrive-messages).
+  For the full workflow of inspecting and redriving failed messages, see [Use Dead Letter Queues](/how-to/dead-letter-queues#redrive-messages).
 </Info>
 
 ### Invoke a user-defined function
@@ -186,16 +186,16 @@ done
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Trigger Actions" href="/docs/how-to/trigger-actions" icon="bolt">
+  <Card title="Trigger Actions" href="/how-to/trigger-actions" icon="bolt">
     Compare synchronous, Void, and Enqueue invocation modes from SDKs
   </Card>
-  <Card title="Dead Letter Queues" href="/docs/how-to/dead-letter-queues" icon="skull">
+  <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Inspect and redrive failed queue messages
   </Card>
-  <Card title="Queue Worker Reference" href="/docs/workers/iii-queue" icon="gear">
+  <Card title="Queue Worker Reference" href="/workers/iii-queue" icon="gear">
     Full reference for builtin queue functions including `iii::queue::redrive`
   </Card>
-  <Card title="Protocol Reference" href="/docs/advanced/protocol" icon="code">
+  <Card title="Protocol Reference" href="/advanced/protocol" icon="code">
     WebSocket message catalog and envelope format
   </Card>
 </CardGroup>

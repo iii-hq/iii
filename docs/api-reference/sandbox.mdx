@@ -24,7 +24,7 @@ cleanly. The filesystem is discarded on stop.
 <Note>
 This page is about the `sandbox::*` runtime API (called via `iii.trigger()`). If you're looking for
 how worker processes run inside isolated microVMs, see
-[Developing Sandbox Workers](/docs/how-to/developing-sandbox-workers).
+[Developing Sandbox Workers](/how-to/developing-sandbox-workers).
 </Note>
 
 <Warning>
@@ -331,7 +331,7 @@ The engine auto-starts the sandbox daemon when it sees this entry. The
 worker runtime, which wraps every `sandbox::create` and `sandbox::exec`
 handler invocation in an OpenTelemetry span. Route them through the
 standard observability worker — see
-[iii-observability](/docs/workers/iii-observability).
+[iii-observability](/workers/iii-observability).
 
 <a id="trigger-create" />
 
@@ -1258,7 +1258,7 @@ const { sandbox_id } = await iii.trigger({
   the sandbox satisfies a managed worker boot of the same OCI ref, and
   vice versa. One pull, one cache entry.
 
-See [Configure the engine](/docs/how-to/configure-engine) for the full
+See [Configure the engine](/how-to/configure-engine) for the full
 engine-level schema.
 
 ## Error handling
