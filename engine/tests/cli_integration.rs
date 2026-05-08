@@ -425,8 +425,7 @@ fn trigger_kv_with_json_merge_parses() {
         .expect("failed to execute");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("expected key=value")
-            && !stderr.contains("must be an object"),
+        !stderr.contains("expected key=value") && !stderr.contains("must be an object"),
         "kv+json merge should parse cleanly:\n{}",
         stderr
     );

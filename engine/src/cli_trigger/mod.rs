@@ -41,9 +41,7 @@ pub struct TriggerArgs {
 
 pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
     let function_path = args.function_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "iii trigger: missing FUNCTION_PATH. Try: `iii trigger <fn-path> [args]`"
-        )
+        anyhow::anyhow!("iii trigger: missing FUNCTION_PATH. Try: `iii trigger <fn-path> [args]`")
     })?;
     let payload = payload::parse(&args.kv, args.json.as_deref())?;
     exec::invoke(

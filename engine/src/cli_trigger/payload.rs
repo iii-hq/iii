@@ -30,8 +30,7 @@ pub fn parse(kv_tokens: &[String], json_override: Option<&str>) -> Result<Value>
             if k.is_empty() {
                 bail!("payload key must not be empty (got `{}`)", token);
             }
-            let value =
-                serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_string()));
+            let value = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_string()));
             obj.insert(k.to_string(), value);
         }
         Some(obj)

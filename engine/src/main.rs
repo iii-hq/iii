@@ -297,13 +297,7 @@ mod tests {
 
     #[test]
     fn trigger_legacy_payload_flag_rejected() {
-        let result = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "my::fn",
-            "--payload",
-            r#"{"a":1}"#,
-        ]);
+        let result = Cli::try_parse_from(["iii", "trigger", "my::fn", "--payload", r#"{"a":1}"#]);
         assert!(
             result.is_err(),
             "--payload should fail to parse (removed in MOT-3239)"
@@ -554,8 +548,7 @@ mod tests {
 
     #[test]
     fn update_target_and_list_targets_conflict() {
-        let result =
-            Cli::try_parse_from(["iii", "update", "console", "--list-targets"]);
+        let result = Cli::try_parse_from(["iii", "update", "console", "--list-targets"]);
         assert!(
             result.is_err(),
             "--list-targets should conflict with positional target"
