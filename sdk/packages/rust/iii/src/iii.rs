@@ -1309,10 +1309,42 @@ impl III {
 
                     queue.extend(self.collect_registrations());
                     Self::dedupe_registrations(&mut queue);
+
+                    // Snapshot the registration keys we're about to send so
+                    // we can drop duplicate copies still pending in `rx`.
+                    // These are leftover from `register_*` calls made by user
+                    // threads before the WS handshake completed: each call
+                    // both inserts into the in-memory map (replayed via
+                    // `collect_registrations`) AND queues into `outbound`.
+                    let snapshot_ids: HashSet<String> =
+                        queue.iter().filter_map(Self::registration_key).collect();
+
                     if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
                         tracing::warn!(error = %err, "failed to flush queue");
                         sleep(Duration::from_secs(2)).await;
                         continue;
+                    }
+
+                    // Drain pre-connect leftovers from `rx`, dropping
+                    // register duplicates and preserving everything else
+                    // (invocations, results, channel ops, and any
+                    // registrations added after the snapshot was taken).
+                    let shutdown =
+                        Self::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+                    if shutdown {
+                        self.inner.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+
+                    if !queue.is_empty() {
+                        if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to flush post-drain queue"
+                            );
+                            sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
                     }
 
                     // Auto-register worker metadata on connect (like Node SDK)
@@ -1393,26 +1425,65 @@ impl III {
         messages
     }
 
+    /// Returns a stable identity key for a registration message, or `None`
+    /// for non-registration messages (invocations, ping/pong, etc.).
+    ///
+    /// Used both to deduplicate within `queue` and to detect leftover
+    /// pre-connect register messages in `rx` whose state has already been
+    /// re-sent via `collect_registrations()`.
+    fn registration_key(message: &Message) -> Option<String> {
+        match message {
+            Message::RegisterTriggerType { id, .. } => Some(format!("trigger_type:{id}")),
+            Message::RegisterTrigger { id, .. } => Some(format!("trigger:{id}")),
+            Message::RegisterFunction { id, .. } => Some(format!("function:{id}")),
+            Message::RegisterService { id, .. } => Some(format!("service:{id}")),
+            _ => None,
+        }
+    }
+
+    /// Drain everything currently pending in the outbound `rx` channel,
+    /// dropping register messages whose keys are already covered by
+    /// `snapshot_ids` (already sent via `collect_registrations()`),
+    /// and pushing every other message onto `queue` for re-flushing.
+    ///
+    /// Returns `true` if a `Shutdown` signal was observed during the
+    /// drain — the caller should then stop the connection loop.
+    fn drain_pre_connect_duplicates(
+        rx: &mut mpsc::UnboundedReceiver<Outbound>,
+        queue: &mut Vec<Message>,
+        snapshot_ids: &HashSet<String>,
+    ) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(Outbound::Message(msg)) => {
+                    let is_dup = Self::registration_key(&msg)
+                        .map(|k| snapshot_ids.contains(&k))
+                        .unwrap_or(false);
+                    if is_dup {
+                        continue;
+                    }
+                    queue.push(msg);
+                }
+                Ok(Outbound::Shutdown) => return true,
+                Err(_) => return false,
+            }
+        }
+    }
+
     fn dedupe_registrations(queue: &mut Vec<Message>) {
         let mut seen = HashSet::new();
         let mut deduped_rev = Vec::with_capacity(queue.len());
 
         for message in queue.iter().rev() {
-            let key = match message {
-                Message::RegisterTriggerType { id, .. } => format!("trigger_type:{id}"),
-                Message::RegisterTrigger { id, .. } => format!("trigger:{id}"),
-                Message::RegisterFunction { id, .. } => {
-                    format!("function:{id}")
+            match Self::registration_key(message) {
+                Some(key) => {
+                    if seen.insert(key) {
+                        deduped_rev.push(message.clone());
+                    }
                 }
-                Message::RegisterService { id, .. } => format!("service:{id}"),
-                _ => {
+                None => {
                     deduped_rev.push(message.clone());
-                    continue;
                 }
-            };
-
-            if seen.insert(key) {
-                deduped_rev.push(message.clone());
             }
         }
 
@@ -1957,5 +2028,163 @@ mod tests {
         assert_eq!(detect_project_name(Some(tmp.clone())), Some(basename));
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn make_register_function(id: &str) -> Message {
+        Message::RegisterFunction {
+            id: id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        }
+    }
+
+    fn make_register_trigger(id: &str) -> Message {
+        Message::RegisterTrigger {
+            id: id.to_string(),
+            trigger_type: "demo".to_string(),
+            function_id: "fn".to_string(),
+            config: json!({}),
+            metadata: None,
+        }
+    }
+
+    fn make_register_trigger_type(id: &str) -> Message {
+        Message::RegisterTriggerType {
+            id: id.to_string(),
+            description: "tt".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        }
+    }
+
+    fn make_register_service(id: &str) -> Message {
+        Message::RegisterService {
+            id: id.to_string(),
+            name: "svc".to_string(),
+            description: None,
+            parent_service_id: None,
+        }
+    }
+
+    fn make_invoke(function_id: &str) -> Message {
+        Message::InvokeFunction {
+            invocation_id: None,
+            function_id: function_id.to_string(),
+            data: json!({}),
+            traceparent: None,
+            baggage: None,
+            action: None,
+        }
+    }
+
+    #[test]
+    fn registration_key_returns_typed_keys_for_register_messages() {
+        assert_eq!(
+            III::registration_key(&make_register_function("greet")),
+            Some("function:greet".to_string())
+        );
+        assert_eq!(
+            III::registration_key(&make_register_trigger("t1")),
+            Some("trigger:t1".to_string())
+        );
+        assert_eq!(
+            III::registration_key(&make_register_trigger_type("tt1")),
+            Some("trigger_type:tt1".to_string())
+        );
+        assert_eq!(
+            III::registration_key(&make_register_service("svc1")),
+            Some("service:svc1".to_string())
+        );
+    }
+
+    #[test]
+    fn registration_key_returns_none_for_non_register_messages() {
+        assert_eq!(III::registration_key(&make_invoke("f")), None);
+        assert_eq!(III::registration_key(&Message::Ping), None);
+        assert_eq!(III::registration_key(&Message::Pong), None);
+        assert_eq!(
+            III::registration_key(&Message::WorkerRegistered {
+                worker_id: "w".to_string()
+            }),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pre_connect_duplicates_drops_only_known_register_ids() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+
+        tx.send(Outbound::Message(make_register_function("dup-fn")))
+            .unwrap();
+        tx.send(Outbound::Message(make_invoke("some::fn"))).unwrap();
+        tx.send(Outbound::Message(make_register_function("new-fn")))
+            .unwrap();
+        tx.send(Outbound::Message(Message::Pong)).unwrap();
+        tx.send(Outbound::Message(make_register_trigger("dup-trig")))
+            .unwrap();
+        tx.send(Outbound::Message(make_register_trigger("new-trig")))
+            .unwrap();
+        tx.send(Outbound::Message(make_register_service("dup-svc")))
+            .unwrap();
+
+        let snapshot_ids: HashSet<String> = [
+            "function:dup-fn".to_string(),
+            "trigger:dup-trig".to_string(),
+            "service:dup-svc".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut queue: Vec<Message> = Vec::new();
+        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+
+        assert!(!shutdown);
+        let kept_keys: Vec<Option<String>> = queue.iter().map(III::registration_key).collect();
+        assert_eq!(
+            kept_keys,
+            vec![
+                None,
+                Some("function:new-fn".to_string()),
+                None,
+                Some("trigger:new-trig".to_string()),
+            ],
+            "kept queue mismatch: {queue:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pre_connect_duplicates_signals_shutdown() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+
+        tx.send(Outbound::Message(make_register_function("a")))
+            .unwrap();
+        tx.send(Outbound::Shutdown).unwrap();
+        tx.send(Outbound::Message(make_register_function("b")))
+            .unwrap();
+
+        let snapshot_ids: HashSet<String> = ["function:a".to_string()].into_iter().collect();
+        let mut queue: Vec<Message> = Vec::new();
+        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+
+        assert!(shutdown, "expected shutdown signal to be reported");
+        assert!(
+            queue.is_empty(),
+            "queue must be empty when shutdown short-circuits the drain: {queue:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pre_connect_duplicates_returns_false_on_empty_channel() {
+        let (_tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+        let snapshot_ids: HashSet<String> = HashSet::new();
+        let mut queue: Vec<Message> = Vec::new();
+
+        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+
+        assert!(!shutdown);
+        assert!(queue.is_empty());
     }
 }
