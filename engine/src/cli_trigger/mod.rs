@@ -5,12 +5,14 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod exec;
+pub mod help;
 pub mod payload;
 
 use clap::Parser;
 use iii::workers::worker::DEFAULT_PORT;
 
 #[derive(Parser, Debug, Clone)]
+#[command(disable_help_flag = true)]
 pub struct TriggerArgs {
     /// Function path (e.g. `my::fn`, `sandbox::run`). Positional.
     #[arg(value_name = "FUNCTION_PATH")]
@@ -37,9 +39,23 @@ pub struct TriggerArgs {
     /// Max time to wait for the invocation result (milliseconds).
     #[arg(long, default_value_t = 30_000)]
     pub timeout_ms: u64,
+
+    /// Print help. With a FUNCTION_PATH, queries a running engine for that
+    /// function's description and request schema.
+    #[arg(short = 'h', long = "help", action = clap::ArgAction::SetTrue)]
+    pub help: bool,
 }
 
 pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
+    if args.help {
+        return help::print(
+            args.function_path.as_deref(),
+            &args.address,
+            args.port,
+            args.timeout_ms,
+        )
+        .await;
+    }
     let function_path = args.function_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!("iii trigger: missing FUNCTION_PATH. Try: `iii trigger <fn-path> [args]`")
     })?;
@@ -67,6 +83,7 @@ mod tests {
             address: "localhost".to_string(),
             port: DEFAULT_PORT,
             timeout_ms: 800,
+            help: false,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
         assert!(
@@ -85,6 +102,7 @@ mod tests {
             address: "localhost".to_string(),
             port: 19999,
             timeout_ms: 800,
+            help: false,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
         assert!(
@@ -103,6 +121,7 @@ mod tests {
             address: "localhost".to_string(),
             port: DEFAULT_PORT,
             timeout_ms: 30_000,
+            help: false,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
         assert!(
