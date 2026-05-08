@@ -104,7 +104,7 @@ pub fn print_targets() {
         if short.is_empty() {
             println!("  {}", spec.name.bold());
         } else {
-            println!("  {}  (alias: {})", short.bold(), spec.name);
+            println!("  {}  (binary: {})", short.bold(), spec.name);
         }
     }
     println!();

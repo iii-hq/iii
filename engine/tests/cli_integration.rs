@@ -364,8 +364,10 @@ fn trigger_help_shows_function_path_positional() {
 
 #[test]
 fn trigger_legacy_function_id_rejected_at_runtime() {
+    // Pass a valid FUNCTION_PATH positional so the failure is unambiguously
+    // due to the legacy --function-id flag, not a missing positional arg.
     let output = iii_bin()
-        .args(["trigger", "--function-id", "test::fn"])
+        .args(["trigger", "test::fn", "--function-id", "legacy-id"])
         .output()
         .expect("failed to execute");
     assert!(!output.status.success());
