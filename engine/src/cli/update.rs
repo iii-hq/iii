@@ -111,7 +111,7 @@ pub fn print_targets() {
     println!("{}", "Examples:".bold());
     println!("  iii update              # update everything");
     println!("  iii update self         # update only iii");
-    println!("  iii update console      # update only iii-console");
+    println!("  iii update console      # update only console");
 }
 
 /// Get the CLI command name for a binary name.
