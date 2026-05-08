@@ -7,9 +7,67 @@
 mod cli;
 mod cli_trigger;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use cli_trigger::TriggerArgs;
 use iii::{EngineBuilder, logging, workers::config::EngineConfig};
+
+/// Walk the clap Command tree to find the deepest matching subcommand for the
+/// given argv. Skips flags. Falls back to the root command on miss.
+fn resolve_help_target<'a>(root: &'a clap::Command, argv: &[String]) -> &'a clap::Command {
+    let mut cmd = root;
+    for token in argv.iter().skip(1) {
+        if token.starts_with('-') {
+            continue;
+        }
+        match cmd.find_subcommand(token) {
+            Some(sub) => cmd = sub,
+            None => break,
+        }
+    }
+    cmd
+}
+
+/// Render a clap Command's help via clap-help, then exit.
+fn print_help_and_exit(argv: &[String]) -> ! {
+    let mut root = Cli::command();
+    root.build();
+    let target = resolve_help_target(&root, argv).clone();
+    let mut printer = clap_help::Printer::new(target.clone());
+    // Author line is rendered as a useless "by " stub when no author is set.
+    printer.set_template("author", "");
+    // Surface the command's `about` text under the title. clap-help 1.x does
+    // not pull `about` from the Command, so inject it manually.
+    if let Some(about) = target.get_about() {
+        printer.expander_mut().set("about", about.to_string());
+        printer.set_template("introduction", "\n${about}\n");
+    }
+    printer.print_help();
+    print_subcommands_section(&target);
+    std::process::exit(0);
+}
+
+/// clap-help 1.x does not render subcommand listings; print our own table.
+fn print_subcommands_section(cmd: &clap::Command) {
+    use colored::Colorize;
+    let subs: Vec<&clap::Command> = cmd.get_subcommands().filter(|s| !s.is_hide_set()).collect();
+    if subs.is_empty() {
+        return;
+    }
+    let max_name = subs.iter().map(|s| s.get_name().len()).max().unwrap_or(0);
+    println!();
+    println!("{}", "Commands:".bold());
+    for sub in subs {
+        let name = sub.get_name();
+        let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+        let padded = format!("{:<width$}", name, width = max_name);
+        if about.is_empty() {
+            println!("  {}", padded.bold());
+        } else {
+            println!("  {}  {}", padded.bold(), about);
+        }
+    }
+    println!();
+}
 
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -155,7 +213,21 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli_args = Cli::parse();
+    let argv: Vec<String> = std::env::args().collect();
+    let cli_args = match Cli::try_parse_from(&argv) {
+        Ok(c) => c,
+        Err(err) => match err.kind() {
+            // Intercept clap's default help output and re-render it via
+            // clap-help for a friendlier layout. Trigger has its own dynamic
+            // help (engine query) and is opted out via disable_help_flag, so
+            // this only fires for root + non-trigger subcommands.
+            clap::error::ErrorKind::DisplayHelp
+            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                print_help_and_exit(&argv);
+            }
+            _ => err.exit(),
+        },
+    };
 
     if cli_args.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
