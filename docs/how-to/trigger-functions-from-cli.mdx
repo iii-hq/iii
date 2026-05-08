@@ -36,12 +36,12 @@ iii trigger <function-path> [key=value ...] [--json '<obj>']
     The `iii trigger` command connects to a running engine instance. If you don't have one running yet, follow the [Quickstart](/quickstart) to get started.
   </Step>
   <Step title="Identify the function path">
-    Every function registered with the engine has a unique path. Builtin functions use the `iii::` prefix. User-defined functions use the ID you specified during registration.
+    Every function registered with the engine has a unique path. Built-in functions use the `iii::` prefix. User-defined functions use the ID you specified during registration.
 
     Examples of function paths:
-    - `iii::queue::redrive` — builtin DLQ redrive
+    - `iii::queue::redrive` — built-in DLQ redrive
     - `orders::process-payment` — a user-defined function
-    - `iii::durable::publish` — the builtin topic-based publish function
+    - `iii::durable::publish` — the built-in topic-based publish function
   </Step>
   <Step title="Build the payload">
     Pass payload fields as `key=value` tokens after the function path. Values are JSON-decoded when possible.
@@ -155,7 +155,7 @@ iii trigger orders::process-payment orderId=ord_789 amount=149.99 currency=USD
 
 ### Publish to a topic-based queue
 
-Use the builtin `iii::durable::publish` function to publish a message to a topic. The nested `data` object makes `--json` the cleanest form:
+Use the built-in `iii::durable::publish` function to publish a message to a topic. The nested `data` object makes `--json` the cleanest form:
 
 ```bash
 iii trigger iii::durable::publish \

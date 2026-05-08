@@ -7,13 +7,15 @@
 use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
 use serde_json::Value;
 
+use super::TriggerCliError;
+
 pub async fn invoke(
     function_path: &str,
     payload: Value,
     address: &str,
     port: u16,
     timeout_ms: u64,
-) -> anyhow::Result<()> {
+) -> Result<(), TriggerCliError> {
     let url = format!("ws://{}:{}", address, port);
     let iii = register_worker(&url, InitOptions::default());
 
@@ -31,7 +33,10 @@ pub async fn invoke(
     match result {
         Ok(value) => {
             if !value.is_null() {
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?
+                );
             }
             Ok(())
         }
@@ -45,10 +50,16 @@ pub async fn invoke(
                 "message": message,
                 "stacktrace": stacktrace,
             });
-            eprintln!("Error: {}", serde_json::to_string_pretty(&err_obj)?);
-            std::process::exit(1);
+            // Print structured JSON to stderr; main.rs translates the
+            // RemoteAlreadyReported variant into a silent exit(1).
+            eprintln!(
+                "Error: {}",
+                serde_json::to_string_pretty(&err_obj)
+                    .unwrap_or_else(|_| "(unserializable error body)".to_string())
+            );
+            Err(TriggerCliError::RemoteAlreadyReported)
         }
-        Err(e) => Err(map_trigger_error(e)),
+        Err(e) => Err(TriggerCliError::Other(map_trigger_error(e))),
     }
 }
 

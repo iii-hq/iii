@@ -11,6 +11,19 @@ pub mod payload;
 use clap::Parser;
 use iii::workers::worker::DEFAULT_PORT;
 
+/// Errors surfaced by `iii trigger`.
+///
+/// `RemoteAlreadyReported` carries no message because `exec::invoke` has
+/// already printed a structured JSON error to stderr; main.rs translates
+/// this variant into a silent exit-code-1 to avoid double-printing.
+#[derive(Debug, thiserror::Error)]
+pub enum TriggerCliError {
+    #[error("remote function returned an error")]
+    RemoteAlreadyReported,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(disable_help_flag = true)]
 pub struct TriggerArgs {
@@ -46,15 +59,16 @@ pub struct TriggerArgs {
     pub help: bool,
 }
 
-pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
+pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
     if args.help {
-        return help::print(
+        help::print(
             args.function_path.as_deref(),
             &args.address,
             args.port,
             args.timeout_ms,
         )
-        .await;
+        .await?;
+        return Ok(());
     }
     let function_path = args.function_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!("iii trigger: missing FUNCTION_PATH. Try: `iii trigger <fn-path> [args]`")
@@ -105,9 +119,16 @@ mod tests {
             help: false,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
+        // The OS may immediately return ECONNREFUSED on closed ports, in which
+        // case the application-level timeout never fires. Accept either the
+        // application timeout message OR the underlying connection error.
         assert!(
-            err.contains("Timed out") || err.contains("timeout"),
-            "expected timeout when engine is unreachable, got: {}",
+            err.contains("Timed out")
+                || err.contains("timeout")
+                || err.contains("Connection refused")
+                || err.contains("connect")
+                || err.contains("WebSocket"),
+            "expected timeout or connection error when engine is unreachable, got: {}",
             err,
         );
     }

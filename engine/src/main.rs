@@ -180,7 +180,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match &cli_args.command {
-        Some(Commands::Trigger(args)) => cli_trigger::run_trigger(args).await,
+        Some(Commands::Trigger(args)) => match cli_trigger::run_trigger(args).await {
+            Ok(()) => Ok(()),
+            // exec::invoke already printed the structured JSON; exit silently.
+            Err(cli_trigger::TriggerCliError::RemoteAlreadyReported) => std::process::exit(1),
+            Err(cli_trigger::TriggerCliError::Other(e)) => Err(e),
+        },
         Some(Commands::Console { args }) => {
             let exit_code = cli::handle_dispatch("console", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
