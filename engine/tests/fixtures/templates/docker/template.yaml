@@ -1,0 +1,19 @@
+name: Docker
+description: Adds a Dockerfile and docker-compose.yml that run iii via the iiidev/iii base image.
+version: "0.1.0"
+min_iii_version: "0.11.0"
+
+# No language requirements: the Dockerfile delegates language-specific
+# concerns to the engine's worker stack. The engine post-processes the
+# generated `.env` to inject the host device_id (III_HOST_USER_ID).
+treat_required_as_included: true
+requires: []
+optional: []
+
+files:
+  - Dockerfile
+  - docker-compose.yml
+
+next_steps:
+  - "Build and start: docker compose up"
+  - "Engine reachable on http://localhost:3111 once containers are up"

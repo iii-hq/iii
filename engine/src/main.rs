@@ -11,6 +11,10 @@ use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
 use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
+#[cfg(test)]
+#[allow(unused_imports)]
+use cli::project::{InitArgs, ProjectAction};
+
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
 struct Cli {
@@ -73,17 +77,6 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Create a new iii project from a template
-    #[command(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Create {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
-    },
-
     /// Manage iii Cloud deployments
     #[command(
         trailing_var_arg = true,
@@ -116,6 +109,9 @@ enum Commands {
         #[arg(num_args = 0..)]
         args: Vec<String>,
     },
+
+    /// Manage iii projects (init, generate-docker)
+    Project(crate::cli::project::ProjectArgs),
 
     /// Update iii and managed binaries to their latest versions
     Update {
@@ -185,10 +181,6 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::handle_dispatch("console", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Create { args }) => {
-            let exit_code = cli::handle_dispatch("create", args, cli_args.no_update_check).await;
-            std::process::exit(exit_code);
-        }
         Some(Commands::Cloud { args }) => {
             let exit_code = cli::handle_dispatch("cloud", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
@@ -199,6 +191,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Sandbox { args }) => {
             let exit_code = cli::handle_dispatch("sandbox", args, cli_args.no_update_check).await;
+            std::process::exit(exit_code);
+        }
+        Some(Commands::Project(args)) => {
+            let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Update { target }) => {
@@ -314,26 +310,14 @@ mod tests {
     }
 
     #[test]
-    fn create_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "create", "my-project", "--template", "default"])
-            .expect("should parse create with args");
-        match cli.command {
-            Some(Commands::Create { args }) => {
-                assert_eq!(args, vec!["my-project", "--template", "default"]);
-            }
-            _ => panic!("expected Create subcommand"),
-        }
-    }
-
-    #[test]
-    fn create_parses_with_no_args() {
-        let cli = Cli::try_parse_from(["iii", "create"]).expect("should parse create with no args");
-        match cli.command {
-            Some(Commands::Create { args }) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Create subcommand"),
-        }
+    fn create_is_no_longer_a_subcommand() {
+        // `iii create` was removed in favor of `iii project init --template`.
+        // Bare `iii create` should now fail to parse.
+        let result = Cli::try_parse_from(["iii", "create"]);
+        assert!(
+            result.is_err(),
+            "\"create\" should no longer be a valid subcommand"
+        );
     }
 
     #[test]
@@ -577,5 +561,124 @@ mod tests {
             !error_source.contains("iii-cli"),
             "error.rs should not contain 'iii-cli' references — the binary is now 'iii'"
         );
+    }
+
+    #[test]
+    fn project_init_parses() {
+        let cli =
+            Cli::try_parse_from(["iii", "project", "init"]).expect("should parse project init");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(_) => {}
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_with_positional_name_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "myapp"])
+            .expect("should parse project init <name>");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => {
+                    assert_eq!(init.name.as_deref(), Some("myapp"));
+                    assert!(init.directory.is_none());
+                }
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_with_directory_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "--directory", "myapp"])
+            .expect("should parse project init --directory");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => assert_eq!(init.directory.as_deref(), Some("myapp")),
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_with_docker_flag_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "--docker"])
+            .expect("should parse project init --docker");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => assert!(init.docker),
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_generate_docker_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "generate-docker"])
+            .expect("should parse project generate-docker");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::GenerateDocker(_) => {}
+                _ => panic!("expected GenerateDocker action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_with_template_parses() {
+        let cli = Cli::try_parse_from(["iii", "project", "init", "--template", "node-pdfkit"])
+            .expect("should parse project init --template");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => {
+                    assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
+                    assert!(!init.yes);
+                    assert!(!init.skip_iii);
+                }
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
+    }
+
+    #[test]
+    fn project_init_template_full_arg_set_parses() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "project",
+            "init",
+            "--template",
+            "node-pdfkit",
+            "--directory",
+            "myapp",
+            "--languages",
+            "ts,py",
+            "--skip-iii",
+            "--yes",
+        ])
+        .expect("should parse full template arg set");
+        match cli.command {
+            Some(Commands::Project(args)) => match args.action {
+                ProjectAction::Init(init) => {
+                    assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
+                    assert_eq!(init.directory.as_deref(), Some("myapp"));
+                    assert_eq!(
+                        init.languages.as_ref().map(|v| v.as_slice()),
+                        Some(&["ts".to_string(), "py".to_string()][..])
+                    );
+                    assert!(init.skip_iii);
+                    assert!(init.yes);
+                }
+                _ => panic!("expected Init action"),
+            },
+            _ => panic!("expected Project subcommand"),
+        }
     }
 }

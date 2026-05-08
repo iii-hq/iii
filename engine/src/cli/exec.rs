@@ -12,7 +12,7 @@ use super::error::ExecError;
 ///
 /// On Unix: Uses the POSIX process-replacement syscall to hand off the
 /// current process entirely. This ensures the child binary fully owns the
-/// terminal (critical for interactive tools like iii-tools with cliclack).
+/// terminal (critical for interactive tools that use cliclack).
 ///
 /// On Windows: Spawns the binary as a child process with inherited stdio and
 /// returns its exit code.

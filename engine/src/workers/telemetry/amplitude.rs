@@ -9,6 +9,76 @@ use serde::Serialize;
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 const MAX_RETRIES: u32 = 3;
 
+/// Canonical Amplitude API key used by the engine, the CLI, and (via its own
+/// copy) scaffolder-core. Kept here so anyone sending telemetry from the
+/// engine binary references one source of truth.
+pub const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
+
+/// Strip `/Users/<name>/`, `/home/<name>/`, and Windows `\Users\<name>\` /
+/// `\home\<name>\` prefixes from error strings, and cap the length so we
+/// never ship unbounded backtraces. Applied at the send layer
+/// ([`AmplitudeClient::send_event`]) so every Amplitude event is scrubbed,
+/// regardless of which subsystem produced it.
+pub fn sanitize_error(error: &str) -> String {
+    const MAX_LEN: usize = 256;
+    let mut out = String::with_capacity(error.len().min(MAX_LEN));
+    let mut chars = error.chars().peekable();
+    let mut buf = String::new();
+    while let Some(c) = chars.next() {
+        buf.push(c);
+        if buf.ends_with("/Users/")
+            || buf.ends_with("/home/")
+            || buf.ends_with("\\Users\\")
+            || buf.ends_with("\\home\\")
+        {
+            out.push_str(&buf);
+            buf.clear();
+            // Skip the username segment up to the next path separator
+            // (forward or back slash) or whitespace.
+            while let Some(&peek) = chars.peek() {
+                if peek == '/' || peek == '\\' || peek.is_whitespace() {
+                    break;
+                }
+                chars.next();
+            }
+            out.push_str("<redacted>");
+        }
+    }
+    out.push_str(&buf);
+    if out.chars().count() > MAX_LEN {
+        let truncated: String = out.chars().take(MAX_LEN).collect();
+        format!("{truncated}…")
+    } else {
+        out
+    }
+}
+
+/// Recursively walk a JSON value and apply [`sanitize_error`] to any string
+/// stored under a key named `"error"`. This way the redaction applies to
+/// any Amplitude event whose `event_properties` carry an `error` field,
+/// without each call site having to remember to sanitize.
+fn sanitize_event_properties(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k == "error" {
+                    if let serde_json::Value::String(s) = v {
+                        *s = sanitize_error(s);
+                    }
+                } else {
+                    sanitize_event_properties(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                sanitize_event_properties(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// An event to be sent to Amplitude.
 #[derive(Debug, Clone, Serialize)]
 pub struct AmplitudeEvent {
@@ -60,7 +130,11 @@ impl AmplitudeClient {
     }
 
     /// Send a single event to Amplitude.
-    pub async fn send_event(&self, event: AmplitudeEvent) -> anyhow::Result<()> {
+    pub async fn send_event(&self, mut event: AmplitudeEvent) -> anyhow::Result<()> {
+        sanitize_event_properties(&mut event.event_properties);
+        if let Some(props) = event.user_properties.as_mut() {
+            sanitize_event_properties(props);
+        }
         self.send_batch(vec![event]).await
     }
 
@@ -320,5 +394,58 @@ mod tests {
     #[test]
     fn test_max_retries_is_three() {
         assert_eq!(MAX_RETRIES, 3);
+    }
+
+    #[test]
+    fn sanitize_error_redacts_unix_users_path() {
+        let s = sanitize_error("failed to open /Users/alice/secret.txt: not found");
+        assert!(!s.contains("alice"), "username should be redacted: {s}");
+        assert!(s.contains("/Users/<redacted>/"));
+    }
+
+    #[test]
+    fn sanitize_error_redacts_unix_home_path() {
+        let s = sanitize_error("permission denied for /home/bob/.ssh/id_rsa");
+        assert!(!s.contains("bob"), "username should be redacted: {s}");
+        assert!(s.contains("/home/<redacted>/"));
+    }
+
+    #[test]
+    fn sanitize_error_redacts_windows_users_path() {
+        let s = sanitize_error("open C:\\Users\\carol\\secret.txt failed");
+        assert!(!s.contains("carol"), "username should be redacted: {s}");
+        assert!(s.contains("\\Users\\<redacted>\\"));
+    }
+
+    #[test]
+    fn sanitize_error_truncates_long_strings() {
+        let long = "x".repeat(1024);
+        let s = sanitize_error(&long);
+        let len = s.chars().count();
+        assert!(len <= 257, "truncated length should be <= 257, got {len}");
+        assert!(
+            s.ends_with("…"),
+            "truncated output should end with ellipsis"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_passes_through_safe_strings() {
+        let s = sanitize_error("HTTP 500: Internal Server Error");
+        assert_eq!(s, "HTTP 500: Internal Server Error");
+    }
+
+    #[test]
+    fn sanitize_event_properties_walks_nested_error_fields() {
+        let mut value = serde_json::json!({
+            "stage": "create_dir",
+            "error": "/Users/dave/oops",
+            "nested": {"error": "/home/eve/oops"},
+            "list": [{"error": "/Users/frank/x"}],
+        });
+        sanitize_event_properties(&mut value);
+        assert!(!value.to_string().contains("dave"));
+        assert!(!value.to_string().contains("eve"));
+        assert!(!value.to_string().contains("frank"));
     }
 }

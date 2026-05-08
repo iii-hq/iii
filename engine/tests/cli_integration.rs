@@ -47,9 +47,13 @@ fn help_flag_shows_all_subcommands() {
     // All subcommands should appear in help
     assert!(stdout.contains("trigger"), "help should list trigger");
     assert!(stdout.contains("console"), "help should list console");
-    assert!(stdout.contains("create"), "help should list create");
     assert!(stdout.contains("worker"), "help should list worker");
+    assert!(stdout.contains("project"), "help should list project");
     assert!(stdout.contains("update"), "help should list update");
+    assert!(
+        !stdout.contains(" create "),
+        "help should NOT list create (replaced by `iii project init --template`)"
+    );
 }
 
 #[test]

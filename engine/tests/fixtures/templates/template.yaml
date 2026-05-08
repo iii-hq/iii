@@ -1,0 +1,80 @@
+# Root template manifest for iii - lists available templates by folder name
+templates:
+  - bare
+  - docker
+  - quickstart
+  # - multi-worker-orchestration
+  # - quickstart-ai-agents
+  - starter
+
+# Shared files from this directory included in every template
+# Supports renaming: source is the file in this directory, dest is the name in each template
+shared_files:
+  - source: default-gitignore
+    dest: .gitignore
+  - source: default-iii-config.yaml
+    dest: config.yaml
+
+# Global language-specific file patterns
+# These determine which files are included based on selected languages
+# Patterns support: exact match, prefix* match, *suffix match
+# NOTE: Files not in any list are NOT copied by default
+language_files:
+  # Files always included regardless of language selection
+  common:
+    - '.env.*'
+    - '.gitignore'
+    - '.gitkeep'
+    - '.dockerignore'
+    - 'README.md'
+    - 'README*'
+    - 'LICENSE'
+    - 'LICENSE*'
+    - '*-config.yaml'
+    - 'config.yaml'
+    - 'iii.worker.yaml'
+    - 'Dockerfile'
+    - 'docker-compose.yml'
+    - 'docker-compose.*.yml'
+
+  # Files only included when Python is selected
+  python:
+    - '*.py'
+    - 'requirements.txt'
+    - 'pyproject.toml'
+    - 'setup.py'
+    - 'setup.cfg'
+    - 'Pipfile'
+    - 'Pipfile.lock'
+    - 'poetry.lock'
+    - '.python-version'
+
+  # Files only included when TypeScript is selected
+  typescript:
+    - '*.ts'
+    - '*.tsx'
+    - 'tsconfig.json'
+    - 'tsconfig.*.json'
+
+  # Files only included when JavaScript is selected
+  javascript:
+    - '*.js'
+    - '*.jsx'
+    - 'jsconfig.json'
+
+  # Files included when either JavaScript OR TypeScript is selected
+  node:
+    - 'package.json'
+    - 'package-lock.json'
+    - 'yarn.lock'
+    - 'pnpm-lock.yaml'
+    - 'bun.lockb'
+    - '.npmrc'
+    - '.nvmrc'
+    - '.node-version'
+
+  # Files only included when Rust is selected
+  rust:
+    - 'Cargo.toml'
+    - 'Cargo.lock'
+    - '*.rs'

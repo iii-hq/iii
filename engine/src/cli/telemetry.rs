@@ -4,36 +4,16 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use serde::Serialize;
+//! CLI telemetry helpers.
+//!
+//! All Amplitude HTTP transport, retry behavior, and PII sanitization live in
+//! `iii::workers::telemetry::amplitude`. This module is the CLI-side glue:
+//! gating (`is_telemetry_disabled`), event-property construction
+//! (`build_user_properties`), and the named event helpers
+//! (`send_cli_update_*`, `send_project_init_*`, `send_install_lifecycle_event`).
 
+use iii::workers::telemetry::amplitude::{API_KEY, AmplitudeClient, AmplitudeEvent};
 use iii::workers::telemetry::environment;
-
-const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
-const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
-
-#[derive(Serialize)]
-struct AmplitudeEvent {
-    device_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_id: Option<String>,
-    event_type: String,
-    event_properties: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_properties: Option<serde_json::Value>,
-    platform: String,
-    os_name: String,
-    app_version: String,
-    time: i64,
-    insert_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ip: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AmplitudePayload<'a> {
-    api_key: &'a str,
-    events: Vec<AmplitudeEvent>,
-}
 
 fn is_telemetry_disabled() -> bool {
     if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
@@ -84,23 +64,16 @@ fn build_event(
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         time: chrono::Utc::now().timestamp_millis(),
-        insert_id: uuid::Uuid::new_v4().to_string(),
+        insert_id: Some(uuid::Uuid::new_v4().to_string()),
+        country: None,
+        language: None,
         ip: Some("$remote".to_string()),
     })
 }
 
 async fn send_direct(event: AmplitudeEvent) {
-    let payload = AmplitudePayload {
-        api_key: API_KEY,
-        events: vec![event],
-    };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build();
-
-    if let Ok(client) = client {
-        let _ = client.post(AMPLITUDE_ENDPOINT).json(&payload).send().await;
-    }
+    let client = AmplitudeClient::new(API_KEY.to_string());
+    let _ = client.send_event(event).await;
 }
 
 fn send_fire_and_forget(event: AmplitudeEvent) {
@@ -155,6 +128,34 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
         serde_json::json!({
             "target_binary": target_binary,
             "from_version": from_version,
+            "error": error,
+            "install_method": environment::detect_install_method(),
+        }),
+        None,
+    ) {
+        send_fire_and_forget(event);
+    }
+}
+
+pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
+    if let Some(event) = build_event(
+        "project_init_succeeded",
+        serde_json::json!({
+            "with_docker": with_docker,
+            "project_id": project_id,
+            "install_method": environment::detect_install_method(),
+        }),
+        None,
+    ) {
+        send_fire_and_forget(event);
+    }
+}
+
+pub fn send_project_init_failed(stage: &str, error: &str) {
+    if let Some(event) = build_event(
+        "project_init_failed",
+        serde_json::json!({
+            "stage": stage,
             "error": error,
             "install_method": environment::detect_install_method(),
         }),
@@ -243,7 +244,7 @@ mod tests {
         assert_eq!(event.app_version, env!("CARGO_PKG_VERSION"));
         assert!(!event.device_id.is_empty());
         assert_eq!(event.user_id, None);
-        assert!(!event.insert_id.is_empty());
+        assert!(event.insert_id.as_deref().map(str::is_empty) == Some(false));
         assert_eq!(event.event_properties["target_binary"], "iii");
         let user_props = event
             .user_properties

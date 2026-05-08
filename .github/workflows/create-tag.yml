@@ -77,7 +77,6 @@ jobs:
                      sdk/packages/python/iii/pyproject.toml \
                      console/packages/console-rust/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
-                     crates/iii-tools/Cargo.toml \
                      crates/motia-tools/Cargo.toml; do
               if [[ ! -f "$f" ]]; then
                 echo "::error::$f not found"

@@ -552,7 +552,8 @@ async fn create_project(
         .unwrap_or("unknown")
         .to_string();
 
-    telemetry::write_project_ini(project_dir, &project_id, &project_name, template_name).await?;
+    telemetry::write_project_ini(project_dir, &project_id, &project_name, template_name, None)
+        .await?;
 
     let platform = telemetry::platform_for_product(product_name);
     let tools_version = cli_version.to_string();
