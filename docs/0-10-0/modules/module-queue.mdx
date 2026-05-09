@@ -183,7 +183,7 @@ For each named queue defined in `queue_configs`, iii creates the following Rabbi
 | DLQ queue | `iii.__fn_queue::<name>::dlq.queue` | `iii.__fn_queue::payment::dlq.queue` |
 
 <Info title="Why so many resources?">
-  Each named queue creates six RabbitMQ objects to support delayed retry and dead-lettering. For the design rationale, see [Queue Architecture](../architecture/queues).
+  Each named queue creates six RabbitMQ objects to support delayed retry and dead-lettering. For the design rationale, see [Queue Architecture](../modules/module-queue#queue-flow).
 </Info>
 
 ## Adapter Comparison

@@ -60,7 +60,7 @@
 <link rel="apple-touch-icon" href="/favicon.svg" />
 
 <!-- SEO Meta Tags -->
-<meta name="description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
+<meta name="description" content="The latest docs on how to use iii, a new paradigm to effortlessly compose, extend, and observe every service in any system in real-time for the first time ever." />
 <meta name="keywords" content="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox" />
 <meta name="author" content="III, Inc." />
 <meta name="theme-color" content="#f5f3ee" />
@@ -71,7 +71,7 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://iii.dev/" />
 <meta property="og:title" content="iii — Three primitives. Zero integration cost." />
-<meta property="og:description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
+<meta property="og:description" content="The latest docs on how to use iii, a new paradigm to effortlessly compose, extend, and observe every service in any system in real-time for the first time ever." />
 <meta property="og:image" content="https://iii.dev/og-image.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
@@ -81,7 +81,7 @@
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:url" content="https://iii.dev/" />
 <meta name="twitter:title" content="iii — Three primitives. Zero integration cost." />
-<meta name="twitter:description" content="iii is Worker, Trigger, and Function. Three primitives that can encapsulate and unify every service. Add a worker (service); every other worker can use it. Polyglot, durable, observable. Zero integration cost." />
+<meta name="twitter:description" content="The latest docs on how to use iii, a new paradigm to effortlessly compose, extend, and observe every service in any system in real-time for the first time ever." />
 <meta name="twitter:image" content="https://iii.dev/og-image.png" />
 
 <!-- JSON-LD: Organization -->
@@ -97,6 +97,22 @@
     "sameAs": [
       "https://github.com/iii-hq/iii"
     ]
+  }
+</script>
+
+<!-- JSON-LD: WebSite -->
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "iii",
+    "alternateName": "iii.dev",
+    "url": "https://iii.dev/",
+    "publisher": {
+      "@type": "Organization",
+      "name": "III, Inc.",
+      "url": "https://iii.dev/"
+    }
   }
 </script>
 
@@ -6973,7 +6989,7 @@ iii.register_function(
     const URL = `https://discord.com/api/guilds/${GUILD_ID}/widget.json`;
     // Public invite endpoint exposes approximate_member_count (total members),
     // which the widget endpoint does not. Used for the navbar/mobile total.
-    const INVITE_URL = 'https://discord.com/api/v10/invites/motia?with_counts=true';
+    const INVITE_URL = 'https://discord.com/api/v10/invites/iiidev?with_counts=true';
 
     function formatCount(n){
       if (n >= 1000) return (n/1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k';
