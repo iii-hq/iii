@@ -6989,7 +6989,7 @@ iii.register_function(
     const URL = `https://discord.com/api/guilds/${GUILD_ID}/widget.json`;
     // Public invite endpoint exposes approximate_member_count (total members),
     // which the widget endpoint does not. Used for the navbar/mobile total.
-    const INVITE_URL = 'https://discord.com/api/v10/invites/motia?with_counts=true';
+    const INVITE_URL = 'https://discord.com/api/v10/invites/iiidev?with_counts=true';
 
     function formatCount(n){
       if (n >= 1000) return (n/1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k';
