@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Generic, List, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 TData = TypeVar("TData")
 
@@ -198,6 +198,17 @@ class UpdateAppend(BaseModel):
     path: str | list[str] | None = None
     value: Any
 
+    @model_serializer(mode="wrap")
+    def _omit_none_path(self, handler):  # type: ignore[no-untyped-def]
+        # Drop ``path: None`` from the wire so cross-SDK consumers see
+        # the field absent rather than ``null``. Mirrors the Rust
+        # ``#[serde(skip_serializing_if = "Option::is_none")]`` on
+        # ``UpdateOp::Append.path``.
+        data = handler(self)
+        if data.get("path") is None:
+            data.pop("path", None)
+        return data
+
 
 class UpdateRemove(BaseModel):
     """Remove operation for stream update."""
@@ -240,6 +251,16 @@ class UpdateMerge(BaseModel):
     # input -> str, array input -> list[str].
     path: str | list[str] | None = None
     value: Any
+
+    @model_serializer(mode="wrap")
+    def _omit_none_path(self, handler):  # type: ignore[no-untyped-def]
+        # Mirrors the same skip-when-none rule applied to
+        # ``UpdateOp::Merge.path`` in the Rust SDK so cross-SDK wire
+        # payloads are byte-identical for root merges.
+        data = handler(self)
+        if data.get("path") is None:
+            data.pop("path", None)
+        return data
 
 
 UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge

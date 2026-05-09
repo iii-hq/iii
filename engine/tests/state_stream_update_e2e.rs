@@ -610,3 +610,98 @@ async fn nested_append_segments_path_round_trips_via_merge_path_segments() {
     assert!(result.errors.is_empty());
     assert_eq!(result.new_value, json!({ "a": { "b": [42] } }));
 }
+
+// ─────────── #1612 review feedback (ytallo's gherkin scenarios) ───────────
+
+#[tokio::test]
+async fn append_existing_empty_array_at_single_segment_pushes_value() {
+    // Scenario A from #1612 review: `{"buffer": []}` + `append("buffer", "x")`
+    // must produce `{"buffer": ["x"]}` with no errors. Pre-existing
+    // empty arrays are the most common "ready to receive its first
+    // element" leaf shape in stream-buffer use cases.
+    let store = fresh_store().await;
+    let key = "empty-leaf".to_string();
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("buffer", json!([]))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append("buffer", json!("x"))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(result.new_value, json!({ "buffer": ["x"] }));
+}
+
+#[tokio::test]
+async fn append_root_when_state_is_empty_array_pushes_value() {
+    // Scenario B: state at the key is `[]`, root append `"x"` → `["x"]`.
+    // The root branch routes through `append_to_target`, which treats
+    // an existing array as a push target.
+    let store = fresh_store().await;
+    let key = "empty-root-array".to_string();
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![UpdateOp::Set {
+                path: iii_sdk::FieldPath::from(""),
+                value: Some(json!([])),
+            }],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_root(json!("x"))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(result.new_value, json!(["x"]));
+}
+
+#[tokio::test]
+async fn nested_append_replaces_array_intermediate_with_object() {
+    // Scenario C: `{"a": [1,2,3]}` + nested append `["a", "b"]` 42.
+    // `walk_or_create` replaces the array intermediate with a fresh
+    // object (Rust-parity outcome) — the destructive replace mirrors
+    // merge's semantics and ytallo's gherkin accepts either this OR
+    // a strict-error outcome, but explicitly forbids the corrupted
+    // mixed-key form `{"a": {"1": 1, "2": 2, "3": 3, "b": [42]}}`.
+    let store = fresh_store().await;
+    let key = "array-intermediate".to_string();
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("a", json!([1, 2, 3]))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_at_path(["a", "b"], json!(42))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(result.new_value, json!({ "a": { "b": [42] } }));
+    // Negative assertion the gherkin specifically calls out.
+    assert_ne!(
+        result.new_value,
+        json!({ "a": { "1": 1, "2": 2, "3": 3, "b": [42] } })
+    );
+}

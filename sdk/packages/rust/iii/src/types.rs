@@ -120,6 +120,7 @@ pub enum UpdateOp {
     /// omitted (root merge), a single first-level key, or an array of
     /// literal segments for nested merge. See [`MergePath`].
     Merge {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<MergePath>,
         value: Value,
     },
@@ -135,6 +136,7 @@ pub enum UpdateOp {
     /// first-level key, or an array of literal segments for nested
     /// append. See [`MergePath`] for the variant shape.
     Append {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<MergePath>,
         value: Value,
     },
@@ -477,12 +479,13 @@ mod tests {
         let op = UpdateOp::append_root(serde_json::json!("first"));
         let encoded = serde_json::to_value(&op).unwrap();
 
-        // path is None, so it serializes as null (mirrors merge precedent).
+        // `path` is None, so it is omitted entirely from the JSON
+        // wire format (no explicit `null`). Cross-SDK consumers (Node
+        // / Python / browser) decode the `path?` field as absent.
         assert_eq!(
             encoded,
             serde_json::json!({
                 "type": "append",
-                "path": null,
                 "value": "first",
             })
         );
@@ -603,12 +606,14 @@ mod tests {
         let op = UpdateOp::merge(serde_json::json!({"x": 1}));
         let encoded = serde_json::to_value(&op).unwrap();
 
-        // path is None, so it serializes as null.
+        // `path` is None, so it is omitted from the JSON wire format
+        // (no explicit `null`). Cross-SDK consumers decode `path?` as
+        // absent. `path: null` payloads still deserialize via the
+        // `#[serde(default)]` attribute.
         assert_eq!(
             encoded,
             serde_json::json!({
                 "type": "merge",
-                "path": null,
                 "value": {"x": 1},
             })
         );

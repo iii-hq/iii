@@ -206,7 +206,11 @@ name: bridge
 
         Each array element is a *literal* key. `["a.b"]` writes a single key named `"a.b"`, not `a → b`.
 
+        For root operations (no path), the SDK encoders omit the `path` field from the wire payload entirely (e.g. `{ "type": "append", "value": "first" }`) rather than emitting `"path": null`. Servers accept either form on input — `null`, missing, and empty string all route to the root.
+
         **Append at a nested missing leaf is always an array.** When `append` walks to a missing leaf at the end of an array-form path, it creates `[value]` regardless of the value's type — including string values, which would be kept as a string under the legacy single-string path's string-concat tier. This is the core fix for [issue #1552](https://github.com/iii-hq/iii/issues/1552).
+
+        **Append walks through array intermediates by replacing them with objects.** When the path traverses an existing non-object intermediate (array, scalar, or null), the engine replaces it with a fresh `{}` and continues — mirroring `merge`'s `walk_or_create` semantics. So `{"a": [1,2,3]}` + `append(["a", "b"], 42)` yields `{"a": {"b": [42]}}` (the prior array at `a` is dropped). Callers that need to preserve the array should pre-check with `state.get` rather than relying on append to error.
 
         **Note on `append.type_mismatch` for nested paths:** the structured `append.type_mismatch` error for object/scalar leaves shipped in #1555 for the single-string-path case. The nested-path form added here returns the same error code with the same shape, so consumers parsing `errors[]` need no new branches. Callers using `path: ""` or `path: "field"` against array, string, null, or missing-field leaves are unaffected.
 

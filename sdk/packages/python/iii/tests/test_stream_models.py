@@ -25,20 +25,30 @@ def test_update_append_with_array_path_round_trips() -> None:
 
 
 def test_update_append_without_path_round_trips() -> None:
-    """Path is now optional. Omitted -> None on both sides; mirrors UpdateMerge."""
+    """Root append omits ``path`` from the wire (parity with the Rust
+    ``skip_serializing_if = "Option::is_none"`` on
+    ``UpdateOp::Append.path`` — surfaced in #1612 review)."""
     op = UpdateAppend(value="first")
     dumped = op.model_dump()
-    assert dumped == {"type": "append", "path": None, "value": "first"}
+    assert dumped == {"type": "append", "value": "first"}
+    assert "path" not in dumped
     parsed = UpdateAppend.model_validate(json.loads(json.dumps(dumped)))
     assert parsed.path is None
 
 
 def test_update_append_with_explicit_none_path() -> None:
-    """Symmetric with Rust's serde-default: explicit None and missing field both yield None."""
+    """Explicit ``None`` and missing field both round-trip through a
+    wire payload that has no ``path`` key. ``path: null`` payloads
+    coming from older clients still deserialize for backward compat."""
     op = UpdateAppend(path=None, value=42)
     assert op.path is None
+    assert op.model_dump() == {"type": "append", "value": 42}
     parsed = UpdateAppend.model_validate({"type": "append", "value": 42})
     assert parsed.path is None
+    parsed_null = UpdateAppend.model_validate(
+        {"type": "append", "path": None, "value": 42}
+    )
+    assert parsed_null.path is None
 
 
 def test_update_append_with_empty_string_path() -> None:
@@ -81,11 +91,18 @@ def test_update_merge_with_array_path_round_trips() -> None:
 
 
 def test_update_merge_without_path_round_trips() -> None:
+    """Same wire-format rule as ``UpdateAppend``: root merge omits the
+    ``path`` key entirely. ``path: null`` payloads still deserialize."""
     op = UpdateMerge(value={"x": 1})
     dumped = op.model_dump()
-    assert dumped == {"type": "merge", "path": None, "value": {"x": 1}}
+    assert dumped == {"type": "merge", "value": {"x": 1}}
+    assert "path" not in dumped
     parsed = UpdateMerge.model_validate(json.loads(json.dumps(dumped)))
     assert parsed.path is None
+    parsed_null = UpdateMerge.model_validate(
+        {"type": "merge", "path": None, "value": {"x": 1}}
+    )
+    assert parsed_null.path is None
 
 
 def test_update_op_error_round_trip() -> None:
