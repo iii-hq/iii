@@ -182,26 +182,37 @@ name: bridge
         | `merge` | `{ "type": "merge", "path": ["sessions", "abc"], "value": { "ts": "chunk" } }` | Shallow-merge an object at the root or at any nested path. |
         | `increment` | `{ "type": "increment", "path": "count", "by": 1 }` | Add `by` to a numeric field. |
         | `decrement` | `{ "type": "decrement", "path": "count", "by": 1 }` | Subtract `by` from a numeric field. |
-        | `append` | `{ "type": "append", "path": "events", "value": { "kind": "chunk" } }` | Push one element to an array or concatenate a string value. |
+        | `append` | `{ "type": "append", "path": ["sessions", "abc", "events"], "value": { "kind": "chunk" } }` | Push one element to an array (or concatenate a string) at the root, a first-level field, or any nested path. |
         | `remove` | `{ "type": "remove", "path": "status" }` | Remove a field from the current object. |
 
-        For `set`, `increment`, `decrement`, `append`, and `remove`, paths are first-level field names. For example, `user.name` updates the field named `user.name`; it does not traverse into `{ "user": { "name": ... } }`.
+        For `set`, `increment`, `decrement`, and `remove`, paths are first-level field names. For example, `user.name` updates the field named `user.name`; it does not traverse into `{ "user": { "name": ... } }`.
 
-        For `merge`, `path` accepts either a single string (legacy / first-level field) or an array of literal segments for nested merge:
+        For `merge` and `append`, `path` accepts either a single string (legacy / first-level field) or an array of literal segments for nested traversal:
 
         ```json
-        // Root merge (existing behavior, unchanged).
+        // Root merge / append (existing behavior, unchanged).
         { "type": "merge", "path": "", "value": { "status": "active" } }
+        { "type": "append", "path": "", "value": "first" }
 
-        // First-level merge into the field named "session-abc".
+        // First-level merge / append into the field named "session-abc".
         { "type": "merge", "path": "session-abc", "value": { "author": "alice" } }
+        { "type": "append", "path": "events", "value": { "kind": "chunk" } }
 
-        // Nested merge: walks "sessions" → "abc", auto-creating
-        // missing or non-object intermediates as it goes.
+        // Nested merge / append: walks the segments, auto-creating
+        // missing or non-object intermediates along the way.
         { "type": "merge", "path": ["sessions", "abc"], "value": { "ts": "chunk" } }
+        { "type": "append", "path": ["sessions", "abc", "events"], "value": { "kind": "chunk" } }
         ```
 
         Each array element is a *literal* key. `["a.b"]` writes a single key named `"a.b"`, not `a → b`.
+
+        For root operations (no path), the SDK encoders omit the `path` field from the wire payload entirely (e.g. `{ "type": "append", "value": "first" }`) rather than emitting `"path": null`. Servers accept either form on input — `null`, missing, and empty string all route to the root.
+
+        **Append at a nested missing leaf is always an array.** When `append` walks to a missing leaf at the end of an array-form path, it creates `[value]` regardless of the value's type — including string values, which would be kept as a string under the legacy single-string path's string-concat tier. This is the core fix for [issue #1552](https://github.com/iii-hq/iii/issues/1552).
+
+        **Append walks through array intermediates by replacing them with objects.** When the path traverses an existing non-object intermediate (array, scalar, or null), the engine replaces it with a fresh `{}` and continues — mirroring `merge`'s `walk_or_create` semantics. So `{"a": [1,2,3]}` + `append(["a", "b"], 42)` yields `{"a": {"b": [42]}}` (the prior array at `a` is dropped). Callers that need to preserve the array should pre-check with `state.get` rather than relying on append to error.
+
+        **Note on `append.type_mismatch` for nested paths:** the structured `append.type_mismatch` error for object/scalar leaves shipped in #1555 for the single-string-path case. The nested-path form added here returns the same error code with the same shape, so consumers parsing `errors[]` need no new branches. Callers using `path: ""` or `path: "field"` against array, string, null, or missing-field leaves are unaffected.
 
         Validation: invalid update inputs are rejected with a structured error in the response's `errors` array. Reasons include path depth > 32 segments, segment > 256 bytes, value depth > 16, > 1024 top-level keys, type mismatches, non-object targets, or any segment / top-level key matching `__proto__` / `constructor` / `prototype`. Successfully applied ops still reflect in `new_value`.
       </ResponseField>
@@ -238,6 +249,8 @@ Each `state::update` op may add an entry to the response `errors` array. Operati
 | `<op>.path.segment_too_long` | A path segment is longer than 256 bytes | Shorten the field name or merge path segment. |
 | `merge.path.too_deep` | A nested merge path has more than 32 segments | Reduce the nested path depth. |
 | `merge.path.empty_segment` | A nested merge path array contains an empty segment | Remove the empty segment. |
+| `append.path.too_deep` | A nested append path has more than 32 segments | Reduce the nested path depth. |
+| `append.path.empty_segment` | A nested append path array contains an empty segment | Remove the empty segment. |
 | `merge.value.not_an_object` | `merge` value is not a JSON object | Pass an object as the merge value. |
 | `merge.value.too_deep` | `merge` value has JSON nesting deeper than 16 levels | Flatten the value. |
 | `merge.value.too_many_keys` | `merge` value has more than 1024 top-level keys | Split the write into smaller updates. |

@@ -107,6 +107,14 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         return path
     end
 
+    -- Bracket-notation label for nested-segment paths. Mirrors the Rust
+    -- helper `path_label_segments` in `engine/src/update_ops.rs` so the
+    -- error messages produced by the two adapters match byte-for-byte.
+    local function path_label_segments(segments)
+        if segments == nil or #segments == 0 then return 'root' end
+        return '[' .. table.concat(segments, ', ') .. ']'
+    end
+
     local function field_path_segments(path)
         if path == nil or path == '' then return {} end
         return { path }
@@ -186,16 +194,39 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         return true
     end
 
-    -- Walk segments inside `root`, replacing or auto-creating non-object
-    -- intermediates. Returns the target object table for shallow merge.
+    -- "Object shape" check used at the IMP-003 root gate and inside
+    -- `walk_or_create` to decide whether to walk into a node or replace
+    -- it. Mirrors `json_type_name`'s convention (`value[1] ~= nil`
+    -- means array, otherwise object) so empty Lua tables count as
+    -- objects here. Aligns the Lua walk with the Rust path, which uses
+    -- `matches!(v, Value::Object(_))` and replaces non-object
+    -- intermediates (including arrays) with `Value::Object(Map::new())`.
+    --
+    -- Defined before `walk_or_create` (and other consumers) so the
+    -- closure resolves it as an upvalue rather than a missing global.
+    local function is_object_shape(value)
+        if type(value) ~= 'table' or value == cjson.null then
+            return false
+        end
+        return value[1] == nil
+    end
+
+    -- Walk segments inside `root`, replacing any non-object intermediate
+    -- (null, scalar, OR array) with a fresh empty object. Mirrors the
+    -- Rust `walk_or_create` (engine/src/update_ops.rs) which calls
+    -- `*entry = Value::Object(Map::new())` whenever the intermediate is
+    -- not already a `Value::Object(_)`. Without the array branch, Lua
+    -- would walk into an existing array intermediate and produce a
+    -- corrupted mixed-key form like `{1=1, 2=2, b=[42]}` for state
+    -- `{"a": [1,2,3]}` + nested append `["a","b"]`.
     local function walk_or_create(root, segments)
-        if type(root) ~= 'table' or root == cjson.null then
+        if not is_object_shape(root) then
             return nil  -- caller normalises root before invoking
         end
         local node = root
         for _, seg in ipairs(segments) do
             local next_node = node[seg]
-            if type(next_node) ~= 'table' or next_node == cjson.null then
+            if not is_object_shape(next_node) then
                 next_node = {}
                 node[seg] = next_node
             end
@@ -211,6 +242,17 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
         return {value}
     end
 
+    -- Used by `append_to_target` to decide whether an existing leaf is
+    -- appendable as an array. cjson loses the empty-`[]` vs empty-`{}`
+    -- distinction across the encode/decode roundtrip (both materialise
+    -- as a `{}` Lua table; Redis cjson does not expose `array_mt`), so
+    -- this heuristic accepts empty tables as arrays. That matches the
+    -- common case where users append into a freshly-stored `[]` leaf
+    -- (e.g. `{"buffer": []}` + `append("buffer", x)`); the dual case
+    -- where the leaf is stored as `{}` is documented as a known
+    -- limitation of the Lua path. The IMP-003 root gate and
+    -- `walk_or_create` use `is_object_shape` instead, so empty-document
+    -- nested append still works.
     local function is_array(value)
         if type(value) ~= 'table' then
             return false
@@ -359,23 +401,66 @@ pub const JSON_UPDATE_SCRIPT: &str = r#"
               end
             end
         elseif op.type == 'append' then
-            local path = get_path(op.path)
-            if validate_op_path('append', zero_index, field_path_segments(path)) then
-              if path == '' or path == nil then
-                local changed, next_value = append_to_target(using_missing_default and cjson.null or current, op.value, 'root', zero_index)
+            -- Validation order is load-bearing (mirror of update_ops.rs):
+            --   1. validate_op_path  (bounds + proto-pollution)
+            --   2. root-is-object    (before walk_or_create can mutate)
+            --   3. walk_or_create    (nested only)
+            --   4. leaf-type matrix  (FR-11)
+            local segments = merge_path_segments(op.path)
+            if validate_op_path('append', zero_index, segments) then
+              if #segments == 0 then
+                -- Root append: legacy semantics preserved.
+                local target_root = using_missing_default and cjson.null or current
+                local changed, next_value = append_to_target(target_root, op.value, 'root', zero_index)
                 if changed then
                     current = next_value
                     using_missing_default = false
                 end
-              elseif type(current) == 'table' and current ~= cjson.null then
-                    local changed, next_value = append_to_target(current[path], op.value, path, zero_index)
-                    if changed then
-                        current[path] = next_value
-                        using_missing_default = false
-                    end
-              else
+              elseif not is_object_shape(current) then
+                -- Non-empty path requires object root (IMP-003). Empty
+                -- Lua tables count as objects per `is_object_shape`, so
+                -- empty-document nested append succeeds (matching the
+                -- Rust path's `Value::Object({})` initialization).
                 push_error(zero_index, 'append.target_not_object',
-                    "Cannot append at path '" .. path_label(path) .. "': target is " .. json_type_name(current) .. ", expected object.")
+                    "Cannot append at path '" .. path_label_segments(segments) .. "': target is " .. json_type_name(current) .. ", expected object.")
+              elseif #segments == 1 then
+                -- Single-segment path: back-compat with the legacy
+                -- single-string `FieldPath` semantics — `initial_append_value`
+                -- keeps the string-concat tier for missing leaves.
+                local leaf_key = segments[1]
+                local existing_val = current[leaf_key]
+                if existing_val ~= nil and existing_val ~= cjson.null then
+                    local changed, next_value = append_to_target(existing_val, op.value, leaf_key, zero_index)
+                    if changed then
+                        current[leaf_key] = next_value
+                    end
+                else
+                    current[leaf_key] = initial_append_value(op.value)
+                end
+                using_missing_default = false
+              else
+                -- Nested path: walk parent (creating intermediates), then
+                -- operate on the leaf key. FR-11 nested-path rule: missing
+                -- leaf is ALWAYS an array (no string-concat tier).
+                local parent_segments = {}
+                for i = 1, #segments - 1 do
+                    parent_segments[i] = segments[i]
+                end
+                local leaf_key = segments[#segments]
+                local parent_map = walk_or_create(current, parent_segments)
+                if parent_map ~= nil then
+                    local existing_val = parent_map[leaf_key]
+                    if existing_val ~= nil and existing_val ~= cjson.null then
+                        local changed, next_value = append_to_target(existing_val, op.value, leaf_key, zero_index)
+                        if changed then
+                            parent_map[leaf_key] = next_value
+                        end
+                    else
+                        -- FR-11: nested-path missing leaf is always an array.
+                        parent_map[leaf_key] = { op.value }
+                    end
+                    using_missing_default = false
+                end
               end
             end
         elseif op.type == 'remove' then
