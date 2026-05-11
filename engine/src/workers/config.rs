@@ -111,18 +111,39 @@ impl EngineConfig {
     /// Inject KNOWN_EXTERNAL daemons (e.g. `iii-worker-ops` for the
     /// `worker::*` SDK triggers) so they ship without requiring a
     /// `iii.config.yaml` entry. Idempotent.
+    ///
+    /// Injection is gated on `super::external::resolve_external_module`
+    /// being able to find the backing binary — promising a worker we can't
+    /// actually spawn would fail the engine boot on every host that ships
+    /// without `iii-worker` (CI SDK runners that download only the `iii`
+    /// binary, minimal install paths, etc.). Set
+    /// `IIIWORKER_DISABLE_BUILTIN_DAEMONS=1` to opt out explicitly
+    /// regardless of binary availability (used by engine reload tests that
+    /// spawn back-to-back `serve()` instances and need to avoid the
+    /// daemon's lingering listener).
     pub fn ensure_builtin_daemons(&mut self) {
+        if std::env::var_os("IIIWORKER_DISABLE_BUILTIN_DAEMONS").is_some() {
+            return;
+        }
         const ALWAYS_ON: &[&str] = &["iii-worker-ops"];
         for name in ALWAYS_ON {
             let already_listed = self.workers.iter().any(|w| w.name == *name)
                 || self.modules.iter().any(|m| m.name == *name);
-            if !already_listed {
-                self.workers.push(WorkerEntry {
-                    name: (*name).to_string(),
-                    image: None,
-                    config: None,
-                });
+            if already_listed {
+                continue;
             }
+            if super::external::resolve_external_module(name).is_none() {
+                tracing::debug!(
+                    daemon = name,
+                    "Skipping builtin daemon auto-injection: backing binary not found on PATH"
+                );
+                continue;
+            }
+            self.workers.push(WorkerEntry {
+                name: (*name).to_string(),
+                image: None,
+                config: None,
+            });
         }
     }
 }
@@ -1221,6 +1242,17 @@ mod tests {
 
     #[test]
     fn test_default_config_auto_injects_iii_worker_ops() {
+        // Injection is now gated on the iii-worker binary being resolvable
+        // via `resolve_external_module`. Skip when the host doesn't ship
+        // the binary (CI SDK runners, lean dev installs) so the test
+        // reflects user-visible behavior instead of false-positive failing
+        // on those hosts.
+        if super::super::external::resolve_external_module("iii-worker-ops").is_none() {
+            eprintln!(
+                "skipping: iii-worker binary not on PATH; auto-injection correctly suppressed"
+            );
+            return;
+        }
         let config = EngineConfig::default_config();
         let count = config
             .workers
@@ -1229,7 +1261,7 @@ mod tests {
             .count();
         assert_eq!(
             count, 1,
-            "default config must auto-inject iii-worker-ops exactly once"
+            "default config must auto-inject iii-worker-ops exactly once when the binary is available"
         );
     }
 

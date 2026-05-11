@@ -28,6 +28,24 @@ use serial_test::serial;
 // helpers
 // ---------------------------------------------------------------------------
 
+/// Suppress the `iii-worker-ops` auto-injection. The reload pipeline spawns
+/// fresh `EngineBuilder::serve()` instances per test; the injected daemon's
+/// child process keeps listeners alive past the test's tokio runtime
+/// shutdown, which makes the next test in the file panic with `AddrInUse`
+/// when it tries to rebind. Tests don't exercise `worker::*` triggers, so
+/// they don't need the daemon — set the opt-out before any builder runs.
+fn disable_builtin_daemons() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        // Safety: called once before any code that may read the env;
+        // tests are #[serial] so there is no concurrent reader at this
+        // point.
+        unsafe {
+            std::env::set_var("IIIWORKER_DISABLE_BUILTIN_DAEMONS", "1");
+        }
+    });
+}
+
 /// A minimal YAML config with no user-defined workers or modules. Mandatory
 /// workers (telemetry, observability, engine-functions) are auto-injected by
 /// `EngineBuilder::build()` and do not bind fixed ports.
@@ -97,6 +115,7 @@ impl Worker for TestEphemeralWorker {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn config_change_reloads_without_crashing() {
+    disable_builtin_daemons();
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
     write_config(&path, minimal_config_yaml());
@@ -140,6 +159,7 @@ async fn config_change_reloads_without_crashing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn broken_yaml_config_exits_engine() {
+    disable_builtin_daemons();
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
     write_config(&path, minimal_config_yaml());
@@ -190,6 +210,7 @@ async fn broken_yaml_config_exits_engine() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn config_reload_removes_worker_function_registrations() {
+    disable_builtin_daemons();
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
 
