@@ -67,9 +67,10 @@ before the trigger client gives up.
 | [`sandbox::fs::grep`](#trigger-fs-grep) | filesystem | scale with tree size | Recursive regex search |
 | [`sandbox::fs::sed`](#trigger-fs-sed) | filesystem | scale with file count | Find-and-replace across files |
 
-The CLI (`iii sandbox …`) wraps a strict subset: `run`, `create`,
-`exec`, `list`, `stop`, `upload`, `download`. Anything not on that
-list is reachable only through `iii.trigger()` from your worker code.
+Every sandbox operation is reachable through `iii.trigger()` from worker
+code or through `iii trigger sandbox::<op> …` from the terminal. There
+is no longer a dedicated `iii sandbox` CLI subcommand — see
+[CLI reference](#cli-reference) for the trigger forms.
 
 **Also on this page:**
 [Engine setup](#engine-setup) ·
@@ -128,7 +129,7 @@ the `registerWorker("ws://<host>:<port>")` URL. See
 From the terminal:
 
 ```bash
-iii sandbox run python -- python3 -c 'print("hi")'
+iii trigger sandbox::run --json '{"image":"python","cmd":["python3","-c","print(\"hi\")"]}'
 ```
 
 From your code — create, exec, then stop:
@@ -202,10 +203,10 @@ carry across commands, create a sandbox up front and exec into it
 repeatedly:
 
 ```bash
-SB=$(iii sandbox create python --idle-timeout 300)
-iii sandbox exec "$SB" -- python3 -c 'print(2+2)'            # 4
-iii sandbox exec "$SB" -- python3 -c 'import sys; print(sys.version)'
-iii sandbox stop "$SB"
+SB=$(iii trigger sandbox::create image=python idle_timeout=300 | jq -r .sandbox_id)
+iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2+2)\"]}"
+iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"import sys; print(sys.version)\"]}"
+iii trigger sandbox::stop sandbox_id="$SB"
 ```
 
 On an interactive terminal, `create` prints `✓ sandbox ready in Xs` on
@@ -401,7 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `image` | `string` | — | **Required.** Catalog preset (`python`, `node`) or any name declared under `custom_images` in `config.yaml`. Must appear in `image_allowlist`. See [Allowed images](#allowed-images) and [Custom images](#custom-images). |
 | `cpus` | `number` | daemon default | vCPU count. Capped per-image by engine config. |
 | `memory_mb` | `number` | daemon default | RAM in MiB. Capped per-image. |
-| `name` | `string` | generated | Human-readable label for `iii sandbox list`. |
+| `name` | `string` | generated | Human-readable label shown in `iii trigger sandbox::list`. |
 | `network` | `boolean` | `false` | Opt in to host network access. |
 | `idle_timeout_secs` | `number` | `300` | Reap idle sandbox after N seconds. |
 | `env` | `string[]` | — | Create-time environment variables as `"KEY=VALUE"` strings, baked into the VM's init environment. |
@@ -410,7 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Field | Type | Description |
 |---|---|---|
-| `sandbox_id` | `string` | UUID handle — pass to `sandbox::exec`, `sandbox::stop`, and `iii sandbox stop`. |
+| `sandbox_id` | `string` | UUID handle — pass to `sandbox::exec`, `sandbox::stop`, or `iii trigger sandbox::stop sandbox_id=…`. |
 | `image` | `string` | Echo of the resolved image name — the catalog preset or `custom_images` key that was booted. |
 
 <a id="trigger-exec" />
@@ -635,7 +636,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Field | Type | Description |
 |---|---|---|
-| `sandbox_id` | `string` | UUID handle — pass to `iii sandbox stop`. |
+| `sandbox_id` | `string` | UUID handle — pass to `iii trigger sandbox::stop sandbox_id=…`. |
 | `name` | `string?` | Label set at create time. |
 | `image` | `string` | Catalog preset (`python`, `node`) or `custom_images` key. |
 | `age_secs` | `number` | Seconds since create. |
