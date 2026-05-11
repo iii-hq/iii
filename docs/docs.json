@@ -43,12 +43,12 @@
             "group": "Using iii",
             "pages": [
               "using-iii/workers",
+              "using-iii/registry",
               "using-iii/engine",
               "using-iii/functions",
               "using-iii/triggers",
               "using-iii/console",
               "using-iii/cli",
-              "using-iii/registry",
               "using-iii/deployment"
             ]
           },

@@ -9,7 +9,7 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
   Make sure you have installed iii before proceeding. If you haven't then visit the [Install](/install) guide first.
 </Info>
 
-## 1. Scaffold the project
+## 1. Create the project
 
 ```bash
 iii project init quickstart --template quickstart
@@ -107,7 +107,7 @@ From the folder containing iii's `config.yaml` run:
 iii worker add iii-state
 ```
 
-Now open `workers/math-worker/math_worker.py` and uncomment the state block so the handler looks like this:
+Now open `workers/math-worker/math_worker.py` in your code editor and uncomment the state block so the handler looks like this:
 
 ```python
 def add_handler(payload: dict) -> dict:

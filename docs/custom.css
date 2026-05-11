@@ -327,3 +327,25 @@ a:has(> span.bg-primary-dark):hover span.text-white,
 a:has(> span.bg-primary-dark):hover svg {
   color: var(--iii-ink) !important;
 }
+
+/* Mintlify's right-edge fade-overlay hardcodes #fff and clashes with --iii-bg; hide it. */
+.code-block [data-fade-overlay] {
+  display: none !important;
+}
+
+/* Copy button: drop the backdrop blur, make the icon contrast the page background. */
+.code-block [data-testid="copy-code-button"] {
+  backdrop-filter: none !important;
+  background: transparent !important;
+  color: var(--iii-ink-faint) !important;
+}
+
+.code-block [data-testid="copy-code-button"] svg {
+  color: var(--iii-ink-faint) !important;
+}
+
+.code-block [data-testid="copy-code-button"]:hover,
+.code-block [data-testid="copy-code-button"]:hover svg {
+  background: var(--iii-rule-2) !important;
+  color: var(--iii-ink) !important;
+}

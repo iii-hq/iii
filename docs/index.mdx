@@ -21,7 +21,7 @@ This pattern has been growing for decades.
 
 iii organizes software into three primitives: **Worker**, **Trigger**, **Function**. Something hosts work, something causes it, something does it. Every capability in every system can be built from these three things — queues, cron, streaming, sandboxing, observability, agents, business logic, devices, even frontend browser UIs.
 
-## Quadratic to Linear
+## Quadratic to Zero
 
 The integration problem doesn't only manifest where two systems connect. It creates downstream friction in logging, debugging, and upgrading, and upstream friction that blocks growth initiatives, new verticals, and partnerships.
 
@@ -29,9 +29,9 @@ iii reduces all of that effort to zero. Adding two workers or two hundred is the
 
 ## Have a Need? Add a Worker
 
-Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, observability, an agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are deterministic code. Some are stochastic agents. Most real systems are a mix. The semantics live in the functions, not in the category.
+Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, observability, an agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are deterministic code. Some are stochastic agents.
 
-`iii worker add` is the npm moment for systems. What installs is not a library — it is a running participant. A queue worker. A sandbox worker. A classifier. One command, complete capability, immediately available to every other worker in the system.
+`iii worker add` is the npm moment for systems. What installs is not a library — it is a complete running service. A queue worker. A sandbox worker. A classifier. One command, complete capability, immediately available to every other worker in the system.
 
 ## Same Contract, Both Sides
 
@@ -43,11 +43,13 @@ A worker in Docker, on Kubernetes, on the edge, in a browser tab, on a Raspberry
 
 ## Built for Agents
 
+Most agent harnesses solve one slice of the problem — a chat loop, a tool-calling sandbox, a chained workflow. iii is not a harness for one kind of agent. It is the same runtime the whole system already runs on, which is what makes an agent inside it actually agentic: it can act on every part of the system, not on a sandbox bolted to the side.
+
+Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is triggers. The agent does not call out to a separate "agent runtime" to do work — the runtime is the rest of the system. An agent that hits a task outside its current capabilities can register a worker at runtime, expose new functions, and extend the system it operates inside. That is the difference between scripted LLM calls and real autonomy.
+
 Humans and agents share one mental model. A new engineer is productive on day one because the mental model never changes from one capability to the next. AI agents can reliably reason about an entire system in a single context window because there is one set of primitives to learn and one always-accurate source of truth for what exists.
 
-Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is triggers. An agent that hits a task outside its current capabilities can register a worker at runtime and use its functions immediately. This is the difference between scripted LLM calls and real autonomy.
-
-As agents do more of the work of building and operating software, small primitives compound: easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
+As agents do more of the work of building and operating software, the size of that primitive set is what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
 
 ## Getting Started
 
