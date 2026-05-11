@@ -56,13 +56,15 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
     0
 }
 
-fn err_payload(e: &WorkerOpError) -> String {
+#[doc(hidden)]
+pub fn err_payload(e: &WorkerOpError) -> String {
     serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string())
 }
 
 /// Map a serde failure into the W101 envelope so bad payloads return the
 /// same `{ type, code, details }` shape as handler-level errors.
-fn bad_request_payload(input_label: &str, e: &serde_json::Error) -> String {
+#[doc(hidden)]
+pub fn bad_request_payload(input_label: &str, e: &serde_json::Error) -> String {
     let err = WorkerOpError::InvalidSource {
         input: input_label.into(),
         reason: e.to_string(),
@@ -106,7 +108,8 @@ struct SchemaEntry {
 
 /// (default_timeout_ms, idempotent). Mirrors the table in
 /// `docs/workers/worker-management-triggers.mdx`.
-fn op_metadata(function_id: &str) -> (u64, bool) {
+#[doc(hidden)]
+pub fn op_metadata(function_id: &str) -> (u64, bool) {
     match function_id {
         "worker::add" => (600_000, true),
         "worker::remove" => (30_000, true),

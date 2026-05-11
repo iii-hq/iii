@@ -176,7 +176,8 @@ fn extract_error_message(captured: &str) -> String {
 /// the worker name (or registry name) the caller passed; surfaced into
 /// `details.name` for typed not-found errors when the stderr line does
 /// not include a quoted name itself.
-fn classify_handler_error(rc: i32, captured: &str, op: &str, name_hint: &str) -> WorkerOpError {
+#[doc(hidden)]
+pub fn classify_handler_error(rc: i32, captured: &str, op: &str, name_hint: &str) -> WorkerOpError {
     let detail = extract_error_message(captured);
     let lower = detail.to_lowercase();
 
@@ -609,7 +610,8 @@ fn diff_versions(
 /// Validate `RemoveOptions` and return the concrete name list to act on.
 /// Rejects missing consent (W104), empty lists without `all = true`
 /// (W103), and non-empty + `all` combinations (W103) as ambiguous.
-fn resolve_remove_targets(opts: &RemoveOptions) -> Result<Vec<String>, WorkerOpError> {
+#[doc(hidden)]
+pub fn resolve_remove_targets(opts: &RemoveOptions) -> Result<Vec<String>, WorkerOpError> {
     if !opts.yes {
         return Err(WorkerOpError::ConsentRequired {
             op: "remove".into(),
@@ -632,7 +634,8 @@ fn resolve_remove_targets(opts: &RemoveOptions) -> Result<Vec<String>, WorkerOpE
 /// Validate `ClearOptions` and return the names to wipe. `all` lets the
 /// caller request a full sweep without listing names; both must be set
 /// explicitly so `{}` no longer wipes everything by accident.
-fn resolve_clear_targets(opts: &ClearOptions) -> Result<Vec<String>, WorkerOpError> {
+#[doc(hidden)]
+pub fn resolve_clear_targets(opts: &ClearOptions) -> Result<Vec<String>, WorkerOpError> {
     if !opts.yes {
         return Err(WorkerOpError::ConsentRequired { op: "clear".into() });
     }
