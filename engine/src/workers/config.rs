@@ -601,7 +601,13 @@ impl EngineBuilder {
 
     /// Builds and initializes all modules
     pub async fn build(mut self) -> anyhow::Result<Self> {
-        let config = self.config.take().expect("No worker configs found");
+        let mut config = self.config.take().expect("No worker configs found");
+        // Builder entry points (with_config / add_worker / register_worker) don't
+        // route through config_file()/default_config(), so KNOWN_EXTERNAL
+        // daemons (e.g. iii-worker-ops) would be missing for programmatic
+        // engine construction. Re-apply the invariant at the build boundary;
+        // ensure_builtin_daemons is idempotent so duplicate calls are safe.
+        config.ensure_builtin_daemons();
 
         crate::workers::observability::metrics::ensure_default_meter();
 

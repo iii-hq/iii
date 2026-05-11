@@ -17,6 +17,10 @@ const CONFIG_CANDIDATES: &[&str] = &["iii.config.yaml", "config.yaml"];
 #[derive(Debug)]
 pub struct ProjectOperationLock {
     path: PathBuf,
+    /// Exact bytes this guard wrote into the lockfile. `Drop` only unlinks
+    /// when the file's current contents still match — otherwise another
+    /// owner (recreated after a stale guard was reaped) keeps its lock.
+    marker: String,
 }
 
 impl ProjectOperationLock {
@@ -28,8 +32,13 @@ impl ProjectOperationLock {
             .open(&path)
         {
             Ok(mut file) => {
-                let _ = writeln!(file, "pid={}", std::process::id());
-                Ok(Self { path })
+                let marker = format!("pid={}\n", std::process::id());
+                file.write_all(marker.as_bytes())
+                    .map_err(|source| WorkerOpError::LockIo {
+                        path: path.clone(),
+                        source,
+                    })?;
+                Ok(Self { path, marker })
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let holder_pid = fs::read_to_string(&path).ok().and_then(|s| {
@@ -46,7 +55,12 @@ impl ProjectOperationLock {
 
 impl Drop for ProjectOperationLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        // Compare current contents to our marker so we never unlink a
+        // lockfile belonging to a different acquirer (e.g. one that
+        // recreated the file after we became a stale guard).
+        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.marker.as_str()) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

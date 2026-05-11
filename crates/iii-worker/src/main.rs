@@ -88,16 +88,36 @@ async fn main() -> anyhow::Result<()> {
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{ProjectCtx, RemoveOptions, remove as core_remove};
+            use std::io::IsTerminal;
 
-            // CLI: handle_managed_remove_many already gates with its own
-            // interactive confirm, so we always pass yes:true into the shim.
+            // Consent: -y / --yes always proceeds. Without -y, prompt when
+            // stderr is a tty; refuse non-interactively so scripts don't
+            // silently remove workers without confirmation.
+            let confirmed = if yes {
+                true
+            } else if std::io::stderr().is_terminal() {
+                use std::io::{BufRead, Write};
+                let names_str = worker_names.join(", ");
+                eprint!("Remove worker(s) '{}'? [y/N] ", names_str);
+                let _ = std::io::stderr().flush();
+                let mut buf = String::new();
+                let _ = std::io::stdin().lock().read_line(&mut buf);
+                let trimmed = buf.trim().to_lowercase();
+                trimmed == "y" || trimmed == "yes"
+            } else {
+                eprintln!("error: remove is destructive; pass -y/--yes for non-interactive use");
+                std::process::exit(1);
+            };
+            if !confirmed {
+                eprintln!("Aborted.");
+                std::process::exit(1);
+            }
             // `all` is unused on the CLI surface (users list names explicitly).
             let opts = RemoveOptions {
                 names: worker_names,
                 all: false,
                 yes: true,
             };
-            let _ = yes; // CLI's own --yes already wired into the inner handler
             let cwd = std::env::current_dir().unwrap_or_else(|e| {
                 eprintln!("error: cannot resolve project root: {e}");
                 std::process::exit(1);
@@ -171,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{ClearOptions, ProjectCtx, clear as core_clear};
+            use std::io::IsTerminal;
 
             // Map the existing CLI shape onto the new symmetric schema:
             // no name = wipe all, with-name = wipe just that one.
@@ -178,10 +199,36 @@ async fn main() -> anyhow::Result<()> {
                 Some(n) => (vec![n], false),
                 None => (Vec::new(), true),
             };
+            // Consent: -y / --yes always proceeds. Without -y, prompt when
+            // stderr is a tty; refuse non-interactively so scripts don't
+            // silently wipe artifacts without confirmation.
+            let target_label = if all {
+                "all worker artifacts".to_string()
+            } else {
+                format!("artifacts for '{}'", names.join(", "))
+            };
+            let confirmed = if yes {
+                true
+            } else if std::io::stderr().is_terminal() {
+                use std::io::{BufRead, Write};
+                eprint!("Clear {}? [y/N] ", target_label);
+                let _ = std::io::stderr().flush();
+                let mut buf = String::new();
+                let _ = std::io::stdin().lock().read_line(&mut buf);
+                let trimmed = buf.trim().to_lowercase();
+                trimmed == "y" || trimmed == "yes"
+            } else {
+                eprintln!("error: clear is destructive; pass -y/--yes for non-interactive use");
+                std::process::exit(1);
+            };
+            if !confirmed {
+                eprintln!("Aborted.");
+                std::process::exit(1);
+            }
             let opts = ClearOptions {
                 names,
                 all,
-                yes: yes || true,
+                yes: true,
             };
             let cwd = std::env::current_dir().unwrap_or_else(|e| {
                 eprintln!("error: cannot resolve project root: {e}");

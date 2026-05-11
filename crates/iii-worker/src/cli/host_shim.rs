@@ -274,6 +274,16 @@ impl WorkerHostShim for CliHostShim {
         let force = opts.force;
         let reset_config = opts.reset_config;
         let wait = opts.wait;
+        // Snapshot config workers BEFORE the install so we can diff and
+        // recover the canonical worker name on success. For OCI / local
+        // installs `source_label_name` returns a raw reference/path, which
+        // lockfile lookups miss and clients can't feed back into other
+        // worker::* triggers. The canonical name is whatever the installer
+        // actually wrote to config.yaml.
+        let pre_config_names: std::collections::HashSet<String> =
+            crate::cli::config_file::list_worker_names()
+                .into_iter()
+                .collect();
         let (rc, captured) = run_capturing_stderr(|| async move {
             if is_local {
                 crate::cli::local_worker::handle_local_add(
@@ -298,7 +308,13 @@ impl WorkerHostShim for CliHostShim {
         .await;
 
         if rc == 0 {
-            let name = source_label_name(&opts.source);
+            let label = source_label_name(&opts.source);
+            // First post-install canonical name we didn't see beforehand.
+            // Falls back to the raw label for idempotent re-adds where the
+            // entry already existed (in which case the label IS the name
+            // for the registry path, and the lockfile lookup at least
+            // returns None cleanly for OCI / local sources).
+            let name = post_install_worker_name(&opts.source, &pre_config_names, &label);
             let version = read_locked_version(&name);
             Ok(AddOutcome {
                 name,
@@ -569,6 +585,29 @@ impl WorkerHostShim for CliHostShim {
 // Helpers used by the adapters above. All read-only against the lockfile and
 // on-disk worker dirs; safe to call concurrently.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Resolve the canonical worker name after a successful add by diffing
+/// config.yaml entries. Returns the first name that appears post-install
+/// but didn't exist beforehand. Falls back to:
+///   - the registry name (for `Registry` sources, which is already canonical)
+///   - the raw label otherwise (OCI ref / local path), preserving the prior
+///     behavior for idempotent re-adds where the diff is empty.
+fn post_install_worker_name(
+    source: &crate::core::WorkerSource,
+    pre: &std::collections::HashSet<String>,
+    fallback_label: &str,
+) -> String {
+    if let Some(new_name) = crate::cli::config_file::list_worker_names()
+        .into_iter()
+        .find(|n| !pre.contains(n))
+    {
+        return new_name;
+    }
+    match source {
+        crate::core::WorkerSource::Registry { name, .. } => name.clone(),
+        _ => fallback_label.to_string(),
+    }
+}
 
 fn read_locked_version(name: &str) -> Option<String> {
     crate::cli::lockfile::WorkerLockfile::read_from(crate::cli::lockfile::lockfile_path())

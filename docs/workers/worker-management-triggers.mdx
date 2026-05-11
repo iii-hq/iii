@@ -3,18 +3,20 @@ title: 'Worker Management Triggers'
 description: 'Install, remove, and manage peer workers from inside another worker via worker::* SDK triggers.'
 ---
 
-The `iii-worker-manager` daemon registers `worker::*` SDK trigger functions that any worker can call to install, remove, or manage peer workers dynamically. The same trigger surface backs `iii worker <cmd>` CLI invocations when the daemon is reachable, so external workers and the CLI converge on a single source of truth.
+The `iii-worker-ops` daemon registers `worker::*` SDK trigger functions that any worker can call to install, remove, or manage peer workers dynamically. The same trigger surface backs `iii worker <cmd>` CLI invocations when the daemon is reachable, so external workers and the CLI converge on a single source of truth.
 
 ## Enabling the daemon
 
-Add `iii-worker-manager` to your `iii.config.yaml` workers list:
+Nothing to configure — the engine auto-injects `iii-worker-ops` into every config (via `EngineConfig::ensure_builtin_daemons()`) and starts it as a sidecar resolved through the `KNOWN_EXTERNAL` registry. The daemon ships with the `iii-worker` binary as the `worker-manager-daemon` subcommand, so a separate install isn't needed.
+
+To override the injection (e.g. point at a custom build), add an explicit entry to your `iii.config.yaml`:
 
 ```yaml
 workers:
-  - name: iii-worker-manager
+  - name: iii-worker-ops
 ```
 
-The engine resolves it through its `KNOWN_EXTERNAL` registry and starts it as a sidecar — no separate binary install is needed. The daemon ships with the `iii-worker` binary as a `worker-manager-daemon` subcommand.
+The injection is idempotent, so an explicit entry simply takes precedence.
 
 ## Trigger surface
 
@@ -100,4 +102,4 @@ Trigger errors return a flat JSON envelope mirroring the `SandboxError` pattern,
 
 ## Status
 
-The trigger surface is registered today, but daemon-side handler bodies are stubbed pending a follow-up that resolves a `?Send` constraint on `WorkerHostShim`. Calls to `worker::*` triggers currently return `W900 Internal` errors with a message indicating the deferred state. The CLI's dual-path routing means `iii worker <cmd>` continues to work via the in-process library path when the daemon stub would otherwise fail. See the TODO at `crates/iii-worker-core/src/host.rs` for remediation paths.
+Daemon-side handlers are wired end-to-end. Each `worker::*` trigger routes through `crates/iii-worker/src/cli/worker_manager_daemon.rs`, which delegates to the same `core::*::run` orchestrators (in `crates/iii-worker/src/core/`) as the CLI via `CliHostShim` (`crates/iii-worker/src/cli/host_shim.rs`). Trigger and CLI invocations share one code path, so the W-code envelope above describes both surfaces. The CLI's dual-path routing still applies: `iii worker <cmd>` will fall through to the in-process library path if the daemon isn't reachable.

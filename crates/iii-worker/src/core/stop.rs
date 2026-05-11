@@ -15,8 +15,11 @@ pub async fn run(
     events: &dyn EventSink,
     shim: &dyn WorkerHostShim,
 ) -> Result<StopOutcome, WorkerOpError> {
-    if opts.name.is_empty() {
-        return Err(WorkerOpError::invalid_name("", "name is required"));
+    if opts.name.trim().is_empty() {
+        return Err(WorkerOpError::invalid_name(
+            opts.name.as_str(),
+            "name is required",
+        ));
     }
     events.emit(WorkerOpEvent::Started {
         op: "stop",

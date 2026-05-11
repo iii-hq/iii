@@ -130,7 +130,9 @@ struct SchemaResponse {
 
 fn register_schema(iii: &III) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::schema", |req: SchemaRequest| async move {
+        RegisterFunction::new_async("worker::schema", |payload: Value| async move {
+            let req: SchemaRequest = serde_json::from_value(payload)
+                .map_err(|e| bad_request_payload("worker::schema", &e))?;
             let all = vec![
                 (
                     "worker::add",
@@ -213,7 +215,7 @@ fn register_add(iii: &III, project_root: PathBuf) {
             async move {
                 let opts: AddOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::add", &e))?;
-                let ctx = ProjectCtx::open_unlocked(project_root);
+                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
                 core_add::run(
                     opts,
                     &ctx,
@@ -236,7 +238,7 @@ fn register_remove(iii: &III, project_root: PathBuf) {
             async move {
                 let opts: RemoveOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::remove", &e))?;
-                let ctx = ProjectCtx::open_unlocked(project_root);
+                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
                 core_remove::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
@@ -253,7 +255,7 @@ fn register_update(iii: &III, project_root: PathBuf) {
             async move {
                 let opts: UpdateOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::update", &e))?;
-                let ctx = ProjectCtx::open_unlocked(project_root);
+                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
                 core_update::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
@@ -270,7 +272,7 @@ fn register_start(iii: &III, project_root: PathBuf) {
             async move {
                 let opts: StartOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::start", &e))?;
-                let ctx = ProjectCtx::open_unlocked(project_root);
+                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
                 core_start::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
@@ -287,7 +289,7 @@ fn register_stop(iii: &III, project_root: PathBuf) {
             async move {
                 let opts: StopOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::stop", &e))?;
-                let ctx = ProjectCtx::open_unlocked(project_root);
+                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
                 core_stop::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
@@ -302,8 +304,15 @@ fn register_list(iii: &III, project_root: PathBuf) {
         RegisterFunction::new_async("worker::list", move |payload: Value| {
             let project_root = project_root.clone();
             async move {
-                // Lenient: empty/null payload defaults to "list everything".
-                let opts: ListOptions = serde_json::from_value(payload).unwrap_or_default();
+                // Lenient default only for null or empty object. Other shapes
+                // must deserialize cleanly or return the W101 envelope so the
+                // caller can tell typos apart from "no args".
+                let opts: ListOptions = match &payload {
+                    Value::Null => ListOptions::default(),
+                    Value::Object(map) if map.is_empty() => ListOptions::default(),
+                    _ => serde_json::from_value(payload)
+                        .map_err(|e| bad_request_payload("worker::list", &e))?,
+                };
                 let ctx = ProjectCtx::open_unlocked(project_root);
                 core_list::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
@@ -321,7 +330,7 @@ fn register_clear(iii: &III, project_root: PathBuf) {
             async move {
                 let opts: ClearOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::clear", &e))?;
-                let ctx = ProjectCtx::open_unlocked(project_root);
+                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
                 core_clear::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
