@@ -331,6 +331,45 @@ fn project_generate_docker_warns_when_no_project_ini() {
 }
 
 #[test]
+fn project_init_rejects_yes_flag() {
+    let dir = tempdir().unwrap();
+    let out = iii_bin()
+        .args(["project", "init", "--yes", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        !out.status.success(),
+        "init should reject --yes after removal"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("--yes"),
+        "expected clap rejection mentioning --yes:\n{stderr}"
+    );
+}
+
+#[test]
+fn project_init_rejects_short_languages_alias() {
+    let dir = tempdir().unwrap();
+    let out = iii_bin()
+        .args([
+            "project", "init", "-l", "ts", "--template-dir",
+        ])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        !out.status.success(),
+        "init should reject -l short alias after removal"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn project_init_failure_emits_problem_cause_fix() {
     let out = iii_bin()

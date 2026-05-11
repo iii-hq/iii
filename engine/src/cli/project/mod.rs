@@ -58,16 +58,12 @@ pub struct InitArgs {
     pub template_dir: Option<String>,
 
     /// Languages to include (comma-separated: ts,js,py).
-    #[arg(short, long, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',')]
     pub languages: Option<Vec<String>>,
 
     /// Skip the iii-engine version compatibility check.
     #[arg(long = "skip-iii")]
     pub skip_iii: bool,
-
-    /// Auto-confirm all prompts (non-interactive mode).
-    #[arg(short, long)]
-    pub yes: bool,
 
     /// Allow scaffolding into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
@@ -227,7 +223,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         directory: target_dir.clone(),
         languages: args.languages.clone(),
         skip_tool_check: args.skip_iii,
-        yes: args.yes,
+        yes: false,
     };
 
     let result = scaffolder_core::run(&IiiConfig, create_args, env!("CARGO_PKG_VERSION")).await;
@@ -238,7 +234,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         return print_err(
             "template scaffold failed",
             &e.to_string(),
-            "see scaffolder output above; re-run with --template <name> --yes to skip prompts",
+            "see scaffolder output above",
         );
     }
 
