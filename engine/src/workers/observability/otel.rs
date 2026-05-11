@@ -38,7 +38,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::registry::LookupSpan;
@@ -694,20 +694,53 @@ static SDK_SPAN_FORWARDER: OnceLock<Channel> = OnceLock::new();
 /// can point the forwarder at a mock collector. Treat this as an internal
 /// API — in-crate callers should keep going through `init_otel`.
 pub fn init_sdk_span_forwarder(endpoint: &str) {
-    match Endpoint::from_shared(endpoint.to_owned()) {
-        Ok(ep) => {
-            let channel = ep.connect_lazy();
-            if SDK_SPAN_FORWARDER.set(channel).is_err() {
-                tracing::debug!("SDK span forwarder already initialized");
-            }
-        }
+    let ep = match Endpoint::from_shared(endpoint.to_owned()) {
+        Ok(ep) => ep,
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 endpoint = endpoint,
                 "Failed to build SDK span forwarder channel; SDK spans will not be exported to collector"
             );
+            return;
         }
+    };
+
+    // Preserve the pre-#1617 deployment contract: when the endpoint
+    // is `https://...`, the previous `opentelemetry_otlp::SpanExporter`
+    // builder configured TLS automatically via its `tls-roots` feature.
+    // Replicate that here for the raw-tonic channel — without this,
+    // every TLS-fronted collector (Grafana Cloud, SigNoz Cloud,
+    // Honeycomb, the standard prod shape) would silently fail at
+    // handshake time post-merge.
+    //
+    // `Endpoint::tls_config` consumes `self`, so we rebind through the
+    // configured value. On config failure we fall back to the original
+    // unconfigured endpoint and log a warning; the lazy connect will
+    // then fail at handshake time against an HTTPS collector, but
+    // engine init proceeds and HTTP collectors keep working.
+    let ep = if endpoint.starts_with("https://") {
+        match ep.tls_config(ClientTlsConfig::new().with_native_roots()) {
+            Ok(configured) => configured,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    endpoint = endpoint,
+                    "Failed to configure TLS for SDK span forwarder; channel will attempt plaintext (handshake to an HTTPS collector will fail)"
+                );
+                // Re-build the unconfigured Endpoint so we can still
+                // return a channel for the (broken) plaintext path.
+                // Unwrap is safe — same string parsed successfully above.
+                Endpoint::from_shared(endpoint.to_owned()).unwrap()
+            }
+        }
+    } else {
+        ep
+    };
+
+    let channel = ep.connect_lazy();
+    if SDK_SPAN_FORWARDER.set(channel).is_err() {
+        tracing::debug!("SDK span forwarder already initialized");
     }
 }
 
@@ -1593,13 +1626,21 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
 
     // Forward to OTLP collector if forwarder is available.
     //
-    // We deliberately bypass `convert_otlp_to_span_data` here. That helper
-    // is still used by the in-memory storage path above, but it drops
-    // `resource_spans[].resource` and the receiving exporter cannot
-    // reattach it (the forwarder is a bare `TraceServiceClient`, not a
-    // `TracerProvider`-wrapped exporter). Translating the parsed JSON
-    // request directly into the proto type preserves the full resource
-    // block byte-for-byte. See iii-hq/iii#1617.
+    // We deliberately bypass `convert_otlp_to_span_data` here (in fact,
+    // that helper has been removed — see the comment near
+    // `otlp_json_request_to_proto` below for the rationale). The earlier
+    // path dropped `resource_spans[].resource` because the bare
+    // `SpanExporter` had no `TracerProvider` to supply a resource at
+    // export time. Translating the parsed JSON request directly into the
+    // proto type preserves the full resource block byte-for-byte. See
+    // iii-hq/iii#1617.
+    //
+    // Behaviour change called out in the commit message: the new path
+    // relays spans with malformed trace/span IDs (the old SpanData path
+    // pre-filtered them via `TraceId::from_hex`/`SpanId::from_hex`
+    // bailout). Downstream collectors validate and reject; engine-side
+    // pre-filtering hid that diagnostic signal. The in-memory storage
+    // path is unchanged.
     if let Some(channel) = SDK_SPAN_FORWARDER.get() {
         let proto_request = otlp_json_request_to_proto(&request);
         let span_count: usize = proto_request
@@ -1720,7 +1761,13 @@ fn otlp_span_to_proto(span: &OtlpSpan) -> opentelemetry_proto::tonic::trace::v1:
         span_id,
         trace_state: String::new(),
         parent_span_id,
-        flags: span.flags.unwrap_or(0),
+        // Parity with the in-memory storage path's default at the top of
+        // `ingest_otlp_json` — a span arriving without an explicit `flags`
+        // field is treated as SAMPLED (W3C trace-flags bit 0 = 0x01).
+        // Defaulting to 0 here would mark such spans as unsampled on the
+        // forwarder hop while storage records them as sampled, producing
+        // inconsistent behaviour across the two halves of the same call.
+        flags: span.flags.unwrap_or(1),
         name: span.name.clone(),
         kind: span.kind.unwrap_or(0) as i32,
         start_time_unix_nano: span.start_time_unix_nano.0,

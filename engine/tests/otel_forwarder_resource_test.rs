@@ -65,6 +65,12 @@ async fn spawn_mock_collector() -> (String, Arc<Mutex<Vec<ExportTraceServiceRequ
 fn payload_with_resource(service_name: &str, namespace: &str, version: &str) -> String {
     // Minimal but real OTLP/JSON ExportTraceServiceRequest.
     // `resourceSpans[0].resource.attributes` is the structure under audit.
+    // The attribute mix exercises three AnyValue discriminator branches —
+    // stringValue (service.name/namespace/version), intValue
+    // (replica.count), and boolValue (telemetry.enabled) — so the proto
+    // conversion's non-string code paths are also pinned by the regression
+    // contract. Spans deliberately omit `flags` so the test also asserts
+    // the SAMPLED default that mirrors the in-memory storage path.
     format!(
         r#"{{
             "resourceSpans": [{{
@@ -72,7 +78,9 @@ fn payload_with_resource(service_name: &str, namespace: &str, version: &str) -> 
                     "attributes": [
                         {{"key": "service.name", "value": {{"stringValue": "{service_name}"}}}},
                         {{"key": "service.namespace", "value": {{"stringValue": "{namespace}"}}}},
-                        {{"key": "service.version", "value": {{"stringValue": "{version}"}}}}
+                        {{"key": "service.version", "value": {{"stringValue": "{version}"}}}},
+                        {{"key": "replica.count", "value": {{"intValue": "7"}}}},
+                        {{"key": "telemetry.enabled", "value": {{"boolValue": true}}}}
                     ]
                 }},
                 "scopeSpans": [{{
@@ -104,6 +112,36 @@ fn find_string_attr<'a>(
             opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
                 Some(s.as_str())
             }
+            _ => None,
+        })
+}
+
+fn find_int_attr(
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+    key: &str,
+) -> Option<i64> {
+    attrs
+        .iter()
+        .find(|kv| kv.key == key)
+        .and_then(|kv| kv.value.as_ref())
+        .and_then(|v| v.value.as_ref())
+        .and_then(|v| match v {
+            opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(i) => Some(*i),
+            _ => None,
+        })
+}
+
+fn find_bool_attr(
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+    key: &str,
+) -> Option<bool> {
+    attrs
+        .iter()
+        .find(|kv| kv.key == key)
+        .and_then(|kv| kv.value.as_ref())
+        .and_then(|v| v.value.as_ref())
+        .and_then(|v| match v {
+            opentelemetry_proto::tonic::common::v1::any_value::Value::BoolValue(b) => Some(*b),
             _ => None,
         })
 }
@@ -168,5 +206,33 @@ async fn forwarder_preserves_full_resource_attributes_through_to_collector() {
         Some("1.4.2"),
         "service.version was dropped on the forwarder hop — fix must preserve \
          every resource attribute, not just service.name"
+    );
+
+    // Non-string AnyValue branches. The proto-conversion helper probes
+    // discriminator variants in spec order (`string → int → double → bool`
+    // → composites); these assertions catch regressions in any branch
+    // selection beyond the simple string case.
+    assert_eq!(
+        find_int_attr(&resource.attributes, "replica.count"),
+        Some(7),
+        "intValue resource attribute was lost or mistranslated by the forwarder"
+    );
+    assert_eq!(
+        find_bool_attr(&resource.attributes, "telemetry.enabled"),
+        Some(true),
+        "boolValue resource attribute was lost or mistranslated by the forwarder"
+    );
+
+    // Trace flags default. The inbound payload omits `flags`, and the
+    // forwarder must default to SAMPLED (W3C trace-flags bit 0 = 1) to
+    // match the in-memory storage path's behaviour. Defaulting to 0
+    // (unsampled) would silently drop spans at downstream samplers /
+    // collectors that respect the SAMPLED bit.
+    let span = &req.resource_spans[0].scope_spans[0].spans[0];
+    assert_eq!(
+        span.flags & 0x01,
+        0x01,
+        "Forwarder must default missing trace flags to SAMPLED; got {:#x}",
+        span.flags
     );
 }
