@@ -129,6 +129,12 @@ the `registerWorker("ws://<host>:<port>")` URL. See
 From the terminal:
 
 ```bash
+iii trigger sandbox::run image=python cmd='["python3","-c","print(\"hi\")"]'
+```
+
+Or, equivalently, with a single `--json` payload:
+
+```bash
 iii trigger sandbox::run --json '{"image":"python","cmd":["python3","-c","print(\"hi\")"]}'
 ```
 
@@ -204,9 +210,15 @@ repeatedly:
 
 ```bash
 SB=$(iii trigger sandbox::create image=python idle_timeout_secs=300 | jq -r .sandbox_id)
-iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2+2)\"]}"
-iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"import sys; print(sys.version)\"]}"
+iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(2+2)"]'
+iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","import sys; print(sys.version)"]'
 iii trigger sandbox::stop sandbox_id="$SB"
+```
+
+Each `iii trigger` accepts either `key=value` tokens (shown above) or a single `--json` payload. The two forms are interchangeable — the kv form parses each value as JSON when possible and falls back to a string. The `--json` equivalent of the second exec:
+
+```bash
+iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"import sys; print(sys.version)\"]}"
 ```
 
 On an interactive terminal, `create` prints `✓ sandbox ready in Xs` on
@@ -1427,7 +1439,7 @@ the three triggers in your shell:
 
 ```bash
 SB=$(iii trigger sandbox::create image=python idle_timeout_secs=300 | jq -r .sandbox_id)
-iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2 ** 10)\"]}"
+iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(2 ** 10)"]'
 iii trigger sandbox::stop sandbox_id="$SB"
 ```
 
@@ -1436,12 +1448,18 @@ of the result envelope), so `jq -r .sandbox_id` extracts the UUID for
 later calls. `sandbox::exec` returns `stdout`, `stderr`, and
 `exit_code` in its result payload.
 
+Each call takes either `key=value` tokens (shown above) or `--json '<obj>'`. The kv form parses each value as JSON when possible and falls back to a string — that is why `args='[...]'` is interpreted as an array. The `--json` equivalent of the exec call:
+
+```bash
+iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2 ** 10)\"]}"
+```
+
 ### Lifecycle ops
 
 | Old subcommand | Trigger form |
 |---|---|
 | `iii sandbox create python --cpus 2 --memory 512` | `iii trigger sandbox::create image=python cpus=2 memory_mb=512` |
-| `iii sandbox exec "$SB" -- python3 -c 'print(2+2)'` | `iii trigger sandbox::exec --json '{"sandbox_id":"…","cmd":"python3","args":["-c","print(2+2)"]}'` |
+| `iii sandbox exec "$SB" -- python3 -c 'print(2+2)'` | `iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(2+2)"]'` |
 | `iii sandbox list` | `iii trigger sandbox::list` |
 | `iii sandbox stop "$SB"` | `iii trigger sandbox::stop sandbox_id="$SB"` |
 

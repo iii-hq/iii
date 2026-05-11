@@ -16,9 +16,11 @@ description: "Product updates and announcements for iii."
 
   # after
   SB=$(iii trigger sandbox::create image=python idle_timeout_secs=300 | jq -r .sandbox_id)
-  iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2+2)\"]}"
+  iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(2+2)"]'
   iii trigger sandbox::stop sandbox_id="$SB"
   ```
+
+  Each call also accepts a single `--json '<obj>'` payload — e.g. `iii trigger sandbox::exec --json '{"sandbox_id":"…","cmd":"python3","args":["-c","print(2+2)"]}'` — equivalent to the kv form shown above.
 
   `iii trigger` is request/response only, so the streaming flows the old subcommand offered (`exec` stdout/stderr stream, `upload`, `download`) are no longer available from the terminal. Use the SDK from worker code for those — `sandbox::exec` and `sandbox::fs::write` / `sandbox::fs::read` still expose the streaming channel.
 
