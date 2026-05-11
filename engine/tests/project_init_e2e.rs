@@ -161,10 +161,20 @@ fn project_init_with_docker_flag_writes_docker_assets_with_device_id() {
         .map(|v| v.trim().to_string())
         .expect("project.ini missing device_id");
 
+    let dockerfile = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains(&format!("ENV III_HOST_USER_ID={device_id_in_ini}")),
+        "Dockerfile should bake the literal device_id, got:\n{dockerfile}"
+    );
+    assert!(
+        !dockerfile.contains("__III_DEVICE_ID__"),
+        "placeholder must be substituted, got:\n{dockerfile}"
+    );
+
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(
-        env.contains(&format!("III_HOST_USER_ID={device_id_in_ini}")),
-        "Docker .env should hard-code the same device_id as project.ini"
+        !env.contains("III_HOST_USER_ID"),
+        ".env should no longer carry III_HOST_USER_ID, got:\n{env}"
     );
 }
 
@@ -191,11 +201,16 @@ fn project_generate_docker_uses_existing_project_ini_device_id() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    let dockerfile = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains("ENV III_HOST_USER_ID=preseeded-xyz"),
+        "Dockerfile should bake the existing device_id, got:\n{dockerfile}"
+    );
+
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(
-        env.contains("III_HOST_USER_ID=preseeded-xyz"),
-        "generate-docker should reuse the existing project.ini device_id, got .env:\n{}",
-        env
+        !env.contains("III_HOST_USER_ID"),
+        ".env should no longer carry III_HOST_USER_ID, got:\n{env}"
     );
 }
 

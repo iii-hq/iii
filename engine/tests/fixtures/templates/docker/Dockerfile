@@ -2,9 +2,8 @@
 # Edit freely; re-running the generator will not overwrite this file.
 FROM iiidev/iii:latest
 
-ARG III_HOST_USER_ID
 ENV III_EXECUTION_CONTEXT=docker
-ENV III_HOST_USER_ID=${III_HOST_USER_ID}
+ENV III_HOST_USER_ID=__III_DEVICE_ID__
 
 WORKDIR /app
 COPY config.yaml /app/config.yaml
