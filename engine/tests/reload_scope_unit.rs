@@ -5,6 +5,23 @@ use iii::function::{Function, FunctionResult};
 use iii::workers::reload::WorkerRegistrations;
 use serial_test::serial;
 
+/// Suppress the `iii-worker-ops` auto-injection. `EngineBuilder::build()`
+/// otherwise drops a daemon child into `serve()`, and that child only
+/// listens for SIGINT (`tokio::signal::ctrl_c`); the engine's worker
+/// teardown then waits past this test's 2s SIGTERM deadline. We're
+/// asserting engine-builtin shutdown speed, not daemon lifecycle.
+fn disable_builtin_daemons() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        // Safety: called once before any code that may read the env;
+        // tests are #[serial] so there is no concurrent reader at this
+        // point.
+        unsafe {
+            std::env::set_var("IIIWORKER_DISABLE_BUILTIN_DAEMONS", "1");
+        }
+    });
+}
+
 fn make_dummy_function(id: &str) -> Function {
     Function {
         handler: Arc::new(|_invocation_id, _input, _session| {
@@ -76,7 +93,12 @@ fn register_function_outside_scope_does_not_track() {
     assert!(regs.function_ids.is_empty());
 }
 
+// Serial so the env-var flipped by `serve_returns_on_sigterm`'s
+// `disable_builtin_daemons()` helper can't race with this test's
+// back-to-back `default_config()` calls (a flip between them produces
+// asymmetric `expected_names` vs `running` sets and a spurious failure).
 #[tokio::test]
+#[serial]
 async fn builder_produces_running_workers_with_matching_entries() {
     use iii::EngineBuilder;
     use iii::workers::config::EngineConfig;
@@ -186,6 +208,8 @@ async fn serve_returns_on_sigterm() {
     use iii::workers::config::EngineConfig;
     use std::time::Duration;
     use tokio::signal::unix::{SignalKind, signal};
+
+    disable_builtin_daemons();
 
     // Register a SIGTERM handler in the test process BEFORE anything else so
     // the default disposition (process termination) is replaced. The worker's
