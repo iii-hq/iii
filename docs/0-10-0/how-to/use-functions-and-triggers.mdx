@@ -106,7 +106,7 @@ for delegating work to external services like webhooks, serverless functions, or
 
 <Warning title="Engine module required">
 HTTP-invoked functions require `HttpFunctionsModule` to be enabled in your engine config.
-See the [engine configuration guide](configure-engine) for details.
+See the [engine configuration guide](./configure-engine) for details.
 </Warning>
 
 Pass an `HttpInvocationConfig` as the second argument to `registerFunction` instead of a handler:
@@ -313,7 +313,7 @@ iii.register_function(
 
 ### Enqueue — `trigger` with `TriggerAction.Enqueue({ queue })`
 
-Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Queues](use-queues).
+Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Queues](./use-queues).
 
 <Tabs>
 <Tab title="Node / TypeScript">

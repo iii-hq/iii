@@ -404,3 +404,304 @@ async fn remove_missing_path_remains_idempotent_and_silent() {
     assert!(result.errors.is_empty());
     assert_eq!(result.new_value, json!({}));
 }
+
+// ─────────── nested-path append (issue #1552 RifkiSalim repros) ───────────
+
+#[tokio::test]
+async fn issue_1552_case1_dotted_string_keeps_literal_segment() {
+    // Case 1 from the report: `path: "entityId.buffer"` is treated as a
+    // single literal key — the dotted string is NOT traversed. This
+    // matches iii's existing FieldPath literal-segment contract on the
+    // other state ops.
+    let store = fresh_store().await;
+    let key = "case1".to_string();
+
+    // Pre-populate so we can prove the dotted string doesn't traverse
+    // into the nested buffer.
+    let _ = store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("entityId", json!({ "buffer": ["nested"] }))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append("entityId.buffer", json!("flat"))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty());
+    assert_eq!(
+        result.new_value,
+        json!({
+            "entityId": { "buffer": ["nested"] },
+            "entityId.buffer": "flat",
+        })
+    );
+}
+
+#[tokio::test]
+async fn issue_1552_case2_object_value_returns_type_mismatch() {
+    // Case 2 from the report: object value at a parent-path append used
+    // to silently no-op when the leaf was an object. After this PR it
+    // returns a structured `append.type_mismatch` error and leaves
+    // state unchanged. This is the documented behavior change.
+    let store = fresh_store().await;
+    let key = "case2".to_string();
+
+    let _ = store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("entityId", json!({ "buffer": { "x": "y" } }))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_at_path(["entityId", "buffer"], json!("z"))],
+        )
+        .await;
+
+    assert_structured_error(&result.errors, 0, "append.type_mismatch", "buffer");
+    assert_eq!(
+        result.new_value,
+        json!({ "entityId": { "buffer": { "x": "y" } } })
+    );
+}
+
+#[tokio::test]
+async fn issue_1552_case3_array_path_appends_to_nested_array() {
+    // Case 3 from the report: array-form path `["entityId", "buffer"]`
+    // is the new happy path. It walks the parent (auto-creating
+    // intermediates if needed) and pushes onto the nested array.
+    let store = fresh_store().await;
+    let key = "case3".to_string();
+
+    let _ = store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("entityId", json!({ "buffer": ["a"] }))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_at_path(["entityId", "buffer"], json!("b"))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty());
+    assert_eq!(
+        result.new_value,
+        json!({ "entityId": { "buffer": ["a", "b"] } })
+    );
+}
+
+#[tokio::test]
+async fn nested_append_creates_intermediate_objects_through_kv_store() {
+    // FR-3 + UC-5 through the KV-store path: walk_or_create auto-creates
+    // missing intermediate objects, and the leaf becomes an array even
+    // when the value is a string (FR-11 nested-path missing-leaf rule).
+    let store = fresh_store().await;
+    let key = "nested-create".to_string();
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_at_path(
+                ["session", "abc", "events"],
+                json!("first"),
+            )],
+        )
+        .await;
+
+    assert!(result.errors.is_empty());
+    assert_eq!(
+        result.new_value,
+        json!({ "session": { "abc": { "events": ["first"] } } })
+    );
+}
+
+#[tokio::test]
+async fn nested_append_proto_pollution_rejected_at_intermediate_segment() {
+    // B3 expansion through KV-store path: __proto__ at an intermediate
+    // segment is rejected, and crucially, walk_or_create is NOT called
+    // — state remains untouched. The validate-before-mutate audit
+    // (FR-2 + step 1 of validation order) is the load-bearing invariant.
+    let store = fresh_store().await;
+    let key = "proto-mid".to_string();
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_at_path(
+                ["safe", "__proto__", "x"],
+                json!("never"),
+            )],
+        )
+        .await;
+
+    assert_structured_error(&result.errors, 0, "append.path.proto_polluted", "__proto__");
+    assert_eq!(result.new_value, json!({}));
+}
+
+#[tokio::test]
+async fn nested_append_multi_op_partial_failure_retains_prior_successes() {
+    // FR-13 through KV-store path: skip-failed semantics. op-0 succeeds
+    // (creates intermediate object + array leaf), op-1 fails on
+    // proto-pollution, op-2 succeeds (appends to the array op-0 created).
+    // The error in errors[] carries the original op_index (1).
+    let store = fresh_store().await;
+    let key = "multi-op".to_string();
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![
+                UpdateOp::append_at_path(["session", "abc", "events"], json!("first")),
+                UpdateOp::append_at_path(["__proto__", "polluted"], json!(true)),
+                UpdateOp::append_at_path(["session", "abc", "events"], json!("third")),
+            ],
+        )
+        .await;
+
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].op_index, 1);
+    assert_eq!(result.errors[0].code, "append.path.proto_polluted");
+    assert_eq!(
+        result.new_value,
+        json!({ "session": { "abc": { "events": ["first", "third"] } } })
+    );
+}
+
+#[tokio::test]
+async fn nested_append_segments_path_round_trips_via_merge_path_segments() {
+    // Constructor-level smoke: `Some(MergePath::Segments(...))` and
+    // `UpdateOp::append_at_path(...)` produce equivalent ops. This is
+    // the legacy-friendly path for callers that want to build a
+    // `MergePath` value directly rather than via the helper.
+    let store = fresh_store().await;
+    let key = "round-trip".to_string();
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::Append {
+                path: Some(MergePath::Segments(vec!["a".to_string(), "b".to_string()])),
+                value: json!(42),
+            }],
+        )
+        .await;
+
+    assert!(result.errors.is_empty());
+    assert_eq!(result.new_value, json!({ "a": { "b": [42] } }));
+}
+
+// ─────────── #1612 review feedback (ytallo's gherkin scenarios) ───────────
+
+#[tokio::test]
+async fn append_existing_empty_array_at_single_segment_pushes_value() {
+    // Scenario A from #1612 review: `{"buffer": []}` + `append("buffer", "x")`
+    // must produce `{"buffer": ["x"]}` with no errors. Pre-existing
+    // empty arrays are the most common "ready to receive its first
+    // element" leaf shape in stream-buffer use cases.
+    let store = fresh_store().await;
+    let key = "empty-leaf".to_string();
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("buffer", json!([]))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append("buffer", json!("x"))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(result.new_value, json!({ "buffer": ["x"] }));
+}
+
+#[tokio::test]
+async fn append_root_when_state_is_empty_array_pushes_value() {
+    // Scenario B: state at the key is `[]`, root append `"x"` → `["x"]`.
+    // The root branch routes through `append_to_target`, which treats
+    // an existing array as a push target.
+    let store = fresh_store().await;
+    let key = "empty-root-array".to_string();
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![UpdateOp::Set {
+                path: iii_sdk::FieldPath::from(""),
+                value: Some(json!([])),
+            }],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_root(json!("x"))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(result.new_value, json!(["x"]));
+}
+
+#[tokio::test]
+async fn nested_append_replaces_array_intermediate_with_object() {
+    // Scenario C: `{"a": [1,2,3]}` + nested append `["a", "b"]` 42.
+    // `walk_or_create` replaces the array intermediate with a fresh
+    // object (Rust-parity outcome) — the destructive replace mirrors
+    // merge's semantics and ytallo's gherkin accepts either this OR
+    // a strict-error outcome, but explicitly forbids the corrupted
+    // mixed-key form `{"a": {"1": 1, "2": 2, "3": 3, "b": [42]}}`.
+    let store = fresh_store().await;
+    let key = "array-intermediate".to_string();
+    store
+        .update(
+            SCOPE.to_string(),
+            key.clone(),
+            vec![set_op("a", json!([1, 2, 3]))],
+        )
+        .await;
+
+    let result = store
+        .update(
+            SCOPE.to_string(),
+            key,
+            vec![UpdateOp::append_at_path(["a", "b"], json!(42))],
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(result.new_value, json!({ "a": { "b": [42] } }));
+    // Negative assertion the gherkin specifically calls out.
+    assert_ne!(
+        result.new_value,
+        json!({ "a": { "1": 1, "2": 2, "3": 3, "b": [42] } })
+    );
+}

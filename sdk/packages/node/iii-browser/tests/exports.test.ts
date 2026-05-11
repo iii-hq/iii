@@ -32,6 +32,32 @@ describe('Package Exports', () => {
     expect(ops[0]).toEqual({ type: 'append', path: 'chunks', value: 'hello' })
   })
 
+  it('should type append with nested array path (issue #1552 case 3)', () => {
+    // Closes issue #1552: array-form path is the new happy path. The
+    // TS shape mirrors UpdateMerge's MergePath = string | string[].
+    const op = {
+      type: 'append',
+      path: ['entityId', 'buffer'],
+      value: 'chunk',
+    } satisfies UpdateAppend
+    const ops: UpdateOp[] = [op]
+
+    expect(ops[0]).toEqual({
+      type: 'append',
+      path: ['entityId', 'buffer'],
+      value: 'chunk',
+    })
+  })
+
+  it('should type append with omitted path (root append)', () => {
+    // Path is now optional — omitted, empty string, and empty array all
+    // route to root append in the engine.
+    const op = { type: 'append', value: 'first' } satisfies UpdateAppend
+    const ops: UpdateOp[] = [op]
+
+    expect(ops[0]).toEqual({ type: 'append', value: 'first' })
+  })
+
   it('should import state module', async () => {
     const stateModule = await import('../src/state')
     expect(stateModule).toBeDefined()

@@ -254,6 +254,16 @@ fn path_label(path: &str) -> &str {
     if path.is_empty() { "root" } else { path }
 }
 
+fn path_label_segments(segments: &[String]) -> String {
+    if segments.is_empty() {
+        "root".to_string()
+    } else {
+        // Bracketed form to keep the literal-segment contract visible —
+        // never a dot-joined form, since dots are not separators in iii.
+        format!("[{}]", segments.join(", "))
+    }
+}
+
 fn increment_number(value: &Value, by: i64) -> Option<Value> {
     if let Some(num) = value.as_i64()
         && let Some(sum) = num.checked_add(by)
@@ -493,34 +503,69 @@ pub(crate) fn apply_update_ops(
                 }
             }
             UpdateOp::Append { path, value } => {
-                let segments = field_path_segments(&path.0);
+                // Validation order is load-bearing (SDD §10):
+                //   1. validate_op_path  (bounds + proto-pollution rejection)
+                //   2. root-is-object    (before walk_or_create can mutate)
+                //   3. walk_or_create    (nested only — auto-creates intermediates)
+                //   4. leaf-type matrix  (FR-11)
+                let segments = merge_path_segments(path);
                 if !validate_op_path("append", op_index, segments, &mut errors) {
                     continue;
                 }
-                if path.0.is_empty() {
+                if segments.is_empty() {
+                    // Root append (path absent / Single("") / Segments([]))
+                    // — legacy semantics preserved (initial_append_value
+                    // wraps non-strings into a one-element array, keeps
+                    // strings as strings for the string-concat tier).
                     if using_missing_default {
                         current = Value::Null;
                     }
                     if append_to_target(&mut current, value, "root", op_index, &mut errors) {
                         using_missing_default = false;
                     }
-                } else if let Value::Object(ref mut map) = current {
-                    if let Some(existing_val) = map.get_mut(&path.0) {
-                        append_to_target(existing_val, value, &path.0, op_index, &mut errors);
-                    } else {
-                        map.insert(path.0.clone(), initial_append_value(value));
-                    }
-                    using_missing_default = false;
-                } else {
+                } else if !matches!(current, Value::Object(_)) {
+                    // Step 2: non-empty path requires object root.
                     errors.push(err(
                         op_index,
                         ERR_APPEND_TARGET_NOT_OBJECT,
                         format!(
                             "Cannot append at path '{}': target is {}, expected object.",
-                            path_label(&path.0),
+                            path_label_segments(segments),
                             json_type_name(&current)
                         ),
                     ));
+                } else if segments.len() == 1 {
+                    // Single-segment path: back-compat with the old
+                    // `FieldPath` shape — `initial_append_value` keeps
+                    // string-concat tier for missing leaves.
+                    let leaf_key = &segments[0];
+                    if let Value::Object(ref mut map) = current {
+                        if let Some(existing_val) = map.get_mut(leaf_key) {
+                            append_to_target(existing_val, value, leaf_key, op_index, &mut errors);
+                        } else {
+                            map.insert(leaf_key.clone(), initial_append_value(value));
+                        }
+                        using_missing_default = false;
+                    }
+                } else {
+                    // Nested path: walk parent (creating intermediates),
+                    // then operate on the leaf key. FR-11 nested-path rule:
+                    // missing leaf → ALWAYS array (no string-concat tier).
+                    let (leaf_key, parent_segments) = segments.split_last().unwrap();
+                    if let Some(parent_map) = walk_or_create(&mut current, parent_segments) {
+                        if let Some(existing_val) = parent_map.get_mut(leaf_key) {
+                            append_to_target(existing_val, value, leaf_key, op_index, &mut errors);
+                        } else {
+                            // FR-11: nested-path missing leaf is always an array.
+                            parent_map.insert(leaf_key.clone(), Value::Array(vec![value.clone()]));
+                        }
+                        using_missing_default = false;
+                    } else {
+                        tracing::warn!(
+                            path = ?segments,
+                            "Append operation could not resolve parent path"
+                        );
+                    }
                 }
             }
             UpdateOp::Remove { path } => {
@@ -911,10 +956,14 @@ mod tests {
 
     #[test]
     fn dotted_paths_are_first_level_fields() {
+        // Dotted strings are ALWAYS literal segments — never traversed
+        // as `user.name`. This regression test locks the legacy
+        // FieldPath-style literal-key contract through the
+        // FieldPath → MergePath compatibility shim.
         let updated = run(
             Some(json!({ "user.name": ["A"], "user": { "name": ["B"] } })),
             &[UpdateOp::Append {
-                path: FieldPath("user.name".to_string()),
+                path: Some(FieldPath("user.name".to_string()).into()),
                 value: json!("C"),
             }],
         );
@@ -1258,5 +1307,169 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, super::ERR_VALUE_TOO_DEEP);
+    }
+
+    // ───────────────────────── nested-path append (issue #1552) ─────────────────────────
+
+    #[test]
+    fn append_segments_path_walks_and_pushes_to_existing_array() {
+        // UC-1: the new happy path. `Segments(["entityId","buffer"])`
+        // walks the parent and pushes onto the existing array.
+        let updated = run(
+            Some(json!({ "entityId": { "buffer": ["a"] } })),
+            &[UpdateOp::append_at_path(["entityId", "buffer"], json!("b"))],
+        );
+
+        assert_eq!(updated, json!({ "entityId": { "buffer": ["a", "b"] } }));
+    }
+
+    #[test]
+    fn append_segments_path_creates_intermediate_object() {
+        // FR-3: walk_or_create auto-creates missing intermediate objects.
+        let updated = run(
+            Some(json!({})),
+            &[UpdateOp::append_at_path(["entityId", "buffer"], json!("a"))],
+        );
+
+        assert_eq!(updated, json!({ "entityId": { "buffer": ["a"] } }));
+    }
+
+    #[test]
+    fn append_segments_missing_leaf_string_value_becomes_array() {
+        // FR-11 + B1 carve-out + UC-5: nested-path missing leaf is
+        // ALWAYS an array, even when the value is a string. This
+        // diverges from single-path's `initial_append_value` which
+        // would keep the string as a string for the concat tier.
+        let updated = run(
+            Some(json!({ "entityId": {} })),
+            &[UpdateOp::append_at_path(["entityId", "buffer"], json!("x"))],
+        );
+
+        // Compare with the single-path equivalent which keeps "x" as a string.
+        let single = run(Some(json!({})), &[UpdateOp::append("buffer", json!("x"))]);
+
+        assert_eq!(updated, json!({ "entityId": { "buffer": ["x"] } }));
+        assert_eq!(single, json!({ "buffer": "x" })); // back-compat preserved
+    }
+
+    #[test]
+    fn append_dotted_string_path_keeps_literal_segment_semantics() {
+        // UC-3: `Single("entityId.buffer")` is ONE literal key, never
+        // dot-traversed. Mirrors iii's existing FieldPath contract.
+        let updated = run(
+            Some(json!({ "entityId": { "buffer": ["nested"] } })),
+            &[UpdateOp::append("entityId.buffer", json!("flat"))],
+        );
+
+        // The dotted-string append targets the literal "entityId.buffer"
+        // key at root, NOT the nested array. The nested array is
+        // untouched; a new top-level key is created.
+        assert_eq!(
+            updated,
+            json!({
+                "entityId": { "buffer": ["nested"] },
+                "entityId.buffer": "flat",
+            })
+        );
+    }
+
+    #[test]
+    fn append_segments_path_object_leaf_returns_type_mismatch() {
+        // UC-6 + Case-2 transition: existing object at the leaf can't
+        // accept an append. Previously this silently no-op'd at the
+        // single-path level; now nested append produces a structured
+        // error and leaves state unchanged.
+        let (updated, errors) = apply_update_ops(
+            Some(json!({ "entityId": { "buffer": { "x": "y" } } })),
+            &[UpdateOp::append_at_path(["entityId", "buffer"], json!("z"))],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, super::ERR_APPEND_TYPE_MISMATCH);
+        // State unchanged: the object at the leaf was not mutated.
+        assert_eq!(updated, json!({ "entityId": { "buffer": { "x": "y" } } }));
+    }
+
+    #[test]
+    fn append_segments_path_non_object_root_returns_target_not_object() {
+        // IMP-003 root-not-object: validation order must check root
+        // is an object BEFORE walk_or_create can mutate it. With a
+        // top-level array as state, append["a","b"] should reject.
+        let (updated, errors) = apply_update_ops(
+            Some(json!([1, 2, 3])),
+            &[UpdateOp::append_at_path(["a", "b"], json!("x"))],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, super::ERR_APPEND_TARGET_NOT_OBJECT);
+        // State unchanged: walk_or_create did NOT replace the array root.
+        assert_eq!(updated, json!([1, 2, 3]));
+    }
+
+    // ───────────────────── proto-pollution at root/intermediate/leaf (B3) ─────────────────────
+
+    #[test]
+    fn append_proto_polluted_at_root_segment_rejected() {
+        let (updated, errors) = apply_update_ops(
+            Some(json!({})),
+            &[UpdateOp::append_at_path(["__proto__"], json!("x"))],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "append.path.proto_polluted");
+        assert_eq!(updated, json!({}));
+    }
+
+    #[test]
+    fn append_proto_polluted_at_intermediate_segment_rejected() {
+        let (updated, errors) = apply_update_ops(
+            Some(json!({})),
+            &[UpdateOp::append_at_path(
+                ["a", "constructor", "b"],
+                json!("x"),
+            )],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "append.path.proto_polluted");
+        // State must be unchanged — validation runs BEFORE walk_or_create
+        // can create intermediate objects (validate-before-mutate audit).
+        assert_eq!(updated, json!({}));
+    }
+
+    #[test]
+    fn append_proto_polluted_at_leaf_segment_rejected() {
+        let (updated, errors) = apply_update_ops(
+            Some(json!({ "safe": {} })),
+            &[UpdateOp::append_at_path(["safe", "prototype"], json!("x"))],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "append.path.proto_polluted");
+        assert_eq!(updated, json!({ "safe": {} }));
+    }
+
+    // ───────────────────────── multi-op batch semantics (FR-13) ─────────────────────────
+
+    #[test]
+    fn multi_op_partial_failure_retains_prior_successes() {
+        // FR-13: skip-failed semantics. op-0 succeeds, op-1 fails on
+        // proto-pollution, op-2 succeeds. Both successful ops are
+        // reflected in new_value; op-1's error is in errors[] with the
+        // correct original-array op_index (1, not the post-skip 0).
+        let (updated, errors) = apply_update_ops(
+            Some(json!({ "buffer": [] })),
+            &[
+                UpdateOp::append("buffer", json!("first")),
+                UpdateOp::append_at_path(["__proto__", "polluted"], json!(true)),
+                UpdateOp::append("buffer", json!("third")),
+            ],
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].op_index, 1);
+        assert_eq!(errors[0].code, "append.path.proto_polluted");
+        // op-0 and op-2 effects retained, op-1 skipped.
+        assert_eq!(updated, json!({ "buffer": ["first", "third"] }));
     }
 }
