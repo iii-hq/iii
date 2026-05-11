@@ -126,16 +126,18 @@ the `registerWorker("ws://<host>:<port>")` URL. See
 
 ### One-shot: boot, run one command, stop
 
-From the terminal:
+From the terminal — compose `sandbox::create`, `sandbox::exec`, and `sandbox::stop` in your shell. There is no single `sandbox::run` trigger; the runtime only exposes the three lifecycle ops:
 
 ```bash
-iii trigger sandbox::run image=python cmd='["python3","-c","print(\"hi\")"]'
+SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
+iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(\"hi\")"]'
+iii trigger sandbox::stop sandbox_id="$SB"
 ```
 
-Or, equivalently, with a single `--json` payload:
+The `--json` form of the same `exec` call, for reference:
 
 ```bash
-iii trigger sandbox::run --json '{"image":"python","cmd":["python3","-c","print(\"hi\")"]}'
+iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(\\\"hi\\\")\"]}"
 ```
 
 From your code — create, exec, then stop:
