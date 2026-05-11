@@ -22,42 +22,32 @@ struct Cli {
     command: Option<Commands>,
 
     /// Path to the config file (default: config.yaml)
-    #[arg(short, long, default_value = "config.yaml", global = true)]
+    #[arg(short, long, default_value = "config.yaml")]
     config: String,
 
     /// Print version and exit
-    #[arg(short = 'v', long, global = true)]
+    #[arg(short = 'v', long)]
     version: bool,
 
     /// Run with built-in defaults instead of a config file.
     /// Cannot be combined with --config.
-    #[arg(long, global = true, conflicts_with = "config")]
+    #[arg(long, conflicts_with = "config")]
     use_default_config: bool,
 
     /// Disable background update and advisory checks
-    #[arg(long, global = true)]
+    #[arg(long)]
     no_update_check: bool,
 
     /// Initialize telemetry IDs and optionally emit install lifecycle events.
-    #[arg(long, hide = true, global = true)]
+    #[arg(long, hide = true)]
     install_only_generate_ids: bool,
 
     /// Install lifecycle event type (e.g. install_succeeded, upgrade_succeeded).
-    #[arg(
-        long,
-        hide = true,
-        global = true,
-        requires = "install_only_generate_ids"
-    )]
+    #[arg(long, hide = true, requires = "install_only_generate_ids")]
     install_event_type: Option<String>,
 
     /// Install lifecycle event properties as JSON.
-    #[arg(
-        long,
-        hide = true,
-        global = true,
-        requires = "install_only_generate_ids"
-    )]
+    #[arg(long, hide = true, requires = "install_only_generate_ids")]
     install_event_properties: Option<String>,
 }
 
@@ -677,5 +667,24 @@ mod tests {
             },
             _ => panic!("expected Project subcommand"),
         }
+    }
+
+    #[test]
+    fn config_flag_is_not_global_on_subcommands() {
+        // After dropping global=true, the engine config flags should only
+        // be parseable before a subcommand. A trailing --config on a
+        // subcommand that doesn't define the flag itself must error.
+        let result = Cli::try_parse_from(["iii", "project", "init", "--config", "foo.yaml"]);
+        assert!(
+            result.is_err(),
+            "--config after a subcommand should no longer parse globally"
+        );
+    }
+
+    #[test]
+    fn config_flag_still_works_before_subcommand() {
+        let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "worker", "add", "x"])
+            .expect("config before subcommand should still parse");
+        assert_eq!(cli.config, "foo.yaml");
     }
 }
