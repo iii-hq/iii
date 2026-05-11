@@ -4,8 +4,6 @@ services:
   iii:
     build:
       context: .
-      args:
-        III_HOST_USER_ID: "${III_HOST_USER_ID}"
     ports:
       - "49134:49134"  # WebSocket (worker connections)
       - "3111:3111"    # REST API
@@ -16,7 +14,6 @@ services:
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker
-      - III_HOST_USER_ID=${III_HOST_USER_ID}
     restart: unless-stopped
 
   # Uncomment if your workers need Redis.
