@@ -639,7 +639,6 @@ mod tests {
             Some(Commands::Project(args)) => match args.action {
                 ProjectAction::Init(init) => {
                     assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
-                    assert!(!init.yes);
                     assert!(!init.skip_iii);
                 }
                 _ => panic!("expected Init action"),
@@ -661,7 +660,6 @@ mod tests {
             "--languages",
             "ts,py",
             "--skip-iii",
-            "--yes",
         ])
         .expect("should parse full template arg set");
         match cli.command {
@@ -674,7 +672,6 @@ mod tests {
                         Some(&["ts".to_string(), "py".to_string()][..])
                     );
                     assert!(init.skip_iii);
-                    assert!(init.yes);
                 }
                 _ => panic!("expected Init action"),
             },
