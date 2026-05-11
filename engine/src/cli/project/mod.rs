@@ -554,9 +554,7 @@ fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), Strin
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| {
-                !name.starts_with('.') && name != "data"
-            })
+            .filter(|name| !name.starts_with('.') && name != "data")
             .collect(),
         Err(e) => return Err(format!("read {}: {e}", root.display())),
     };

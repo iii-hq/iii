@@ -364,9 +364,7 @@ fn project_init_rejects_yes_flag() {
 fn project_init_rejects_short_languages_alias() {
     let dir = tempdir().unwrap();
     let out = iii_bin()
-        .args([
-            "project", "init", "-l", "ts", "--template-dir",
-        ])
+        .args(["project", "init", "-l", "ts", "--template-dir"])
         .arg(fixtures())
         .arg("--directory")
         .arg(dir.path())
