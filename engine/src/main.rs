@@ -643,6 +643,17 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_is_no_longer_a_valid_subcommand() {
+        // `iii sandbox` was removed in favor of `iii trigger sandbox::<op>`.
+        // Bare `iii sandbox` should now fail to parse.
+        let result = Cli::try_parse_from(["iii", "sandbox"]);
+        assert!(
+            result.is_err(),
+            "\"sandbox\" should no longer be a valid subcommand"
+        );
+    }
+
+    #[test]
     fn no_update_check_flag_works_globally() {
         let cli = Cli::try_parse_from(["iii", "--no-update-check"])
             .expect("should parse --no-update-check");
