@@ -20,9 +20,9 @@ description: "Product updates and announcements for iii."
   iii trigger sandbox::stop sandbox_id="$SB"
   ```
 
-  Each call also accepts a single `--json '<obj>'` payload — e.g. `iii trigger sandbox::exec --json '{"sandbox_id":"…","cmd":"python3","args":["-c","print(2+2)"]}'` — equivalent to the kv form shown above.
+  Each call also accepts a single `--json '<obj>'` payload (e.g. `iii trigger sandbox::exec --json '{"sandbox_id":"…","cmd":"python3","args":["-c","print(2+2)"]}'`), equivalent to the kv form shown above.
 
-  `iii trigger` is request/response only, so the streaming flows the old subcommand offered (`exec` stdout/stderr stream, `upload`, `download`) are no longer available from the terminal. Use the SDK from worker code for those — `sandbox::exec` and `sandbox::fs::write` / `sandbox::fs::read` still expose the streaming channel.
+  `iii trigger` is request/response only, so the streaming flows the old subcommand offered (`exec` stdout/stderr stream, `upload`, `download`) are no longer available from the terminal. Use the SDK from worker code for those: `sandbox::exec` and `sandbox::fs::write` / `sandbox::fs::read` still expose the streaming channel.
 
   See [Sandbox API reference](/api-reference/sandbox#cli-reference) for the full mapping.
 </Update>

@@ -69,7 +69,7 @@ before the trigger client gives up.
 
 Every sandbox operation is reachable through `iii.trigger()` from worker
 code or through `iii trigger sandbox::<op> …` from the terminal. There
-is no longer a dedicated `iii sandbox` CLI subcommand — see
+is no longer a dedicated `iii sandbox` CLI subcommand. See
 [CLI reference](#cli-reference) for the trigger forms.
 
 **Also on this page:**
@@ -126,7 +126,7 @@ the `registerWorker("ws://<host>:<port>")` URL. See
 
 ### One-shot: boot, run one command, stop
 
-From the terminal — compose `sandbox::create`, `sandbox::exec`, and `sandbox::stop` in your shell. There is no single `sandbox::run` trigger; the runtime only exposes the three lifecycle ops:
+From the terminal, compose `sandbox::create`, `sandbox::exec`, and `sandbox::stop` in your shell. There is no single `sandbox::run` trigger; the runtime only exposes the three lifecycle ops:
 
 ```bash
 SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
@@ -217,7 +217,7 @@ iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","import sys; 
 iii trigger sandbox::stop sandbox_id="$SB"
 ```
 
-Each `iii trigger` accepts either `key=value` tokens (shown above) or a single `--json` payload. The two forms are interchangeable — the kv form parses each value as JSON when possible and falls back to a string. The `--json` equivalent of the second exec:
+Each `iii trigger` accepts either `key=value` tokens (shown above) or a single `--json` payload. The two forms are interchangeable: the kv form parses each value as JSON when possible and falls back to a string. The `--json` equivalent of the second exec:
 
 ```bash
 iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"import sys; print(sys.version)\"]}"
@@ -425,7 +425,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Field | Type | Description |
 |---|---|---|
-| `sandbox_id` | `string` | UUID handle — pass to `sandbox::exec`, `sandbox::stop`, or `iii trigger sandbox::stop sandbox_id=…`. |
+| `sandbox_id` | `string` | UUID handle. Pass to `sandbox::exec`, `sandbox::stop`, or `iii trigger sandbox::stop sandbox_id=…`. |
 | `image` | `string` | Echo of the resolved image name — the catalog preset or `custom_images` key that was booted. |
 
 <a id="trigger-exec" />
@@ -650,7 +650,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Field | Type | Description |
 |---|---|---|
-| `sandbox_id` | `string` | UUID handle — pass to `iii trigger sandbox::stop sandbox_id=…`. |
+| `sandbox_id` | `string` | UUID handle. Pass to `iii trigger sandbox::stop sandbox_id=…`. |
 | `name` | `string?` | Label set at create time. |
 | `image` | `string` | Catalog preset (`python`, `node`) or `custom_images` key. |
 | `age_secs` | `number` | Seconds since create. |
@@ -1450,7 +1450,7 @@ of the result envelope), so `jq -r .sandbox_id` extracts the UUID for
 later calls. `sandbox::exec` returns `stdout`, `stderr`, and
 `exit_code` in its result payload.
 
-Each call takes either `key=value` tokens (shown above) or `--json '<obj>'`. The kv form parses each value as JSON when possible and falls back to a string — that is why `args='[...]'` is interpreted as an array. The `--json` equivalent of the exec call:
+Each call takes either `key=value` tokens (shown above) or `--json '<obj>'`. The kv form parses each value as JSON when possible and falls back to a string. That is why `args='[...]'` is interpreted as an array. The `--json` equivalent of the exec call:
 
 ```bash
 iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2 ** 10)\"]}"
