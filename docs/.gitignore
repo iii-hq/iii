@@ -3,3 +3,5 @@ node_modules
 .mintlify
 *.log
 .DS_Store
+.env
+
