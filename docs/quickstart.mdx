@@ -63,7 +63,7 @@ This worker registered the function `math::add` with the engine. You could call 
 iii trigger math::add a=2 b=3
 ```
 
-However this is not much different than running an equivalent script on its own. The utility of iii comes from being able to place any functionality into a worker and then compose that worker with other workers through the engine — regardless of where each one runs or what language it's written in.
+However this is not much different than running an equivalent script on its own. The utility of iii comes from being able to place any functionality into a worker and then compose that worker with other workers through the engine, regardless of where each one runs or what language it's written in.
 
 <Tip>
   Workers need a moment to install their runtime dependencies after being added. If you see `"message": "Function math::add not found"`, wait a few seconds and try again.
@@ -154,7 +154,7 @@ iii trigger math::add a=10 b=20
 { "c": 30, "running_total": 35 }
 ```
 
-The running total persists across every call — including calls that arrive through `math::add_two_numbers`.
+The running total persists across every call, including calls that arrive through `math::add_two_numbers`.
 
 ## 7. Add HTTP endpoints
 
@@ -207,17 +207,17 @@ The same functions that respond to `iii trigger` now also respond to HTTP reques
 
 ## How it works
 
-For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together, see [Understanding iii](/understanding-iii) — it uses this project as the worked example.
+For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together, see [Understanding iii](/understanding-iii). It uses this project as the worked example.
 
 <Tip title="Inspect what's running">
-  Open the iii Console with `iii console` in a new terminal — an interactive UI for workers, functions, triggers, logs, traces, and state. See the full [Console documentation](/using-iii/console) for details.
+  Open the iii Console with `iii console` in a new terminal: an interactive UI for workers, functions, triggers, logs, traces, and state. See the full [Console documentation](/using-iii/console) for details.
 </Tip>
 
 {/* TODO: re-add the "Give your coding agent context" Tip with `npx skillkit add iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}
 
 ## Next Steps
 
-You scaffolded a project, started two workers in different languages, called functions across them, added persistent state, and exposed everything over HTTP — all by incrementally adding workers to a running system.
+You scaffolded a project, started two workers in different languages, called functions across them, added persistent state, and exposed everything over HTTP, all by incrementally adding workers to a running system.
 
 <CardGroup cols={2}>
   <Card title="Build a real-time todo app" href="/how-to/build-a-realtime-todo-app" icon="book-open">
