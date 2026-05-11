@@ -678,6 +678,17 @@ static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 /// `ExportTraceServiceRequest` (translated from the inbound JSON) so the
 /// full inbound resource block — not just `service.name` — survives the
 /// hop byte-for-byte.
+///
+/// **Test isolation note**: this is a process-global `OnceLock`. Integration
+/// tests that call `init_sdk_span_forwarder` MUST live in their own
+/// `engine/tests/*.rs` integration-test binary (cargo gives each `tests/`
+/// file its own process). Two `#[tokio::test]`s in the same integration
+/// binary that both call `init_sdk_span_forwarder` will see the second
+/// `OnceLock::set` no-op and the second test will export to the first
+/// test's endpoint. If a future need arises (e.g. parameterising the
+/// endpoint per-test), add a `#[cfg(test)] pub fn reset_for_test()` that
+/// swaps the cell via an `OnceLock` rebuild — do NOT make the static
+/// public-write in production.
 static SDK_SPAN_FORWARDER: OnceLock<Channel> = OnceLock::new();
 
 /// Initialize the SDK-span forwarder channel at `endpoint`. Idempotent —

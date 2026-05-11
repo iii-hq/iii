@@ -51,13 +51,26 @@ async fn spawn_mock_collector() -> (String, Arc<Mutex<Vec<ExportTraceServiceRequ
             .add_service(TraceServiceServer::new(service))
             .serve_with_incoming(incoming)
             .await
-            .unwrap();
+            .expect("mock OTLP collector failed to start; see tonic transport error above")
     });
 
-    // Give the listener a tick to come up before we hand the URL to the
-    // forwarder. Without this, the first export occasionally races the
-    // tonic server's accept loop and tonic retries internally — flaky in CI.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Active readiness check — replaces the prior 50ms-sleep heuristic
+    // (which was flaky on loaded CI runners where the spawned task could
+    // take >50ms to be polled). `TcpListener::bind` already guarantees
+    // the kernel-level listening socket is open before we get here; the
+    // remaining race is purely "is tonic's accept loop being polled?".
+    // We probe with a bounded `TcpStream::connect` loop — a successful
+    // connect-then-drop is sufficient evidence the accept loop is live.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(_) => break,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::task::yield_now().await;
+            }
+            Err(e) => panic!("mock collector not reachable within 2s: {e}"),
+        }
+    }
 
     (endpoint, received)
 }
@@ -223,6 +236,23 @@ async fn forwarder_preserves_full_resource_attributes_through_to_collector() {
         "boolValue resource attribute was lost or mistranslated by the forwarder"
     );
 
+    // Pass-through fidelity. The forwarder must relay exactly what
+    // arrived — no engine-injected hop-level attributes (e.g. a
+    // `forwarder.id`), no span-name rewrites. A bug that ADDS attrs or
+    // mutates the span would pass the preceeding assertions but is
+    // caught here. Five inbound attributes; expect five out.
+    assert_eq!(
+        resource.attributes.len(),
+        5,
+        "Forwarder injected or dropped resource attributes; expected exactly 5 (inbound), got {} (names: {:?})",
+        resource.attributes.len(),
+        resource
+            .attributes
+            .iter()
+            .map(|kv| &kv.key)
+            .collect::<Vec<_>>()
+    );
+
     // Trace flags default. The inbound payload omits `flags`, and the
     // forwarder must default to SAMPLED (W3C trace-flags bit 0 = 1) to
     // match the in-memory storage path's behaviour. Defaulting to 0
@@ -234,5 +264,9 @@ async fn forwarder_preserves_full_resource_attributes_through_to_collector() {
         0x01,
         "Forwarder must default missing trace flags to SAMPLED; got {:#x}",
         span.flags
+    );
+    assert_eq!(
+        span.name, "forwarder.preserves.resource",
+        "Forwarder rewrote span name; pass-through contract violated"
     );
 }
