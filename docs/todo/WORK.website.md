@@ -19,8 +19,14 @@ Confirmed:
   `/quickstart` at root). No redirects needed.
 
 Skipped per user direction:
-- Discord invite (`discord.gg/motia` not rebranded) — not pursuing.
 - "Motia LLC" copyright on footer — legal entity, not a branding concern.
+
+## Active items
+
+- [ ] **Rebrand Discord invite to `discord.gg/iiidev`.** Replace every `discord.gg/<old>`
+  link (current value: `discord.gg/motia`) across the website, docs, READMEs, agent
+  skill bundles, and any other repo source. Search broadly for `discord.gg` — the new
+  invite is the single canonical link. Reverses the earlier "not pursuing" decision.
 
 ## Watch items (no current work)
 

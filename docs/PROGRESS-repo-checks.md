@@ -300,7 +300,7 @@ The sandbox surface in `iii-worker` is broader than ideal-docs currently capture
 ### Naming
 - Product name: consistently "iii".
 - Footer: "Motia LLC" copyright (legal entity, not product name).
-- Discord invite: `discord.gg/motia` (not rebranded).
+- Discord invite: `discord.gg/motia` → rebrand to `discord.gg/iiidev` (see [`todo/WORK.website.md`](./todo/WORK.website.md) "Active items").
 - Sample email in console demo: `alex@motia.dev`.
 - [x] No iii vs motia drift in product naming.
 
