@@ -203,7 +203,7 @@ carry across commands, create a sandbox up front and exec into it
 repeatedly:
 
 ```bash
-SB=$(iii trigger sandbox::create image=python idle_timeout=300 | jq -r .sandbox_id)
+SB=$(iii trigger sandbox::create image=python idle_timeout_secs=300 | jq -r .sandbox_id)
 iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2+2)\"]}"
 iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"import sys; print(sys.version)\"]}"
 iii trigger sandbox::stop sandbox_id="$SB"
