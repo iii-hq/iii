@@ -3,6 +3,29 @@ title: "Changelog"
 description: "Product updates and announcements for iii."
 ---
 
+<Update label="0.12.0" description="May 2026">
+  ## `iii trigger` reshape
+
+  **Breaking.** `iii trigger` no longer accepts `--function-id` and `--payload`. The new form takes the function path as a positional argument and accepts payload fields as `key=value` tokens, an `--json '<obj>'` flag, or both:
+
+  ```bash
+  # kv form
+  iii trigger orders::process amount=149.99 currency=USD
+
+  # JSON form
+  iii trigger orders::process --json '{"amount": 149.99, "currency": "USD"}'
+
+  # Combined: --json is the base, kv overrides individual keys
+  iii trigger orders::process --json '{"amount": 100}' amount=149.99
+  ```
+
+  See [Trigger Functions from the CLI](/how-to/trigger-functions-from-cli) for the full reference.
+
+  ## `iii update --list-targets`
+
+  `iii update` now exposes a `--list-targets` flag that prints every target accepted by `iii update <target>` (e.g. `self`, `console`, `worker`). Passing an unknown target now points users at this flag instead of failing silently. Rollback is not supported; reinstall a prior version manually with `curl -fsSL https://iii.dev/install.sh | sh -s -- --version <prior>`.
+</Update>
+
 <Update label="0.11.0" description="April 2026">
   ## Migrating from Motia
 

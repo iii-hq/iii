@@ -11,33 +11,44 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateSetInput {
+    /// Namespace that groups related keys (e.g. `users`, `orders`).
     pub scope: String,
+    /// Identifier for the value within the scope.
     pub key: String,
+    /// Arbitrary JSON value to store. Replaces any existing value at `scope`/`key`.
     #[serde(alias = "data")]
     pub value: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateGetInput {
+    /// Namespace that groups related keys.
     pub scope: String,
+    /// Identifier for the value within the scope.
     pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateDeleteInput {
+    /// Namespace that groups related keys.
     pub scope: String,
+    /// Identifier for the value to delete within the scope.
     pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateUpdateInput {
+    /// Namespace that groups related keys.
     pub scope: String,
+    /// Identifier for the value to update within the scope.
     pub key: String,
+    /// Ordered list of update operations applied atomically to the existing value.
     pub ops: Vec<UpdateOp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateGetGroupInput {
+    /// Namespace whose keys should be listed as a group.
     pub scope: String,
 }
 

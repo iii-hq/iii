@@ -42,12 +42,15 @@ pub struct QueueWorker {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct QueueInput {
+    /// Topic to publish to. Subscribers registered for this topic receive the message.
     topic: String,
+    /// JSON payload delivered to each subscriber.
     data: Value,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RedriveInput {
+    /// Queue name whose dead-letter messages should be moved back to the main queue.
     queue: String,
 }
 
@@ -59,7 +62,9 @@ pub struct RedriveResult {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RedriveSingleInput {
+    /// Queue name owning the dead-letter message.
     queue: String,
+    /// Identifier of the dead-letter message to redrive.
     message_id: String,
 }
 

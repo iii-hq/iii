@@ -58,7 +58,7 @@ Path  /Users/tony/iii/projects/testing/quickstart/workers/math-worker
 This worker registered the function `math::add` with the engine. You could call this function right now using the command below.
 
 ```bash
-iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
+iii trigger math::add a=2 b=3
 ```
 
 However this is not much different than running an equivalent script on its own. The utility of iii comes from being able to place
@@ -91,7 +91,7 @@ This worker registered the function `math::add_two_numbers` with the engine.
 Call the TypeScript worker. It will call the Python worker through the engine and return the result:
 
 ```bash
-iii trigger --function-id='math::add_two_numbers' --payload='{"a": 10, "b": 20}'
+iii trigger math::add_two_numbers a=10 b=20
 ```
 
 ```json
@@ -138,7 +138,7 @@ def add_handler(payload: dict) -> dict:
 Save the file and call the function a few times:
 
 ```bash
-iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
+iii trigger math::add a=2 b=3
 ```
 
 ```json
@@ -146,7 +146,7 @@ iii trigger --function-id='math::add' --payload='{"a": 2, "b": 3}'
 ```
 
 ```bash
-iii trigger --function-id='math::add' --payload='{"a": 10, "b": 20}'
+iii trigger math::add a=10 b=20
 ```
 
 ```json
