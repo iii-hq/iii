@@ -90,17 +90,39 @@ impl EngineConfig {
             }
         })?;
         let yaml_content = Self::expand_env_vars(&yaml_content);
-        serde_yaml::from_str(&yaml_content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))
+        let mut cfg: Self = serde_yaml::from_str(&yaml_content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
+        cfg.ensure_builtin_daemons();
+        Ok(cfg)
     }
 
     /// Returns a config with default port and default modules (from inventory).
     /// Use this when explicitly opting in to run without a config file.
     pub fn default_config() -> Self {
         tracing::info!("Using default config (no config file)");
-        Self {
+        let mut cfg = Self {
             modules: default_worker_entries(),
             workers: Vec::new(),
+        };
+        cfg.ensure_builtin_daemons();
+        cfg
+    }
+
+    /// Inject KNOWN_EXTERNAL daemons (e.g. `iii-worker-ops` for the
+    /// `worker::*` SDK triggers) so they ship without requiring a
+    /// `iii.config.yaml` entry. Idempotent.
+    pub fn ensure_builtin_daemons(&mut self) {
+        const ALWAYS_ON: &[&str] = &["iii-worker-ops"];
+        for name in ALWAYS_ON {
+            let already_listed = self.workers.iter().any(|w| w.name == *name)
+                || self.modules.iter().any(|m| m.name == *name);
+            if !already_listed {
+                self.workers.push(WorkerEntry {
+                    name: (*name).to_string(),
+                    image: None,
+                    config: None,
+                });
+            }
         }
     }
 }
@@ -1189,6 +1211,40 @@ mod tests {
                 .any(|entry| entry.name == "iii-observability"),
             "default config should include ObservabilityWorker (registered as mandatory)"
         );
+    }
+
+    #[test]
+    fn test_default_config_auto_injects_iii_worker_ops() {
+        let config = EngineConfig::default_config();
+        let count = config
+            .workers
+            .iter()
+            .filter(|w| w.name == "iii-worker-ops")
+            .count();
+        assert_eq!(
+            count, 1,
+            "default config must auto-inject iii-worker-ops exactly once"
+        );
+    }
+
+    #[test]
+    fn test_ensure_builtin_daemons_is_idempotent() {
+        let mut config = EngineConfig {
+            modules: Vec::new(),
+            workers: vec![WorkerEntry {
+                name: "iii-worker-ops".into(),
+                image: None,
+                config: None,
+            }],
+        };
+        config.ensure_builtin_daemons();
+        config.ensure_builtin_daemons();
+        let count = config
+            .workers
+            .iter()
+            .filter(|w| w.name == "iii-worker-ops")
+            .count();
+        assert_eq!(count, 1, "must not duplicate user-declared entries");
     }
 
     // =========================================================================

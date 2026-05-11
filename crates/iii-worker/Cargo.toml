@@ -72,6 +72,8 @@ once_cell = "1"
 # Used by sandbox_daemon for derive-based error types.
 thiserror = "2"
 
+schemars = "0.8"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"

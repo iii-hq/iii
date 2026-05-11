@@ -58,11 +58,20 @@ struct KnownExternal {
 /// Workers shipped as subcommands of a single binary on $PATH, not as
 /// standalone binaries in iii_workers/. Resolved in
 /// `resolve_external_module_in` before the iii.toml lookup.
-const KNOWN_EXTERNAL: &[KnownExternal] = &[KnownExternal {
-    name: "iii-sandbox",
-    binary: "iii-worker",
-    args: &["sandbox-daemon"],
-}];
+const KNOWN_EXTERNAL: &[KnownExternal] = &[
+    KnownExternal {
+        name: "iii-sandbox",
+        binary: "iii-worker",
+        args: &["sandbox-daemon"],
+    },
+    // Slug is "iii-worker-ops" to avoid clashing with the built-in
+    // `WorkerManager` already registered as "iii-worker-manager".
+    KnownExternal {
+        name: "iii-worker-ops",
+        binary: "iii-worker",
+        args: &["worker-manager-daemon"],
+    },
+];
 
 pub fn resolve_external_module(class: &str) -> Option<ExternalWorkerInfo> {
     let base_dir = std::env::current_dir().ok()?;
@@ -726,6 +735,51 @@ mod tests {
             .expect("iii-sandbox must be in KNOWN_EXTERNAL");
         assert_eq!(hit.binary, "iii-worker");
         assert_eq!(hit.args, &["sandbox-daemon"]);
+    }
+
+    #[test]
+    fn known_external_iii_worker_ops_dispatches_to_iii_worker() {
+        let hit = KNOWN_EXTERNAL
+            .iter()
+            .find(|k| k.name == "iii-worker-ops")
+            .expect("iii-worker-ops must be in KNOWN_EXTERNAL");
+        assert_eq!(hit.binary, "iii-worker");
+        assert_eq!(hit.args, &["worker-manager-daemon"]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolves_iii_worker_ops_to_subcommand() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("iii-worker");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let orig_path = std::env::var_os("PATH");
+        // SAFETY: test is marked #[serial] so no other thread mutates env concurrently.
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+
+        let result = resolve_external_module_in(dir.path(), "iii-worker-ops");
+
+        // SAFETY: test is marked #[serial]; restoring original.
+        unsafe {
+            if let Some(v) = orig_path {
+                std::env::set_var("PATH", v);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+
+        let info = result.expect("bare 'iii-worker-ops' must resolve via KNOWN_EXTERNAL");
+        assert_eq!(info.name, "iii-worker-ops");
+        assert_eq!(info.binary_path, fake);
+        assert_eq!(info.extra_args, vec!["worker-manager-daemon".to_string()]);
     }
 
     #[test]

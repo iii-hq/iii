@@ -171,6 +171,7 @@ pub fn validate_locked_artifact_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(debug_assertions)]
 fn is_loopback_host(host: &str) -> bool {
     host == "localhost"
         || host
@@ -203,7 +204,7 @@ fn is_private_or_loopback_host(host: &str) -> bool {
 
 async fn download_archive_bytes(
     url: &str,
-    validate_final_url: Option<&dyn Fn(&str) -> Result<(), String>>,
+    validate_final_url: Option<&(dyn Fn(&str) -> Result<(), String> + Send + Sync)>,
 ) -> Result<Vec<u8>, String> {
     let resp = match validate_final_url {
         Some(validator) => download_archive_bytes_with_validated_redirects(url, validator).await?,
@@ -248,7 +249,7 @@ async fn download_archive_bytes(
 
 async fn download_archive_bytes_with_validated_redirects(
     url: &str,
-    validator: &dyn Fn(&str) -> Result<(), String>,
+    validator: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
 ) -> Result<reqwest::Response, String> {
     let mut current_url =
         reqwest::Url::parse(url).map_err(|e| format!("invalid artifact URL `{url}`: {e}"))?;

@@ -443,17 +443,31 @@ fn handle_frame(
                 .get(&corr_id)
                 .cloned();
             if let Some(tx) = sender {
-                // try_send mirrors the existing pattern for Stdin: if
-                // the write thread is saturated we drop the frame and
-                // log, rather than blocking the dispatcher loop.
+                // try_send avoids blocking the dispatcher loop. Stdin
+                // can tolerate a dropped frame; an upload cannot —
+                // dropping a chunk while a later FsEnd still arrives
+                // would let the writer thread set ended_cleanly=true
+                // and rename a truncated temp file into place
+                // (streaming.rs:147-188), giving the caller a
+                // success response for a corrupt file. Abort the
+                // session instead: drop the registry entry so the
+                // writer thread observes Disconnected on its next
+                // recv_timeout, unlinks the temp file, and emits a
+                // terminal FsError(S218). Subsequent FsChunk/FsEnd
+                // frames for this corr_id find no sender and are
+                // silently ignored — correct, the session is over.
                 if let Err(e) = tx.try_send(msg) {
                     use std::sync::mpsc::TrySendError;
                     match e {
                         TrySendError::Full(_) => {
                             eprintln!(
                                 "iii-init: fs write channel full, \
-                                 dropping chunk for corr_id={corr_id}"
+                                 aborting upload for corr_id={corr_id}"
                             );
+                            fs_writes
+                                .lock()
+                                .expect("fs_writes mutex poisoned")
+                                .remove(&corr_id);
                         }
                         TrySendError::Disconnected(_) => {
                             // Write thread already exited — ignore.
