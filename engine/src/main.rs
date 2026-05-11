@@ -647,8 +647,6 @@ mod tests {
             "node-pdfkit",
             "--directory",
             "myapp",
-            "--languages",
-            "ts,py",
             "--skip-iii",
         ])
         .expect("should parse full template arg set");
@@ -657,10 +655,6 @@ mod tests {
                 ProjectAction::Init(init) => {
                     assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
                     assert_eq!(init.directory.as_deref(), Some("myapp"));
-                    assert_eq!(
-                        init.languages.as_ref().map(|v| v.as_slice()),
-                        Some(&["ts".to_string(), "py".to_string()][..])
-                    );
                     assert!(init.skip_iii);
                 }
                 _ => panic!("expected Init action"),

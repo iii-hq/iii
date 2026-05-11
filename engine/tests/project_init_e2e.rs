@@ -361,10 +361,10 @@ fn project_init_rejects_yes_flag() {
 }
 
 #[test]
-fn project_init_rejects_short_languages_alias() {
+fn project_init_rejects_languages_flag() {
     let dir = tempdir().unwrap();
     let out = iii_bin()
-        .args(["project", "init", "-l", "ts", "--template-dir"])
+        .args(["project", "init", "--languages", "ts", "--template-dir"])
         .arg(fixtures())
         .arg("--directory")
         .arg(dir.path())
@@ -372,7 +372,12 @@ fn project_init_rejects_short_languages_alias() {
         .expect("failed to run iii");
     assert!(
         !out.status.success(),
-        "init should reject -l short alias after removal"
+        "init should reject --languages after removal"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("--languages"),
+        "expected clap rejection mentioning --languages:\n{stderr}"
     );
 }
 

@@ -57,10 +57,6 @@ pub struct InitArgs {
     #[arg(long = "template-dir")]
     pub template_dir: Option<String>,
 
-    /// Languages to include (comma-separated: ts,js,py).
-    #[arg(long, value_delimiter = ',')]
-    pub languages: Option<Vec<String>>,
-
     /// Skip the iii-engine version compatibility check.
     #[arg(long = "skip-iii")]
     pub skip_iii: bool,
@@ -96,9 +92,7 @@ pub struct GenerateDockerArgs {
 fn template_flow_requested(args: &InitArgs) -> bool {
     // Only --template triggers the interactive scaffolder TUI. The bare flow
     // also uses scaffolder-core under the hood, but goes through the
-    // non-interactive `apply_template` helper. --languages is meaningful
-    // only when paired with --template; we silently ignore it on the bare
-    // path rather than erroring (it'd be a confusing UX otherwise).
+    // non-interactive `apply_template` helper.
     args.template.is_some()
 }
 
@@ -228,7 +222,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         template_dir: args.template_dir.as_ref().map(PathBuf::from),
         template: args.template.clone(),
         directory: target_dir.clone(),
-        languages: args.languages.clone(),
+        languages: None,
         skip_tool_check: args.skip_iii,
         yes: false,
     };
