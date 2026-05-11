@@ -63,7 +63,7 @@ fn project_init_accepts_positional_name() {
 }
 
 #[test]
-fn project_init_preserves_existing_project_id_on_rerun() {
+fn project_init_rejects_already_initialized_dir() {
     let dir = tempdir().unwrap();
     let out1 = iii_bin()
         .args(["project", "init", "--template-dir"])
@@ -77,7 +77,6 @@ fn project_init_preserves_existing_project_id_on_rerun() {
         "first init must succeed: {}",
         String::from_utf8_lossy(&out1.stderr)
     );
-    let ini1 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
 
     let out2 = iii_bin()
         .args(["project", "init", "--template-dir"])
@@ -86,19 +85,14 @@ fn project_init_preserves_existing_project_id_on_rerun() {
         .arg(dir.path())
         .output()
         .expect("second init");
-    assert!(out2.status.success(), "second init must succeed");
-    let ini2 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
-
-    let project_id_of = |s: &str| {
-        s.lines()
-            .find_map(|l| l.trim().strip_prefix("project_id="))
-            .map(|v| v.trim().to_string())
-            .expect("project_id present")
-    };
-    assert_eq!(
-        project_id_of(&ini1),
-        project_id_of(&ini2),
-        "project_id must remain stable across re-runs"
+    assert!(
+        !out2.status.success(),
+        "second init must refuse to clobber an already-initialized project"
+    );
+    let stderr = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        stderr.contains("already initialized") || stderr.contains(".iii/project.ini"),
+        "error should mention the existing project marker:\n{stderr}"
     );
 }
 
@@ -225,7 +219,7 @@ fn project_init_errors_on_non_empty_dir_without_override() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not empty"),
+        stderr.contains("contains README.md") || stderr.contains("cannot be initialized"),
         "expected non-empty error message:\n{stderr}"
     );
     assert!(

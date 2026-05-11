@@ -136,12 +136,18 @@ async fn run_init(args: InitArgs) -> i32 {
     }
 
     if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
-        crate::cli::telemetry::send_project_init_failed("non_empty_dir", &e);
-        return print_err(
-            "target directory is not empty",
-            &e,
-            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory",
-        );
+        let kind = if e.contains("already initialized") {
+            "non_empty_dir_existing_project"
+        } else {
+            "non_empty_dir"
+        };
+        crate::cli::telemetry::send_project_init_failed(kind, &e);
+        let fix = if e.contains("already initialized") {
+            "delete .iii/project.ini or pick a different --directory"
+        } else {
+            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory"
+        };
+        return print_err("target directory cannot be initialized", &e, fix);
     }
 
     let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
@@ -151,8 +157,9 @@ async fn run_init(args: InitArgs) -> i32 {
         .unwrap_or("iii-project")
         .to_string();
 
-    // Fetch + apply the canonical 'bare' template. Existing project_id is
-    // preserved on re-runs.
+    // Fetch + apply the canonical 'bare' template. Re-runs against an
+    // already-initialized directory are rejected earlier by
+    // `check_directory_state`.
     let mut fetcher = match build_fetcher(args.template_dir.as_deref()) {
         Ok(f) => f,
         Err(e) => {
@@ -504,10 +511,11 @@ fn resolve_root(dir: Option<&str>) -> Result<PathBuf, String> {
 }
 
 /// Reject scaffolding into a non-empty directory unless the user opted in via
-/// `--allow-non-empty`, OR the directory is already an iii project (has
-/// `.iii/project.ini`). Hidden dotfiles (`.git/`, `.gitignore`, etc.) and
-/// the `data/` runtime directory are not considered "non-empty content" —
-/// they're either dev tooling or iii-managed state.
+/// `--allow-non-empty`. An existing `.iii/project.ini` is always a hard error
+/// (no idempotent re-init): the user must delete the marker or pick a fresh
+/// directory. Hidden dotfiles (`.git/`, `.gitignore`, etc.) and the `data/`
+/// runtime directory are not considered "non-empty content" — they're either
+/// dev tooling or iii-managed state.
 fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
@@ -515,10 +523,11 @@ fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), Strin
     if !root.is_dir() {
         return Err(format!("{} exists but is not a directory", root.display()));
     }
-    // Idempotent re-init: an existing project.ini means we're scaffolding
-    // into a directory we previously initialized. Always allowed.
     if root.join(".iii").join("project.ini").exists() {
-        return Ok(());
+        return Err(format!(
+            "{} is already initialized (.iii/project.ini exists)",
+            root.display()
+        ));
     }
     if allow_non_empty {
         return Ok(());
@@ -528,9 +537,6 @@ fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), Strin
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| {
-                // Hidden files/dirs (.git, .env.example, etc.) and iii's
-                // own runtime data directory are not "user content" for
-                // the purpose of this check.
                 !name.starts_with('.') && name != "data"
             })
             .collect(),
