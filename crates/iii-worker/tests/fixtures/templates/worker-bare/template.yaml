@@ -1,0 +1,14 @@
+name: Worker Bare
+description: Minimal standalone iii worker scaffold.
+version: "0.1.0"
+min_iii_version: "0.11.0"
+
+treat_required_as_included: true
+requires: []
+optional: []
+
+files: []
+
+next_steps:
+  - "Edit iii.worker.yaml to declare your entry point"
+  - "Add to a parent project: iii worker add ./path/to/this-worker"

@@ -1,0 +1,4 @@
+# Default standalone-worker manifest. Edit name, language, and entry as needed.
+name: {{worker_name}}
+language: ts
+entry: ./src/index.ts
