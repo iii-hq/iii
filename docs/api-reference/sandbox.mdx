@@ -67,11 +67,6 @@ before the trigger client gives up.
 | [`sandbox::fs::grep`](#trigger-fs-grep) | filesystem | scale with tree size | Recursive regex search |
 | [`sandbox::fs::sed`](#trigger-fs-sed) | filesystem | scale with file count | Find-and-replace across files |
 
-Every sandbox operation is reachable through `iii.trigger()` from worker
-code or through `iii trigger sandbox::<op> …` from the terminal. There
-is no longer a dedicated `iii sandbox` CLI subcommand. See
-[CLI reference](#cli-reference) for the trigger forms.
-
 **Also on this page:**
 [Engine setup](#engine-setup) ·
 [Allowed images](#allowed-images) ·
@@ -215,12 +210,6 @@ SB=$(iii trigger sandbox::create image=python idle_timeout_secs=300 | jq -r .san
 iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(2+2)"]'
 iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","import sys; print(sys.version)"]'
 iii trigger sandbox::stop sandbox_id="$SB"
-```
-
-Each `iii trigger` accepts either `key=value` tokens (shown above) or a single `--json` payload. The two forms are interchangeable: the kv form parses each value as JSON when possible and falls back to a string. The `--json` equivalent of the second exec:
-
-```bash
-iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"import sys; print(sys.version)\"]}"
 ```
 
 On an interactive terminal, `create` prints `✓ sandbox ready in Xs` on
@@ -1420,19 +1409,12 @@ troubleshooting page.
 
 ## CLI reference
 
-The dedicated `iii sandbox` subcommand was removed in 0.13.0. Every
-sandbox operation now goes through [`iii trigger`](/how-to/trigger-functions-from-cli),
-which has a single shape: a function path plus a payload (kv pairs or
-`--json`). The four most useful flows are below; see the
+Four common flows are below; see the
 [trigger catalog](#api-surface-at-a-glance) above for the full list.
 
-<Warning>
-`iii trigger` is request/response only. The old `iii sandbox exec`
-streamed stdout/stderr line-by-line; the trigger form buffers the
-whole output and returns it as part of the result. For interactive
-or long-running execs, call `sandbox::exec` from SDK code where you
-can attach to the streaming channel directly.
-</Warning>
+<Info>
+`iii trigger` is request/response only. `sandbox::exec` buffers the whole stdout/stderr and returns it in the result payload. For interactive or long-running execs that need line-by-line streaming, call `sandbox::exec` from SDK code and attach to the streaming channel directly.
+</Info>
 
 ### Boot, exec, stop
 
@@ -1450,12 +1432,6 @@ of the result envelope), so `jq -r .sandbox_id` extracts the UUID for
 later calls. `sandbox::exec` returns `stdout`, `stderr`, and
 `exit_code` in its result payload.
 
-Each call takes either `key=value` tokens (shown above) or `--json '<obj>'`. The kv form parses each value as JSON when possible and falls back to a string. That is why `args='[...]'` is interpreted as an array. The `--json` equivalent of the exec call:
-
-```bash
-iii trigger sandbox::exec --json "{\"sandbox_id\":\"$SB\",\"cmd\":\"python3\",\"args\":[\"-c\",\"print(2 ** 10)\"]}"
-```
-
 ### Lifecycle ops
 
 | Old subcommand | Trigger form |
@@ -1471,16 +1447,10 @@ the full payload schemas.
 
 ### Filesystem ops
 
-The previous `iii sandbox upload` / `iii sandbox download` commands
-streamed file bytes through an iii data channel. `iii trigger` does
-not expose channels, so host↔guest byte movement from the terminal is
-no longer supported. Use either:
+`iii trigger` does not expose channels, so host↔guest byte movement from the terminal is not supported. Options:
 
-- `sandbox::fs::write` and `sandbox::fs::read` from SDK code, where
-  you can hold the channel reference (see
-  [filesystem operations](#sdk-filesystem-operations)).
-- `sandbox::exec` for in-VM shell tools (`tar`, `curl`, `cat`, etc.)
-  when the payload size fits the envelope.
+- `sandbox::fs::write` and `sandbox::fs::read` from SDK code, where you can hold the channel reference (see [filesystem operations](#sdk-filesystem-operations)).
+- `sandbox::exec` for in-VM shell tools (`tar`, `curl`, `cat`, etc.) when the payload size fits the envelope.
 
 ## Testing
 
