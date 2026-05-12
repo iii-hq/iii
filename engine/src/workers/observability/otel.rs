@@ -38,6 +38,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
+use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -660,10 +661,9 @@ impl SpanExporter for TeeSpanExporter {
 
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
-/// Global tonic channel pointing at the configured OTLP collector. Used by
-/// the SDK-span forwarder hop in `ingest_otlp_json` to relay the inbound
-/// OTLP payload to the collector *without* round-tripping it through
-/// `SpanData`.
+/// State for the SDK-span forwarder hop: a tonic channel to the collector
+/// plus the parsed `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS`
+/// metadata pairs that get injected on every export request.
 ///
 /// The earlier shape was `Arc<opentelemetry_otlp::SpanExporter>`, which
 /// internally serialized `SpanData` values back into proto. That conversion
@@ -672,12 +672,15 @@ static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 /// forwarder is bare), so collectors rendered `service.name=<nil>` —
 /// see iii-hq/iii#1617.
 ///
-/// The new shape is a `tonic::Channel`. `Channel` is `Arc`-internally and
-/// cheap to clone; the forwarder branch clones it per request to build a
-/// fresh `TraceServiceClient`, which lets us hand it the original proto
-/// `ExportTraceServiceRequest` (translated from the inbound JSON) so the
-/// full inbound resource block — not just `service.name` — survives the
-/// hop byte-for-byte.
+/// The new shape is a tonic `Channel` plus a parsed-header list. `Channel`
+/// is `Arc`-internally and cheap to clone; the forwarder branch clones it
+/// per request to build a fresh `TraceServiceClient`, which lets us hand
+/// it the original proto `ExportTraceServiceRequest` (translated from the
+/// inbound JSON) so the full inbound resource block — not just
+/// `service.name` — survives the hop byte-for-byte. The header list
+/// replicates the behaviour the previous `opentelemetry_otlp` builder
+/// gave us for free: API-keyed collectors (Grafana Cloud, Honeycomb,
+/// SigNoz Cloud) configured via the standard OTel env vars keep working.
 ///
 /// **Test isolation note**: this is a process-global `OnceLock`. Integration
 /// tests that call `init_sdk_span_forwarder` MUST live in their own
@@ -689,7 +692,69 @@ static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 /// endpoint per-test), add a `#[cfg(test)] pub fn reset_for_test()` that
 /// swaps the cell via an `OnceLock` rebuild — do NOT make the static
 /// public-write in production.
-static SDK_SPAN_FORWARDER: OnceLock<Channel> = OnceLock::new();
+struct SdkForwarderState {
+    channel: Channel,
+    headers: Vec<(MetadataKey<Ascii>, MetadataValue<Ascii>)>,
+}
+
+static SDK_SPAN_FORWARDER: OnceLock<SdkForwarderState> = OnceLock::new();
+
+/// Parse `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS`
+/// into tonic-typed metadata pairs.
+///
+/// Format per the OTel SDK spec: comma-separated `key=value` pairs (e.g.
+/// `authorization=Bearer abc123,x-tenant=acme`). Keys must be valid HTTP/2
+/// header names (ASCII, lowercase by convention); values are ASCII for
+/// non-binary metadata. Invalid pairs are skipped with a warning rather
+/// than failing the whole init — matches `opentelemetry-otlp`'s tolerance.
+///
+/// Signal-specific (`*_TRACES_HEADERS`) takes precedence over generic
+/// (`*_HEADERS`) per the OTel spec.
+fn parse_otlp_headers_env() -> Vec<(MetadataKey<Ascii>, MetadataValue<Ascii>)> {
+    let raw = std::env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_HEADERS"))
+        .ok();
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    raw.split(',')
+        .filter_map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                return None;
+            }
+            let (k, v) = pair.split_once('=')?;
+            let k = k.trim();
+            let v = v.trim();
+            let key = match MetadataKey::<Ascii>::from_bytes(k.as_bytes()) {
+                Ok(k) => k,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        header_name = k,
+                        "OTEL_EXPORTER_OTLP_HEADERS entry has invalid header name; skipping"
+                    );
+                    return None;
+                }
+            };
+            let value = match MetadataValue::<Ascii>::try_from(v) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        header_name = k,
+                        "OTEL_EXPORTER_OTLP_HEADERS entry has invalid header value; skipping"
+                    );
+                    return None;
+                }
+            };
+            Some((key, value))
+        })
+        .collect()
+}
 
 /// Initialize the SDK-span forwarder channel at `endpoint`. Idempotent —
 /// later calls are no-ops once the channel is set.
@@ -750,7 +815,15 @@ pub fn init_sdk_span_forwarder(endpoint: &str) {
     };
 
     let channel = ep.connect_lazy();
-    if SDK_SPAN_FORWARDER.set(channel).is_err() {
+    let headers = parse_otlp_headers_env();
+    if !headers.is_empty() {
+        tracing::debug!(
+            count = headers.len(),
+            "SDK span forwarder loaded OTEL_EXPORTER_OTLP_HEADERS / OTEL_EXPORTER_OTLP_TRACES_HEADERS entries"
+        );
+    }
+    let state = SdkForwarderState { channel, headers };
+    if SDK_SPAN_FORWARDER.set(state).is_err() {
         tracing::debug!("SDK span forwarder already initialized");
     }
 }
@@ -1646,13 +1719,13 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
     // proto type preserves the full resource block byte-for-byte. See
     // iii-hq/iii#1617.
     //
-    // Behaviour change called out in the commit message: the new path
-    // relays spans with malformed trace/span IDs (the old SpanData path
-    // pre-filtered them via `TraceId::from_hex`/`SpanId::from_hex`
-    // bailout). Downstream collectors validate and reject; engine-side
-    // pre-filtering hid that diagnostic signal. The in-memory storage
-    // path is unchanged.
-    if let Some(channel) = SDK_SPAN_FORWARDER.get() {
+    // Malformed-span handling: per #1618 review (ytallo's gherkin §"One
+    // bad span does not poison the rest of the forwarded batch"),
+    // `otlp_span_to_proto` returns `None` for spans whose `trace_id` /
+    // `span_id` fail to hex-decode. `otlp_scope_spans_to_proto` then
+    // filter_maps those out, so valid spans in the same batch reach the
+    // collector. The in-memory storage path is unchanged.
+    if let Some(state) = SDK_SPAN_FORWARDER.get() {
         let proto_request = otlp_json_request_to_proto(&request);
         let span_count: usize = proto_request
             .resource_spans
@@ -1665,8 +1738,19 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
             })
             .sum();
         if span_count > 0 {
-            let mut client = TraceServiceClient::new(channel.clone());
-            match client.export(proto_request).await {
+            // Build the tonic Request, then attach the parsed
+            // OTEL_EXPORTER_OTLP_HEADERS metadata. Replicates the behaviour
+            // that the previous `opentelemetry_otlp::SpanExporter` got from
+            // its env-var pickup — without this, API-keyed collectors
+            // (Grafana Cloud, Honeycomb, SigNoz Cloud) drop forwarded
+            // spans at auth with no signal at the engine side.
+            let mut grpc_request = tonic::Request::new(proto_request);
+            let metadata = grpc_request.metadata_mut();
+            for (key, value) in &state.headers {
+                metadata.insert(key.clone(), value.clone());
+            }
+            let mut client = TraceServiceClient::new(state.channel.clone());
+            match client.export(grpc_request).await {
                 Ok(_) => {
                     tracing::debug!(
                         span_count = span_count,
@@ -1739,7 +1823,17 @@ fn otlp_scope_spans_to_proto(
 ) -> opentelemetry_proto::tonic::trace::v1::ScopeSpans {
     opentelemetry_proto::tonic::trace::v1::ScopeSpans {
         scope: scope_spans.scope.as_ref().map(otlp_scope_to_proto),
-        spans: scope_spans.spans.iter().map(otlp_span_to_proto).collect(),
+        // Per #1618 review (gherkin §"One bad span does not poison the rest
+        // of the forwarded batch"): drop spans with malformed `trace_id`
+        // or `span_id` rather than relaying them with empty-byte IDs that
+        // most collectors reject — wholesale-rejecting a batch because of
+        // one bad span would be worse than the prior `convert_otlp_to_span_data`
+        // pre-filtering it deliberately matched.
+        spans: scope_spans
+            .spans
+            .iter()
+            .filter_map(otlp_span_to_proto)
+            .collect(),
         schema_url: String::new(),
     }
 }
@@ -1755,19 +1849,46 @@ fn otlp_scope_to_proto(
     }
 }
 
-fn otlp_span_to_proto(span: &OtlpSpan) -> opentelemetry_proto::tonic::trace::v1::Span {
+// OTLP spec-required byte lengths for span identifiers. Encoded as 32
+// and 16 hex characters respectively in the OTLP/JSON form.
+const OTLP_TRACE_ID_BYTES: usize = 16;
+const OTLP_SPAN_ID_BYTES: usize = 8;
+
+fn otlp_span_to_proto(span: &OtlpSpan) -> Option<opentelemetry_proto::tonic::trace::v1::Span> {
     use opentelemetry_proto::tonic::trace::v1::Span as ProtoSpan;
 
-    let trace_id = hex_decode_or_empty(&span.trace_id);
-    let span_id = hex_decode_or_empty(&span.span_id);
+    // `trace_id` and `span_id` are required by the OTLP spec to be valid
+    // hex-encoded byte strings of exactly 16 and 8 bytes respectively.
+    // A span with either ID malformed OR wrong-length is unusable
+    // downstream — relaying it would deliver invalid IDs that
+    // collectors reject (sometimes wholesale, poisoning the whole
+    // batch). Drop the span instead, so valid spans in the same batch
+    // still get through. `hex::decode("01")` would succeed without the
+    // length check below and emit a 1-byte trace_id — collectors then
+    // reject the export.
+    let trace_id = hex::decode(&span.trace_id).ok()?;
+    if trace_id.len() != OTLP_TRACE_ID_BYTES {
+        return None;
+    }
+    let span_id = hex::decode(&span.span_id).ok()?;
+    if span_id.len() != OTLP_SPAN_ID_BYTES {
+        return None;
+    }
+
+    // `parent_span_id` is optional; "absent" can mean missing field,
+    // empty string, or all-zeros. Treat each as "no parent". If present
+    // but malformed (bad hex OR wrong length), fall back to empty
+    // rather than dropping the whole span — the orphaned-parent case is
+    // recoverable downstream.
     let parent_span_id = span
         .parent_span_id
         .as_deref()
         .filter(|s| !s.is_empty() && !s.chars().all(|c| c == '0'))
-        .map(hex_decode_or_empty)
+        .and_then(|s| hex::decode(s).ok())
+        .filter(|bytes| bytes.len() == OTLP_SPAN_ID_BYTES)
         .unwrap_or_default();
 
-    ProtoSpan {
+    Some(ProtoSpan {
         trace_id,
         span_id,
         trace_state: String::new(),
@@ -1790,7 +1911,7 @@ fn otlp_span_to_proto(span: &OtlpSpan) -> opentelemetry_proto::tonic::trace::v1:
         links: span.links.iter().map(otlp_link_to_proto).collect(),
         dropped_links_count: 0,
         status: span.status.as_ref().map(otlp_status_to_proto),
-    }
+    })
 }
 
 fn otlp_event_to_proto(ev: &OtlpSpanEvent) -> opentelemetry_proto::tonic::trace::v1::span::Event {
@@ -1803,9 +1924,13 @@ fn otlp_event_to_proto(ev: &OtlpSpanEvent) -> opentelemetry_proto::tonic::trace:
 }
 
 fn otlp_link_to_proto(link: &OtlpSpanLink) -> opentelemetry_proto::tonic::trace::v1::span::Link {
+    // Links to malformed-ID remote spans fall back to empty bytes here
+    // (rather than dropping the link) — the parent span itself was already
+    // validated by `otlp_span_to_proto`, so a bad link is a recoverable
+    // metadata loss, not a wholesale span-loss event.
     opentelemetry_proto::tonic::trace::v1::span::Link {
-        trace_id: hex_decode_or_empty(&link.trace_id),
-        span_id: hex_decode_or_empty(&link.span_id),
+        trace_id: hex::decode(&link.trace_id).unwrap_or_default(),
+        span_id: hex::decode(&link.span_id).unwrap_or_default(),
         trace_state: link.trace_state.clone().unwrap_or_default(),
         attributes: link.attributes.iter().map(otlp_kv_to_proto).collect(),
         dropped_attributes_count: 0,
@@ -1859,15 +1984,6 @@ fn otlp_any_value_to_proto(v: &OtlpAnyValue) -> opentelemetry_proto::tonic::comm
     };
 
     ProtoAnyValue { value }
-}
-
-/// Hex-decode trace/span IDs. The OTLP/JSON contract is lowercase hex; we
-/// accept any case here and return an empty `Vec` on malformed input so a
-/// single bad ID does not crash the forwarder hop. The collector will
-/// reject empty IDs at validation time (correct behaviour — better than
-/// silent corruption).
-fn hex_decode_or_empty(s: &str) -> Vec<u8> {
-    hex::decode(s).unwrap_or_default()
 }
 
 // =============================================================================
