@@ -3,77 +3,22 @@
 //
 // Owns its own process via being an integration test file, so the
 // process-global `SDK_SPAN_FORWARDER` `OnceLock` is fresh on every run.
-// The mock collector is a tonic gRPC `TraceService` server bound to an
-// ephemeral loopback port; the assertion contract is that the captured
-// `ExportTraceServiceRequest` carries the full inbound
-// `resource_spans[].resource` block — not just `service.name`, but every
-// resource attribute we put on the wire — to lock in full-resource
-// preservation rather than a single-field band-aid.
+// The mock collector lives in `tests/common/forwarder_mock.rs` and is
+// shared across the three `otel_forwarder_*` regression tests so the
+// readiness/spawn contract stays in lockstep.
+//
+// The assertion contract: the captured `ExportTraceServiceRequest`
+// carries the full inbound `resource_spans[].resource` block — not just
+// `service.name`, but every resource attribute we put on the wire — to
+// lock in full-resource preservation rather than a single-field band-aid.
 
-use std::sync::Arc;
+mod common;
+
 use std::time::Duration;
 
-use opentelemetry_proto::tonic::collector::trace::v1::{
-    ExportTraceServiceRequest, ExportTraceServiceResponse,
-    trace_service_server::{TraceService, TraceServiceServer},
-};
-use tokio::sync::Mutex;
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use opentelemetry_proto::tonic::common::v1::{KeyValue, any_value};
 
-#[derive(Default, Clone)]
-struct CapturingTraceService {
-    received: Arc<Mutex<Vec<ExportTraceServiceRequest>>>,
-}
-
-#[tonic::async_trait]
-impl TraceService for CapturingTraceService {
-    async fn export(
-        &self,
-        request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        self.received.lock().await.push(request.into_inner());
-        Ok(Response::new(ExportTraceServiceResponse::default()))
-    }
-}
-
-async fn spawn_mock_collector() -> (String, Arc<Mutex<Vec<ExportTraceServiceRequest>>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let endpoint = format!("http://{addr}");
-
-    let service = CapturingTraceService::default();
-    let received = service.received.clone();
-
-    tokio::spawn(async move {
-        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-        Server::builder()
-            .add_service(TraceServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await
-            .expect("mock OTLP collector failed to start; see tonic transport error above")
-    });
-
-    // Active readiness check — replaces the prior 50ms-sleep heuristic
-    // (which was flaky on loaded CI runners where the spawned task could
-    // take >50ms to be polled). `TcpListener::bind` already guarantees
-    // the kernel-level listening socket is open before we get here; the
-    // remaining race is purely "is tonic's accept loop being polled?".
-    // We probe with a bounded `TcpStream::connect` loop — a successful
-    // connect-then-drop is sufficient evidence the accept loop is live.
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(_) => break,
-            Err(_) if std::time::Instant::now() < deadline => {
-                tokio::task::yield_now().await;
-            }
-            Err(e) => panic!("mock collector not reachable within 2s: {e}"),
-        }
-    }
-
-    (endpoint, received)
-}
+use common::forwarder_mock::spawn_body_capturing_collector;
 
 fn payload_with_resource(service_name: &str, namespace: &str, version: &str) -> String {
     // Minimal but real OTLP/JSON ExportTraceServiceRequest.
@@ -112,56 +57,45 @@ fn payload_with_resource(service_name: &str, namespace: &str, version: &str) -> 
     )
 }
 
-fn find_string_attr<'a>(
-    attrs: &'a [opentelemetry_proto::tonic::common::v1::KeyValue],
-    key: &str,
-) -> Option<&'a str> {
+fn find_string_attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a str> {
     attrs
         .iter()
         .find(|kv| kv.key == key)
         .and_then(|kv| kv.value.as_ref())
         .and_then(|v| v.value.as_ref())
         .and_then(|v| match v {
-            opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
-                Some(s.as_str())
-            }
+            any_value::Value::StringValue(s) => Some(s.as_str()),
             _ => None,
         })
 }
 
-fn find_int_attr(
-    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
-    key: &str,
-) -> Option<i64> {
+fn find_int_attr(attrs: &[KeyValue], key: &str) -> Option<i64> {
     attrs
         .iter()
         .find(|kv| kv.key == key)
         .and_then(|kv| kv.value.as_ref())
         .and_then(|v| v.value.as_ref())
         .and_then(|v| match v {
-            opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(i) => Some(*i),
+            any_value::Value::IntValue(i) => Some(*i),
             _ => None,
         })
 }
 
-fn find_bool_attr(
-    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
-    key: &str,
-) -> Option<bool> {
+fn find_bool_attr(attrs: &[KeyValue], key: &str) -> Option<bool> {
     attrs
         .iter()
         .find(|kv| kv.key == key)
         .and_then(|kv| kv.value.as_ref())
         .and_then(|v| v.value.as_ref())
         .and_then(|v| match v {
-            opentelemetry_proto::tonic::common::v1::any_value::Value::BoolValue(b) => Some(*b),
+            any_value::Value::BoolValue(b) => Some(*b),
             _ => None,
         })
 }
 
 #[tokio::test]
 async fn forwarder_preserves_full_resource_attributes_through_to_collector() {
-    let (endpoint, received) = spawn_mock_collector().await;
+    let (endpoint, received) = spawn_body_capturing_collector().await;
 
     iii::workers::observability::otel::init_sdk_span_forwarder(&endpoint);
 
@@ -239,7 +173,7 @@ async fn forwarder_preserves_full_resource_attributes_through_to_collector() {
     // Pass-through fidelity. The forwarder must relay exactly what
     // arrived — no engine-injected hop-level attributes (e.g. a
     // `forwarder.id`), no span-name rewrites. A bug that ADDS attrs or
-    // mutates the span would pass the preceeding assertions but is
+    // mutates the span would pass the preceding assertions but is
     // caught here. Five inbound attributes; expect five out.
     assert_eq!(
         resource.attributes.len(),

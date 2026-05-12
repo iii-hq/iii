@@ -9,70 +9,19 @@
 // could blackhole otherwise-valid telemetry from the same payload.
 //
 // The contract pinned here: `otlp_span_to_proto` returns `None` for
-// spans whose `trace_id` or `span_id` fails to hex-decode;
+// spans whose `trace_id` or `span_id` fails to hex-decode OR decodes to
+// a non-spec byte length (16 bytes for trace_id, 8 for span_id);
 // `otlp_scope_spans_to_proto` `filter_map`s them out. Valid spans in
 // the same batch reach the collector.
 //
 // Owns its own process so the global `SDK_SPAN_FORWARDER` `OnceLock`
 // is fresh.
 
-use std::sync::Arc;
+mod common;
+
 use std::time::Duration;
 
-use opentelemetry_proto::tonic::collector::trace::v1::{
-    ExportTraceServiceRequest, ExportTraceServiceResponse,
-    trace_service_server::{TraceService, TraceServiceServer},
-};
-use tokio::sync::Mutex;
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
-
-#[derive(Default, Clone)]
-struct CapturingTraceService {
-    received: Arc<Mutex<Vec<ExportTraceServiceRequest>>>,
-}
-
-#[tonic::async_trait]
-impl TraceService for CapturingTraceService {
-    async fn export(
-        &self,
-        request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        self.received.lock().await.push(request.into_inner());
-        Ok(Response::new(ExportTraceServiceResponse::default()))
-    }
-}
-
-async fn spawn_mock_collector() -> (String, Arc<Mutex<Vec<ExportTraceServiceRequest>>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let endpoint = format!("http://{addr}");
-
-    let service = CapturingTraceService::default();
-    let received = service.received.clone();
-
-    tokio::spawn(async move {
-        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-        Server::builder()
-            .add_service(TraceServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await
-            .expect("mock OTLP collector failed to start; see tonic transport error above")
-    });
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(_) => break,
-            Err(_) if std::time::Instant::now() < deadline => {
-                tokio::task::yield_now().await;
-            }
-            Err(e) => panic!("mock collector not reachable within 2s: {e}"),
-        }
-    }
-
-    (endpoint, received)
-}
+use common::forwarder_mock::spawn_body_capturing_collector;
 
 // Three-span payload covering all three OTLP ID-shape failure modes:
 // (1) non-hex characters — `hex::decode` returns Err.
@@ -121,7 +70,7 @@ const MIXED_BATCH_PAYLOAD: &str = r#"{
 
 #[tokio::test]
 async fn forwarder_drops_malformed_spans_and_relays_the_rest_of_the_batch() {
-    let (endpoint, received) = spawn_mock_collector().await;
+    let (endpoint, received) = spawn_body_capturing_collector().await;
 
     iii::workers::observability::otel::init_sdk_span_forwarder(&endpoint);
 

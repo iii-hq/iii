@@ -14,69 +14,11 @@
 // `SDK_SPAN_FORWARDER` `OnceLock` are both isolated from any other
 // integration-test binary.
 
-use std::sync::Arc;
+mod common;
+
 use std::time::Duration;
 
-use opentelemetry_proto::tonic::collector::trace::v1::{
-    ExportTraceServiceRequest, ExportTraceServiceResponse,
-    trace_service_server::{TraceService, TraceServiceServer},
-};
-use tokio::sync::Mutex;
-use tonic::metadata::MetadataMap;
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
-
-#[derive(Default, Clone)]
-struct CapturingTraceService {
-    received_metadata: Arc<Mutex<Vec<MetadataMap>>>,
-}
-
-#[tonic::async_trait]
-impl TraceService for CapturingTraceService {
-    async fn export(
-        &self,
-        request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        self.received_metadata
-            .lock()
-            .await
-            .push(request.metadata().clone());
-        Ok(Response::new(ExportTraceServiceResponse::default()))
-    }
-}
-
-async fn spawn_mock_collector() -> (String, Arc<Mutex<Vec<MetadataMap>>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let endpoint = format!("http://{addr}");
-
-    let service = CapturingTraceService::default();
-    let received_metadata = service.received_metadata.clone();
-
-    tokio::spawn(async move {
-        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-        Server::builder()
-            .add_service(TraceServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await
-            .expect("mock OTLP collector failed to start; see tonic transport error above")
-    });
-
-    // Active readiness probe — see `otel_forwarder_resource_test.rs` for the
-    // rationale (CI runners can take >50ms to poll the spawned task).
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(_) => break,
-            Err(_) if std::time::Instant::now() < deadline => {
-                tokio::task::yield_now().await;
-            }
-            Err(e) => panic!("mock collector not reachable within 2s: {e}"),
-        }
-    }
-
-    (endpoint, received_metadata)
-}
+use common::forwarder_mock::spawn_metadata_capturing_collector;
 
 const MINIMAL_PAYLOAD: &str = r#"{
     "resourceSpans": [{
@@ -113,7 +55,7 @@ async fn forwarder_injects_otel_exporter_otlp_headers_into_export_metadata() {
         );
     }
 
-    let (endpoint, received_metadata) = spawn_mock_collector().await;
+    let (endpoint, received_metadata) = spawn_metadata_capturing_collector().await;
 
     iii::workers::observability::otel::init_sdk_span_forwarder(&endpoint);
 
