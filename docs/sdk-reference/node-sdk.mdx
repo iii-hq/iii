@@ -30,8 +30,8 @@ Register this worker with an iii engine.
 
 #### InitOptions
 
-Options accepted when constructing the worker instance (worker name, timeouts,
-`reconnectionConfig`, `otel`, metrics reporting).
+Options accepted when constructing the worker instance (worker name, timeouts, `reconnectionConfig`,
+`otel`, metrics reporting).
 
 ### registerFunction
 
@@ -60,7 +60,10 @@ Remove a previously registered trigger type. **Consider removing**
 <Note>
   Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end.
 
-  Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#) — channels are managed by that worker end-to-end.
+Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`,
+`StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#) — channels are
+managed by that worker end-to-end.
+
 </Note>
 
 ## Subpath exports

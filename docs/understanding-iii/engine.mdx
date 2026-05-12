@@ -5,7 +5,8 @@ owner: "devrel"
 type: "explanation"
 ---
 
-To use iii you need to first understand it. iii's surface is very simple but its utility is very expansive.
+To use iii you need to first understand it. iii's surface is very simple but its utility is very
+expansive.
 
 ## Startup flow
 
@@ -13,15 +14,18 @@ How the engine boots — argument parsing, config loading, worker application, a
 
 ## Engine responsibilities
 
-Worker connections, function and trigger registries, and invocation routing across all connected workers.
+Worker connections, function and trigger registries, and invocation routing across all connected
+workers.
 
 ## Worker disconnect cleanup
 
-What the engine does when a worker drops — removing its functions and triggers, cancelling in-flight invocations, and firing `engine::workers-available` for the rest of the system.
+What the engine does when a worker drops — removing its functions and triggers, cancelling in-flight
+invocations, and firing `engine::workers-available` for the rest of the system.
 
 ## Config hot-reload
 
-How config file changes are picked up — parse, diff, validate, commit. Unchanged workers stay running through the reload; an invalid config exits the engine.
+How config file changes are picked up — parse, diff, validate, commit. Unchanged workers stay
+running through the reload; an invalid config exits the engine.
 
 ## Architecture-agnostic routing
 
@@ -29,8 +33,12 @@ Function-to-worker routing is independent of language, runtime, and location.
 
 ## Discovery and the live registry
 
-The engine maintains a registry of every connected worker's functions and triggers; workers read it on demand via the `engine::*::list` functions and subscribe to changes via the `engine::functions-available` trigger.
+The engine maintains a registry of every connected worker's functions and triggers; workers read it
+on demand via the `engine::*::list` functions and subscribe to changes via the
+`engine::functions-available` trigger.
 
 <Note>
-  Listing workers, functions, triggers, and trigger types is documented with the [iii-engine-functions worker](#). Querying traces, logs, and metrics is documented with the [iii-observability worker](#).
+  Listing workers, functions, triggers, and trigger types is documented with the
+  [iii-engine-functions worker](#). Querying traces, logs, and metrics is documented with the
+  [iii-observability worker](#).
 </Note>

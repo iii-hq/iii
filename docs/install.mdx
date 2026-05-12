@@ -15,30 +15,44 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 
 ## 2. Verify installation
 
-Check that iii has installed correctly with the following command. It should return a version number.
+Check that iii has installed correctly with the following command. It should return a version
+number.
 
 ```bash
 iii --version
 ```
 
 <Info title="Engine and SDK versions">
-  The engine and SDK packages can have different patch versions within the same minor line. Keep the engine and SDKs on the same minor version, for example `0.11.x`, unless a release note says otherwise.
+  The engine and SDK packages can have different patch versions within the same minor line. Keep the
+  engine and SDKs on the same minor version, for example `0.11.x`, unless a release note says
+  otherwise.
 </Info>
 
-{/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section below once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added.
+{/\* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section below once the
+iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The
+Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added.
 
 ## 3. Install the VS Code Extension (Optional)
 
 The iii Language Server extension gives your editor live awareness of your iii project:
 
-- **Completions**: function IDs, trigger types, payload properties, and known values like stream names and API paths.
+- **Completions**: function IDs, trigger types, payload properties, and known values like stream
+  names and API paths.
 - **Hover documentation**: request and response schemas for any registered function.
-- **Diagnostics**: validates function IDs, required payload fields, trigger configs, cron expressions, and HTTP methods as you type.
+- **Diagnostics**: validates function IDs, required payload fields, trigger configs, cron
+  expressions, and HTTP methods as you type.
 
 Works with TypeScript, Python, and Rust files. Requires a running iii engine.
 
 <Frame>
-  <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server in action: completions, hover docs, and diagnostics" />
+  <video
+    autoPlay
+    loop
+    muted
+    playsInline
+    src="/images/lsp.mp4"
+    alt="iii Language Server in action: completions, hover docs, and diagnostics"
+  />
 </Frame>
 
 Open the Extensions panel and search for `iii-lsp`, or install from the terminal:

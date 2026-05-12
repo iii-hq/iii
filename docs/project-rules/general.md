@@ -38,8 +38,8 @@ Tracker: [`todo/WORK.dead-code.md`](../todo/WORK.dead-code.md).
 
 ## "Telemetry" is ambiguous — always disambiguate
 
-iii has **two** distinct telemetry surfaces. Most prose talks about one or the other, rarely
-both, and conflating them is a recurring failure mode. Always make clear which one you mean.
+iii has **two** distinct telemetry surfaces. Most prose talks about one or the other, rarely both,
+and conflating them is a recurring failure mode. Always make clear which one you mean.
 
 - **OpenTelemetry / observability** — traces, metrics, logs, baggage, sampling, alerts, custom
   spans, exporters. Owned by the `iii-observability` worker. Governed by `OTEL_*` env vars
@@ -47,21 +47,21 @@ both, and conflating them is a recurring failure mode. Always make clear which o
   Grafana, Jaeger, etc. When in doubt, call this **observability** or **OpenTelemetry**, not
   "telemetry".
 - **iii-telemetry (anonymous usage)** — Amplitude analytics, heartbeat, anonymous device-ID
-  management. Owned by the `iii-telemetry` worker. Governed by `III_TELEMETRY_ENABLED`. This is
-  the opt-out anonymous usage stream, **not** OpenTelemetry.
+  management. Owned by the `iii-telemetry` worker. Governed by `III_TELEMETRY_ENABLED`. This is the
+  opt-out anonymous usage stream, **not** OpenTelemetry.
 
 Rules:
+
 - Never use bare "telemetry" to refer to OpenTelemetry surfaces — use "observability" or
   "OpenTelemetry".
 - Reserve the bare word "telemetry" for `iii-telemetry` (anonymous usage), or always qualify it
   ("OTel telemetry", "anonymous usage telemetry").
-- SDK callouts about logger / spans / metrics point at **iii-observability**, never
-  iii-telemetry.
-- `OTEL_ENABLED` and `III_TELEMETRY_ENABLED` are independent — disabling one does not disable
-  the other. `how-to/disable-telemetry.mdx` documents both distinctly.
+- SDK callouts about logger / spans / metrics point at **iii-observability**, never iii-telemetry.
+- `OTEL_ENABLED` and `III_TELEMETRY_ENABLED` are independent — disabling one does not disable the
+  other. `how-to/disable-telemetry.mdx` documents both distinctly.
 
-The canonical disambiguation lives in [`workers.md`](./workers.md) ("Logger and telemetry belong
-to iii-observability"); this rule lifts it so it's not buried.
+The canonical disambiguation lives in [`workers.md`](./workers.md) ("Logger and telemetry belong to
+iii-observability"); this rule lifts it so it's not buried.
 
 ## No "backend software" or "backend engineering"
 

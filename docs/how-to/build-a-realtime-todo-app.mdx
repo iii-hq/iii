@@ -5,7 +5,8 @@ owner: "devrel"
 type: "how-to"
 ---
 
-A full-stack reactive todo app over a single browser-to-engine WebSocket — function calls and live stream change events flow over the same connection.
+A full-stack reactive todo app over a single browser-to-engine WebSocket — function calls and live
+stream change events flow over the same connection.
 
 ## Engine configuration
 
@@ -21,15 +22,18 @@ Connect a worker, register the functions the app needs, and bind triggers.
 
 ### Auth function (RBAC)
 
-An auth function runs on each new browser WebSocket connection, issues a session ID, and namespaces the session's registered functions to prevent collisions.
+An auth function runs on each new browser WebSocket connection, issues a session ID, and namespaces
+the session's registered functions to prevent collisions.
 
 ### Stream wrapper
 
-A typed wrapper class over `stream::get` / `stream::set` / `stream::list` / `stream::delete` for one named stream.
+A typed wrapper class over `stream::get` / `stream::set` / `stream::list` / `stream::delete` for one
+named stream.
 
 ### Functions
 
-The CRUD functions the browser calls (create, toggle, delete, list) wired to write through the stream wrapper.
+The CRUD functions the browser calls (create, toggle, delete, list) wired to write through the
+stream wrapper.
 
 ## Frontend
 
@@ -45,4 +49,5 @@ A hook that subscribes to the stream and re-renders the UI on each change event 
 
 ## Key concepts
 
-The reactive primitives this app relies on — single-WebSocket transport, per-session RBAC namespacing, and stream-driven UI updates.
+The reactive primitives this app relies on — single-WebSocket transport, per-session RBAC
+namespacing, and stream-driven UI updates.

@@ -10,6 +10,46 @@ type: "how-to"
 Workers add capability to an iii system — each one contributes functions and triggers the engine can
 route to.
 
+## Connecting to the engine
+
+A worker connects to the engine over WebSocket. Set the engine URL via the `III_URL` environment
+variable, or pass it explicitly to `register_worker` (shown in the tabs below).
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="my-worker"),
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, register_worker};
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+    ```
+
+  </Tab>
+</Tabs>
+
+See [Using iii / Workers](/using-iii/workers#worker-lifecycle) for what happens after the worker
+connects and disconnects.
+
 ## Configuring workers
 
 How workers are declared and tuned in `iii.worker.yaml`.

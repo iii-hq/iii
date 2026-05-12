@@ -10,7 +10,10 @@ type: "reference"
 <Note>
   Logging and telemetry surfaces are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end. The browser SDK does not currently ship OpenTelemetry.
 
-  Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`, `StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#) — channels are managed by that worker end-to-end.
+Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`,
+`StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#) — channels are
+managed by that worker end-to-end.
+
 </Note>
 
 ## Installation
@@ -25,7 +28,8 @@ Connecting to the engine and obtaining the SDK handle. Always call the variable 
 ## Connection lifecycle
 
 How the SDK connects to the engine, registers functions, and reconnects with re-registration on
-disconnect (exponential backoff with jitter, configured via the reconnection options on `InitOptions`).
+disconnect (exponential backoff with jitter, configured via the reconnection options on
+`InitOptions`).
 
 ## Methods
 

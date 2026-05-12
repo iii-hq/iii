@@ -6,7 +6,8 @@
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
 <Info title="Install iii before proceeding">
-  Make sure you have installed iii before proceeding. If you haven't then visit the [Install](/install) guide first.
+  Make sure you have installed iii before proceeding. If you haven't then visit the
+  [Install](/install) guide first.
 </Info>
 
 ## 1. Create the project
@@ -16,7 +17,8 @@ iii project init quickstart --template quickstart
 cd quickstart
 ```
 
-This creates the two workers that you'll run: a Python worker that adds two numbers, and a TypeScript worker that calls the Python worker through the iii engine.
+This creates the two workers that you'll run: a Python worker that adds two numbers, and a
+TypeScript worker that calls the Python worker through the iii engine.
 
 ```
 quickstart/
@@ -33,12 +35,14 @@ quickstart/
 iii --config config.yaml
 ```
 
-The engine is now listening on `ws://localhost:49134`. Keep this terminal open and open a second terminal in the `quickstart` directory for the remaining commands.
+The engine is now listening on `ws://localhost:49134`. Keep this terminal open and open a second
+terminal in the `quickstart` directory for the remaining commands.
 
 ## 3. Start the Python worker
 
 <Info title="Workers can run anywhere">
-  Workers only need a WebSocket connection to the iii engine. They can run locally, in the cloud, replicated in kubernetes, or anywhere else.
+  Workers only need a WebSocket connection to the iii engine. They can run locally, in the cloud,
+  replicated in kubernetes, or anywhere else.
 </Info>
 
 ```bash
@@ -55,16 +59,21 @@ Path  /Users/tony/iii/projects/testing/quickstart/workers/math-worker
 ✓ Worker auto-started
 ```
 
-This worker registered the function `math::add` with the engine. You could call this function right now using the command below.
+This worker registered the function `math::add` with the engine. You could call this function right
+now using the command below.
 
 ```bash
 iii trigger math::add a=2 b=3
 ```
 
-However this is not much different than running an equivalent script on its own. The utility of iii comes from being able to place any functionality into a worker and then compose that worker with other workers through the engine, regardless of where each one runs or what language it's written in.
+However this is not much different than running an equivalent script on its own. The utility of iii
+comes from being able to place any functionality into a worker and then compose that worker with
+other workers through the engine, regardless of where each one runs or what language it's written
+in.
 
 <Tip>
-  Workers need a moment to install their runtime dependencies after being added. If you see `"message": "Function math::add not found"`, wait a few seconds and try again.
+  Workers need a moment to install their runtime dependencies after being added. If you see
+  `"message": "Function math::add not found"`, wait a few seconds and try again.
 </Tip>
 
 ## 4. Start the TypeScript worker
@@ -99,7 +108,8 @@ iii trigger math::add_two_numbers a=10 b=20
 
 ## 6. Add state
 
-The `iii worker add` command incrementally adds workers from the registry to your running system. Start by adding the state worker, which gives every function access to a persistent key-value store.
+The `iii worker add` command incrementally adds workers from the registry to your running system.
+Start by adding the state worker, which gives every function access to a persistent key-value store.
 
 From the folder containing iii's `config.yaml` run:
 
@@ -107,7 +117,8 @@ From the folder containing iii's `config.yaml` run:
 iii worker add iii-state
 ```
 
-Now open `workers/math-worker/math_worker.py` in your code editor and uncomment the state block so the handler looks like this:
+Now open `workers/math-worker/math_worker.py` in your code editor and uncomment the state block so
+the handler looks like this:
 
 ```python
 def add_handler(payload: dict) -> dict:
@@ -152,7 +163,8 @@ iii trigger math::add a=10 b=20
 { "c": 30, "running_total": 35 }
 ```
 
-The running total persists across every call, including calls that arrive through `math::add_two_numbers`.
+The running total persists across every call, including calls that arrive through
+`math::add_two_numbers`.
 
 ## 7. Add HTTP endpoints
 
@@ -168,24 +180,24 @@ Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the b
 
 ```typescript
 worker.registerFunction(
-  'http::add_two_numbers',
+  "http::add_two_numbers",
   async (payload: { body: { a: number; b: number } }) => {
     const result = await worker.trigger({
-      function_id: 'math::add_two_numbers',
+      function_id: "math::add_two_numbers",
       payload: payload.body,
     });
     return {
       status_code: 200,
       body: { c: result.c, running_total: result.running_total },
-      headers: { 'Content-Type': 'application/json' },
+      headers: { "Content-Type": "application/json" },
     };
   },
 );
 
 worker.registerTrigger({
-  type: 'http',
-  function_id: 'http::add_two_numbers',
-  config: { api_path: '/math/add-two-numbers', http_method: 'POST' },
+  type: "http",
+  function_id: "http::add_two_numbers",
+  config: { api_path: "/math/add-two-numbers", http_method: "POST" },
 });
 ```
 
@@ -201,24 +213,34 @@ curl -X POST http://localhost:3111/math/add-two-numbers \
 { "c": 300, "running_total": 335 }
 ```
 
-The same functions that respond to `iii trigger` now also respond to HTTP requests with no code changes to the handlers themselves.
+The same functions that respond to `iii trigger` now also respond to HTTP requests with no code
+changes to the handlers themselves.
 
 ## How it works
 
-For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together, see [Understanding iii](/understanding-iii). It uses this project as the worked example.
+For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together,
+see [Understanding iii](/understanding-iii). It uses this project as the worked example.
 
 <Tip title="Inspect what's running">
-  Open the iii Console with `iii console` in a new terminal: an interactive UI for workers, functions, triggers, logs, traces, and state. See the full [Console documentation](/using-iii/console) for details.
+  Open the iii Console with `iii console` in a new terminal: an interactive UI for workers,
+  functions, triggers, logs, traces, and state. See the full [Console
+  documentation](/using-iii/console) for details.
 </Tip>
 
 {/* TODO: re-add the "Give your coding agent context" Tip with `npx skillkit add iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}
 
 ## Next Steps
 
-You scaffolded a project, started two workers in different languages, called functions across them, added persistent state, and exposed everything over HTTP, all by incrementally adding workers to a running system.
+You scaffolded a project, started two workers in different languages, called functions across them,
+added persistent state, and exposed everything over HTTP, all by incrementally adding workers to a
+running system.
 
 <CardGroup cols={2}>
-  <Card title="Build a real-time todo app" href="/how-to/build-a-realtime-todo-app" icon="book-open">
+  <Card
+    title="Build a real-time todo app"
+    href="/how-to/build-a-realtime-todo-app"
+    icon="book-open"
+  >
     Apply functions, triggers, and workers to a complete how-to.
   </Card>
   <Card title="Understanding iii" href="/understanding-iii" icon="table-layout">

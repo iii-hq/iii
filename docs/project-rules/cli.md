@@ -20,10 +20,14 @@ Examples that conform:
 - `iii worker update`
 - `iii worker verify`
 
-**Recognized exemption — `iii trigger`:** The syntax `iii trigger <function-path> [argA="value" argB=5 ...]` is the canonical way to invoke any registered function from the CLI (e.g., `iii trigger sandbox::run`, `iii trigger state::set`, `iii trigger iii::durable::publish`). The `function-path` follows the worker-namespaced `noun::verb` scheme.
+**Recognized exemption — `iii trigger`:** The syntax
+`iii trigger <function-path> [argA="value" argB=5 ...]` is the canonical way to invoke any
+registered function from the CLI (e.g., `iii trigger sandbox::run`, `iii trigger state::set`,
+`iii trigger iii::durable::publish`). The `function-path` follows the worker-namespaced `noun::verb`
+scheme.
 
-When you encounter another command that doesn't follow `iii noun verb`, flag it — either the
-command name should change, or the doc should clarify the noun.
+When you encounter another command that doesn't follow `iii noun verb`, flag it — either the command
+name should change, or the doc should clarify the noun.
 
 ## `iii worker` CLI is iii-level tooling
 

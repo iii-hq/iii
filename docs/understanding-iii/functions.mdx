@@ -15,8 +15,11 @@ The `service::name` convention used to address functions across workers.
 
 ## Invocation modes
 
-How `trigger()` calls a function — synchronous (default, blocks until result) and void (fire-and-forget).
+How `trigger()` calls a function — synchronous (default, blocks until result) and void
+(fire-and-forget).
 
 <Note>
-  Workers can provide their own `TriggerAction`s. The built-in iii-queue worker provides `TriggerAction.Enqueue({ queue })`, which routes the invocation through a named queue with retries — see iii-queue for the queue mechanics.
+  Workers can provide their own `TriggerAction`s. The built-in iii-queue worker provides
+  `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries —
+  see iii-queue for the queue mechanics.
 </Note>

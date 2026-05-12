@@ -3,55 +3,89 @@
 # Welcome to iii
 
 
-Software engineering has become an exercise in assembling categories of services. iii eliminates the integration complexity that pattern produces.
+Software engineering has become an exercise in assembling categories of services. iii eliminates the
+integration complexity that pattern produces.
 
 <Tip>
-  The tabs above split the site into Docs (start here), Tutorials, How-tos, Patterns, SDK & Engine Reference, and Changelog. Read this page and the Docs tab in order first. The other tabs make more sense once you have the model.
+  The tabs above split the site into Docs (start here), Tutorials, How-tos, Patterns, SDK & Engine
+  Reference, and Changelog. Read this page and the Docs tab in order first. The other tabs make more
+  sense once you have the model.
 </Tip>
 
 ## The Problem
 
-Each service in a modern system arrives with its own internals, its own lifecycle, its own integration story, and its own failure modes. Four services means six possible integrations. Twenty means 190. Every new capability quadratically compounds the coordination cost of everything already in your stack.
+Each service in a modern system arrives with its own internals, its own lifecycle, its own
+integration story, and its own failure modes. Four services means six possible integrations. Twenty
+means 190. Every new capability quadratically compounds the coordination cost of everything already
+in your stack.
 
 This pattern has been growing for decades.
 
 ## The Solution
 
-iii organizes software into three primitives: **Worker**, **Trigger**, **Function**. Something hosts work, something causes it, something does it. Every capability in every system can be built from these three things: queues, cron, streaming, sandboxing, observability, agents, business logic, devices, even frontend browser UIs.
+iii organizes software into three primitives: **Worker**, **Trigger**, **Function**. Something hosts
+work, something causes it, something does it. Every capability in every system can be built from
+these three things: queues, cron, streaming, sandboxing, observability, agents, business logic,
+devices, even frontend browser UIs.
 
 ## Quadratic to Zero
 
-The integration problem doesn't only manifest where two systems connect. It creates downstream friction in logging, debugging, and upgrading, and upstream friction that blocks growth initiatives, new verticals, and partnerships.
+The integration problem doesn't only manifest where two systems connect. It creates downstream
+friction in logging, debugging, and upgrading, and upstream friction that blocks growth initiatives,
+new verticals, and partnerships.
 
-iii reduces all of that effort to zero. Adding two workers or two hundred is the same operation. A new worker joins the system by opening a single WebSocket connection and becomes immediately available to every other worker at that moment.
+iii reduces all of that effort to zero. Adding two workers or two hundred is the same operation. A
+new worker joins the system by opening a single WebSocket connection and becomes immediately
+available to every other worker at that moment.
 
 ## Have a Need? Add a Worker
 
-Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, observability, an agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are deterministic code. Some are stochastic agents.
+Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, observability, an
+agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are
+deterministic code. Some are stochastic agents.
 
-`iii worker add` is the npm moment for systems. What installs is not a library. It is a complete running service. A queue worker. A sandbox worker. A classifier. One command, complete capability, immediately available to every other worker in the system.
+`iii worker add` is the npm moment for systems. What installs is not a library. It is a complete
+running service. A queue worker. A sandbox worker. A classifier. One command, complete capability,
+immediately available to every other worker in the system.
 
 ## Same Contract, Both Sides
 
-Application teams register functions and declare triggers, focused entirely on business logic. Platform teams publish workers, focused entirely on the capabilities they provide. Both sides fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service API contracts. The work that used to live between teams disappears.
+Application teams register functions and declare triggers, focused entirely on business logic.
+Platform teams publish workers, focused entirely on the capabilities they provide. Both sides
+fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service API
+contracts. The work that used to live between teams disappears.
 
 ## Any Language, Any Runtime
 
-A worker in Docker, on Kubernetes, on the edge, in a browser tab, on a Raspberry Pi, or inside a hardware-isolated microVM is the same kind of worker. Moving a workload is a redeploy, not a rewrite. The engine handles serialization and routing.
+A worker in Docker, on Kubernetes, on the edge, in a browser tab, on a Raspberry Pi, or inside a
+hardware-isolated microVM is the same kind of worker. Moving a workload is a redeploy, not a
+rewrite. The engine handles serialization and routing.
 
 ## Built for Agents
 
-Most agent harnesses solve one slice of the problem: a chat loop, a tool-calling sandbox, a chained workflow. iii is not a harness for one kind of agent. It is the same runtime the whole system already runs on, which is what makes an agent inside it actually agentic: it can act on every part of the system, not inside a runtime carved out separately for agents.
+Most agent harnesses solve one slice of the problem: a chat loop, a tool-calling sandbox, a chained
+workflow. iii is not a harness for one kind of agent. It is the same runtime the whole system
+already runs on, which is what makes an agent inside it actually agentic: it can act on every part
+of the system, not inside a runtime carved out separately for agents.
 
-Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the rest of the system. An agent that hits a task outside its current capabilities can register a worker at runtime, expose new functions, and extend the system it operates inside. That is the difference between scripted LLM calls and real autonomy.
+Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
+triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
+rest of the system. An agent that hits a task outside its current capabilities can register a worker
+at runtime, expose new functions, and extend the system it operates inside. That is the difference
+between scripted LLM calls and real autonomy.
 
-Humans and agents share one mental model. A new engineer is productive on day one because the mental model never changes from one capability to the next. AI agents can reliably reason about an entire system in a single context window because there is one set of primitives to learn and one always-accurate source of truth for what exists.
+Humans and agents share one mental model. A new engineer is productive on day one because the mental
+model never changes from one capability to the next. AI agents can reliably reason about an entire
+system in a single context window because there is one set of primitives to learn and one
+always-accurate source of truth for what exists.
 
-As agents do more of the work of building and operating software, the size of that primitive set is what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
+As agents do more of the work of building and operating software, the size of that primitive set is
+what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
 
 ## Getting Started
 
-The best way to understand iii is to try it. Install the engine and follow the Quickstart to create your first iii-powered project.
+The best way to understand iii is to try it. Install the engine and follow the Quickstart to create
+your first iii-powered project.
 
 <CardGroup cols={2}>
   <Card title="Install" href="/install" icon="download">
