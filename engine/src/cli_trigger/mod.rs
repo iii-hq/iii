@@ -27,7 +27,7 @@ pub enum TriggerCliError {
 #[derive(Parser, Debug, Clone)]
 #[command(disable_help_flag = true)]
 pub struct TriggerArgs {
-    /// Function path (e.g. `my::fn`, `sandbox::run`). Positional.
+    /// Function path (e.g. `my::fn`, `sandbox::create`). Positional.
     #[arg(value_name = "FUNCTION_PATH")]
     pub function_path: Option<String>,
 

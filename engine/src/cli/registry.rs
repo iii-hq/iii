@@ -108,16 +108,10 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
-        commands: &[
-            CommandMapping {
-                cli_command: "worker",
-                binary_subcommand: None,
-            },
-            CommandMapping {
-                cli_command: "sandbox",
-                binary_subcommand: Some("sandbox"),
-            },
-        ],
+        commands: &[CommandMapping {
+            cli_command: "worker",
+            binary_subcommand: None,
+        }],
         tag_prefix: Some("iii"),
     },
 ];
