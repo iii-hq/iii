@@ -199,3 +199,26 @@ fn init_allows_non_empty_with_flag() {
         "init --allow-non-empty must not delete pre-existing files"
     );
 }
+
+#[test]
+fn init_reports_clear_error_when_template_dir_missing() {
+    let dir = tempdir().unwrap();
+    let bogus = tempdir().unwrap(); // empty: no template.yaml at root
+    let out = worker_bin()
+        .args(["init", "--template-dir"])
+        .arg(bogus.path())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("run iii-worker");
+
+    assert!(
+        !out.status.success(),
+        "init must fail when template tree is empty"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("worker-bare") || stderr.contains("template"),
+        "stderr should mention the failing template, got: {stderr}"
+    );
+}
