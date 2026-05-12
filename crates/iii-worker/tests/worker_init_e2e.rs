@@ -150,3 +150,52 @@ fn init_preserves_worker_id_and_user_edits_on_rerun() {
         "re-init must not clobber edited iii.worker.yaml"
     );
 }
+
+#[test]
+fn init_refuses_non_empty_directory_without_flag() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("user-file.txt"), "hello").unwrap();
+
+    let out = worker_bin()
+        .args(["init", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("run iii-worker");
+
+    assert!(!out.status.success(), "init must fail on non-empty dir");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not empty"),
+        "expected non-empty hint in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn init_allows_non_empty_with_flag() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("user-file.txt"), "hello").unwrap();
+
+    let out = worker_bin()
+        .args(["init", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .arg("--allow-non-empty")
+        .output()
+        .expect("run iii-worker");
+
+    assert!(
+        out.status.success(),
+        "init --allow-non-empty must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join(".iii").join("worker.ini").exists());
+    // Pre-existing file must survive.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("user-file.txt")).unwrap(),
+        "hello",
+        "init --allow-non-empty must not delete pre-existing files"
+    );
+}
