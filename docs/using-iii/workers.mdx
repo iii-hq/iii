@@ -40,21 +40,19 @@ being callable until it reconnects.
 ## Finding workers
 
 We maintain a worker registry which you can explore at [workers.iii.dev](https://workers.iii.dev/).
-The registry contains many workers than encapsulate common services.
+The registry contains many workers that encapsulate common services. See
+[Worker Registry](./registry) for more information on the worker registry.
 
 ## Adding a worker
 
-`iii worker add <name>` installs a worker into your project such as:
+`iii worker add <name>` installs a worker into your project:
 
 ```bash
-iii worker add iii-state                # registry name
-iii worker add ./workers/my-worker      # local path
-iii worker add ghcr.io/org/worker:tag   # Docker or OCI image
+iii worker add iii-state
 ```
 
-You can append `@<version>` to a registry name to pin a specific version
-(`iii worker add iii-state@1.2.0`). See [CLI](/using-iii/cli#worker) for the full feature set of
-`iii worker`.
+The worker is added to `config.yaml` and started automatically. For local paths, Docker / OCI
+images, and version pinning, see [Worker Registry / Adding a worker](./registry#adding-a-worker).
 
 ## Starting and stopping workers
 
@@ -94,6 +92,29 @@ The `iii worker` CLI subcommands cover the operational lifecycle of workers in a
 includes `add`, `remove`, `reinstall`, `clear`, `list`, `start`, `stop`, etc. Full syntax, flags,
 and behavior are documented at [CLI](/using-iii/cli).
 
+## Versioning and pinning
+
+Workers are published with semver versions. Installing without a version specifier picks the latest
+release. Append `@<version>` to a registry name to pin a specific release rather than tracking the
+latest:
+
+```bash
+iii worker add iii-state@1.2.0
+```
+
+The pin is recorded in `iii.lock` and replays on every subsequent install, so the same deployment of
+an iii system is reproducible across machines.
+
+## Updating a worker
+
+`iii worker update` re-resolves locked workers and writes the new pins back to `iii.lock`. Pass a
+worker name to update one, or omit it to update every locked worker:
+
+```bash
+iii worker update <worker-name>   # one worker
+iii worker update                 # every locked worker
+```
+
 ## The lockfile (iii.lock)
 
 `iii.lock` is a YAML file at your project root. It pins each managed worker to a specific version
@@ -105,6 +126,18 @@ installs. The `iii worker` CLI subcommands `sync`, `verify`, and `update` read a
 [CLI](/using-iii/cli) for complete syntax.
 
 {/* TODO: Add a dedicated lockfile reference page for the per-field schema (top-level fields, LockedWorker, BinaryArtifact, ImageSource, manifest hash format). The dx-improves source includes `docs/workers/managed-worker-lockfile.mdx` which can be ported. */}
+
+## Removing a worker
+
+`iii worker remove` drops a worker from `config.yaml` and the engine tears down the running worker
+process:
+
+```bash
+iii worker remove <worker-name>
+```
+
+Downloaded artifacts remain on disk after removal. See [CLI](/using-iii/cli#worker) for the
+subcommand that cleans up artifacts.
 
 ## Authoring workers
 

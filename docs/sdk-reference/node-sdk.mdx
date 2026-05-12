@@ -11,8 +11,7 @@ How to add the Node.js SDK (`iii-sdk`) to a project.
 
 ## Initialization
 
-Connecting to the engine and obtaining the SDK handle. Always call the variable `worker` and not
-`iii` so when we do `worker.registerFunction()` it makes more contextual sense.
+Connecting to the engine and obtaining the SDK handle. The handle is conventionally named `worker`.
 
 ## Connection lifecycle
 
@@ -47,7 +46,7 @@ Invoke a registered function or fire a trigger from Node.
 
 ### shutdown
 
-Disconnect from the engine and release resources, flushing any pending telemetry.
+Disconnect from the engine and release resources, flushing any pending observability data.
 
 ### registerTriggerType
 
@@ -58,17 +57,18 @@ Declare a new trigger type that this worker can source events from. **Consider r
 Remove a previously registered trigger type. **Consider removing**
 
 <Note>
-  Logging and telemetry surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#) — they live there because that worker owns logging and telemetry end-to-end.
+  Logging and observability surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#); that worker owns logging and OpenTelemetry end-to-end.
 
 Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`,
-`StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#) — channels are
+`StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#); channels are
 managed by that worker end-to-end.
 
 </Note>
 
 ## Subpath exports
 
-Additional modules importable from sub-paths (e.g., `iii-sdk/telemetry`).
+Additional modules importable from sub-paths (e.g., `iii-sdk/telemetry`, the
+OpenTelemetry/observability subpath).
 
 ## Types
 
@@ -84,7 +84,7 @@ Typed reference to a registered function.
 
 ### IIIReconnectionConfig
 
-Engine-WebSocket reconnection behavior — `maxRetries`, `initialDelayMs`, `backoffMultiplier`,
+Engine-WebSocket reconnection behavior: `maxRetries`, `initialDelayMs`, `backoffMultiplier`,
 `maxDelayMs`, `jitterFactor`.
 
 ### HttpAuthConfig
