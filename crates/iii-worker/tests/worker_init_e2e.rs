@@ -96,3 +96,57 @@ fn init_creates_minimum_scaffold_and_templates_name() {
         "next-steps should mention `iii worker add`; got: {stderr}"
     );
 }
+
+#[test]
+fn init_preserves_worker_id_and_user_edits_on_rerun() {
+    let dir = tempdir().unwrap();
+    let run = || {
+        worker_bin()
+            .args(["init", "--template-dir"])
+            .arg(fixtures())
+            .arg("--directory")
+            .arg(dir.path())
+            .output()
+            .expect("init run")
+    };
+
+    let out1 = run();
+    assert!(
+        out1.status.success(),
+        "first init: {}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+    let ini1 = std::fs::read_to_string(dir.path().join(".iii").join("worker.ini")).unwrap();
+
+    // User edits iii.worker.yaml between runs.
+    let yaml_path = dir.path().join("iii.worker.yaml");
+    let edited = "name: my-custom-worker\nlanguage: py\nentry: ./main.py\n";
+    std::fs::write(&yaml_path, edited).unwrap();
+
+    let out2 = run();
+    assert!(
+        out2.status.success(),
+        "second init: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let ini2 = std::fs::read_to_string(dir.path().join(".iii").join("worker.ini")).unwrap();
+
+    let id_of = |s: &str| {
+        s.lines()
+            .find_map(|l| l.trim().strip_prefix("worker_id="))
+            .map(|v| v.trim().to_string())
+            .expect("worker_id present")
+    };
+    assert_eq!(
+        id_of(&ini1),
+        id_of(&ini2),
+        "worker_id must persist across reruns"
+    );
+
+    // OV-3: idempotent apply_template must NOT clobber user edits.
+    let yaml_after = std::fs::read_to_string(&yaml_path).unwrap();
+    assert_eq!(
+        yaml_after, edited,
+        "re-init must not clobber edited iii.worker.yaml"
+    );
+}
