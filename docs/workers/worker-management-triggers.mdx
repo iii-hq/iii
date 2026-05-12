@@ -1,0 +1,105 @@
+---
+title: 'Worker Management Triggers'
+description: 'Install, remove, and manage peer workers from inside another worker via worker::* SDK triggers.'
+---
+
+The `iii-worker-ops` daemon registers `worker::*` SDK trigger functions that any worker can call to install, remove, or manage peer workers dynamically. The same trigger surface backs `iii worker <cmd>` CLI invocations when the daemon is reachable, so external workers and the CLI converge on a single source of truth.
+
+## Enabling the daemon
+
+Nothing to configure — the engine auto-injects `iii-worker-ops` into every config (via `EngineConfig::ensure_builtin_daemons()`) and starts it as a sidecar resolved through the `KNOWN_EXTERNAL` registry. The daemon ships with the `iii-worker` binary as the `worker-manager-daemon` subcommand, so a separate install isn't needed.
+
+To override the injection (e.g. point at a custom build), add an explicit entry to your `iii.config.yaml`:
+
+```yaml
+workers:
+  - name: iii-worker-ops
+```
+
+The injection is idempotent, so an explicit entry simply takes precedence.
+
+## Trigger surface
+
+| Trigger ID       | Request type     | Response type    | Default client timeout |
+|------------------|------------------|------------------|------------------------|
+| `worker::add`    | `AddOptions`     | `AddOutcome`     | 600s                   |
+| `worker::remove` | `RemoveOptions`  | `RemoveOutcome`  | 30s                    |
+| `worker::update` | `UpdateOptions`  | `UpdateOutcome`  | 600s                   |
+| `worker::start`  | `StartOptions`   | `StartOutcome`   | 60s                    |
+| `worker::stop`   | `StopOptions`    | `StopOutcome`    | 30s                    |
+| `worker::list`   | `ListOptions`    | `ListOutcome`    | 10s                    |
+| `worker::clear`  | `ClearOptions`   | `ClearOutcome`   | 30s                    |
+
+`worker::add` rejects local-path sources via the trigger surface (W102) — local paths remain CLI-only because a sandboxed worker has no meaningful filesystem mapping to the host. Use registry names or OCI references instead.
+
+## Example: install a peer worker from a Rust worker
+
+```rust
+use iii_sdk::TriggerRequest;
+use serde_json::json;
+
+let resp = iii.trigger(TriggerRequest {
+    function_id: "worker::add".into(),
+    payload: json!({
+        "source": { "kind": "registry", "name": "pdfkit", "version": "1.0.0" },
+        "force": false,
+        "reset_config": false,
+        "wait": true,
+    }),
+    action: None,
+    timeout_ms: Some(600_000),
+}).await?;
+```
+
+`source` is an adjacently-tagged enum with three variants:
+
+- `{ "kind": "registry", "name": "pdfkit", "version": "1.0.0" }` — registry name with optional version
+- `{ "kind": "oci", "reference": "ghcr.io/iii-hq/node:latest" }` — full OCI reference
+- `{ "kind": "local", "path": "./my-worker" }` — local path (CLI only; rejected via trigger with W102)
+
+## Error envelope
+
+Trigger errors return a flat JSON envelope mirroring the `SandboxError` pattern, with a per-variant `details` sub-object:
+
+```json
+{
+  "type": "WorkerOpError",
+  "code": "W141",
+  "message": "OCI pull failed: ghcr.io/foo/bar:1.0 — manifest unknown",
+  "details": { "reference": "ghcr.io/foo/bar:1.0" }
+}
+```
+
+## W-code reference
+
+| W-code | Variant                          | Meaning                                                  |
+|--------|----------------------------------|----------------------------------------------------------|
+| W100   | `InvalidName`                    | Worker name failed validation                             |
+| W101   | `InvalidSource`                  | Source string is malformed                                |
+| W102   | `LocalPathNotAllowedViaTrigger`  | Local-path sources are CLI-only                           |
+| W110   | `NotFound`                       | Worker is not registered                                  |
+| W111   | `AlreadyExists`                  | Worker already installed                                  |
+| W112   | `NotInstalled`                   | Worker not present on disk                                |
+| W113   | `NotRunning`                     | Worker process not running                                |
+| W114   | `AlreadyRunning`                 | Worker is already running                                 |
+| W120   | `LockBusy`                       | Another operation holds the project lock                  |
+| W121   | `LockIo`                         | Lockfile I/O failed                                       |
+| W130   | `ConfigIo`                       | `iii.config.yaml` I/O failed                              |
+| W131   | `ConfigParse`                    | `iii.config.yaml` parse error                             |
+| W140   | `Registry`                       | Worker registry returned an error                         |
+| W141   | `OciPull`                        | OCI image pull failed                                     |
+| W142   | `Download`                       | Binary download failed                                    |
+| W150   | `LockfileMismatch`               | Resolved lockfile entry does not match expected           |
+| W160   | `Spawn`                          | Failed to spawn worker process                            |
+| W161   | `StartTimeout`                   | Worker did not become ready within deadline               |
+| W162   | `StopTimeout`                    | Worker did not exit within deadline                       |
+| W170   | `Cancelled`                      | Operation cancelled (caller dropped trigger)              |
+| W900   | `Internal`                       | Unexpected internal failure                               |
+
+## CLI dual-path routing
+
+`iii worker <cmd>` probes the engine WS port (200ms TCP connect). When the daemon is reachable the CLI triggers `worker::<cmd>` over the SDK; otherwise it falls through to an in-process library path. Set `IIIWORKER_DIRECT=1` to force the library path (useful for tests, debugging, or as an escape hatch).
+
+## Status
+
+Daemon-side handlers are wired end-to-end. Each `worker::*` trigger routes through `crates/iii-worker/src/cli/worker_manager_daemon.rs`, which delegates to the same `core::*::run` orchestrators (in `crates/iii-worker/src/core/`) as the CLI via `CliHostShim` (`crates/iii-worker/src/cli/host_shim.rs`). Trigger and CLI invocations share one code path, so the W-code envelope above describes both surfaces. The CLI's dual-path routing still applies: `iii worker <cmd>` will fall through to the in-process library path if the daemon isn't reachable.

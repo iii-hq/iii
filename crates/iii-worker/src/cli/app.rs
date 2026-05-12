@@ -117,6 +117,10 @@ pub enum Commands {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
         worker_name: String,
+        /// Skip the confirmation prompt. Required when stdin is non-interactive
+        /// (scripts, CI, agents); without `-y` the call needs a tty.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Restart a managed worker: stop if running, then start. Idempotent --
@@ -207,6 +211,11 @@ pub enum Commands {
     #[command(name = "sandbox-daemon", hide = true)]
     SandboxDaemon(SandboxDaemonArgs),
 
+    /// Run the host-side worker-manager daemon. Connects to the engine,
+    /// registers `worker::*` SDK triggers, and serves them until SIGINT.
+    #[command(name = "worker-manager-daemon", hide = true)]
+    WorkerManagerDaemon(WorkerManagerDaemonArgs),
+
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
@@ -273,6 +282,20 @@ pub struct WatchSourceArgs {
     /// Absolute project directory to watch recursively
     #[arg(long, value_name = "PATH")]
     pub project: String,
+}
+
+/// Arguments for the `worker-manager-daemon` subcommand. Started by
+/// the iii engine as a child process when iii-worker-manager is listed
+/// in the project's worker config; rarely invoked directly.
+#[derive(Args, Debug)]
+pub struct WorkerManagerDaemonArgs {
+    /// Engine WebSocket URL to connect back to.
+    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    pub engine: String,
+
+    /// Project root the daemon mutates. Defaults to CWD at start.
+    #[arg(long)]
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 /// Arguments for the `sandbox-daemon` subcommand. Started by the iii

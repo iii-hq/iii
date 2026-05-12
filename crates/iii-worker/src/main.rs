@@ -16,16 +16,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // The `sandbox` subtree is exposed through the `iii` dispatcher as
-    // `iii sandbox ...`. When users run `iii sandbox --help`, clap would
-    // otherwise show `Usage: iii worker sandbox <COMMAND>` because the
-    // top-level bin_name is "iii worker". Clap's help generator always
-    // walks from the root and uses the root's bin_name as the usage
-    // prefix, so per-subcommand overrides don't change the displayed
-    // path. Workaround: peek at argv and, if the first non-program
-    // argument is `sandbox`, swap the root bin_name to `iii` so the
-    // usage line reads `iii sandbox ...`. All other subcommands keep
-    // the existing `iii worker <cmd>` usage.
+    // The `iii` dispatcher routes `iii sandbox ...` here, but our root
+    // bin_name is "iii worker" so clap renders `Usage: iii worker sandbox`.
+    // Peek at argv: if the first non-flag arg is `sandbox`, override the
+    // root bin_name to `iii` for that one invocation. Per-subcommand bin_name
+    // overrides don't fix it — clap's help walker always uses the root's.
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let is_sandbox = args
         .iter()
@@ -47,52 +42,207 @@ async fn main() -> anyhow::Result<()> {
             force,
             no_wait,
         } => {
-            let wait = !no_wait;
-            if force {
-                let mut fail_count = 0;
-                for name in &args.worker_names {
-                    let result = iii_worker::cli::managed::handle_managed_add(
-                        name,
-                        false,
-                        force,
-                        args.reset_config,
-                        wait,
-                    )
-                    .await;
-                    if result != 0 {
-                        fail_count += 1;
-                    }
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+
+            let total = args.worker_names.len();
+            let brief = total > 1;
+            let mut fail_count = 0usize;
+
+            for (i, name) in args.worker_names.iter().enumerate() {
+                if brief {
+                    use colored::Colorize;
+                    eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
                 }
-                if fail_count == 0 { 0 } else { 1 }
-            } else {
-                iii_worker::cli::managed::handle_managed_add_many(&args.worker_names, wait).await
+
+                let opts = AddOptions {
+                    source: parse_source_for_cli(name),
+                    force,
+                    reset_config: args.reset_config,
+                    wait: !no_wait,
+                };
+
+                let cwd = match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("error: cannot resolve project root: {e}");
+                        fail_count += 1;
+                        continue;
+                    }
+                };
+                let ctx = ProjectCtx::open_unlocked(cwd);
+                let sink = StderrSink::new(brief);
+                let result =
+                    core_add::run(opts, &ctx, &sink, &CliHostShim, core_add::CallerMode::Cli).await;
+
+                if let Err(e) = result {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    fail_count += 1;
+                }
             }
+
+            if fail_count == 0 { 0 } else { 1 }
         }
         Commands::Remove { worker_names, yes } => {
-            iii_worker::cli::managed::handle_managed_remove_many(&worker_names, yes).await
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{ProjectCtx, RemoveOptions, remove as core_remove};
+            use std::io::IsTerminal;
+
+            // Consent: -y / --yes always proceeds. Without -y, prompt when
+            // stderr is a tty; refuse non-interactively so scripts don't
+            // silently remove workers without confirmation.
+            let confirmed = if yes {
+                true
+            } else if std::io::stderr().is_terminal() {
+                use std::io::{BufRead, Write};
+                let names_str = worker_names.join(", ");
+                eprint!("Remove worker(s) '{}'? [y/N] ", names_str);
+                let _ = std::io::stderr().flush();
+                let mut buf = String::new();
+                let _ = std::io::stdin().lock().read_line(&mut buf);
+                let trimmed = buf.trim().to_lowercase();
+                trimmed == "y" || trimmed == "yes"
+            } else {
+                eprintln!("error: remove is destructive; pass -y/--yes for non-interactive use");
+                std::process::exit(1);
+            };
+            if !confirmed {
+                eprintln!("Aborted.");
+                std::process::exit(1);
+            }
+            // `all` is unused on the CLI surface (users list names explicitly).
+            let opts = RemoveOptions {
+                names: worker_names,
+                all: false,
+                yes: true,
+            };
+            let cwd = std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve project root: {e}");
+                std::process::exit(1);
+            });
+            let ctx = ProjectCtx::open_unlocked(cwd);
+            let sink = StderrSink::new(false);
+            match core_remove::run(opts, &ctx, &sink, &CliHostShim).await {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    1
+                }
+            }
         }
         Commands::Reinstall { args } => {
-            let mut fail_count = 0;
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+
+            let mut fail_count = 0usize;
             for name in &args.worker_names {
-                let result = iii_worker::cli::managed::handle_managed_add(
-                    name,
-                    false,
-                    true,
-                    args.reset_config,
-                    false,
-                )
-                .await;
-                if result != 0 {
+                let opts = AddOptions {
+                    source: parse_source_for_cli(name),
+                    force: true,
+                    reset_config: args.reset_config,
+                    wait: false,
+                };
+
+                let cwd = match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("error: cannot resolve project root: {e}");
+                        fail_count += 1;
+                        continue;
+                    }
+                };
+                let ctx = ProjectCtx::open_unlocked(cwd);
+                let sink = StderrSink::new(false);
+                if let Err(e) =
+                    core_add::run(opts, &ctx, &sink, &CliHostShim, core_add::CallerMode::Cli).await
+                {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
                     fail_count += 1;
                 }
             }
             if fail_count == 0 { 0 } else { 1 }
         }
         Commands::Update { worker_name } => {
-            iii_worker::cli::managed::handle_worker_update(worker_name.as_deref()).await
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{ProjectCtx, UpdateOptions, update as core_update};
+
+            let opts = UpdateOptions {
+                names: worker_name.map(|n| vec![n]).unwrap_or_default(),
+            };
+            let cwd = std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve project root: {e}");
+                std::process::exit(1);
+            });
+            let ctx = ProjectCtx::open_unlocked(cwd);
+            let sink = StderrSink::new(false);
+            match core_update::run(opts, &ctx, &sink, &CliHostShim).await {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    1
+                }
+            }
         }
         Commands::Clear { worker_name, yes } => {
-            iii_worker::cli::managed::handle_managed_clear(worker_name.as_deref(), yes)
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{ClearOptions, ProjectCtx, clear as core_clear};
+            use std::io::IsTerminal;
+
+            // Map the existing CLI shape onto the new symmetric schema:
+            // no name = wipe all, with-name = wipe just that one.
+            let (names, all) = match worker_name {
+                Some(n) => (vec![n], false),
+                None => (Vec::new(), true),
+            };
+            // Consent: -y / --yes always proceeds. Without -y, prompt when
+            // stderr is a tty; refuse non-interactively so scripts don't
+            // silently wipe artifacts without confirmation.
+            let target_label = if all {
+                "all worker artifacts".to_string()
+            } else {
+                format!("artifacts for '{}'", names.join(", "))
+            };
+            let confirmed = if yes {
+                true
+            } else if std::io::stderr().is_terminal() {
+                use std::io::{BufRead, Write};
+                eprint!("Clear {}? [y/N] ", target_label);
+                let _ = std::io::stderr().flush();
+                let mut buf = String::new();
+                let _ = std::io::stdin().lock().read_line(&mut buf);
+                let trimmed = buf.trim().to_lowercase();
+                trimmed == "y" || trimmed == "yes"
+            } else {
+                eprintln!("error: clear is destructive; pass -y/--yes for non-interactive use");
+                std::process::exit(1);
+            };
+            if !confirmed {
+                eprintln!("Aborted.");
+                std::process::exit(1);
+            }
+            let opts = ClearOptions {
+                names,
+                all,
+                yes: true,
+            };
+            let cwd = std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve project root: {e}");
+                std::process::exit(1);
+            });
+            let ctx = ProjectCtx::open_unlocked(cwd);
+            let sink = StderrSink::new(false);
+            match core_clear::run(opts, &ctx, &sink, &CliHostShim).await {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    1
+                }
+            }
         }
         Commands::Start {
             worker_name,
@@ -100,16 +250,74 @@ async fn main() -> anyhow::Result<()> {
             port,
             config,
         } => {
-            iii_worker::cli::managed::handle_managed_start(
-                &worker_name,
-                !no_wait,
-                port,
-                config.as_deref(),
-            )
-            .await
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{ProjectCtx, StartOptions, start as core_start};
+
+            // Adapt CLI Start arg shape to StartOptions.
+            let opts = StartOptions {
+                name: worker_name,
+                port: Some(port),
+                config: config.map(|p| p.display().to_string()),
+                wait: !no_wait,
+            };
+            let cwd = std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve project root: {e}");
+                std::process::exit(1);
+            });
+            let ctx = ProjectCtx::open_unlocked(cwd);
+            let sink = StderrSink::new(false);
+            match core_start::run(opts, &ctx, &sink, &CliHostShim).await {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    1
+                }
+            }
         }
-        Commands::Stop { worker_name } => {
-            iii_worker::cli::managed::handle_managed_stop(&worker_name).await
+        Commands::Stop { worker_name, yes } => {
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{ProjectCtx, StopOptions, stop as core_stop};
+            use std::io::IsTerminal;
+
+            // Consent: -y / --yes always proceeds. Without -y, prompt
+            // when stderr is a tty; refuse non-interactively so scripts
+            // don't silently stop workers without confirmation.
+            if !yes {
+                if std::io::stderr().is_terminal() {
+                    use std::io::{BufRead, Write};
+                    eprint!("Stop worker '{}'? [y/N] ", worker_name);
+                    let _ = std::io::stderr().flush();
+                    let mut buf = String::new();
+                    let _ = std::io::stdin().lock().read_line(&mut buf);
+                    let trimmed = buf.trim().to_lowercase();
+                    if trimmed != "y" && trimmed != "yes" {
+                        eprintln!("Aborted.");
+                        std::process::exit(1);
+                    }
+                } else {
+                    eprintln!("error: stop is destructive; pass -y/--yes for non-interactive use");
+                    std::process::exit(1);
+                }
+            }
+            let opts = StopOptions {
+                name: worker_name,
+                yes: true,
+            };
+            let cwd = std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve project root: {e}");
+                std::process::exit(1);
+            });
+            let ctx = ProjectCtx::open_unlocked(cwd);
+            let sink = StderrSink::new(false);
+            match core_stop::run(opts, &ctx, &sink, &CliHostShim).await {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    1
+                }
+            }
         }
         Commands::Restart {
             worker_name,
@@ -125,7 +333,68 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Commands::List => iii_worker::cli::managed::handle_worker_list().await,
+        Commands::List => {
+            use colored::Colorize;
+            use iii_worker::cli::host_shim::CliHostShim;
+            use iii_worker::cli::stderr_sink::StderrSink;
+            use iii_worker::core::{ListOptions, ProjectCtx, list as core_list};
+
+            let opts = ListOptions::default();
+            let cwd = std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve project root: {e}");
+                std::process::exit(1);
+            });
+            let ctx = ProjectCtx::open_unlocked(cwd);
+            let sink = StderrSink::new(false);
+            match core_list::run(opts, &ctx, &sink, &CliHostShim).await {
+                Ok(outcome) => {
+                    if outcome.workers.is_empty() {
+                        eprintln!("  No workers. Use `iii worker add` to get started.");
+                    } else {
+                        eprintln!();
+                        eprintln!(
+                            "  {:25} {:10} {:10} {}",
+                            "NAME".bold(),
+                            "VERSION".bold(),
+                            "PID".bold(),
+                            "STATUS".bold(),
+                        );
+                        eprintln!(
+                            "  {:25} {:10} {:10} {}",
+                            "----".dimmed(),
+                            "-------".dimmed(),
+                            "---".dimmed(),
+                            "------".dimmed(),
+                        );
+                        for w in &outcome.workers {
+                            let version = w.version.clone().unwrap_or_else(|| "-".to_string());
+                            let pid = w
+                                .pid
+                                .map(|p| p.to_string())
+                                .unwrap_or_else(|| "-".to_string());
+                            let status = if w.running {
+                                "running".green().to_string()
+                            } else {
+                                "stopped".dimmed().to_string()
+                            };
+                            eprintln!(
+                                "  {:25} {:10} {:10} {}",
+                                w.name,
+                                version.dimmed(),
+                                pid.dimmed(),
+                                status
+                            );
+                        }
+                        eprintln!();
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    1
+                }
+            }
+        }
         Commands::Sync { frozen } => iii_worker::cli::managed::handle_worker_sync(frozen).await,
         Commands::Verify { strict } => iii_worker::cli::managed::handle_worker_verify(strict).await,
         Commands::Status {
@@ -214,22 +483,16 @@ async fn main() -> anyhow::Result<()> {
             } => iii_worker::cli::sandbox::handle_download(id, remote_path, local_path, port).await,
         },
         Commands::SandboxDaemon(args) => iii_worker::cli::sandbox_daemon::run(args).await,
+        Commands::WorkerManagerDaemon(args) => {
+            iii_worker::cli::worker_manager_daemon::run(args).await
+        }
         Commands::VmBoot(args) => {
-            // Run the VM on a dedicated OS thread. `msb_krun`'s virtio-blk
-            // devices (imago-backed) call `tokio::Runtime::block_on` in
-            // their Drop impl to finalize async storage shutdown. Nested
-            // block_on inside our outer `#[tokio::main]` runtime panics
-            // with "Cannot start a runtime from within a runtime" — only
-            // observable once a `.disk()` attach is wired in. Spawning
-            // on a std::thread gives the Drop impl a runtime-free
-            // context so it can construct its own ephemeral runtime
-            // without tripping tokio's nested-runtime detector.
+            // Run the VM on a dedicated OS thread: `msb_krun`'s virtio-blk
+            // Drop impls call `tokio::Runtime::block_on` for async shutdown,
+            // which panics inside our `#[tokio::main]` runtime. The std
+            // thread gives those drops a runtime-free context.
             //
-            // `vm_boot::run` has return type `-> !` so the thread only
-            // returns on panic; normal exit happens via
-            // `std::process::exit`. If we ever see the join below
-            // return cleanly, something has returned from `run` that
-            // was supposed to diverge — treat it as a bug, exit 1.
+            // `vm_boot::run` is `-> !`; a clean join is a bug, exit 1.
             //
             // TODO(msb_krun upstream): remove this std::thread dispatch
             // once virtio-blk Drop uses `Handle::try_current()` instead
@@ -265,4 +528,22 @@ async fn main() -> anyhow::Result<()> {
     };
 
     std::process::exit(exit_code);
+}
+
+fn parse_source_for_cli(input: &str) -> iii_worker::core::WorkerSource {
+    if iii_worker::cli::local_worker::is_local_path(input) {
+        return iii_worker::core::WorkerSource::Local { path: input.into() };
+    }
+    // OCI ref heuristic: contains '/' OR contains ':' but not '@'
+    // (`pdfkit@1.0` is registry name+version, not OCI).
+    if input.contains('/') || (input.contains(':') && !input.contains('@')) {
+        return iii_worker::core::WorkerSource::Oci {
+            reference: input.into(),
+        };
+    }
+    let (name, version) = match input.split_once('@') {
+        Some((n, v)) => (n.to_string(), Some(v.to_string())),
+        None => (input.to_string(), None),
+    };
+    iii_worker::core::WorkerSource::Registry { name, version }
 }
