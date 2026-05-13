@@ -253,7 +253,7 @@ impl WorkerStatus {
         match self.phase {
             Phase::NotInConfig => format!("{} {} not in config.yaml", "✗".red(), self.name.bold()),
             Phase::EngineDown => format!(
-                "{} engine not running (start it with `iii start`)",
+                "{} engine not running (start it with `iii`)",
                 "⚠".yellow()
             ),
             Phase::Queued => {
@@ -320,7 +320,7 @@ impl WorkerStatus {
                 "{:>12}  {} {}",
                 "engine:".dimmed(),
                 "stopped".red(),
-                "(run `iii start` in another terminal)".dimmed()
+                "(run `iii` in another terminal)".dimmed()
             )
         };
         out.push(engine_line);
@@ -630,7 +630,7 @@ mod tests {
             phase: Phase::EngineDown,
             ..base
         };
-        assert!(s.headline().contains("iii start"));
+        assert!(s.headline().contains("start it with `iii`"));
     }
 
     #[test]
