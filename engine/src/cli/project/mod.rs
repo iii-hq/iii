@@ -221,6 +221,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         languages: None,
         skip_tool_check: args.skip_iii,
         skip_install: false,
+        skip_next_steps: false,
         yes: false,
     };
 

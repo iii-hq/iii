@@ -237,6 +237,8 @@ pub async fn run(args: InitArgs) -> i32 {
         // Auto-install also fails for Python today because iii-sdk 0.11.7
         // is not yet on PyPI (only pre-releases exist).
         skip_install: true,
+        // We print our own per-language success message below.
+        skip_next_steps: true,
         yes: resolved_lang.is_some(),
     };
 

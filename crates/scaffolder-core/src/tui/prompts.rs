@@ -31,6 +31,11 @@ pub struct CreateArgs {
     /// runnable code but the user owns when to fetch deps.
     pub skip_install: bool,
 
+    /// Skip the scaffolder's `next_steps` print. Worker init renders
+    /// its own per-language success message and doesn't want two
+    /// "Next steps" blocks back-to-back.
+    pub skip_next_steps: bool,
+
     /// Auto-confirm all prompts (non-interactive mode)
     pub yes: bool,
 }
@@ -104,8 +109,10 @@ pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &s
     )
     .await?;
 
-    // Step 8: Show next steps
-    print_next_steps(&project_dir, &manifest)?;
+    // Step 8: Show next steps (unless the caller renders its own).
+    if !args.skip_next_steps {
+        print_next_steps(&project_dir, &manifest)?;
+    }
 
     Ok(())
 }

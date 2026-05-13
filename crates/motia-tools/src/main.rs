@@ -98,6 +98,7 @@ impl From<CliCreateArgs> for CreateArgs {
             languages: args.languages,
             skip_tool_check: args.skip_iii,
             skip_install: false,
+            skip_next_steps: false,
             yes: args.yes,
         }
     }
