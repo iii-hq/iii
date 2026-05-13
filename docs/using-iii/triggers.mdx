@@ -7,27 +7,32 @@ type: "how-to"
 
 ## Call a function directly
 
-To invoke a function by its `function_id` without any event binding, use `iii.trigger` from worker
-code or `iii trigger` from the terminal. The engine routes the call to whatever worker registered
-the function; no trigger registration is involved.
+Call a function by its `function_id` from worker code (`worker.trigger(...)`) or from the terminal
+(`iii trigger`). The engine routes the call to whatever worker registered the function; no trigger
+registration is involved. The `action` field controls delivery: by default the call waits for the
+function to return its result, or for the configured timeout to fire. Pass a different
+`TriggerAction` to change that.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { registerWorker } from "iii-sdk";
+    import { registerWorker, TriggerAction } from "iii-sdk";
 
     const worker = registerWorker(process.env.III_URL);
 
     const result = await worker.trigger({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
+      // action: TriggerAction.Void(),                       // fire-and-forget
+      // action: TriggerAction.Enqueue({ queue: "math" }),   // route through iii-queue
     });
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
     import os
-    from iii import register_worker, InitOptions
+    from iii import register_worker, InitOptions, TriggerAction
 
     worker = register_worker(
         os.environ.get("III_URL"),
@@ -37,12 +42,15 @@ the function; no trigger registration is involved.
     result = worker.trigger({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
+        # "action": TriggerAction.Void(),                    # fire-and-forget
+        # "action": TriggerAction.Enqueue(queue="math"),     # route through iii-queue
     })
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{InitOptions, TriggerRequest, register_worker};
+    use iii_sdk::{InitOptions, TriggerAction, TriggerRequest, register_worker};
     use serde_json::json;
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
@@ -53,6 +61,8 @@ the function; no trigger registration is involved.
             function_id: "math::add".to_string(),
             payload: json!({ "a": 2, "b": 3 }),
             action: None,
+            // action: Some(TriggerAction::Void),                                  // fire-and-forget
+            // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through iii-queue
             timeout_ms: None,
         })
         .await?;
@@ -66,10 +76,20 @@ the function; no trigger registration is involved.
   </Tab>
 </Tabs>
 
-By default the call waits for the function to return. To fire-and-forget, pass `TriggerAction.Void`;
-to route the call through a queue worker with retries, pass `TriggerAction.Enqueue`. See
-[Functions / Invoke a function](/using-iii/functions#invoke-a-function-synchronously) for the full
-list of actions.
+Some common actions are:
+
+- **Default (synchronous)**. No `action` set. The call waits for the function to return its result
+  or for the configured timeout to fire.
+- **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
+  but the caller doesn't see the result.
+- **`TriggerAction.Enqueue({ queue })`**. Provided by
+  [iii-queue](https://workers.iii.dev/workers/iii-queue). Routes the invocation through a named
+  queue with retries; the call returns once the message is enqueued.
+
+<Note>
+  Workers can provide their own `TriggerAction`s. Check each [worker's
+  documentation](https://workers.iii.dev) for the action types it offers.
+</Note>
 
 ## Register a trigger
 
