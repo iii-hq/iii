@@ -1,0 +1,101 @@
+---
+title: "Functions"
+description: "Registering and invoking functions in your iii project."
+owner: "devrel"
+type: "how-to"
+---
+
+## Invoking functions
+
+A function runs when a trigger fires. The same function can be invoked from many trigger sources at
+once (direct CLI calls, an HTTP route, and a cron schedule, for example) without changing the
+handler.
+
+Trigger sources:
+
+- **CLI**: the `iii trigger` command; see [CLI](/using-iii/cli).
+- **SDK**: `worker.trigger({ function_id, payload })` from any connected worker; see the
+  [SDK reference](/sdk-reference).
+- **HTTP request**: see [iii-http](https://workers.iii.dev/workers/iii-http).
+- **Cron schedule**: see [iii-cron](https://workers.iii.dev/workers/iii-cron).
+- **Queue message**: owned by [iii-queue](https://workers.iii.dev/workers/iii-queue).
+- **State change**: owned by [iii-state](https://workers.iii.dev/workers/iii-state).
+- **Stream event**: owned by [iii-stream](https://workers.iii.dev/workers/iii-stream).
+
+## Register a function
+
+Inside a worker, `worker.registerFunction(id, handler)` makes a function callable from anywhere in
+the iii system. The `id` follows the `service::name` form; the handler receives the call's payload
+and returns the result.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
+      return { c: payload.a + payload.b };
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    worker.register_function("math::add", add_handler)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::RegisterFunction;
+
+    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+        Ok(serde_json::json!({ "c": input.a + input.b }))
+    }));
+    ```
+
+  </Tab>
+</Tabs>
+
+## Define request and response formats
+
+Attach JSON Schemas to a registered function so the engine validates each call's payload and return
+shape. Validation happens at registration time (the schemas are stored with the function) and at
+every invocation. Mismatches surface as invocation errors, not as silent bad data.
+
+The schemas also feed the iii console, agent-readable skills, and the request and response types
+each SDK generates for typed call sites.
+
+## Invoke a function synchronously
+
+Call `worker.trigger(...)` with no `action` (the default). The call waits for the target function to
+return its result, or for the configured timeout to fire.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "math::add",
+      payload: { a: 2, b: 3 },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "math::add",
+        "payload": {"a": 2, "b": 3},
+    })
+    ```
+  </Tab>
+</Tabs>
+
+## Fire-and-forget with `TriggerAction.Void`
+
+Pass `TriggerAction.Void()` as the action to return immediately without waiting for the function to
+run. Use this when you don't need the result and don't want to block.
+
+{/* prettier-ignore */}
+<Note>
+  Workers can provide their own `TriggerAction`s. The [iii-queue](https://workers.iii.dev/workers/iii-queue) worker provides `TriggerAction.Enqueue` (takes a `queue` name) to route the invocation through a named queue with retries.
+</Note>

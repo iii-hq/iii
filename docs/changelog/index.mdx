@@ -1,0 +1,51 @@
+---
+title: "Changelog"
+description: "Product updates and announcements for iii."
+owner: "devrel"
+type: "reference"
+---
+
+<Update label="0.13.0" description="May 2026">
+  ## `iii sandbox` subcommand removed
+
+  **Breaking.** The `iii sandbox` CLI subcommand is gone. Every sandbox operation now goes through `iii trigger`:
+
+  ```bash
+  # before
+  iii sandbox create python --idle-timeout 300
+  iii sandbox exec "$SB" -- python3 -c 'print(2+2)'
+  iii sandbox stop "$SB"
+
+  # after
+  SB=$(iii trigger sandbox::create image=python idle_timeout_secs=300 | jq -r .sandbox_id)
+  iii trigger sandbox::exec sandbox_id="$SB" cmd=python3 args='["-c","print(2+2)"]'
+  iii trigger sandbox::stop sandbox_id="$SB"
+  ```
+
+  Each call also accepts a single `--json '<obj>'` payload (e.g. `iii trigger sandbox::exec --json '{"sandbox_id":"…","cmd":"python3","args":["-c","print(2+2)"]}'`), equivalent to the kv form shown above.
+
+  `iii trigger` is request/response only, so the streaming flows the old subcommand offered (`exec` stdout/stderr stream, `upload`, `download`) are no longer available from the terminal. Use the SDK from worker code for those: `sandbox::exec` and `sandbox::fs::write` / `sandbox::fs::read` still expose the streaming channel.
+</Update>
+
+<Update label="0.12.0" description="May 2026">
+  ## `iii trigger` reshape
+
+  **Breaking.** `iii trigger` no longer accepts `--function-id` and `--payload`. The new form takes the function path as a positional argument and accepts payload fields as `key=value` tokens, an `--json '<obj>'` flag, or both:
+
+  ```bash
+  # kv form
+  iii trigger orders::process amount=149.99 currency=USD
+
+  # JSON form
+  iii trigger orders::process --json '{"amount": 149.99, "currency": "USD"}'
+
+  # Combined: --json is the base, kv overrides individual keys
+  iii trigger orders::process --json '{"amount": 100}' amount=149.99
+  ```
+
+  See [Triggers](/using-iii/triggers) for the full reference.
+
+  ## `iii update --list-targets`
+
+  `iii update` now exposes a `--list-targets` flag that prints every target accepted by `iii update <target>` (e.g. `self`, `console`, `worker`). Passing an unknown target now points users at this flag instead of failing silently. Rollback is not supported; reinstall a prior version manually with `curl -fsSL https://iii.dev/install.sh | sh -s -- --version <prior>`.
+</Update>

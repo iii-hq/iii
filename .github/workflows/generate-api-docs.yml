@@ -1,10 +1,10 @@
 name: Generate API Docs
 
+# Paused during the 0.12.x docs migration. The 0.11.x SDK API reference
+# (under docs/0-11-0/api-reference/) is frozen; 0.12.x ships with manually
+# authored sdk-reference/ pages. Re-enable the push trigger after the SDK
+# rework lands and the script is repointed at the 0.12.x targets.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'sdk/packages/**'
   workflow_dispatch:
 
 concurrency:
@@ -62,16 +62,16 @@ jobs:
 
       # Step 4: Generate MDX from extracted JSON
       - name: Generate MDX files
-        run: pnpm tsx docs/scripts/generate-api-docs.mts
+        run: pnpm tsx docs/0-11-0/scripts/generate-api-docs.mts
 
       # Step 5: Commit if changed
       - name: Commit generated docs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/content/api-reference/sdk-node.mdx \
-                  docs/content/api-reference/sdk-browser.mdx \
-                  docs/content/api-reference/sdk-python.mdx \
-                  docs/content/api-reference/sdk-rust.mdx
+          git add docs/0-11-0/api-reference/sdk-node.mdx \
+                  docs/0-11-0/api-reference/sdk-browser.mdx \
+                  docs/0-11-0/api-reference/sdk-python.mdx \
+                  docs/0-11-0/api-reference/sdk-rust.mdx
           git diff --cached --quiet || git commit -m "docs: regenerate SDK API reference"
           git push

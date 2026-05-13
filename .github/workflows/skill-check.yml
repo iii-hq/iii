@@ -1,0 +1,34 @@
+name: Skill check
+
+on:
+  pull_request:
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+      - ".skill-check.yaml"
+      - ".github/workflows/skill-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+      - ".skill-check.yaml"
+      - ".github/workflows/skill-check.yml"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify:
+    name: Verify docs skills
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run iii-skill-check
+        uses: iii-hq/skills-and-validation@v0.2
+        with:
+          write: true
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

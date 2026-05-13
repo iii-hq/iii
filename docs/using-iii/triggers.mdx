@@ -1,0 +1,88 @@
+---
+title: "Triggers"
+description: "Calling functions directly or by binding them to events in your iii project."
+owner: "devrel"
+type: "how-to"
+---
+
+## Call a function directly
+
+To invoke a function by its `function_id` without any event binding, use `iii.trigger` from worker
+code or `iii trigger` from the terminal. The engine routes the call to whatever worker registered
+the function; no trigger registration is involved.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "math::add",
+      payload: { a: 2, b: 3 },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "math::add",
+        "payload": {"a": 2, "b": 3},
+    })
+    ```
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    iii trigger math::add a=2 b=3
+    ```
+  </Tab>
+</Tabs>
+
+By default the call waits for the function to return. To fire-and-forget, pass `TriggerAction.Void`;
+to route the call through a queue worker with retries, pass `TriggerAction.Enqueue`. See
+[Functions / Invoke a function](/using-iii/functions#invoke-a-function-synchronously) for the full
+list of actions.
+
+## Register a trigger
+
+Register the function first, then register a trigger that routes to it by `function_id`. The trigger
+declares its `type` (whatever the connected worker advertises, like `http` or `cron`), its `config`
+(the per-type details), and the function to invoke.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+</Tabs>
+
+Per-type configuration is documented in each worker's Worker Docs (e.g.
+[iii-http](https://workers.iii.dev/workers/iii-http) for the `http` type).
+
+## Bind multiple triggers to one function
+
+The same `function_id` can be the target of any number of triggers across any number of types.
+Register a second trigger with the same `function_id` and a different type or config; the function
+runs unchanged whether the call arrives over HTTP, on a cron schedule, or from a queue message.
+
+## Gate a trigger with a condition
+
+A trigger can carry an optional `condition_function_id`. When the trigger fires, the engine invokes
+the condition function first; the handler only runs if the condition returns truthy. Use this when
+the same event source should sometimes fire the function and sometimes skip it.
+
+## Unregister a trigger
+
+Trigger registration returns a handle. Pass that handle to `worker.unregisterTrigger(...)` to drop
+the trigger at runtime. When the worker disconnects, all of its triggers are removed automatically.

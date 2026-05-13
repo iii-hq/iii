@@ -1,0 +1,15 @@
+version: 2
+mode: docs
+docs:
+  include:
+    - "docs/**/*.md"
+    - "docs/**/*.mdx"
+  exclude:
+    - "docs/0-10-0/**"
+    - "docs/0-11-0/**"
+    - "docs/changelog/**"
+ai_check:
+  provider: anthropic
+  model: claude-opus-4-7
+  api_key_env_var: ANTHROPIC_API_KEY
+  max_tokens: 6000
