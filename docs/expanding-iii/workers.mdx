@@ -85,3 +85,15 @@ Once connected, a worker exposes:
 
 The SDK calls a worker uses to register these are language-specific and documented in each
 language's Worker Docs authoring guide.
+
+## Run an ephemeral worker
+
+For one-shot jobs (Kubernetes Jobs, serverless containers, scheduled scripts), an SDK worker can
+connect to a remote engine, register its functions, do the work, and exit. The engine cleans up the
+worker's registrations on disconnect.
+
+Set `III_URL` to point the worker at the remote engine (see
+[Connecting to the engine](#connecting-to-the-engine)), register the work the job needs to expose,
+and let the process exit when the job is done.
+
+{/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node / TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits cleanly. */}

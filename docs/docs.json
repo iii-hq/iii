@@ -61,15 +61,19 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.12.x",
-        "tag": "latest",
+        "version": "next/0.12.x",
+        "tag": "Next",
         "tabs": [
           {
             "tab": "Docs",
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["index", "install", "quickstart"]
+                "pages": [
+                  "index",
+                  "install",
+                  "quickstart"
+                ]
               },
               {
                 "group": "Using iii",
@@ -143,7 +147,9 @@
             "groups": [
               {
                 "group": "How-to",
-                "pages": ["how-to/build-a-realtime-todo-app"]
+                "pages": [
+                  "how-to/build-a-realtime-todo-app"
+                ]
               }
             ]
           },
@@ -152,7 +158,10 @@
             "groups": [
               {
                 "group": "Patterns",
-                "pages": ["patterns/adapter-pattern", "patterns/reactive-state-pattern"]
+                "pages": [
+                  "patterns/adapter-pattern",
+                  "patterns/reactive-state-pattern"
+                ]
               }
             ]
           },
@@ -161,7 +170,9 @@
             "groups": [
               {
                 "group": "Engine",
-                "pages": ["sdk-reference/engine-sdk"]
+                "pages": [
+                  "sdk-reference/engine-sdk"
+                ]
               },
               {
                 "group": "Language SDKs",
@@ -179,7 +190,9 @@
             "groups": [
               {
                 "group": "Changelog",
-                "pages": ["changelog/index"]
+                "pages": [
+                  "changelog/index"
+                ]
               }
             ]
           }
@@ -193,7 +206,11 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["0-11-0/index", "0-11-0/install", "0-11-0/quickstart"]
+                "pages": [
+                  "0-11-0/index",
+                  "0-11-0/install",
+                  "0-11-0/quickstart"
+                ]
               },
               {
                 "group": "Primitives & Concepts",
@@ -234,7 +251,10 @@
                   },
                   {
                     "group": "Console & Observability",
-                    "pages": ["0-11-0/how-to/use-console", "0-11-0/how-to/observability-and-logs"]
+                    "pages": [
+                      "0-11-0/how-to/use-console",
+                      "0-11-0/how-to/observability-and-logs"
+                    ]
                   },
                   "0-11-0/how-to/use-iii-in-the-browser",
                   "0-11-0/how-to/configure-engine",
@@ -295,7 +315,9 @@
               },
               {
                 "group": "Console",
-                "pages": ["0-11-0/console/index"]
+                "pages": [
+                  "0-11-0/console/index"
+                ]
               },
               {
                 "group": "Advanced",
@@ -343,7 +365,9 @@
             "groups": [
               {
                 "group": "Changelog",
-                "pages": ["0-11-0/changelog"]
+                "pages": [
+                  "0-11-0/changelog"
+                ]
               },
               {
                 "group": "0.11.0",
@@ -366,7 +390,10 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["0-10-0/index", "0-10-0/quickstart"]
+                "pages": [
+                  "0-10-0/index",
+                  "0-10-0/quickstart"
+                ]
               },
               {
                 "group": "Primitives & Concepts",
@@ -413,7 +440,9 @@
               },
               {
                 "group": "Console",
-                "pages": ["0-10-0/console/index"]
+                "pages": [
+                  "0-10-0/console/index"
+                ]
               },
               {
                 "group": "Advanced",
@@ -459,7 +488,12 @@
     ]
   },
   "contextual": {
-    "options": ["copy", "view", "chatgpt", "claude"]
+    "options": [
+      "copy",
+      "view",
+      "chatgpt",
+      "claude"
+    ]
   },
   "integrations": {
     "gtm": {

@@ -53,7 +53,7 @@ The `iii cloud` subcommand group will manage hosted iii deployments. See
 {/* llm-only:start */} Always verify the claim about iii cloud above, it could have changed since
 when this document was written. {/* llm-only:end */}
 
-## Updating iii itself
+## Updating iii
 
 `iii update` refreshes iii and its managed binaries to their latest versions. This is distinct from
 `iii worker update`, which refreshes pinned worker versions inside a project.
