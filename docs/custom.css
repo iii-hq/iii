@@ -13,6 +13,12 @@
   --iii-accent-fg: #f2f0ed;
   --iii-alert: #c43e1c;
   --iii-warn: #a87a00;
+
+  /* Code palette is flipped: light page → dark code, dark page → light code. */
+  --iii-code-bg: #1a1916;
+  --iii-code-fg: #f2f0ed;
+  --iii-code-rule: #2a2926;
+  --iii-code-pane-bg: var(--iii-bg);
 }
 
 html.dark,
@@ -27,6 +33,11 @@ html.dark,
   --iii-rule-2: #1f1e1c;
   --iii-accent: #3ea8ff;
   --iii-accent-fg: #111110;
+
+  --iii-code-bg: #e9e6e2;
+  --iii-code-fg: #0a0a0a;
+  --iii-code-rule: #d8d5d0;
+  --iii-code-pane-bg: var(--iii-panel);
 }
 
 html,
@@ -149,15 +160,13 @@ hr {
   border-color: var(--iii-rule) !important;
 }
 
-pre,
 kbd {
-  background-color: var(--iii-panel) !important;
-  color: var(--iii-ink) !important;
-  border-color: var(--iii-rule) !important;
+  background-color: var(--iii-code-bg) !important;
+  color: var(--iii-code-fg) !important;
+  border-color: var(--iii-code-rule) !important;
 }
 
 pre {
-  background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
   margin: 0 !important;
@@ -176,14 +185,9 @@ pre code {
 }
 
 .code-block {
-  background: var(--iii-panel) !important;
-  border: 1px solid var(--iii-rule) !important;
+  background: var(--iii-code-pane-bg) !important;
+  border: 1px solid var(--iii-code-rule) !important;
   box-shadow: none !important;
-}
-
-.code-block [data-component-part="code-block-root"] {
-  background: transparent !important;
-  padding: 14px 16px !important;
 }
 
 .code-block [data-component-part="code-block-root"] > pre {
@@ -196,10 +200,40 @@ pre code {
   background: transparent !important;
 }
 
-:not(pre) > code {
-  background-color: var(--iii-panel) !important;
-  border: 1px solid var(--iii-rule-2) !important;
-  color: var(--iii-ink) !important;
+/* Flip Shiki colors in light mode by mirroring Mintlify's .dark rules onto :not(.dark).
+   This swaps every token to its --shiki-dark value and the bg to --shiki-dark-bg, so
+   syntax highlighting renders with the dark theme while the page stays light. The
+   reverse direction (dark page → light code) isn't doable from CSS alone: Mintlify
+   only exposes --shiki-dark, not --shiki-light, so the original inline `color:#X` is
+   unrecoverable once overridden. */
+html:not(.dark) .shiki,
+html:not(.dark) .shiki span {
+  color: var(--shiki-dark) !important;
+  font-weight: var(--shiki-dark-font-weight) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}
+
+html:not(.dark) .code-block-background {
+  background-color: var(--shiki-dark-bg) !important;
+}
+
+html:not(.dark) .has-line-numbers pre.shiki > code > .line:before {
+  color: var(--shiki-dark) !important;
+}
+
+/* Remove the right-side fade gradient Mintlify paints behind the copy buttons. */
+[data-fade-overlay] {
+  display: none !important;
+}
+
+/* Inline code. Specificity is bumped past .prose's `[&_code]:!text-current` rule
+   used by admonitions/callouts, which otherwise forces inline code to inherit
+   the callout's text color. */
+.prose :not(pre) > code,
+body :not(pre) > code {
+  background-color: var(--iii-code-bg) !important;
+  border: 1px solid var(--iii-code-rule) !important;
+  color: var(--iii-code-fg) !important;
   padding: 0.08rem 0.28rem;
 }
 
