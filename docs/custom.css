@@ -151,9 +151,9 @@ hr {
 
 pre,
 kbd {
-  background-color: var(--iii-ink) !important;
-  color: var(--iii-bg) !important;
-  border-color: var(--iii-ink) !important;
+  background-color: var(--iii-bg) !important;
+  color: var(--iii-ink) !important;
+  border-color: var(--iii-rule) !important;
 }
 
 pre {
@@ -168,20 +168,28 @@ pre code,
 pre code * {
   background: transparent !important;
   border: 0 !important;
-  color: var(--iii-bg) !important;
   padding: 0 !important;
 }
 
+pre code {
+  color: inherit !important;
+}
+
 .code-block {
-  background: var(--iii-ink) !important;
-  color: var(--iii-bg) !important;
-  border: 1px solid var(--iii-ink) !important;
+  background: var(--iii-bg) !important;
+  border: 1px solid var(--iii-rule) !important;
   box-shadow: none !important;
 }
 
 .code-block [data-component-part="code-block-root"] {
   background: transparent !important;
   padding: 14px 16px !important;
+  /* Flip the code area's colors so light-mode pages get dark-mode-style
+     code (and vice versa). Preserves the syntax highlighter's relative
+     contrast between tokens; only the absolute colors flip. Applied to
+     the inner content area only so the copy button (a sibling) stays
+     unaffected. */
+  filter: invert(1) hue-rotate(180deg);
 }
 
 .code-block [data-component-part="code-block-root"] > pre {
@@ -194,18 +202,13 @@ pre code * {
   background: transparent !important;
 }
 
-.code-block [data-component-part="code-block-root"],
-.code-block [data-component-part="code-block-root"] *,
-.code-block pre,
-.code-block pre * {
-  color: var(--iii-bg) !important;
-}
-
 :not(pre) > code {
-  background-color: var(--iii-ink) !important;
-  border: 1px solid var(--iii-ink) !important;
-  color: var(--iii-bg) !important;
+  background-color: var(--iii-bg) !important;
+  border: 1px solid var(--iii-rule-2) !important;
+  color: var(--iii-ink) !important;
   padding: 0.08rem 0.28rem;
+  /* Same invert trick for inline code. */
+  filter: invert(1) hue-rotate(180deg);
 }
 
 table {
