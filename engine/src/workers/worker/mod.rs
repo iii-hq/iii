@@ -34,6 +34,8 @@ pub const DEFAULT_PORT: u16 = 49134;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct CreateChannelInput {
+    /// Maximum number of pending messages buffered between writer and reader.
+    /// Defaults to an engine-chosen value when omitted.
     #[serde(default)]
     pub buffer_size: Option<usize>,
 }

@@ -83,6 +83,37 @@ pub fn print_update_notifications(updates: &[UpdateInfo]) {
     eprintln!();
 }
 
+/// Print the targets accepted by `iii update <target>`.
+pub fn print_targets() {
+    println!("{}", "Available targets for `iii update`:".bold());
+    println!();
+    println!(
+        "  {} (or {})  - update iii itself",
+        "self".bold(),
+        "iii".bold()
+    );
+    println!();
+    println!("{}", "Managed binaries:".bold());
+    for spec in registry::REGISTRY {
+        let short = spec
+            .commands
+            .iter()
+            .map(|m| m.cli_command)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if short.is_empty() {
+            println!("  {}", spec.name.bold());
+        } else {
+            println!("  {}  (binary: {})", short.bold(), spec.name);
+        }
+    }
+    println!();
+    println!("{}", "Examples:".bold());
+    println!("  iii update              # update everything");
+    println!("  iii update self         # update only iii");
+    println!("  iii update console      # update only console");
+}
+
 /// Get the CLI command name for a binary name.
 fn cli_command_for_binary(binary_name: &str) -> Option<&str> {
     for spec in registry::REGISTRY {

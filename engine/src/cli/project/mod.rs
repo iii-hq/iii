@@ -57,23 +57,15 @@ pub struct InitArgs {
     #[arg(long = "template-dir")]
     pub template_dir: Option<String>,
 
-    /// Languages to include (comma-separated: ts,js,py).
-    #[arg(short, long, value_delimiter = ',')]
-    pub languages: Option<Vec<String>>,
-
     /// Skip the iii-engine version compatibility check.
     #[arg(long = "skip-iii")]
     pub skip_iii: bool,
 
-    /// Auto-confirm all prompts (non-interactive mode).
-    #[arg(short, long)]
-    pub yes: bool,
-
     /// Allow scaffolding into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
-    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`).
-    /// Re-running init in a directory with `.iii/project.ini` is always
-    /// allowed (idempotent re-init).
+    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An
+    /// existing `.iii/project.ini` is always rejected — delete the marker
+    /// or pick a different directory.
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
 }
@@ -100,9 +92,7 @@ pub struct GenerateDockerArgs {
 fn template_flow_requested(args: &InitArgs) -> bool {
     // Only --template triggers the interactive scaffolder TUI. The bare flow
     // also uses scaffolder-core under the hood, but goes through the
-    // non-interactive `apply_template` helper. --languages is meaningful
-    // only when paired with --template; we silently ignore it on the bare
-    // path rather than erroring (it'd be a confusing UX otherwise).
+    // non-interactive `apply_template` helper.
     args.template.is_some()
 }
 
@@ -140,12 +130,18 @@ async fn run_init(args: InitArgs) -> i32 {
     }
 
     if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
-        crate::cli::telemetry::send_project_init_failed("non_empty_dir", &e);
-        return print_err(
-            "target directory is not empty",
-            &e,
-            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory",
-        );
+        let kind = if e.contains("already initialized") {
+            "non_empty_dir_existing_project"
+        } else {
+            "non_empty_dir"
+        };
+        crate::cli::telemetry::send_project_init_failed(kind, &e);
+        let fix = if e.contains("already initialized") {
+            "delete .iii/project.ini or pick a different --directory"
+        } else {
+            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory"
+        };
+        return print_err("target directory cannot be initialized", &e, fix);
     }
 
     let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
@@ -155,8 +151,9 @@ async fn run_init(args: InitArgs) -> i32 {
         .unwrap_or("iii-project")
         .to_string();
 
-    // Fetch + apply the canonical 'bare' template. Existing project_id is
-    // preserved on re-runs.
+    // Fetch + apply the canonical 'bare' template. Re-runs against an
+    // already-initialized directory are rejected earlier by
+    // `check_directory_state`.
     let mut fetcher = match build_fetcher(args.template_dir.as_deref()) {
         Ok(f) => f,
         Err(e) => {
@@ -225,9 +222,9 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         template_dir: args.template_dir.as_ref().map(PathBuf::from),
         template: args.template.clone(),
         directory: target_dir.clone(),
-        languages: args.languages.clone(),
+        languages: None,
         skip_tool_check: args.skip_iii,
-        yes: args.yes,
+        yes: false,
     };
 
     let result = scaffolder_core::run(&IiiConfig, create_args, env!("CARGO_PKG_VERSION")).await;
@@ -238,7 +235,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         return print_err(
             "template scaffold failed",
             &e.to_string(),
-            "see scaffolder output above; re-run with --template <name> --yes to skip prompts",
+            "see scaffolder output above",
         );
     }
 
@@ -383,22 +380,41 @@ async fn apply_template(
 /// and clobber any user customizations — the caller already has those from the
 /// 'bare' template or a prior `iii project init`.
 ///
-/// Generates `.env` with the device_id baked in as `III_HOST_USER_ID` and a
-/// fresh UUID-based RabbitMQ password.
+/// The Dockerfile template carries a literal `__III_DEVICE_ID__` placeholder
+/// that we substitute with the actual device_id before writing, so the image
+/// no longer needs an `III_HOST_USER_ID` env var at runtime. The generated
+/// `.env` only carries the RabbitMQ password (used by the commented-out
+/// rabbitmq service in docker-compose.yml).
+const DEVICE_ID_PLACEHOLDER: &str = "__III_DEVICE_ID__";
+
 async fn apply_docker(
     fetcher: &mut TemplateFetcher,
     target: &Path,
     device_id: &str,
 ) -> anyhow::Result<()> {
-    let dockerfile = fetcher.fetch_file_bytes("docker", "Dockerfile").await?;
+    let dockerfile_bytes = fetcher.fetch_file_bytes("docker", "Dockerfile").await?;
     let compose = fetcher
         .fetch_file_bytes("docker", "docker-compose.yml")
         .await?;
 
+    let dockerfile = substitute_device_id(&dockerfile_bytes, device_id)?;
+
     write_if_absent(&target.join("Dockerfile"), &dockerfile)?;
     write_if_absent(&target.join("docker-compose.yml"), &compose)?;
-    write_env_if_absent(target, device_id)?;
+    write_env_if_absent(target)?;
     Ok(())
+}
+
+fn substitute_device_id(bytes: &[u8], device_id: &str) -> anyhow::Result<Vec<u8>> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| anyhow::anyhow!("Dockerfile template is not valid UTF-8: {e}"))?;
+    if !text.contains(DEVICE_ID_PLACEHOLDER) {
+        anyhow::bail!(
+            "Dockerfile template is missing the {DEVICE_ID_PLACEHOLDER} \
+             placeholder — the template repo and engine are out of sync"
+        );
+    }
+    Ok(text.replace(DEVICE_ID_PLACEHOLDER, device_id).into_bytes())
 }
 
 fn write_if_absent(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -408,7 +424,7 @@ fn write_if_absent(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, contents)
 }
 
-fn write_env_if_absent(target: &Path, device_id: &str) -> std::io::Result<()> {
+fn write_env_if_absent(target: &Path) -> std::io::Result<()> {
     let path = target.join(".env");
     if path.exists() {
         return Ok(());
@@ -416,7 +432,6 @@ fn write_env_if_absent(target: &Path, device_id: &str) -> std::io::Result<()> {
     let rabbitmq_pass = uuid::Uuid::new_v4().simple().to_string();
     let contents = format!(
         "# Generated by `iii project generate-docker`. Do not commit.\n\
-         III_HOST_USER_ID={device_id}\n\
          RABBITMQ_USER=iii\n\
          RABBITMQ_PASS={rabbitmq_pass}\n",
     );
@@ -508,10 +523,11 @@ fn resolve_root(dir: Option<&str>) -> Result<PathBuf, String> {
 }
 
 /// Reject scaffolding into a non-empty directory unless the user opted in via
-/// `--allow-non-empty`, OR the directory is already an iii project (has
-/// `.iii/project.ini`). Hidden dotfiles (`.git/`, `.gitignore`, etc.) and
-/// the `data/` runtime directory are not considered "non-empty content" —
-/// they're either dev tooling or iii-managed state.
+/// `--allow-non-empty`. An existing `.iii/project.ini` is always a hard error
+/// (no idempotent re-init): the user must delete the marker or pick a fresh
+/// directory. Hidden dotfiles (`.git/`, `.gitignore`, etc.) and the `data/`
+/// runtime directory are not considered "non-empty content" — they're either
+/// dev tooling or iii-managed state.
 fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
@@ -519,10 +535,11 @@ fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), Strin
     if !root.is_dir() {
         return Err(format!("{} exists but is not a directory", root.display()));
     }
-    // Idempotent re-init: an existing project.ini means we're scaffolding
-    // into a directory we previously initialized. Always allowed.
     if root.join(".iii").join("project.ini").exists() {
-        return Ok(());
+        return Err(format!(
+            "{} is already initialized (.iii/project.ini exists)",
+            root.display()
+        ));
     }
     if allow_non_empty {
         return Ok(());
@@ -531,12 +548,7 @@ fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), Strin
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| {
-                // Hidden files/dirs (.git, .env.example, etc.) and iii's
-                // own runtime data directory are not "user content" for
-                // the purpose of this check.
-                !name.starts_with('.') && name != "data"
-            })
+            .filter(|name| !name.starts_with('.') && name != "data")
             .collect(),
         Err(e) => return Err(format!("read {}: {e}", root.display())),
     };

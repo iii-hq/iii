@@ -540,13 +540,13 @@ fn cli_trigger_subcommand_parses_correctly() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("function-id"),
-        "Help should mention --function-id, got: {}",
+        stdout.contains("FUNCTION_PATH"),
+        "Help should mention FUNCTION_PATH, got: {}",
         stdout
     );
     assert!(
-        stdout.contains("payload"),
-        "Help should mention --payload, got: {}",
+        stdout.contains("--json"),
+        "Help should mention --json, got: {}",
         stdout
     );
 }
@@ -562,7 +562,7 @@ fn cli_trigger_missing_required_args_fails() {
 
     assert!(
         !output.status.success(),
-        "trigger without required args should fail"
+        "trigger without FUNCTION_PATH should fail"
     );
 }
 
@@ -573,9 +573,8 @@ fn cli_trigger_invalid_json_payload_fails() {
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
         .args([
             "trigger",
-            "--function-id",
             "test::fn",
-            "--payload",
+            "--json",
             "not-valid-json",
             "--port",
             "19876",
@@ -585,12 +584,12 @@ fn cli_trigger_invalid_json_payload_fails() {
 
     assert!(
         !output.status.success(),
-        "trigger with invalid JSON should fail"
+        "trigger with invalid --json should fail"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Invalid JSON") || stderr.contains("JSON"),
+        stderr.contains("invalid JSON") || stderr.contains("JSON"),
         "Should mention JSON error, got: {}",
         stderr
     );
@@ -603,10 +602,8 @@ fn cli_trigger_connection_refused_fails_gracefully() {
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
         .args([
             "trigger",
-            "--function-id",
             "iii::queue::redrive",
-            "--payload",
-            r#"{"queue":"orders"}"#,
+            "queue=orders",
             "--port",
             "19877",
             "--timeout-ms",

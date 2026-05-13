@@ -37,7 +37,9 @@ pub struct PubSubWorker {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 pub struct PubSubInput {
+    /// Topic to publish to. Subscribers registered for this topic receive the event.
     pub topic: String,
+    /// JSON payload delivered to each subscriber.
     pub data: Value,
 }
 

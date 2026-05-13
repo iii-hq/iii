@@ -63,7 +63,7 @@ fn project_init_accepts_positional_name() {
 }
 
 #[test]
-fn project_init_preserves_existing_project_id_on_rerun() {
+fn project_init_rejects_already_initialized_dir() {
     let dir = tempdir().unwrap();
     let out1 = iii_bin()
         .args(["project", "init", "--template-dir"])
@@ -77,7 +77,6 @@ fn project_init_preserves_existing_project_id_on_rerun() {
         "first init must succeed: {}",
         String::from_utf8_lossy(&out1.stderr)
     );
-    let ini1 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
 
     let out2 = iii_bin()
         .args(["project", "init", "--template-dir"])
@@ -86,19 +85,14 @@ fn project_init_preserves_existing_project_id_on_rerun() {
         .arg(dir.path())
         .output()
         .expect("second init");
-    assert!(out2.status.success(), "second init must succeed");
-    let ini2 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
-
-    let project_id_of = |s: &str| {
-        s.lines()
-            .find_map(|l| l.trim().strip_prefix("project_id="))
-            .map(|v| v.trim().to_string())
-            .expect("project_id present")
-    };
-    assert_eq!(
-        project_id_of(&ini1),
-        project_id_of(&ini2),
-        "project_id must remain stable across re-runs"
+    assert!(
+        !out2.status.success(),
+        "second init must refuse to clobber an already-initialized project"
+    );
+    let stderr = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        stderr.contains("already initialized") || stderr.contains(".iii/project.ini"),
+        "error should mention the existing project marker:\n{stderr}"
     );
 }
 
@@ -167,10 +161,20 @@ fn project_init_with_docker_flag_writes_docker_assets_with_device_id() {
         .map(|v| v.trim().to_string())
         .expect("project.ini missing device_id");
 
+    let dockerfile = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains(&format!("ENV III_HOST_USER_ID={device_id_in_ini}")),
+        "Dockerfile should bake the literal device_id, got:\n{dockerfile}"
+    );
+    assert!(
+        !dockerfile.contains("__III_DEVICE_ID__"),
+        "placeholder must be substituted, got:\n{dockerfile}"
+    );
+
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(
-        env.contains(&format!("III_HOST_USER_ID={device_id_in_ini}")),
-        "Docker .env should hard-code the same device_id as project.ini"
+        !env.contains("III_HOST_USER_ID"),
+        ".env should no longer carry III_HOST_USER_ID, got:\n{env}"
     );
 }
 
@@ -197,11 +201,16 @@ fn project_generate_docker_uses_existing_project_ini_device_id() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    let dockerfile = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains("ENV III_HOST_USER_ID=preseeded-xyz"),
+        "Dockerfile should bake the existing device_id, got:\n{dockerfile}"
+    );
+
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(
-        env.contains("III_HOST_USER_ID=preseeded-xyz"),
-        "generate-docker should reuse the existing project.ini device_id, got .env:\n{}",
-        env
+        !env.contains("III_HOST_USER_ID"),
+        ".env should no longer carry III_HOST_USER_ID, got:\n{env}"
     );
 }
 
@@ -225,7 +234,7 @@ fn project_init_errors_on_non_empty_dir_without_override() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not empty"),
+        stderr.contains("contains README.md") || stderr.contains("cannot be initialized"),
         "expected non-empty error message:\n{stderr}"
     );
     assert!(
@@ -327,6 +336,48 @@ fn project_generate_docker_warns_when_no_project_ini() {
     assert!(
         stderr.contains("iii project init"),
         "warning should suggest running iii project init:\n{stderr}"
+    );
+}
+
+#[test]
+fn project_init_rejects_yes_flag() {
+    let dir = tempdir().unwrap();
+    let out = iii_bin()
+        .args(["project", "init", "--yes", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        !out.status.success(),
+        "init should reject --yes after removal"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("--yes"),
+        "expected clap rejection mentioning --yes:\n{stderr}"
+    );
+}
+
+#[test]
+fn project_init_rejects_languages_flag() {
+    let dir = tempdir().unwrap();
+    let out = iii_bin()
+        .args(["project", "init", "--languages", "ts", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run iii");
+    assert!(
+        !out.status.success(),
+        "init should reject --languages after removal"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("--languages"),
+        "expected clap rejection mentioning --languages:\n{stderr}"
     );
 }
 
