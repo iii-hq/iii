@@ -32,7 +32,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run iii-skill-check
-        uses: iii-hq/skills-and-validation@v0.3
+        uses: iii-hq/skills-and-validation@v0.4
         with:
           write: true
+          scope: pr-diff
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
