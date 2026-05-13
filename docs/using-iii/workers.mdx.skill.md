@@ -26,31 +26,51 @@ being callable until it reconnects.
 
 We maintain a worker registry which you can explore at [workers.iii.dev](https://workers.iii.dev/).
 The registry contains many workers that encapsulate common services. See
-[Worker Registry](./registry) for naming conventions, versioning, and artifact types.
+[Worker Registry](./registry) for more information on the worker registry.
 
 ## Adding a worker
 
-`iii worker add <name>` installs a worker into your project such as:
+`iii worker add <name>` installs a worker into your project:
 
 ```bash
-iii worker add iii-state                # registry name
-iii worker add ./workers/my-worker      # local path
-iii worker add ghcr.io/org/worker:tag   # Docker or OCI image
+iii worker add iii-state
 ```
 
-You can append `@<version>` to a registry name to pin a specific version
-(`iii worker add iii-state@1.2.0`). See [CLI](/using-iii/cli#worker) for the full feature set of
-`iii worker`.
+The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
+worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
+
+For local paths, Docker / OCI images, and version pinning, see
+[Worker Registry / Adding a worker](./registry#adding-a-worker).
+
+## Listing workers
+
+`iii worker list` shows every worker declared in your project's `config.yaml` along with its current
+status:
+
+```bash
+iii worker list
+```
 
 ## Starting and stopping workers
 
 Added workers start automatically with the engine. To control them manually, use the `start`,
-`stop`, and `restart` commands
+`stop`, and `restart` commands:
 
 ```bash
 iii worker start <name>     # start one worker
 iii worker stop <name>      # stop one worker
 iii worker restart <name>   # stop then start
+```
+
+## Inspecting a worker
+
+To check a specific worker's state, follow its logs, or run a command inside the worker's sandbox,
+use:
+
+```bash
+iii worker status <name>             # config, sandbox state, recent logs
+iii worker logs <name>               # stream the worker's logs
+iii worker exec <name> -- <command>  # run a command inside the worker
 ```
 
 ## Worker skills
@@ -74,11 +94,28 @@ worker that provides it to be connected. For example if you add `http` triggers 
 [iii-http](https://workers.iii.dev/workers/iii-http) worker then you can now expose endpoints for
 your function just as you would in a web framework like Express or FastAPI.
 
-## Managing workers from the CLI
+## Versioning and pinning
 
-The `iii worker` CLI subcommands cover the operational lifecycle of workers in a project. The set
-includes `add`, `remove`, `reinstall`, `clear`, `list`, `start`, `stop`, etc. Full syntax, flags,
-and behavior are documented at [CLI](/using-iii/cli).
+Workers are published with semver versions. Installing without a version specifier picks the latest
+release. Append `@<version>` to a registry name to pin a specific release rather than tracking the
+latest:
+
+```bash
+iii worker add iii-state@1.2.0
+```
+
+The pin is recorded in `iii.lock` and replays on every subsequent install, so the same deployment of
+an iii system is reproducible across machines.
+
+## Updating a worker
+
+`iii worker update` re-resolves locked workers and writes the new pins back to `iii.lock`. Pass a
+worker name to update one, or omit it to update every locked worker:
+
+```bash
+iii worker update <worker-name>   # one worker
+iii worker update                 # every locked worker
+```
 
 ## The lockfile (iii.lock)
 
@@ -86,11 +123,31 @@ and behavior are documented at [CLI](/using-iii/cli).
 and source so the same worker set installs the same way across machines and platforms. Binary
 workers can pin per-platform artifacts (macOS, Linux, Windows) in the same lockfile.
 
-When publishing to version control commit `iii.lock` alongside `config.yaml` for reproducible
-installs. The `iii worker` CLI subcommands `sync`, `verify`, and `update` read and write it; see
-[CLI](/using-iii/cli) for complete syntax.
+Commit `iii.lock` alongside `config.yaml` for reproducible installs. Two commands operate on the
+lockfile directly:
+
+```bash
+iii worker sync            # install workers exactly from iii.lock
+iii worker sync --frozen   # CI form: verify the lockfile without mutating local files
+iii worker verify          # report drift between config.yaml and iii.lock
+```
+
+`iii worker update` (above) is the third lockfile command; it re-resolves pins to the latest
+permitted versions and writes them back to `iii.lock`.
 
 {/* TODO: Add a dedicated lockfile reference page for the per-field schema (top-level fields, LockedWorker, BinaryArtifact, ImageSource, manifest hash format). The dx-improves source includes `docs/workers/managed-worker-lockfile.mdx` which can be ported. */}
+
+## Removing a worker
+
+`iii worker remove` drops a worker from `config.yaml` and the engine tears down the running worker
+process:
+
+```bash
+iii worker remove <worker-name>
+```
+
+Downloaded artifacts remain on disk after removal. To delete them too, use
+`iii worker clear <worker-name>`. Omit the name to clear every worker's artifacts.
 
 ## Authoring workers
 

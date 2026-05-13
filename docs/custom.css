@@ -151,9 +151,9 @@ hr {
 
 pre,
 kbd {
-  background-color: var(--iii-bg) !important;
-  color: var(--iii-ink) !important;
-  border-color: var(--iii-rule) !important;
+  background-color: var(--iii-ink) !important;
+  color: var(--iii-bg) !important;
+  border-color: var(--iii-ink) !important;
 }
 
 pre {
@@ -168,16 +168,14 @@ pre code,
 pre code * {
   background: transparent !important;
   border: 0 !important;
+  color: var(--iii-bg) !important;
   padding: 0 !important;
 }
 
-pre code {
-  color: inherit !important;
-}
-
 .code-block {
-  background: var(--iii-bg) !important;
-  border: 1px solid var(--iii-rule) !important;
+  background: var(--iii-ink) !important;
+  color: var(--iii-bg) !important;
+  border: 1px solid var(--iii-ink) !important;
   box-shadow: none !important;
 }
 
@@ -196,10 +194,17 @@ pre code {
   background: transparent !important;
 }
 
+.code-block [data-component-part="code-block-root"],
+.code-block [data-component-part="code-block-root"] *,
+.code-block pre,
+.code-block pre * {
+  color: var(--iii-bg) !important;
+}
+
 :not(pre) > code {
-  background-color: var(--iii-bg) !important;
-  border: 1px solid var(--iii-rule-2) !important;
-  color: var(--iii-ink) !important;
+  background-color: var(--iii-ink) !important;
+  border: 1px solid var(--iii-ink) !important;
+  color: var(--iii-bg) !important;
   padding: 0.08rem 0.28rem;
 }
 
@@ -337,15 +342,17 @@ a:has(> span.bg-primary-dark):hover svg {
 .code-block [data-testid="copy-code-button"] {
   backdrop-filter: none !important;
   background: transparent !important;
-  color: var(--iii-ink-faint) !important;
+  color: var(--iii-bg) !important;
+  opacity: 0.6;
 }
 
 .code-block [data-testid="copy-code-button"] svg {
-  color: var(--iii-ink-faint) !important;
+  color: var(--iii-bg) !important;
 }
 
 .code-block [data-testid="copy-code-button"]:hover,
 .code-block [data-testid="copy-code-button"]:hover svg {
-  background: var(--iii-rule-2) !important;
-  color: var(--iii-ink) !important;
+  background: var(--iii-rule) !important;
+  color: var(--iii-bg) !important;
+  opacity: 1;
 }

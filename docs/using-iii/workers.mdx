@@ -51,18 +51,41 @@ The registry contains many workers that encapsulate common services. See
 iii worker add iii-state
 ```
 
-The worker is added to `config.yaml` and started automatically. For local paths, Docker / OCI
-images, and version pinning, see [Worker Registry / Adding a worker](./registry#adding-a-worker).
+The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
+worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
+
+For local paths, Docker / OCI images, and version pinning, see
+[Worker Registry / Adding a worker](./registry#adding-a-worker).
+
+## Listing workers
+
+`iii worker list` shows every worker declared in your project's `config.yaml` along with its current
+status:
+
+```bash
+iii worker list
+```
 
 ## Starting and stopping workers
 
 Added workers start automatically with the engine. To control them manually, use the `start`,
-`stop`, and `restart` commands
+`stop`, and `restart` commands:
 
 ```bash
 iii worker start <name>     # start one worker
 iii worker stop <name>      # stop one worker
 iii worker restart <name>   # stop then start
+```
+
+## Inspecting a worker
+
+To check a specific worker's state, follow its logs, or run a command inside the worker's sandbox,
+use:
+
+```bash
+iii worker status <name>             # config, sandbox state, recent logs
+iii worker logs <name>               # stream the worker's logs
+iii worker exec <name> -- <command>  # run a command inside the worker
 ```
 
 ## Worker skills
@@ -85,12 +108,6 @@ Functions and triggers come from connected workers. To use a trigger of a given 
 worker that provides it to be connected. For example if you add `http` triggers via the
 [iii-http](https://workers.iii.dev/workers/iii-http) worker then you can now expose endpoints for
 your function just as you would in a web framework like Express or FastAPI.
-
-## Managing workers from the CLI
-
-The `iii worker` CLI subcommands cover the operational lifecycle of workers in a project. The set
-includes `add`, `remove`, `reinstall`, `clear`, `list`, `start`, `stop`, etc. Full syntax, flags,
-and behavior are documented at [CLI](/using-iii/cli).
 
 ## Versioning and pinning
 
@@ -121,9 +138,17 @@ iii worker update                 # every locked worker
 and source so the same worker set installs the same way across machines and platforms. Binary
 workers can pin per-platform artifacts (macOS, Linux, Windows) in the same lockfile.
 
-When publishing to version control commit `iii.lock` alongside `config.yaml` for reproducible
-installs. The `iii worker` CLI subcommands `sync`, `verify`, and `update` read and write it; see
-[CLI](/using-iii/cli) for complete syntax.
+Commit `iii.lock` alongside `config.yaml` for reproducible installs. Two commands operate on the
+lockfile directly:
+
+```bash
+iii worker sync            # install workers exactly from iii.lock
+iii worker sync --frozen   # CI form: verify the lockfile without mutating local files
+iii worker verify          # report drift between config.yaml and iii.lock
+```
+
+`iii worker update` (above) is the third lockfile command; it re-resolves pins to the latest
+permitted versions and writes them back to `iii.lock`.
 
 {/* TODO: Add a dedicated lockfile reference page for the per-field schema (top-level fields, LockedWorker, BinaryArtifact, ImageSource, manifest hash format). The dx-improves source includes `docs/workers/managed-worker-lockfile.mdx` which can be ported. */}
 
@@ -136,8 +161,8 @@ process:
 iii worker remove <worker-name>
 ```
 
-Downloaded artifacts remain on disk after removal. See [CLI](/using-iii/cli#worker) for the
-subcommand that cleans up artifacts.
+Downloaded artifacts remain on disk after removal. To delete them too, use
+`iii worker clear <worker-name>`. Omit the name to clear every worker's artifacts.
 
 ## Authoring workers
 

@@ -1,6 +1,6 @@
 ---
 title: "Functions"
-description: "Placeholder."
+description: "Registering and invoking functions in your iii project."
 owner: "devrel"
 type: "how-to"
 ---
@@ -24,20 +24,76 @@ Trigger sources:
 
 ## Register a function
 
-`worker.registerFunction(id, handler, options?)` registers a callable function with the engine.
+Inside a worker, `worker.registerFunction(id, handler)` makes a function callable from anywhere in
+the iii system. The `id` follows the `service::name` form; the handler receives the call's payload
+and returns the result.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
+      return { c: payload.a + payload.b };
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    worker.register_function("math::add", add_handler)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::RegisterFunction;
+
+    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+        Ok(serde_json::json!({ "c": input.a + input.b }))
+    }));
+    ```
+
+  </Tab>
+</Tabs>
 
 ## Define request and response formats
 
-Defining JSON Schemas for the request and response so the engine validates calls.
+Attach JSON Schemas to a registered function so the engine validates each call's payload and return
+shape. Validation happens at registration time (the schemas are stored with the function) and at
+every invocation. Mismatches surface as invocation errors, not as silent bad data.
+
+The schemas also feed the iii console, agent-readable skills, and the request and response types
+each SDK generates for typed call sites.
 
 ## Invoke a function synchronously
 
-Call `trigger()` without an `action`. The call waits until the function returns or the timeout
-expires.
+Call `worker.trigger(...)` with no `action` (the default). The call waits for the target function to
+return its result, or for the configured timeout to fire.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "math::add",
+      payload: { a: 2, b: 3 },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "math::add",
+        "payload": {"a": 2, "b": 3},
+    })
+    ```
+  </Tab>
+</Tabs>
 
 ## Fire-and-forget with `TriggerAction.Void`
 
-Pass `TriggerAction.Void()` to return immediately without waiting for the function to run.
+Pass `TriggerAction.Void()` as the action to return immediately without waiting for the function to
+run. Use this when you don't need the result and don't want to block.
 
 {/* prettier-ignore */}
 <Note>

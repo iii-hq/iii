@@ -6,71 +6,38 @@
 ## Browsing the registry
 
 The iii Worker Registry at [workers.iii.dev](https://workers.iii.dev/) is the index of installable
-workers. Each worker page lists its functions, triggers, configuration, supported platforms, and
-skills.
-
-## Find a worker
-
-Browse [workers.iii.dev](https://workers.iii.dev/) to locate a worker that matches a capability your
-project needs. Each worker page lists the functions and trigger types it provides, its configuration
-schema, supported platforms, and skills. Use that information to confirm the worker fits before
-installing.
+workers. Each worker page lists the functions and trigger types it provides, its configuration
+schema, supported platforms, and agent skills. Use that information to locate a worker that fulfills
+a capability your project needs.
 
 {/* TODO: Add a llm-only note here on how an llm can browse the registry once that surface is stable in the skills worker */}
 
-## Add a worker from the registry
+Workers can also be found on Docker and OCI-compatible registries.
 
-Install a worker by passing its registry name to `iii worker add`:
+## Adding a worker
 
-```bash
-iii worker add <worker-name>
-```
-
-The worker is downloaded, added to your project's `config.yaml`, and started automatically. See
-[Workers / Adding a worker](./workers#adding-a-worker) for the other install forms (local path, OCI
-image).
-
-## Versions
-
-Workers are published with semver versions. Installing without a version specifier picks the latest
-release. Pinned versions are recorded in [`iii.lock`](./workers#the-lockfile-iiilock) so the same
-versions install across machines.
-
-## Pin a version
-
-Append `@<version>` to a registry name to pin a specific release rather than tracking the latest:
+`iii worker add` accepts three sources. In every case the worker is added to your project's
+`config.yaml` and started automatically.
 
 ```bash
-iii worker add <worker-name>@1.2.0
+iii worker add iii-state                # registry name
+iii worker add ./workers/my-worker      # local path
+iii worker add ghcr.io/org/worker:tag   # Docker or OCI image
 ```
 
-The pin is recorded in `iii.lock` and replays on every subsequent install. See
-[Workers / The lockfile (iii.lock)](./workers#the-lockfile-iiilock).
+<Note>
+  Registry workers are published with semver versions. For how versions are picked, pinned with
+  `@<version>`, updated, and recorded in `iii.lock`, see [Versioning and
+  pinning](./workers#versioning-and-pinning) and [Updating a
+  worker](./workers#updating-a-worker) on the Workers page.
+</Note>
 
-## Update a worker
-
-`iii worker update` re-resolves locked workers and writes the new pins back to `iii.lock`. Pass a
-worker name to update one, or omit it to update every locked worker:
-
-```bash
-iii worker update <worker-name>   # one worker
-iii worker update                 # every locked worker
-```
-
-## Remove a worker
-
-`iii worker remove` drops a worker from `config.yaml`. The engine tears down the running worker
-process:
-
-```bash
-iii worker remove <worker-name>
-```
-
-Downloaded artifacts remain on disk after removal. See
-[Workers / Managing workers from the CLI](./workers#managing-workers-from-the-cli) for the broader
-subcommand set, including the command that cleans up artifacts.
+<Note>
+  For removing workers and the broader `iii worker` subcommand set (start, stop, restart, sync,
+  verify, etc.), see [Workers](./workers).
+</Note>
 
 ## Artifact types
 
 Each registry worker is published as either a native binary (with per-platform artifacts for macOS,
-Linux, and Windows) or as an OCI image reference that runs on every supported platform.
+Linux, and Windows) or as a Docker / OCI compatible image that runs on every supported platform.

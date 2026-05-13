@@ -1,23 +1,53 @@
 ---
 title: "Triggers"
-description: "Placeholder."
+description: "Binding functions to events in your iii project."
 owner: "devrel"
 type: "how-to"
 ---
 
 ## Register a trigger
 
-The function-then-trigger workflow: register a function first, then register a trigger that routes
-to it.
+Register the function first, then register a trigger that routes to it by `function_id`. The trigger
+declares its `type` (whatever the connected worker advertises, like `http` or `cron`), its `config`
+(the per-type details), and the function to invoke.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+</Tabs>
+
+Per-type configuration is documented in each worker's Worker Docs (e.g.
+[iii-http](https://workers.iii.dev/workers/iii-http) for the `http` type).
 
 ## Bind multiple triggers to one function
 
-Re-using a single function across multiple trigger types (HTTP, queue, cron, etc.).
+The same `function_id` can be the target of any number of triggers across any number of types.
+Register a second trigger with the same `function_id` and a different type or config; the function
+runs unchanged whether the call arrives over HTTP, on a cron schedule, or from a queue message.
 
 ## Gate a trigger with a condition
 
-Using a condition function to gate whether a trigger fires its handler.
+A trigger can carry an optional `condition_function_id`. When the trigger fires, the engine invokes
+the condition function first; the handler only runs if the condition returns truthy. Use this when
+the same event source should sometimes fire the function and sometimes skip it.
 
 ## Unregister a trigger
 
-Removing a trigger dynamically via the handle returned from registration.
+Trigger registration returns a handle. Pass that handle to `worker.unregisterTrigger(...)` to drop
+the trigger at runtime. When the worker disconnects, all of its triggers are removed automatically.

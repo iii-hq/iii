@@ -22,10 +22,6 @@ engine.
 
 The flags accepted by the `iii` binary (`--config`, `--use-default-config`, `--version`).
 
-## Worker
-
-For the `iii worker` subcommand group, see [Workers](/using-iii/workers).
-
 ## Managing iii Cloud deployments
 
 The `iii cloud` subcommand group manages hosted iii deployments (e.g. `iii cloud deploy`,
