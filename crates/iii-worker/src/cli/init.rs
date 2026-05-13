@@ -241,6 +241,20 @@ pub async fn run(args: InitArgs) -> i32 {
         );
     }
 
+    // Strip project-only files the scaffolder inherits from the root
+    // manifest's `shared_files`. `config.yaml` belongs to `iii project`,
+    // not to a standalone worker. The scaffolder has no per-template
+    // shared_files opt-out, so we clean up here. Only remove when the
+    // file did NOT exist before scaffolding (i.e. is absent from
+    // `snapshots`) -- never touch user content.
+    for name in ["config.yaml"] {
+        let path = root.join(name);
+        let preexisted = snapshots.contains_key(Path::new(name));
+        if !preexisted && path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     // For `--language` runs we already know the language. For interactive
     // runs, recover it by parsing the `language:` line of the scaffolded
     // `iii.worker.yaml` (scaffolder substituted it via the shared file's
