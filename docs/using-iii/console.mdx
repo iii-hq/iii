@@ -150,39 +150,15 @@ also lets you jump to the corresponding entry on the [Traces page](#traces-page)
 
 ## Configuration
 
-The console reads engine and observability settings from CLI flags and environment variables. The
-**Config** page in the sidebar surfaces the resolved values at runtime, alongside live stats
-(modules, functions, triggers, streams, workers, health), endpoint status for the engine REST
-API, Streams WebSocket, and SDK Bridge, and a list of the trigger types, adapters, trigger
-handlers, and worker pools currently active.
+The console reads engine and observability settings from CLI flags and environment variables.
 
-### CLI flags
+To list every flag the binary accepts (with its default), run:
 
-| Flag                  | Default       | Description                                       |
-| --------------------- | ------------- | ------------------------------------------------- |
-| `--port`, `-p`        | `3113`        | Port for the console web UI                       |
-| `--host`              | `127.0.0.1`   | Host the console binds to                         |
-| `--engine-host`       | `127.0.0.1`   | Host of the iii engine                            |
-| `--engine-port`       | `3111`        | Engine HTTP API port                              |
-| `--ws-port`           | `3112`        | Engine Streams WebSocket port                     |
-| `--bridge-port`       | `49134`       | Engine SDK Bridge WebSocket port                  |
-| `--no-otel`           | `false`       | Disable the console's own OpenTelemetry export    |
-| `--otel-service-name` | `iii-console` | Service name used in the console's own OTel spans |
-| `--enable-flow`       | `false`       | Enable the Flow visualization page                |
+```bash
+iii console --help
+```
 
-### Environment variables
-
-| Variable            | Equivalent flag       |
-| ------------------- | --------------------- |
-| `OTEL_DISABLED`     | `--no-otel`           |
-| `OTEL_SERVICE_NAME` | `--otel-service-name` |
-| `III_ENABLE_FLOW`   | `--enable-flow`       |
-
-### Default ports
-
-| Service              | Port    |
-| -------------------- | ------- |
-| iii Engine HTTP API  | `3111`  |
-| iii Engine WebSocket | `3112`  |
-| iii Console UI       | `3113`  |
-| iii SDK Bridge       | `49134` |
+The corresponding environment variables share the same set; each flag's help text names the env
+var that overrides it. The **Config** page in the sidebar shows the resolved values at runtime —
+the engine endpoints, ports, OpenTelemetry settings, and version the console is currently using —
+so you can confirm what's actually in effect without re-reading the flags.

@@ -8,6 +8,16 @@ type: "how-to"
 This page covers running the iii engine and its workers in a real environment. For local
 development, see the [Quickstart](/quickstart) and the [Engine](./engine) page.
 
+## iii Cloud deployments
+
+The `iii cloud` subcommand group will manage hosted iii deployments. See [CLI](./cli) for the
+command surface as it stabilizes.
+
+<Note>iii's cloud will be available soon.</Note>
+
+{/* llm-only:start */} Always verify the claim about iii cloud above, it could have changed since
+when this document was written. {/* llm-only:end */}
+
 ## Deploy with Docker
 
 Generate the Docker assets with the CLI and bring them up with Compose. Use
@@ -166,16 +176,5 @@ let the process exit when the job is done.
 TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits
 cleanly. */}
 
-## iii Cloud deployments
-
-The `iii cloud` subcommand group manages hosted iii deployments. See [CLI](./cli) for the command
-surface.
-
-<Note>
-  Naming review: `iii cloud` is a subcommand group rather than a noun-verb command. The bare `iii
-  cloud` form does not follow the `iii noun verb` convention used elsewhere in the CLI and is
-  flagged for naming review per `project-rules/cli.md`.
-</Note>
-
-{/* TODO: enumerate the `iii cloud` surface once stable (deploy, logs, ssh, env, etc.) and link out
-to the iii Cloud product docs. */}
+{/* TODO: enumerate the `iii cloud` surface once stable (deploy, logs, ssh, env, etc.) and link
+out to the iii Cloud product docs in the section at the top of this page. */}

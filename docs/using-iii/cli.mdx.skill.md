@@ -3,29 +3,50 @@
 # CLI
 
 
-<Note>
-  For `iii worker ...` subcommands (add, remove, list, start, stop, update, verify, lockfile), see
-  [Workers](/using-iii/workers).
-</Note>
+For the most current list of commands, flags, and defaults, ask the binary directly:
 
-## Invoking functions through the CLI
+```bash
+iii --help            #lists iii's flags and available subcommands
+iii subcommand --help #lists the specific actions each sucommand accepts
+```
+
+Each subcommand's help also provides the defaults and environment variables that affect each
+command.
+
+## Trigger a function from the CLI
 
 `iii trigger <function-id> [arg=value ...]` invokes a registered function against a running engine.
-Pass `--address` / `--port` to target a remote engine.
+The engine routes the call to whatever worker registered the function — no trigger registration
+involved.
 
-## Publishing triggers through the CLI
+```bash
+iii trigger math::add a=2 b=3
+```
 
-Firing a trigger from the command line so external systems and scripts can publish events into the
-engine.
+<Note>
+  For the full invocation surface, payload formats, fire-and-forget, queue-routed actions, and the
+  equivalent SDK call from worker code, see [Triggers / Call a function
+  directly](/using-iii/triggers#call-a-function-directly).
+</Note>
 
-## CLI arguments
+## Subcommands
 
-The flags accepted by the `iii` binary (`--config`, `--use-default-config`, `--version`).
+| Subcommand    | What it does                                                                                              |
+| ------------- | --------------------------------------------------------------------------------------------------------- |
+| `iii trigger` | Invoke a registered function on a running engine.                                                         |
+| `iii worker`  | Manage workers: add, remove, list, start/stop, update, verify. See [Workers](/using-iii/workers).         |
+| `iii project` | Manage iii projects: scaffold a new one, generate Docker assets. See [Deployment](/using-iii/deployment). |
+| `iii console` | Launch the iii web console. See [Console](/using-iii/console).                                            |
+| `iii cloud`   | Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments).     |
+| `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii-itself).                     |
+
+Running `iii` with no subcommand starts the engine from `./config.yaml` (or the path passed to
+`--config`); pass `--use-default-config` to start with the built-in defaults instead.
 
 ## Managing iii Cloud deployments
 
-The `iii cloud` subcommand group manages hosted iii deployments (e.g. `iii cloud deploy`,
-`iii cloud logs`). See [Deployment](/using-iii/deployment#iii-cloud-deployments).
+The `iii cloud` subcommand group will manage hosted iii deployments. See
+[Deployment](/using-iii/deployment#iii-cloud-deployments) for details about the iii cloud.
 
 <Note>iii's cloud will be available soon.</Note>
 
@@ -34,10 +55,10 @@ when this document was written. {/* llm-only:end */}
 
 ## Updating iii itself
 
-The `iii update` command updates the iii engine and its managed binaries. Pass a target to update a
-specific binary. This is distinct from `iii worker update`, which refreshes pinned worker versions.
+`iii update` refreshes iii and its managed binaries to their latest versions. This is distinct from
+`iii worker update`, which refreshes pinned worker versions inside a project.
 
 <Note>
-  Specific targets can be updated individually as well via `iii update [target]`. Run `iii update
+  Specific targets can be updated individually via `iii update [target]`. Run `iii update
   --list-targets` to see the list of targets.
 </Note>
