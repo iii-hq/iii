@@ -1599,7 +1599,7 @@ async fn finish_add(worker_name: &str, rc: i32, wait: bool, brief: bool) -> i32 
         // picked up. A wait would run to timeout. Tell the user instead.
         eprintln!(
             "\n  {} engine not running; start it to observe boot.\n  \
-               Start:         iii start\n  \
+               Start:         iii\n  \
                Then watch:    iii worker status {}",
             "⚠".yellow(),
             worker_name,
@@ -2734,7 +2734,7 @@ pub async fn handle_managed_start(
         if !is_engine_running() {
             eprintln!(
                 "{} '{}' is a builtin served by the iii engine, but the engine isn't running.\n  \
-                 Start the engine:  iii start",
+                 Start the engine:  iii",
                 "error:".red(),
                 worker_name,
             );
@@ -2851,14 +2851,14 @@ pub async fn handle_managed_start(
             if !is_engine_running() {
                 eprintln!(
                     "{} '{}' is an engine builtin, but the engine isn't running.\n  \
-                     Start the engine:  iii start",
+                     Start the engine:  iii",
                     "error:".red(),
                     worker_name,
                 );
                 return 1;
             }
             eprintln!(
-                "  {} '{}' is an engine builtin — it starts automatically with `iii start`.",
+                "  {} '{}' is an engine builtin — it starts automatically with `iii`.",
                 "info:".cyan(),
                 worker_name
             );
