@@ -3,10 +3,15 @@
   "proseWrap": "always",
   "overrides": [
     {
-      "files": ["*.md", "*.mdx"],
+      "files": ["*.md"],
       "options": {
-        "printWidth": 100,
-        "proseWrap": "always"
+        "parser": "markdown"
+      }
+    },
+    {
+      "files": ["*.mdx"],
+      "options": {
+        "parser": "mdx"
       }
     }
   ]
