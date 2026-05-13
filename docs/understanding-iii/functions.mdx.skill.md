@@ -5,16 +5,33 @@
 
 ## What a function is
 
-A named handler that can be invoked directly or via a trigger.
+A function is a named handler inside a worker. It takes a payload and returns a result. From the iii
+system's perspective, a function is identified by its name and addressable across language and
+location boundaries. Callers do not know what worker is providing the function, what language the
+handler is written in, or where the worker is running. The engine routes each invocation to a worker
+that currently provides the target function.
+
+A function has no fixed shape beyond payload-in / result-out. Some functions are pure computation.
+Some perform side effects (state writes, HTTP calls, queue enqueues). Some are agentic, invoking
+other functions in turn. The engine does not distinguish: routing is the same for all of them.
 
 ## Function identifiers
 
-The `service::name` convention used to address functions across workers.
+Function identifiers use the `service::name` convention. The `service` segment groups related
+functions together as a namespace, scope, or worker name. The `name` segment is the specific
+handler. Identifiers like `math::add`, `state::get`, and `http::serve` follow this convention.
+
+The convention is a recommendation, not a hard rule. Any string is a valid function ID at the engine
+level, but the `service::name` form makes the function's intent obvious to readers and avoids
+collisions between unrelated functions registered by different workers.
 
 ## Invocation modes
 
-How `trigger()` calls a function: synchronous (default, blocks until result) and void
-(fire-and-forget).
+Functions can be invoked in two modes. The default, synchronous mode blocks until the function
+returns its result or the configured timeout fires. The fire-and-forget mode (`TriggerAction.Void`)
+returns immediately, scheduling the function to run without waiting for a result. Synchronous
+invocations are appropriate when the caller needs the value the function returns. Fire-and-forget is
+for side-effect work where the caller does not need to wait.
 
 <Note>
   Workers can provide their own `TriggerAction`s. The iii-queue worker provides

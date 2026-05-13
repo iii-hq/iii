@@ -1,6 +1,6 @@
 ---
 title: "Workers"
-description: "Placeholder."
+description: "Building new workers that extend an iii system."
 owner: "devrel"
 type: "how-to"
 ---
@@ -52,8 +52,31 @@ connects and disconnects.
 
 ## Configuring workers
 
-How workers are declared and tuned in `iii.worker.yaml`.
+Add an `iii.worker.yaml` manifest at the root of your worker:
+
+```yaml
+name: math-worker
+runtime:
+  kind: python
+  package_manager: pip
+  entry: math_worker.py
+scripts:
+  install: "pip install -r requirements.txt"
+  start: "python math_worker.py"
+```
+
+For the full manifest field schema, see the SDK reference.
+
+<!-- TODO: link to the canonical iii.worker.yaml reference page once it exists. -->
 
 ## What a worker contributes
 
-The functions and trigger types a worker exposes once it's connected.
+Register functions and trigger types from inside the worker process:
+
+- Functions: `worker.registerFunction(id, handler)`. See
+  [Using iii / Functions](/using-iii/functions).
+- Triggers: `worker.registerTrigger({ type, config, function_id })`. See
+  [Using iii / Triggers](/using-iii/triggers).
+
+A worker can also advertise its own trigger types so other workers' functions can be wired to those
+events. The implementation per type is documented in the advertising worker's Worker Docs.
