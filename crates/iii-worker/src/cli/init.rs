@@ -488,12 +488,12 @@ fn print_init_success(
     if target_specified {
         eprintln!("    {}", format!("cd {}", root.display()).bold());
     }
-    let install_hint = match lang {
-        WorkerLanguage::Ts | WorkerLanguage::Js => "npm install",
-        WorkerLanguage::Py => "uv sync",
-        WorkerLanguage::Rust => "cargo build",
-    };
-    eprintln!("    {}    # install the iii SDK", install_hint.bold());
+    // The scaffolder runs `npm install` / `uv sync` automatically for
+    // JS/TS and Python (see `scaffolder_core::telemetry::*_install`).
+    // Rust has no auto-install, so surface the build hint.
+    if matches!(lang, WorkerLanguage::Rust) {
+        eprintln!("    {}    # fetch + build deps", "cargo build".bold());
+    }
     eprintln!(
         "    edit {}    # add your function handlers",
         lang.default_entry().bold()
