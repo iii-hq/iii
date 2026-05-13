@@ -2829,6 +2829,8 @@ dependencies = [
  "base64",
  "clap",
  "colored",
+ "console 0.16.3",
+ "ctrlc",
  "dirs 6.0.0",
  "flate2",
  "futures",

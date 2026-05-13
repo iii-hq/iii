@@ -1,5 +1,8 @@
 //! End-to-end tests for `iii worker init`. Uses --template-dir against a
 //! fixture so the tests are hermetic and don't depend on iii-hq/templates.
+//!
+//! Tests always pass `--language <l> --skip-iii` so the run is fully
+//! non-interactive (no cliclack prompt, no version check).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -32,20 +35,36 @@ fn init_subcommand_is_reachable() {
         stdout.contains("--directory") || stdout.contains("Target directory"),
         "help should describe --directory; got: {stdout}"
     );
+    assert!(
+        stdout.contains("--language") || stdout.contains("language"),
+        "help should describe --language; got: {stdout}"
+    );
 }
 
-#[test]
-fn init_creates_minimum_scaffold_and_templates_name() {
+/// Shared assertions for a successful language-specific scaffold.
+fn assert_lang_scaffold(
+    lang_short: &str,
+    expected_manifest: &str,
+    expected_entry: &str,
+    expected_files: &[&str],
+) {
     let parent = tempdir().unwrap();
     let out = worker_bin()
-        .args(["init", "mywkr", "--template-dir"])
+        .args([
+            "init",
+            "mywkr",
+            "--language",
+            lang_short,
+            "--skip-iii",
+            "--template-dir",
+        ])
         .arg(fixtures())
         .current_dir(parent.path())
         .output()
         .expect("failed to run iii-worker");
     assert!(
         out.status.success(),
-        "init failed: {}",
+        "init --language {lang_short} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
@@ -60,7 +79,7 @@ fn init_creates_minimum_scaffold_and_templates_name() {
     );
     assert!(root.join(".gitignore").exists(), "expected .gitignore");
 
-    // Codex finding: worker.ini must include name and source, not just worker_id.
+    // .iii/worker.ini captures name, source, AND language.
     let ini = std::fs::read_to_string(root.join(".iii").join("worker.ini")).unwrap();
     assert!(ini.contains("worker_id="), "worker.ini missing worker_id");
     assert!(
@@ -71,29 +90,155 @@ fn init_creates_minimum_scaffold_and_templates_name() {
         ini.contains("source=init"),
         "worker.ini missing source: {ini}"
     );
+    assert!(
+        ini.contains(&format!("language={lang_short}")),
+        "worker.ini missing language={lang_short}, got: {ini}"
+    );
 
-    // Name templating: iii.worker.yaml must reflect the dirname, not the
-    // hardcoded fixture placeholder.
+    // iii.worker.yaml: placeholders substituted.
     let yaml = std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap();
     assert!(
         yaml.contains("name: mywkr"),
-        "iii.worker.yaml name should be templated to 'mywkr', got: {yaml}"
+        "yaml name not templated: {yaml}"
     );
     assert!(
-        !yaml.contains("{{worker_name}}"),
-        "iii.worker.yaml still contains the unresolved placeholder, got: {yaml}"
+        yaml.contains(&format!("language: {expected_manifest}")),
+        "yaml language wrong: {yaml}"
+    );
+    assert!(
+        yaml.contains(&format!("entry: {expected_entry}")),
+        "yaml entry wrong: {yaml}"
+    );
+    assert!(
+        !yaml.contains("{{"),
+        "yaml still has unresolved placeholders: {yaml}"
     );
 
-    // Stderr should reference iii.worker.yaml and iii worker add (the new
-    // next-steps message; per Issue 5).
+    // Language-specific files exist.
+    for f in expected_files {
+        assert!(
+            root.join(f).exists(),
+            "expected language-specific file {f} for {lang_short}; tree: {:?}",
+            std::fs::read_dir(&root).ok().map(|rd| rd
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>())
+        );
+    }
+}
+
+#[test]
+fn init_typescript_creates_node_scaffold_with_sdk() {
+    assert_lang_scaffold(
+        "ts",
+        "typescript",
+        "./src/index.ts",
+        &["package.json", "tsconfig.json", "src/index.ts"],
+    );
+    let parent = tempdir().unwrap();
+    let out = worker_bin()
+        .args([
+            "init",
+            "ts-wkr",
+            "--language",
+            "ts",
+            "--skip-iii",
+            "--template-dir",
+        ])
+        .arg(fixtures())
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let pkg = std::fs::read_to_string(parent.path().join("ts-wkr").join("package.json")).unwrap();
+    assert!(
+        pkg.contains("@iii-hq/iii"),
+        "package.json must pin @iii-hq/iii, got: {pkg}"
+    );
+}
+
+#[test]
+fn init_javascript_creates_node_scaffold() {
+    assert_lang_scaffold(
+        "js",
+        "javascript",
+        "./src/index.js",
+        &["package.json", "src/index.js"],
+    );
+}
+
+#[test]
+fn init_python_creates_pyproject_with_sdk() {
+    assert_lang_scaffold("py", "python", "./main.py", &["pyproject.toml", "main.py"]);
+    let parent = tempdir().unwrap();
+    let out = worker_bin()
+        .args([
+            "init",
+            "py-wkr",
+            "--language",
+            "py",
+            "--skip-iii",
+            "--template-dir",
+        ])
+        .arg(fixtures())
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let pyproj =
+        std::fs::read_to_string(parent.path().join("py-wkr").join("pyproject.toml")).unwrap();
+    assert!(
+        pyproj.contains("iii-sdk"),
+        "pyproject.toml must pin iii-sdk, got: {pyproj}"
+    );
+}
+
+#[test]
+fn init_rust_creates_cargo_with_sdk() {
+    assert_lang_scaffold(
+        "rust",
+        "rust",
+        "./src/main.rs",
+        &["Cargo.toml", "src/main.rs"],
+    );
+    let parent = tempdir().unwrap();
+    let out = worker_bin()
+        .args([
+            "init",
+            "rs-wkr",
+            "--language",
+            "rust",
+            "--skip-iii",
+            "--template-dir",
+        ])
+        .arg(fixtures())
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let cargo = std::fs::read_to_string(parent.path().join("rs-wkr").join("Cargo.toml")).unwrap();
+    assert!(
+        cargo.contains("iii"),
+        "Cargo.toml must pin iii crate, got: {cargo}"
+    );
+}
+
+#[test]
+fn init_without_language_in_non_tty_fails_with_hint() {
+    let parent = tempdir().unwrap();
+    let out = worker_bin()
+        .args(["init", "auto", "--skip-iii", "--template-dir"])
+        .arg(fixtures())
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "non-TTY init without --language must fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("iii.worker.yaml"),
-        "next-steps should mention iii.worker.yaml; got: {stderr}"
-    );
-    assert!(
-        stderr.contains("iii worker add"),
-        "next-steps should mention `iii worker add`; got: {stderr}"
+        stderr.contains("--language"),
+        "stderr should suggest --language, got: {stderr}"
     );
 }
 
@@ -102,7 +247,7 @@ fn init_preserves_worker_id_and_user_edits_on_rerun() {
     let dir = tempdir().unwrap();
     let run = || {
         worker_bin()
-            .args(["init", "--template-dir"])
+            .args(["init", "--language", "ts", "--skip-iii", "--template-dir"])
             .arg(fixtures())
             .arg("--directory")
             .arg(dir.path())
@@ -120,7 +265,7 @@ fn init_preserves_worker_id_and_user_edits_on_rerun() {
 
     // User edits iii.worker.yaml between runs.
     let yaml_path = dir.path().join("iii.worker.yaml");
-    let edited = "name: my-custom-worker\nlanguage: py\nentry: ./main.py\n";
+    let edited = "name: my-custom-worker\nlanguage: typescript\nentry: ./custom.ts\n";
     std::fs::write(&yaml_path, edited).unwrap();
 
     let out2 = run();
@@ -157,7 +302,7 @@ fn init_refuses_non_empty_directory_without_flag() {
     std::fs::write(dir.path().join("user-file.txt"), "hello").unwrap();
 
     let out = worker_bin()
-        .args(["init", "--template-dir"])
+        .args(["init", "--language", "ts", "--skip-iii", "--template-dir"])
         .arg(fixtures())
         .arg("--directory")
         .arg(dir.path())
@@ -178,7 +323,7 @@ fn init_allows_non_empty_with_flag() {
     std::fs::write(dir.path().join("user-file.txt"), "hello").unwrap();
 
     let out = worker_bin()
-        .args(["init", "--template-dir"])
+        .args(["init", "--language", "ts", "--skip-iii", "--template-dir"])
         .arg(fixtures())
         .arg("--directory")
         .arg(dir.path())
@@ -192,7 +337,6 @@ fn init_allows_non_empty_with_flag() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(dir.path().join(".iii").join("worker.ini").exists());
-    // Pre-existing file must survive.
     assert_eq!(
         std::fs::read_to_string(dir.path().join("user-file.txt")).unwrap(),
         "hello",
@@ -205,7 +349,7 @@ fn init_reports_clear_error_when_template_dir_missing() {
     let dir = tempdir().unwrap();
     let bogus = tempdir().unwrap(); // empty: no template.yaml at root
     let out = worker_bin()
-        .args(["init", "--template-dir"])
+        .args(["init", "--language", "ts", "--skip-iii", "--template-dir"])
         .arg(bogus.path())
         .arg("--directory")
         .arg(dir.path())
@@ -218,7 +362,9 @@ fn init_reports_clear_error_when_template_dir_missing() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("worker-bare") || stderr.contains("template"),
+        stderr.contains("worker-bare")
+            || stderr.contains("template")
+            || stderr.contains("scaffold"),
         "stderr should mention the failing template, got: {stderr}"
     );
 }
