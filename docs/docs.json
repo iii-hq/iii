@@ -111,61 +111,6 @@
             ]
           },
           {
-            "tab": "Tutorials",
-            "groups": [
-              {
-                "group": "Build a Reactive CRUD backend",
-                "pages": [
-                  "tutorials/reactive-crud/overview",
-                  "tutorials/reactive-crud/model-and-store",
-                  "tutorials/reactive-crud/crud-endpoints",
-                  "tutorials/reactive-crud/realtime-subscriptions"
-                ]
-              },
-              {
-                "group": "Incremental adoption",
-                "pages": [
-                  "tutorials/incremental-adoption/overview",
-                  "tutorials/incremental-adoption/wrap-existing-api",
-                  "tutorials/incremental-adoption/offload-to-queue",
-                  "tutorials/incremental-adoption/migrate-persistence"
-                ]
-              },
-              {
-                "group": "Build an Agent",
-                "pages": [
-                  "tutorials/build-an-agent/overview",
-                  "tutorials/build-an-agent/define-tools",
-                  "tutorials/build-an-agent/orchestration-loop",
-                  "tutorials/build-an-agent/memory-and-state"
-                ]
-              }
-            ]
-          },
-          {
-            "tab": "How-tos",
-            "groups": [
-              {
-                "group": "How-to",
-                "pages": [
-                  "how-to/build-a-realtime-todo-app"
-                ]
-              }
-            ]
-          },
-          {
-            "tab": "Patterns",
-            "groups": [
-              {
-                "group": "Patterns",
-                "pages": [
-                  "patterns/adapter-pattern",
-                  "patterns/reactive-state-pattern"
-                ]
-              }
-            ]
-          },
-          {
             "tab": "SDK & Engine Reference",
             "groups": [
               {
