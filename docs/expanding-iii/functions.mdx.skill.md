@@ -7,7 +7,7 @@
 
 A worker contributes capability by registering functions. Each function has an `id` of the form
 `service::name`, a handler that receives the payload and returns a result, and optional JSON
-Schemas that validate the request and response shape on every invocation.
+Schemas that describe the request and response shape.
 
 For how callers invoke functions (`worker.trigger` / `iii trigger` / event-bound triggers), see
 [Using iii / Functions](/using-iii/functions) and
@@ -65,9 +65,14 @@ call, HTTP trigger, cron, queue message).
 
 ## Attach request and response schemas
 
-Attach JSON Schemas to the registration so the engine validates each call's payload and return
-shape. Validation happens at registration time (the schemas are stored with the function) and on
-every invocation. Mismatches surface as invocation errors, not as silent bad data.
+Attach JSON Schemas to the registration so the request and response shape are documented alongside
+the function. The schemas are stored with the function and surface in the iii console and the
+agent-readable skills.
+
+<Note>
+  Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
+  reject payloads or handler return values that don't match them.
+</Note>
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
@@ -149,15 +154,15 @@ every invocation. Mismatches surface as invocation errors, not as silent bad dat
   </Tab>
 </Tabs>
 
-The schemas also feed the iii console, agent-readable skills, and the request and response types
-each SDK generates for typed call sites.
+The schemas also feed the iii console and the agent-readable skills.
 
 ## Return values and errors
 
-A function returns either a value matching its response schema, or an error. Errors raised inside
-the handler are propagated to the caller as invocation errors with the worker's stack trace; the
-engine doesn't swallow them. Use this distinction to express expected failures (return a
-structured error value) versus unexpected ones (throw / raise / return `Err`).
+A function returns either a value (which the handler is responsible for shaping to match its
+documented response schema) or an error. Errors raised inside the handler are propagated to the
+caller as invocation errors with the worker's stack trace; the engine doesn't swallow them. Use
+this distinction to express expected failures (return a structured error value) versus unexpected
+ones (throw / raise / return `Err`).
 
 ## Unregister a function
 
@@ -168,5 +173,5 @@ its functions are removed automatically and pending invocations error out.
 
 The function ids your worker exposes, what each one does, and any worker-specific semantics
 (idempotency, rate limits, side effects) belong in this worker's Worker Docs. Keep iii-level
-concepts (the registration surface, schema validation, error propagation) here; document the
+concepts (the registration surface, schema metadata, error propagation) here; document the
 per-function specifics there.

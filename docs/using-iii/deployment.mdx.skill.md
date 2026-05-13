@@ -8,55 +8,161 @@ development, see the [Quickstart](/quickstart) and the [Engine](./engine) page.
 
 ## Deploy with Docker
 
-Running iii via the official image: a single container for development, Compose for development and
-production.
+Generate the Docker assets with the CLI and bring them up with Compose. Use
+`iii project init --docker` for a fresh project, or `iii project generate-docker` to add Docker
+assets to an existing one:
 
-{/* TODO: fill in the canonical image tag (e.g. `ghcr.io/iii-hq/iii:<version>`), a minimal Compose
-file template that mounts `config.yaml` and exposes the engine ports (3111 HTTP, 3112 WS, 49134 SDK
-WebSocket), and the recommended volume mounts for state, queue, and observability data. */}
+```bash
+iii project generate-docker
+```
+
+Both forms emit three files at the project root: `Dockerfile`, `docker-compose.yml`, and `.env`.
+Re-running the generator does not overwrite existing files, so edits you make to the templates
+stick.
+
+Start the stack:
+
+```bash
+docker compose up -d
+```
+
+The generated `docker-compose.yml` exposes:
+
+| Port  | Service                          |
+| ----- | -------------------------------- |
+| 49134 | SDK WebSocket (worker connections) |
+| 3111  | REST API                         |
+| 3112  | Stream API                       |
+| 9464  | Prometheus metrics               |
+
+The Dockerfile builds against `iiidev/iii:latest` (distroless, non-root). The compose file ships
+commented-out Redis and RabbitMQ services that can be uncommented when workers need external
+adapters.
 
 ## Configure a reverse proxy
 
-Terminate TLS in front of iii with Caddy or Nginx, routing HTTP, WebSocket, and stream traffic to
-the right ports.
+The engine does not terminate TLS. Place a reverse proxy in front of it to handle TLS and route
+the three transport surfaces (`/api/*`, `/stream/*`, `/ws`) to the right ports.
 
-{/* TODO: example Caddy / Nginx configs for proxying iii's three transport surfaces (HTTP 3111,
-engine WS 3112, SDK WebSocket 49134) with TLS termination. */}
+### Caddy
+
+```
+your-domain.com {
+    handle /api/* {
+        reverse_proxy 127.0.0.1:3111
+    }
+    handle /stream/* {
+        reverse_proxy 127.0.0.1:3112
+    }
+    handle /ws {
+        reverse_proxy 127.0.0.1:49134
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3111
+    }
+}
+```
+
+See the [Caddy documentation](https://caddyserver.com/docs/) for the rest of the TLS and proxy
+configuration.
+
+### Nginx
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3111;
+    }
+
+    location /ws {
+        proxy_pass http://127.0.0.1:49134;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location /stream/ {
+        proxy_pass http://127.0.0.1:3112;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3111;
+    }
+}
+```
+
+See the [Nginx documentation](https://nginx.org/en/docs/) for SSL, header, and proxy configuration.
 
 ## Harden for production
 
-Run the iii container with a read-only filesystem, dropped Linux capabilities, `no-new-privileges`,
-and a non-root user.
+The generated Dockerfile runs as a non-root user against a distroless base image. For additional
+runtime hardening, run the container with restricted capabilities and a read-only filesystem:
 
-{/* TODO: capture the recommended Docker / Compose flags (`read_only: true`, `cap_drop`,
-`security_opt`, `user`), plus the writable volume mounts iii actually needs (data dirs for the
-state, queue, and observability workers). */}
+```bash
+docker run --read-only --tmpfs /tmp \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+  --security-opt=no-new-privileges:true \
+  -v ./config.yaml:/app/config.yaml:ro \
+  iiidev/iii:latest
+```
+
+- `--read-only` blocks writes to the container filesystem.
+- `--cap-drop=ALL` drops every Linux capability not explicitly re-added.
+- `--security-opt=no-new-privileges:true` prevents privilege escalation inside the container.
 
 ## Run multiple engine instances
 
-Scale iii horizontally by running multiple engines behind a load balancer, backing them with shared
-storage for state, queue, and stream data, and coordinating with distributed locks where needed.
+Scale horizontally by running multiple engines behind a load balancer and backing the workers that
+own shared state with external adapters:
 
-{/* TODO: which workers require shared storage (iii-state, iii-queue, iii-stream) and the
-recommended adapter configs (Redis, etc.) for multi-instance deployments. Also: load balancer
-considerations for sticky WebSocket sessions. */}
+- `iii-state`, `iii-queue`, `iii-stream`, and `iii-cron` need shared storage (typically a Redis
+  adapter) when running across multiple engine instances. Configure each worker's adapter in
+  `config.yaml`; the [Worker Registry](./workers-registry) points to the per-worker config
+  reference.
+- SDK workers connect to any engine instance over WebSocket. No session affinity is required for
+  correctness, though sticky sessions can reduce reconnect churn for long-lived WebSocket clients.
+- A load balancer terminates HTTP for the REST and Stream APIs and routes WebSocket clients to a
+  healthy engine.
 
 ## Check engine health
 
-The engine exposes a Prometheus metrics endpoint and accepts HTTP and WebSocket health checks for
-liveness and readiness probes.
+The HTTP API exposes a health endpoint on port 3111:
 
-{/* TODO: exact endpoint paths (`/metrics`, `/healthz`, `/readyz`?), expected response shapes, and
-sample Kubernetes `livenessProbe` / `readinessProbe` configurations. */}
+```bash
+curl http://localhost:3111/health
+```
+
+The observability worker exposes Prometheus metrics on port 9464:
+
+```bash
+curl http://localhost:9464/metrics
+```
+
+For Kubernetes probes, point `livenessProbe` and `readinessProbe` at `/health`.
+
+{/* TODO: confirm exact endpoint shapes (response body, status codes) and whether a separate
+`/readyz` / `/livez` split exists. Sample Kubernetes probe YAML once endpoints are stable. */}
 
 ## Run an ephemeral worker
 
-For one-shot tasks (Kubernetes Jobs, serverless containers, scheduled scripts), an SDK worker
-process can connect to a remote engine, register its functions and triggers, perform the work, and
-shut down gracefully. The engine cleans up the worker's registrations on disconnect.
+For one-shot jobs (Kubernetes Jobs, serverless containers, scheduled scripts), an SDK worker can
+connect to a remote engine, register its functions, do the work, and exit. The engine cleans up
+the worker's registrations on disconnect.
 
-{/* TODO: minimal ephemeral-worker code samples (TypeScript / Python / Rust) that demonstrate
-connect, register, do work, and call `worker.shutdown()` cleanly. */}
+The connection-string surface is documented in
+[Expanding iii / Connecting to the engine](/expanding-iii/workers#connecting-to-the-engine). Set
+`III_URL` to point the worker at the remote engine, register the work the job needs to expose, and
+let the process exit when the job is done.
+
+{/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node /
+TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits
+cleanly. */}
 
 ## iii Cloud deployments
 

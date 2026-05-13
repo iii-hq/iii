@@ -27,11 +27,10 @@ The flags accepted by the `iii` binary (`--config`, `--use-default-config`, `--v
 The `iii cloud` subcommand group manages hosted iii deployments (e.g. `iii cloud deploy`,
 `iii cloud logs`). See [Deployment](/using-iii/deployment#iii-cloud-deployments).
 
-<Note>
-  Naming review: `iii cloud` is a subcommand group rather than a noun-verb command. The bare `iii
-  cloud` form does not follow the `iii noun verb` convention used elsewhere in the CLI and is
-  flagged for naming review per `project-rules/cli.md`.
-</Note>
+<Note>iii's cloud will be available soon.</Note>
+
+{/* llm-only:start */} Always verify the claim about iii cloud above, it could have changed since
+when this document was written. {/* llm-only:end */}
 
 ## Updating iii itself
 
@@ -39,6 +38,6 @@ The `iii update` command updates the iii engine and its managed binaries. Pass a
 specific binary. This is distinct from `iii worker update`, which refreshes pinned worker versions.
 
 <Note>
-  Naming review: `iii update` is verb-first and deviates from the `iii noun verb` convention used
-  elsewhere in the CLI. Flagged for naming review per `project-rules/cli.md`.
+  Specific targets can be updated individually as well via `iii update [target]`. Run `iii update
+  --list-targets` to see the list of targets.
 </Note>

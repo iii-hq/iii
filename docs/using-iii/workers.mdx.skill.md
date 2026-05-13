@@ -9,8 +9,6 @@
   Workers](/expanding-iii/workers).
 </Note>
 
-{/* TODO: The iii-engine-functions Worker Docs entry at https://workers.iii.dev/workers/iii-engine-functions does not exist yet (returns 404 as of 2026-05-12). The three callouts pointing at it on this page will resolve once that Worker Docs entry publishes. */}
-
 ## Worker lifecycle
 
 Workers connect to iii over WebSocket. When a worker connects it becomes visible to the entire iii

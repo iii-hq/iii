@@ -5,20 +5,18 @@
 
 ## Invoking functions
 
-A function runs when a trigger fires. The same function can be invoked from many trigger sources at
+A function runs when a trigger fires. The same function can be invoked from many trigger types at
 once (direct CLI calls, an HTTP route, and a cron schedule, for example) without changing the
 handler.
 
-Trigger sources:
-
-- **CLI**: the `iii trigger` command; see [CLI](/using-iii/cli).
-- **SDK**: `worker.trigger({ function_id, payload })` from any connected worker; see the
-  [SDK reference](/sdk-reference).
-- **HTTP request**: see [iii-http](https://workers.iii.dev/workers/iii-http).
-- **Cron schedule**: see [iii-cron](https://workers.iii.dev/workers/iii-cron).
-- **Queue message**: owned by [iii-queue](https://workers.iii.dev/workers/iii-queue).
-- **State change**: owned by [iii-state](https://workers.iii.dev/workers/iii-state).
-- **Stream event**: owned by [iii-stream](https://workers.iii.dev/workers/iii-stream).
+<Note>
+  Some trigger types are: [`iii trigger`](/using-iii/cli), [`worker.trigger`](/using-iii/triggers),
+  [iii-http](https://workers.iii.dev/workers/iii-http),
+  [iii-cron](https://workers.iii.dev/workers/iii-cron),
+  [iii-queue](https://workers.iii.dev/workers/iii-queue),
+  [iii-state](https://workers.iii.dev/workers/iii-state),
+  [iii-stream](https://workers.iii.dev/workers/iii-stream).
+</Note>
 
 ## Register a function
 
@@ -37,6 +35,7 @@ and returns the result.
       return { c: payload.a + payload.b };
     });
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
@@ -72,73 +71,24 @@ and returns the result.
 
 ## Define request and response formats
 
-Attach JSON Schemas to a registered function so the engine validates each call's payload and return
-shape. Validation happens at registration time (the schemas are stored with the function) and at
-every invocation. Mismatches surface as invocation errors, not as silent bad data.
+Functions can carry JSON Schemas for their request payload and response shape. The schemas are
+stored with the function and feed the iii console and the agent-readable skills.
 
-The schemas also feed the iii console, agent-readable skills, and the request and response types
-each SDK generates for typed call sites.
-
-## Invoke a function synchronously
-
-Call `worker.trigger(...)` with no `action` (the default). The call waits for the target function to
-return its result, or for the configured timeout to fire.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from "iii-sdk";
-
-    const worker = registerWorker(process.env.III_URL);
-
-    const result = await worker.trigger({
-      function_id: "math::add",
-      payload: { a: 2, b: 3 },
-    });
-    ```
-  </Tab>
-  <Tab title="Python">
-    ```python
-    import os
-    from iii import register_worker, InitOptions
-
-    worker = register_worker(
-        os.environ.get("III_URL"),
-        InitOptions(worker_name="caller"),
-    )
-
-    result = worker.trigger({
-        "function_id": "math::add",
-        "payload": {"a": 2, "b": 3},
-    })
-    ```
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{InitOptions, TriggerRequest, register_worker};
-    use serde_json::json;
-
-    let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
-
-    let result = worker
-        .trigger(TriggerRequest {
-            function_id: "math::add".to_string(),
-            payload: json!({ "a": 2, "b": 3 }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await?;
-    ```
-  </Tab>
-</Tabs>
-
-## Fire-and-forget with `TriggerAction.Void`
-
-Pass `TriggerAction.Void()` as the action to return immediately without waiting for the function to
-run. Use this when you don't need the result and don't want to block.
-
-{/* prettier-ignore */}
 <Note>
-  Workers can provide their own `TriggerAction`s. The [iii-queue](https://workers.iii.dev/workers/iii-queue) worker provides `TriggerAction.Enqueue` (takes a `queue` name) to route the invocation through a named queue with retries.
+  Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
+  reject payloads or responses that don't match. Treat the schemas as contract documentation for
+  callers, agents, and the console until validation lands.
+</Note>
+
+<Note>
+  For how to attach schemas when registering a function, see [Expanding iii /
+  Functions](/expanding-iii/functions#attach-request-and-response-schemas).
+</Note>
+
+## Invoke a function
+
+<Note>
+  For how to call a registered function from worker code or the terminal (with optional delivery
+  actions like fire-and-forget or queue-routed), see
+  [Triggers / Call a function directly](/using-iii/triggers#call-a-function-directly).
 </Note>
