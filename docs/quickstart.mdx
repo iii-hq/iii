@@ -21,16 +21,16 @@ iii project init quickstart --template quickstart
 cd quickstart
 ```
 
-This creates the two workers that you'll run: a Python worker that adds two numbers, and a
-TypeScript worker that calls the Python worker through the iii engine.
+This creates the two workers that you'll run: a Python worker that adds two numbers and stores the
+sum in state, and a TypeScript worker that exposes an http endpoint and calls the Python worker
+through the iii engine.
 
 ```
-quickstart/
-  workers/
-    math-worker/          # Python
-      math_worker.py
-    caller-worker/        # TypeScript
-      src/worker.ts
+workers/
+  math-worker/
+    math_worker.py      # Python worker
+  caller-worker/
+    src/worker.ts       # TypeScript worker
 ```
 
 ## 2. Start the engine
@@ -240,12 +240,8 @@ added persistent state, and exposed everything over HTTP, all by incrementally a
 running system.
 
 <CardGroup cols={2}>
-  <Card
-    title="Build a real-time todo app"
-    href="/how-to/build-a-realtime-todo-app"
-    icon="book-open"
-  >
-    Apply functions, triggers, and workers to a complete how-to.
+  <Card title="Use iii" href="/using-iii" icon="table-layout">
+    Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="/understanding-iii" icon="table-layout">
     Understand functions, triggers, and workers from a conceptual point of view.
