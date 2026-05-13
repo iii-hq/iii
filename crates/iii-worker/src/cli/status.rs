@@ -252,10 +252,9 @@ impl WorkerStatus {
     pub fn headline(&self) -> String {
         match self.phase {
             Phase::NotInConfig => format!("{} {} not in config.yaml", "✗".red(), self.name.bold()),
-            Phase::EngineDown => format!(
-                "{} engine not running (start it with `iii`)",
-                "⚠".yellow()
-            ),
+            Phase::EngineDown => {
+                format!("{} engine not running (start it with `iii`)", "⚠".yellow())
+            }
             Phase::Queued => {
                 // Binary workers don't have a sandbox; the engine spawns
                 // them as plain host processes. Tailor the message so we
