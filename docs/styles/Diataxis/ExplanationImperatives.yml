@@ -1,0 +1,13 @@
+extends: existence
+message: "Explanation docs should discuss, not direct. '%s' is imperative—rephrase as discussion."
+level: suggestion
+scope: sentence
+ignorecase: true
+tokens:
+  - you must
+  - you need to
+  - you should
+  - make sure to
+  - ensure that you
+  - don't forget to
+  - always remember to

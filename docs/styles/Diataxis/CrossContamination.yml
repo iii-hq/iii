@@ -1,0 +1,11 @@
+extends: existence
+message: "'%s' signals tutorial content. If this is not a tutorial, consider rephrasing or moving to /tutorials/."
+level: suggestion
+scope: sentence
+ignorecase: true
+tokens:
+  - in this tutorial
+  - this tutorial will
+  - by the end of this tutorial
+  - you have successfully completed
+  - congratulations you have

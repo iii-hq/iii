@@ -1,0 +1,7 @@
+extends: existence
+message: "Avoid '%s'. Use 'worker' (workers are not built-in to iii)."
+level: error
+ignorecase: true
+tokens:
+  - builtin worker
+  - built-in worker
