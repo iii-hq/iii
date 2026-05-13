@@ -10,6 +10,6 @@ docs:
     - "docs/changelog/**"
 ai_check:
   provider: anthropic
-  model: claude-opus-4-7
+  model: claude-sonnet-4-6
   api_key_env_var: ANTHROPIC_API_KEY
   max_tokens: 6000
