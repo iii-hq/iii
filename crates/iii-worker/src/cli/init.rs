@@ -369,25 +369,54 @@ fn substitute_yaml_placeholders(
     std::fs::write(&path, replaced)
 }
 
-/// Detect the language from a scaffolded `iii.worker.yaml` (interactive
-/// path). Looks for `language: <manifest-key>` on a line. Returns `None` if
-/// the file is missing, malformed, or the value isn't one of the four
-/// known langs.
+/// Detect the language the scaffolder picked. Two strategies:
+///
+/// 1. Read `iii.worker.yaml`'s `language:` line. Works only when scaffolder
+///    already substituted `{{worker_language}}` (it doesn't on the
+///    interactive path; the engine substitutes post-scaffold).
+/// 2. Sniff language-specific files the scaffolder dropped: `Cargo.toml`
+///    -> Rust, `pyproject.toml` -> Python, `tsconfig.json` -> TypeScript,
+///    `package.json` (without `tsconfig.json`) -> JavaScript. This is the
+///    primary signal on the interactive path because the language picker's
+///    selection ends up as file presence, not as a yaml field.
 fn detect_language_from_yaml(root: &Path) -> Option<WorkerLanguage> {
-    let path = root.join("iii.worker.yaml");
-    let contents = std::fs::read_to_string(path).ok()?;
-    for line in contents.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("language:") {
-            let value = rest.trim().trim_matches('"').trim_matches('\'');
-            return match value {
-                "typescript" | "ts" => Some(WorkerLanguage::Ts),
-                "javascript" | "js" => Some(WorkerLanguage::Js),
-                "python" | "py" => Some(WorkerLanguage::Py),
-                "rust" | "rs" => Some(WorkerLanguage::Rust),
-                _ => None,
-            };
+    // Strategy 1: explicit `language:` field with a known value.
+    let yaml = root.join("iii.worker.yaml");
+    if let Ok(contents) = std::fs::read_to_string(&yaml) {
+        for line in contents.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("language:") {
+                let value = rest.trim().trim_matches('"').trim_matches('\'');
+                let parsed = match value {
+                    "typescript" | "ts" => Some(WorkerLanguage::Ts),
+                    "javascript" | "js" => Some(WorkerLanguage::Js),
+                    "python" | "py" => Some(WorkerLanguage::Py),
+                    "rust" | "rs" => Some(WorkerLanguage::Rust),
+                    _ => None, // includes the un-substituted "{{worker_language}}"
+                };
+                if parsed.is_some() {
+                    return parsed;
+                }
+                break;
+            }
         }
+    }
+
+    // Strategy 2: file-presence heuristic. The scaffolder only drops the
+    // files matching the selected language (gated by root manifest's
+    // `language_files`), so file presence is a reliable proxy.
+    if root.join("Cargo.toml").exists() {
+        return Some(WorkerLanguage::Rust);
+    }
+    if root.join("pyproject.toml").exists() {
+        return Some(WorkerLanguage::Py);
+    }
+    if root.join("tsconfig.json").exists() {
+        return Some(WorkerLanguage::Ts);
+    }
+    if root.join("package.json").exists() {
+        // No tsconfig.json -> JS scaffold.
+        return Some(WorkerLanguage::Js);
     }
     None
 }
