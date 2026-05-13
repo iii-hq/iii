@@ -19,24 +19,28 @@ integration complexity that pattern produces.
 ## The Problem
 
 Each service in a modern system arrives with its own internals, its own lifecycle, its own
-integration story, and its own failure modes. Four services means six possible integrations. Twenty
-means 190. Every new capability quadratically compounds the coordination cost of everything already
-in your stack.
+integration story, and its own failure modes. Four services means six possible integration edges.
+Twenty means 190.
 
-This pattern has been growing for decades.
+What we mean by edges is that every new integration brings with it cross-system interactions. For
+example the addition of an agentic harness includes not just a single integration point with your
+current system but the numerous downstream consumers of it.
+
+Every new capability quadratically compounds the coordination cost of everything already in your
+stack.
 
 ## The Solution
 
-iii organizes software into three primitives: **Worker**, **Trigger**, **Function**. Something hosts
+iii organizes software into three primitives: **Worker**, **Trigger**, and **Function**. Something hosts
 work, something causes it, something does it. Every capability in every system can be built from
 these three things: queues, cron, streaming, sandboxing, observability, agents, business logic,
 devices, even frontend browser UIs.
 
 ## Quadratic to Zero
 
-The integration problem doesn't only manifest where two systems connect. It creates downstream
+The integration edge problem doesn't only manifest where two systems connect. It creates downstream
 friction in logging, debugging, and upgrading, and upstream friction that blocks growth initiatives,
-new verticals, and partnerships.
+new verticals, and even partnerships.
 
 iii reduces all of that effort to zero. Adding two workers or two hundred is the same operation. A
 new worker joins the system by opening a single WebSocket connection and becomes immediately
