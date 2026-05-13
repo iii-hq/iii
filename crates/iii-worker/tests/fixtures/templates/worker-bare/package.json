@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@iii-hq/iii": "^0.11.7"
+    "@iii-hq/iii": "^0.11.6"
   }
 }

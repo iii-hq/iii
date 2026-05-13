@@ -234,8 +234,6 @@ pub async fn run(args: InitArgs) -> i32 {
         languages: languages_arg,
         skip_tool_check: args.skip_iii,
         // Workers ship runnable code; the user owns when to fetch deps.
-        // Auto-install also fails for Python today because iii-sdk 0.11.7
-        // is not yet on PyPI (only pre-releases exist).
         skip_install: true,
         // We print our own per-language success message below.
         skip_next_steps: true,
