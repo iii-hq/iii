@@ -403,7 +403,6 @@ pub async fn dynamic_handler(
                     if !body_bytes.is_empty() {
                         let _ = req_tx.send(ChannelItem::Binary(body_bytes.clone())).await;
                     }
-                    drop(req_tx);
                 }
                 serde_json::from_slice(&body_bytes).unwrap_or(Value::Null)
             } else if let Some(req_tx) = req_tx {
