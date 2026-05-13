@@ -2828,6 +2828,7 @@ dependencies = [
  "async-trait",
  "base64",
  "clap",
+ "cliclack",
  "colored",
  "console 0.16.3",
  "ctrlc",

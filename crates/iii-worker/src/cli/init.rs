@@ -189,20 +189,36 @@ pub async fn run(args: InitArgs) -> i32 {
     // `iii.worker.yaml`, `package.json`, etc.
     let snapshots = snapshot_existing_files(&root);
 
-    let resolved_lang = args.resolved_language();
-
-    // Cliclack needs a TTY to prompt. In CI / piped invocations the prompt
-    // would hang or panic -- short-circuit with a helpful error instead.
-    if resolved_lang.is_none() {
-        use std::io::IsTerminal;
-        if !std::io::stdin().is_terminal() {
-            return print_err(
-                "no language selected",
-                "stdin is not a TTY, so the interactive language picker cannot run",
-                "pass --language <ts|js|py|rust>",
-            );
+    // Resolve language. Three paths:
+    //   1. `--language <l>` set -> use it.
+    //   2. TTY + no flag -> prompt with our own single-select picker so the
+    //      user picks EXACTLY one. We do this here (not via scaffolder's
+    //      multiselect) because workers are one-language repos; the
+    //      multiselect UX confuses users who press Enter without toggling.
+    //   3. Non-TTY + no flag -> error with a hint.
+    let resolved_lang = match args.resolved_language() {
+        Some(l) => Some(l),
+        None => {
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                return print_err(
+                    "no language selected",
+                    "stdin is not a TTY, so the interactive language picker cannot run",
+                    "pass --language <ts|js|py|rust>",
+                );
+            }
+            match prompt_language() {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    return print_err(
+                        "could not read language selection",
+                        &e.to_string(),
+                        "pass --language <ts|js|py|rust>",
+                    );
+                }
+            }
         }
-    }
+    };
 
     let languages_arg: Option<Vec<String>> =
         resolved_lang.map(|l| vec![l.manifest_key().to_string()]);
@@ -298,6 +314,20 @@ pub async fn run(args: InitArgs) -> i32 {
         final_lang,
     );
     0
+}
+
+/// Single-select cliclack prompt for the worker language. Used when the
+/// user runs `iii worker init` without `--language` on a TTY. Returns the
+/// chosen `WorkerLanguage`; bubbles up cliclack errors (e.g. user hit
+/// Ctrl+C) as `io::Error` so the caller can format them.
+fn prompt_language() -> std::io::Result<WorkerLanguage> {
+    let choice = cliclack::select("Pick a language for this worker")
+        .item(WorkerLanguage::Ts, "TypeScript", "@iii-hq/iii")
+        .item(WorkerLanguage::Js, "JavaScript", "@iii-hq/iii")
+        .item(WorkerLanguage::Py, "Python", "iii-sdk")
+        .item(WorkerLanguage::Rust, "Rust", "iii crate")
+        .interact()?;
+    Ok(choice)
 }
 
 /// Read every file under `root` into memory so the caller can restore
