@@ -151,8 +151,8 @@ fn init_typescript_creates_node_scaffold_with_sdk() {
     assert!(out.status.success());
     let pkg = std::fs::read_to_string(parent.path().join("ts-wkr").join("package.json")).unwrap();
     assert!(
-        pkg.contains("@iii-hq/iii"),
-        "package.json must pin @iii-hq/iii, got: {pkg}"
+        pkg.contains("iii-sdk"),
+        "package.json must pin iii-sdk, got: {pkg}"
     );
 }
 

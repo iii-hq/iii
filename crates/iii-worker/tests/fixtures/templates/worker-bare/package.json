@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@iii-hq/iii": "^0.11.6"
+    "iii-sdk": "^0.11.6"
   }
 }

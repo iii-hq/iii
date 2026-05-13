@@ -1,6 +1,6 @@
 import asyncio
 
-from iii_sdk import register_worker
+from iii import register_worker
 
 
 async def main() -> None:
