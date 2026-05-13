@@ -41,9 +41,15 @@ being callable until it reconnects.
 
 We maintain a worker registry which you can explore at [workers.iii.dev](https://workers.iii.dev/).
 The registry contains many workers that encapsulate common services. See
-[Worker Registry](./registry) for more information on the worker registry.
+[Worker Registry](./workers-registry) for more information on the worker registry.
 
 ## Adding a worker
+
+<Note>
+  You need iii [installed](/install) and [running](/using-iii/engine) before adding a worker. To
+  spin up a temporary iii instance for testing, run `iii --use-default-config` (see
+  [Default configuration](/using-iii/engine#default-configuration)).
+</Note>
 
 `iii worker add <name>` installs a worker into your project:
 
@@ -56,7 +62,7 @@ worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
 <Note>
   For local paths, Docker / OCI images, and version pinning, see
-  [Worker Registry / Adding a worker](./registry#adding-a-worker).
+  [Worker Registry / Adding a worker](./workers-registry#adding-a-worker).
 </Note>
 
 ## Listing workers
@@ -80,8 +86,8 @@ iii worker restart <name>   # stop then start
 ```
 
 <Note>
-  To call functions inside running workers — directly with `iii.trigger` / `iii trigger`, or by
-  binding them to events with optional condition gates — see [Triggers](/using-iii/triggers).
+  To call functions inside running workers (directly with `iii.trigger` / `iii trigger`, or by
+  binding them to events with optional condition gates), see [Triggers](/using-iii/triggers).
 </Note>
 
 ## Inspecting a worker
@@ -176,4 +182,4 @@ Downloaded artifacts remain on disk after removal. To delete them too, use
 Creating a new worker (`iii worker init`), registering functions and triggers in worker code, and
 building or publishing a worker image are out of scope for this page. See
 [Expanding iii / Workers](/expanding-iii/workers) and
-[Expanding iii / Worker Registry](/expanding-iii/registry).
+[Expanding iii / Worker Registry](/expanding-iii/workers-registry).

@@ -6,8 +6,9 @@ type: "how-to"
 ---
 
 When the trigger for a function is a change in some piece of state (not a request or a schedule),
-register a `state` trigger so the engine fires the function whenever the state's key changes. The
-function code is the same as any other; only the trigger registration differs.
+bind the function to a state-change trigger advertised by a state worker. The engine fires the
+function whenever the watched key or scope changes. The function code is the same as any other;
+only the trigger registration differs.
 
 ## When to use this pattern
 
@@ -17,11 +18,14 @@ when a user record updates, propagate a calculated value into another scope when
 
 ## Structure
 
-1. The iii-state worker holds the source-of-truth state.
+1. A state worker holds the source-of-truth state.
 2. A function in some worker handles the change (compute a derived value, send a notification,
    etc.).
-3. A `state` trigger binds that function to the relevant key or scope so the engine fires it on
-   every change.
+3. A trigger advertised by the state worker binds that function to the relevant key or scope so the
+   engine fires it on every change.
 
-{/* TODO: full worked example with iii-state set/get and a derived function. Cover the trigger
+The trigger type, its config shape, and the state worker's read/write surface are documented in
+that worker's Worker Docs.
+
+{/* TODO: full worked example with a state set/write and a derived function. Cover the trigger
 config shape, scope vs key matching, ordering guarantees, and how to handle bursts of changes. */}
