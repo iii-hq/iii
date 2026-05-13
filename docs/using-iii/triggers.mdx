@@ -1,9 +1,44 @@
 ---
 title: "Triggers"
-description: "Binding functions to events in your iii project."
+description: "Calling functions directly or by binding them to events in your iii project."
 owner: "devrel"
 type: "how-to"
 ---
+
+## Call a function directly
+
+To invoke a function by its `function_id` without any event binding, use `iii.trigger` from worker
+code or `iii trigger` from the terminal. The engine routes the call to whatever worker registered
+the function; no trigger registration is involved.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "math::add",
+      payload: { a: 2, b: 3 },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "math::add",
+        "payload": {"a": 2, "b": 3},
+    })
+    ```
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    iii trigger math::add a=2 b=3
+    ```
+  </Tab>
+</Tabs>
+
+By default the call waits for the function to return. To fire-and-forget, pass `TriggerAction.Void`;
+to route the call through a queue worker with retries, pass `TriggerAction.Enqueue`. See
+[Functions / Invoke a function](/using-iii/functions#invoke-a-function-synchronously) for the full
+list of actions.
 
 ## Register a trigger
 

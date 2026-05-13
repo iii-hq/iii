@@ -54,8 +54,10 @@ iii worker add iii-state
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
-For local paths, Docker / OCI images, and version pinning, see
-[Worker Registry / Adding a worker](./registry#adding-a-worker).
+<Note>
+  For local paths, Docker / OCI images, and version pinning, see
+  [Worker Registry / Adding a worker](./registry#adding-a-worker).
+</Note>
 
 ## Listing workers
 
@@ -76,6 +78,11 @@ iii worker start <name>     # start one worker
 iii worker stop <name>      # stop one worker
 iii worker restart <name>   # stop then start
 ```
+
+<Note>
+  To call functions inside running workers — directly with `iii.trigger` / `iii trigger`, or by
+  binding them to events with optional condition gates — see [Triggers](/using-iii/triggers).
+</Note>
 
 ## Inspecting a worker
 

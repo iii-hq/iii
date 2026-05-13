@@ -27,7 +27,12 @@
   },
   "styling": {
     "eyebrows": "breadcrumbs",
-    "codeblocks": "system"
+    "codeblocks": {
+      "theme": {
+        "light": "catppuccin-latte",
+        "dark": "dark-plus"
+      }
+    }
   },
   "logo": {
     "light": "/assets/iii-black.svg",
