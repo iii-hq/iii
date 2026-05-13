@@ -90,6 +90,7 @@ async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
 @pytest.mark.asyncio
 async def test_raw_json_request_body(engine_http_url, iii_client: III):
     raw_json = '{"z":2, "a":1}'
+    function_id = "test::api::json::raw::py"
 
     @http
     async def handler(req: HttpRequest, response: HttpResponse):
@@ -106,13 +107,13 @@ async def test_raw_json_request_body(engine_http_url, iii_client: III):
         await response.writer.write(result)
         await response.writer.close_async()
 
-    fn_ref = iii_client.register_function("test.api.json.raw.py", handler)
+    fn_ref = iii_client.register_function(function_id, handler)
     trigger = iii_client.register_trigger(
         {
             "type": "http",
-            "function_id": "test.api.json.raw.py",
+            "function_id": function_id,
             "config": {
-                "api_path": "test/py/json/raw",
+                "api_path": "/test/py/json/raw",
                 "http_method": "POST",
             },
         }

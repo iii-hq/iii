@@ -77,7 +77,7 @@ describe('API Triggers', () => {
     const rawJson = '{"z":2, "a":1}'
 
     const fn = iii.registerFunction(
-      'test.api.json.raw',
+      'test::api::json::raw',
       http(async (req: HttpRequest, response: HttpResponse) => {
         const rawBody = await req.request_body.readAll()
 
@@ -98,7 +98,7 @@ describe('API Triggers', () => {
       type: 'http',
       function_id: fn.id,
       config: {
-        api_path: 'test/json/raw',
+        api_path: '/test/json/raw',
         http_method: 'POST',
       },
     })

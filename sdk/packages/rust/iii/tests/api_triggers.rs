@@ -191,7 +191,7 @@ async fn raw_json_request_body() {
             trigger_type: "http".to_string(),
             function_id: "test::api::json::raw::rs".to_string(),
             config: json!({
-                "api_path": "test/rs/json/raw",
+                "api_path": "/test/rs/json/raw",
                 "http_method": "POST",
             }),
             metadata: None,
