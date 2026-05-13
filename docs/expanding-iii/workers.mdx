@@ -1,6 +1,6 @@
 ---
 title: "Workers"
-description: "Building new workers that extend an iii system."
+description: "Deploying and integrating workers into an iii project."
 owner: "devrel"
 type: "how-to"
 ---
@@ -8,15 +8,19 @@ type: "how-to"
 ## How workers expand iii
 
 Workers add capability to an iii system. Each one contributes functions and triggers the engine can
-route to.
+route to. This page covers deploying and wiring workers into a project. For the authoring surface a
+worker uses to register its functions and triggers (the SDK), see each language's Worker Docs
+authoring guide.
 
 ## Connecting to the engine
 
 A worker connects to the engine over WebSocket. Set the engine URL via the `III_URL` environment
-variable, or pass it explicitly to `register_worker` (shown in the tabs below).
+variable, or pass it explicitly to `register_worker`. The connection string is the only coupling
+between a worker and the iii instance it joins, so the worker process can be deployed anywhere
+reachable on the network.
 
 <Tabs>
-  <Tab title="TypeScript">
+  <Tab title="Node / TypeScript">
     ```typescript
     import { registerWorker } from "iii-sdk";
 
@@ -50,9 +54,10 @@ variable, or pass it explicitly to `register_worker` (shown in the tabs below).
 See [Using iii / Workers](/using-iii/workers#worker-lifecycle) for what happens after the worker
 connects and disconnects.
 
-## Configuring workers
+## Worker manifest
 
-Add an `iii.worker.yaml` manifest at the root of your worker:
+When a worker is checked into a project so iii can launch it locally, `iii.worker.yaml` at the
+worker's root tells iii how to install dependencies, run the worker, and pass through configuration.
 
 ```yaml
 name: math-worker
@@ -65,18 +70,18 @@ scripts:
   start: "python math_worker.py"
 ```
 
-For the full manifest field schema, see the SDK reference.
+For the full manifest field schema, see [Using iii / Workers](/using-iii/workers).
 
 {/* TODO: link to the canonical iii.worker.yaml reference page once it exists. */}
 
 ## What a worker contributes
 
-Register functions and trigger types from inside the worker process:
+Once connected, a worker exposes:
 
-- Functions: `worker.registerFunction(id, handler)`. See
-  [Using iii / Functions](/using-iii/functions).
-- Triggers: `worker.registerTrigger({ type, config, function_id })`. See
-  [Using iii / Triggers](/using-iii/triggers).
+- Functions, callable by `function_id` from anywhere in the system (see
+  [Using iii / Functions](/using-iii/functions)).
+- Triggers it advertises, which other workers can bind their functions to (see
+  [Using iii / Triggers](/using-iii/triggers)).
 
-A worker can also advertise its own trigger types so other workers' functions can be wired to those
-events. The implementation per type is documented in the advertising worker's Worker Docs.
+The SDK calls a worker uses to register these are language-specific and documented in each
+language's Worker Docs authoring guide.

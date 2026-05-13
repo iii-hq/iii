@@ -12,8 +12,12 @@ code or `iii trigger` from the terminal. The engine routes the call to whatever 
 the function; no trigger registration is involved.
 
 <Tabs>
-  <Tab title="TypeScript">
+  <Tab title="Node / TypeScript">
     ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+
     const result = await worker.trigger({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
@@ -22,11 +26,38 @@ the function; no trigger registration is involved.
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="caller"),
+    )
+
     result = worker.trigger({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
     })
     ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, TriggerRequest, register_worker};
+    use serde_json::json;
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    let result = worker
+        .trigger(TriggerRequest {
+            function_id: "math::add".to_string(),
+            payload: json!({ "a": 2, "b": 3 }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    ```
+
   </Tab>
   <Tab title="CLI">
     ```bash
@@ -42,13 +73,20 @@ list of actions.
 
 ## Register a trigger
 
-Register the function first, then register a trigger that routes to it by `function_id`. The trigger
-declares its `type` (whatever the connected worker advertises, like `http` or `cron`), its `config`
-(the per-type details), and the function to invoke.
+Functions can also run when a trigger is satisfied. A trigger can be any event that happens such as
+a request to an `http` endpoint, a `cron` job, a change in `state`, or any other trigger that a
+worker supports. You can also [write your own](/expanding-iii/triggers).
+
+You bind triggers to functions via the `function_id`. The trigger declares its `type`, its `config`
+(defined by each type), and the function to invoke.
 
 <Tabs>
-  <Tab title="TypeScript">
+  <Tab title="Node / TypeScript">
     ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+
     worker.registerTrigger({
       type: "http",
       function_id: "math::add",
@@ -58,12 +96,37 @@ declares its `type` (whatever the connected worker advertises, like `http` or `c
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="my-worker"),
+    )
+
     worker.register_trigger({
         "type": "http",
         "function_id": "math::add",
         "config": {"api_path": "/math/add", "http_method": "POST"},
     })
     ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, RegisterTriggerInput, register_worker};
+    use serde_json::json;
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".into(),
+        function_id: "math::add".into(),
+        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
+        metadata: None,
+    })?;
+    ```
+
   </Tab>
 </Tabs>
 
@@ -72,15 +135,16 @@ Per-type configuration is documented in each worker's Worker Docs (e.g.
 
 ## Bind multiple triggers to one function
 
-The same `function_id` can be the target of any number of triggers across any number of types.
-Register a second trigger with the same `function_id` and a different type or config; the function
-runs unchanged whether the call arrives over HTTP, on a cron schedule, or from a queue message.
+It's valid to bind multiple triggers to the same `function_id` and this can be done across any
+number of types. Register a second trigger with the same `function_id` and a different type or
+config; the function runs unchanged whether the call arrives over HTTP, on a cron schedule, or from
+a queue message.
 
 ## Gate a trigger with a condition
 
 A trigger can carry an optional `condition_function_id`. When the trigger fires, the engine invokes
-the condition function first; the handler only runs if the condition returns truthy. Use this when
-the same event source should sometimes fire the function and sometimes skip it.
+the condition function first; the target `function_id` only runs if the condition returns truthy.
+Use this when the same event source should sometimes fire the function and sometimes skip it.
 
 ## Unregister a trigger
 

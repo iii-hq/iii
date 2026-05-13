@@ -5,6 +5,12 @@ owner: "devrel"
 type: "how-to"
 ---
 
+## The engine is just a router
+
+{/* skill:exclude-section */}
+
+Think of the engine like a router, it receives requests, routes them to workers, and routes responses back as needed.
+
 ## Engine configuration
 
 The iii engine starts from a `config.yaml` file at your project root. Pass `--config <path>` to
@@ -37,8 +43,18 @@ workers:
           file_path: ./data/state_store.db
 ```
 
-Per-worker config schemas are documented on each worker's Worker Docs page (see
-[Worker Registry](./registry)).
+{/* TODO: replace this paragraph with the auto-generated engine config reference. Per
+project-rules/config.md, the per-field `workers:` schema should not be hand-authored here; this
+section is a placeholder pending the generated reference. */}
+
+Per-worker config schemas live on each worker's Worker Docs page. See
+[Worker Registry](./workers-registry) for where to find a worker's config reference.
+
+<Note>
+  Workers do not need to be running alongside iii; configuring them in config.yaml is a convenience. A worker
+  can be deployed anywhere and only needs a connection string to the iii instance. See
+  [Expanding iii / Connecting to the engine](/expanding-iii/workers#connecting-to-the-engine) for more information.
+</Note>
 
 ## Environment variable expansion
 
@@ -54,7 +70,7 @@ workers:
       host: ${HTTP_HOST:127.0.0.1}
 ```
 
-## Built-in defaults
+## Default configuration
 
 Run `iii --use-default-config` to start the engine with a default set of workers without writing a
 `config.yaml`. Useful for first-run and scratch work. Once you need to customize ports, adapters, or

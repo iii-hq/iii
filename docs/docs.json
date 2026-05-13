@@ -75,10 +75,10 @@
                 "group": "Using iii",
                 "pages": [
                   "using-iii/workers",
-                  "using-iii/registry",
-                  "using-iii/engine",
-                  "using-iii/functions",
+                  "using-iii/workers-registry",
                   "using-iii/triggers",
+                  "using-iii/functions",
+                  "using-iii/engine",
                   "using-iii/console",
                   "using-iii/cli",
                   "using-iii/deployment"
@@ -97,7 +97,12 @@
               },
               {
                 "group": "Expanding iii",
-                "pages": ["expanding-iii/workers", "expanding-iii/registry"]
+                "pages": [
+                  "expanding-iii/workers",
+                  "expanding-iii/functions",
+                  "expanding-iii/triggers",
+                  "expanding-iii/workers-registry"
+                ]
               }
             ]
           },
