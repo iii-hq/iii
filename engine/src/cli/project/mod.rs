@@ -220,6 +220,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         directory: target_dir.clone(),
         languages: None,
         skip_tool_check: args.skip_iii,
+        skip_install: false,
         yes: false,
     };
 

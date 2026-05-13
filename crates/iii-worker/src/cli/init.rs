@@ -233,6 +233,10 @@ pub async fn run(args: InitArgs) -> i32 {
         directory: Some(root.clone()),
         languages: languages_arg,
         skip_tool_check: args.skip_iii,
+        // Workers ship runnable code; the user owns when to fetch deps.
+        // Auto-install also fails for Python today because iii-sdk 0.11.7
+        // is not yet on PyPI (only pre-releases exist).
+        skip_install: true,
         yes: resolved_lang.is_some(),
     };
 
@@ -322,10 +326,10 @@ pub async fn run(args: InitArgs) -> i32 {
 /// Ctrl+C) as `io::Error` so the caller can format them.
 fn prompt_language() -> std::io::Result<WorkerLanguage> {
     let choice = cliclack::select("Pick a language for this worker")
-        .item(WorkerLanguage::Ts, "TypeScript", "@iii-hq/iii")
-        .item(WorkerLanguage::Js, "JavaScript", "@iii-hq/iii")
-        .item(WorkerLanguage::Py, "Python", "iii-sdk")
-        .item(WorkerLanguage::Rust, "Rust", "iii crate")
+        .item(WorkerLanguage::Ts, "TypeScript", "")
+        .item(WorkerLanguage::Js, "JavaScript", "")
+        .item(WorkerLanguage::Py, "Python", "")
+        .item(WorkerLanguage::Rust, "Rust", "")
         .interact()?;
     Ok(choice)
 }

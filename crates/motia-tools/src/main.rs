@@ -97,6 +97,7 @@ impl From<CliCreateArgs> for CreateArgs {
             directory: args.directory,
             languages: args.languages,
             skip_tool_check: args.skip_iii,
+            skip_install: false,
             yes: args.yes,
         }
     }
