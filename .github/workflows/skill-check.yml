@@ -8,7 +8,10 @@ on:
       - ".skill-check.yaml"
       - ".github/workflows/skill-check.yml"
   push:
-    branches: [main]
+    # dx-improves is included so a merge into the working branch
+    # populates the base-ref AI skip-cache; subsequent PRs against
+    # dx-improves then restore from it instead of starting cold.
+    branches: [main, dx-improves]
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
