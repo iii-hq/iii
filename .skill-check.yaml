@@ -2,13 +2,12 @@ version: 2
 mode: docs
 docs:
   include:
-    - "**/*.md"
-    - "**/*.mdx"
+    - "docs/**/*.md"
+    - "docs/**/*.mdx"
   exclude:
-    - "PROGRESS*.md"
-    - "todo/**"
-    - "project-rules/**"
-    - "changelog/**"
+    - "docs/0-10-0/**"
+    - "docs/0-11-0/**"
+    - "docs/changelog/**"
 ai_check:
   provider: anthropic
   model: claude-opus-4-7

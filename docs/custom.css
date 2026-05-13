@@ -327,3 +327,10 @@ a:has(> span.bg-primary-dark):hover span.text-white,
 a:has(> span.bg-primary-dark):hover svg {
   color: var(--iii-ink) !important;
 }
+
+.iii-live-count {
+  color: var(--iii-ink-faint);
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.35rem;
+}

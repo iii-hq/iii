@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(iii-skill-check verify *)",
-      "Bash(vale *)"
-    ]
-  }
-}

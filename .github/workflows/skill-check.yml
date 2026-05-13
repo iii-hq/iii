@@ -3,12 +3,17 @@ name: Skill check
 on:
   pull_request:
     paths:
-      - "**/*.md"
-      - "**/*.mdx"
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
       - ".skill-check.yaml"
       - ".github/workflows/skill-check.yml"
   push:
     branches: [main]
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+      - ".skill-check.yaml"
+      - ".github/workflows/skill-check.yml"
 
 permissions:
   contents: write
