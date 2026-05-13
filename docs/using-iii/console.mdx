@@ -28,6 +28,12 @@ iii console
 
 Open `http://127.0.0.1:3113` in your browser.
 
+<Note>
+  Naming review: `iii console` is verb-shaped (launches the console) but doesn't follow the `iii
+  noun verb` convention used elsewhere in the CLI. Flagged for naming review per
+  `project-rules/cli.md`.
+</Note>
+
 ## Workers page
 
 Lists every worker process currently connected to the engine. Each row shows the worker's name (or
@@ -35,7 +41,8 @@ short ID), the project / framework / language it reported, a runtime badge with 
 optional isolation badge (`libkrun`, `docker`, etc. as reported by the worker), IP, PID, the
 number of functions it has registered, in-flight invocations, and how long it has been connected.
 
-Selecting a worker opens a detail panel with full metadata, telemetry, live metrics (memory
+Selecting a worker opens a detail panel with full metadata, the project / framework / language
+fields the worker reported, live metrics (memory
 breakdown, CPU, event-loop lag, uptime), and the list of functions the worker has registered.
 
 <Info title="Isolation badge">
@@ -88,7 +95,7 @@ Supported operations:
   triggers.
 
 Use the search bar to filter items by key; pagination handles large groups. The page does not push
-live updates over WebSocket — use the refresh control after external writes.
+live updates over WebSocket; use the refresh control after external writes.
 
 ## Streams page
 
@@ -159,6 +166,6 @@ iii console --help
 ```
 
 The corresponding environment variables share the same set; each flag's help text names the env
-var that overrides it. The **Config** page in the sidebar shows the resolved values at runtime —
-the engine endpoints, ports, OpenTelemetry settings, and version the console is currently using —
+var that overrides it. The **Config** page in the sidebar shows the resolved values at runtime
+(the engine endpoints, ports, OpenTelemetry settings, and version the console is currently using),
 so you can confirm what's actually in effect without re-reading the flags.
