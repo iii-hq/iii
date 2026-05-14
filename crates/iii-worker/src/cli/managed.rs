@@ -48,15 +48,16 @@ async fn fire_engine_telemetry(name: &str, version: &str) {
     let api_url =
         std::env::var("III_API_URL").unwrap_or_else(|_| "https://api.workers.iii.dev".to_string());
     let url = format!("{api_url}/download/{name}");
+    let timeout = std::time::Duration::from_secs(2);
 
-    match HTTP_CLIENT
-        .get(&url)
-        .query(&[("version", version)])
-        .send()
-        .await
+    match tokio::time::timeout(
+        timeout,
+        HTTP_CLIENT.get(&url).query(&[("version", version)]).send(),
+    )
+    .await
     {
-        Ok(resp) if resp.status().as_u16() == 204 => {}
-        Ok(resp) => {
+        Ok(Ok(resp)) if resp.status().as_u16() == 204 => {}
+        Ok(Ok(resp)) => {
             eprintln!(
                 "  {} telemetry for {} returned unexpected status {}",
                 "warn:".yellow(),
@@ -64,12 +65,20 @@ async fn fire_engine_telemetry(name: &str, version: &str) {
                 resp.status()
             );
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             eprintln!(
                 "  {} telemetry for {} failed: {}",
                 "warn:".yellow(),
                 name,
                 e
+            );
+        }
+        Err(_) => {
+            eprintln!(
+                "  {} telemetry for {} timed out after {:?}",
+                "warn:".yellow(),
+                name,
+                timeout
             );
         }
     }
