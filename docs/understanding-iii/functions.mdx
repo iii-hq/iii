@@ -36,3 +36,11 @@ Registering a Function with `registerFunction()` makes it directly invokable thr
 Trigger registration is required for these two paths; they are the baseline call surface every
 registered Function gets. Other trigger sources (HTTP, cron, queue, state, stream) bind an explicit
 Trigger to the same `function_id`.
+
+## Multiple Triggers per Function
+
+A single Function can be the target of any number of Triggers. The same Function can be invoked by
+an HTTP request, a cron schedule, and a queue message at once, by registering three separate
+Triggers that share the same `function_id`. The function code does not change; only the trigger
+registrations differ. This is what lets a single business-logic Function answer to many event
+sources without per-source variants.

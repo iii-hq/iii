@@ -1,21 +1,23 @@
 ---
 title: "Engine"
-description: "Placeholder."
+description:
+  "The iii engine is the thin layer that allows the benefits of Workers, Triggers, and Functions to
+  happen."
 owner: "devrel"
 type: "explanation"
 ---
 
-{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
-
-Using iii effectively starts with understanding it. iii's surface is very simple but its utility is
-very expansive.
-
 ## Startup flow
 
-When the Engine starts, it parses its command-line arguments, loads `config.yaml` (or the default
-config if none is provided), applies the worker declarations from the config (starting each declared
-worker process), and begins serving connections. After this sequence the Engine is ready to accept
-WebSocket connections from Workers and route invocations between them.
+When the Engine starts it does a few things:
+
+1. It parses its command-line arguments.
+1. Loads its configuration file (typically `config.yaml`).
+1. Applies the worker declarations from the config (starting each declared worker process).
+1. Begins serving connections.
+
+After this sequence the Engine is ready to accept WebSocket connections from Workers and route
+invocations between them.
 
 ## Engine responsibilities
 
@@ -54,7 +56,4 @@ or subscribe to changes. Reading on demand goes through the `engine::*::list` fa
 which return a snapshot. Subscribing goes through `engine::functions-available` or
 `engine::workers-available`, which fire as the registry changes.
 
-<Note>
-  Querying traces, logs, and metrics is documented with the
-  iii-observability Worker.
-</Note>
+<Note>Querying traces, logs, and metrics is documented with the iii-observability Worker.</Note>
