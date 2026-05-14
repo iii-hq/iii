@@ -2,9 +2,6 @@
 	"name": "docs",
 	"private": true,
 	"scripts": {
-		"normalize-skill-comments": "node scripts/normalize-skill-comments.mjs",
-		"predev": "pnpm normalize-skill-comments",
-		"prebuild": "pnpm normalize-skill-comments",
 		"dev": "mint dev",
 		"build": "mint build"
 	},
