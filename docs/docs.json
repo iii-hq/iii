@@ -114,7 +114,7 @@
             "tab": "SDK & Engine Reference",
             "groups": [
               {
-                "group": "Engine",
+                "group": "Engine protocol",
                 "pages": [
                   "sdk-reference/engine-sdk"
                 ]

@@ -130,8 +130,8 @@ type StreamChannelRef = {
 - `TriggerInfo`. `id`, `trigger_type`, `function_id`, optional `config` / `metadata`.
 
 `WorkerInfo` and `WorkerMetadata` are not part of this SDK. Use the engine introspection
-functions ([`engine::workers::list`](/sdk-reference/engine-sdk)) when a browser client needs
-metadata about other workers.
+functions ([`engine::workers::list`](/sdk-reference/engine-sdk#engine-discovery-functions)) when a
+browser client needs metadata about other workers.
 
 ## `MessageType`
 

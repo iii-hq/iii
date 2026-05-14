@@ -147,8 +147,9 @@ Node `Readable` plus `.sendMessage()` and `.onMessage()`; `ChannelWriter` expose
 ## Logger
 
 `Logger` is a runtime class with `info`, `warn`, `error`, and `debug` methods, each
-`(message: string, data?: unknown) => void`. Output is correlated with the worker's
-OpenTelemetry context.
+`(message: string, data?: unknown) => void`. The output integrates with the SDK's OpenTelemetry
+setup; see [iii-observability](https://workers.iii.dev/workers/iii-observability) for the export
+side.
 
 ## Info types
 
@@ -173,4 +174,4 @@ custom code.
 
 The connection-state literal union (`"disconnected" | "connecting" | "connected" | "reconnecting"
 | "failed"`) is internal in the current build. Treat the connection as established once
-`registerWorker` resolves; failures raise on the first SDK call.
+`registerWorker` returns; failures raise on the first SDK call.

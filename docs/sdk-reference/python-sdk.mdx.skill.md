@@ -29,7 +29,7 @@ def register_worker(address: str, options: InitOptions | None = None) -> III: ..
 `address` is the engine's SDK WebSocket URL. `options` configures worker identity, reconnection,
 and OpenTelemetry. The returned `III` instance carries every method below.
 
-## Methods on the `III` handle
+## Methods on the worker handle
 
 ### `register_function`
 
@@ -139,7 +139,7 @@ attributes.
 identifies a channel:
 
 ```python
-class StreamChannelRef(TypedDict):
+class StreamChannelRef(BaseModel):
     channel_id: str
     access_key: str
     direction: Literal["read", "write"]
@@ -150,7 +150,8 @@ Both classes are constructed with the engine's WS base URL and a `StreamChannelR
 ## Logger
 
 `Logger` exposes `info`, `warn`, `error`, and `debug`, each accepting a message and an optional
-data dict. Output is correlated with the worker's OpenTelemetry context.
+data dict. The output integrates with the SDK's OpenTelemetry setup; see
+[iii-observability](https://workers.iii.dev/workers/iii-observability) for the export side.
 
 ## Info types
 

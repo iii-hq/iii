@@ -29,7 +29,7 @@ pub fn register_worker(address: &str, options: InitOptions) -> III;
 The returned `III` carries every method below. Spawned async tasks are driven on the SDK's
 internal tokio runtime.
 
-## Methods on `III`
+## Methods on the worker handle
 
 ### `register_function`
 
@@ -59,8 +59,8 @@ pub fn register_trigger(
 ) -> Result<Trigger, IIIError>;
 ```
 
-Drop the trigger with `Trigger::unregister(&self)` on the returned handle. There is no
-free-function `unregister_trigger`.
+Drop the trigger with `trigger.unregister()` on the returned handle. There is no free-function
+`unregister_trigger`.
 
 ### `register_trigger_type`
 
@@ -161,8 +161,9 @@ methods include `write()`, `send_message()`, and `close()`.
 
 ## Logger
 
-`Logger` is a `Clone + Default` struct emitting structured log records correlated with the
-worker's OpenTelemetry context.
+`Logger` is a `Clone + Default` struct that emits structured log records. The output integrates
+with the SDK's OpenTelemetry setup; see
+[iii-observability](https://workers.iii.dev/workers/iii-observability) for the export side.
 
 ## Connection state
 
