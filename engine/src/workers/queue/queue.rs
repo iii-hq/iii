@@ -672,7 +672,6 @@ impl Worker for QueueWorker {
 
             let handle = tokio::spawn(async move {
                 while let Some(msg) = receiver.recv().await {
-                    {
                     let adapter = adapter.clone();
                     let engine = engine.clone();
                     let queue_name = queue_name.clone();
@@ -768,7 +767,6 @@ impl Worker for QueueWorker {
 
                         drop(permit);
                     });
-                    }
                 }
 
                 tracing::warn!(queue = %queue_name, "Consumer loop ended");
