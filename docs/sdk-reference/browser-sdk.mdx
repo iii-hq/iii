@@ -5,6 +5,8 @@ owner: "engineering"
 type: "reference"
 ---
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
   This page is a hand-authored snapshot of the planned public surface. The final reference will be
   generated from the SDK source. The Browser SDK is a standalone implementation alongside the
@@ -144,7 +146,7 @@ callers.
 
 - **`Logger`.** The Browser SDK does not ship a structured logger; use the browser's built-in
   `console` and rely on the OpenTelemetry surfaces provided by the
-  [iii-observability worker](https://workers.iii.dev/workers/iii-observability) for export.
+  iii-observability worker for export.
 - **Error class.** There is no `IIIError` / `IIIInvocationError` class. Failures are surfaced as
   rejected promises carrying `Error` instances; inspect the message and any attached `code` for
   the engine error code.

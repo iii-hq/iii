@@ -3,6 +3,8 @@
 # Rust SDK
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
   This page is a hand-authored snapshot of the planned public surface. The final reference will be
   generated from the SDK source.
@@ -163,7 +165,7 @@ methods include `write()`, `send_message()`, and `close()`.
 
 `Logger` is a `Clone + Default` struct that emits structured log records. The output integrates
 with the SDK's OpenTelemetry setup; see
-[iii-observability](https://workers.iii.dev/workers/iii-observability) for the export side.
+iii-observability for the export side.
 
 ## Connection state
 

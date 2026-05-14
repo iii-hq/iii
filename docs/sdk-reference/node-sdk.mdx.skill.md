@@ -3,6 +3,8 @@
 # Node.js SDK
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
   This page is a hand-authored snapshot of the planned public surface. The final reference will be
   generated from the SDK source.
@@ -146,7 +148,7 @@ Node `Readable` plus `.sendMessage()` and `.onMessage()`; `ChannelWriter` expose
 
 `Logger` is a runtime class with `info`, `warn`, `error`, and `debug` methods, each
 `(message: string, data?: unknown) => void`. The output integrates with the SDK's OpenTelemetry
-setup; see [iii-observability](https://workers.iii.dev/workers/iii-observability) for the export
+setup; see iii-observability for the export
 side.
 
 ## Info types

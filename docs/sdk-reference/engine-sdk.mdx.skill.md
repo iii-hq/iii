@@ -3,6 +3,8 @@
 # Engine protocol
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
   This page documents the wire-level protocol the engine and SDK workers exchange. Most projects use
   a language SDK ([Node](/sdk-reference/node-sdk), [Python](/sdk-reference/python-sdk),
@@ -12,7 +14,7 @@
 
 <Note>
   Observability introspection (traces, logs, metrics, sampling rules, alerts, rollups) is owned
-  end-to-end by the [iii-observability worker](https://workers.iii.dev/workers/iii-observability).
+  end-to-end by the iii-observability worker.
 </Note>
 
 ## Connection ports

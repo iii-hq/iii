@@ -3,6 +3,8 @@
 # Python SDK
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
   This page is a hand-authored snapshot of the planned public surface. The final reference will be
   generated from the SDK source.
@@ -151,7 +153,7 @@ Both classes are constructed with the engine's WS base URL and a `StreamChannelR
 
 `Logger` exposes `info`, `warn`, `error`, and `debug`, each accepting a message and an optional
 data dict. The output integrates with the SDK's OpenTelemetry setup; see
-[iii-observability](https://workers.iii.dev/workers/iii-observability) for the export side.
+iii-observability for the export side.
 
 ## Info types
 

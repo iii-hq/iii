@@ -5,6 +5,8 @@ owner: "devrel"
 type: "how-to"
 ---
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 ## Call a function directly
 
 Call a function by its `function_id` from worker code (`worker.trigger(...)`) or from the terminal
@@ -83,7 +85,7 @@ Some common actions are:
 - **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
   but the caller doesn't see the result.
 - **`TriggerAction.Enqueue({ queue })`**. Provided by
-  [iii-queue](https://workers.iii.dev/workers/iii-queue). Routes the invocation through a named
+  iii-queue. Routes the invocation through a named
   queue with retries; the call returns once the message is enqueued.
 
 <Note>
@@ -151,7 +153,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 </Tabs>
 
 Per-type configuration is documented in each worker's Worker Docs (e.g.
-[iii-http](https://workers.iii.dev/workers/iii-http) for the `http` type).
+iii-http for the `http` type).
 
 ## Bind multiple triggers to one function
 
