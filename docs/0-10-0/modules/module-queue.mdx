@@ -10,7 +10,7 @@ modules::queue::QueueModule
 ```
 
 <Info title="How-to guidance">
-  For step-by-step instructions on configuring and using queues, see [Use Queues](../how-to/use-queues). For DLQ management, see [Manage Failed Triggers](../how-to/dead-letter-queues).
+  For step-by-step instructions on configuring and using queues, see [Use Queues](/0-10-0/how-to/use-queues). For DLQ management, see [Manage Failed Triggers](/0-10-0/how-to/dead-letter-queues).
 </Info>
 
 ## Queue Modes
@@ -33,7 +33,7 @@ Define queues in `iii-config.yaml`, then enqueue function calls directly. No tri
 2. **Enqueue a function call** with `trigger({ function_id: 'orders::process', payload, action: TriggerAction.Enqueue({ queue: 'payment' }) })`. The engine routes the job to the named queue and invokes the function when a worker consumes it.
 3. **Action on the trigger**: the target function receives `payload` as its input. Retries, concurrency, and FIFO are configured centrally in `iii-config.yaml`.
 
-The producer targets the function and queue explicitly. Queue configuration is centralized. For a hands-on walkthrough, see [Use Queues](../how-to/use-queues).
+The producer targets the function and queue explicitly. Queue configuration is centralized. For a hands-on walkthrough, see [Use Queues](/0-10-0/how-to/use-queues).
 
 ### When to use which
 
@@ -47,7 +47,7 @@ The producer targets the function and queue explicitly. Queue configuration is c
 Both modes are valid. Named queues offer config-driven retries, concurrency, and FIFO ordering.
 
 <Info title="Trigger actions">
-  Named queues use the `Enqueue` trigger action. For a full comparison of synchronous, Void, and Enqueue invocation modes, see [Trigger Actions](../how-to/trigger-actions).
+  Named queues use the `Enqueue` trigger action. For a full comparison of synchronous, Void, and Enqueue invocation modes, see [Trigger Actions](/0-10-0/how-to/trigger-actions).
 </Info>
 
 ## Sample Configuration
@@ -183,7 +183,7 @@ For each named queue defined in `queue_configs`, iii creates the following Rabbi
 | DLQ queue | `iii.__fn_queue::<name>::dlq.queue` | `iii.__fn_queue::payment::dlq.queue` |
 
 <Info title="Why so many resources?">
-  Each named queue creates six RabbitMQ objects to support delayed retry and dead-lettering. For the design rationale, see [Queue Architecture](../modules/module-queue#queue-flow).
+  Each named queue creates six RabbitMQ objects to support delayed retry and dead-lettering. For the design rationale, see [Queue Architecture](/0-10-0/modules/module-queue#queue-flow).
 </Info>
 
 ## Adapter Comparison
@@ -199,7 +199,7 @@ For each named queue defined in `queue_configs`, iii creates the following Rabbi
 | **External dependency** | None | RabbitMQ | Redis |
 
 <Info title="Choosing an adapter">
-  For practical guidance on which adapter to use in different deployment scenarios, see [Use Queues — Choosing an Adapter](../how-to/use-queues#choosing-an-adapter).
+  For practical guidance on which adapter to use in different deployment scenarios, see [Use Queues — Choosing an Adapter](/0-10-0/how-to/use-queues#choosing-an-adapter).
 </Info>
 
 ## Builtin Functions
@@ -243,7 +243,7 @@ iii trigger \
 ```
 
 <Info title="DLQ operations">
-  For a complete guide on inspecting DLQ messages before redriving, see [Manage Failed Triggers](../how-to/dead-letter-queues).
+  For a complete guide on inspecting DLQ messages before redriving, see [Manage Failed Triggers](/0-10-0/how-to/dead-letter-queues).
 </Info>
 
 ## Queue Flow

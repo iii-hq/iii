@@ -4,7 +4,7 @@ description: 'A full-stack realtime todo app powered by a single WebSocket conne
 ---
 
 <Frame caption="Todo App">
-  <img src="/assets/todo-app.png" />
+  <img src="/0-11-0/assets/todo-app.png" />
 </Frame>
 
 This example builds a full-stack todo app where the browser connects to the iii engine over a **single WebSocket**. That one connection handles function invocations (create, toggle, delete, list) and delivers real-time stream change events back to the UI — no polling, no separate event channel.
@@ -64,7 +64,7 @@ workers:
 | **iii-exec** | — | Runs `pnpm dev` to start the API worker process. |
 | **iii-stream** | 3112 | Manages stream state with a file-based KvStore adapter. The engine routes `stream::get`, `stream::set`, `stream::delete`, and `stream::list` to this worker. |
 
-The RBAC configuration on port `3111` references `todo-project::auth-function` and explicitly lists the five functions the browser is allowed to call. See [Worker RBAC](/how-to/worker-rbac) for the full reference.
+The RBAC configuration on port `3111` references `todo-project::auth-function` and explicitly lists the five functions the browser is allowed to call. See [Worker RBAC](/0-11-0/how-to/worker-rbac) for the full reference.
 
 ## Backend
 
@@ -381,6 +381,6 @@ All CRUD operations (`addTodo`, `toggleTodo`, `deleteTodo`) call `iii.trigger` w
 
 - **Single connection** — The browser opens one WebSocket to the RBAC port. Function calls and real-time stream events flow over the same connection.
 - **No HTTP routes** — The API worker registers plain iii functions. The browser invokes them directly via `iii.trigger`. There is no REST layer.
-- **RBAC** — The engine's iii-worker-manager supports auth functions, expose lists, and middleware. This example uses a simple auth function that creates a session. See [Worker RBAC](/how-to/worker-rbac) for the full reference.
+- **RBAC** — The engine's iii-worker-manager supports auth functions, expose lists, and middleware. This example uses a simple auth function that creates a session. See [Worker RBAC](/0-11-0/how-to/worker-rbac) for the full reference.
 - **Engine-managed streams** — The `iii-stream` worker handles persistence (file-based KvStore in this example). The API worker reads and writes through `stream::*` function triggers — no custom stream implementation required.
 - **Session isolation** — The auth function returns a `function_registration_prefix`. The engine prefixes every function registered by that browser session, so multiple clients can register `ui::on-todo-change` without colliding.
