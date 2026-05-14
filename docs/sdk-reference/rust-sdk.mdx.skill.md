@@ -18,7 +18,7 @@ cargo add iii-sdk
 
 Imported as `iii_sdk`.
 
-## Functions
+## Common methods
 
 ### `register_worker`
 
@@ -30,8 +30,6 @@ pub fn register_worker(address: &str, options: InitOptions) -> III;
 
 The returned `III` carries every method below. Spawned async tasks are driven on the SDK's
 internal tokio runtime.
-
-## Methods on the worker handle
 
 ### `register_function`
 

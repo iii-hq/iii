@@ -16,7 +16,7 @@
 npm install iii-sdk
 ```
 
-## Functions
+## Common methods
 
 ### `registerWorker`
 
@@ -29,8 +29,6 @@ function registerWorker(address: string, options?: InitOptions): ISdk;
 Pass the engine's SDK WebSocket URL (e.g. `process.env.III_URL`) as `address`. `options` configures
 worker identity, timeouts, reconnection, and OpenTelemetry. The returned `ISdk` carries every
 method below.
-
-## Methods on the worker handle
 
 ### `registerFunction`
 

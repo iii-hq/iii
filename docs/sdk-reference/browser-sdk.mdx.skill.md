@@ -17,7 +17,7 @@
 npm install iii-browser-sdk
 ```
 
-## Functions
+## Common methods
 
 ### `registerWorker`
 
@@ -28,8 +28,6 @@ function registerWorker(address: string, options?: InitOptions): ISdk;
 ```
 
 `address` is the engine's SDK WebSocket URL. The returned `ISdk` carries every method below.
-
-## Methods on the worker handle
 
 ### `registerFunction`
 

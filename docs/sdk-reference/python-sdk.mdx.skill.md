@@ -18,7 +18,7 @@ pip install iii-sdk
 
 Imported as `iii`.
 
-## Functions
+## Common methods
 
 ### `register_worker`
 
@@ -35,8 +35,6 @@ reconnection. The returned `III` instance carries every method below.
   The SDK's OpenTelemetry hookup is wired through `options` as well; the export and rollup side is
   owned by iii-observability.
 </Note>
-
-## Methods on the worker handle
 
 ### `register_function`
 
