@@ -7,8 +7,8 @@
 
 <Note>
   This page covers using existing workers. For creating new workers (`iii worker init`), registering
-  functions and triggers, and building or publishing worker images, see [Expanding iii /
-  Workers](/expanding-iii/workers).
+  functions and triggers, and building or publishing worker images, see [Creating Workers /
+  Workers](/creating-workers/workers).
 </Note>
 
 ## Worker lifecycle
@@ -18,8 +18,8 @@ system and every other worker within it. When a worker disconnects, its function
 being callable until it reconnects.
 
 <Note>
-  For the SDK calls that establish the connection from worker code, see [Expanding iii /
-  Workers](/expanding-iii/workers#connecting-to-the-engine).
+  For the SDK calls that establish the connection from worker code, see [Creating Workers /
+  Workers](/creating-workers/workers#connecting-to-the-engine).
 </Note>
 
 ## Finding workers
@@ -166,5 +166,5 @@ Downloaded artifacts remain on disk after removal. To delete them too, use
 
 Creating a new worker (`iii worker init`), registering functions and triggers in worker code, and
 building or publishing a worker image are out of scope for this page. See
-[Expanding iii / Workers](/expanding-iii/workers) and
-[Expanding iii / Worker Registry](/expanding-iii/workers-registry).
+[Creating Workers / Workers](/creating-workers/workers) and
+[Creating Workers / Worker Registry](/creating-workers/workers-registry).

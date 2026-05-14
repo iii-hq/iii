@@ -30,8 +30,8 @@ Functions and Triggers are removed, in-flight invocations of those Functions are
 rest of the system keeps serving.
 
 <Note>
-  See [Expanding iii / Workers / Handling Worker
-  disconnects](/expanding-iii/workers#handling-worker-disconnects) for the cancellation error code
+  See [Creating Workers / Workers / Handling Worker
+  disconnects](/creating-workers/workers#handling-worker-disconnects) for the cancellation error code
   and the discovery events that fire (with their consistency semantics).
 </Note>
 
@@ -56,8 +56,8 @@ and the Triggers bound to those Functions. Other Workers and tooling can read th
 or subscribe to changes as it evolves.
 
 <Note>
-  See [Expanding iii / Workers / Inspecting the live
-  registry](/expanding-iii/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
+  See [Creating Workers / Workers / Inspecting the live
+  registry](/creating-workers/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
   snapshot calls and the `engine::workers-available` / `engine::functions-available` subscription
   events.
 </Note>

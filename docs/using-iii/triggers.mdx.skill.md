@@ -93,7 +93,7 @@ Some common actions are:
 
 Functions can also run when a trigger is satisfied. A trigger can be any event that happens such as
 a request to an `http` endpoint, a `cron` job, a change in `state`, or any other trigger that a
-worker supports. You can also [write your own](/expanding-iii/triggers).
+worker supports. You can also [write your own](/creating-workers/triggers).
 
 You bind triggers to functions via the `function_id`. The trigger declares its `type`, its `config`
 (defined by each type), and the function to invoke.

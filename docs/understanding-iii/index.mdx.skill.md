@@ -87,7 +87,7 @@ same regardless of how it was built or where it runs.
 
 <Note>
   See [Workers](/understanding-iii/workers) for process isolation, and
-  [Expanding iii / Workers](/expanding-iii/workers#worker-lifecycle-states) for the connection
+  [Creating Workers / Workers](/creating-workers/workers#worker-lifecycle-states) for the connection
   lifecycle.
 </Note>
 
