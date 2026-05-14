@@ -61,7 +61,7 @@ The runtime topology looks like this:
 ```mermaid
 graph TD
   CLI["iii trigger (CLI)"] <-->|WS| Engine["iii engine :49134"]
-  HTTP["curl / HTTP"] <-->|HTTP :3111| Engine
+  HTTP["curl / HTTP"] <-->|HTTP :3111| HttpWorker
 
   Engine <--> Math["math-worker (Python) math::add"]
   Engine <--> Caller["caller-worker (TypeScript) math::add_two_numbers"]
