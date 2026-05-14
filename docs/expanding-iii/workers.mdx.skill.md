@@ -58,6 +58,40 @@ whether the Worker is currently handling invocations. `disconnected` is the term
 WebSocket closes. The Engine tracks these transitions and surfaces them to other Workers and tooling
 through its discovery functions, so the rest of the system can react.
 
+## Handling Worker disconnects
+
+When a Worker's WebSocket closes, the Engine cleans up after it automatically — its Functions and
+Triggers leave the live registry, and any in-flight invocations of those Functions are cancelled.
+There are two things to handle on the caller side:
+
+1. **Catch `invocation_stopped`.** Callers waiting on a Function whose Worker disconnects mid-flight
+   receive an `invocation_stopped` error rather than a timeout. Treat it like a cancellation, not a
+   transient failure — retrying will fail until a Worker reconnects and re-registers the Function.
+1. **Subscribe to the discovery events** if you need to react to topology changes:
+   - `engine::workers-available` fires immediately when a Worker connects or disconnects.
+   - `engine::functions-available` is eventually consistent; it fires on the next polling tick once
+     the function-list hash changes.
+
+## Inspecting the live registry
+
+To see what's currently connected to the Engine, use one of two surfaces depending on whether you
+want a snapshot or a live subscription:
+
+- **Read a snapshot** by invoking one of the `engine::*::list` Functions:
+  - `engine::workers::list` — every connected Worker with metrics.
+  - `engine::functions::list` — every registered Function (filterable by `include_internal`).
+  - `engine::triggers::list` — every registered Trigger (filterable by `include_internal`).
+  - `engine::trigger-types::list` — every advertised Trigger type with its config and call schemas.
+- **Subscribe to changes** by registering a Trigger against `engine::workers-available` (fires when
+  a Worker connects or disconnects) or `engine::functions-available` (fires when a Function is
+  registered or unregistered). See [Handling Worker disconnects](#handling-worker-disconnects) for
+  their consistency semantics.
+
+<Note>
+  These are the high-level call surfaces. For the wire-level shapes, see [Engine
+  protocol](/sdk-reference/engine-sdk#engine-discovery-functions).
+</Note>
+
 ## Worker manifest
 
 When a worker is checked into a project so iii can launch it locally, `iii.worker.yaml` at the

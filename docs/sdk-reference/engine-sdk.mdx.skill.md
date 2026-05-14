@@ -165,7 +165,8 @@ Failure:
 ```
 
 `ErrorBody.code` values the engine emits today include `invocation_failed` (handler threw),
-`invocation_stopped` (engine-side timeout), `function_not_found`, `function_not_invokable`,
+`invocation_stopped` (the owning worker disconnected mid-flight — the engine cancels the in-flight
+call and surfaces this code to the caller), `function_not_found`, `function_not_invokable`,
 `TIMEOUT` (client-side timeout), `FORBIDDEN` (RBAC denial).
 
 ## Trigger actions
