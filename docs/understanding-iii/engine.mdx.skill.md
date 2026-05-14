@@ -26,9 +26,11 @@ called, the Engine finds a Worker that provides the target Function and dispatch
 ## Worker disconnect cleanup
 
 When a Worker disconnects, the Engine cleans up the Worker's footprint in the live registry. The
-Worker's registered Functions and Triggers are removed. Any in-flight invocations of those Functions
-are cancelled. The Engine fires `engine::workers-available` so subscribers can react. The rest of
-the system keeps serving.
+Worker's registered Functions and Triggers are removed. Any in-flight invocations of those
+Functions are cancelled (callers receive an `invocation_stopped` error rather than a timeout). The
+Engine fires `engine::workers-available` so subscribers can react immediately;
+`engine::functions-available` is eventually consistent and fires on the next polling tick once the
+function-list hash changes. The rest of the system keeps serving.
 
 ## Config hot-reload
 
@@ -40,7 +42,7 @@ failure) causes the Engine to exit rather than enter an indeterminate state.
 ## Architecture-agnostic routing
 
 Routing is independent of language, runtime, and location. The Engine does not care whether a
-Function is hosted by a Python Worker on a laptop, a TypeScript Worker in a browser tab, a Rust
+Function is hosted by a Python Agent on a laptop, a TypeScript Worker in a browser tab, a Rust
 binary in a microVM, or an OCI image on Kubernetes. The same routing path applies. This is what
 makes "any language, any runtime" a concrete property of iii rather than an aspiration.
 
