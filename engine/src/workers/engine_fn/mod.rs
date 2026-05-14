@@ -89,8 +89,6 @@ pub struct WorkerInfo {
     pub ip_address: Option<String>,
     #[serde(default)]
     pub internal: bool,
-    #[serde(default)]
-    pub virtual_worker: bool,
     pub status: String,
     pub connected_at_ms: u64,
     pub function_count: usize,
@@ -288,7 +286,6 @@ impl EngineFunctionsWorker {
                 os: w.os.clone(),
                 ip_address,
                 internal: false,
-                virtual_worker: false,
                 status: w.status.as_str().to_string(),
                 connected_at_ms: w.connected_at.timestamp_millis() as u64,
                 function_count,
@@ -316,7 +313,6 @@ impl EngineFunctionsWorker {
                 os: None,
                 ip_address: None,
                 internal: runtime_worker.internal,
-                virtual_worker: false,
                 status: "available".to_string(),
                 connected_at_ms: runtime_worker.connected_at.timestamp_millis() as u64,
                 function_count: functions.len(),
@@ -329,10 +325,9 @@ impl EngineFunctionsWorker {
         }
 
         for virtual_worker in self.engine.virtual_workers.list() {
-            let worker_id = format!("virtual:{}", virtual_worker.name);
+            let worker_id = virtual_worker.name.clone();
             if let Some(filter_id) = filter_worker_id
                 && filter_id != worker_id
-                && filter_id != virtual_worker.name
             {
                 continue;
             }
@@ -352,7 +347,6 @@ impl EngineFunctionsWorker {
                 os: None,
                 ip_address: None,
                 internal: false,
-                virtual_worker: true,
                 status: "available".to_string(),
                 connected_at_ms: chrono::Utc::now().timestamp_millis() as u64,
                 function_count: functions.len(),
@@ -360,7 +354,7 @@ impl EngineFunctionsWorker {
                 active_invocations: 0,
                 latest_metrics: None,
                 pid: None,
-                isolation: Some("virtual".to_string()),
+                isolation: None,
             });
         }
 
@@ -907,7 +901,6 @@ mod tests {
             vec!["state::get".to_string(), "state::set".to_string()]
         );
         assert!(!workers[0].internal);
-        assert!(!workers[0].virtual_worker);
     }
 
     #[tokio::test]
@@ -933,7 +926,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_worker_infos_includes_virtual_worker_group() {
+    async fn test_list_worker_infos_includes_generated_group_without_virtual_public_shape() {
         let (engine, module) = setup_engine_and_module();
         let owner = uuid::Uuid::new_v4();
 
@@ -953,12 +946,11 @@ mod tests {
         let workers = module.list_worker_infos(None).await;
 
         assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].id, "virtual:converted-api-worker");
+        assert_eq!(workers[0].id, "converted-api-worker");
         assert_eq!(workers[0].name.as_deref(), Some("converted-api-worker"));
-        assert!(workers[0].virtual_worker);
         assert!(!workers[0].internal);
         assert_eq!(workers[0].runtime.as_deref(), Some("engine"));
-        assert_eq!(workers[0].isolation.as_deref(), Some("virtual"));
+        assert_eq!(workers[0].isolation, None);
         assert_eq!(workers[0].function_count, 2);
         assert_eq!(
             workers[0].functions,
