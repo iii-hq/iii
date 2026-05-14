@@ -2,8 +2,8 @@
 
 use std::sync::Mutex;
 
-use iii_sdk::telemetry::payload::redact_and_truncate;
 use iii_sdk::BaggageSpanProcessor;
+use iii_sdk::telemetry::payload::redact_and_truncate;
 use opentelemetry::trace::{Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
@@ -39,11 +39,7 @@ fn capture_input_event(cx: &Context, data: &serde_json::Value, enabled: bool) {
     );
 }
 
-fn capture_output_event(
-    cx: &Context,
-    result: &Result<serde_json::Value, String>,
-    enabled: bool,
-) {
+fn capture_output_event(cx: &Context, result: &Result<serde_json::Value, String>, enabled: bool) {
     if !enabled {
         return;
     }

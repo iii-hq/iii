@@ -3,11 +3,11 @@
 use std::sync::Mutex;
 
 use iii_sdk::{
-    current_span_is_recording, get_baggage_entry, record_span_event, run_with_baggage,
-    set_current_span_attribute, set_current_span_error, BaggageSpanProcessor,
+    BaggageSpanProcessor, current_span_is_recording, get_baggage_entry, record_span_event,
+    run_with_baggage, set_current_span_attribute, set_current_span_error,
 };
-use opentelemetry::trace::{TraceContextExt, Tracer};
 use opentelemetry::Context;
+use opentelemetry::trace::{TraceContextExt, Tracer};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
 
 /// `set_tracer_provider` is process-wide; serialize to prevent races.
@@ -101,13 +101,9 @@ fn set_current_span_error_marks_status_error() {
     }
 }
 
-
 #[tokio::test]
 async fn run_with_baggage_attaches_entries_for_inner_scope() {
-    let inside_value = run_with_baggage(&[("k", "v")], async {
-        get_baggage_entry("k")
-    })
-    .await;
+    let inside_value = run_with_baggage(&[("k", "v")], async { get_baggage_entry("k") }).await;
 
     assert_eq!(inside_value.as_deref(), Some("v"));
 }
@@ -166,8 +162,7 @@ fn record_span_event_writes_event_with_attributes() {
         event
             .attributes
             .iter()
-            .any(|kv| kv.key.as_str() == "iii.payload.json"
-                && kv.value.as_str() == r#"{"x":1}"#),
+            .any(|kv| kv.key.as_str() == "iii.payload.json" && kv.value.as_str() == r#"{"x":1}"#),
         "payload.json attribute present on event"
     );
 }
@@ -177,10 +172,7 @@ fn record_span_event_is_noop_without_active_span() {
     let _guard = SERIAL.lock().unwrap();
     let (exporter, _provider) = install_test_provider();
 
-    record_span_event(
-        "iii.orphan.event",
-        &[("k".to_string(), "v".to_string())],
-    );
+    record_span_event("iii.orphan.event", &[("k".to_string(), "v".to_string())]);
 
     let spans = exporter.get_finished_spans().expect("exporter ok");
     assert!(spans.is_empty(), "no spans should have been exported");

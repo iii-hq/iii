@@ -8,8 +8,7 @@ use opentelemetry_sdk::trace::{Span, SpanData, SpanProcessor};
 
 /// DEFAULT_ALLOWLIST drift across languages would break worker chains;
 /// lockstep tests in each SDK pin this constant at CI time.
-pub const DEFAULT_ALLOWLIST: &[&str] =
-    &["iii.session.id", "iii.message.id", "iii.function_id"];
+pub const DEFAULT_ALLOWLIST: &[&str] = &["iii.session.id", "iii.message.id", "iii.function_id"];
 
 #[derive(Debug, Clone)]
 pub struct BaggageSpanProcessor {
@@ -78,9 +77,7 @@ mod tests {
     use opentelemetry::{Context, KeyValue};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
 
-    fn build_test_provider(
-        processor: BaggageSpanProcessor,
-    ) -> (impl Tracer, InMemorySpanExporter) {
+    fn build_test_provider(processor: BaggageSpanProcessor) -> (impl Tracer, InMemorySpanExporter) {
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_span_processor(processor)
@@ -110,7 +107,9 @@ mod tests {
             KeyValue::new("iii.function_id", "auth::set_token"),
         ]);
 
-        let span = tracer.span_builder("inner").start_with_context(&tracer, &cx);
+        let span = tracer
+            .span_builder("inner")
+            .start_with_context(&tracer, &cx);
         drop(span);
 
         assert_eq!(
@@ -131,10 +130,11 @@ mod tests {
     fn missing_baggage_entry_means_attribute_not_set() {
         let (tracer, exporter) = build_test_provider(BaggageSpanProcessor::default());
 
-        let cx = Context::new()
-            .with_baggage(vec![KeyValue::new("iii.message.id", "M-only")]);
+        let cx = Context::new().with_baggage(vec![KeyValue::new("iii.message.id", "M-only")]);
 
-        let span = tracer.span_builder("inner").start_with_context(&tracer, &cx);
+        let span = tracer
+            .span_builder("inner")
+            .start_with_context(&tracer, &cx);
         drop(span);
 
         assert_eq!(
@@ -155,7 +155,9 @@ mod tests {
             KeyValue::new("debug.feature_flag", "on"),
         ]);
 
-        let span = tracer.span_builder("inner").start_with_context(&tracer, &cx);
+        let span = tracer
+            .span_builder("inner")
+            .start_with_context(&tracer, &cx);
         drop(span);
 
         assert_eq!(
@@ -168,8 +170,7 @@ mod tests {
 
     #[test]
     fn custom_allowlist_is_honored() {
-        let processor =
-            BaggageSpanProcessor::with_allowlist(vec!["tenant.id", "iii.message.id"]);
+        let processor = BaggageSpanProcessor::with_allowlist(vec!["tenant.id", "iii.message.id"]);
         let (tracer, exporter) = build_test_provider(processor);
 
         let cx = Context::new().with_baggage(vec![
@@ -178,7 +179,9 @@ mod tests {
             KeyValue::new("iii.session.id", "S-not-copied"),
         ]);
 
-        let span = tracer.span_builder("inner").start_with_context(&tracer, &cx);
+        let span = tracer
+            .span_builder("inner")
+            .start_with_context(&tracer, &cx);
         drop(span);
 
         assert_eq!(
@@ -218,7 +221,9 @@ mod tests {
             KeyValue::new("iii.message.id", "M-1"),
         ]);
 
-        let span = tracer.span_builder("inner").start_with_context(&tracer, &cx);
+        let span = tracer
+            .span_builder("inner")
+            .start_with_context(&tracer, &cx);
         drop(span);
 
         let spans = exporter.get_finished_spans().expect("exporter ok");

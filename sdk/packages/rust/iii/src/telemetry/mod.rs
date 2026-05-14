@@ -162,10 +162,8 @@ mod service_name_tests {
             Some("harness")
         );
         assert_eq!(
-            name_from_path(
-                "/path/to/workers/turn-orchestrator/target/release/turn-orchestrator"
-            )
-            .as_deref(),
+            name_from_path("/path/to/workers/turn-orchestrator/target/release/turn-orchestrator")
+                .as_deref(),
             Some("turn-orchestrator")
         );
     }
@@ -543,11 +541,7 @@ where
 
 /// Like [`with_span`] but unconstrained on the error type, for code
 /// paths using typed `thiserror` enums or infallible loops.
-pub async fn run_in_span<F, Fut, T>(
-    name: &str,
-    kind: Option<SpanKind>,
-    f: F,
-) -> T
+pub async fn run_in_span<F, Fut, T>(name: &str, kind: Option<SpanKind>, f: F) -> T
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,

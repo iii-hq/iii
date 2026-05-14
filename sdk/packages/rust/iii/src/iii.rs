@@ -1677,8 +1677,7 @@ impl III {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
 
-            let payload_max_bytes =
-                crate::telemetry::payload::resolve_max_bytes_from_env();
+            let payload_max_bytes = crate::telemetry::payload::resolve_max_bytes_from_env();
 
             if trace_payloads {
                 use crate::telemetry::payload::redact_and_truncate;
@@ -1686,8 +1685,7 @@ impl III {
                 use opentelemetry::trace::TraceContextExt;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
-                    let (input_json, truncated) =
-                        redact_and_truncate(&data, payload_max_bytes);
+                    let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
                     span.add_event(
                         "iii.invocation.input",
                         vec![
@@ -1715,8 +1713,7 @@ impl III {
                             (j, t, true)
                         }
                         Err(err) => {
-                            let payload =
-                                serde_json::json!({ "error": err.to_string() });
+                            let payload = serde_json::json!({ "error": err.to_string() });
                             let (j, t) = redact_and_truncate(&payload, payload_max_bytes);
                             (j, t, false)
                         }
