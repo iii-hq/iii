@@ -15,10 +15,11 @@ invocations through Triggers.
 ## Trigger types
 
 <Note>
-  `worker.trigger()` and the `iii trigger` CLI command can invoke any registered Function without
-  an explicit Trigger registration. They are the baseline call surface that every Function gets the
-  moment it is registered. The trigger types described below are how Functions get bound to other
-  event sources (HTTP requests, cron schedules, queue messages, etc.).
+  `worker.trigger()` and the `iii trigger` CLI command can invoke any registered Function via its
+  `function_id` (see [Functions / Direct
+  invocation](/understanding-iii/functions#direct-invocation)). The trigger types described below
+  are how Functions get bound to other event sources (HTTP requests, cron schedules, queue messages,
+  etc.). Workers can define their own trigger types.
 </Note>
 
 Trigger types come from connected Workers. A Worker that can source events declares one or more
@@ -34,24 +35,33 @@ per-type details, like an HTTP path or a cron expression), and a `function_id` (
 invoke). Together they tell iii what event to listen for, how to listen, and what to call when the
 event happens.
 
+### Conditional triggers
+
+A Trigger can also specify an optional `condition_function_id`, which can be any gating function
+that returns truthy/falsey result. If specified the Engine invokes the condition function first and
+the `function_id`'s handler will only execute if the condition function returns a truthy value.
+
+Since Triggers are concerned with "when to do" and Functions are concerned with "what to do" these
+conditional functions preserve that separation: the Function stays focused on its work instead of
+accumulating per-Trigger guards that the developer has to link specific invocation paths. Using
+condition functions correctly helps maintain Worker and Function composability.
+
 ## Trigger pipeline
 
 When a Trigger fires, the Engine looks up its `function_id` in the live registry, finds a Worker
-that currently provides the Function, and dispatches the invocation. If the Trigger has an optional
-`condition_function_id`, the Engine invokes the condition function first; the handler runs only when
-the condition returns a truthy result. The function handler sees the payload alone, never the source
-of the Trigger or the type of event that fired it.
+that currently provides the Function, and dispatches the invocation. The function handler sees the
+payload alone, never the source of the Trigger or the type of event that fired it.
 
-## Invocation modes
+## Trigger Actions
 
-Functions can be invoked in two modes. The default, synchronous mode blocks until the Function
-returns its result or the configured timeout fires. The fire-and-forget mode (`TriggerAction.Void`)
-returns immediately, scheduling the Function to run without waiting for a result. Synchronous
-invocations are appropriate when the caller needs the value the Function returns. Fire-and-forget is
-for side-effect work where the caller does not need to wait.
+Functions invocation can be controlled via Trigger Actions. The default, synchronous mode blocks
+until the Function returns its result or the configured timeout fires. The fire-and-forget mode
+(`TriggerAction.Void`) returns immediately, scheduling the Function to run without waiting for a
+result. Synchronous invocations are appropriate when the caller needs the value the Function
+returns. Fire-and-forget is for side-effect work where the caller does not need to wait.
 
 <Note>
-  Workers can provide their own `TriggerAction`s. The iii-queue Worker provides
+  Workers can also define their own `TriggerAction`s. The iii-queue Worker provides
   `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries.
   See iii-queue for the queue mechanics.
 </Note>
@@ -62,14 +72,6 @@ Triggers move through four states. `registered` means the Trigger has been decla
 `active` means the Trigger is currently listening for its event. `invoked` means an event has fired
 the Trigger. `unregistered` means the Trigger has been removed. When the Worker that owns a Trigger
 disconnects, all of its Triggers are unregistered automatically along with its Functions.
-
-## Multiple Triggers per Function
-
-A single Function can be the target of any number of Triggers. The same Function can be invoked by
-an HTTP request, a cron schedule, and a queue message at once, by registering three separate
-Triggers that share the same `function_id`. The function code does not change; only the trigger
-registrations differ. This is what lets a single business-logic Function answer to many event
-sources without per-source variants.
 
 ## Trigger conditions
 

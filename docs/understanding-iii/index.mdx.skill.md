@@ -121,7 +121,7 @@ message, and a direct CLI call.
 
 <Note>
   See [Triggers](/understanding-iii/triggers) for trigger types, invocation modes, the trigger
-  lifecycle, and trigger conditions.
+  pipeline, the trigger lifecycle, and trigger conditions.
 </Note>
 
 ## Functions
@@ -139,8 +139,9 @@ Functions are defined synchronously but can be invoked asynchronously due to the
 Triggers and Functions.
 
 <Note>
-  See [Functions](/understanding-iii/functions) for identifier conventions and direct invocation,
-  and [Triggers / Invocation modes](/understanding-iii/triggers#invocation-modes) for sync and
+  See [Functions](/understanding-iii/functions) for identifier conventions, direct invocation, and
+  multiple Triggers per Function. See
+  [Triggers / Invocation modes](/understanding-iii/triggers#invocation-modes) for sync and
   fire-and-forget behavior.
 </Note>
 
