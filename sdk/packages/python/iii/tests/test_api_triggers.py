@@ -88,6 +88,55 @@ async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
 
 
 @pytest.mark.asyncio
+async def test_raw_json_request_body(engine_http_url, iii_client: III):
+    raw_json = '{"z":2, "a":1}'
+    function_id = "test::api::json::raw::py"
+
+    @http
+    async def handler(req: HttpRequest, response: HttpResponse):
+        raw = await req.request_body.read_all()
+
+        await response.status(200)
+        await response.headers({"content-type": "application/json"})
+        result = json.dumps(
+            {
+                "parsed_body": req.body,
+                "raw_body": raw.decode("utf-8"),
+            }
+        ).encode("utf-8")
+        await response.writer.write(result)
+        await response.writer.close_async()
+
+    fn_ref = iii_client.register_function(function_id, handler)
+    trigger = iii_client.register_trigger(
+        {
+            "type": "http",
+            "function_id": function_id,
+            "config": {
+                "api_path": "/test/py/json/raw",
+                "http_method": "POST",
+            },
+        }
+    )
+
+    time.sleep(0.3)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{engine_http_url}/test/py/json/raw",
+            headers={"content-type": "application/json"},
+            data=raw_json,
+        ) as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["parsed_body"] == {"z": 2, "a": 1}
+            assert data["raw_body"] == raw_json
+
+    fn_ref.unregister()
+    trigger.unregister()
+
+
+@pytest.mark.asyncio
 async def test_path_parameters(engine_http_url, iii_client: III):
     """Verify path parameters are extracted correctly."""
 

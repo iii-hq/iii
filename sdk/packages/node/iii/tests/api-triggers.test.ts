@@ -73,6 +73,54 @@ describe('API Triggers', () => {
     trigger.unregister()
   })
 
+  it('should expose raw JSON request body through request_body', async () => {
+    const rawJson = '{"z":2, "a":1}'
+
+    const fn = iii.registerFunction(
+      'test::api::json::raw',
+      http(async (req: HttpRequest, response: HttpResponse) => {
+        const rawBody = await req.request_body.readAll()
+
+        response.status(200)
+        response.headers({ 'content-type': 'application/json' })
+        response.stream.end(
+          Buffer.from(
+            JSON.stringify({
+              parsed_body: req.body,
+              raw_body: rawBody.toString('utf-8'),
+            }),
+          ),
+        )
+      }),
+    )
+
+    const trigger = iii.registerTrigger({
+      type: 'http',
+      function_id: fn.id,
+      config: {
+        api_path: '/test/json/raw',
+        http_method: 'POST',
+      },
+    })
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/json/raw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: rawJson,
+    })
+
+    expect(response.status).toBe(200)
+    const data = (await response.json()) as Record<string, unknown>
+
+    expect(data.parsed_body).toEqual({ z: 2, a: 1 })
+    expect(data.raw_body).toBe(rawJson)
+
+    fn.unregister()
+    trigger.unregister()
+  })
+
   it('should handle path parameters', async () => {
     const fn = iii.registerFunction(
       'test.api.getById',
