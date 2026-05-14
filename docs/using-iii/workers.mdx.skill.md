@@ -3,6 +3,8 @@
 # Workers
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
   This page covers using existing workers. For creating new workers (`iii worker init`), registering
   functions and triggers, and building or publishing worker images, see [Expanding iii /
@@ -87,7 +89,7 @@ iii worker exec <name> -- <command>  # run a command inside the worker
 ## Worker skills
 
 Every worker also ships with skills for Agentic work. Skills are managed by the
-[`skills` worker](https://workers.iii.dev/workers/skills), an actively developed content-registry
+`skills` worker, an actively developed content-registry
 worker added to a project like any other.
 
 Skill bodies load lazily. Top-level entries stay small; agents fetch deeper content via
@@ -102,7 +104,7 @@ and its workers.
 
 Functions and triggers come from connected workers. To use a trigger of a given type, you need the
 worker that provides it to be connected. For example if you add `http` triggers via the
-[iii-http](https://workers.iii.dev/workers/iii-http) worker then you can now expose endpoints for
+iii-http worker then you can now expose endpoints for
 your function just as you would in a web framework like Express or FastAPI.
 
 ## Versioning and pinning

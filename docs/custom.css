@@ -275,7 +275,7 @@ td:first-child {
   display: flex !important;
   font-size: 12px !important;
   line-height: 1.4 !important;
-  padding: 0.28rem 0 !important;
+  padding-block: 0.28rem !important;
   text-decoration: none !important;
   transition:
     color 150ms ease;

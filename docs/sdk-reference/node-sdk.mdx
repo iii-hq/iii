@@ -1,164 +1,177 @@
 ---
 title: "Node.js SDK"
-description: "Placeholder."
+description: "Public surface of the iii Node.js SDK (`iii-sdk`)."
 owner: "engineering"
 type: "reference"
 ---
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
+<Note>
+  This page is a hand-authored snapshot of the planned public surface. The final reference will be
+  generated from the SDK source.
+</Note>
+
 ## Installation
 
-How to add the Node.js SDK (`iii-sdk`) to a project.
+```bash
+npm install iii-sdk
+```
 
-## Initialization
+## Common methods
 
-Connecting to the engine and obtaining the SDK handle. The handle is conventionally named `worker`.
+### `registerWorker`
 
-## Connection lifecycle
+Connect a worker to a running iii engine and return its handle.
 
-How the SDK connects to the engine, registers functions, heartbeats, and reconnects with
-re-registration on disconnect (exponential backoff with jitter, configured via
-`IIIReconnectionConfig`).
+```typescript
+function registerWorker(address: string, options?: InitOptions): ISdk;
+```
 
-## Methods
+Pass the engine's SDK WebSocket URL (e.g. `process.env.III_URL`) as `address`. `options` configures
+worker identity, timeouts, reconnection, and OpenTelemetry. The returned `ISdk` carries every
+method below.
 
-The functions exposed by the Node SDK for registering, invoking, and tearing down workers.
+### `registerFunction`
 
-### registerWorker
+Register a callable function on this worker.
 
-Register this worker with an iii engine.
+```typescript
+worker.registerFunction(
+  functionId: string,
+  handlerOrInvocation: RemoteFunctionHandler | HttpInvocationConfig,
+  options?: RegisterFunctionOptions,
+): FunctionRef;
+```
 
-#### InitOptions
+`options` accepts `description`, `metadata`, and optional `request_format` / `response_format`
+JSON Schemas (stored alongside the function for the iii console and agent-readable skills).
 
-Options accepted when constructing the worker instance (worker name, timeouts, `reconnectionConfig`,
-`otel`, metrics reporting).
-
-### registerFunction
-
-Register a callable function on this worker, with optional request and response JSON Schema formats.
-
-### registerTrigger
+### `registerTrigger`
 
 Bind a registered function to a configured trigger instance.
 
-### trigger
+```typescript
+worker.registerTrigger(trigger: RegisterTriggerInput): Trigger;
+```
 
-Invoke a registered function or fire a trigger from Node.
+The returned `Trigger` carries the runtime handle. Drop the trigger with `Trigger.unregister()`;
+there is no top-level `unregisterTrigger` function.
 
-### shutdown
+### `registerTriggerType`
+
+Declare a new trigger type that this worker advertises so other workers can bind their functions to
+it.
+
+```typescript
+worker.registerTriggerType<TConfig>(
+  triggerType: RegisterTriggerTypeInput,
+  handler: TriggerHandler<TConfig>,
+): TriggerTypeRef<TConfig>;
+```
+
+### `unregisterTriggerType`
+
+Remove a previously registered trigger type.
+
+```typescript
+worker.unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void;
+```
+
+### `trigger`
+
+Invoke a registered function. Resolves with the function's return value for synchronous calls,
+with an `EnqueueResult` for `TriggerAction.Enqueue` actions, and with `undefined` for
+`TriggerAction.Void`.
+
+```typescript
+worker.trigger<TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput>;
+```
+
+### `shutdown`
 
 Disconnect from the engine and release resources, flushing any pending observability data.
 
-### registerTriggerType
+```typescript
+worker.shutdown(): Promise<void>;
+```
 
-Declare a new trigger type that this worker can source events from. **Consider removing**
+## Trigger actions
 
-### unregisterTriggerType
+`TriggerAction` is a runtime const that produces the value passed to `trigger`'s `action` field.
 
-Remove a previously registered trigger type. **Consider removing**
+```typescript
+TriggerAction.Void();                       // fire-and-forget
+TriggerAction.Enqueue({ queue: "math" });   // route through iii-queue
+```
 
-<Note>
-  Logging and observability surfaces (logger methods, OpenTelemetry init, custom spans, worker metrics, log emission/subscription) are documented with the [iii-observability worker](#); that worker owns logging and OpenTelemetry end-to-end.
+The underlying type is the discriminated union `{ type: "enqueue"; queue: string } | { type: "void" }`,
+exported as `TriggerActionType`.
 
-Channel surfaces (`Channel`, `ChannelReader`, `ChannelWriter`, `ChannelDirection`,
-`StreamChannelRef`, `createChannel`) are documented with the [iii-worker-manager](#); channels are
-managed by that worker end-to-end.
+## Error type
 
-</Note>
+`IIIInvocationError extends Error`. Every failure that crosses the SDK boundary is thrown as an
+instance of this class with a `code: string`, a `message: string`, an optional `function_id`, and
+an optional `stacktrace`.
 
-## Subpath exports
+```typescript
+class IIIInvocationError extends Error {
+  code: string;
+  message: string;
+  function_id?: string;
+  stacktrace?: string;
+}
+```
 
-Additional modules importable from sub-paths (e.g., `iii-sdk/telemetry`, the
-OpenTelemetry/observability subpath).
+Common `code` values come from the engine: `invocation_failed` (handler threw), `invocation_stopped`
+(engine timeout), `function_not_found`, `function_not_invokable`, `TIMEOUT` (client-side timeout),
+`FORBIDDEN` (RBAC denial).
 
-## Types
+## Channels
 
-**Types should be visually separated from the functions in the docs**
+`ChannelReader` and `ChannelWriter` are runtime classes wrapping the engine's stream WebSockets.
+`StreamChannelRef` is the type passed between SDK calls to identify a channel:
 
-### MessageType
+```typescript
+type StreamChannelRef = {
+  channel_id: string;
+  access_key: string;
+  direction: "read" | "write";
+};
+```
 
-Wire message-type discriminator used by the SDK.
+Construct each with the engine's WS base URL and a `StreamChannelRef`. `ChannelReader` exposes a
+Node `Readable` plus `.sendMessage()` and `.onMessage()`; `ChannelWriter` exposes a `Writable` plus
+`.sendMessage()`, `.sendChunked()`, and `.close()`.
 
-### FunctionRef
+## Logger
 
-Typed reference to a registered function.
+`Logger` is a runtime class with `info`, `warn`, `error`, and `debug` methods, each
+`(message: string, data?: unknown) => void`. The output integrates with the SDK's OpenTelemetry
+setup; see iii-observability for the export
+side.
 
-### IIIReconnectionConfig
+## Info types
 
-Engine-WebSocket reconnection behavior: `maxRetries`, `initialDelayMs`, `backoffMultiplier`,
-`maxDelayMs`, `jitterFactor`.
+The SDK re-exports the structured types the engine returns when listing system state:
 
-### HttpAuthConfig
+- `FunctionInfo`. `function_id`, optional `description`, optional `request_format` /
+  `response_format`, optional `metadata`.
+- `TriggerInfo`. `id`, `trigger_type`, `function_id`, optional `config`, optional `metadata`.
+- `WorkerInfo`. `id`, `name`, runtime/version/OS fields, IP, `status`, `connected_at_ms`,
+  `function_count`, registered `functions`, `active_invocations`, optional `isolation`.
 
-Auth configuration accepted by HTTP-invoked function registrations.
+`WorkerMetadata` is not part of this SDK; use `WorkerInfo` for worker-side metadata.
 
-### HttpInvocationConfig
+## MessageType
 
-Config used when registering an external HTTP endpoint as an iii function.
+`MessageType` is a runtime enum naming every wire frame the SDK exchanges with the engine
+(`RegisterFunction`, `InvokeFunction`, `InvocationResult`, `RegisterTrigger`, `WorkerRegistered`,
+and the rest). Callers rarely use it directly; it surfaces in middleware hooks and protocol-level
+custom code.
 
-### RegisterFunctionFormat
+## Connection state
 
-JSON Schema shape used for `request_format` and `response_format` on registered functions.
-
-### RegisterFunctionMessage
-
-Wire shape sent when registering a function.
-
-### RegisterFunctionOptions
-
-Options passed alongside a function registration.
-
-### RegisterServiceInput
-
-Input shape for `registerService`.
-
-### RegisterTriggerInput
-
-Input shape for `registerTrigger`.
-
-### RegisterTriggerMessage
-
-Wire shape sent when binding a trigger.
-
-### RegisterTriggerTypeInput
-
-Input shape for `registerTriggerType`.
-
-### RegisterTriggerTypeMessage
-
-Wire shape sent when declaring a trigger type.
-
-### RemoteFunctionHandler
-
-Handler signature for functions invoked remotely.
-
-### Trigger
-
-Configured trigger instance.
-
-### TriggerHandler
-
-Handler signature for trigger-driven invocations.
-
-### TriggerRequest
-
-Request payload delivered to a trigger handler.
-
-### TriggerTypeRef
-
-Typed reference to a registered trigger type.
-
-### IStream
-
-Stream consumer interface.
-
-### DeleteResult
-
-Result of a delete operation.
-
-### StreamSetResult
-
-Result of a stream set operation.
-
-### StreamUpdateResult
-
-Result of a stream update operation.
+The connection-state literal union (`"disconnected" | "connecting" | "connected" | "reconnecting"
+| "failed"`) is internal in the current build. Treat the connection as established once
+`registerWorker` returns; failures raise on the first SDK call.

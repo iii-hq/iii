@@ -3,6 +3,8 @@
 # Engine
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 Using iii effectively starts with understanding it. iii's surface is very simple but its utility is
 very expansive.
 
@@ -52,5 +54,5 @@ which return a snapshot. Subscribing goes through `engine::functions-available` 
 
 <Note>
   Querying traces, logs, and metrics is documented with the
-  [iii-observability worker](https://workers.iii.dev/workers/iii-observability).
+  iii-observability worker.
 </Note>

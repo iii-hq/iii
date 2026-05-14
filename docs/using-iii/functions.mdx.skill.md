@@ -3,6 +3,8 @@
 # Functions
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 ## Invoking functions
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
@@ -11,11 +13,11 @@ handler.
 
 <Note>
   Some trigger types are: [`iii trigger`](/using-iii/cli), [`worker.trigger`](/using-iii/triggers),
-  [iii-http](https://workers.iii.dev/workers/iii-http),
-  [iii-cron](https://workers.iii.dev/workers/iii-cron),
-  [iii-queue](https://workers.iii.dev/workers/iii-queue),
-  [iii-state](https://workers.iii.dev/workers/iii-state),
-  [iii-stream](https://workers.iii.dev/workers/iii-stream).
+  iii-http,
+  iii-cron,
+  iii-queue,
+  iii-state,
+  iii-stream.
 </Note>
 
 ## Register a function

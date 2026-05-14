@@ -3,118 +3,182 @@
 # Python SDK
 
 
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
 <Note>
-  Logging and observability surfaces are documented with the [iii-observability worker](#); that worker
-  owns logging and OpenTelemetry end-to-end.
-
-Channel surfaces (`ChannelReader`, `ChannelWriter`, `StreamChannelRef`, `create_channel`) are
-documented with the [iii-worker-manager](#); channels are managed by that worker end-to-end.
-
+  This page is a hand-authored snapshot of the planned public surface. The final reference will be
+  generated from the SDK source.
 </Note>
 
 ## Installation
 
-How to add the Python SDK (`iii`) to a project.
+```bash
+pip install iii-sdk
+```
 
-## Initialization
+Imported as `iii`.
 
-Connecting to the engine and obtaining the SDK handle. The handle is conventionally named `worker`.
+## Common methods
 
-## Connection lifecycle
+### `register_worker`
 
-How the SDK connects to the engine, registers functions, heartbeats, and reconnects with
-re-registration on disconnect (configured via `ReconnectionConfig`).
+Connect a worker to a running iii engine and return its handle.
 
-## Methods
+```python
+def register_worker(address: str, options: InitOptions | None = None) -> III: ...
+```
 
-The functions exposed by the Python SDK for registering, invoking, and tearing down workers.
+`address` is the engine's SDK WebSocket URL. `options` configures worker identity and
+reconnection. The returned `III` instance carries every method below.
 
-### register_worker
+<Note>
+  The SDK's OpenTelemetry hookup is wired through `options` as well; the export and rollup side is
+  owned by iii-observability.
+</Note>
 
-Register this worker with an iii engine.
+### `register_function`
 
-#### InitOptions
+Register a callable function on this worker.
 
-Options accepted when constructing the worker (worker name, timeouts, `reconnection_config`).
+```python
+def register_function(
+    self,
+    function_id: str,
+    handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
+    *,
+    description: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    request_format: RegisterFunctionFormat | dict[str, Any] | None = None,
+    response_format: RegisterFunctionFormat | dict[str, Any] | None = None,
+) -> FunctionRef: ...
+```
 
-### register_function
+`request_format` / `response_format` accept either a JSON Schema dict or a `RegisterFunctionFormat`
+helper. They are stored alongside the function for the iii console and the agent-readable skills.
 
-Register a callable function on this worker, with optional request and response JSON Schema formats.
-
-### register_trigger
+### `register_trigger`
 
 Bind a registered function to a configured trigger instance.
 
-### trigger
+```python
+def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
+```
 
-Invoke a registered function or fire a trigger from Python.
+Drop the trigger with `trigger.unregister()` on the returned handle. There is no top-level
+`unregister_trigger` method.
 
-### trigger_async
+### `register_trigger_type`
 
-Async variant of `trigger` for use within an async context. _This differs from node, is this okay?_
+Declare a new trigger type that this worker advertises.
 
-### shutdown
+```python
+def register_trigger_type(
+    self,
+    trigger_type: RegisterTriggerTypeInput | dict[str, Any],
+    handler: TriggerHandler[Any],
+) -> TriggerTypeRef[Any, Any]: ...
+```
 
-Disconnect from the engine and release resources.
+### `unregister_trigger_type`
 
-### shutdown_async
+Remove a previously registered trigger type.
 
-Async variant of `shutdown` for use within an async context. _This differs from node, is this okay?_
+```python
+def unregister_trigger_type(
+    self,
+    trigger_type: RegisterTriggerTypeInput | dict[str, Any],
+) -> None: ...
+```
 
-### register_trigger_type
+### `trigger` / `trigger_async`
 
-Declare a new trigger type that this worker can source events from. **Consider removing**
+Invoke a registered function. `trigger` is the synchronous entry point (runs the async machinery
+on the SDK's internal loop); `trigger_async` is the awaitable form for callers inside `asyncio`.
 
-### unregister_trigger_type
+```python
+def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
+async def trigger_async(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
+```
 
-Remove a previously registered trigger type. **Consider removing**
+Both return the function's value for synchronous invocations, an `EnqueueResult` for
+`TriggerAction.Enqueue` actions, and `None` for `TriggerAction.Void`.
 
-## Types
+### `shutdown` / `shutdown_async`
 
-**Types should be visually separated from the functions in the docs**
+Disconnect from the engine and release resources. Use `shutdown_async` from `asyncio` contexts.
 
-### ReconnectionConfig
+```python
+def shutdown(self) -> None: ...
+async def shutdown_async(self) -> None: ...
+```
 
-Engine-WebSocket reconnection behavior: `max_retries`, `initial_delay_ms`, `backoff_multiplier`,
-`max_delay_ms`, `jitter_factor`. The Python SDK only has this one; other SDKs may additionally
-expose an OTel-exporter reconnection config.
+## Trigger actions
 
-### HttpInvocationConfig
+`TriggerAction` is a factory class with two static helpers; `TriggerActionEnqueue` and
+`TriggerActionVoid` are the concrete return shapes.
 
-Config used when registering an external HTTP endpoint as an iii function.
+```python
+TriggerAction.Void()                  # fire-and-forget; returns TriggerActionVoid()
+TriggerAction.Enqueue(queue="math")   # route through iii-queue; returns TriggerActionEnqueue(...)
+```
 
-### RegisterFunctionFormat
+`queue` is a keyword-only argument on `Enqueue`.
 
-JSON Schema shape used for `request_format` and `response_format` on registered functions.
+## Error types
 
-### RegisterServiceInput
+The base class is `IIIInvocationError`. The SDK's wire-error decoder maps engine error codes to
+two known subclasses; everything else stays on the base class:
 
-Input shape for service-style registration.
+| Class                | When raised                       |
+| -------------------- | --------------------------------- |
+| `IIIInvocationError` | Any engine-side invocation error. |
+| `IIIForbiddenError`  | `code == "FORBIDDEN"` (RBAC).     |
+| `IIITimeoutError`    | `code == "TIMEOUT"`.              |
 
-### RegisterTriggerInput
+All three are exported. The base class has `code`, `message`, `function_id`, and `stacktrace`
+attributes.
 
-Input shape for `register_trigger`.
+## Channels
 
-### RegisterTriggerTypeInput
+`ChannelReader` and `ChannelWriter` wrap the engine's stream WebSockets. `StreamChannelRef`
+identifies a channel:
 
-Input shape for `register_trigger_type`.
+```python
+class StreamChannelRef(BaseModel):
+    channel_id: str
+    access_key: str
+    direction: Literal["read", "write"]
+```
 
-### TriggerActionEnqueue
+Both classes are constructed with the engine's WS base URL and a `StreamChannelRef`.
 
-Trigger action that enqueues an invocation onto a named queue.
+## Logger
 
-### TriggerActionVoid
+`Logger` exposes `info`, `warn`, `error`, and `debug`, each accepting a message and an optional
+data dict. The output integrates with the SDK's OpenTelemetry setup; see
+iii-observability for the export side.
 
-Trigger action that performs a fire-and-forget invocation.
+## Info types
 
-### TriggerRequest
+- `FunctionInfo`. `function_id`, optional `description`, optional `request_format` /
+  `response_format`, optional `metadata`.
+- `TriggerInfo`. `id`, `trigger_type`, `function_id`, optional `config` / `metadata`.
 
-Request payload delivered to a trigger handler.
+`WorkerInfo` exists in `iii_types` but isn't currently re-exported from the package root; import
+it from `iii.iii_types` when needed. `WorkerMetadata` is not part of this SDK.
 
-### TriggerHandler
+## `MessageType`
 
-Handler signature for trigger-driven invocations.
+A runtime enum naming every wire frame the SDK exchanges with the engine. Used internally by
+middleware; rarely needed by callers.
 
-### IStream
+## `RegisterFunctionFormat`
 
-Stream consumer interface.
+The Python-only helper for declaring a function's request or response schema in a structured way.
+Accepts either a JSON Schema dict directly or constructed values; both forms reach `register_function`.
+
+## Connection state
+
+`IIIConnectionState` is the literal-type alias `"disconnected" | "connecting" | "connected" |
+"reconnecting" | "failed"`. It is defined in `iii.iii_constants` but not re-exported from the
+package root; treat the connection as established once `register_worker` returns.
