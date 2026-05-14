@@ -49,8 +49,14 @@ reachable on the network.
   </Tab>
 </Tabs>
 
-See [Using iii / Workers](/using-iii/workers#worker-lifecycle) for what happens after the worker
-connects and disconnects.
+## Worker lifecycle states
+
+Workers transition through a small set of states after connecting:
+`connecting → connected → available / busy → disconnected`. `connecting` is the WebSocket handshake.
+`connected` means the Worker has joined the Engine's registry. `available` and `busy` describe
+whether the Worker is currently handling invocations. `disconnected` is the terminal state when the
+WebSocket closes. The Engine tracks these transitions and surfaces them to other Workers and tooling
+through its discovery functions, so the rest of the system can react.
 
 ## Worker manifest
 
@@ -67,6 +73,10 @@ scripts:
   install: "pip install -r requirements.txt"
   start: "python math_worker.py"
 ```
+
+The manifest is metadata about _starting_ the Worker. Once the Worker is running, the WebSocket
+connection to the Engine and the function registrations are what matter. A Worker started by
+`iii worker add` and a Worker started by hand in a container behave identically to the Engine.
 
 For the full manifest field schema, see [Using iii / Workers](/using-iii/workers).
 

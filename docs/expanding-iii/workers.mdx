@@ -51,8 +51,14 @@ reachable on the network.
   </Tab>
 </Tabs>
 
-See [Using iii / Workers](/using-iii/workers#worker-lifecycle) for what happens after the worker
-connects and disconnects.
+## Worker lifecycle states
+
+Workers transition through a small set of states after connecting:
+`connecting → connected → available / busy → disconnected`. `connecting` is the WebSocket handshake.
+`connected` means the Worker has joined the Engine's registry. `available` and `busy` describe
+whether the Worker is currently handling invocations. `disconnected` is the terminal state when the
+WebSocket closes. The Engine tracks these transitions and surfaces them to other Workers and tooling
+through its discovery functions, so the rest of the system can react.
 
 ## Worker manifest
 

@@ -11,25 +11,18 @@ type: "explanation"
 
 Workers are what actually do things in an iii system. Every category of capability is built as a
 Worker: queues, scheduling, sandboxing, observability, agents, business logic, devices, and even
-code executing in a browser. A Worker is a process that connects to the Engine over WebSocket and
-announces a set of Functions it can run and Triggers to register. Once connected, those Functions
-are callable from anywhere in the system without per-pair integration code between the caller and
-the Worker.
+code executing in a browser.
+
+Specifically, a Worker is a process that connects to the Engine over WebSocket and announces a set
+of Functions it can run and Triggers to register. Once connected, those Functions are invocable from
+anywhere in the system and those Triggers will respond to their events without per-pair integration
+code between the caller and the Worker.
 
 The Worker concept is intentionally narrow. A Worker is not a microservice, a job runner, or a
 sidecar. It is a participant in the Engine's live registry that contributes Functions and Triggers.
 Whether the Worker is a long-lived process serving thousands of invocations per second or a
 short-lived process that connects, registers, runs once, and shuts down, the Engine treats it the
 same.
-
-## Worker lifecycle states
-
-Workers transition through a small set of states after connecting:
-`connecting → connected → available / busy → disconnected`. `connecting` is the WebSocket handshake.
-`connected` means the Worker has joined the Engine's registry. `available` and `busy` describe
-whether the Worker is currently handling invocations. `disconnected` is the terminal state when the
-WebSocket closes. The Engine tracks these transitions and surfaces them to other Workers and tooling
-through its discovery functions, so the rest of the system can react.
 
 ## Worker isolation
 

@@ -10,49 +10,49 @@ very expansive.
 
 ## Startup flow
 
-When the engine starts, it parses its command-line arguments, loads `config.yaml` (or the default
+When the Engine starts, it parses its command-line arguments, loads `config.yaml` (or the default
 config if none is provided), applies the worker declarations from the config (starting each declared
-worker process), and begins serving connections. After this sequence the engine is ready to accept
-WebSocket connections from workers and route invocations between them.
+worker process), and begins serving connections. After this sequence the Engine is ready to accept
+WebSocket connections from Workers and route invocations between them.
 
 ## Engine responsibilities
 
-The engine's responsibilities cover three concerns at runtime. First, it accepts WebSocket
-connections from workers and maintains the live registry of which workers are currently connected.
-Second, it tracks the functions and triggers each connected worker has registered, exposing them as
-a unified system-wide surface. Third, it routes invocations: when a trigger fires or a function is
-called, the engine finds a worker that provides the target function and dispatches the call.
+The Engine's responsibilities cover three concerns at runtime. First, it accepts WebSocket
+connections from Workers and maintains the live registry of which Workers are currently connected.
+Second, it tracks the Functions and Triggers each connected Worker has registered, exposing them as
+a unified system-wide surface. Third, it routes invocations: when a Trigger fires or a Function is
+called, the Engine finds a Worker that provides the target Function and dispatches the call.
 
 ## Worker disconnect cleanup
 
-When a worker disconnects, the engine cleans up the worker's footprint in the live registry. The
-worker's registered functions and triggers are removed. Any in-flight invocations of those functions
-are cancelled. The engine fires `engine::workers-available` so subscribers can react. The rest of
+When a Worker disconnects, the Engine cleans up the Worker's footprint in the live registry. The
+Worker's registered Functions and Triggers are removed. Any in-flight invocations of those Functions
+are cancelled. The Engine fires `engine::workers-available` so subscribers can react. The rest of
 the system keeps serving.
 
 ## Config hot-reload
 
-`config.yaml` is watched at runtime. When the file changes, the engine parses, diffs, validates, and
+`config.yaml` is watched at runtime. When the file changes, the Engine parses, diffs, validates, and
 commits the new config. Workers that did not change in the diff stay running through the reload, so
-only added, removed, or changed workers are restarted. An invalid config (parse error or validation
-failure) causes the engine to exit rather than enter an indeterminate state.
+only added, removed, or changed Workers are restarted. An invalid config (parse error or validation
+failure) causes the Engine to exit rather than enter an indeterminate state.
 
 ## Architecture-agnostic routing
 
-Routing is independent of language, runtime, and location. The engine does not care whether a
-function is hosted by a Python worker on a laptop, a TypeScript worker in a browser tab, a Rust
+Routing is independent of language, runtime, and location. The Engine does not care whether a
+Function is hosted by a Python Worker on a laptop, a TypeScript Worker in a browser tab, a Rust
 binary in a microVM, or an OCI image on Kubernetes. The same routing path applies. This is what
 makes "any language, any runtime" a concrete property of iii rather than an aspiration.
 
 ## Discovery and the live registry
 
-The engine maintains a registry of every connected worker, the functions each worker has registered,
-and the triggers bound to those functions. Other workers and tooling can read the registry on demand
+The Engine maintains a registry of every connected Worker, the Functions each Worker has registered,
+and the Triggers bound to those Functions. Other Workers and tooling can read the registry on demand
 or subscribe to changes. Reading on demand goes through the `engine::*::list` family of functions,
 which return a snapshot. Subscribing goes through `engine::functions-available` or
 `engine::workers-available`, which fire as the registry changes.
 
 <Note>
   Querying traces, logs, and metrics is documented with the
-  iii-observability worker.
+  iii-observability Worker.
 </Note>
