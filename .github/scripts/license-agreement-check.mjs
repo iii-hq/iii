@@ -17,8 +17,13 @@ export function normalizeAgreementText(value = '') {
 
 export function touchesEnginePaths(files = []) {
   return files.some((file) => {
-    const name = typeof file === 'string' ? file : (file?.filename ?? '');
-    return name.startsWith(ENGINE_PATH_PREFIX);
+    if (typeof file === 'string') {
+      return file.startsWith(ENGINE_PATH_PREFIX);
+    }
+    if (file?.filename?.startsWith(ENGINE_PATH_PREFIX)) {
+      return true;
+    }
+    return Boolean(file?.previous_filename?.startsWith(ENGINE_PATH_PREFIX));
   });
 }
 

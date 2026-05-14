@@ -116,6 +116,24 @@ test('touchesEnginePaths does not match unrelated paths that contain "engine"', 
   assert.equal(touchesEnginePaths([{ filename: 'crates/engine-utils/src/lib.rs' }]), false);
 });
 
+test('touchesEnginePaths detects files renamed out of engine/', () => {
+  assert.equal(
+    touchesEnginePaths([
+      { filename: 'other/x.rs', previous_filename: 'engine/x.rs', status: 'renamed' },
+    ]),
+    true,
+  );
+});
+
+test('touchesEnginePaths detects files renamed into engine/', () => {
+  assert.equal(
+    touchesEnginePaths([
+      { filename: 'engine/x.rs', previous_filename: 'other/x.rs', status: 'renamed' },
+    ]),
+    true,
+  );
+});
+
 test('passes any PR that does not touch engine code regardless of permission', () => {
   const result = evaluateAgreement({
     comments: [],
@@ -162,6 +180,23 @@ test('passes external contributors touching engine code with an acknowledgement 
     commentAcknowledged: true,
     teamMember: false,
   });
+});
+
+test('accepts acknowledgement with normalized case and whitespace', () => {
+  const result = evaluateAgreement({
+    comments: [
+      {
+        body: `  ${ACKNOWLEDGEMENT_PHRASE.toUpperCase()}  `,
+        user: { login: 'external-user' },
+      },
+    ],
+    permission: 'read',
+    prAuthor: 'external-user',
+    changedFiles: [{ filename: 'engine/src/lib.rs' }],
+  });
+
+  assert.equal(result.acknowledged, true);
+  assert.equal(result.commentAcknowledged, true);
 });
 
 test('fails external contributors touching engine code without acknowledgement', () => {
