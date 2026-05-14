@@ -272,6 +272,7 @@
               },
               {
                 "group": "Creating Workers",
+                "hidden": true,
                 "pages": [
                   "creating-workers/workers",
                   "creating-workers/functions",
