@@ -70,6 +70,10 @@ scripts:
   start: "python math_worker.py"
 ```
 
+The manifest is metadata about _starting_ the Worker. Once the Worker is running, the WebSocket
+connection to the Engine and the function registrations are what matter. A Worker started by
+`iii worker add` and a Worker started by hand in a container behave identically to the Engine.
+
 For the full manifest field schema, see [Using iii / Workers](/using-iii/workers).
 
 {/* TODO: link to the canonical iii.worker.yaml reference page once it exists. */}
