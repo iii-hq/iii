@@ -40,7 +40,6 @@ workers:
       service_version: ${SERVICE_VERSION:0.1.0}
 
       service_namespace: ${SERVICE_NAMESPACE:production}
-      service_instance_id: ${SERVICE_INSTANCE_ID:auto-generated}
 
       exporter: ${OTEL_EXPORTER_TYPE:both}
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
@@ -51,7 +50,6 @@ workers:
 
       metrics_enabled: true
       metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}
-      prometheus_port: ${PROMETHEUS_PORT:9464}
       metrics_retention_seconds: 3600
       metrics_max_count: 10000
 
@@ -59,11 +57,6 @@ workers:
       logs_exporter: ${OTEL_LOGS_EXPORTER:both}
       logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
-
-      worker_metrics:
-        enabled: true
-        collection_interval_seconds: 5
-        history_size: 60
 
   - name: iii-queue
     config:
