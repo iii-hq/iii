@@ -3,14 +3,7 @@
 # Welcome to iii
 
 
-Software engineering has become an exercise in assembling categories of services. iii eliminates the
-integration complexity that pattern produces.
-
-<Tip>
-  The tabs above split the site into Docs (start here), Tutorials, How-tos, Patterns, SDK & Engine
-  Reference, and Changelog. Read this page and the Docs tab in order first. The other tabs make more
-  sense once you have the model.
-</Tip>
+{/* <Tip> The tabs above split the site into Docs (start here), Tutorials, How-tos, Patterns, SDK & Engine Reference, and Changelog. Read this page and the Docs tab in order first. The other tabs make more sense once you have the model. </Tip> */}
 
 ## The Problem
 

@@ -22,7 +22,7 @@ Or directly from this directory:
 npx mint dev
 ```
 
-The docs config lives in `docs.json`. Local preview is typically available at `http://localhost:3000`.
+The docs config is in `docs.json`. Local preview is typically available at `http://localhost:3000`.
 
 ## API Reference
 

@@ -3,38 +3,42 @@
 # Functions
 
 
-## What a function is
+## What a Function is
 
-A function is a named handler inside a worker. It takes a payload and returns a result. From the iii
-system's perspective, a function is identified by its name and addressable across language and
-location boundaries. Callers do not know what worker is providing the function, what language the
-handler is written in, or where the worker is running. The engine routes each invocation to a worker
-that currently provides the target function.
+A Function is a named handler inside a Worker. It takes a payload and returns a result. From the iii
+system's perspective, a Function is identified by its name and addressable across language and
+location boundaries. Callers do not know what Worker is providing the Function, what language the
+handler is written in, or where the Worker is running. The Engine routes each invocation to a Worker
+that currently provides the target Function.
 
-A function has no fixed shape beyond payload-in / result-out. Some functions are pure computation.
+A Function has no fixed shape beyond payload-in / result-out. Some Functions are pure computation.
 Some perform side effects (state writes, HTTP calls, queue enqueues). Some are agentic, invoking
-other functions in turn. The engine does not distinguish: routing is the same for all of them.
+other Functions in turn. The Engine does not distinguish: routing is the same for all of them.
 
 ## Function identifiers
 
 Function identifiers use the `service::name` convention. The `service` segment groups related
-functions together as a namespace, scope, or worker name. The `name` segment is the specific
+Functions together as a namespace, scope, or worker name. The `name` segment is the specific
 handler. Identifiers like `math::add`, `state::get`, and `http::serve` follow this convention.
 
 The convention is a recommendation, not a hard rule. Any string is a valid function ID at the engine
-level, but the `service::name` form makes the function's intent obvious to readers and avoids
-collisions between unrelated functions registered by different workers.
+level, but the `service::name` form makes the Function's intent obvious to readers and avoids
+collisions between unrelated Functions registered by different Workers.
 
-## Invocation modes
+{/* TODO: Confirm if we still have restricted string prefixes */}
 
-Functions can be invoked in two modes. The default, synchronous mode blocks until the function
-returns its result or the configured timeout fires. The fire-and-forget mode (`TriggerAction.Void`)
-returns immediately, scheduling the function to run without waiting for a result. Synchronous
-invocations are appropriate when the caller needs the value the function returns. Fire-and-forget is
-for side-effect work where the caller does not need to wait.
+## Direct invocation
 
-<Note>
-  Workers can provide their own `TriggerAction`s. The iii-queue worker provides
-  `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries.
-  See iii-queue for the queue mechanics.
-</Note>
+Registering a Function with `registerFunction()` makes it directly invokable through
+`worker.trigger()` from any connected Worker and through the `iii trigger` CLI command. No explicit
+Trigger registration is required for these two paths; they are the baseline call surface every
+registered Function gets. Other trigger sources (HTTP, cron, queue, state, stream) bind an explicit
+Trigger to the same `function_id`.
+
+## Multiple Triggers per Function
+
+A single Function can be the target of any number of Triggers. The same Function can be invoked by
+an HTTP request, a cron schedule, and a queue message at once, by registering three separate
+Triggers that share the same `function_id`. The function code does not change; only the trigger
+registrations differ. This is what lets a single business-logic Function answer to many event
+sources without per-source variants.

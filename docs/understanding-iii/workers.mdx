@@ -7,33 +7,27 @@ type: "explanation"
 
 {/* TODO: Consider combining with Functions and Triggers into one doc. */}
 
-## What a worker is
+## What a Worker is
 
 Workers are what actually do things in an iii system. Every category of capability is built as a
-worker: queues, scheduling, sandboxing, observability, agents, business logic, devices, and even
-browser tabs. A worker is a process that connects to the engine over WebSocket and announces a set
-of functions it can run. Once connected, those functions are callable from anywhere in the system
-without per-pair integration code between the caller and the worker.
+Worker: queues, scheduling, sandboxing, observability, agents, business logic, devices, and even
+code executing in a browser.
 
-The worker concept is intentionally narrow. A worker is not a microservice, a job runner, or a
-sidecar. It is a participant in the engine's live registry that contributes functions and triggers.
-Whether the worker is a long-lived process serving thousands of invocations per second or a
-short-lived process that connects, registers, runs once, and shuts down, the engine treats it the
+Specifically, a Worker is a process that connects to the Engine over WebSocket and announces a set
+of Functions it can run and Triggers to register. Once connected, those Functions are invocable from
+anywhere in the system and those Triggers will respond to their events without per-pair integration
+code between the caller and the Worker.
+
+The Worker concept is intentionally narrow. A Worker is not a microservice, a job runner, or a
+sidecar. It is a participant in the Engine's live registry that contributes Functions and Triggers.
+Whether the Worker is a long-lived process serving thousands of invocations per second or a
+short-lived process that connects, registers, runs once, and shuts down, the Engine treats it the
 same.
-
-## Worker lifecycle states
-
-Workers transition through a small set of states after connecting:
-`connecting → connected → available / busy → disconnected`. `connecting` is the WebSocket handshake.
-`connected` means the worker has joined the engine's registry. `available` and `busy` describe
-whether the worker is currently handling invocations. `disconnected` is the terminal state when the
-WebSocket closes. The engine tracks these transitions and surfaces them to other workers and tooling
-through its discovery functions, so the rest of the system can react.
 
 ## Worker isolation
 
-Workers are intended and designed to be independent processes. One worker crashing does not affect
-others. The engine connects to each worker over a separate WebSocket and routes invocations only to
-workers that are currently connected. A crash, restart, or network partition affecting one worker
-does not propagate to the others. The crashed worker's functions and triggers drop out of the
-routing table on disconnect, and every other worker keeps serving.
+Workers are intended and designed to be independent processes. One Worker crashing does not affect
+others. The Engine connects to each Worker over a separate WebSocket and routes invocations only to
+Workers that are currently connected. A crash, restart, or network partition affecting one Worker
+does not propagate to the others. The crashed Worker's Functions and Triggers drop out of the
+routing table on disconnect, and every other Worker keeps serving.

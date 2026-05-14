@@ -21,7 +21,7 @@ async function* walk(dir) {
     if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) yield* walk(full);
-    else if (entry.isFile() && full.endsWith(".mdx.skill.md")) yield full;
+    else if (entry.isFile() && full.endsWith(".skill.md")) yield full;
   }
 }
 

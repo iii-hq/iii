@@ -3,56 +3,63 @@
 # Engine
 
 
-{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
-
-Using iii effectively starts with understanding it. iii's surface is very simple but its utility is
-very expansive.
-
 ## Startup flow
 
-When the engine starts, it parses its command-line arguments, loads `config.yaml` (or the default
-config if none is provided), applies the worker declarations from the config (starting each declared
-worker process), and begins serving connections. After this sequence the engine is ready to accept
-WebSocket connections from workers and route invocations between them.
+When the Engine starts it does a few things:
+
+1. It parses its command-line arguments.
+1. Loads its configuration file (typically `config.yaml`).
+1. Applies the worker declarations from the config (starting each declared worker process).
+1. Begins serving connections.
+
+After this sequence the Engine is ready to accept WebSocket connections from Workers and route
+invocations between them.
 
 ## Engine responsibilities
 
-The engine's responsibilities cover three concerns at runtime. First, it accepts WebSocket
-connections from workers and maintains the live registry of which workers are currently connected.
-Second, it tracks the functions and triggers each connected worker has registered, exposing them as
-a unified system-wide surface. Third, it routes invocations: when a trigger fires or a function is
-called, the engine finds a worker that provides the target function and dispatches the call.
+The Engine's responsibilities cover three concerns at runtime. First, it accepts WebSocket
+connections from Workers and maintains the live registry of which Workers are currently connected.
+Second, it tracks the Functions and Triggers each connected Worker has registered, exposing them as
+a unified system-wide surface. Third, it routes invocations: when a Trigger fires or a Function is
+called, the Engine finds a Worker that provides the target Function and dispatches the call.
 
 ## Worker disconnect cleanup
 
-When a worker disconnects, the engine cleans up the worker's footprint in the live registry. The
-worker's registered functions and triggers are removed. Any in-flight invocations of those functions
-are cancelled. The engine fires `engine::workers-available` so subscribers can react. The rest of
-the system keeps serving.
+When a Worker disconnects, the Engine cleans up the Worker's footprint in the live registry: its
+Functions and Triggers are removed, in-flight invocations of those Functions are cancelled, and the
+rest of the system keeps serving.
+
+<Note>
+  See [Creating Workers / Workers / Handling Worker
+  disconnects](/creating-workers/workers#handling-worker-disconnects) for the cancellation error code
+  and the discovery events that fire (with their consistency semantics).
+</Note>
 
 ## Config hot-reload
 
-`config.yaml` is watched at runtime. When the file changes, the engine parses, diffs, validates, and
+`config.yaml` is watched at runtime. When the file changes, the Engine parses, diffs, validates, and
 commits the new config. Workers that did not change in the diff stay running through the reload, so
-only added, removed, or changed workers are restarted. An invalid config (parse error or validation
-failure) causes the engine to exit rather than enter an indeterminate state.
+only added, removed, or changed Workers are restarted. An invalid config (parse error or validation
+failure) causes the Engine to exit rather than enter an indeterminate state.
 
 ## Architecture-agnostic routing
 
-Routing is independent of language, runtime, and location. The engine does not care whether a
-function is hosted by a Python worker on a laptop, a TypeScript worker in a browser tab, a Rust
-binary in a microVM, or an OCI image on Kubernetes. The same routing path applies. This is what
+Routing is independent of language, runtime, and location. The Engine applies the same routing path
+whether a Function is hosted by a Python Agent on a laptop, a TypeScript Worker in a browser tab, a
+Rust binary in a microVM, or an OCI image on Kubernetes. This is what
 makes "any language, any runtime" a concrete property of iii rather than an aspiration.
 
 ## Discovery and the live registry
 
-The engine maintains a registry of every connected worker, the functions each worker has registered,
-and the triggers bound to those functions. Other workers and tooling can read the registry on demand
-or subscribe to changes. Reading on demand goes through the `engine::*::list` family of functions,
-which return a snapshot. Subscribing goes through `engine::functions-available` or
-`engine::workers-available`, which fire as the registry changes.
+The Engine maintains a registry of every connected Worker, the Functions each Worker has registered,
+and the Triggers bound to those Functions. Other Workers and tooling can read the registry on demand
+or subscribe to changes as it evolves.
 
 <Note>
-  Querying traces, logs, and metrics is documented with the
-  iii-observability worker.
+  See [Creating Workers / Workers / Inspecting the live
+  registry](/creating-workers/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
+  snapshot calls and the `engine::workers-available` / `engine::functions-available` subscription
+  events.
 </Note>
+
+<Note>Querying traces, logs, and metrics is documented with the iii-observability Worker.</Note>

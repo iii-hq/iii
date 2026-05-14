@@ -12,7 +12,7 @@ Register functions with **`request_format`** and **`response_format`** (JSON Sch
 When you register a function, the iii engine stores metadata for discovery. The built-in **`engine::functions::list`** function returns every registered function with its `request_format` and `response_format`.
 
 - **AI and automation** — Agents can read that list and construct valid `payload` objects without guessing field names or types.
-- **CLI and scripts** — The same schemas document how to build `--payload` for [`iii trigger`](/how-to/trigger-functions-from-cli).
+- **CLI and scripts** — The same schemas document how to build `--payload` for [`iii trigger`](/0-11-0/how-to/trigger-functions-from-cli).
 - **Contracts** — Formats are a machine-readable contract between your implementation and anything that triggers it.
 
 If you omit formats, discovery still lists your function, but **`request_format` / `response_format` may be `null`**, leaving callers without a structured contract.
@@ -172,10 +172,10 @@ For handlers typed as `serde_json::Value` only, you won’t get a rich input sch
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Trigger Functions from the CLI" href="/how-to/trigger-functions-from-cli" icon="terminal">
+  <Card title="Trigger Functions from the CLI" href="/0-11-0/how-to/trigger-functions-from-cli" icon="terminal">
     Invoke any function with `iii trigger` and a JSON payload
   </Card>
-  <Card title="Use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="code">
+  <Card title="Use Functions & Triggers" href="/0-11-0/how-to/use-functions-and-triggers" icon="code">
     Register functions, triggers, and cross-language invocation patterns
   </Card>
 </CardGroup>

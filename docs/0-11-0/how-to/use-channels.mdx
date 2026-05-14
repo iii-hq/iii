@@ -40,7 +40,7 @@ sequenceDiagram
 Function A creates a channel, sends `readerRef` to Function B through a normal `trigger()` call, then writes chunks to the writer stream. The engine pipes each chunk over WebSocket to Function B's reader stream. When A ends the writer, B's reader emits `end`.
 
 <Info title="Architecture deep-dive">
-  For internal details on the WebSocket framing, backpressure handling, and lazy connection behavior, see the [Channels architecture](/architecture/channels) reference.
+  For internal details on the WebSocket framing, backpressure handling, and lazy connection behavior, see the [Channels architecture](/0-11-0/architecture/channels) reference.
 </Info>
 
 ## Why Channels Are Necessary
@@ -645,16 +645,16 @@ type StreamChannelRef = {
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Channels Architecture" href="/architecture/channels" icon="sitemap">
+  <Card title="Channels Architecture" href="/0-11-0/architecture/channels" icon="sitemap">
     Internal design: WebSocket framing, backpressure, and lazy connections
   </Card>
-  <Card title="Expose an HTTP Endpoint" href="/how-to/expose-http-endpoint" icon="globe">
+  <Card title="Expose an HTTP Endpoint" href="/0-11-0/how-to/expose-http-endpoint" icon="globe">
     Register a function as a REST API endpoint
   </Card>
-  <Card title="Use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="bolt">
+  <Card title="Use Functions & Triggers" href="/0-11-0/how-to/use-functions-and-triggers" icon="bolt">
     Learn how to register and trigger functions across languages
   </Card>
-  <Card title="Stream Real-Time Data" href="/how-to/stream-realtime-data" icon="signal-stream">
+  <Card title="Stream Real-Time Data" href="/0-11-0/how-to/stream-realtime-data" icon="signal-stream">
     Push real-time updates to connected clients
   </Card>
 </CardGroup>

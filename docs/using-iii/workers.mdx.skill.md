@@ -5,11 +5,7 @@
 
 {/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
 
-<Note>
-  This page covers using existing workers. For creating new workers (`iii worker init`), registering
-  functions and triggers, and building or publishing worker images, see [Expanding iii /
-  Workers](/expanding-iii/workers).
-</Note>
+{/* TODO: Add back once worker init is merged. <Note> This page covers using existing workers. For creating new workers (`iii worker init`), registering functions and triggers, and building or publishing worker images, see [Creating Workers / Workers](/creating-workers/workers). </Note> */}
 
 ## Worker lifecycle
 
@@ -18,8 +14,8 @@ system and every other worker within it. When a worker disconnects, its function
 being callable until it reconnects.
 
 <Note>
-  For the SDK calls that establish the connection from worker code, see [Expanding iii /
-  Workers](/expanding-iii/workers#connecting-to-the-engine).
+  For the SDK calls that establish the connection from worker code, see [Creating Workers /
+  Workers](/creating-workers/workers#connecting-to-the-engine).
 </Note>
 
 ## Finding workers
@@ -32,8 +28,8 @@ The registry contains many workers that encapsulate common services. See
 
 <Note>
   You need iii [installed](/install) and [running](/using-iii/engine) before adding a worker. To
-  spin up a temporary iii instance for testing, run `iii --use-default-config` (see
-  [Default configuration](/using-iii/engine#default-configuration)).
+  spin up a temporary iii instance for testing, run `iii --use-default-config` (see [Default
+  configuration](/using-iii/engine#default-configuration)).
 </Note>
 
 `iii worker add <name>` installs a worker into your project:
@@ -46,8 +42,8 @@ The worker is added to `config.yaml` and started automatically. To force a redow
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
 <Note>
-  For local paths, Docker / OCI images, and version pinning, see
-  [Worker Registry / Adding a worker](./workers-registry#adding-a-worker).
+  For local paths, Docker / OCI images, and version pinning, see [Worker Registry / Adding a
+  worker](./workers-registry#adding-a-worker).
 </Note>
 
 ## Listing workers
@@ -88,12 +84,11 @@ iii worker exec <name> -- <command>  # run a command inside the worker
 
 ## Worker skills
 
-Every worker also ships with skills for Agentic work. Skills are managed by the
-`skills` worker, an actively developed content-registry
-worker added to a project like any other.
+Every worker also ships with skills for Agentic work. Skills are managed by the `skills` worker, an
+actively developed content-registry worker added to a project like any other.
 
 Skill bodies load lazily. Top-level entries stay small; agents fetch deeper content via
-`iii://fn/<path>` section URIs only when a function reference resolves to one.
+`iii://<worker>/<leaf>` section URIs only when a function reference resolves to one.
 
 We ship high level skills as well which make it possible for any agent to make immediate use of iii
 and its workers.
@@ -103,9 +98,9 @@ and its workers.
 ## Available functions and triggers
 
 Functions and triggers come from connected workers. To use a trigger of a given type, you need the
-worker that provides it to be connected. For example if you add `http` triggers via the
-iii-http worker then you can now expose endpoints for
-your function just as you would in a web framework like Express or FastAPI.
+worker that provides it to be connected. For example if you add `http` triggers via the iii-http
+worker then you can now expose endpoints for your function just as you would in a web framework like
+Express or FastAPI.
 
 ## Versioning and pinning
 
@@ -164,7 +159,7 @@ Downloaded artifacts remain on disk after removal. To delete them too, use
 
 ## Authoring workers
 
-Creating a new worker (`iii worker init`), registering functions and triggers in worker code, and
-building or publishing a worker image are out of scope for this page. See
-[Expanding iii / Workers](/expanding-iii/workers) and
-[Expanding iii / Worker Registry](/expanding-iii/workers-registry).
+Creating a new worker, registering functions and triggers in worker code, and building or publishing
+a worker image are out of scope for this page. See
+[Creating Workers / Workers](/creating-workers/workers) and
+[Creating Workers / Worker Registry](/creating-workers/workers-registry).
