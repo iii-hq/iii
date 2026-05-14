@@ -1,9 +1,3 @@
-/**
- * Tests for the payload redaction + truncation utility. Mirrors the
- * Rust SDK tests at `sdk/packages/rust/iii/src/telemetry/payload.rs` so
- * cross-language behavior stays consistent.
- */
-
 import { describe, it, expect } from 'vitest'
 import {
   redact,

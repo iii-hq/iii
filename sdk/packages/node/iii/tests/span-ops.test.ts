@@ -1,9 +1,3 @@
-/**
- * Tests for `recordSpanEvent` / `currentSpanIsRecording` helpers. We
- * build a local in-memory tracer provider so the assertions don't race
- * with the global one.
- */
-
 import { describe, it, expect } from 'vitest'
 import { context, trace } from '@opentelemetry/api'
 import {
@@ -33,8 +27,6 @@ describe('recordSpanEvent', () => {
     const { tracer, exporter } = buildTestProvider()
     const span = tracer.startSpan('inner')
 
-    // Attach the span to the active context so `trace.getActiveSpan()`
-    // inside `recordSpanEvent` resolves to it.
     context.with(trace.setSpan(context.active(), span), () => {
       recordSpanEvent('iii.invocation.input', {
         'iii.payload.json': '{"x":1}',
@@ -53,7 +45,6 @@ describe('recordSpanEvent', () => {
 
   it('is a no-op when no span is active', () => {
     const { exporter } = buildTestProvider()
-    // No span on the current context → addEvent is never called.
     recordSpanEvent('orphan', { k: 'v' })
     expect(exporter.getFinishedSpans()).toHaveLength(0)
   })
@@ -113,7 +104,6 @@ describe('setCurrentSpanError', () => {
   })
 
   it('is a no-op when no span is active', () => {
-    // No span on the active context. Helper must not panic.
     setCurrentSpanError('boom')
   })
 })

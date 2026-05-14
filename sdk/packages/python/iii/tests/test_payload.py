@@ -1,10 +1,3 @@
-"""Tests for the payload redaction + truncation utility.
-
-Mirrors the Rust + Node SDK tests so cross-language behavior stays
-consistent. Single source of truth: each SDK's payload module references
-the same fragment list.
-"""
-
 import os
 
 from iii.payload import (
@@ -48,7 +41,6 @@ def test_walks_into_arrays() -> None:
 
 
 def test_sensitive_parent_key_redacts_entire_subtree() -> None:
-    # `credentials` itself matches `credential` fragment → whole subtree redacted.
     out = redact({"credentials": [{"user": "alice", "token": "a"}]})
     assert out["credentials"] == REDACTED_PLACEHOLDER
 
@@ -131,9 +123,6 @@ def test_truncation_preserves_utf8_boundaries() -> None:
     s = "aéaéaéaé" * 2000
     json_str, truncated = redact_and_truncate({"v": s}, 100)
     assert truncated is True
-    # If we sliced mid-codepoint, `decode("utf-8", errors="ignore")` would
-    # have already dropped the invalid byte; the resulting string still
-    # parses as a string. Round-trip via encode to confirm.
     json_str.encode("utf-8")
 
 

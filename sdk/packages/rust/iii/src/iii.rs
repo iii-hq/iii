@@ -1673,15 +1673,6 @@ impl III {
                 parent_cx.with_span(span)
             };
 
-            // Payload auto-capture: ON by default. Emit
-            // `iii.invocation.input` before dispatch and
-            // `iii.invocation.output` after, both as span events with
-            // redacted+truncated JSON. Workers don't need to instrument
-            // anything — payloads show up in the console Events tab
-            // for every invocation in the chain. Set
-            // `III_DISABLE_TRACE_PAYLOADS=1` to turn it off (e.g. for
-            // high-throughput production workloads where the extra
-            // event bytes per span outweigh the troubleshooting value).
             let trace_payloads = !std::env::var("III_DISABLE_TRACE_PAYLOADS")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);

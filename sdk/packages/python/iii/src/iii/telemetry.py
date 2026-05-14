@@ -107,11 +107,9 @@ def init_otel(
 
     span_exporter = EngineSpanExporter(_connection)
     provider = TracerProvider(resource=resource)
-    # Order matters: BaggageSpanProcessor.on_start fires in registration
-    # order, so the baggage-to-attribute copy MUST run before the batch
-    # exporter sees the span. Producers (Rust-side harness wrapper)
-    # write iii.session.id / iii.message.id / iii.function_id into
-    # baggage; this processor turns them into queryable span attributes.
+    # BaggageSpanProcessor must register first: on_start fires in
+    # registration order, so baggage entries are materialized as span
+    # attributes before the batch exporter reads them.
     from .baggage_span_processor import BaggageSpanProcessor
 
     provider.add_span_processor(BaggageSpanProcessor())  # type: ignore[arg-type]

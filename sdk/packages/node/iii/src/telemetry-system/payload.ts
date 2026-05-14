@@ -1,24 +1,8 @@
-/**
- * Payload redaction + truncation for invocation event capture.
- * Mirrors `sdk/packages/rust/iii/src/telemetry/payload.rs` so worker
- * chains crossing language boundaries produce consistently safe events.
- *
- * Payload capture is ON by default; gate with `III_DISABLE_TRACE_PAYLOADS=1`.
- * Two passes run before the payload leaves the process: recursive
- * redaction of well-known credential keys, then OPTIONAL truncation.
- *
- * Truncation is off by default. Set `III_TRACE_PAYLOAD_MAX_BYTES=N` to
- * cap each serialized payload at N bytes; `0` or `unlimited` (or unset)
- * means no cap.
- */
+/** Payload redaction + truncation for invocation event capture. */
 
 export const REDACTED_PLACEHOLDER = '[REDACTED]'
 const TRUNCATION_MARKER = '..."[TRUNCATED]"'
 
-/**
- * Read `III_TRACE_PAYLOAD_MAX_BYTES`. Returns a positive integer or
- * `null` (no cap) for unset / `"0"` / `"unlimited"` / unparseable.
- */
 export function resolveMaxBytesFromEnv(): number | null {
   const raw = process.env.III_TRACE_PAYLOAD_MAX_BYTES
   if (raw === undefined) return null
@@ -48,14 +32,11 @@ const SENSITIVE_FRAGMENTS = [
 function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase()
   if (SENSITIVE_FRAGMENTS.some((fragment) => lower.includes(fragment))) return true
-  // `token` alone is too common as a substring; gate to whole-key or suffix.
+  // `token` alone is too common a substring; require whole-key or suffix match.
   return lower === 'token' || lower.endsWith('_token') || lower.endsWith('-token')
 }
 
-/**
- * Recursively redact values of sensitive keys. Returns a new value;
- * does not mutate input.
- */
+/** Recursively redact values of sensitive keys. Returns a new value. */
 export function redact(value: unknown): unknown {
   if (value === null || value === undefined) return value
   if (Array.isArray(value)) return value.map(redact)
@@ -69,15 +50,7 @@ export function redact(value: unknown): unknown {
   return value
 }
 
-/**
- * Redact sensitive keys then serialize to JSON. When `maxBytes` is a
- * positive number, the result is capped at that byte length; otherwise
- * (null/undefined/0) the full payload is returned.
- *
- * Returns the serialized string and a boolean indicating whether
- * truncation occurred. UTF-8 safe truncation (we operate on byte length
- * via Buffer to match the Rust implementation).
- */
+/** Redact then serialize to JSON, optionally capped at `maxBytes`. */
 export function redactAndTruncate(
   value: unknown,
   maxBytes: number | null = null,
@@ -99,11 +72,10 @@ export function redactAndTruncate(
     return { json: serialized, truncated: false }
   }
 
-  // Slice by bytes, then back off to a valid UTF-8 boundary.
   const cap = Math.max(0, maxBytes - Buffer.byteLength(TRUNCATION_MARKER, 'utf8'))
   const buf = Buffer.from(serialized, 'utf8')
   let cut = Math.min(cap, buf.length)
-  // Walk back at most 3 bytes to land on a codepoint boundary.
+  // Walk back to a UTF-8 boundary so we don't emit half-codepoints.
   while (cut > 0 && (buf[cut] & 0xc0) === 0x80) {
     cut -= 1
   }

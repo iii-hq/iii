@@ -121,15 +121,9 @@ export function initOtel(config: OtelConfig = {}): void {
   // a ghost null-metadata worker alongside the real worker.
   sharedConnection = new SharedEngineConnection(appendOtelPath(engineWsUrl), config.reconnectionConfig)
 
-  // Initialize tracer.
-  //
-  // `BaggageSpanProcessor` runs first (onStart fires in registration order)
-  // so allowlisted baggage entries — `iii.session.id`, `iii.message.id`,
-  // `iii.function_id` — are materialized as span attributes BEFORE the
-  // batch exporter reads them. Producers (the Rust-side harness wrapper)
-  // write these into baggage; iii-sdk auto-propagates baggage on every
-  // outgoing trigger; this processor closes the loop by making the IDs
-  // queryable as span attributes everywhere.
+  // BaggageSpanProcessor must register first: onStart fires in
+  // registration order, so baggage entries are materialized as span
+  // attributes before the batch exporter reads them.
   const spanExporter = new EngineSpanExporter(sharedConnection)
   tracerProvider = new NodeTracerProvider({
     resource,

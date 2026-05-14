@@ -1,28 +1,4 @@
-//! Baggage → span attribute processor.
-//!
-//! Copies an allowlisted set of OTel baggage entries from the parent context
-//! onto every new span as attributes at `on_start`. Installed by default in
-//! `init_otel` (`super::mod.rs`), so every worker built on iii-sdk
-//! automatically materializes `iii.session.id`, `iii.message.id`, and
-//! `iii.function_id` as queryable span attributes when those entries are
-//! present in the propagated context.
-//!
-//! # Why this exists
-//!
-//! Producers (e.g. the harness wrapper) write the IDs into baggage. iii-sdk's
-//! wire layer propagates baggage on every `iii.trigger(...)` so every
-//! downstream worker's task-local context inherits them. But baggage is NOT
-//! a span attribute by default — without this processor, downstream worker
-//! spans (`state::set`, `provider::call`, …) hold the IDs in context but
-//! never tag their own spans, so `engine::traces::list` cannot query for
-//! them. This processor closes that gap.
-//!
-//! # Allowlist
-//!
-//! Defaults to `["iii.session.id", "iii.message.id", "iii.function_id"]`.
-//! Construct with `BaggageSpanProcessor::with_allowlist(...)` to customize.
-//! Wildcard ("copy all baggage") is intentionally not provided — baggage is
-//! unbounded key-space and copying everything risks span-attribute bloat.
+//! Baggage -> span attribute processor.
 
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::trace::Span as _;
@@ -30,35 +6,22 @@ use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::trace::{Span, SpanData, SpanProcessor};
 
-/// Default keys copied from baggage to span attributes.
-///
-/// Aligned with the harness wrapper's baggage write set. Lock-step pinned
-/// from the harness side via a cross-crate test in
-/// `motia/workers/harness/tests/trace_correlation.rs`. If a future change
-/// adds a fourth harness baggage key, that test fails until this constant
-/// grows the corresponding entry.
+/// DEFAULT_ALLOWLIST drift across languages would break worker chains;
+/// lockstep tests in each SDK pin this constant at CI time.
 pub const DEFAULT_ALLOWLIST: &[&str] =
     &["iii.session.id", "iii.message.id", "iii.function_id"];
 
-/// Copies allowlisted baggage entries from the parent context onto each new
-/// span as attributes, at `on_start`.
-///
-/// `on_start`-only: never holds spans and never exports. Safe to chain
-/// before `BatchSpanProcessor` / `SimpleSpanProcessor` in
-/// `SdkTracerProvider::builder()`.
 #[derive(Debug, Clone)]
 pub struct BaggageSpanProcessor {
     allowlist: Vec<&'static str>,
 }
 
 impl BaggageSpanProcessor {
-    /// Construct with the default allowlist.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Construct with a custom allowlist.
     #[must_use]
     pub const fn with_allowlist(keys: Vec<&'static str>) -> Self {
         Self { allowlist: keys }
@@ -75,12 +38,7 @@ impl Default for BaggageSpanProcessor {
 
 impl SpanProcessor for BaggageSpanProcessor {
     fn on_start(&self, span: &mut Span, cx: &Context) {
-        // NoOp guard: skip baggage lookup + attribute allocation entirely
-        // when the new span isn't recording (sampler dropped it, or no
-        // global tracer provider). `set_attribute` on a non-recording span
-        // is itself a no-op, but constructing `KeyValue::new` still
-        // allocates — measurable under high QPS across every span in
-        // every worker.
+        // NoOp guard: skip allocation when sampler drops the span.
         if !span.is_recording() {
             return;
         }
@@ -88,8 +46,6 @@ impl SpanProcessor for BaggageSpanProcessor {
         let baggage = cx.baggage();
         for key in &self.allowlist {
             if let Some(value) = baggage.get(*key) {
-                // BaggageValue → string. `as_str()` returns a `&str`
-                // borrow; we clone once to own it for the attribute.
                 span.set_attribute(KeyValue::new(
                     (*key).to_string(),
                     value.as_str().to_string(),
@@ -98,9 +54,7 @@ impl SpanProcessor for BaggageSpanProcessor {
         }
     }
 
-    fn on_end(&self, _span: SpanData) {
-        // No-op: this processor only enriches at start, doesn't export.
-    }
+    fn on_end(&self, _span: SpanData) {}
 
     fn force_flush(&self) -> OTelSdkResult {
         Ok(())
@@ -117,9 +71,6 @@ impl SpanProcessor for BaggageSpanProcessor {
 
 #[cfg(test)]
 mod tests {
-    //! End-to-end tests against `InMemorySpanExporter`. The setup builds a
-    //! `SdkTracerProvider` with `BaggageSpanProcessor` chained before a
-    //! `SimpleSpanProcessor` — exactly the layering `init_otel` installs.
 
     use super::*;
     use opentelemetry::baggage::BaggageExt;
@@ -238,7 +189,6 @@ mod tests {
             first_span_attr(&exporter, "iii.message.id").as_deref(),
             Some("M"),
         );
-        // Default allowlist key, dropped because not in custom allowlist:
         assert!(first_span_attr(&exporter, "iii.session.id").is_none());
     }
 
@@ -255,12 +205,6 @@ mod tests {
 
     #[test]
     fn noop_guard_skips_processing_when_sampled_out() {
-        // With `Sampler::AlwaysOff`, the span returned by the tracer is
-        // not recording. The `on_start` guard must short-circuit BEFORE
-        // touching baggage — both as a panic safeguard and as the
-        // documented allocation-skipping perf optimization. This test
-        // pins the guard so a regression that removes it (or moves it
-        // below the baggage lookup) is caught.
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_sampler(opentelemetry_sdk::trace::Sampler::AlwaysOff)
@@ -286,12 +230,7 @@ mod tests {
 
     #[test]
     fn default_allowlist_matches_harness_baggage_write_set() {
-        // Lock-step contract with the harness writer side
-        // (`motia/workers/harness/src/otel.rs::HARNESS_KEYS`). The full
-        // round-trip is asserted from the harness side via a cross-crate
-        // test in `harness/tests/trace_correlation.rs`. This unit test
-        // pins the iii-sdk side so the constant can't drift even before
-        // the cross-crate test runs.
+        // DEFAULT_ALLOWLIST drift across languages would break worker chains.
         assert_eq!(
             DEFAULT_ALLOWLIST,
             &["iii.session.id", "iii.message.id", "iii.function_id"],

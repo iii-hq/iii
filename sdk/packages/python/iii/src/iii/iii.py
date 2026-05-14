@@ -500,12 +500,6 @@ class III:
             propagate.extract(carrier) if carrier else otel_context.get_current()
         )
         tracer = trace.get_tracer("iii-python-sdk")
-        # Payload auto-capture: ON by default. Emits
-        # `iii.invocation.input` before dispatch and
-        # `iii.invocation.output` after, both as span events with
-        # redacted+truncated JSON. Set ``III_DISABLE_TRACE_PAYLOADS=1``
-        # to turn it off. Mirrors the Rust + Node SDKs so
-        # cross-language worker chains stay consistent.
         import os
 
         from .payload import redact_and_truncate, resolve_max_bytes_from_env

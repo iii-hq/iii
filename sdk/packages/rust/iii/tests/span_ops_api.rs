@@ -1,7 +1,4 @@
-//! End-to-end tests for the iii-sdk public helper surface introduced
-//! alongside `BaggageSpanProcessor`. These tests build their own
-//! `SdkTracerProvider` with an `InMemorySpanExporter` so behavior is
-//! pinned without racing the global tracer.
+//! End-to-end tests for span_ops + run_with_baggage helpers.
 
 use std::sync::Mutex;
 
@@ -13,9 +10,7 @@ use opentelemetry::trace::{TraceContextExt, Tracer};
 use opentelemetry::Context;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
 
-/// Global lock — these tests touch `opentelemetry::global::set_tracer_provider`
-/// which is a process-wide singleton. Without serialization, parallel test
-/// execution would race and silently drop our installed processor.
+/// `set_tracer_provider` is process-wide; serialize to prevent races.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn install_test_provider() -> (InMemorySpanExporter, SdkTracerProvider) {
@@ -47,12 +42,10 @@ fn set_current_span_attribute_writes_to_active_span() {
     let span = tracer.start("inner");
     let cx = Context::current_with_span(span);
 
-    // Attach the context so set_current_span_attribute sees the span.
     let _attach = cx.clone().attach();
     set_current_span_attribute("k", "v");
     drop(_attach);
 
-    // Drop the span by dropping cx (which holds it).
     drop(cx);
 
     assert_eq!(first_span_attr(&exporter, "k").as_deref(), Some("v"));
@@ -63,9 +56,6 @@ fn set_current_span_attribute_is_noop_with_no_active_span() {
     let _guard = SERIAL.lock().unwrap();
     let (exporter, _provider) = install_test_provider();
 
-    // No span attached. The helper must NOT panic and must NOT create a
-    // phantom span attribute somewhere. Calling export with no spans
-    // returns an empty vec.
     set_current_span_attribute("orphan", "value");
 
     let spans = exporter.get_finished_spans().expect("exporter ok");
@@ -77,8 +67,6 @@ fn current_span_is_recording_reflects_active_span_state() {
     let _guard = SERIAL.lock().unwrap();
     let (_exporter, _provider) = install_test_provider();
 
-    // No active span → false (or rather: the default no-op span has an
-    // invalid span context).
     assert!(!current_span_is_recording());
 
     let tracer = opentelemetry::global::tracer("test");
@@ -86,7 +74,6 @@ fn current_span_is_recording_reflects_active_span_state() {
     let cx = Context::current_with_span(span);
     let _attach = cx.clone().attach();
 
-    // With a tracer-installed span attached → true.
     assert!(current_span_is_recording());
 }
 
@@ -114,9 +101,6 @@ fn set_current_span_error_marks_status_error() {
     }
 }
 
-// The async `run_with_baggage_*` tests do not install a global tracer
-// provider, so they don't need the SERIAL lock — `run_with_baggage` is a
-// pure context-attach operation that's safe to run in parallel.
 
 #[tokio::test]
 async fn run_with_baggage_attaches_entries_for_inner_scope() {
@@ -131,27 +115,21 @@ async fn run_with_baggage_attaches_entries_for_inner_scope() {
 #[tokio::test]
 async fn run_with_baggage_does_not_leak_into_caller_scope() {
     run_with_baggage(&[("scoped", "yes")], async {
-        // Inside the inner future, the entry is visible.
         assert_eq!(get_baggage_entry("scoped").as_deref(), Some("yes"));
     })
     .await;
 
-    // Outside the inner future, the caller's context is unchanged.
     assert!(get_baggage_entry("scoped").is_none());
 }
 
 #[tokio::test]
 async fn run_with_baggage_overwrites_existing_keys() {
-    // Set a baseline entry on the outer context, then nest a call that
-    // overwrites it. The inner future must observe the new value and
-    // exactly one entry for that key — no accumulation of duplicates.
     run_with_baggage(&[("k", "outer")], async {
         run_with_baggage(&[("k", "inner")], async {
             assert_eq!(get_baggage_entry("k").as_deref(), Some("inner"));
         })
         .await;
 
-        // After the inner scope exits, the outer value is restored.
         assert_eq!(get_baggage_entry("k").as_deref(), Some("outer"));
     })
     .await;
@@ -199,8 +177,6 @@ fn record_span_event_is_noop_without_active_span() {
     let _guard = SERIAL.lock().unwrap();
     let (exporter, _provider) = install_test_provider();
 
-    // No active span attached. The helper short-circuits on the recording
-    // check, so no phantom span/event gets exported.
     record_span_event(
         "iii.orphan.event",
         &[("k".to_string(), "v".to_string())],

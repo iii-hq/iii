@@ -55,14 +55,6 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
 /// The engine exposes `/otel` for telemetry-only WS connections. Appending
 /// the path here means the SDK never shows up in `worker_registry` as a
 /// ghost null-metadata worker. Handles trailing slashes, is idempotent
-/// Derive a sensible OTel `service.name` from the running binary's
-/// `argv[0]`. Strips the directory path, returns the bare filename.
-/// Examples:
-///   `/path/to/workers/harness/target/release/harness` → `"harness"`
-///   `/usr/local/bin/iii`                                → `"iii"`
-///
-/// Returns `None` only when argv[0] is missing or empty, which
-/// shouldn't happen on Unix but could on weird embeds.
 fn detect_service_name_from_argv0() -> Option<String> {
     let argv0 = std::env::args().next()?;
     if argv0.is_empty() {
@@ -148,11 +140,8 @@ mod otel_path_tests {
 
 #[cfg(test)]
 mod service_name_tests {
-    //! `detect_service_name_from_argv0` is tested behaviorally —
-    //! the function reads `std::env::args()` directly so we can't
-    //! inject a value without forking a child process. These tests
-    //! exercise the pure file_name() extraction logic via a helper
-    //! shim and pin the documented examples.
+    //! `detect_service_name_from_argv0` reads `std::env::args()` directly,
+    //! so these tests exercise the extraction logic via a local shim.
 
     use std::path::Path;
 
@@ -297,15 +286,9 @@ pub async fn init_otel(config: OtelConfig) -> bool {
     ]);
     opentelemetry::global::set_text_map_propagator(propagator);
 
-    // Set up tracer provider with span exporter.
-    //
-    // `BaggageSpanProcessor` runs first (on_start order = registration
-    // order) so allowlisted baggage entries — `iii.session.id`,
-    // `iii.message.id`, `iii.function_id` — are materialized as span
-    // attributes BEFORE the batch exporter sees them. Producers (the
-    // harness wrapper) write these into baggage; iii-sdk auto-propagates
-    // baggage on every outgoing trigger; this processor closes the loop
-    // by making the IDs queryable as span attributes everywhere.
+    // BaggageSpanProcessor must register first: on_start fires in
+    // registration order, so baggage entries are materialized as span
+    // attributes before the batch exporter reads them.
     let span_exporter = EngineSpanExporter::new(connection.clone());
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
@@ -558,14 +541,8 @@ where
     }
 }
 
-/// Run `future` inside a new OTel span and return whatever the future
-/// returns. Sister of [`with_span`] for code paths that can't easily
-/// adapt their error type to `Box<dyn Error + Send + Sync>` (typed
-/// `thiserror` enums, infallible loops, etc).
-///
-/// The new span is parented to the current OTel context and propagates
-/// the same context into the awaited future, so child spans created
-/// inside `future` (e.g. via `execute_traced_request`) nest correctly.
+/// Like [`with_span`] but unconstrained on the error type, for code
+/// paths using typed `thiserror` enums or infallible loops.
 pub async fn run_in_span<F, Fut, T>(
     name: &str,
     kind: Option<SpanKind>,

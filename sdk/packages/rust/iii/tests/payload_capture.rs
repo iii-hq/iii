@@ -1,10 +1,4 @@
 //! Integration test for the env-flag-gated invocation payload auto-capture.
-//!
-//! End-to-end via the full iii-sdk dispatcher is expensive to set up (it needs
-//! a live engine bus). This test instead simulates the exact pattern the
-//! dispatcher uses: create a Server span, gate on the env flag, redact +
-//! truncate the input/output, record events. Same primitives, same code path
-//! shape, deterministic verification against an in-memory exporter.
 
 use std::sync::Mutex;
 
@@ -27,8 +21,6 @@ fn install_test_provider() -> (InMemorySpanExporter, SdkTracerProvider) {
     (exporter, provider)
 }
 
-/// Mirrors the dispatcher's auto-capture block in
-/// `sdk/packages/rust/iii/src/iii.rs::handle_invoke_function`.
 fn capture_input_event(cx: &Context, data: &serde_json::Value, enabled: bool) {
     if !enabled {
         return;
@@ -114,7 +106,6 @@ fn input_and_output_events_recorded_when_enabled() {
     let _guard = SERIAL.lock().unwrap();
     let (exporter, _provider) = install_test_provider();
 
-    // Enabled by default (no env var set, or set to anything other than "1"/"true").
     unsafe { std::env::remove_var("III_DISABLE_TRACE_PAYLOADS") };
     let enabled = read_env_flag();
     assert!(enabled, "default state must be enabled");
@@ -145,7 +136,6 @@ fn events_suppressed_when_env_disables() {
     let _guard = SERIAL.lock().unwrap();
     let (exporter, _provider) = install_test_provider();
 
-    // Flip the kill switch.
     unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
     let enabled = read_env_flag();
     assert!(!enabled, "kill switch must disable");
@@ -158,7 +148,6 @@ fn events_suppressed_when_env_disables() {
     capture_output_event(&cx, &Ok(json!({"y":2})), enabled);
     drop(cx);
 
-    // Reset for other tests.
     unsafe { std::env::remove_var("III_DISABLE_TRACE_PAYLOADS") };
 
     let spans = exporter.get_finished_spans().expect("exporter ok");

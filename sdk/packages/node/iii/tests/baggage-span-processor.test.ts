@@ -1,6 +1,3 @@
-// Unit tests for BaggageSpanProcessor. Mirrors the Rust impl tests at
-// motia/sdk/packages/rust/iii/src/telemetry/baggage_span_processor.rs::tests
-// so cross-language behavior stays in lock-step.
 
 import type { AttributeValue } from '@opentelemetry/api'
 import { context, propagation, ROOT_CONTEXT } from '@opentelemetry/api'
@@ -14,10 +11,6 @@ import { describe, expect, it } from 'vitest'
 
 import { BaggageSpanProcessor, DEFAULT_ALLOWLIST } from '../src/telemetry-system/baggage-span-processor'
 
-/**
- * Build a tracer provider with BaggageSpanProcessor chained before an
- * InMemorySpanExporter. Exactly the layering `initOtel` installs.
- */
 function buildTestProvider(processor: BaggageSpanProcessor) {
   const exporter = new InMemorySpanExporter()
   const provider = new BasicTracerProvider({
@@ -27,7 +20,6 @@ function buildTestProvider(processor: BaggageSpanProcessor) {
   return { tracer, exporter, provider }
 }
 
-/** Run `fn` with a context that has the given baggage entries set. */
 function withBaggage<T>(entries: Record<string, string>, fn: () => T): T {
   let bag = propagation.createBaggage()
   for (const [k, v] of Object.entries(entries)) {
@@ -114,7 +106,6 @@ describe('BaggageSpanProcessor', () => {
 
     expect(firstSpanAttr(exporter, 'tenant.id')).toBe('t-1')
     expect(firstSpanAttr(exporter, 'iii.message.id')).toBe('M')
-    // Default allowlist key, dropped because not in custom allowlist:
     expect(firstSpanAttr(exporter, 'iii.session.id')).toBeUndefined()
   })
 
@@ -129,11 +120,6 @@ describe('BaggageSpanProcessor', () => {
   })
 
   it('NoOp guard skips processing when sampled out', () => {
-    // With AlwaysOffSampler, the span returned by the tracer is not
-    // recording. The `onStart` guard must short-circuit BEFORE calling
-    // `propagation.getBaggage` — both as a panic safeguard and as the
-    // documented allocation-skipping perf optimization. Pins the guard
-    // so a regression that removes it is caught.
     const exporter = new InMemorySpanExporter()
     const provider = new BasicTracerProvider({
       sampler: new AlwaysOffSampler(),
@@ -156,11 +142,7 @@ describe('BaggageSpanProcessor', () => {
   })
 
   it('default allowlist matches the Rust SDK and harness contract', () => {
-    // Lock-step contract. Single source of truth lives in
-    // docs/superpowers/specs/2026-05-12-...md §3 step 2 and the Rust
-    // harness HARNESS_KEYS constant. If a new harness baggage key lands,
-    // the Rust-side cross-crate test catches it on the Rust side; this
-    // test catches drift on the Node side.
+    // DEFAULT_ALLOWLIST drift across languages would break worker chains.
     expect([...DEFAULT_ALLOWLIST]).toEqual([
       'iii.session.id',
       'iii.message.id',

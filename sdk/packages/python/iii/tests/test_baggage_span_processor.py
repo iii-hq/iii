@@ -1,9 +1,4 @@
-"""Unit tests for BaggageSpanProcessor.
-
-Mirrors the Rust impl tests at
-``motia/sdk/packages/rust/iii/src/telemetry/baggage_span_processor.rs``
-so cross-language behavior stays in lock-step.
-"""
+"""Unit tests for BaggageSpanProcessor."""
 
 from __future__ import annotations
 
@@ -24,8 +19,6 @@ from iii.baggage_span_processor import (
 def _build_test_provider(
     processor: BaggageSpanProcessor,
 ) -> tuple[TracerProvider, InMemorySpanExporter]:
-    """Build a tracer provider with BaggageSpanProcessor chained before an
-    InMemorySpanExporter. Exactly the layering ``init_otel`` installs."""
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(processor)
@@ -34,8 +27,6 @@ def _build_test_provider(
 
 
 def _attach_baggage(entries: dict[str, str]):
-    """Attach baggage entries to the current context. Returns a token to
-    pass to context.detach() when the test ends."""
     ctx = context.get_current()
     for key, value in entries.items():
         ctx = baggage.set_baggage(key, value, ctx)
@@ -129,7 +120,6 @@ def test_custom_allowlist_is_honored() -> None:
 
     assert _first_span_attr(exporter, "tenant.id") == "t-1"
     assert _first_span_attr(exporter, "iii.message.id") == "M"
-    # Default allowlist key, dropped because not in custom allowlist:
     assert _first_span_attr(exporter, "iii.session.id") is None
 
 
@@ -137,7 +127,6 @@ def test_empty_parent_context_produces_no_attributes() -> None:
     provider, exporter = _build_test_provider(BaggageSpanProcessor())
     tracer = provider.get_tracer("test")
 
-    # No baggage attached at all.
     with tracer.start_as_current_span("inner"):
         pass
 
@@ -146,11 +135,6 @@ def test_empty_parent_context_produces_no_attributes() -> None:
 
 
 def test_noop_guard_skips_processing_when_sampled_out() -> None:
-    # With ALWAYS_OFF, the span is not recording. The `on_start` guard
-    # must short-circuit BEFORE calling `baggage.get_baggage` — both as
-    # a panic safeguard and as the documented allocation-skipping perf
-    # optimization. Pins the guard so a regression that removes it is
-    # caught.
     exporter = InMemorySpanExporter()
     provider = TracerProvider(sampler=ALWAYS_OFF)
     provider.add_span_processor(BaggageSpanProcessor())
@@ -170,10 +154,7 @@ def test_noop_guard_skips_processing_when_sampled_out() -> None:
 
 
 def test_default_allowlist_matches_other_sdks() -> None:
-    """Lock-step contract. Allowlist constants in Rust, Node, and Python
-    SDKs MUST agree. The Rust harness test catches Rust↔Rust drift; the
-    Node test catches Node drift; this test catches Python drift. All
-    three reference the spec doc §3 step 2."""
+    """DEFAULT_ALLOWLIST drift across languages would break worker chains."""
     assert tuple(DEFAULT_ALLOWLIST) == (
         "iii.session.id",
         "iii.message.id",

@@ -1,32 +1,7 @@
 //! Payload redaction + truncation for invocation event capture.
-//!
-//! When payload capture is enabled (the default; gate with
-//! `III_DISABLE_TRACE_PAYLOADS=1`), the iii-sdk dispatcher emits
-//! `iii.invocation.input` and `iii.invocation.output` span events carrying
-//! the JSON payload of every worker invocation. Two safety nets must run
-//! before those payloads leave the process:
-//!
-//! 1. **Redaction.** Keys whose name matches well-known credential patterns
-//!    (`api_key`, `token`, `password`, `secret`, `credential`, `authorization`)
-//!    are replaced with `"[REDACTED]"`. The match is case-insensitive and
-//!    walks the value recursively, so nested objects and arrays inside
-//!    arrays are covered. Without this, exposing the events tab in a shared
-//!    console would leak provider API keys, OAuth tokens, and similar.
-//!
-//! 2. **Optional truncation.** Conversation histories, tool-call payloads,
-//!    and LLM responses can reach megabytes. By default we emit the full
-//!    payload — readability beats ring-buffer pressure for the common
-//!    "what did the LLM see?" question. Set `III_TRACE_PAYLOAD_MAX_BYTES=N`
-//!    to cap each serialized payload at N bytes (truncated output gets a
-//!    `..."[TRUNCATED]"` suffix); set `0` or leave unset for unlimited.
 
 use serde_json::Value;
 
-/// Read the `III_TRACE_PAYLOAD_MAX_BYTES` env var.
-///
-/// Returns `Some(n)` for a positive integer; `None` for unset, `"0"`,
-/// `"unlimited"`, or anything that fails to parse. `None` means do not
-/// truncate.
 #[must_use]
 pub fn resolve_max_bytes_from_env() -> Option<usize> {
     let raw = std::env::var("III_TRACE_PAYLOAD_MAX_BYTES").ok()?;
@@ -44,8 +19,6 @@ pub fn resolve_max_bytes_from_env() -> Option<usize> {
 pub const REDACTED_PLACEHOLDER: &str = "[REDACTED]";
 const TRUNCATION_MARKER: &str = "...\"[TRUNCATED]\"";
 
-/// Returns true if `key` should have its value redacted. Case-insensitive
-/// substring match against the well-known credential key fragments.
 fn is_sensitive_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     [
@@ -65,14 +38,13 @@ fn is_sensitive_key(key: &str) -> bool {
     ]
     .iter()
     .any(|fragment| lower.contains(fragment))
-        // `token` alone is too common; gate to whole-token or suffix match.
+        // `token` alone is too common a substring; require whole-key or suffix match.
         || lower == "token"
         || lower.ends_with("_token")
         || lower.ends_with("-token")
 }
 
-/// Recursively walks a `serde_json::Value`, replacing values of sensitive
-/// keys with `[REDACTED]`. Returns a new `Value`; does not mutate input.
+/// Recursively redact values of sensitive keys. Returns a new `Value`.
 #[must_use]
 pub fn redact(value: &Value) -> Value {
     match value {
@@ -92,16 +64,7 @@ pub fn redact(value: &Value) -> Value {
     }
 }
 
-/// Redact sensitive keys then serialize to JSON, optionally capped at
-/// `max_bytes`.
-///
-/// Pass `None` (or unset `III_TRACE_PAYLOAD_MAX_BYTES`) to emit the full
-/// payload — the new default.
-///
-/// Returns `(json_string, truncated)`. When `truncated == true`, the
-/// returned string ends with the truncation marker so consumers can tell
-/// the payload was clipped. Truncation operates on UTF-8 byte boundaries
-/// to avoid emitting malformed multi-byte sequences.
+/// Redact then serialize to JSON, optionally capped at `max_bytes`.
 #[must_use]
 pub fn redact_and_truncate(value: &Value, max_bytes: Option<usize>) -> (String, bool) {
     let redacted = redact(value);
@@ -115,9 +78,8 @@ pub fn redact_and_truncate(value: &Value, max_bytes: Option<usize>) -> (String, 
         return (serialized, false);
     }
 
-    // Find the largest UTF-8 char boundary <= cap so we don't split a
-    // multi-byte codepoint. `floor_char_boundary` is unstable, so do it by
-    // hand: walk back at most 3 bytes (max UTF-8 sequence is 4 bytes).
+    // Walk back to a char boundary so we don't emit half-codepoints.
+    // (`floor_char_boundary` is unstable.)
     let mut cut = cap.saturating_sub(TRUNCATION_MARKER.len());
     while cut > 0 && !serialized.is_char_boundary(cut) {
         cut -= 1;
@@ -160,9 +122,6 @@ mod tests {
 
     #[test]
     fn redacts_inside_arrays() {
-        // Parent key `accounts` is not sensitive → recurse into the
-        // array; each item's `access_token` inside should be redacted
-        // individually while the username stays visible.
         let input = json!({
             "accounts": [
                 { "access_token": "a", "user": "alice" },
@@ -178,11 +137,6 @@ mod tests {
 
     #[test]
     fn sensitive_parent_key_redacts_entire_subtree() {
-        // When the parent key itself is sensitive (e.g. `credentials`,
-        // `password`, `secret`), the whole value is replaced — we don't
-        // try to be clever about partial redaction inside it. This is
-        // the safer default: leaking partial credentials is still
-        // leaking credentials.
         let input = json!({
             "credentials": [
                 { "username": "alice", "token": "a" },
@@ -207,7 +161,6 @@ mod tests {
 
     #[test]
     fn token_alone_matched_but_not_substring() {
-        // bare "token" key → redact; "notification" (contains "tion") → keep.
         let input = json!({
             "token": "tok-1",
             "id_token": "tok-2",
@@ -251,22 +204,15 @@ mod tests {
 
     #[test]
     fn truncation_preserves_utf8_boundaries() {
-        // Build a payload that places a multi-byte char near the cut.
-        // Use é (U+00E9, 2 bytes in UTF-8) every other position.
         let s = "aéaéaéaé".repeat(2000);
         let input = json!({ "v": s });
         let (out, truncated) = redact_and_truncate(&input, Some(100));
         assert!(truncated);
-        // The truncated string must still be valid UTF-8 — if we cut mid
-        // codepoint, `out.chars().count()` would panic via the slice. We
-        // already produced a String, so just confirm it round-trips.
         assert!(out.is_char_boundary(out.len()));
     }
 
     #[test]
     fn redaction_runs_before_truncation() {
-        // Even if the truncation cap is small, sensitive keys near the top
-        // of the payload must be redacted before serialization.
         let input = json!({
             "api_key": "sk-must-not-leak",
             "blob": "x".repeat(8192),
