@@ -1,0 +1,75 @@
+---
+title: "Engine"
+description: "Configuring and running the iii engine."
+owner: "devrel"
+type: "how-to"
+---
+
+## The engine is just a router
+
+{/* skill:exclude-section */}
+
+Think of the engine like a router, it receives requests, routes them to workers, and routes responses back as needed.
+
+## Engine configuration
+
+The iii engine starts from a `config.yaml` file at your project root. Pass `--config <path>` to
+point at a different file, or `--use-default-config` to start with a default set of workers (handy
+for first-run and scratch work).
+
+```bash
+iii --config config.yaml
+```
+
+## Configuration file structure
+
+`config.yaml` has a single top-level key, `workers:`, that lists the workers the engine should load.
+Each entry has a `name` (a registry slug or local worker name) and a `config` block whose shape is
+defined by that worker.
+
+```yaml
+workers:
+  - name: iii-http
+    config:
+      port: 3111
+      host: 127.0.0.1
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store.db
+```
+
+{/* TODO: replace this paragraph with the auto-generated engine config reference. Per project-rules/config.md, the per-field `workers:` schema should not be hand-authored here; this section is a placeholder pending the generated reference. */}
+
+Per-worker config schemas live on each worker's Worker Docs page. See
+[Worker Registry](./workers-registry) for where to find a worker's config reference.
+
+<Note>
+  Workers do not need to be running alongside iii; configuring them in config.yaml is a convenience. A worker
+  can be deployed anywhere and only needs a connection string to the iii instance. See
+  [Expanding iii / Connecting to the engine](/expanding-iii/workers#connecting-to-the-engine) for more information.
+</Note>
+
+## Environment variable expansion
+
+Values in `config.yaml` support `${VAR:default}` syntax. The expansion uses the value of the
+environment variable `VAR`, falling back to `default` when the variable is not set. Use this to swap
+ports, URLs, and feature flags per environment without forking the config file.
+
+```yaml
+workers:
+  - name: iii-http
+    config:
+      port: ${HTTP_PORT:3111}
+      host: ${HTTP_HOST:127.0.0.1}
+```
+
+## Default configuration
+
+Run `iii --use-default-config` to start the engine with a default set of workers without writing a
+`config.yaml`. Useful for first-run and scratch work. Once you need to customize ports, adapters, or
+the set of workers, switch to a real `config.yaml`.

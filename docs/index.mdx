@@ -1,64 +1,100 @@
 ---
-title: Welcome to iii
-description: A backend unification and orchestration system.
+title: "Welcome to iii"
+description:
+  "A next-generation software system that eliminates integration complexity and makes software
+  unreasonably simple to create, extend, and modify."
+owner: "devrel"
+type: "explanation"
 ---
 
-Today, building a typical backend means connecting many separate systems: API frameworks,
-a task queue, a cron scheduler, an event bus, a pub/sub layer, a state store,
-a WebSocket server, and an observability pipeline.
+Software engineering has become an exercise in assembling categories of services. iii eliminates the
+integration complexity that pattern produces.
 
-Each system brings its own setup, its own deployment, and its own
-failure modes. Balancing infrastructure and business logic becomes increasingly difficult
-with every new system.
+<Tip>
+  The tabs above split the site into Docs (start here), Tutorials, How-tos, Patterns, SDK & Engine
+  Reference, and Changelog. Read this page and the Docs tab in order first. The other tabs make more
+  sense once you have the model.
+</Tip>
 
-The result of balancing these many necessary systems are delayed delivery, difficulty debugging,
-transient issues, increased expenses, siloed domain and systems knowledge, and difficulty with
-onboarding new developers and AI agents.
+## The Problem
 
-The main benefit of iii is that it transforms a backend from behaving like a series of
-separate concerns, domains, and services into a single application-level interface across services.
+Each service in a modern system arrives with its own internals, its own lifecycle, its own
+integration story, and its own failure modes. Four services means six possible integration edges.
+Twenty means 190.
 
-**iii** (pronounced "three eye") does this by creating a single integration point
-for all backend systems which results in a stack that is easier to change and which
-keeps all historical knowledge in one place (ie. a single config).
+What we mean by edges is that every new integration brings with it cross-system interactions. For
+example the addition of an agentic harness includes not just a single integration point with your
+current system but the numerous downstream consumers of it.
 
-The result is faster onboarding of new developers and AI agents, and simpler debugging across systems,
-removal of cost centers with reduced switching costs, and faster delivery of backend features.
+Every new capability quadratically compounds the coordination cost of everything already in your
+stack.
 
-## What makes iii different
+## The Solution
 
-iii's primitives produce an execution model and live system traits that together make it
-unreasonably good at creating backend software.
+iii organizes software into three primitives: **Worker**, **Trigger**, **Function**. Something hosts
+work, something causes it, something does it. Every capability in every system can be built from
+these three things: queues, cron, streaming, sandboxing, observability, agents, business logic,
+devices, even frontend browser UIs.
 
-| | What it means |
-| --- | --- |
-| **Durable orchestration** | Coordinate long-running, failure-tolerant execution across workers and triggers. |
-| **Interoperable execution** | Execute across languages natively as if it were one runtime. |
-| **Simple primitives** | Collapse distributed backend design into a paradigm that humans and agents can reason about. |
-| **Live discovery** | Functions and triggers exposed by one worker become visible and usable across the system in real time. |
-| **Live extensibility** | Add new workers and capabilities to a live iii system without redesigning the architecture. |
-| **Live observability** | Observe operations, traces, and system behavior across the entire connected stack in real time. |
+## Quadratic to Zero
 
-## How iii achieves this
+The integration problem doesn't only manifest where two systems connect. It creates downstream
+friction in logging, debugging, and upgrading, and upstream friction that blocks growth initiatives,
+new verticals, and partnerships.
 
-iii unifies any backend stack with a single engine and three primitives: **Function**, **Trigger**, and **Worker**.
+iii reduces all of that effort to zero. Adding two workers or two hundred is the same operation. A
+new worker joins the system by opening a single WebSocket connection and becomes immediately
+available to every other worker at that moment.
 
-This results in the ability to:
+## Have a Need? Add a Worker
 
-- **Write Functions in any language:** Use TypeScript, Python, or Rust. Mix them freely. Everything is just a Function.
-- **Handle any event with Triggers:** A function call, an HTTP request, a cron schedule, a queue message, a state change, a stream event. They all work the same way: a Trigger fires, iii invokes your Function.
-- **Always stay in sync with Workers:** When a new function is registered with iii every other part of the stack can use it. Workers can dynamically unregister Functions too, allowing rolling upgrades without manual registry or config updates. No service registry needed — iii always knows what the entire system can do.
+Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, observability, an
+agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are
+deterministic code. Some are stochastic agents.
 
-<Info title="Why this matters">
-  React simplified the frontend with Component and Context. iii does the same for the backend with Function, Trigger, and Worker.
-  One mental model for every backend system.
-</Info>
+`iii worker add` is the npm moment for systems. What installs is not a library. It is a complete
+running service. A queue worker. A sandbox worker. A classifier. One command, complete capability,
+immediately available to every other worker in the system.
+
+## Same Contract, Both Sides
+
+Application teams register functions and declare triggers, focused entirely on business logic.
+Platform teams publish workers, focused entirely on the capabilities they provide. Both sides
+fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service API
+contracts. The work that used to live between teams disappears.
+
+## Any Language, Any Runtime
+
+A worker in Docker, on Kubernetes, on the edge, in a browser tab, on a Raspberry Pi, or inside a
+hardware-isolated microVM is the same kind of worker. Moving a workload is a redeploy, not a
+rewrite. The engine handles serialization and routing.
+
+## Built for Agents
+
+Most agent harnesses solve one slice of the problem: a chat loop, a tool-calling sandbox, a chained
+workflow. iii is not a harness for agents. Instead it functions better than a harness because it is
+the same runtime the whole system already runs on. This makes iii inherently agentic. In iii an
+agent is a worker and can (with permission) act on every part of the system, not inside a runtime
+created separately for agents.
+
+Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
+triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
+rest of the system. An agent that hits a task outside its current capabilities can register a worker
+at runtime, expose new functions, and extend the system it operates inside. That is what makes iii
+different.
+
+Humans and agents share one mental model. A new engineer is productive on day one because the mental
+model never changes from one capability to the next. AI agents can reliably reason about an entire
+system in a single context window because there is one set of primitives to learn and one
+always-accurate source of truth for what exists.
+
+As agents do more of the work of building and operating software, the size of that primitive set is
+what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
 
 ## Getting Started
 
-The best way to understand iii is to try it. [Install iii](/install) and then follow the [Quickstart](/quickstart) to create your first iii powered project.
-
-## Next Steps
+The best way to understand iii is to try it. Install the engine and follow the Quickstart to create
+your first iii-powered project.
 
 <CardGroup cols={2}>
   <Card title="Install" href="/install" icon="download">

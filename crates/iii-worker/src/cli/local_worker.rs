@@ -541,7 +541,7 @@ pub async fn handle_local_add(
         if !engine_running {
             eprintln!(
                 "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
-                 --wait cannot observe it boot — run `iii start` in another terminal first.",
+                 --wait cannot observe it boot — run `iii` in another terminal first.",
                 "\u{26A0}".yellow(),
                 worker_name.bold(),
                 "local".dimmed()
@@ -603,7 +603,7 @@ pub async fn handle_local_add(
     } else {
         eprintln!(
             "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
-             Start it:  iii start\n  \
+             Start it:  iii\n  \
              Then:      iii worker status {}",
             "\u{26A0}".yellow(),
             worker_name.bold(),

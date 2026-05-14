@@ -1,0 +1,39 @@
+name: Skill check
+
+on:
+  pull_request:
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+      - ".skill-check.yaml"
+      - ".github/workflows/skill-check.yml"
+  push:
+    # dx-improves is included so a merge into the working branch
+    # populates the base-ref AI skip-cache; subsequent PRs against
+    # dx-improves then restore from it instead of starting cold.
+    branches: [main, dx-improves]
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+      - ".skill-check.yaml"
+      - ".github/workflows/skill-check.yml"
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write          # for the persistent AI skip-cache (v0.3+)
+
+jobs:
+  verify:
+    name: Verify docs skills
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run iii-skill-check
+        uses: iii-hq/skills-and-validation@v0.4
+        with:
+          write: true
+          scope: pr-diff
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
