@@ -62,6 +62,11 @@ async fn retry_backoff_timing_is_exponential() {
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     enqueue(
         &engine,
@@ -163,6 +168,11 @@ async fn dlq_exhaustion_preserves_payload_and_metadata() {
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     // Distinctive payload for verification
     let sent_payload = json!({
@@ -277,6 +287,11 @@ async fn max_retries_zero_sends_directly_to_dlq() {
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     // Verify DLQ starts empty
     assert_eq!(

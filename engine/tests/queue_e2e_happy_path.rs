@@ -35,6 +35,11 @@ async fn enqueue_process_ack_preserves_payload() {
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     let sent_payload = json!({
         "order_id": 42,
@@ -102,6 +107,11 @@ async fn condition_based_filtering_routes_matching_messages_only() {
     // available on the engine (topic-based enqueue path uses engine.call("iii::durable::publish", ...))
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     let topic = format!("cond-test-{}", uuid::Uuid::new_v4());
 

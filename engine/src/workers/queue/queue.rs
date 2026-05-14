@@ -7,7 +7,7 @@
 use std::{
     collections::HashMap,
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex as StdMutex, RwLock},
 };
 
 use async_trait::async_trait;
@@ -19,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::panic::AssertUnwindSafe;
+use tokio::task::AbortHandle;
 
 use super::{QueueAdapter, SubscriberQueueConfig, TopicInfo, config::QueueModuleConfig};
 use tracing::Instrument;
@@ -38,6 +39,7 @@ pub struct QueueWorker {
     adapter: Arc<dyn QueueAdapter>,
     engine: Arc<Engine>,
     _config: QueueModuleConfig,
+    consumer_aborts: Arc<StdMutex<Vec<AbortHandle>>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -630,6 +632,27 @@ impl Worker for QueueWorker {
         self._config.validate()?;
         self.engine.set_queue_module(Arc::new(self.clone())).await;
 
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue core module",
+            Box::new(self.clone()),
+            None,
+        );
+
+        let _ = self.engine.register_trigger_type(trigger_type).await;
+
+        Ok(())
+    }
+
+    async fn start_background_tasks(
+        &self,
+        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
+    ) -> anyhow::Result<()> {
+        // Consumer loops are not wired to `shutdown_rx`: `destroy()` aborts the
+        // spawned task via the stored AbortHandle, which is sufficient to stop
+        // it cleanly during reload. Adding a `select!` on shutdown made
+        // `receiver.recv()` race-prone under heavy parallel test load.
         for (name, config) in &self._config.queue_configs {
             self.adapter.setup_function_queue(name, config).await?;
 
@@ -647,8 +670,9 @@ impl Worker for QueueWorker {
 
             let semaphore = Arc::new(tokio::sync::Semaphore::new(prefetch as usize));
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 while let Some(msg) = receiver.recv().await {
+                    {
                     let adapter = adapter.clone();
                     let engine = engine.clone();
                     let queue_name = queue_name.clone();
@@ -744,10 +768,16 @@ impl Worker for QueueWorker {
 
                         drop(permit);
                     });
+                    }
                 }
 
                 tracing::warn!(queue = %queue_name, "Consumer loop ended");
             });
+
+            self.consumer_aborts
+                .lock()
+                .expect("consumer_aborts mutex poisoned")
+                .push(handle.abort_handle());
 
             tracing::info!(
                 queue = %name,
@@ -757,15 +787,20 @@ impl Worker for QueueWorker {
             );
         }
 
-        let trigger_type = TriggerType::new(
-            "durable:subscriber",
-            "Queue core module",
-            Box::new(self.clone()),
-            None,
-        );
+        Ok(())
+    }
 
-        let _ = self.engine.register_trigger_type(trigger_type).await;
-
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::info!("Destroying QueueModule");
+        let aborts: Vec<AbortHandle> = self
+            .consumer_aborts
+            .lock()
+            .expect("consumer_aborts mutex poisoned")
+            .drain(..)
+            .collect();
+        for abort in aborts {
+            abort.abort();
+        }
         Ok(())
     }
 }
@@ -788,6 +823,7 @@ impl ConfigurableWorker for QueueWorker {
             engine,
             _config: config,
             adapter,
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -1145,6 +1181,7 @@ mod tests {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: super::super::config::QueueModuleConfig::default(),
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         };
         (engine, module, adapter)
     }
@@ -1524,6 +1561,7 @@ mod tests {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: config,
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         };
 
         (engine, module, adapter)
@@ -1679,6 +1717,7 @@ mod tests {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: config,
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         };
 
         (engine, module, adapter)
@@ -1728,6 +1767,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait for the consumer loop to pick up and process the message
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1785,6 +1829,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait for the consumer to process the message (and potentially retries)
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1847,6 +1896,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait for consumer to process all 3 messages
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -1918,6 +1972,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait enough for all tasks to be picked up and processed concurrently
         // With concurrency=3 and 200ms sleep each, concurrent execution should
