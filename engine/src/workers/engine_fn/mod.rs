@@ -89,6 +89,8 @@ pub struct WorkerInfo {
     pub ip_address: Option<String>,
     #[serde(default)]
     pub internal: bool,
+    #[serde(default)]
+    pub virtual_worker: bool,
     pub status: String,
     pub connected_at_ms: u64,
     pub function_count: usize,
@@ -286,6 +288,7 @@ impl EngineFunctionsWorker {
                 os: w.os.clone(),
                 ip_address,
                 internal: false,
+                virtual_worker: false,
                 status: w.status.as_str().to_string(),
                 connected_at_ms: w.connected_at.timestamp_millis() as u64,
                 function_count,
@@ -313,6 +316,7 @@ impl EngineFunctionsWorker {
                 os: None,
                 ip_address: None,
                 internal: runtime_worker.internal,
+                virtual_worker: false,
                 status: "available".to_string(),
                 connected_at_ms: runtime_worker.connected_at.timestamp_millis() as u64,
                 function_count: functions.len(),
@@ -321,6 +325,42 @@ impl EngineFunctionsWorker {
                 latest_metrics: None,
                 pid: None,
                 isolation: Some("in-process".to_string()),
+            });
+        }
+
+        for virtual_worker in self.engine.virtual_workers.list() {
+            let worker_id = format!("virtual:{}", virtual_worker.name);
+            if let Some(filter_id) = filter_worker_id
+                && filter_id != worker_id
+                && filter_id != virtual_worker.name
+            {
+                continue;
+            }
+
+            let mut functions = virtual_worker
+                .function_ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            functions.sort();
+
+            worker_infos.push(WorkerInfo {
+                id: worker_id,
+                name: Some(virtual_worker.name),
+                runtime: Some("engine".to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                os: None,
+                ip_address: None,
+                internal: false,
+                virtual_worker: true,
+                status: "available".to_string(),
+                connected_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+                function_count: functions.len(),
+                functions,
+                active_invocations: 0,
+                latest_metrics: None,
+                pid: None,
+                isolation: Some("virtual".to_string()),
             });
         }
 
@@ -867,6 +907,7 @@ mod tests {
             vec!["state::get".to_string(), "state::set".to_string()]
         );
         assert!(!workers[0].internal);
+        assert!(!workers[0].virtual_worker);
     }
 
     #[tokio::test]
@@ -889,6 +930,43 @@ mod tests {
 
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].id, "iii-stream");
+    }
+
+    #[tokio::test]
+    async fn test_list_worker_infos_includes_virtual_worker_group() {
+        let (engine, module) = setup_engine_and_module();
+        let owner = uuid::Uuid::new_v4();
+
+        engine.virtual_workers.claim_function(
+            "context7-stdio-worker",
+            owner,
+            true,
+            "context7_stdio::resolve_library_id",
+        );
+        engine.virtual_workers.claim_function(
+            "context7-stdio-worker",
+            owner,
+            true,
+            "context7_stdio::query_docs",
+        );
+
+        let workers = module.list_worker_infos(None).await;
+
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "virtual:context7-stdio-worker");
+        assert_eq!(workers[0].name.as_deref(), Some("context7-stdio-worker"));
+        assert!(workers[0].virtual_worker);
+        assert!(!workers[0].internal);
+        assert_eq!(workers[0].runtime.as_deref(), Some("engine"));
+        assert_eq!(workers[0].isolation.as_deref(), Some("virtual"));
+        assert_eq!(workers[0].function_count, 2);
+        assert_eq!(
+            workers[0].functions,
+            vec![
+                "context7_stdio::query_docs".to_string(),
+                "context7_stdio::resolve_library_id".to_string()
+            ]
+        );
     }
 
     // ---- register_worker_metadata tests ----

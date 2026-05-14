@@ -79,6 +79,13 @@ impl VirtualWorkerRegistry {
         self.function_to_worker.contains_key(function_id)
     }
 
+    pub(crate) fn list(&self) -> Vec<VirtualWorkerInfo> {
+        self.workers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn get(&self, worker_name: &str) -> Option<VirtualWorkerInfo> {
         self.workers
