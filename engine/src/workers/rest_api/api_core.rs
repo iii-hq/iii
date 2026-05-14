@@ -1004,7 +1004,10 @@ mod tests {
         .expect("module should be created");
 
         // initialize() no longer binds — only registers the trigger type.
-        module.initialize().await.expect("initialize should succeed");
+        module
+            .initialize()
+            .await
+            .expect("initialize should succeed");
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let err = module
@@ -1035,7 +1038,10 @@ mod tests {
         .await
         .expect("module should be created");
 
-        module.initialize().await.expect("initialize should succeed");
+        module
+            .initialize()
+            .await
+            .expect("initialize should succeed");
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
@@ -1047,7 +1053,10 @@ mod tests {
         module.destroy().await.expect("destroy should succeed");
 
         // Second destroy is a no-op (abort handle already taken).
-        module.destroy().await.expect("second destroy should be no-op");
+        module
+            .destroy()
+            .await
+            .expect("second destroy should be no-op");
     }
 
     #[tokio::test]
