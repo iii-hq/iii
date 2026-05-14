@@ -2,25 +2,24 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 export const AGREEMENT_TEXT =
-  'I am licensing the entirety of this PR under Apache 2 and have all necessary rights to the code I am contributing.';
+  'I agree that my contributions in this PR to the engine code are licensed under Apache 2.0.';
 export const ACKNOWLEDGEMENT_PHRASE = AGREEMENT_TEXT;
 export const STATUS_CONTEXT = 'license-agreement';
 export const STICKY_COMMENT_MARKER = '<!-- iii-license-agreement-check -->';
+export const ENGINE_PATH_PREFIX = 'engine/';
 
 const TEAM_PERMISSIONS = new Set(['write', 'maintain', 'admin']);
 const BOT_LOGINS = new Set(['github-actions[bot]']);
 
-export function hasCheckedLicenseAgreement(body = '') {
-  return String(body ?? '')
-    .split(/\r?\n/)
-    .some((line) => {
-      const match = line.match(/^\s*-\s*\[[xX]\]\s*(.*)$/);
-      return match && normalizeAgreementText(match[1]) === normalizeAgreementText(AGREEMENT_TEXT);
-    });
-}
-
 export function normalizeAgreementText(value = '') {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function touchesEnginePaths(files = []) {
+  return files.some((file) => {
+    const name = typeof file === 'string' ? file : (file?.filename ?? '');
+    return name.startsWith(ENGINE_PATH_PREFIX);
+  });
 }
 
 export function isTeamPermission(permission = '') {
@@ -58,15 +57,20 @@ export function findStickyComment(comments = []) {
   );
 }
 
-export function evaluateAgreement({ body = '', comments = [], permission = '', prAuthor = '' }) {
+export function evaluateAgreement({
+  comments = [],
+  permission = '',
+  prAuthor = '',
+  changedFiles = [],
+} = {}) {
   const teamMember = isTeamPermission(permission);
-  const bodyAcknowledged = hasCheckedLicenseAgreement(body);
+  const engineTouched = touchesEnginePaths(changedFiles);
   const commentAcknowledged = hasAgreementComment(comments, prAuthor);
-  const acknowledged = teamMember || bodyAcknowledged || commentAcknowledged;
+  const acknowledged = !engineTouched || teamMember || commentAcknowledged;
 
   return {
     acknowledged,
-    bodyAcknowledged,
+    engineTouched,
     commentAcknowledged,
     teamMember,
   };
@@ -77,25 +81,20 @@ export function buildPendingComment(prAuthor) {
     STICKY_COMMENT_MARKER,
     '## License agreement required',
     '',
-    `@${prAuthor}, thanks for contributing. Before this PR can be merged, please acknowledge the contributor license agreement:`,
+    `@${prAuthor}, this PR touches engine code. For us to accept it, we need your explicit confirmation in this thread that you license your changes to the engine portion of the codebase under Apache 2.0.`,
+    '',
+    'Please reply with:',
     '',
     `> ${AGREEMENT_TEXT}`,
-    '',
-    'You can satisfy this requirement in either of these ways:',
-    '',
-    `- Check the license agreement box in the PR description.`,
-    `- Reply to this PR with exactly: ${ACKNOWLEDGEMENT_PHRASE}`,
   ].join('\n');
 }
 
-export function buildSatisfiedComment(prAuthor, source) {
-  const sourceLabel = source === 'comment' ? 'PR comment' : 'PR description checkbox';
-
+export function buildSatisfiedComment(prAuthor) {
   return [
     STICKY_COMMENT_MARKER,
     '## License agreement recorded',
     '',
-    `@${prAuthor}, the license agreement acknowledgement has been recorded from the ${sourceLabel}.`,
+    `@${prAuthor}, the engine license agreement has been recorded from your PR reply.`,
     '',
     `> ${AGREEMENT_TEXT}`,
   ].join('\n');
@@ -180,6 +179,21 @@ async function listIssueComments({ owner, repo, issueNumber }) {
   }
 }
 
+async function listPullRequestFiles({ owner, repo, pullNumber }) {
+  const files = [];
+
+  for (let page = 1; ; page += 1) {
+    const batch = await githubRequest(
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/files?per_page=100&page=${page}`,
+    );
+    files.push(...batch);
+
+    if (batch.length < 100) {
+      return files;
+    }
+  }
+}
+
 async function upsertStickyComment({ owner, repo, issueNumber, comments, body }) {
   const stickyComment = findStickyComment(comments);
 
@@ -244,13 +258,33 @@ export async function run() {
   const { issueNumber, pullRequest } = prContext;
   const prAuthor = pullRequest.user.login;
   const headSha = pullRequest.head.sha;
+  const changedFiles = await listPullRequestFiles({
+    owner,
+    repo,
+    pullNumber: pullRequest.number,
+  });
+
+  if (!touchesEnginePaths(changedFiles)) {
+    await createCommitStatus({
+      owner,
+      repo,
+      sha: headSha,
+      state: 'success',
+      description: 'PR does not touch engine code; license agreement not required.',
+    });
+    console.log(
+      `Skipping license agreement check for PR #${pullRequest.number}; no engine files touched.`,
+    );
+    return;
+  }
+
   const comments = await listIssueComments({ owner, repo, issueNumber });
   const permission = await getPermission({ owner, repo, username: prAuthor });
   const result = evaluateAgreement({
-    body: pullRequest.body || '',
     comments,
     permission,
     prAuthor,
+    changedFiles,
   });
 
   if (result.teamMember) {
@@ -266,13 +300,12 @@ export async function run() {
   }
 
   if (result.acknowledged) {
-    const source = result.commentAcknowledged ? 'comment' : 'body';
     await upsertStickyComment({
       owner,
       repo,
       issueNumber,
       comments,
-      body: buildSatisfiedComment(prAuthor, source),
+      body: buildSatisfiedComment(prAuthor),
     });
     await createCommitStatus({
       owner,
@@ -281,7 +314,7 @@ export async function run() {
       state: 'success',
       description: 'License agreement acknowledged.',
     });
-    console.log(`License agreement acknowledged by ${prAuthor} through ${source}.`);
+    console.log(`License agreement acknowledged by ${prAuthor} through PR comment.`);
     return;
   }
 
@@ -300,7 +333,7 @@ export async function run() {
     description: 'License agreement acknowledgement required.',
   });
   console.error(
-    `::error::License agreement acknowledgement required. ${prAuthor} must check the PR description box or reply with the exact acknowledgement phrase.`,
+    `::error::License agreement acknowledgement required. ${prAuthor} must reply with the exact acknowledgement phrase.`,
   );
   process.exitCode = 1;
 }
