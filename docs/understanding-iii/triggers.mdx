@@ -44,6 +44,20 @@ that currently provides the Function, and dispatches the invocation. If the Trig
 the condition returns a truthy result. The function handler sees the payload alone, never the source
 of the Trigger or the type of event that fired it.
 
+## Invocation modes
+
+Functions can be invoked in two modes. The default, synchronous mode blocks until the Function
+returns its result or the configured timeout fires. The fire-and-forget mode (`TriggerAction.Void`)
+returns immediately, scheduling the Function to run without waiting for a result. Synchronous
+invocations are appropriate when the caller needs the value the Function returns. Fire-and-forget is
+for side-effect work where the caller does not need to wait.
+
+<Note>
+  Workers can provide their own `TriggerAction`s. The iii-queue Worker provides
+  `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries.
+  See iii-queue for the queue mechanics.
+</Note>
+
 ## Trigger lifecycle
 
 Triggers move through four states. `registered` means the Trigger has been declared with the Engine.

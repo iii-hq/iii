@@ -27,24 +27,12 @@ The convention is a recommendation, not a hard rule. Any string is a valid funct
 level, but the `service::name` form makes the Function's intent obvious to readers and avoids
 collisions between unrelated Functions registered by different Workers.
 
+{/* TODO: Confirm if we still have restricted string prefixes */}
+
 ## Direct invocation
 
 Registering a Function with `registerFunction()` makes it directly invokable through
 `worker.trigger()` from any connected Worker and through the `iii trigger` CLI command. No explicit
 Trigger registration is required for these two paths; they are the baseline call surface every
-registered Function gets. Other trigger sources (HTTP, cron, queue, state, stream) layer on top by
-binding an explicit Trigger to the same `function_id`.
-
-## Invocation modes
-
-Functions can be invoked in two modes. The default, synchronous mode blocks until the Function
-returns its result or the configured timeout fires. The fire-and-forget mode (`TriggerAction.Void`)
-returns immediately, scheduling the Function to run without waiting for a result. Synchronous
-invocations are appropriate when the caller needs the value the Function returns. Fire-and-forget is
-for side-effect work where the caller does not need to wait.
-
-<Note>
-  Workers can provide their own `TriggerAction`s. The iii-queue Worker provides
-  `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries.
-  See iii-queue for the queue mechanics.
-</Note>
+registered Function gets. Other trigger sources (HTTP, cron, queue, state, stream) bind an explicit
+Trigger to the same `function_id`.
