@@ -1,6 +1,19 @@
 """III SDK for Python."""
 
+from .baggage_span_processor import DEFAULT_ALLOWLIST, BaggageSpanProcessor
 from .channels import ChannelReader, ChannelWriter
+from .payload import (
+    REDACTED_PLACEHOLDER,
+    redact,
+    redact_and_truncate,
+    resolve_max_bytes_from_env,
+)
+from .span_ops import (
+    current_span_is_recording,
+    record_span_event,
+    set_current_span_attribute,
+    set_current_span_error,
+)
 from .errors import IIIForbiddenError, IIIInvocationError, IIITimeoutError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
@@ -59,6 +72,17 @@ from .types import (
 from .utils import http
 
 __all__ = [
+    # Telemetry helpers
+    "BaggageSpanProcessor",
+    "DEFAULT_ALLOWLIST",
+    "REDACTED_PLACEHOLDER",
+    "current_span_is_recording",
+    "record_span_event",
+    "set_current_span_attribute",
+    "set_current_span_error",
+    "redact",
+    "redact_and_truncate",
+    "resolve_max_bytes_from_env",
     # Channels
     "ChannelReader",
     "ChannelWriter",

@@ -1529,7 +1529,13 @@ impl III {
     }
 
     fn handle_message(&self, payload: &str) -> Result<(), IIIError> {
-        let message: Message = serde_json::from_str(payload)?;
+        // WS is engine↔worker (internal trust boundary). `serde_json::from_str`
+        // caps recursion at 128 levels, which trips on legitimate deep
+        // payloads (e.g. `engine::traces::tree` returning long parent-chains
+        // of `SpanTreeNode`). Disable the cap on this hot path.
+        let mut de = serde_json::Deserializer::from_str(payload);
+        de.disable_recursion_limit();
+        let message = Message::deserialize(&mut de)?;
 
         match message {
             Message::InvocationResult {
@@ -1667,10 +1673,73 @@ impl III {
                 parent_cx.with_span(span)
             };
 
+            // Payload auto-capture: ON by default. Emit
+            // `iii.invocation.input` before dispatch and
+            // `iii.invocation.output` after, both as span events with
+            // redacted+truncated JSON. Workers don't need to instrument
+            // anything — payloads show up in the console Events tab
+            // for every invocation in the chain. Set
+            // `III_DISABLE_TRACE_PAYLOADS=1` to turn it off (e.g. for
+            // high-throughput production workloads where the extra
+            // event bytes per span outweigh the troubleshooting value).
+            let trace_payloads = !std::env::var("III_DISABLE_TRACE_PAYLOADS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            let payload_max_bytes =
+                crate::telemetry::payload::resolve_max_bytes_from_env();
+
+            if trace_payloads {
+                use crate::telemetry::payload::redact_and_truncate;
+                use opentelemetry::KeyValue;
+                use opentelemetry::trace::TraceContextExt;
+                let span = otel_cx.span();
+                if span.span_context().is_valid() {
+                    let (input_json, truncated) =
+                        redact_and_truncate(&data, payload_max_bytes);
+                    span.add_event(
+                        "iii.invocation.input",
+                        vec![
+                            KeyValue::new("iii.payload.json", input_json),
+                            KeyValue::new("iii.payload.truncated", truncated),
+                        ],
+                    );
+                }
+            }
+
             let result = {
                 use opentelemetry::trace::FutureExt as OtelFutureExt;
                 handler(data).with_context(otel_cx.clone()).await
             };
+
+            if trace_payloads {
+                use crate::telemetry::payload::redact_and_truncate;
+                use opentelemetry::KeyValue;
+                use opentelemetry::trace::TraceContextExt;
+                let span = otel_cx.span();
+                if span.span_context().is_valid() {
+                    let (output_json, truncated, ok) = match &result {
+                        Ok(value) => {
+                            let (j, t) = redact_and_truncate(value, payload_max_bytes);
+                            (j, t, true)
+                        }
+                        Err(err) => {
+                            let payload =
+                                serde_json::json!({ "error": err.to_string() });
+                            let (j, t) = redact_and_truncate(&payload, payload_max_bytes);
+                            (j, t, false)
+                        }
+                    };
+                    span.add_event(
+                        "iii.invocation.output",
+                        vec![
+                            KeyValue::new("iii.payload.json", output_json),
+                            KeyValue::new("iii.payload.truncated", truncated),
+                            KeyValue::new("iii.payload.ok", ok),
+                        ],
+                    );
+                }
+            }
 
             // Record span status based on result
             let mut error_stacktrace: Option<String> = None;

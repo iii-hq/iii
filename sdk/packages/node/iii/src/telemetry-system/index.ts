@@ -21,6 +21,7 @@ import {
   type Meter,
 } from '@opentelemetry/api'
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { BaggageSpanProcessor } from './baggage-span-processor'
 import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from '@opentelemetry/core'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
@@ -45,6 +46,19 @@ import { parseIntegerEnv, parseNumberEnv } from './utils'
 // Re-export everything from submodules
 export * from './types'
 export * from './context'
+export { BaggageSpanProcessor, DEFAULT_ALLOWLIST } from './baggage-span-processor'
+export {
+  currentSpanIsRecording,
+  recordSpanEvent,
+  setCurrentSpanAttribute,
+  setCurrentSpanError,
+} from './span-ops'
+export {
+  REDACTED_PLACEHOLDER,
+  redact,
+  redactAndTruncate,
+  resolveMaxBytesFromEnv,
+} from './payload'
 
 /**
  * Normalize an engine WebSocket URL into the dedicated OTEL endpoint.
@@ -107,11 +121,19 @@ export function initOtel(config: OtelConfig = {}): void {
   // a ghost null-metadata worker alongside the real worker.
   sharedConnection = new SharedEngineConnection(appendOtelPath(engineWsUrl), config.reconnectionConfig)
 
-  // Initialize tracer
+  // Initialize tracer.
+  //
+  // `BaggageSpanProcessor` runs first (onStart fires in registration order)
+  // so allowlisted baggage entries — `iii.session.id`, `iii.message.id`,
+  // `iii.function_id` — are materialized as span attributes BEFORE the
+  // batch exporter reads them. Producers (the Rust-side harness wrapper)
+  // write these into baggage; iii-sdk auto-propagates baggage on every
+  // outgoing trigger; this processor closes the loop by making the IDs
+  // queryable as span attributes everywhere.
   const spanExporter = new EngineSpanExporter(sharedConnection)
   tracerProvider = new NodeTracerProvider({
     resource,
-    spanProcessors: [new BatchSpanProcessor(spanExporter)],
+    spanProcessors: [new BaggageSpanProcessor(), new BatchSpanProcessor(spanExporter)],
   })
 
   // Register W3C Trace Context and Baggage propagators

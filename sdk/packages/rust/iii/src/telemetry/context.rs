@@ -172,6 +172,94 @@ pub fn get_all_baggage() -> HashMap<String, String> {
         .collect()
 }
 
+/// Run `future` with the current OTel context augmented by `entries` in
+/// baggage. Entries with keys already present in baggage are overwritten
+/// (callers don't need to dedupe).
+///
+/// The augmented context is dropped when the future completes — entries do
+/// not leak into the calling scope. The returned `T` is whatever the inner
+/// future resolves to; this helper does not constrain the inner result type.
+///
+/// # Why this exists
+///
+/// Folds the `OtelContext::current()` + `with_baggage(...)` +
+/// `FutureExt::with_context(...)` dance into one call so consumers don't
+/// need to depend on `opentelemetry`/`opentelemetry_sdk` directly to attach
+/// baggage for a scoped async operation.
+///
+/// # Example
+///
+/// ```ignore
+/// iii_sdk::run_with_baggage(
+///     &[("iii.session.id", "S-1"), ("iii.message.id", "M-42")],
+///     async {
+///         iii.trigger(/* ... */).await
+///     },
+/// ).await
+/// ```
+pub async fn run_with_baggage<F, T>(entries: &[(&str, &str)], future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    use opentelemetry::trace::FutureExt;
+
+    let cx = OtelContext::current();
+    let new_keys: std::collections::HashSet<&str> = entries.iter().map(|(k, _)| *k).collect();
+
+    // Preserve every existing baggage entry whose key we're NOT about to
+    // overwrite, then append the new entries. Overwrite semantics matter
+    // for nested call chains (e.g. an outer harness wrapper sets
+    // iii.message.id=M-outer; an inner one sets M-inner — the inner must
+    // win for spans inside its scope, without accumulating duplicates).
+    let mut all_entries: Vec<KeyValue> = cx
+        .baggage()
+        .iter()
+        .filter(|(k, _)| !new_keys.contains(&k.as_str()))
+        .map(|(k, (v, _meta))| KeyValue::new(k.clone(), v.clone()))
+        .collect();
+    for (k, v) in entries {
+        all_entries.push(KeyValue::new(k.to_string(), v.to_string()));
+    }
+
+    future.with_context(cx.with_baggage(all_entries)).await
+}
+
+/// Snapshot of the current OTel context (active span + baggage) that
+/// can be moved across thread/task boundaries and re-attached to a
+/// future.
+///
+/// `tokio::spawn` does NOT carry OTel context into the spawned task:
+/// the new task starts with an empty context, so any spans created
+/// inside it become orphan roots (no parent, no inherited baggage).
+/// Capture the context BEFORE the spawn, then call `.attach(future)`
+/// inside the spawned async block to re-establish it.
+#[derive(Clone)]
+pub struct CapturedContext(OtelContext);
+
+impl CapturedContext {
+    /// Run `future` with this captured OTel context attached. Inside
+    /// the future, `Context::current()` returns the captured context,
+    /// so spans created via `with_span` / `execute_traced_request` /
+    /// any direct `global::tracer(...)` call become children of the
+    /// originally-active span and inherit its baggage.
+    pub async fn attach<F, T>(self, future: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        use opentelemetry::trace::FutureExt;
+        future.with_context(self.0).await
+    }
+}
+
+/// Capture the current OTel context for use across `tokio::spawn`.
+///
+/// Call this at the spawn-site (before `tokio::spawn`); move the
+/// returned `CapturedContext` into the spawned future and call
+/// `.attach(inner_future)` to wrap the work.
+pub fn capture_otel_context() -> CapturedContext {
+    CapturedContext(OtelContext::current())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

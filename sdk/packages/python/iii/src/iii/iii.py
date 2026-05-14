@@ -500,17 +500,64 @@ class III:
             propagate.extract(carrier) if carrier else otel_context.get_current()
         )
         tracer = trace.get_tracer("iii-python-sdk")
+        # Payload auto-capture: ON by default. Emits
+        # `iii.invocation.input` before dispatch and
+        # `iii.invocation.output` after, both as span events with
+        # redacted+truncated JSON. Set ``III_DISABLE_TRACE_PAYLOADS=1``
+        # to turn it off. Mirrors the Rust + Node SDKs so
+        # cross-language worker chains stay consistent.
+        import os
+
+        from .payload import redact_and_truncate, resolve_max_bytes_from_env
+
+        trace_payloads = os.environ.get("III_DISABLE_TRACE_PAYLOADS", "").lower() not in (
+            "1",
+            "true",
+        )
+        payload_max_bytes = resolve_max_bytes_from_env()
+
         with tracer.start_as_current_span(
             f"call {handler.__name__}",
             context=parent_ctx,
             kind=trace.SpanKind.SERVER,
         ) as span:
+            if trace_payloads and span.is_recording():
+                input_json, input_truncated = redact_and_truncate(data, payload_max_bytes)
+                span.add_event(
+                    "iii.invocation.input",
+                    attributes={
+                        "iii.payload.json": input_json,
+                        "iii.payload.truncated": input_truncated,
+                    },
+                )
             try:
                 result = await handler(data)
+                if trace_payloads and span.is_recording():
+                    out_json, out_truncated = redact_and_truncate(result, payload_max_bytes)
+                    span.add_event(
+                        "iii.invocation.output",
+                        attributes={
+                            "iii.payload.json": out_json,
+                            "iii.payload.truncated": out_truncated,
+                            "iii.payload.ok": True,
+                        },
+                    )
                 span.set_status(trace.StatusCode.OK)
                 response_traceparent = self._inject_traceparent()
                 return result, response_traceparent
             except Exception as e:
+                if trace_payloads and span.is_recording():
+                    err_json, err_truncated = redact_and_truncate(
+                        {"error": str(e)}, payload_max_bytes
+                    )
+                    span.add_event(
+                        "iii.invocation.output",
+                        attributes={
+                            "iii.payload.json": err_json,
+                            "iii.payload.truncated": err_truncated,
+                            "iii.payload.ok": False,
+                        },
+                    )
                 span.record_exception(e)
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 response_traceparent = self._inject_traceparent()
