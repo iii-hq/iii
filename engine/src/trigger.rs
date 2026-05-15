@@ -32,6 +32,21 @@ fn worker_name_for_trigger_type(trigger_type_id: &str) -> Option<&'static str> {
         .map(|(_, worker)| *worker)
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterTriggerError {
+    #[error(
+        "Trigger type \"{trigger_type}\" not found — worker {worker} is missing. Run: iii worker add {worker}"
+    )]
+    UnknownBuiltin {
+        trigger_type: String,
+        worker: &'static str,
+    },
+    #[error("Trigger type \"{trigger_type}\" not found")]
+    Unknown { trigger_type: String },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
 pub struct TriggerType {
     pub id: String,
     pub _description: String,
@@ -231,7 +246,7 @@ impl TriggerRegistry {
         Ok(())
     }
 
-    pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
+    pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), RegisterTriggerError> {
         let trigger_type_id = trigger.trigger_type.clone();
         let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
             if let Some(worker_name) = worker_name_for_trigger_type(&trigger_type_id) {
@@ -241,28 +256,25 @@ impl TriggerRegistry {
                     worker_name.cyan().bold(),
                     format!("iii worker add {}", worker_name).green().bold()
                 );
-                return Err(anyhow::anyhow!(
-                    "Trigger type \"{}\" not found — worker {} is missing. Run: iii worker add {}",
-                    trigger_type_id,
-                    worker_name,
-                    worker_name
-                ));
+                return Err(RegisterTriggerError::UnknownBuiltin {
+                    trigger_type: trigger_type_id,
+                    worker: worker_name,
+                });
             }
 
             tracing::error!("Trigger type {} not found", trigger_type_id.purple());
-            return Err(anyhow::anyhow!("Trigger type not found"));
+            return Err(RegisterTriggerError::Unknown {
+                trigger_type: trigger_type_id,
+            });
         };
 
-        match trigger_type
+        if let Err(err) = trigger_type
             .registrator
             .register_trigger(trigger.clone())
             .await
         {
-            Ok(_) => {}
-            Err(err) => {
-                tracing::error!(error = %err, "Error registering trigger");
-                return Err(err);
-            }
+            tracing::error!(error = %err, "Error registering trigger");
+            return Err(RegisterTriggerError::Other(err));
         }
 
         drop(trigger_type);
@@ -475,7 +487,11 @@ mod tests {
         let trigger = make_trigger("t1", "nonexistent");
         let result = registry.register_trigger(trigger).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Trigger type not found");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("\"nonexistent\" not found"),
+            "Expected unknown-type message, got: {err_msg}"
+        );
         assert!(registry.triggers.is_empty());
     }
 

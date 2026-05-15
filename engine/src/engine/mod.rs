@@ -770,17 +770,44 @@ impl Engine {
                     reg_function_id = format!("{prefix}::{reg_function_id}");
                 }
 
-                let _ = self
+                match self
                     .trigger_registry
                     .register_trigger(Trigger {
-                        id: reg_trigger_id,
-                        trigger_type: reg_trigger_type,
-                        function_id: reg_function_id,
+                        id: reg_trigger_id.clone(),
+                        trigger_type: reg_trigger_type.clone(),
+                        function_id: reg_function_id.clone(),
                         config: reg_config,
                         worker_id: Some(worker.id),
                         metadata: metadata.clone(),
                     })
-                    .await;
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(err) => {
+                        let error_body = match &err {
+                            crate::trigger::RegisterTriggerError::UnknownBuiltin { .. }
+                            | crate::trigger::RegisterTriggerError::Unknown { .. } => {
+                                crate::protocol::ErrorBody::new(
+                                    "trigger_type_not_found",
+                                    err.to_string(),
+                                )
+                            }
+                            crate::trigger::RegisterTriggerError::Other(_) => {
+                                crate::protocol::ErrorBody::new(
+                                    "trigger_registration_failed",
+                                    err.to_string(),
+                                )
+                            }
+                        };
+                        let result_msg = Message::TriggerRegistrationResult {
+                            id: reg_trigger_id,
+                            trigger_type: reg_trigger_type,
+                            function_id: reg_function_id,
+                            error: Some(error_body),
+                        };
+                        let _ = self.send_msg(worker, result_msg).await;
+                    }
+                }
                 crate::workers::telemetry::collector::track_trigger_registered();
 
                 Ok(())
@@ -3269,6 +3296,84 @@ mod tests {
             .router_msg(&worker, &msg)
             .await
             .expect("TriggerRegistrationResult with error should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_unknown_builtin_sends_install_hint() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        let msg = Message::RegisterTrigger {
+            id: "trig-1".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn-1".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+
+        engine
+            .router_msg(&worker, &msg)
+            .await
+            .expect("RegisterTrigger should succeed at protocol level");
+
+        let outbound = rx
+            .try_recv()
+            .expect("engine should emit TriggerRegistrationResult on failure");
+        let Outbound::Protocol(Message::TriggerRegistrationResult {
+            id,
+            trigger_type,
+            function_id,
+            error,
+        }) = outbound
+        else {
+            panic!("expected TriggerRegistrationResult, got {:?}", outbound);
+        };
+        assert_eq!(id, "trig-1");
+        assert_eq!(trigger_type, "http");
+        assert_eq!(function_id, "fn-1");
+        let err = error.expect("error should be populated");
+        assert_eq!(err.code, "trigger_type_not_found");
+        assert!(err.message.contains("iii-http"), "msg: {}", err.message);
+        assert!(
+            err.message.contains("iii worker add"),
+            "msg: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_unknown_type_sends_generic_error() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        let msg = Message::RegisterTrigger {
+            id: "trig-2".to_string(),
+            trigger_type: "totally-made-up".to_string(),
+            function_id: "fn-2".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+
+        engine
+            .router_msg(&worker, &msg)
+            .await
+            .expect("RegisterTrigger should succeed at protocol level");
+
+        let outbound = rx.try_recv().expect("engine should emit a result");
+        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
+            panic!("expected TriggerRegistrationResult");
+        };
+        let err = error.expect("error should be populated");
+        assert_eq!(err.code, "trigger_type_not_found");
+        assert!(
+            err.message.contains("totally-made-up"),
+            "msg should name the missing type: {}",
+            err.message
+        );
     }
 
     // =========================================================================
