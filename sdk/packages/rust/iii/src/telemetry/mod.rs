@@ -539,8 +539,12 @@ where
     }
 }
 
-/// Like [`with_span`] but unconstrained on the error type, for code
-/// paths using typed `thiserror` enums or infallible loops.
+/// Run a future inside a new span. Returns the future's output unchanged.
+///
+/// Does NOT set span status automatically — use [`with_span`] for
+/// automatic OK/Error status on `Result` returns, or call
+/// [`set_current_span_error`] from inside `f` to mark errors on typed
+/// `thiserror` paths.
 pub async fn run_in_span<F, Fut, T>(name: &str, kind: Option<SpanKind>, f: F) -> T
 where
     F: FnOnce() -> Fut,

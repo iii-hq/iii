@@ -87,6 +87,17 @@ describe('redactAndTruncate', () => {
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(4096)
   })
 
+  it('respects maxBytes when smaller than the truncation marker', () => {
+    // The marker itself is ~16 bytes; output must never exceed maxBytes
+    // even when the cap is below marker length.
+    const big = 'x'.repeat(100)
+    for (const max of [1, 4, 8, 12]) {
+      const { json, truncated } = redactAndTruncate({ blob: big }, max)
+      expect(truncated).toBe(true)
+      expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(max)
+    }
+  })
+
   it('never truncates when maxBytes is null (default)', () => {
     const big = 'x'.repeat(1_000_000)
     const { json, truncated } = redactAndTruncate({ blob: big })

@@ -95,6 +95,16 @@ def test_redact_and_truncate_truncates_over_limit() -> None:
     assert len(json_str.encode("utf-8")) <= 4096
 
 
+def test_redact_and_truncate_respects_max_below_marker_length() -> None:
+    # Marker is ~16 bytes; output must never exceed max_bytes even when
+    # the cap is below marker length.
+    big = "x" * 100
+    for max_bytes in (1, 4, 8, 12):
+        json_str, truncated = redact_and_truncate({"blob": big}, max_bytes)
+        assert truncated is True
+        assert len(json_str.encode("utf-8")) <= max_bytes
+
+
 def test_redact_and_truncate_no_cap_by_default() -> None:
     big = "x" * 1_000_000
     json_str, truncated = redact_and_truncate({"blob": big})

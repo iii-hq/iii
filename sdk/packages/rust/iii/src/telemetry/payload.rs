@@ -78,9 +78,13 @@ pub fn redact_and_truncate(value: &Value, max_bytes: Option<usize>) -> (String, 
         return (serialized, false);
     }
 
+    if cap <= TRUNCATION_MARKER.len() {
+        return (TRUNCATION_MARKER[..cap].to_string(), true);
+    }
+
     // Walk back to a char boundary so we don't emit half-codepoints.
     // (`floor_char_boundary` is unstable.)
-    let mut cut = cap.saturating_sub(TRUNCATION_MARKER.len());
+    let mut cut = cap - TRUNCATION_MARKER.len();
     while cut > 0 && !serialized.is_char_boundary(cut) {
         cut -= 1;
     }
@@ -190,6 +194,18 @@ mod tests {
         assert!(truncated);
         assert!(out.ends_with(TRUNCATION_MARKER));
         assert!(out.len() <= 4096);
+    }
+
+    #[test]
+    fn truncation_respects_max_bytes_below_marker_length() {
+        // When max_bytes < TRUNCATION_MARKER.len(), the truncated marker
+        // itself must be capped — otherwise the output exceeds the cap.
+        let input = json!({ "blob": "x".repeat(100) });
+        for max in 1..TRUNCATION_MARKER.len() {
+            let (out, truncated) = redact_and_truncate(&input, Some(max));
+            assert!(truncated);
+            assert!(out.len() <= max, "max={max} got len={}: {out:?}", out.len());
+        }
     }
 
     #[test]

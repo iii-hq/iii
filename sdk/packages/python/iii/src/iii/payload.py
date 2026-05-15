@@ -80,7 +80,10 @@ def redact_and_truncate(
         return serialized, False
 
     marker_len = len(_TRUNCATION_MARKER.encode("utf-8"))
-    cap = max(0, max_bytes - marker_len)
+    if max_bytes <= marker_len:
+        return _TRUNCATION_MARKER[:max_bytes], True
+
+    cap = max_bytes - marker_len
     # Walk back to a UTF-8 boundary so we don't emit half-codepoints.
     cut = cap
     while cut > 0 and (encoded[cut] & 0xC0) == 0x80:

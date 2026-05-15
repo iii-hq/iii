@@ -8,8 +8,11 @@ export function resolveMaxBytesFromEnv(): number | null {
   if (raw === undefined) return null
   const trimmed = raw.trim()
   if (trimmed === '' || trimmed.toLowerCase() === 'unlimited') return null
-  const parsed = Number.parseInt(trimmed, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  // parseInt accepts partial parses like "8192mb" → 8192; Python int()
+  // and Rust parse::<usize>() reject those. Match the strict semantics.
+  if (!/^\d+$/.test(trimmed)) return null
+  const parsed = Number(trimmed)
+  if (parsed <= 0) return null
   return parsed
 }
 
@@ -72,7 +75,14 @@ export function redactAndTruncate(
     return { json: serialized, truncated: false }
   }
 
-  const cap = Math.max(0, maxBytes - Buffer.byteLength(TRUNCATION_MARKER, 'utf8'))
+  const markerLen = Buffer.byteLength(TRUNCATION_MARKER, 'utf8')
+  // When maxBytes is smaller than the marker itself, emit only a
+  // truncated marker so the result never exceeds the cap.
+  if (maxBytes <= markerLen) {
+    return { json: TRUNCATION_MARKER.slice(0, maxBytes), truncated: true }
+  }
+
+  const cap = maxBytes - markerLen
   const buf = Buffer.from(serialized, 'utf8')
   let cut = Math.min(cap, buf.length)
   // Walk back to a UTF-8 boundary so we don't emit half-codepoints.
