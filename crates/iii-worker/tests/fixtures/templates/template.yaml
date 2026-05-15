@@ -1,0 +1,30 @@
+templates:
+  - worker-bare
+
+shared_files:
+  - source: default-gitignore
+    dest: .gitignore
+  - source: default-iii-worker.yaml
+    dest: iii.worker.yaml
+
+language_files:
+  common:
+    - '.gitignore'
+    - 'iii.worker.yaml'
+    - 'README.md'
+    - 'README*'
+    - 'LICENSE'
+    - 'LICENSE*'
+  typescript:
+    - '*.ts'
+    - 'tsconfig.json'
+  javascript:
+    - '*.js'
+  node:
+    - 'package.json'
+  python:
+    - '*.py'
+    - 'pyproject.toml'
+  rust:
+    - '*.rs'
+    - 'Cargo.toml'

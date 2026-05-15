@@ -1,0 +1,9 @@
+{
+  "name": "my-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "iii-sdk": "^0.11.6"
+  }
+}

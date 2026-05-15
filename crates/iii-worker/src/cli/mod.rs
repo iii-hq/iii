@@ -10,6 +10,7 @@ pub mod builtin_defaults;
 pub mod config_file;
 pub mod firmware;
 pub mod host_shim;
+pub mod init;
 pub mod lifecycle;
 pub mod local_worker;
 pub mod lockfile;

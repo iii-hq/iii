@@ -63,7 +63,7 @@ fn project_init_accepts_positional_name() {
 }
 
 #[test]
-fn project_init_rejects_already_initialized_dir() {
+fn project_init_preserves_project_id_and_user_edits_on_rerun() {
     let dir = tempdir().unwrap();
     let out1 = iii_bin()
         .args(["project", "init", "--template-dir"])
@@ -77,6 +77,11 @@ fn project_init_rejects_already_initialized_dir() {
         "first init must succeed: {}",
         String::from_utf8_lossy(&out1.stderr)
     );
+    let ini1 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
+
+    let config_path = dir.path().join("config.yaml");
+    let edited = "# user-edited config\nworkers: []\n";
+    std::fs::write(&config_path, edited).unwrap();
 
     let out2 = iii_bin()
         .args(["project", "init", "--template-dir"])
@@ -86,14 +91,20 @@ fn project_init_rejects_already_initialized_dir() {
         .output()
         .expect("second init");
     assert!(
-        !out2.status.success(),
-        "second init must refuse to clobber an already-initialized project"
+        out2.status.success(),
+        "second init must preserve existing project state: {}",
+        String::from_utf8_lossy(&out2.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out2.stderr);
-    assert!(
-        stderr.contains("already initialized") || stderr.contains(".iii/project.ini"),
-        "error should mention the existing project marker:\n{stderr}"
-    );
+    let ini2 = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
+
+    let id_of = |s: &str| {
+        s.lines()
+            .find_map(|l| l.trim().strip_prefix("project_id="))
+            .map(|v| v.trim().to_string())
+            .expect("project_id present")
+    };
+    assert_eq!(id_of(&ini1), id_of(&ini2));
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), edited);
 }
 
 #[test]

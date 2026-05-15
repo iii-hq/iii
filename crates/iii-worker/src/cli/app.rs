@@ -36,7 +36,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Add one or more workers from the registry or by OCI image reference
+    /// Install an EXISTING worker from the registry or by OCI image reference.
+    /// To create a NEW worker from scratch, use `iii worker init`.
     Add {
         #[command(flatten)]
         args: AddArgs,
@@ -194,6 +195,10 @@ pub enum Commands {
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
+
+    /// Scaffold a NEW standalone worker repo from scratch.
+    /// To install an EXISTING worker, use `iii worker add`.
+    Init(super::init::InitArgs),
 
     /// Run a command inside a running worker's VM. Pipes stdin/stdout/
     /// stderr through and returns the child's exit code. Pass `-t` for
@@ -502,4 +507,44 @@ pub enum SandboxCmd {
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
+}
+
+#[cfg(test)]
+mod init_parse_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn init_parses_with_directory_flag() {
+        let cli = Cli::try_parse_from(["iii worker", "init", "--directory", "/tmp/w"])
+            .expect("init should parse");
+        match cli.command {
+            Commands::Init(args) => {
+                assert_eq!(args.directory.as_deref(), Some("/tmp/w"));
+                assert!(args.name.is_none());
+                assert!(!args.allow_non_empty);
+            }
+            _ => panic!("expected Init variant"),
+        }
+    }
+
+    #[test]
+    fn init_parses_positional_name() {
+        let cli = Cli::try_parse_from(["iii worker", "init", "mywkr"])
+            .expect("init positional should parse");
+        match cli.command {
+            Commands::Init(args) => assert_eq!(args.name.as_deref(), Some("mywkr")),
+            _ => panic!("expected Init variant"),
+        }
+    }
+
+    #[test]
+    fn init_accepts_template_dir() {
+        let cli = Cli::try_parse_from(["iii worker", "init", "--template-dir", "/tmp/fix"])
+            .expect("init --template-dir should parse");
+        match cli.command {
+            Commands::Init(args) => assert_eq!(args.template_dir.as_deref(), Some("/tmp/fix")),
+            _ => panic!("expected Init variant"),
+        }
+    }
 }

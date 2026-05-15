@@ -16,7 +16,10 @@
 
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use scaffolder_core::{IiiConfig, TemplateFetcher, copy_template};
+use scaffolder_core::cli::{
+    apply_template_idempotent, build_fetcher, check_directory_state, print_err, resolve_root,
+};
+use scaffolder_core::{IiiConfig, TemplateFetcher};
 use std::path::{Path, PathBuf};
 
 #[derive(Args, Debug, Clone)]
@@ -129,19 +132,13 @@ async fn run_init(args: InitArgs) -> i32 {
         );
     }
 
-    if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
-        let kind = if e.contains("already initialized") {
-            "non_empty_dir_existing_project"
-        } else {
-            "non_empty_dir"
-        };
-        crate::cli::telemetry::send_project_init_failed(kind, &e);
-        let fix = if e.contains("already initialized") {
-            "delete .iii/project.ini or pick a different --directory"
-        } else {
-            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory"
-        };
-        return print_err("target directory cannot be initialized", &e, fix);
+    if let Err(e) = check_directory_state(&root, args.allow_non_empty, "project.ini") {
+        crate::cli::telemetry::send_project_init_failed("non_empty_dir", &e);
+        return print_err(
+            "target directory is not empty",
+            &e,
+            "pass --allow-non-empty to scaffold into an existing project, or pick a different directory",
+        );
     }
 
     let device_id = iii::workers::telemetry::environment::get_or_create_device_id();
@@ -151,9 +148,8 @@ async fn run_init(args: InitArgs) -> i32 {
         .unwrap_or("iii-project")
         .to_string();
 
-    // Fetch + apply the canonical 'bare' template. Re-runs against an
-    // already-initialized directory are rejected earlier by
-    // `check_directory_state`.
+    // Fetch + apply the canonical 'bare' template. Existing project_id is
+    // preserved on re-runs.
     let mut fetcher = match build_fetcher(args.template_dir.as_deref()) {
         Ok(f) => f,
         Err(e) => {
@@ -166,7 +162,7 @@ async fn run_init(args: InitArgs) -> i32 {
         }
     };
 
-    if let Err(e) = apply_template(&mut fetcher, "bare", &root).await {
+    if let Err(e) = apply_template_idempotent(&mut fetcher, "bare", &root).await {
         crate::cli::telemetry::send_project_init_failed("apply_bare", &e.to_string());
         return print_err(
             "could not apply 'bare' template",
@@ -224,6 +220,8 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         directory: target_dir.clone(),
         languages: None,
         skip_tool_check: args.skip_iii,
+        skip_install: false,
+        skip_next_steps: false,
         yes: false,
     };
 
@@ -334,45 +332,6 @@ async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-fn build_fetcher(template_dir: Option<&str>) -> anyhow::Result<TemplateFetcher> {
-    if let Some(dir) = template_dir {
-        Ok(TemplateFetcher::from_local(
-            PathBuf::from(dir),
-            IiiConfig.name(),
-        ))
-    } else {
-        TemplateFetcher::from_config(&IiiConfig)
-    }
-}
-
-/// Apply a template via [`copy_template`] with no language selection. Used for
-/// 'bare' which has no language requirements; 'common' files (the shared
-/// `config.yaml`, `.gitignore`, `data/.gitkeep`) get copied via the root
-/// `language_files.common` patterns.
-///
-/// Merges the root manifest's `language_files` with the per-template overrides
-/// (same precedence as `scaffolder_core::run`).
-async fn apply_template(
-    fetcher: &mut TemplateFetcher,
-    template_name: &str,
-    target: &Path,
-) -> anyhow::Result<()> {
-    let root_manifest = fetcher.fetch_root_manifest().await?;
-    let manifest = fetcher.fetch_template_manifest(template_name).await?;
-    let mut language_files = root_manifest.language_files.clone();
-    language_files.merge(&manifest.language_files);
-    copy_template(
-        fetcher,
-        template_name,
-        &manifest,
-        target,
-        &[],
-        &language_files,
-    )
-    .await?;
-    Ok(())
-}
 
 /// Fetch the docker template's two files directly (skipping the shared_files
 /// merge that [`copy_template`] applies). We can't go through `copy_template`
@@ -514,71 +473,6 @@ fn warn_missing_project_ini(root: &Path) {
     );
 }
 
-fn resolve_root(dir: Option<&str>) -> Result<PathBuf, String> {
-    match dir {
-        Some(d) if d.trim().is_empty() => Err("directory argument cannot be empty".to_string()),
-        Some(d) => Ok(PathBuf::from(d)),
-        None => std::env::current_dir().map_err(|e| format!("cannot read cwd: {}", e)),
-    }
-}
-
-/// Reject scaffolding into a non-empty directory unless the user opted in via
-/// `--allow-non-empty`. An existing `.iii/project.ini` is always a hard error
-/// (no idempotent re-init): the user must delete the marker or pick a fresh
-/// directory. Hidden dotfiles (`.git/`, `.gitignore`, etc.) and the `data/`
-/// runtime directory are not considered "non-empty content" — they're either
-/// dev tooling or iii-managed state.
-fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), String> {
-    if !root.exists() {
-        return Ok(());
-    }
-    if !root.is_dir() {
-        return Err(format!("{} exists but is not a directory", root.display()));
-    }
-    if root.join(".iii").join("project.ini").exists() {
-        return Err(format!(
-            "{} is already initialized (.iii/project.ini exists)",
-            root.display()
-        ));
-    }
-    if allow_non_empty {
-        return Ok(());
-    }
-    let entries: Vec<String> = match std::fs::read_dir(root) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| !name.starts_with('.') && name != "data")
-            .collect(),
-        Err(e) => return Err(format!("read {}: {e}", root.display())),
-    };
-    if entries.is_empty() {
-        Ok(())
-    } else {
-        let mut sample = entries.clone();
-        sample.sort();
-        let preview: Vec<String> = sample.iter().take(5).cloned().collect();
-        let suffix = if sample.len() > 5 {
-            format!(", and {} more", sample.len() - 5)
-        } else {
-            String::new()
-        };
-        Err(format!(
-            "{} contains {}{}",
-            root.display(),
-            preview.join(", "),
-            suffix
-        ))
-    }
-}
-
-fn print_err(problem: &str, cause: &str, fix: &str) -> i32 {
-    eprintln!("{} {}", "error:".red().bold(), problem);
-    eprintln!("  {} {}", "cause:".dimmed(), cause);
-    eprintln!("  {} {}", "fix:".dimmed(), fix);
-    1
-}
-
 fn print_init_success(project_name: &str, root: &Path, target_specified: bool, docker: bool) {
     eprintln!();
     eprintln!(
@@ -609,7 +503,3 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
 }
-
-// `IiiConfig::name()` requires the trait in scope; bring it in here so the
-// `build_fetcher` helper above compiles.
-use scaffolder_core::ProductConfig;
