@@ -443,6 +443,8 @@ class III:
             )
         elif msg_type == MessageType.REGISTER_TRIGGER.value:
             asyncio.create_task(self._handle_trigger_registration(data))
+        elif msg_type == MessageType.TRIGGER_REGISTRATION_RESULT.value:
+            self._handle_trigger_registration_result(data)
         elif msg_type == MessageType.WORKER_REGISTERED.value:
             worker_id = data.get("worker_id", "")
             self._worker_id = worker_id
@@ -705,6 +707,21 @@ class III:
                     "error": {"code": "trigger_registration_failed", "message": str(e)},
                 }
             )
+
+    def _handle_trigger_registration_result(self, data: dict[str, Any]) -> None:
+        error = data.get("error")
+        if not error:
+            return
+
+        trigger_id = data.get("id", "")
+        trigger_type = data.get("trigger_type") or data.get("type") or ""
+        message = error.get("message", "")
+        log.error(
+            "[iii] Trigger registration failed for %r (%s): %s",
+            trigger_id,
+            trigger_type,
+            message,
+        )
 
     # Connection state management
 
