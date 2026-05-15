@@ -1294,4 +1294,25 @@ modules:
             .collect();
         assert!(visible.iter().any(|n| *n == "data"));
     }
+
+    #[test]
+    fn display_option_renders_some_without_wrapper() {
+        let v: Option<String> = Some("abc123".to_string());
+        assert_eq!(format!("{}", display_option(&v)), "abc123");
+    }
+
+    #[test]
+    fn display_option_renders_none_as_empty_string() {
+        let v: Option<String> = None;
+        assert_eq!(format!("{}", display_option(&v)), "");
+    }
+
+    #[test]
+    fn display_option_uses_display_not_debug_on_uuids() {
+        let id = uuid::Uuid::nil();
+        let v: Option<uuid::Uuid> = Some(id);
+        let rendered = format!("{}", display_option(&v));
+        assert_eq!(rendered, "00000000-0000-0000-0000-000000000000");
+        assert!(!rendered.contains("Some"));
+    }
 }
