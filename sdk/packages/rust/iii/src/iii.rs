@@ -1571,6 +1571,23 @@ impl III {
             Message::WorkerRegistered { worker_id } => {
                 tracing::debug!(worker_id = %worker_id, "Worker registered");
             }
+            Message::TriggerRegistrationResult {
+                id,
+                trigger_type,
+                function_id: _,
+                error,
+            } => {
+                if let Some(err) = error {
+                    tracing::error!(
+                        trigger_id = %id,
+                        trigger_type = %trigger_type,
+                        code = %err.code,
+                        "[iii] Trigger registration failed for {:?}: {}",
+                        id,
+                        err.message
+                    );
+                }
+            }
             _ => {}
         }
 
@@ -2243,5 +2260,44 @@ mod tests {
 
         assert!(!shutdown);
         assert!(queue.is_empty());
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_result_error_is_logged() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let payload = serde_json::json!({
+            "type": "triggerregistrationresult",
+            "id": "trig-1",
+            "trigger_type": "http",
+            "function_id": "fn-1",
+            "error": {
+                "code": "trigger_type_not_found",
+                "message": "Trigger type \"http\" not found — worker iii-http is missing. Run: iii worker add iii-http",
+            },
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        assert!(logs_contain("iii worker add iii-http"));
+        assert!(logs_contain("trig-1"));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_result_success_does_not_log_error() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let payload = serde_json::json!({
+            "type": "triggerregistrationresult",
+            "id": "trig-2",
+            "trigger_type": "http",
+            "function_id": "fn-2",
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        assert!(!logs_contain("Trigger registration failed"));
     }
 }
