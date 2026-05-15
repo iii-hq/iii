@@ -8,7 +8,6 @@ from opentelemetry import baggage
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
-
 #: DEFAULT_ALLOWLIST drift across languages would break worker chains;
 #: lockstep tests in each SDK pin this constant at CI time.
 DEFAULT_ALLOWLIST: tuple[str, ...] = (

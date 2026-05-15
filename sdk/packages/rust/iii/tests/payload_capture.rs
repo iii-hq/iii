@@ -85,8 +85,8 @@ fn find_event<'a>(
     }
 }
 
-fn event_attr<'a>(
-    span: &'a opentelemetry_sdk::trace::SpanData,
+fn event_attr(
+    span: &opentelemetry_sdk::trace::SpanData,
     event_name: &str,
     key: &str,
 ) -> Option<String> {
