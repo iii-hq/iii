@@ -5906,15 +5906,6 @@ mod tests {
         assert!(parsed.get("log.data").is_some());
     }
 
-    // -------------------------------------------------------------------
-    // Context propagation primitives — pin the round-trip semantics that
-    // `Engine::spawn_invoke_function` relies on when it attaches the
-    // inbound traceparent+baggage BEFORE opening the `handle_invocation`
-    // span (so `BaggageSpanProcessor::on_start` in iii-sdk can see
-    // `iii.session.id` / `iii.message.id` / `iii.function.id` in
-    // `Context::current()` and stamp them as span attributes).
-    // -------------------------------------------------------------------
-
     const SAMPLE_TRACEPARENT: &str =
         "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     const SAMPLE_TRACE_ID_HEX: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -5938,11 +5929,7 @@ mod tests {
         );
         assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
         assert_eq!(format!("{:016x}", sc.span_id()), SAMPLE_SPAN_ID_HEX);
-        assert!(
-            sc.is_remote(),
-            "extracted parent must be flagged remote so SpanProcessor::on_start \
-             treats it as the parent span context, not a local sibling"
-        );
+        assert!(sc.is_remote(), "extracted parent must be flagged remote");
     }
 
     #[test]
@@ -5950,8 +5937,7 @@ mod tests {
         let bg = "iii.session.id=s-1,iii.message.id=m-1,iii.function.id=auth::set_token";
         let cx = extract_context(None, Some(bg));
         let round = inject_baggage_from_context(&cx).expect("baggage present");
-        // Baggage is comma-separated unordered; compare as sets so the
-        // assertion doesn't depend on hash-map iteration order.
+        // Baggage entries are unordered; HashMap iteration order is non-deterministic.
         let parse = |s: &str| {
             s.split(',')
                 .map(|e| e.trim().to_string())
@@ -5976,10 +5962,7 @@ mod tests {
     fn extract_context_with_no_headers_returns_empty_context() {
         let cx = extract_context(None, None);
         let span_ref = cx.span();
-        assert!(
-            !span_ref.span_context().is_valid(),
-            "no headers in => no valid span context out"
-        );
+        assert!(!span_ref.span_context().is_valid());
         drop(span_ref);
         assert!(inject_traceparent_from_context(&cx).is_none());
         assert!(inject_baggage_from_context(&cx).is_none());
@@ -5988,37 +5971,23 @@ mod tests {
     #[test]
     #[serial]
     fn attached_extracted_context_makes_baggage_visible_in_current_context() {
-        // This is the exact pattern `Engine::spawn_invoke_function` uses:
-        //   let parent_cx = extract_context(traceparent, baggage);
-        //   let _guard = parent_cx.attach();
-        //   tracing::info_span!("handle_invocation", ...);
-        //
-        // The pin: after `.attach()`, baggage MUST be readable from
-        // `Context::current()` so `BaggageSpanProcessor::on_start`
-        // (which reads `parent_context.baggage()` and copies allowlisted
-        // entries onto each new span) can see the iii.* keys.
         let bg = "iii.message.id=m-1,iii.session.id=s-1";
         let parent_cx = extract_context(None, Some(bg));
         {
             let _guard = parent_cx.attach();
             let injected = inject_baggage_from_context(&Context::current())
-                .expect("baggage must be visible in Context::current() inside the guard");
+                .expect("baggage visible inside the guard");
             assert!(injected.contains("iii.message.id=m-1"));
             assert!(injected.contains("iii.session.id=s-1"));
         }
-        // Guard dropped — baggage must no longer leak into the caller scope.
         assert!(
             inject_baggage_from_context(&Context::current()).is_none(),
-            "baggage must not leak into the caller scope after the guard drops"
+            "baggage must not leak past the guard"
         );
     }
 
     #[test]
     fn invalid_traceparent_extracts_to_invalid_context() {
-        // Engine receives malformed inbound headers (proxy bug, mid-flight
-        // truncation). `extract_context` must NOT panic and must return an
-        // invalid context, so the downstream span starts a fresh trace
-        // instead of inheriting garbage.
         let cx = extract_context(Some("not-a-valid-traceparent"), None);
         let span_ref = cx.span();
         assert!(!span_ref.span_context().is_valid());

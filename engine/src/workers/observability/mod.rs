@@ -84,39 +84,27 @@ pub struct TracesTreeInput {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct TracesGroupByInput {
-    /// Span attribute key to group by (e.g. "iii.message.id",
-    /// "iii.session.id"). Spans without this attribute are skipped.
+    /// Span attribute key to group by. Spans without this attribute are skipped.
     attribute: String,
-    /// Earliest start time (ms since epoch) to include. None = no lower
-    /// bound (within retained spans).
+    /// Earliest end_time (ms since epoch) to include.
     #[serde(default)]
     since_ms: Option<u64>,
-    /// Max number of groups to return (after sorting by `first_seen_ms`
-    /// descending). Default 100.
+    /// Max groups returned after sorting by `first_seen_ms` descending. Default 100.
     #[serde(default)]
     limit: Option<u32>,
-    /// Include internal engine spans (function_id starts with `engine::`
-    /// or `iii.function.kind == "internal"`). Default false — matches
-    /// `engine::traces::list` semantics.
+    /// Include engine-internal spans. Defaults to false, matching `traces::list`.
     #[serde(default)]
     include_internal: Option<bool>,
 }
 
 #[derive(Serialize)]
 pub struct TraceGroup {
-    /// The attribute value this group is keyed on.
     pub value: String,
-    /// Unique trace_ids that contain at least one span with this value.
     pub trace_ids: Vec<String>,
-    /// Total spans across all trace_ids in this group.
     pub span_count: u32,
-    /// Earliest span start_time (ms since epoch) in this group.
     pub first_seen_ms: u64,
-    /// Latest span end_time (ms since epoch) in this group.
     pub last_seen_ms: u64,
-    /// `last_seen_ms - first_seen_ms`. Convenience for UI sort/display.
     pub duration_ms: u32,
-    /// Count of spans in this group whose status is `Error`.
     pub error_count: u32,
 }
 
@@ -675,17 +663,8 @@ impl ObservabilityWorker {
                         None
                     };
 
-                // Pre-compute trace IDs that have any span matching ALL of
-                // the requested `[[key, value], ...]` attribute pairs.
-                //
-                // Mirrors `name_matched_trace_ids` above so the same
-                // trace-level semantics apply: a root span is included if
-                // any span anywhere in its trace matches the attribute
-                // filter. This makes `iii.session.id` / `iii.message.id`
-                // (which the harness wrapper writes onto CHILD spans, not
-                // the engine's auto-instrumented root) queryable when
-                // search_all_spans is set. Without this, child-span
-                // attributes are invisible to traces::list.
+                // Trace-level attribute match, mirroring `name_matched_trace_ids`:
+                // a root is included if any span in its trace matches all pairs.
                 let attributes_matched_trace_ids: Option<std::collections::HashSet<String>> =
                     if search_all {
                         if let Some(ref attrs) = input.attributes {
@@ -712,15 +691,7 @@ impl ObservabilityWorker {
 
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
-                    // Root-only by default. With `search_all_spans: true` we
-                    // surface child spans too — without this, worker spans
-                    // (which always carry `parent_span_id` set by the
-                    // engine's invocation context) are invisible to LIST,
-                    // even though they are stored and walkable via
-                    // `traces::tree`. The harness's `iii.invocation.input` /
-                    // `iii.invocation.output` events live on those child
-                    // spans, so the events tab couldn't surface them via
-                    // LIST until this widening.
+                    // Root-only by default; `search_all_spans` widens to children too.
                     .filter(|s| search_all || s.parent_span_id.is_none())
                     .filter(|s| {
                         // Exclude internal engine traces unless explicitly requested
@@ -788,20 +759,15 @@ impl ObservabilityWorker {
                         }
                         if let Some(ref attrs) = input.attributes {
                             if search_all {
-                                // Trace-level match: include root if ANY span
-                                // in the trace matched all attribute pairs.
-                                // Mirrors the name+search_all_spans behavior
-                                // in the pre-computed set above.
                                 if let Some(ref matched_ids) = attributes_matched_trace_ids
                                     && !matched_ids.contains(&s.trace_id)
                                 {
                                     return false;
                                 }
                             } else {
-                                // Root-only check (back-compat for callers
-                                // that depend on this — e.g. queries by
-                                // service-level attributes like
-                                // `iii.function.kind`).
+                                // Root-only when search_all_spans=false, for
+                                // back-compat with callers querying root-tagged
+                                // attrs like `iii.function.kind`.
                                 for pair in attrs {
                                     if pair.len() == 2 {
                                         let key = &pair[0];
@@ -906,21 +872,9 @@ impl ObservabilityWorker {
         }
     }
 
-    /// Server-side aggregation of spans by a single attribute value.
-    ///
-    /// Designed for the iii Developer Console's TRACES tab "Group by"
-    /// affordance: instead of fetching every span and grouping
-    /// client-side (which doesn't scale), the engine pre-aggregates and
-    /// returns ~100 groups per query. Each group reports its trace_ids,
-    /// span_count, first/last_seen timestamps, duration, and error_count
-    /// — enough for the UI to render collapsible group rows + sort
-    /// without follow-up requests.
-    ///
-    /// Iterates the in-memory span storage once, skips spans without the
-    /// requested attribute, groups by attribute value into a HashMap, then
-    /// applies the `since_ms` filter at iteration and `limit` after sort.
-    /// `include_internal=false` (default) excludes engine-internal spans
-    /// the same way `engine::traces::list` does.
+    /// Aggregate stored spans by one attribute value. Returns up to
+    /// `limit` groups (default 100), each with trace_ids, span_count,
+    /// duration, and error_count.
     #[function(
         id = "engine::traces::group_by",
         description = "Group stored spans by an attribute value (only available when exporter is 'memory' or 'both')"
@@ -994,9 +948,7 @@ impl ObservabilityWorker {
                     .map(|(value, b)| {
                         let first_ms = b.first_seen_ns / 1_000_000;
                         let last_ms = b.last_seen_ns / 1_000_000;
-                        // Saturate to u32 — group durations in the
-                        // billion-millisecond range are diagnostic noise,
-                        // not real data.
+                        // Saturate; durations beyond u32::MAX ms are diagnostic noise.
                         let duration_ms = u32::try_from(last_ms.saturating_sub(first_ms))
                             .unwrap_or(u32::MAX);
                         let mut trace_ids: Vec<String> = b.trace_ids.into_iter().collect();
@@ -1013,8 +965,6 @@ impl ObservabilityWorker {
                     })
                     .collect();
 
-                // Sort newest-first then truncate. UI typically wants
-                // most-recent messages at the top.
                 result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
                 result.truncate(limit);
 
@@ -4367,12 +4317,6 @@ mod tests {
         assert_eq!(span_storage.len(), 0);
     }
 
-    /// Layer 2B: when `search_all_spans=true` is paired with an attribute
-    /// filter, root spans of traces whose CHILD spans match the filter
-    /// must be returned. Before this fix, the filter chain short-circuited
-    /// on `parent_span_id.is_none()` and the attribute filter never saw
-    /// child spans — which broke the `iii.session.id` / `iii.message.id`
-    /// query path the harness wrapper depends on.
     #[tokio::test]
     #[serial]
     async fn test_traces_list_attribute_filter_with_search_all_spans_matches_child() {
@@ -4384,9 +4328,6 @@ mod tests {
         let span_storage = otel::get_span_storage().expect("span storage should exist");
         span_storage.clear();
         span_storage.add_spans(vec![
-            // Root span — NO `iii.message.id` attribute. This is exactly
-            // the harness shape: the engine's auto-`handle_invocation`
-            // span is the root, harness attrs live on a child below.
             make_span(
                 "trace-with-msg",
                 "root",
@@ -4398,7 +4339,6 @@ mod tests {
                 "OK",
                 vec![],
             ),
-            // Child span — carries the harness attribute we want to query.
             make_span(
                 "trace-with-msg",
                 "child",
@@ -4410,7 +4350,6 @@ mod tests {
                 "OK",
                 vec![("iii.message.id", "M-target")],
             ),
-            // Unrelated trace with a different message id.
             make_span(
                 "trace-other",
                 "root-other",
@@ -4450,11 +4389,6 @@ mod tests {
         match result {
             FunctionResult::Success(Some(value)) => {
                 let spans = value["spans"].as_array().expect("spans array");
-                // With `search_all_spans: true`, LIST now surfaces every
-                // span in the matched trace (root + children), not just
-                // the root. This is what makes worker spans — which
-                // always carry `parent_span_id` set — visible to the
-                // console TRACES tab and to attribute-filtered queries.
                 assert_eq!(
                     spans.len(),
                     2,
@@ -4477,13 +4411,6 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_traces_list_returns_children_only_when_search_all_spans() {
-        // Regression: prove that the root-only filter is gated by
-        // `search_all_spans`. Without the flag set, the legacy
-        // root-only behavior is preserved — surfaces only the
-        // parent. With the flag, child spans (where the harness's
-        // `iii.invocation.input` / `iii.invocation.output` events
-        // live) become visible. Pinning both sides protects against
-        // future regressions on either path.
         reset_observability_test_state();
 
         let engine = Arc::new(Engine::new());
@@ -4516,7 +4443,6 @@ mod tests {
             ),
         ]);
 
-        // Default: search_all_spans=false → root-only.
         let result_root_only = module
             .list_traces(TracesListInput {
                 trace_id: None,
@@ -4545,7 +4471,6 @@ mod tests {
             _ => panic!("expected success"),
         }
 
-        // search_all_spans=true → root + children.
         let result_all = module
             .list_traces(TracesListInput {
                 trace_id: None,
@@ -4580,12 +4505,6 @@ mod tests {
         }
     }
 
-    /// Back-compat guard: with `search_all_spans=false` (the default),
-    /// the attribute filter must STILL be root-only — callers that use
-    /// the filter to find root-tagged attributes like `iii.function.kind`
-    /// or `http.method` rely on this. After the Layer 2B change, mixing
-    /// child-only attributes with `search_all_spans=false` must continue
-    /// to return zero results.
     #[tokio::test]
     #[serial]
     async fn test_traces_list_attribute_filter_without_search_all_spans_stays_root_only() {
@@ -4657,11 +4576,6 @@ mod tests {
         }
     }
 
-    /// Layer 3a: end-to-end test of `engine::traces::group_by`. Three
-    /// traces: A (2 spans both `iii.message.id=M-1`), B (3 spans all
-    /// `iii.message.id=M-2`), C (1 span, NO `iii.message.id`). Grouping
-    /// by `iii.message.id` must produce exactly 2 groups (M-1, M-2)
-    /// with correct trace_ids + span_counts; C is silently skipped.
     #[tokio::test]
     #[serial]
     async fn test_traces_group_by_attribute_returns_correct_aggregates() {
@@ -4673,7 +4587,6 @@ mod tests {
         let span_storage = otel::get_span_storage().expect("span storage should exist");
         span_storage.clear();
         span_storage.add_spans(vec![
-            // Trace A: 2 spans, both with iii.message.id=M-1.
             make_span(
                 "trace-A",
                 "A1",
@@ -4696,7 +4609,6 @@ mod tests {
                 "OK",
                 vec![("iii.message.id", "M-1")],
             ),
-            // Trace B: 3 spans, all with iii.message.id=M-2. One is Error.
             make_span(
                 "trace-B",
                 "B1",
@@ -4730,7 +4642,7 @@ mod tests {
                 "OK",
                 vec![("iii.message.id", "M-2")],
             ),
-            // Trace C: 1 span WITHOUT iii.message.id — must be skipped.
+            // No iii.message.id — must be skipped by group_by.
             make_span(
                 "trace-C",
                 "C1",
@@ -4759,9 +4671,9 @@ mod tests {
                 assert_eq!(
                     groups.len(),
                     2,
-                    "expected exactly 2 groups (M-1, M-2); trace-C must be skipped"
+                    "expected 2 groups (M-1, M-2); trace-C has no iii.message.id"
                 );
-                // Sorted by first_seen_ms DESC, so M-2 (newer) is first.
+                // Sorted by first_seen_ms DESC.
                 assert_eq!(groups[0]["value"], "M-2");
                 assert_eq!(groups[0]["span_count"], 3);
                 assert_eq!(groups[0]["error_count"], 1);
@@ -4780,10 +4692,6 @@ mod tests {
         }
     }
 
-    /// `group_by` must drop spans whose `end_time_unix_nano` is older
-    /// than `since_ms * 1_000_000`. Pins the timestamp filter against
-    /// regressions that compare against `start_time_unix_nano` or use
-    /// the wrong unit conversion.
     #[tokio::test]
     #[serial]
     async fn test_traces_group_by_since_ms_filters_old_spans() {
@@ -4795,7 +4703,6 @@ mod tests {
         let span_storage = otel::get_span_storage().expect("span storage should exist");
         span_storage.clear();
         span_storage.add_spans(vec![
-            // Old span — end_time 1s. Must be filtered out when since_ms=2000.
             make_span(
                 "trace-old",
                 "old",
@@ -4807,7 +4714,6 @@ mod tests {
                 "OK",
                 vec![("iii.message.id", "M-old")],
             ),
-            // New span — end_time 5s. Must be retained.
             make_span(
                 "trace-new",
                 "new",
@@ -4840,9 +4746,6 @@ mod tests {
         }
     }
 
-    /// `limit` must truncate the result to N groups (after sort).
-    /// Pins the truncation so a regression that returns the full
-    /// HashMap-derived group list is caught.
     #[tokio::test]
     #[serial]
     async fn test_traces_group_by_limit_truncates_to_n_groups() {
@@ -4854,7 +4757,6 @@ mod tests {
         let span_storage = otel::get_span_storage().expect("span storage should exist");
         span_storage.clear();
 
-        // 5 distinct attribute values across 5 traces.
         let spans: Vec<_> = (0..5)
             .map(|i| {
                 let start_ns = 1_000_000_000_u64 + (i as u64) * 1_000_000_000;
@@ -4885,12 +4787,8 @@ mod tests {
         match result {
             FunctionResult::Success(Some(value)) => {
                 let groups = value["groups"].as_array().expect("groups array");
-                assert_eq!(
-                    groups.len(),
-                    2,
-                    "limit=2 must truncate the 5 groups to 2"
-                );
-                // Sorted by first_seen_ms DESC, so M-4 (newest) is first, M-3 second.
+                assert_eq!(groups.len(), 2, "limit=2 must truncate the 5 groups to 2");
+                // Sorted by first_seen_ms DESC.
                 assert_eq!(groups[0]["value"], "M-4");
                 assert_eq!(groups[1]["value"], "M-3");
             }
@@ -4898,11 +4796,6 @@ mod tests {
         }
     }
 
-    /// `include_internal=false` (default) must exclude spans tagged
-    /// `iii.function.kind=internal` or whose `function_id` attribute
-    /// starts with `engine::`. Pins the exclusion branch — a
-    /// regression that drops the filter would surface engine-internal
-    /// spans in user-facing group views.
     #[tokio::test]
     #[serial]
     async fn test_traces_group_by_excludes_internal_spans_by_default() {
@@ -4914,7 +4807,6 @@ mod tests {
         let span_storage = otel::get_span_storage().expect("span storage should exist");
         span_storage.clear();
         span_storage.add_spans(vec![
-            // Internal span via iii.function.kind=internal.
             make_span(
                 "trace-internal-1",
                 "i1",
@@ -4929,7 +4821,6 @@ mod tests {
                     ("iii.function.kind", "internal"),
                 ],
             ),
-            // Internal span via function_id starting with engine::.
             make_span(
                 "trace-internal-2",
                 "i2",
@@ -4944,7 +4835,6 @@ mod tests {
                     ("function_id", "engine::traces::list"),
                 ],
             ),
-            // User span — must survive.
             make_span(
                 "trace-user",
                 "u1",
@@ -4963,7 +4853,6 @@ mod tests {
                 attribute: "iii.message.id".to_string(),
                 since_ms: None,
                 limit: Some(100),
-                // include_internal defaults to false when None.
                 include_internal: None,
             })
             .await;
@@ -4974,7 +4863,7 @@ mod tests {
                 assert_eq!(
                     groups.len(),
                     1,
-                    "only the user trace should survive (internal excluded by default)"
+                    "internal spans must be excluded by default"
                 );
                 assert_eq!(groups[0]["value"], "M-user");
             }

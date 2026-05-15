@@ -587,24 +587,12 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
     });
 }
 
-/// Format an `Option<T: Display>` for tracing fields: renders
-/// `Some(value)` as just `value` and `None` as the empty string.
-///
-/// The default Rust `Debug` formatter (the `?` directive in tracing
-/// macros) wraps optionals as `Some(...)` / `None`, which leaks into
-/// the OTel attribute strings the engine exports. Downstream readers
-/// (console TRACES tab, Jaeger, Datadog) end up showing values like
-/// `invocation_id Some(afe495fd-...)` instead of `invocation_id afe495fd-...`.
-///
-/// Use with the `%` (Display) directive at every tracing site that
-/// emits an `Option<String>` / `Option<Uuid>` / similar field:
+/// Render `Option<T: Display>` as the inner value or empty string, so
+/// tracing fields exported to OTel don't carry `Some(...)` / `None`
+/// wrappers from Debug.
 ///
 /// ```ignore
-/// tracing::debug!(
-///     invocation_id = %display_option(&invocation_id),
-///     traceparent = %display_option(&traceparent),
-///     "Remembering invocation"
-/// );
+/// tracing::debug!(invocation_id = %display_option(&invocation_id), "...");
 /// ```
 pub fn display_option<T: std::fmt::Display>(
     opt: &Option<T>,

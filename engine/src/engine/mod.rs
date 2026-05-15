@@ -469,11 +469,9 @@ impl Engine {
         invocation_id: Option<Uuid>,
     ) {
         let span = {
-            // Attach the incoming OTel context (traceparent + baggage)
-            // BEFORE creating the span so `BaggageSpanProcessor::on_start`
-            // sees iii.session.id / iii.message.id / iii.function.id in
-            // `Context::current()` and copies them onto this span as
-            // attributes.
+            // Parent context must be on `Context::current()` BEFORE span
+            // creation so `SpanProcessor::on_start` sees the baggage;
+            // `set_parent` after creation runs too late.
             let parent_cx = crate::telemetry::extract_context(
                 traceparent.as_deref(),
                 baggage.as_deref(),
@@ -507,16 +505,9 @@ impl Engine {
         };
         let incoming_traceparent = traceparent.clone();
         let incoming_baggage = baggage.clone();
-        // Derive a traceparent/baggage pair that represents the
-        // `handle_invocation` span we just opened. Passing these
-        // downstream (instead of the original `incoming_*`) makes the
-        // engine-side `call <fn>` span (created inside
-        // `invocations.handle_invocation`) a CHILD of
-        // `handle_invocation` rather than a sibling. Without this,
-        // `.with_parent_headers(incoming_traceparent, ...)` at the
-        // `call` site re-sets the parent to the original caller,
-        // collapsing the two engine spans to siblings — which is what
-        // the trace tree was showing.
+        // Derive headers from the span we just opened so the downstream
+        // `call <fn>` becomes a child of `handle_invocation`, not a
+        // sibling of the original caller.
         let downstream_traceparent =
             inject_traceparent_from_context(&span.context()).or_else(|| traceparent.clone());
         let downstream_baggage =
@@ -924,9 +915,9 @@ impl Engine {
                         let baggage = baggage.clone();
 
                         let span = {
-                            // Attach parent context BEFORE span creation
-                            // so BaggageSpanProcessor copies iii.session.id
-                            // onto this span (set_parent runs too late).
+                            // Parent context must be on `Context::current()`
+                            // BEFORE span creation; `set_parent` after is too
+                            // late for `SpanProcessor::on_start`.
                             let parent_cx = crate::telemetry::extract_context(
                                 traceparent.as_deref(),
                                 baggage.as_deref(),
