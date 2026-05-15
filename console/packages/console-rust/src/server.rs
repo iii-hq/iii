@@ -28,6 +28,7 @@ pub struct ServerConfig {
     pub engine_host: String,
     pub engine_port: u16,
     pub ws_port: u16,
+    pub bridge_port: u16,
     pub enable_flow: bool,
 }
 
@@ -44,6 +45,7 @@ fn get_index_html(config: &ServerConfig) -> String {
         "engineHost": config.engine_host,
         "enginePort": config.engine_port,
         "wsPort": config.ws_port,
+        "bridgePort": config.bridge_port,
         "enableFlow": config.enable_flow,
     });
 
@@ -85,6 +87,7 @@ async fn serve_config(
         "engineHost": config.engine_host,
         "enginePort": config.engine_port,
         "wsPort": config.ws_port,
+        "bridgePort": config.bridge_port,
         "consolePort": config.port,
         "version": env!("CARGO_PKG_VERSION"),
         "enableFlow": config.enable_flow,

@@ -6,6 +6,7 @@ import {
   CircleDot,
   Clock,
   Hash,
+  Layers,
   Search,
   Server,
   Tags,
@@ -16,6 +17,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useReducer, useRef, useState } from 'react'
 import type { TraceFilterState } from '@/hooks/useTraceFilters'
+import type { GroupByOption } from '@/lib/groupTraces'
+import { groupByLabel } from '@/lib/groupTraces'
 import { AttributesFilter } from './AttributesFilter'
 
 interface TraceFiltersProps {
@@ -58,7 +61,22 @@ const statusOptions = [
   { label: 'Unset', value: 'unset' },
 ]
 
-type PopoverType = 'status' | 'timeRange' | 'duration' | 'service' | 'operation' | 'sort' | null
+type PopoverType =
+  | 'status'
+  | 'timeRange'
+  | 'duration'
+  | 'service'
+  | 'operation'
+  | 'sort'
+  | 'groupBy'
+  | null
+
+const groupByOptions: Array<{ label: string; value: GroupByOption }> = [
+  { label: groupByLabel('none'), value: 'none' },
+  { label: groupByLabel('iii.message.id'), value: 'iii.message.id' },
+  { label: groupByLabel('iii.session.id'), value: 'iii.session.id' },
+  { label: groupByLabel('iii.function.id'), value: 'iii.function.id' },
+]
 
 // --- Temp Inputs Reducer ---
 interface TempInputsState {
@@ -196,6 +214,7 @@ export function TraceFilters({
   const serviceRef = useRef<HTMLDivElement>(null)
   const operationRef = useRef<HTMLDivElement>(null)
   const sortRef = useRef<HTMLDivElement>(null)
+  const groupByRef = useRef<HTMLDivElement>(null)
 
   useClickOutside(statusRef, () => openPopover === 'status' && setOpenPopover(null))
   useClickOutside(timeRangeRef, () => openPopover === 'timeRange' && setOpenPopover(null))
@@ -203,6 +222,7 @@ export function TraceFilters({
   useClickOutside(serviceRef, () => openPopover === 'service' && setOpenPopover(null))
   useClickOutside(operationRef, () => openPopover === 'operation' && setOpenPopover(null))
   useClickOutside(sortRef, () => openPopover === 'sort' && setOpenPopover(null))
+  useClickOutside(groupByRef, () => openPopover === 'groupBy' && setOpenPopover(null))
 
   const togglePopover = (popover: PopoverType) => {
     setOpenPopover(openPopover === popover ? null : popover)
@@ -649,6 +669,44 @@ export function TraceFilters({
               >
                 Descending
               </button>
+            </div>
+          )}
+        </div>
+
+        {/* Group By */}
+        <div ref={groupByRef} className="relative">
+          <button
+            type="button"
+            onClick={() => togglePopover('groupBy')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md transition-colors ${
+              filters.groupBy && filters.groupBy !== 'none'
+                ? 'bg-yellow/10 border border-yellow/30 text-yellow'
+                : 'bg-[#141414] border border-[#1D1D1D] text-muted hover:border-[#2D2D2D] hover:text-foreground'
+            }`}
+            title="Group spans by an attribute value (server-side aggregation)"
+          >
+            <Layers className="w-3 h-3" />
+            {groupByLabel(filters.groupBy ?? 'none')}
+          </button>
+          {openPopover === 'groupBy' && (
+            <div className="absolute top-full mt-1 left-0 bg-[#141414] border border-[#1D1D1D] rounded-md shadow-lg z-20 min-w-[180px]">
+              {groupByOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    onFilterChange('groupBy', option.value)
+                    setOpenPopover(null)
+                  }}
+                  className={`w-full px-3 py-1.5 text-left text-[11px] hover:bg-[#1A1A1A] transition-colors first:rounded-t-md last:rounded-b-md ${
+                    (filters.groupBy ?? 'none') === option.value
+                      ? 'text-yellow'
+                      : 'text-muted hover:text-foreground'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
           )}
         </div>

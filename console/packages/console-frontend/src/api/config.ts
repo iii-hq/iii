@@ -2,6 +2,7 @@ export interface ConsoleConfig {
   engineHost: string
   enginePort: number
   wsPort: number
+  bridgePort: number
   consolePort: number
   version: string
   enableFlow?: boolean
@@ -36,6 +37,13 @@ export function getStreamsWs(): string {
   const c = getConfig()
   const host = typeof window !== 'undefined' ? window.location.host : `localhost:${c.consolePort}`
   return `${wsProtocol}//${host}/ws/streams`
+}
+
+export function getEngineBridgeWs(): string {
+  const wsProtocol =
+    typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const c = getConfig()
+  return `${wsProtocol}//${c.engineHost}:${c.bridgePort}`
 }
 
 export function getEngineBaseUrl(): string {

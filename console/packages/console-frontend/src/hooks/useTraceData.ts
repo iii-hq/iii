@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { fetchTraces } from '@/api'
+import { useEngineSdk } from '@/api/engine-sdk-provider'
 import type { TracesFilterParams } from '@/api/observability/traces'
 import { toMs } from '@/lib/traceTransform'
 
@@ -43,6 +44,7 @@ export function useTraceData({
   debouncedSearch,
   isPaused,
 }: UseTraceDataOptions): UseTraceDataReturn {
+  const sdk = useEngineSdk()
   const [traceGroups, setTraceGroups] = useState<TraceGroup[]>([])
   const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
   const [newTraceIds, setNewTraceIds] = useState<Set<string>>(new Set())
@@ -60,7 +62,7 @@ export function useTraceData({
   } = useQuery({
     queryKey: ['traces', filterParams, showSystem, debouncedSearch],
     queryFn: () =>
-      fetchTraces({
+      fetchTraces(sdk, {
         ...filterParams,
         ...(debouncedSearch && !filterParams.name
           ? { name: debouncedSearch, search_all_spans: true }

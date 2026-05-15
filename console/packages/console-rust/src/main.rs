@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
         engine_host: args.engine_host,
         engine_port: args.engine_port,
         ws_port: args.ws_port,
+        bridge_port: args.bridge_port,
         enable_flow: args.enable_flow,
     };
 

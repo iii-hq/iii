@@ -1,4 +1,5 @@
 import { queryOptions } from '@tanstack/react-query'
+import type { ISdk } from 'iii-browser-sdk'
 import { fetchAlerts } from './alerts/alerts'
 import { fetchSamplingRules } from './alerts/sampling'
 import {
@@ -196,17 +197,20 @@ export const otelLogsQuery = (options?: {
 }
 
 // OTEL traces with options
-export const otelTracesQuery = (options?: { trace_id?: string; offset?: number; limit?: number }) =>
+export const otelTracesQuery = (
+  sdk: ISdk,
+  options?: { trace_id?: string; offset?: number; limit?: number },
+) =>
   queryOptions({
     queryKey: ['otel-traces', options],
-    queryFn: () => fetchTraces(options),
+    queryFn: () => fetchTraces(sdk, options),
   })
 
 // OTEL trace tree (single trace with nested children)
-export const otelTraceTreeQuery = (traceId: string) =>
+export const otelTraceTreeQuery = (sdk: ISdk, traceId: string) =>
   queryOptions({
     queryKey: ['otel-trace-tree', traceId],
-    queryFn: () => fetchTraceTree(traceId),
+    queryFn: () => fetchTraceTree(sdk, traceId),
     enabled: !!traceId,
   })
 

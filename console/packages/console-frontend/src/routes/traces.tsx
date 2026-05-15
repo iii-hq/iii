@@ -15,11 +15,15 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchTraceTree } from '@/api'
+import { useEngineSdk } from '@/api/engine-sdk-provider'
+import type { TraceGroup as ApiTraceGroup } from '@/api/observability/traces'
 import { FlameGraph } from '@/components/traces/FlameGraph'
 import { FlowView } from '@/components/traces/FlowView'
 import { ServiceBreakdown } from '@/components/traces/ServiceBreakdown'
+import { SessionDetailPanel } from '@/components/traces/SessionDetailPanel'
 import { SpanPanel } from '@/components/traces/SpanPanel'
 import { TraceFilters } from '@/components/traces/TraceFilters'
+import { TraceGroupsView } from '@/components/traces/TraceGroupsView'
 import { TraceHeader } from '@/components/traces/TraceHeader'
 import { TraceMap } from '@/components/traces/TraceMap'
 import { ViewSwitcher, type ViewType } from '@/components/traces/ViewSwitcher'
@@ -72,6 +76,7 @@ function StatusIcon({ status }: { status: TraceGroup['status'] }) {
 }
 
 function TracesPage() {
+  const sdk = useEngineSdk()
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -82,6 +87,11 @@ function TracesPage() {
   }, [])
   const [showSystem, setShowSystem] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  // When `filterState.groupBy` is active, clicking a session row sets this.
+  // The detail panel switches to `SessionDetailPanel` which renders every
+  // trace in the group instead of just one. Cleared when groupBy goes back
+  // to 'none' or the user closes the panel.
+  const [selectedGroup, setSelectedGroup] = useState<ApiTraceGroup | null>(null)
 
   const [activeView, setActiveView] = useState<ViewType>('waterfall')
   const [selectedSpan, setSelectedSpan] = useState<VisualizationSpan | null>(null)
@@ -126,7 +136,7 @@ function TracesPage() {
     setWaterfallData(null)
 
     try {
-      const data = await fetchTraceTree(traceId)
+      const data = await fetchTraceTree(sdk, traceId)
 
       if (data.roots && data.roots.length > 0) {
         const wfData = treeToWaterfallData(data.roots)
@@ -147,7 +157,7 @@ function TracesPage() {
     } finally {
       setIsLoadingSpans(false)
     }
-  }, [])
+  }, [sdk])
 
   const selectTrace = useCallback(
     (traceId: string | null) => {
@@ -165,7 +175,24 @@ function TracesPage() {
     [loadTraceSpans],
   )
 
-  const selectedTrace = traceGroups.find((g) => g.traceId === selectedTraceId)
+  // In group-by mode the clicked trace_id comes from the engine's
+  // aggregated `TraceGroup` list, not from `traceGroups` (which is the
+  // flat-list `useTraceData` state and is empty when group-by is active).
+  // Synthesize a minimal stub so the existing detail-panel render guard
+  // (`{selectedTrace && (...)}`) still fires. Downstream code only reads
+  // `selectedTrace.traceId` — the other fields are placeholders.
+  const selectedTrace =
+    traceGroups.find((g) => g.traceId === selectedTraceId) ??
+    (selectedTraceId
+      ? ({
+          traceId: selectedTraceId,
+          rootOperation: 'trace',
+          status: 'ok' as const,
+          startTime: 0,
+          spanCount: 0,
+          services: [],
+        } satisfies TraceGroup)
+      : undefined)
 
   const filteredTraces = useMemo(() => {
     // When debouncedSearch is active, server already filtered by name across all spans
@@ -192,10 +219,23 @@ function TracesPage() {
   }, [filteredTraces, filterState.page, filterState.pageSize])
 
   useEffect(() => {
+    // In group-by mode `pagedTraces` is the flat-list view, which is empty
+    // (the view shows engine-aggregated groups instead). Don't auto-evict
+    // a selectedTraceId that came from clicking a group row.
+    if (filterState.groupBy && filterState.groupBy !== 'none') return
     if (selectedTraceId && !pagedTraces.some((g) => g.traceId === selectedTraceId)) {
       selectTrace(null)
     }
-  }, [pagedTraces, selectedTraceId, selectTrace])
+  }, [pagedTraces, selectedTraceId, selectTrace, filterState.groupBy])
+
+  // Clear any selected session group when group-by goes back to 'none',
+  // otherwise stale session state would briefly render alongside the
+  // flat-list view.
+  useEffect(() => {
+    if (!filterState.groupBy || filterState.groupBy === 'none') {
+      setSelectedGroup(null)
+    }
+  }, [filterState.groupBy])
 
   const stats = useMemo(
     () => ({
@@ -307,7 +347,16 @@ function TracesPage() {
               flushPendingTraces()
             }}
           >
-            {isQueryLoading && traceGroups.length === 0 ? (
+            {filterState.groupBy && filterState.groupBy !== 'none' ? (
+              <TraceGroupsView
+                attribute={filterState.groupBy}
+                showSystem={showSystem}
+                isPaused={isPaused}
+                selectedTraceId={selectedTraceId}
+                onSelectTrace={(traceId) => selectTrace(traceId)}
+                onSelectGroup={(group) => setSelectedGroup(group)}
+              />
+            ) : isQueryLoading && traceGroups.length === 0 ? (
               <div className="flex flex-col gap-0">
                 {(['tr-sk-0', 'tr-sk-1', 'tr-sk-2', 'tr-sk-3', 'tr-sk-4'] as const).map((sk) => (
                   <div key={sk} className="p-3 border-b border-border">
@@ -441,6 +490,22 @@ function TracesPage() {
               style={{ width: panelWidths.trace }}
               className={`bg-sidebar flex flex-col h-full overflow-hidden flex-shrink-0 animate-trace-panel-in ${isResizing ? 'pointer-events-none select-none' : ''}`}
             >
+              {selectedGroup ? (
+                // Session-level group: stacked vertical view of every
+                // trace in the group. Bypasses the single-trace
+                // isLoadingSpans/waterfallData path entirely — the
+                // session panel fetches each trace tree itself.
+                <SessionDetailPanel
+                  group={selectedGroup}
+                  onClose={() => {
+                    setSelectedGroup(null)
+                    selectTrace(null)
+                  }}
+                  onSpanClick={setSelectedSpan}
+                  selectedSpanId={selectedSpan?.span_id}
+                />
+              ) : (
+                <>
               {isLoadingSpans && (
                 <div className="flex-1 flex flex-col p-4 gap-3">
                   <div className="flex items-center gap-2">
@@ -529,6 +594,8 @@ function TracesPage() {
                   )}
                 </>
               )}
+                </>
+              )}
             </div>
           </>
         )}
@@ -554,7 +621,15 @@ function TracesPage() {
               className={`bg-sidebar flex-shrink-0 h-full overflow-hidden ${isResizing ? 'pointer-events-none select-none' : ''}`}
             >
               <SpanPanel
-                key={selectedSpan.span_id}
+                // Intentionally NO `key={span.span_id}`: a span-id keyed
+                // remount wipes the Tabs internal state, so switching
+                // between spans would snap the tab back to the
+                // `defaultValue` (errors or info). Keeping a single
+                // instance means the user's last-picked tab (e.g.
+                // Events, with `iii.invocation.input`/`output`)
+                // persists when they click through child spans —
+                // matching how every other devtool span inspector
+                // behaves.
                 span={selectedSpan}
                 traceData={waterfallData}
                 onClose={() => setSelectedSpan(null)}

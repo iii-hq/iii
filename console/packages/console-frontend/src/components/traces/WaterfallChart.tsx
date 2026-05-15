@@ -1,5 +1,11 @@
 import { ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  formatSpanLabel,
+  getSpanKindIndicator,
+  isEngineRoutingPair,
+  isEngineRoutingSpan,
+} from '@/lib/spanLabel'
 import type { VisualizationSpan, WaterfallData } from '@/lib/traceTransform'
 import { formatDuration } from '@/lib/traceUtils'
 
@@ -75,17 +81,55 @@ function buildSpanTree(spans: VisualizationSpan[]): SpanNode[] {
   return roots
 }
 
-function flattenTree(nodes: SpanNode[], expandedIds: Set<string>): SpanNode[] {
-  const result: SpanNode[] = []
+interface FlatSpanRow extends SpanNode {
+  displayDepth: number
+  mergedRouting: boolean
+}
 
-  function traverse(node: SpanNode) {
-    result.push(node)
-    if (expandedIds.has(node.span_id)) {
-      node.children.forEach(traverse)
+interface FlattenOptions {
+  expandedIds: Set<string>
+  hideEngineRouting: boolean
+  collapseEngineRoutingPairs: boolean
+}
+
+function flattenTree(nodes: SpanNode[], opts: FlattenOptions): FlatSpanRow[] {
+  const result: FlatSpanRow[] = []
+
+  function traverse(node: SpanNode, depthOffset: number) {
+    const hidden = opts.hideEngineRouting && isEngineRoutingSpan(node)
+
+    let mergedRouting = false
+    let descendants = node.children
+    if (
+      !hidden &&
+      opts.collapseEngineRoutingPairs &&
+      node.children.length === 1 &&
+      isEngineRoutingPair(node, node.children[0])
+    ) {
+      mergedRouting = true
+      descendants = node.children[0].children
+    }
+
+    if (!hidden) {
+      result.push({
+        ...node,
+        displayDepth: Math.max(0, node.depth - depthOffset),
+        mergedRouting,
+      })
+    }
+
+    const nextOffset = hidden ? depthOffset + 1 : depthOffset
+    const childrenVisible = hidden || opts.expandedIds.has(node.span_id)
+    if (childrenVisible) {
+      for (const child of descendants) {
+        traverse(child, nextOffset)
+      }
     }
   }
 
-  nodes.forEach(traverse)
+  for (const node of nodes) {
+    traverse(node, 0)
+  }
   return result
 }
 
@@ -128,10 +172,29 @@ function displayReducer(state: DisplayState, action: DisplayAction): DisplayStat
   }
 }
 
+const HIDE_ENGINE_KEY = 'iii-trace-hide-engine-routing'
+const COLLAPSE_PAIRS_KEY = 'iii-trace-collapse-engine-pairs'
+
 export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallChartProps) {
   const [displayState, dispatch] = useReducer(displayReducer, initialDisplayState)
   const { expandedIds, showCriticalPath, hoveredSpanId, scrollPosition } = displayState
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const [hideEngineRouting, setHideEngineRouting] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(HIDE_ENGINE_KEY) === '1'
+  })
+  const [collapseEngineRoutingPairs, setCollapseEngineRoutingPairs] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(COLLAPSE_PAIRS_KEY) === '1'
+  })
+
+  useEffect(() => {
+    window.localStorage.setItem(HIDE_ENGINE_KEY, hideEngineRouting ? '1' : '0')
+  }, [hideEngineRouting])
+  useEffect(() => {
+    window.localStorage.setItem(COLLAPSE_PAIRS_KEY, collapseEngineRoutingPairs ? '1' : '0')
+  }, [collapseEngineRoutingPairs])
 
   // Span column resize
   const [spanColWidth, setSpanColWidth] = useState(() => {
@@ -201,7 +264,15 @@ export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallC
     dispatch({ type: 'SET_ALL_EXPANDED', ids: allIds })
   }, [data.spans])
 
-  const visibleSpans = useMemo(() => flattenTree(spanTree, expandedIds), [spanTree, expandedIds])
+  const visibleSpans = useMemo(
+    () =>
+      flattenTree(spanTree, {
+        expandedIds,
+        hideEngineRouting,
+        collapseEngineRoutingPairs,
+      }),
+    [spanTree, expandedIds, hideEngineRouting, collapseEngineRoutingPairs],
+  )
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     dispatch({ type: 'SET_SCROLL', position: e.currentTarget.scrollTop })
@@ -255,6 +326,30 @@ export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallC
             />
             Show critical path
           </label>
+          <label
+            className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer"
+            title="Merge each engine handle_invocation+call pair into one row"
+          >
+            <input
+              type="checkbox"
+              checked={collapseEngineRoutingPairs}
+              onChange={(e) => setCollapseEngineRoutingPairs(e.target.checked)}
+              className="rounded border-[#1D1D1D] bg-[#141414] text-[#F3F724] focus:ring-[#F3F724]/30"
+            />
+            Collapse routing pairs
+          </label>
+          <label
+            className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer"
+            title="Hide engine handle_invocation / call spans entirely"
+          >
+            <input
+              type="checkbox"
+              checked={hideEngineRouting}
+              onChange={(e) => setHideEngineRouting(e.target.checked)}
+              className="rounded border-[#1D1D1D] bg-[#141414] text-[#F3F724] focus:ring-[#F3F724]/30"
+            />
+            Hide engine routing
+          </label>
         </div>
         <div className="text-xs text-gray-400">
           {visibleSpans.length} of {data.span_count} spans
@@ -295,11 +390,17 @@ export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallC
       <div className="flex flex-1 overflow-hidden">
         <div ref={containerRef} className="flex-1 overflow-y-auto" onScroll={handleScroll}>
           {visibleSpans.map((span) => {
-            const hasChildren = span.children.length > 0
+            const effectiveChildren = span.mergedRouting
+              ? (span.children[0]?.children ?? [])
+              : span.children
+            const hasChildren = effectiveChildren.length > 0
             const isExpanded = expandedIds.has(span.span_id)
             const isCritical = showCriticalPath && span.isCriticalPath
             const isSelected = selectedSpanId === span.span_id
             const isHovered = hoveredSpanId === span.span_id
+            const isEngineDim = !isSelected && isEngineRoutingSpan(span)
+            const kindIndicator = getSpanKindIndicator(span.kind)
+            const displayLabel = formatSpanLabel(span)
 
             const getBarStyle = (): React.CSSProperties => {
               if (isCritical) return { background: 'linear-gradient(to right, #F97316, #FB923C)' }
@@ -332,9 +433,11 @@ export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallC
                 onMouseEnter={() => dispatch({ type: 'SET_HOVERED_SPAN', spanId: span.span_id })}
                 onMouseLeave={() => dispatch({ type: 'SET_HOVERED_SPAN', spanId: null })}
               >
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <div className="flex-shrink-0 flex" style={{ width: span.depth * 16 }}>
-                    {Array.from({ length: span.depth }).map((_, i) => (
+                <div
+                  className={`flex items-center gap-1.5 min-w-0 ${isEngineDim ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex-shrink-0 flex" style={{ width: span.displayDepth * 16 }}>
+                    {Array.from({ length: span.displayDepth }).map((_, i) => (
                       <div
                         key={`${span.span_id}-indent-${i}`}
                         className="w-4 h-6 border-l border-[#1D1D1D]/50"
@@ -369,9 +472,12 @@ export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallC
                       {span.service_name}
                     </span>
                   )}
-                  {span.kind && span.kind !== 'unspecified' && (
-                    <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded border border-[#1D1D1D] bg-[#141414] text-gray-400 leading-none capitalize">
-                      {span.kind.toLowerCase()}
+                  {kindIndicator && (
+                    <span
+                      className="flex-shrink-0 text-[11px] text-gray-500 leading-none w-3 text-center"
+                      title={kindIndicator.label}
+                    >
+                      {kindIndicator.icon}
                     </span>
                   )}
 
@@ -379,8 +485,16 @@ export function WaterfallChart({ data, onSpanClick, selectedSpanId }: WaterfallC
                     className={`text-[13px] font-medium truncate ${isSelected ? 'text-[#F3F724]' : 'text-[#F4F4F4]'}`}
                     title={span.name}
                   >
-                    {span.name}
+                    {displayLabel}
                   </span>
+                  {span.mergedRouting && (
+                    <span
+                      className="flex-shrink-0 px-1 py-0.5 text-[9px] font-medium rounded border border-[#1D1D1D] bg-[#141414] text-gray-500 leading-none"
+                      title="Merged: this row hides the engine 'call' child of a handle_invocation pair"
+                    >
+                      +1
+                    </span>
+                  )}
 
                   <span className="font-mono text-[11px] text-gray-400 flex-shrink-0 ml-auto">
                     {formatDuration(span.duration_ms)}

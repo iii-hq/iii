@@ -1,5 +1,4 @@
-import { getDevtoolsApi, getManagementApi } from '../config'
-import { unwrapResponse } from '../utils'
+import type { ISdk } from 'iii-browser-sdk'
 
 export interface SpanEvent {
   name: string
@@ -57,7 +56,6 @@ export interface TracesFilterParams {
   search_all_spans?: boolean
 }
 
-// Tree API types (engine.traces.tree)
 export interface SpanTreeNode {
   trace_id: string
   span_id: string
@@ -80,55 +78,133 @@ export interface TraceTreeResponse {
   roots: SpanTreeNode[]
 }
 
-async function postWithFallback<T>(path: string, body: unknown, errorMsg: string): Promise<T> {
-  const init: RequestInit = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }
+export interface TracesGroupByParams {
+  /** Span attribute key to group by, e.g. "iii.message.id". */
+  attribute: string
+  /** Earliest end_time (ms since epoch) to include. Omit for no lower bound. */
+  since_ms?: number
+  /** Max groups returned after sorting by `first_seen_ms` descending. Default 100 server-side. */
+  limit?: number
+  /** Include engine-internal spans. Defaults to false server-side, matching `traces::list`. */
+  include_internal?: boolean
+}
 
-  const primaryBase = getDevtoolsApi()
-  const fallbackBase = getManagementApi()
-  const hasFallback = primaryBase !== fallbackBase
+export interface TraceGroup {
+  /** The attribute value this group is keyed on. */
+  value: string
+  trace_ids: string[]
+  span_count: number
+  first_seen_ms: number
+  last_seen_ms: number
+  duration_ms: number
+  error_count: number
+}
+
+export interface TracesGroupByResponse {
+  groups: TraceGroup[]
+}
+
+const FN_LIST = 'engine::traces::list'
+const FN_TREE = 'engine::traces::tree'
+const FN_CLEAR = 'engine::traces::clear'
+const FN_GROUP_BY = 'engine::traces::group_by'
+
+const LIST_TIMEOUT_MS = 5_000
+const TREE_TIMEOUT_MS = 10_000
+const CLEAR_TIMEOUT_MS = 5_000
+const GROUP_BY_TIMEOUT_MS = 5_000
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T
+}
+
+function isMemoryExporterNotEnabled(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /memory exporter (is )?not enabled/i.test(msg)
+}
+
+function asError(err: unknown, fallback: string): Error {
+  if (err instanceof Error) return err
+  return new Error(typeof err === 'string' ? err : fallback)
+}
+
+export async function fetchTraces(
+  sdk: ISdk,
+  options?: TracesFilterParams,
+): Promise<TracesResponse> {
+  const offset = options?.offset ?? 0
+  const limit = options?.limit ?? 100
+  const payload = stripUndefined({ ...options, offset, limit })
 
   try {
-    const res = await fetch(`${primaryBase}${path}`, init)
-    if (res.ok) return unwrapResponse<T>(res)
-    if (!hasFallback) throw new Error(errorMsg)
-    console.warn(`[traces] Primary API returned ${res.status} for ${path}, trying fallback`)
+    return await sdk.trigger<typeof payload, TracesResponse>({
+      function_id: FN_LIST,
+      payload,
+      timeoutMs: LIST_TIMEOUT_MS,
+    })
   } catch (err) {
-    if (!hasFallback) throw err instanceof Error ? err : new Error(errorMsg)
-    console.warn(`[traces] Primary API failed for ${path}, falling through to fallback`, err)
+    if (isMemoryExporterNotEnabled(err)) {
+      return { spans: [], total: 0, offset, limit }
+    }
+    throw asError(err, 'Failed to fetch traces')
   }
-
-  const res = await fetch(`${fallbackBase}${path}`, init)
-  if (!res.ok) throw new Error(errorMsg)
-  return unwrapResponse<T>(res)
 }
 
-function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))
+export async function fetchTraceTree(
+  sdk: ISdk,
+  traceId: string,
+): Promise<TraceTreeResponse> {
+  try {
+    return await sdk.trigger<{ trace_id: string }, TraceTreeResponse>({
+      function_id: FN_TREE,
+      payload: { trace_id: traceId },
+      timeoutMs: TREE_TIMEOUT_MS,
+    })
+  } catch (err) {
+    if (isMemoryExporterNotEnabled(err)) {
+      return { roots: [] }
+    }
+    throw asError(err, 'Failed to fetch trace tree')
+  }
 }
 
-export async function fetchTraces(options?: TracesFilterParams): Promise<TracesResponse> {
-  const body = stripUndefined({
-    ...options,
-    offset: options?.offset ?? 0,
-    limit: options?.limit ?? 100,
-  })
-
-  return postWithFallback<TracesResponse>('/otel/traces', body, 'Failed to fetch traces')
+export async function clearTraces(sdk: ISdk): Promise<{ success: boolean }> {
+  try {
+    await sdk.trigger<Record<string, never>, { success: boolean }>({
+      function_id: FN_CLEAR,
+      payload: {},
+      timeoutMs: CLEAR_TIMEOUT_MS,
+    })
+    return { success: true }
+  } catch (err) {
+    throw asError(err, 'Failed to clear traces')
+  }
 }
 
-export async function fetchTraceTree(traceId: string): Promise<TraceTreeResponse> {
-  return postWithFallback<TraceTreeResponse>(
-    '/otel/traces/tree',
-    { trace_id: traceId },
-    'Failed to fetch trace tree',
-  )
-}
-
-export async function clearTraces(): Promise<{ success: boolean }> {
-  await postWithFallback('/otel/traces/clear', {}, 'Failed to clear traces')
-  return { success: true }
+/**
+ * Server-side aggregation by attribute value. Calls the engine function
+ * `engine::traces::group_by`. When the memory exporter is not enabled,
+ * returns an empty group list so the UI degrades to the same "OTel not
+ * configured" path as `fetchTraces`. When the engine itself doesn't
+ * expose `group_by` (older deploy), the error is rethrown — callers
+ * (see `useTraceGroups`) detect it via `isGroupByUnavailable` and hide
+ * the group-by affordance.
+ */
+export async function fetchTracesGroupBy(
+  sdk: ISdk,
+  params: TracesGroupByParams,
+): Promise<TracesGroupByResponse> {
+  const payload = stripUndefined({ ...params })
+  try {
+    return await sdk.trigger<typeof payload, TracesGroupByResponse>({
+      function_id: FN_GROUP_BY,
+      payload,
+      timeoutMs: GROUP_BY_TIMEOUT_MS,
+    })
+  } catch (err) {
+    if (isMemoryExporterNotEnabled(err)) {
+      return { groups: [] }
+    }
+    throw asError(err, 'Failed to fetch trace groups')
+  }
 }

@@ -10,10 +10,12 @@
     "dev:standalone": "vite --host",
     "build": "tsc -b && vite build",
     "build:binary": "vite build --mode binary",
-    "preview": "vite preview",
+    "format": "biome format src --write",
     "lint": "biome check src",
     "lint:fix": "biome check src --write",
-    "format": "biome format src --write"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -31,6 +33,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "dagre": "^0.8.5",
+    "iii-browser-sdk": "workspace:*",
     "lucide-react": "^0.563.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -53,6 +56,7 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^2.1.0"
   }
 }

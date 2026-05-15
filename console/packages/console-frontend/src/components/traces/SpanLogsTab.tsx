@@ -73,12 +73,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
               <div className="border-t border-[#1D1D1D]/50 px-4 py-2.5">
                 <div className="space-y-1.5">
                   {attrEntries.map(([key, value]) => (
-                    <div key={key} className="flex items-start gap-2 text-[11px]">
-                      <span className="text-gray-500 font-mono flex-shrink-0">{key}</span>
-                      <span className="text-gray-300 font-mono break-all">
-                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                      </span>
-                    </div>
+                    <EventAttributeRow key={key} attrKey={key} value={value} />
                   ))}
                 </div>
               </div>
@@ -92,4 +87,55 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
       </div>
     </div>
   )
+}
+
+/**
+ * Render one event attribute row. When the value is a JSON-encoded string
+ * (typically `iii.payload.json` written by the iii-sdk auto-capture), parse
+ * and pretty-print it inside a <pre> block. Everything else renders as a
+ * single-line label/value pair, matching the previous behavior.
+ *
+ * Keeps DOM cost low: pretty-printing only runs when the value clearly
+ * looks like a JSON object/array (`{`/`[` prefix after trim) AND
+ * JSON.parse succeeds. Strings that are bare numbers / booleans / plain
+ * text fall through to the simple renderer.
+ */
+function EventAttributeRow({ attrKey, value }: { attrKey: string; value: unknown }) {
+  const formatted = formatPossibleJson(value)
+  if (formatted !== null) {
+    return (
+      <div className="flex flex-col gap-1 text-[11px]">
+        <span className="text-gray-500 font-mono">{attrKey}</span>
+        <pre className="text-gray-300 font-mono text-[10.5px] leading-snug bg-[#0A0A0A] border border-[#1D1D1D]/60 rounded-md px-3 py-2 overflow-x-auto whitespace-pre">
+          {formatted}
+        </pre>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-start gap-2 text-[11px]">
+      <span className="text-gray-500 font-mono flex-shrink-0">{attrKey}</span>
+      <span className="text-gray-300 font-mono break-all">
+        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+      </span>
+    </div>
+  )
+}
+
+function formatPossibleJson(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  const first = trimmed[0]
+  // Quick filter: only attempt to parse strings that look like a JSON
+  // object/array. Bare quoted strings (`"hi"`) are still valid JSON but
+  // pretty-printing a single string adds no value and would just put
+  // quotes around it.
+  if (first !== '{' && first !== '[') return null
+  try {
+    const parsed = JSON.parse(trimmed)
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return null
+  }
 }

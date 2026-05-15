@@ -11,6 +11,7 @@ export type { ConsoleConfig } from './config'
 export {
   getConfig,
   getDevtoolsApi,
+  getEngineBridgeWs,
   getManagementApi,
   getStreamsWs,
   setConfig,
@@ -76,11 +77,19 @@ export type {
   SpanLink,
   SpanTreeNode,
   StoredSpan,
+  TraceGroup,
   TracesFilterParams,
+  TracesGroupByParams,
+  TracesGroupByResponse,
   TracesResponse,
   TraceTreeResponse,
 } from './observability/traces'
-export { clearTraces, fetchTraces, fetchTraceTree } from './observability/traces'
+export {
+  clearTraces,
+  fetchTraces,
+  fetchTracesGroupBy,
+  fetchTraceTree,
+} from './observability/traces'
 // Queries (React Query)
 export * from './queries'
 // Queues & DLQ

@@ -4,6 +4,7 @@ import { createRouter, RouterProvider } from '@tanstack/react-router'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from './api/config-provider'
+import { EngineSdkProvider } from './api/engine-sdk-provider'
 import { routeTree } from './routeTree.gen'
 import './styles/globals.css'
 
@@ -38,8 +39,10 @@ createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ConfigProvider>
-        <RouterProvider router={router} />
-        {showDevtools && <ReactQueryDevtools initialIsOpen={false} />}
+        <EngineSdkProvider>
+          <RouterProvider router={router} />
+          {showDevtools && <ReactQueryDevtools initialIsOpen={false} />}
+        </EngineSdkProvider>
       </ConfigProvider>
     </QueryClientProvider>
   </StrictMode>,

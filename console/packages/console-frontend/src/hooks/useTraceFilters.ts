@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TracesFilterParams } from '@/api'
+import type { GroupByOption } from '@/lib/groupTraces'
 
 export interface TraceFilterState {
   serviceName?: string
@@ -14,6 +15,12 @@ export interface TraceFilterState {
   attributes?: [string, string][]
   sortBy?: 'start_time' | 'duration' | 'service_name'
   sortOrder?: 'asc' | 'desc'
+  /**
+   * Group spans by an attribute value. When set to anything other than
+   * 'none', `useTraceData` switches to `fetchTracesGroupBy` and the list
+   * view renders collapsible group rows. Default 'none'.
+   */
+  groupBy?: GroupByOption
   page: number
   pageSize: number
 }
@@ -29,6 +36,7 @@ const defaultFilters: TraceFilterState = {
   attributes: undefined,
   sortBy: 'start_time',
   sortOrder: 'desc',
+  groupBy: 'none',
   page: 1,
   pageSize: 50,
 }

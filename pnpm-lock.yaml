@@ -90,6 +90,9 @@ importers:
       dagre:
         specifier: ^0.8.5
         version: 0.8.5
+      iii-browser-sdk:
+        specifier: workspace:*
+        version: link:../../../sdk/packages/node/iii-browser
       lucide-react:
         specifier: ^0.563.0
         version: 0.563.0(react@19.2.4)
@@ -154,6 +157,9 @@ importers:
       vite:
         specifier: ^7.3.1
         version: 7.3.1(@types/node@25.3.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@edge-runtime/vm@3.2.0)(@types/node@25.3.3)(happy-dom@17.6.3)(lightningcss@1.31.1)
 
   docs:
     devDependencies:
