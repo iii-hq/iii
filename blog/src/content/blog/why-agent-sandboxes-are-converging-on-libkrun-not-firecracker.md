@@ -6,6 +6,8 @@ author: 'Rohit Ghumare'
 tags: ['agents', 'sandbox', 'libkrun', 'firecracker']
 ---
 
+![Why agent sandboxes are converging on libkrun, not Firecracker](../../assets/blog/why-agent-sandboxes-are-converging-on-libkrun-not-firecracker/banner.png)
+
 Every coding agent that matters runs on your laptop now. Claude Code, Codex, OpenCode, Cursor's agent mode, the new wave of CLI-first harnesses. They install a binary, take over a directory, and start generating code that wants to actually run.
 
 People shouting Firecrackers as the future sandbox everyone needs assumes the agent and the sandbox both live in someone else's data center. That model still ships a lot of agents. But the agent shape that's eating the world (Claude Code, Codex, the local CLI agents) lives on a developer's MacBook, and Firecracker can't boot there. Not "not yet." It cannot be architecturally.

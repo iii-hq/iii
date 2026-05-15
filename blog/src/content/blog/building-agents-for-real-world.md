@@ -6,6 +6,8 @@ author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'runtime', 'workers']
 ---
 
+![Agents break at month six — the fix is the runtime](../../assets/blog/building-agents-for-real-world/banner.png)
+
 The agent codebases that break at month six all break the same way.
 
 Class-level mutable defaults that share state between two agents the moment a second user shows up. Tool functions that accept any string and return `None` on every kind of failure. Session memory that gets mutated by an LLM-extracted string and silently poisons every subsequent action. Multi-agent setups passing the parent's full conversation history to a sub-agent because it was the easiest thing to wire. Loops without step bounds. Custom harnesses without span propagation.
