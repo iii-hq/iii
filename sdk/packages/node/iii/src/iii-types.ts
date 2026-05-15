@@ -29,13 +29,18 @@ export type UnregisterTriggerMessage = {
   type?: string
 }
 
+export type ErrorBody = {
+  code: string
+  message: string
+  stacktrace?: string
+}
+
 export type TriggerRegistrationResultMessage = {
   message_type: MessageType.TriggerRegistrationResult
   id: string
   type: string
   function_id: string
-  result?: unknown
-  error?: unknown
+  error?: ErrorBody
 }
 
 export type RegisterTriggerMessage = {

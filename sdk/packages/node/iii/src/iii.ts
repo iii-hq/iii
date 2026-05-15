@@ -981,6 +981,16 @@ class Sdk implements ISdk {
     }
   }
 
+  private onTriggerRegistrationResult(
+    message: { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+  ): void {
+    if (!message.error) return
+    const triggerType = message.trigger_type ?? message.type ?? ''
+    console.error(
+      `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
+    )
+  }
+
   private onMessage(socketMessage: Data): void {
     let msgType: MessageType
     let message: Record<string, unknown>
@@ -1003,6 +1013,10 @@ class Sdk implements ISdk {
       this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> })
+    } else if (msgType === MessageType.TriggerRegistrationResult) {
+      this.onTriggerRegistrationResult(
+        message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+      )
     } else if (msgType === MessageType.WorkerRegistered) {
       const { worker_id } = message as WorkerRegisteredMessage
       this.workerId = worker_id
