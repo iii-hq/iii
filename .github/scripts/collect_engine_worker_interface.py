@@ -21,14 +21,13 @@ def count_worker_matches(workers_json: dict[str, object], worker_name: str) -> i
     )
 
 
-def run_iii(function_id: str, payload: dict[str, object]) -> dict[str, object]:
+def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
     completed = subprocess.run(
         [
             "iii",
             "trigger",
-            "--function-id",
-            function_id,
-            "--payload",
+            function_path,
+            "--json",
             json.dumps(payload),
         ],
         check=True,

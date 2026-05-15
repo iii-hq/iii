@@ -8,7 +8,7 @@ description: 'How to enqueue work and process it asynchronously with retries, co
 Offload work to a named queue so it runs asynchronously with built-in retries, concurrency control, and optional FIFO ordering. Target functions receive data normally — no handler changes required.
 
 <Info title="Trigger actions primer">
-  Queues use the `Enqueue` trigger action. If you are new to trigger actions, read [Trigger Actions](./trigger-actions) first to understand the difference between synchronous, Void, and Enqueue invocations.
+  Queues use the `Enqueue` trigger action. If you are new to trigger actions, read [Trigger Actions](/0-10-0/how-to/trigger-actions) first to understand the difference between synchronous, Void, and Enqueue invocations.
 </Info>
 
 ## Steps
@@ -46,7 +46,7 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
     You can define as many named queues as your system requires. Each queue name is referenced when enqueuing work.
 
     <Info title="Full configuration reference">
-      See the [Queue module reference](../modules/module-queue#queue-configuration) for every field, type, and default value.
+      See the [Queue module reference](/0-10-0/modules/module-queue#queue-configuration) for every field, type, and default value.
     </Info>
   </Step>
 
@@ -110,7 +110,7 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
     The target function (`orders::process-payment` in this example) receives the `payload` as its input — it does not need to know it was invoked via a queue.
 
     <Info title="Why Enqueue returns a receipt">
-      Unlike `TriggerAction.Void()` which is fire-and-forget, `Enqueue` validates the queue exists and (for FIFO) checks the `message_group_field`. The `messageReceiptId` lets you correlate enqueue operations with DLQ entries or retry events. See [Trigger Actions](./trigger-actions#3-enqueue-named-queue) for a detailed comparison.
+      Unlike `TriggerAction.Void()` which is fire-and-forget, `Enqueue` validates the queue exists and (for FIFO) checks the `message_group_field`. The `messageReceiptId` lets you correlate enqueue operations with DLQ entries or retry events. See [Trigger Actions](/0-10-0/how-to/trigger-actions#3-enqueue-named-queue) for a detailed comparison.
     </Info>
   </Step>
 
@@ -248,7 +248,7 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
     After all retries are exhausted, the job moves to a dead-letter queue (DLQ) where it is preserved for inspection or manual reprocessing.
 
     <Info title="Dead letter queues">
-      See [Manage Failed Triggers](./dead-letter-queues) for DLQ configuration, inspection, and redrive.
+      See [Manage Failed Triggers](/0-10-0/how-to/dead-letter-queues) for DLQ configuration, inspection, and redrive.
     </Info>
   </Step>
 
@@ -569,7 +569,7 @@ iii.register_trigger(RegisterTriggerInput {
 </Tab>
 </Tabs>
 
-This example uses all three [trigger actions](./trigger-actions): **Enqueue** for payment (reliable, ordered) and email (reliable, parallel), and **Void** for analytics (best-effort).
+This example uses all three [trigger actions](/0-10-0/how-to/trigger-actions): **Enqueue** for payment (reliable, ordered) and email (reliable, parallel), and **Void** for analytics (best-effort).
 
 ### Scenario 2: Bulk Email Delivery with Rate Limiting
 
@@ -1052,11 +1052,11 @@ The queue adapter determines where messages are stored and how they are distribu
 Regardless of which adapter you choose, retry semantics, concurrency enforcement, and FIFO ordering behave identically — the engine owns these behaviors, not the adapter.
 
 <Info title="Adapter details">
-  See the [Queue module reference](../modules/module-queue#adapters) for adapter configuration and the [adapter comparison table](../modules/module-queue#adapter-comparison) for a feature matrix.
+  See the [Queue module reference](/0-10-0/modules/module-queue#adapters) for adapter configuration and the [adapter comparison table](/0-10-0/modules/module-queue#adapter-comparison) for a feature matrix.
 </Info>
 
 <Info title="RabbitMQ queue naming">
-  When using the RabbitMQ adapter, iii creates exchanges and queues using a predictable naming convention. For a queue named `payment`, the main queue is `iii.__fn_queue::payment`, the retry queue is `iii.__fn_queue::payment::retry.queue`, and the DLQ is `iii.__fn_queue::payment::dlq.queue`. See [Dead Letter Queues](./dead-letter-queues#dlq-naming-convention) for the full resource map. For the design rationale behind this topology, see [Queue Architecture](../modules/module-queue#queue-flow).
+  When using the RabbitMQ adapter, iii creates exchanges and queues using a predictable naming convention. For a queue named `payment`, the main queue is `iii.__fn_queue::payment`, the retry queue is `iii.__fn_queue::payment::retry.queue`, and the DLQ is `iii.__fn_queue::payment::dlq.queue`. See [Dead Letter Queues](/0-10-0/how-to/dead-letter-queues#dlq-naming-convention) for the full resource map. For the design rationale behind this topology, see [Queue Architecture](/0-10-0/modules/module-queue#queue-flow).
 </Info>
 
 ## Queue Config Reference
@@ -1070,21 +1070,21 @@ Regardless of which adapter you choose, retry semantics, concurrency enforcement
 | `backoff_ms` | `u64` | `1000` | Base retry backoff in milliseconds. Applied exponentially: `backoff_ms × 2^(attempt - 1)` |
 | `poll_interval_ms` | `u64` | `100` | Worker poll interval in milliseconds |
 
-For the full module configuration including adapter settings, see the [Queue module reference](../modules/module-queue#configuration).
+For the full module configuration including adapter settings, see the [Queue module reference](/0-10-0/modules/module-queue#configuration).
 
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Trigger Actions" href="./trigger-actions" icon="bolt">
+  <Card title="Trigger Actions" href="/0-10-0/how-to/trigger-actions" icon="bolt">
     Understand synchronous, Void, and Enqueue invocation modes
   </Card>
-  <Card title="Dead Letter Queues" href="./dead-letter-queues" icon="skull">
+  <Card title="Dead Letter Queues" href="/0-10-0/how-to/dead-letter-queues" icon="skull">
     Handle and redrive failed queue messages
   </Card>
-  <Card title="Queue Module Reference" href="../modules/module-queue" icon="gear">
+  <Card title="Queue Module Reference" href="/0-10-0/modules/module-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
-  <Card title="Queue Architecture" href="../modules/module-queue#queue-flow" icon="sitemap">
+  <Card title="Queue Architecture" href="/0-10-0/modules/module-queue#queue-flow" icon="sitemap">
     Design rationale behind retry, dead-lettering, and multi-resource topology
   </Card>
 </CardGroup>

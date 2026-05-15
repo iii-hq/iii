@@ -7,9 +7,84 @@
 mod cli;
 mod cli_trigger;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use cli_trigger::TriggerArgs;
 use iii::{EngineBuilder, logging, workers::config::EngineConfig};
+
+/// Walk the clap Command tree to find the deepest matching subcommand for the
+/// given argv. Skips flags and the auto-generated `help` token (so
+/// `iii help update` resolves to the same Command as `iii update --help`).
+/// Falls back to the root command on miss.
+fn resolve_help_target<'a>(root: &'a clap::Command, argv: &[String]) -> &'a clap::Command {
+    let mut cmd = root;
+    for token in argv.iter().skip(1) {
+        if token.starts_with('-') || token == "help" {
+            continue;
+        }
+        match cmd.find_subcommand(token) {
+            Some(sub) => cmd = sub,
+            None => break,
+        }
+    }
+    cmd
+}
+
+/// Render a clap Command's help via clap-help, then exit.
+fn print_help_and_exit(argv: &[String]) -> ! {
+    let mut root = Cli::command();
+    root.build();
+    let target = resolve_help_target(&root, argv).clone();
+    render_clap_help(target);
+    std::process::exit(0);
+}
+
+/// Render a clap Command's help via clap-help with our shared styling
+/// (suppress the empty author stub, surface `about` under the title, and
+/// append a Commands listing because clap-help 1.x has no subcommand
+/// section). Does not exit.
+pub fn render_clap_help(target: clap::Command) {
+    let mut printer = clap_help::Printer::new(target.clone());
+    // Author line is rendered as a useless "by " stub when no author is set.
+    printer.set_template("author", "");
+    // Surface the command's `about` text under the title. clap-help 1.x does
+    // not pull `about` from the Command, so inject it manually.
+    if let Some(about) = target.get_about() {
+        printer.expander_mut().set("about", about.to_string());
+        printer.set_template("introduction", "\n${about}\n");
+    }
+    printer.print_help();
+    print_subcommands_section(&target);
+}
+
+/// Look up a subcommand on the Cli command tree by name.
+pub fn cli_subcommand(name: &str) -> Option<clap::Command> {
+    let mut root = Cli::command();
+    root.build();
+    root.find_subcommand(name).cloned()
+}
+
+/// clap-help 1.x does not render subcommand listings; print our own table.
+fn print_subcommands_section(cmd: &clap::Command) {
+    use colored::Colorize;
+    let subs: Vec<&clap::Command> = cmd.get_subcommands().filter(|s| !s.is_hide_set()).collect();
+    if subs.is_empty() {
+        return;
+    }
+    let max_name = subs.iter().map(|s| s.get_name().len()).max().unwrap_or(0);
+    println!();
+    println!("{}", "Commands:".bold());
+    for sub in subs {
+        let name = sub.get_name();
+        let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+        let padded = format!("{:<width$}", name, width = max_name);
+        if about.is_empty() {
+            println!("  {}", padded.bold());
+        } else {
+            println!("  {}  {}", padded.bold(), about);
+        }
+    }
+    println!();
+}
 
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -22,42 +97,32 @@ struct Cli {
     command: Option<Commands>,
 
     /// Path to the config file (default: config.yaml)
-    #[arg(short, long, default_value = "config.yaml", global = true)]
+    #[arg(short, long, default_value = "config.yaml")]
     config: String,
 
     /// Print version and exit
-    #[arg(short = 'v', long, global = true)]
+    #[arg(short = 'v', long)]
     version: bool,
 
     /// Run with built-in defaults instead of a config file.
     /// Cannot be combined with --config.
-    #[arg(long, global = true, conflicts_with = "config")]
+    #[arg(long, conflicts_with = "config")]
     use_default_config: bool,
 
     /// Disable background update and advisory checks
-    #[arg(long, global = true)]
+    #[arg(long)]
     no_update_check: bool,
 
     /// Initialize telemetry IDs and optionally emit install lifecycle events.
-    #[arg(long, hide = true, global = true)]
+    #[arg(long, hide = true)]
     install_only_generate_ids: bool,
 
     /// Install lifecycle event type (e.g. install_succeeded, upgrade_succeeded).
-    #[arg(
-        long,
-        hide = true,
-        global = true,
-        requires = "install_only_generate_ids"
-    )]
+    #[arg(long, hide = true, requires = "install_only_generate_ids")]
     install_event_type: Option<String>,
 
     /// Install lifecycle event properties as JSON.
-    #[arg(
-        long,
-        hide = true,
-        global = true,
-        requires = "install_only_generate_ids"
-    )]
+    #[arg(long, hide = true, requires = "install_only_generate_ids")]
     install_event_properties: Option<String>,
 }
 
@@ -99,17 +164,6 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Spawn and manage ephemeral sandbox VMs (run, list, stop)
-    #[command(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Sandbox {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
-    },
-
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
@@ -118,8 +172,12 @@ enum Commands {
         /// Specific command or binary to update (e.g., "console", "self").
         /// Use "self" or "iii" to update only iii.
         /// If omitted, updates iii and all installed binaries.
-        #[arg(name = "command")]
+        #[arg(name = "command", conflicts_with = "list_targets")]
         target: Option<String>,
+
+        /// List the targets you can pass to `iii update <target>` and exit.
+        #[arg(long = "list-targets")]
+        list_targets: bool,
     },
 }
 
@@ -151,7 +209,21 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli_args = Cli::parse();
+    let argv: Vec<String> = std::env::args().collect();
+    let cli_args = match Cli::try_parse_from(&argv) {
+        Ok(c) => c,
+        Err(err) => match err.kind() {
+            // Intercept clap's default help output and re-render it via
+            // clap-help for a friendlier layout. Trigger has its own dynamic
+            // help (engine query) and is opted out via disable_help_flag, so
+            // this only fires for root + non-trigger subcommands.
+            clap::error::ErrorKind::DisplayHelp
+            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                print_help_and_exit(&argv);
+            }
+            _ => err.exit(),
+        },
+    };
 
     if cli_args.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
@@ -176,7 +248,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match &cli_args.command {
-        Some(Commands::Trigger(args)) => cli_trigger::run_trigger(args).await,
+        Some(Commands::Trigger(args)) => match cli_trigger::run_trigger(args).await {
+            Ok(()) => Ok(()),
+            // exec::invoke already printed the structured JSON; exit silently.
+            Err(cli_trigger::TriggerCliError::RemoteAlreadyReported) => std::process::exit(1),
+            Err(cli_trigger::TriggerCliError::Other(e)) => Err(e),
+        },
         Some(Commands::Console { args }) => {
             let exit_code = cli::handle_dispatch("console", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
@@ -189,15 +266,18 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::handle_dispatch("worker", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Sandbox { args }) => {
-            let exit_code = cli::handle_dispatch("sandbox", args, cli_args.no_update_check).await;
-            std::process::exit(exit_code);
-        }
         Some(Commands::Project(args)) => {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Update { target }) => {
+        Some(Commands::Update {
+            target,
+            list_targets,
+        }) => {
+            if *list_targets {
+                cli::update::print_targets();
+                std::process::exit(0);
+            }
             let exit_code = cli::handle_update(target.as_deref()).await;
             std::process::exit(exit_code);
         }
@@ -212,47 +292,14 @@ mod tests {
     use iii::workers::worker::DEFAULT_PORT;
 
     #[test]
-    fn trigger_parses_all_arguments() {
-        let cli = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "--function-id",
-            "iii::queue::redrive",
-            "--payload",
-            r#"{"queue":"payment"}"#,
-            "--address",
-            "10.0.0.1",
-            "--port",
-            "9999",
-        ])
-        .expect("should parse valid trigger args");
-
+    fn trigger_parses_with_positional_fn_path_only() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn"])
+            .expect("should parse trigger with fn path only");
         match cli.command {
             Some(Commands::Trigger(args)) => {
-                assert_eq!(args.function_id, "iii::queue::redrive");
-                assert_eq!(args.payload, r#"{"queue":"payment"}"#);
-                assert_eq!(args.address, "10.0.0.1");
-                assert_eq!(args.port, 9999);
-                assert_eq!(args.timeout_ms, 30_000);
-            }
-            _ => panic!("expected Trigger subcommand"),
-        }
-    }
-
-    #[test]
-    fn trigger_uses_defaults_for_address_and_port() {
-        let cli = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "--function-id",
-            "test::fn",
-            "--payload",
-            "{}",
-        ])
-        .expect("should parse with defaults");
-
-        match cli.command {
-            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert!(args.kv.is_empty());
+                assert!(args.json.is_none());
                 assert_eq!(args.address, "localhost");
                 assert_eq!(args.port, DEFAULT_PORT);
                 assert_eq!(args.timeout_ms, 30_000);
@@ -262,9 +309,62 @@ mod tests {
     }
 
     #[test]
-    fn trigger_requires_function_id() {
-        let result = Cli::try_parse_from(["iii", "trigger", "--payload", "{}"]);
-        assert!(result.is_err(), "should fail without --function-id");
+    fn trigger_parses_with_kv_pairs() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "a=10", "b=hello"])
+            .expect("should parse trigger with kv args");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.kv, vec!["a=10", "b=hello"]);
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_parses_with_json_flag() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "--json", r#"{"a":1}"#])
+            .expect("should parse trigger --json");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.json.as_deref(), Some(r#"{"a":1}"#));
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_parses_with_json_and_kv_together() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "trigger",
+            "my::fn",
+            "--json",
+            r#"{"a":1,"b":2}"#,
+            "a=99",
+        ])
+        .expect("should parse trigger with --json and kv simultaneously");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.kv, vec!["a=99"]);
+                assert_eq!(args.json.as_deref(), Some(r#"{"a":1,"b":2}"#));
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_legacy_function_id_flag_rejected() {
+        let result = Cli::try_parse_from(["iii", "trigger", "--function-id", "my::fn"]);
+        assert!(result.is_err(), "--function-id should fail to parse");
+    }
+
+    #[test]
+    fn trigger_legacy_payload_flag_rejected() {
+        let result = Cli::try_parse_from(["iii", "trigger", "my::fn", "--payload", r#"{"a":1}"#]);
+        assert!(result.is_err(), "--payload should fail to parse");
     }
 
     #[test]
@@ -392,82 +492,16 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "sandbox", "run", "python", "--cpus", "2"])
-            .expect("should parse sandbox with passthrough args");
-        match cli.command {
-            Some(Commands::Sandbox { args }) => {
-                assert_eq!(args, vec!["run", "python", "--cpus", "2"]);
-            }
-            _ => panic!("expected Sandbox subcommand"),
-        }
-    }
-
-    #[test]
-    fn sandbox_parses_with_no_args() {
-        let cli =
-            Cli::try_parse_from(["iii", "sandbox"]).expect("should parse sandbox with no args");
-        match cli.command {
-            Some(Commands::Sandbox { args }) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Sandbox subcommand"),
-        }
-    }
-
-    #[test]
-    fn sandbox_list_parses_passthrough() {
-        let cli = Cli::try_parse_from(["iii", "sandbox", "list", "--all"])
-            .expect("should parse sandbox list --all");
-        match cli.command {
-            Some(Commands::Sandbox { args }) => {
-                assert_eq!(args, vec!["list", "--all"]);
-            }
-            _ => panic!("expected Sandbox subcommand"),
-        }
-    }
-
-    #[test]
-    fn sandbox_run_parses_trailing_cmd_with_dashdash() {
-        // Mirrors the docs' recommended syntax:
-        //   iii sandbox run python -- python3 -c 'print("hi")'
-        let cli = Cli::try_parse_from([
-            "iii",
-            "sandbox",
-            "run",
-            "python",
-            "--",
-            "python3",
-            "-c",
-            "print(\"hi\")",
-        ])
-        .expect("should parse sandbox run with trailing command");
-        match cli.command {
-            Some(Commands::Sandbox { args }) => {
-                assert_eq!(
-                    args,
-                    vec!["run", "python", "--", "python3", "-c", "print(\"hi\")"]
-                );
-            }
-            _ => panic!("expected Sandbox subcommand"),
-        }
-    }
-
-    #[test]
-    fn sandbox_dispatch_resolves_to_iii_worker() {
-        use crate::cli::registry::resolve_command;
-        let (spec, binary_subcommand) = resolve_command("sandbox").expect("sandbox should resolve");
-        assert_eq!(spec.name, "iii-worker");
-        assert_eq!(binary_subcommand, Some("sandbox"));
-    }
-
-    #[test]
     fn update_parses_with_target() {
         let cli = Cli::try_parse_from(["iii", "update", "console"])
             .expect("should parse update with target");
         match cli.command {
-            Some(Commands::Update { target }) => {
+            Some(Commands::Update {
+                target,
+                list_targets,
+            }) => {
                 assert_eq!(target.as_deref(), Some("console"));
+                assert!(!list_targets);
             }
             _ => panic!("expected Update subcommand"),
         }
@@ -478,11 +512,40 @@ mod tests {
         let cli =
             Cli::try_parse_from(["iii", "update"]).expect("should parse update without target");
         match cli.command {
-            Some(Commands::Update { target }) => {
+            Some(Commands::Update {
+                target,
+                list_targets,
+            }) => {
                 assert!(target.is_none());
+                assert!(!list_targets);
             }
             _ => panic!("expected Update subcommand"),
         }
+    }
+
+    #[test]
+    fn update_parses_with_list_targets_flag() {
+        let cli = Cli::try_parse_from(["iii", "update", "--list-targets"])
+            .expect("should parse update --list-targets");
+        match cli.command {
+            Some(Commands::Update {
+                target,
+                list_targets,
+            }) => {
+                assert!(target.is_none());
+                assert!(list_targets);
+            }
+            _ => panic!("expected Update subcommand"),
+        }
+    }
+
+    #[test]
+    fn update_target_and_list_targets_conflict() {
+        let result = Cli::try_parse_from(["iii", "update", "console", "--list-targets"]);
+        assert!(
+            result.is_err(),
+            "--list-targets should conflict with positional target"
+        );
     }
 
     #[test]
@@ -491,6 +554,17 @@ mod tests {
         assert!(
             result.is_err(),
             "\"start\" should not be a valid subcommand (engine runs via default serve mode)"
+        );
+    }
+
+    #[test]
+    fn sandbox_is_no_longer_a_valid_subcommand() {
+        // `iii sandbox` was removed in favor of `iii trigger sandbox::<op>`.
+        // Bare `iii sandbox` should now fail to parse.
+        let result = Cli::try_parse_from(["iii", "sandbox"]);
+        assert!(
+            result.is_err(),
+            "\"sandbox\" should no longer be a valid subcommand"
         );
     }
 
@@ -545,7 +619,10 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "update", "iii-cli"])
             .expect("should parse 'update iii-cli' for backward compat");
         match cli.command {
-            Some(Commands::Update { target }) => {
+            Some(Commands::Update {
+                target,
+                list_targets: _,
+            }) => {
                 assert_eq!(target.as_deref(), Some("iii-cli"));
             }
             _ => panic!("expected Update subcommand"),
@@ -639,7 +716,6 @@ mod tests {
             Some(Commands::Project(args)) => match args.action {
                 ProjectAction::Init(init) => {
                     assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
-                    assert!(!init.yes);
                     assert!(!init.skip_iii);
                 }
                 _ => panic!("expected Init action"),
@@ -658,10 +734,7 @@ mod tests {
             "node-pdfkit",
             "--directory",
             "myapp",
-            "--languages",
-            "ts,py",
             "--skip-iii",
-            "--yes",
         ])
         .expect("should parse full template arg set");
         match cli.command {
@@ -669,16 +742,30 @@ mod tests {
                 ProjectAction::Init(init) => {
                     assert_eq!(init.template.as_deref(), Some("node-pdfkit"));
                     assert_eq!(init.directory.as_deref(), Some("myapp"));
-                    assert_eq!(
-                        init.languages.as_ref().map(|v| v.as_slice()),
-                        Some(&["ts".to_string(), "py".to_string()][..])
-                    );
                     assert!(init.skip_iii);
-                    assert!(init.yes);
                 }
                 _ => panic!("expected Init action"),
             },
             _ => panic!("expected Project subcommand"),
         }
+    }
+
+    #[test]
+    fn config_flag_is_not_global_on_subcommands() {
+        // After dropping global=true, the engine config flags should only
+        // be parseable before a subcommand. A trailing --config on a
+        // subcommand that doesn't define the flag itself must error.
+        let result = Cli::try_parse_from(["iii", "project", "init", "--config", "foo.yaml"]);
+        assert!(
+            result.is_err(),
+            "--config after a subcommand should no longer parse globally"
+        );
+    }
+
+    #[test]
+    fn config_flag_still_works_before_subcommand() {
+        let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "worker", "add", "x"])
+            .expect("config before subcommand should still parse");
+        assert_eq!(cli.config, "foo.yaml");
     }
 }

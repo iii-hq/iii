@@ -61,6 +61,11 @@ async fn full_roundtrip_enqueue_consume_invoke() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     enqueue(
         &engine,
@@ -105,6 +110,11 @@ async fn full_roundtrip_fifo_preserves_order() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     let message_count: usize = 5;
     for i in 0..message_count {
@@ -162,6 +172,11 @@ async fn retry_behavior_with_rabbitmq() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     enqueue(
         &engine,
@@ -216,6 +231,11 @@ async fn exhausted_message_lands_in_dlq() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     assert_eq!(
         dlq_count(&engine, &format!("{prefix}-default")).await,
@@ -271,6 +291,11 @@ async fn concurrent_processing() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     let start = std::time::Instant::now();
 
@@ -331,6 +356,11 @@ async fn multiple_queues_operate_independently() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     for i in 0..3 {
         enqueue(
@@ -496,6 +526,11 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     let sent_payload = json!({
         "order_id": 42,
@@ -556,6 +591,11 @@ async fn rmq_topology_matches_expected_configuration() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Open a separate connection for verification (do not reuse the adapter's internal channel)
     let verify_conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
@@ -702,6 +742,11 @@ async fn rmq_retry_backoff_timing_is_flat() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     enqueue(
         &engine,
@@ -764,6 +809,11 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     let sent_payload = json!({"order_id": 42, "action": "verify_dlq_content"});
 
@@ -857,6 +907,11 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     let sent_payload = json!({"zero_retry": true});
 
@@ -968,6 +1023,11 @@ async fn rmq_fifo_multi_group_ordering() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Enqueue 3 groups x 5 messages INTERLEAVED to stress ordering guarantee
     let groups = ["A", "B", "C"];
@@ -1045,6 +1105,11 @@ async fn rmq_handler_panic_recovery() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Enqueue a panicking message
     enqueue(

@@ -88,7 +88,7 @@ jobs:
               cat iii-engine.log
               exit 1
             fi
-            if iii trigger --function-id='engine::workers::list' --payload='{}' >/tmp/iii-workers.json 2>/tmp/iii-trigger.err; then
+            if iii trigger 'engine::workers::list' --json '{}' >/tmp/iii-workers.json 2>/tmp/iii-trigger.err; then
               cat /tmp/iii-workers.json
               exit 0
             fi
@@ -104,8 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           iii trigger \
-            --function-id='engine::trigger-types::list' \
-            --payload='{"include_internal": false}' \
+            'engine::trigger-types::list' \
+            --json '{"include_internal": false}' \
             > trigger-types-baseline.json
           cat trigger-types-baseline.json
 

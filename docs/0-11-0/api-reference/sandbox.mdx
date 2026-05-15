@@ -1,0 +1,1662 @@
+---
+title: "Sandbox"
+description: "Spawn ephemeral microVMs from your worker code or terminal with iii.trigger('sandbox::*', ...)."
+---
+
+## What is the sandbox API?
+
+The sandbox API is a runtime interface for spawning short-lived microVMs from your
+worker code or from the terminal. Each sandbox boots in a few hundred
+milliseconds, runs commands in isolation from the host, and tears down
+cleanly. The filesystem is discarded on stop.
+
+**Use it for:**
+
+- Running untrusted code or AI-agent tool calls.
+- One-shot scripts that should not share state with your workers.
+- Per-request isolation where you want a fresh environment every time.
+
+**Don't use it for:**
+
+- Long-lived services — use a regular worker.
+- Durable stateful tasks — the overlay filesystem is wiped on stop.
+
+<Note>
+This page is about the `sandbox::*` runtime API (called via `iii.trigger()`). If you're looking for
+how worker processes run inside isolated microVMs, see
+[Developing Sandbox Workers](/0-11-0/how-to/developing-sandbox-workers).
+</Note>
+
+<Warning>
+**Host requirements.** Sandboxes run as libkrun microVMs and need
+hardware virtualization on the host: macOS on **Apple Silicon**, or
+Linux with **KVM** enabled (`/dev/kvm` readable by the engine
+process). Intel Macs, Linux without KVM, and Windows hosts cannot
+boot sandboxes — `sandbox::create` returns `S300` with a stderr tail
+from the failed VM process. See [`S300`](#s-codes) in the error
+table for the full diagnostic flow.
+</Warning>
+
+## API surface at a glance
+
+The daemon registers fourteen triggers — four lifecycle ops plus ten
+filesystem ops. Every call goes through `iii.trigger()`; nothing is
+exposed over plain HTTP.
+
+The "Recommended `timeoutMs`" column is what to pass to
+`iii.trigger()`'s envelope timeout from the caller side — the daemon
+itself enforces a separate per-exec deadline (`payload.timeout_ms` on
+`sandbox::exec`) which defaults to 30s. Pad the envelope by ~5s over
+the daemon deadline so the daemon's own `timed_out` signal lands
+before the trigger client gives up.
+
+| Trigger | Category | Recommended `timeoutMs` | Purpose |
+|---|---|---|---|
+| [`sandbox::create`](#trigger-create) | lifecycle | `300_000` (cold pull can take 5-30s) | Boot a microVM and return a `sandbox_id` |
+| [`sandbox::exec`](#trigger-exec) | lifecycle | `35_000` (daemon default + 5s margin) | Run a command inside a live sandbox |
+| [`sandbox::list`](#trigger-list) | lifecycle | omit | Enumerate active sandboxes |
+| [`sandbox::stop`](#trigger-stop) | lifecycle | omit | Tear down a sandbox and reclaim resources |
+| [`sandbox::fs::ls`](#trigger-fs-ls) | filesystem | omit | List directory entries |
+| [`sandbox::fs::stat`](#trigger-fs-stat) | filesystem | omit | Inspect a single path |
+| [`sandbox::fs::mkdir`](#trigger-fs-mkdir) | filesystem | omit | Create a directory |
+| [`sandbox::fs::write`](#trigger-fs-write) | filesystem | omit (channel-paced) | Stream a file in (no envelope cap) |
+| [`sandbox::fs::read`](#trigger-fs-read) | filesystem | omit (channel-paced) | Stream a file out |
+| [`sandbox::fs::rm`](#trigger-fs-rm) | filesystem | omit | Remove a file or directory |
+| [`sandbox::fs::chmod`](#trigger-fs-chmod) | filesystem | omit | Change mode / owner |
+| [`sandbox::fs::mv`](#trigger-fs-mv) | filesystem | omit | Move or rename atomically |
+| [`sandbox::fs::grep`](#trigger-fs-grep) | filesystem | scale with tree size | Recursive regex search |
+| [`sandbox::fs::sed`](#trigger-fs-sed) | filesystem | scale with file count | Find-and-replace across files |
+
+The CLI (`iii sandbox …`) wraps a strict subset: `run`, `create`,
+`exec`, `list`, `stop`, `upload`, `download`. Anything not on that
+list is reachable only through `iii.trigger()` from your worker code.
+
+**Also on this page:**
+[Engine setup](#engine-setup) ·
+[Allowed images](#allowed-images) ·
+[Custom images](#custom-images) ·
+[Environment variables](#environment-variables) ·
+[Error handling](#error-handling) ·
+[S-codes](#s-codes) ·
+[CLI reference](#cli-reference) ·
+[Testing](#testing) ·
+[Troubleshooting](#troubleshooting)
+
+## Quickstart
+
+The Node and Python examples below assume you already have an `iii`
+worker handle in scope. If this is your first call from outside an
+existing worker, here's the minimal setup:
+
+<CodeGroup>
+
+```typescript Node
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker('ws://127.0.0.1:49134')
+// `iii` is now usable for every `iii.trigger(...)` call below.
+```
+
+```python Python
+# pip install iii-sdk
+from iii import register_worker
+
+iii = register_worker("ws://127.0.0.1:49134")
+# Reuse `iii` for every `iii.trigger(...)` call below. The streaming
+# channel examples (fs::write, fs::read) rebind it as `iii_client`
+# purely to disambiguate from the SDK module name.
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions};
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+// Reuse `iii` for every `iii.trigger(...)` call below.
+```
+
+</CodeGroup>
+
+The default engine WebSocket port is `49134` and the engine binds to
+`0.0.0.0:49134` by default. Override the port with the `--port` flag
+on every CLI command. If your engine runs on a remote host (Docker
+host, K8s service, remote dev VM), substitute that host's address in
+the `registerWorker("ws://<host>:<port>")` URL. See
+[Engine setup](#engine-setup) for the full URL convention.
+
+### One-shot: boot, run one command, stop
+
+From the terminal:
+
+```bash
+iii sandbox run python -- python3 -c 'print("hi")'
+```
+
+From your code — create, exec, then stop:
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python' },
+  timeoutMs: 300_000,
+})
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print("hi")'] },
+  timeoutMs: 35_000,
+})
+console.log(out.stdout) // "hi\n"
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python"}, "timeout_ms": 300_000})
+sandbox_id = result["sandbox_id"]
+out = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", 'print("hi")']}, "timeout_ms": 35_000})
+print(out["stdout"])  # "hi\n"
+await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": True}})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+    let out: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(\"hi\")"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    println!("{}", out["stdout"].as_str().unwrap_or(""));
+    iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### Full lifecycle: create once, exec many times, stop
+
+For agent loops, REPLs, or any multi-step flow where guest state needs to
+carry across commands, create a sandbox up front and exec into it
+repeatedly:
+
+```bash
+SB=$(iii sandbox create python --idle-timeout 300)
+iii sandbox exec "$SB" -- python3 -c 'print(2+2)'            # 4
+iii sandbox exec "$SB" -- python3 -c 'import sys; print(sys.version)'
+iii sandbox stop "$SB"
+```
+
+On an interactive terminal, `create` prints `✓ sandbox ready in Xs` on
+stderr before the uuid lands on stdout. In a pipe or
+command-substitution like `$(...)` the output is silent automatically,
+so the capture stays clean.
+
+The SDK lifecycle in code mirrors the CLI:
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python', idle_timeout_secs: 300 },
+  timeoutMs: 300_000,
+})
+const a = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print(2+2)'] },
+  timeoutMs: 35_000,
+})
+const b = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'import sys; print(sys.version)'] },
+  timeoutMs: 35_000,
+})
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python", "idle_timeout_secs": 300}, "timeout_ms": 300_000})
+sandbox_id = result["sandbox_id"]
+a = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2+2)"]}, "timeout_ms": 35_000})
+b = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "import sys; print(sys.version)"]}, "timeout_ms": 35_000})
+await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": True}})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python", "idle_timeout_secs": 300 }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+    let _a: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2+2)"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    let _b: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "import sys; print(sys.version)"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+## Engine setup
+
+The quickest path is `iii worker add iii-sandbox`, which appends the
+builtin default block to your engine `config.yaml`:
+
+```yaml
+workers:
+  - name: iii-sandbox
+    config:
+      auto_install: true
+      image_allowlist:
+        - python
+        - node
+      default_idle_timeout_secs: 300
+      max_concurrent_sandboxes: 32
+      default_cpus: 1
+      default_memory_mb: 512
+```
+
+The supported images are `python` and `node` — add them to
+`image_allowlist` to permit boots. An empty `image_allowlist` denies
+every `sandbox::create` with `S100`. Bring any additional image via
+[`custom_images`](#custom-images).
+
+The engine auto-starts the sandbox daemon when it sees this entry. The
+`iii-sandbox` name resolves to `iii-worker sandbox-daemon` on your `$PATH`
+— shipped in the `iii-worker` binary, no separate install step.
+
+### Configuration reference
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `auto_install` | `boolean` | `true` | Pull the image from its OCI ref on first use when the rootfs isn't cached. Set `false` in air-gapped or pre-provisioned deployments — callers get `S101` and the operator pre-pulls with `iii worker add iiidev/<image>`. |
+| `image_allowlist` | `string[]` | `[]` | Fail-closed list of image names that may be booted. Entries must be preset names (`python`, `node`) or keys from `custom_images`. Empty list denies everything — `sandbox::create` returns `S100` for every request. |
+| `default_idle_timeout_secs` | `number` | `300` | Reap a sandbox when `now - last_exec_at` exceeds this. The reaper runs every 10s. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
+| `max_concurrent_sandboxes` | `number` | `32` | Hard cap on live sandboxes. The 33rd concurrent `sandbox::create` returns `S400`. Size by host RAM (default RAM per sandbox × cap ≤ available RAM). |
+| `default_cpus` | `number` | `1` | vCPUs per sandbox when the request omits `cpus`. |
+| `default_memory_mb` | `number` | `512` | RAM ceiling per sandbox when the request omits `memory_mb`. |
+| `per_image_caps` | `map` | `{}` | Per-image hard caps. Each value is `{ max_cpus: N, max_memory_mb: N }`. Requests exceeding a cap return `S400`. |
+| `custom_images` | `map` | `{}` | Deployment-specific images beyond the built-in presets. See [Custom images](#custom-images). |
+
+**Observability.** The sandbox daemon registers via the standard SDK
+worker runtime, which wraps every `sandbox::create` and `sandbox::exec`
+handler invocation in an OpenTelemetry span. Route them through the
+standard observability worker — see
+[iii-observability](/0-11-0/workers/iii-observability).
+
+<a id="trigger-create" />
+
+## SDK: creating a sandbox
+
+Call `sandbox::create` via `iii.trigger()` to boot a sandbox and get a `sandbox_id` handle.
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: {
+    image: 'python',
+    cpus: 2,
+    memory_mb: 512,
+    env: ['LANG=en_US.UTF-8'],
+  },
+  timeoutMs: 300_000,
+})
+```
+
+```python Python
+result = await iii.trigger({
+    "function_id": "sandbox::create",
+    "payload": {
+        "image": "python",
+        "cpus": 2,
+        "memory_mb": 512,
+        "env": ["LANG=en_US.UTF-8"],
+    },
+    "timeout_ms": 300_000,
+})
+sandbox_id = result["sandbox_id"]
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({
+            "image": "python",
+            "cpus": 2,
+            "memory_mb": 512,
+            "env": ["LANG=en_US.UTF-8"],
+        }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = result["sandbox_id"].as_str().unwrap().to_string();
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### `sandbox::create` payload fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `image` | `string` | — | **Required.** Catalog preset (`python`, `node`) or any name declared under `custom_images` in `config.yaml`. Must appear in `image_allowlist`. See [Allowed images](#allowed-images) and [Custom images](#custom-images). |
+| `cpus` | `number` | daemon default | vCPU count. Capped per-image by engine config. |
+| `memory_mb` | `number` | daemon default | RAM in MiB. Capped per-image. |
+| `name` | `string` | generated | Human-readable label for `iii sandbox list`. |
+| `network` | `boolean` | `false` | Opt in to host network access. |
+| `idle_timeout_secs` | `number` | `300` | Reap idle sandbox after N seconds. |
+| `env` | `string[]` | — | Create-time environment variables as `"KEY=VALUE"` strings, baked into the VM's init environment. |
+
+### `sandbox::create` response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `sandbox_id` | `string` | UUID handle — pass to `sandbox::exec`, `sandbox::stop`, and `iii sandbox stop`. |
+| `image` | `string` | Echo of the resolved image name — the catalog preset or `custom_images` key that was booted. |
+
+<a id="trigger-exec" />
+
+## SDK: running commands
+
+Use `sandbox::exec` to run a command inside a running sandbox.
+
+<CodeGroup>
+
+```typescript Node
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: {
+    sandbox_id,
+    cmd: '/usr/bin/env',
+    args: ['printenv', 'LANG'],
+    timeout_ms: 10_000,
+    env: ['REQUEST_ID=req-42'],
+  },
+  timeoutMs: 35_000,
+})
+if (out.success) console.log(out.stdout.trim())
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+})
+```
+
+```python Python
+out = await iii.trigger({
+    "function_id": "sandbox::exec",
+    "payload": {
+        "sandbox_id": sandbox_id,
+        "cmd": "/usr/bin/env",
+        "args": ["printenv", "LANG"],
+        "timeout_ms": 10_000,
+        "env": ["REQUEST_ID=req-42"],
+    },
+    "timeout_ms": 35_000,
+})
+if out["success"]:
+    print(out["stdout"].strip())
+await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": True}})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+
+    let out: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({
+            "sandbox_id": sandbox_id,
+            "cmd": "/usr/bin/env",
+            "args": ["printenv", "LANG"],
+            "timeout_ms": 10_000,
+            "env": ["REQUEST_ID=req-42"],
+        }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    if out["success"].as_bool().unwrap_or(false) {
+        println!("{}", out["stdout"].as_str().unwrap_or("").trim());
+    }
+    iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### `sandbox::exec` payload fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sandbox_id` | `string` | — | **Required.** UUID from `sandbox::create`. |
+| `cmd` | `string` | — | **Required.** Command to run. |
+| `args` | `string[]` | `[]` | Arguments for the command. |
+| `timeout_ms` | `number` | `30000` | Per-exec timeout. See [Error handling](#error-handling). |
+| `stdin` | `string` | — | Pre-packaged stdin, base64-encoded. |
+| `env` | `string[]` | — | Exec-time env vars as `"KEY=VALUE"` strings, layered on top of create-time env. |
+| `workdir` | `string` | — | Working directory for the command inside the guest. When omitted, the shell's default cwd is used. |
+
+### Output shape
+
+| Field | Type | Description |
+|---|---|---|
+| `stdout` | `string` | Captured stdout, UTF-8 decoded. |
+| `stderr` | `string` | Captured stderr. |
+| `exit_code` | `number \| null` | Child exit code; `null` on timeout without exit frame. |
+| `timed_out` | `boolean` | `true` when the in-VM timeout fired. |
+| `duration_ms` | `number` | Daemon-side wall clock. |
+| `success` | `boolean` | `true` iff `exit_code === 0`. |
+
+## SDK: one-shot and listing
+
+### One-shot (create → exec → stop)
+
+There is no `runOnce` wire call — expand it into the three-call form:
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python' },
+  timeoutMs: 300_000,
+})
+const out = await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print(2 ** 10)'] },
+  timeoutMs: 35_000,
+})
+// Best-effort stop — don't await if you only need the result
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: false },
+}).catch(() => {})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python"}, "timeout_ms": 300_000})
+sandbox_id = result["sandbox_id"]
+out = await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2 ** 10)"]}, "timeout_ms": 35_000})
+try:
+    await iii.trigger({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id, "wait": False}})
+except Exception:
+    pass
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = result["sandbox_id"].as_str().unwrap().to_string();
+    let _out: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2 ** 10)"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    // Best-effort stop
+    let _ = iii.trigger(TriggerRequest {
+        function_id: "sandbox::stop".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "wait": false }),
+        action: None,
+        timeout_ms: None,
+    }).await;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+<a id="trigger-list" />
+
+### `sandbox::list`
+
+Returns active sandboxes.
+
+<CodeGroup>
+
+```typescript Node
+const { sandboxes } = await iii.trigger({
+  function_id: 'sandbox::list',
+  payload: {},
+})
+```
+
+```python Python
+result = await iii.trigger({"function_id": "sandbox::list", "payload": {}})
+sandboxes = result["sandboxes"]
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let _result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::list".into(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: None,
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+| Field | Type | Description |
+|---|---|---|
+| `sandbox_id` | `string` | UUID handle — pass to `iii sandbox stop`. |
+| `name` | `string?` | Label set at create time. |
+| `image` | `string` | Catalog preset (`python`, `node`) or `custom_images` key. |
+| `age_secs` | `number` | Seconds since create. |
+| `exec_in_progress` | `boolean` | `true` while an exec is in flight. |
+| `stopped` | `boolean` | `true` for sandboxes awaiting reap. |
+
+<a id="trigger-stop" />
+
+### `sandbox::stop`
+
+Tear down a running sandbox. The handler kills the VM process,
+unmounts and removes the overlay, drops the registry entry, and
+returns. The trigger is **not** idempotent across the registry
+boundary: once a stop succeeds, the registry entry is gone, so a
+second `sandbox::stop` against the same UUID returns `S002` (not
+found). It *is* tolerant of the rare race where the reaper marks the
+sandbox stopped between your calls — that path returns `{ stopped:
+true }` without re-killing anything.
+
+<CodeGroup>
+
+```typescript Node
+const result = await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: {
+    sandbox_id,
+    wait: true,             // optional, default false
+  },
+})
+// → { sandbox_id: '...', stopped: true }
+```
+
+```python Python
+result = await iii.trigger({
+    "function_id": "sandbox::stop",
+    "payload": {"sandbox_id": sandbox_id, "wait": True},
+})
+```
+
+```rust Rust
+use iii_sdk::{TriggerRequest};
+use serde_json::json;
+
+let _ = iii.trigger(TriggerRequest {
+    function_id: "sandbox::stop".into(),
+    payload: json!({ "sandbox_id": sandbox_id, "wait": true }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+
+</CodeGroup>
+
+#### `sandbox::stop` payload fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sandbox_id` | `string` | — | **Required.** UUID handle from `sandbox::create`. |
+| `wait` | `boolean` | `false` | When `true`, the trigger waits for the reaper to finish releasing kernel/disk resources. When `false`, the call returns once the kill signal has been delivered — the resources may still be reclaiming in the background. |
+
+#### `sandbox::stop` response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `sandbox_id` | `string` | Echo of the stopped sandbox's UUID. |
+| `stopped` | `boolean` | Always `true` on success. |
+
+Errors: `S001` on a malformed `sandbox_id`; `S002` on a UUID the
+daemon doesn't know about (which is what you'll get if you call stop
+twice on the same sandbox — the second call sees an empty registry
+slot).
+
+<a id="sdk-filesystem-operations" />
+
+## SDK: filesystem operations
+
+Ten `sandbox::fs::*` triggers give first-class file access to a live sandbox without going through `sandbox::exec`. Binary-safe, atomic where it matters (write, mv, sed all use temp + fsync + rename), and deterministic regex semantics (Rust `regex` flavor — RE2-ish, no backrefs/lookarounds) independent of the image's coreutils.
+
+| Trigger | Purpose |
+|---|---|
+| `sandbox::fs::ls` | List directory entries (non-recursive) |
+| `sandbox::fs::stat` | Get file/dir metadata |
+| `sandbox::fs::mkdir` | Create directory (with optional `parents`) |
+| `sandbox::fs::write` | Upload a file via streaming channel (no size cap) |
+| `sandbox::fs::read` | Download a file via streaming channel |
+| `sandbox::fs::rm` | Remove file or directory |
+| `sandbox::fs::chmod` | Change permissions / ownership |
+| `sandbox::fs::mv` | Move or rename |
+| `sandbox::fs::grep` | Search text recursively |
+| `sandbox::fs::sed` | Find-and-replace across files |
+
+All requests carry `sandbox_id` (the UUID returned by `sandbox::create`). Paths are absolute inside the VM's rootfs. Symlinks are operated on as symlinks, never followed.
+
+`fs::write` and `fs::read` stream bytes through III data channels — they don't share `sandbox::exec`'s 4 MiB JSON envelope cap, so multi-megabyte files round-trip cleanly. The other eight ops are one-shot JSON. None of them take the per-sandbox exec mutex, so a long `fs::grep` won't block a concurrent `sandbox::exec`.
+
+<a id="trigger-fs-ls" />
+
+### `sandbox::fs::ls`
+
+```typescript
+const { entries } = await iii.trigger({
+  function_id: 'sandbox::fs::ls',
+  payload: { sandbox_id, path: '/workspace' },
+})
+// entries: [{ name, is_dir, size, mode, mtime, is_symlink }, ...]
+```
+
+Non-recursive. Returns `S211` if the path is missing, `S212` if it's a regular file.
+
+<a id="trigger-fs-stat" />
+
+### `sandbox::fs::stat`
+
+```typescript
+const entry = await iii.trigger({
+  function_id: 'sandbox::fs::stat',
+  payload: { sandbox_id, path: '/workspace/foo.py' },
+})
+// entry: { name, is_dir, size, mode, mtime, is_symlink }
+```
+
+Returns `S211` if the path is missing.
+
+<a id="trigger-fs-mkdir" />
+
+### `sandbox::fs::mkdir`
+
+```typescript
+await iii.trigger({
+  function_id: 'sandbox::fs::mkdir',
+  payload: {
+    sandbox_id,
+    path: '/workspace/new/nested',
+    mode: '0755',           // optional, default '0755'
+    parents: true,          // optional, default false → mkdir -p semantics
+  },
+})
+// → { created: true }
+```
+
+`parents: false` + missing ancestor → `S211`. Existing path + `parents: false` → `S213`. `parents: true` on an existing directory is a no-op.
+
+<a id="trigger-fs-write" />
+
+### `sandbox::fs::write` (streaming upload)
+
+Caller opens a data channel, writes bytes into the writer half, and passes the reader half's ref to the trigger. The worker pumps from the channel into the guest's atomic temp+rename write.
+
+<CodeGroup>
+
+```typescript Node
+const channel = await iii.createChannel()
+channel.writer.stream.write(Buffer.from('hello\n'))
+channel.writer.stream.end()
+
+const { bytes_written, path } = await iii.trigger({
+  function_id: 'sandbox::fs::write',
+  payload: {
+    sandbox_id,
+    path: '/workspace/hello.txt',
+    mode: '0644',           // optional, default '0644'
+    parents: false,         // optional, default false
+    content: channel.readerRef,
+  },
+})
+// → { bytes_written: 6, path: '/workspace/hello.txt' }
+```
+
+```python Python
+channel = iii_client.create_channel()
+await channel.writer.write(b"hello\n")
+await channel.writer.close_async()
+
+result = await iii_client.trigger({
+    "function_id": "sandbox::fs::write",
+    "payload": {
+        "sandbox_id": sandbox_id,
+        "path": "/workspace/hello.txt",
+        "mode": "0644",
+        "content": channel.reader_ref.model_dump(),
+    },
+})
+```
+
+```rust Rust
+use iii_sdk::{ChannelWriter, register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+let channel = iii.create_channel(None).await?;
+channel.writer.write(b"hello\n").await?;
+channel.writer.close().await?;
+
+let resp = iii.trigger(TriggerRequest {
+    function_id: "sandbox::fs::write".into(),
+    payload: json!({
+        "sandbox_id": sandbox_id,
+        "path": "/workspace/hello.txt",
+        "mode": "0644",
+        "content": channel.reader_ref,
+    }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+
+</CodeGroup>
+
+Atomic on disk: the supervisor writes to `<path>.iii-tmp-<uuid>`, fsyncs, then renames onto the target. If the channel closes before the writer signals end-of-stream (caller crashed mid-upload), the temp file is unlinked and the trigger returns `S218`. The original target — if it existed — is untouched.
+
+<a id="trigger-fs-read" />
+
+### `sandbox::fs::read` (streaming download)
+
+Trigger returns metadata synchronously plus a `StreamChannelRef` the caller pulls bytes from. The worker spawns a background task that pumps file bytes into the channel as the caller reads.
+
+<CodeGroup>
+
+```typescript Node
+import { ChannelReader } from 'iii-sdk'
+
+const resp = await iii.trigger({
+  function_id: 'sandbox::fs::read',
+  payload: { sandbox_id, path: '/workspace/hello.txt' },
+})
+// resp = { content: StreamChannelRef, size, mode, mtime }
+
+const reader = new ChannelReader(ENGINE_URL, resp.content)
+const chunks: Buffer[] = []
+for await (const chunk of reader.stream) chunks.push(chunk)
+const bytes = Buffer.concat(chunks)
+```
+
+```python Python
+result = await iii_client.trigger({
+    "function_id": "sandbox::fs::read",
+    "payload": {"sandbox_id": sandbox_id, "path": "/workspace/hello.txt"},
+})
+reader = ChannelReader(ENGINE_URL, StreamChannelRef(**result["content"]))
+data = await reader.read_all()
+```
+
+```rust Rust
+use iii_sdk::{ChannelReader, TriggerRequest};
+use serde_json::{json, Value};
+
+let resp: Value = iii.trigger(TriggerRequest {
+    function_id: "sandbox::fs::read".into(),
+    payload: json!({ "sandbox_id": sandbox_id, "path": "/workspace/hello.txt" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+// resp = { "content": StreamChannelRef, "size", "mode", "mtime" }
+
+let channel_ref = serde_json::from_value(resp["content"].clone())?;
+let reader = ChannelReader::new("ws://127.0.0.1:49134", &channel_ref);
+let bytes = reader.read_all().await?;
+```
+
+</CodeGroup>
+
+`S211` if the path is missing, `S212` if it's a directory. The supervisor holds the file descriptor open for the full stream so mid-read size changes don't affect the bytes you receive. If the read fails after metadata was emitted (e.g. `EIO`), the worker side-bands `{ "error": "S216", "message": "..." }` via the channel's text-message channel and closes the stream early.
+
+<a id="trigger-fs-rm" />
+
+### `sandbox::fs::rm`
+
+```typescript
+await iii.trigger({
+  function_id: 'sandbox::fs::rm',
+  payload: {
+    sandbox_id,
+    path: '/workspace/junk',
+    recursive: false,       // default false
+  },
+})
+// → { removed: true }
+```
+
+Non-recursive on a non-empty directory → `S214`, with the path preserved on disk. Symlinks are unlinked, never their targets.
+
+<a id="trigger-fs-chmod" />
+
+### `sandbox::fs::chmod`
+
+```typescript
+const { updated } = await iii.trigger({
+  function_id: 'sandbox::fs::chmod',
+  payload: {
+    sandbox_id,
+    path: '/workspace/foo.sh',
+    mode: '0755',
+    uid: null,              // optional u32
+    gid: null,              // optional u32
+    recursive: false,
+  },
+})
+// updated: number of entries successfully chmod'd (root included)
+```
+
+`uid` / `gid` are optional — pass either or both to chown alongside the mode change. `recursive: true` walks the tree (root entry counted). `updated` counts entries the call applied to, not entries whose mode actually differed.
+
+<a id="trigger-fs-mv" />
+
+### `sandbox::fs::mv`
+
+```typescript
+await iii.trigger({
+  function_id: 'sandbox::fs::mv',
+  payload: {
+    sandbox_id,
+    src: '/workspace/a',
+    dst: '/workspace/b',
+    overwrite: false,       // default false
+  },
+})
+// → { moved: true }
+```
+
+Same-filesystem moves are atomic via `rename(2)`. Cross-filesystem moves (e.g. across a virtio-fs mountpoint) fall back to copy-to-temp-at-dst, fsync, rename, unlink-src — `src` survives any partial failure. `overwrite: false` + existing `dst` → `S213`.
+
+<a id="trigger-fs-grep" />
+
+### `sandbox::fs::grep`
+
+```typescript
+const { matches, truncated } = await iii.trigger({
+  function_id: 'sandbox::fs::grep',
+  payload: {
+    sandbox_id,
+    path: '/workspace',
+    pattern: 'TODO\\(.+\\):',
+    recursive: true,
+    ignore_case: false,
+    include_glob: ['*.rs', '*.py'],
+    exclude_glob: ['target/*'],
+    max_matches: 1000,        // default 10000
+    max_line_bytes: 4096,     // default 4096
+  },
+})
+// matches: [{ path, line, content }, ...]   (legacy callers may also see `file` — it's an alias for `path`)
+```
+
+Rust `regex` syntax. Lines longer than `max_line_bytes` are truncated with `…`. Binary files (null-byte scan in the first 8 KiB) are skipped silently — same default as `ripgrep`. `truncated: true` means `max_matches` was reached and the walk stopped early. `line` is 1-based.
+
+`include_glob` / `exclude_glob` accept `*` (any chars except `/`) and `?` (any single char except `/`). For richer globbing, pre-filter via `sandbox::exec find ...` and pass single files.
+
+Bad regex → `S217`.
+
+<a id="trigger-fs-sed" />
+
+### `sandbox::fs::sed`
+
+`fs::sed` accepts **exactly one** of two forms — explicit `files`, or
+`path` + walk filters (mirrors `fs::grep`'s walk semantics so you can
+copy a grep query into a sed call). Sending both, or neither, returns
+`S210` before any file is touched.
+
+**Form 1 — explicit list (`files`):**
+
+```typescript
+const { results, total_replacements } = await iii.trigger({
+  function_id: 'sandbox::fs::sed',
+  payload: {
+    sandbox_id,
+    files: ['/workspace/a.txt', '/workspace/b.txt'],
+    pattern: 'foo',
+    replacement: 'bar',
+    regex: true,            // default true — false → literal substring match
+    first_only: false,      // true → at most one replace per line
+    ignore_case: false,
+  },
+})
+// results: [{ path, replacements, success, error? }, ...]   (alias `file` accepted for back-compat)
+```
+
+**Form 2 — walk a tree (`path`):**
+
+```typescript
+const { results, total_replacements } = await iii.trigger({
+  function_id: 'sandbox::fs::sed',
+  payload: {
+    sandbox_id,
+    path: '/workspace',
+    recursive: true,                     // default true; false on a directory → S210
+    include_glob: ['*.rs', '*.py'],      // gitignore-style; relative to `path`
+    exclude_glob: ['target/*'],
+    pattern: 'foo',
+    replacement: 'bar',
+    regex: true,
+    first_only: false,
+    ignore_case: false,
+  },
+})
+```
+
+Line-oriented: regex matches are tested per line, never across
+newlines. Use `$1`, `$2`, etc. in `replacement` for capture-group
+references. Each file is rewritten via temp+rename — a per-file error
+sets `success: false` on that entry without aborting the rest. The
+trigger always returns 2xx; check the per-file `success` flag and the
+top-level `total_replacements` counter.
+
+Bad regex → `S217` (top-level error; nothing rewritten). Mutually
+exclusive form check (`files` + `path`, or neither) → `S210`.
+
+For full POSIX sed (hold space, multi-line patterns, chained
+commands), use `sandbox::exec` with the image's own `sed` binary.
+
+### Concurrency and lifecycle
+
+Each `sandbox::fs::*` call opens a fresh `shell.sock` connection; the supervisor serves them on independent threads. There is no per-sandbox FS serialization — parallel `fs::write` and `fs::read` on the same file race at the filesystem level (same as two concurrent `sandbox::exec`s would). FS ops do **not** take the `exec_in_progress` mutex, so a long `fs::grep` does not block `sandbox::exec`. They do bump `last_exec_at` so the idle reaper leaves the sandbox alone while files are being moved around.
+
+## Environment variables
+
+Two layers:
+
+- **Create-time** (`sandbox::create` payload `env`): passed to the VM at boot
+  and exported into the guest shell's init environment. Every exec call
+  inherits these. The right place for secrets (keys, tokens), service URLs,
+  locale/PATH overrides.
+- **Exec-time** (`sandbox::exec` payload `env`): sent with that single exec
+  request. The guest shell layers the exec-time list on top of the init
+  environment for the duration of that call. The right place for per-request
+  correlation IDs, debug flags, and one-off overrides.
+
+Both layers take `env` as a list/array of `"KEY=VALUE"` strings.
+
+If a key appears in both, exec-time wins for that call only. Create-time
+remains the base for every subsequent exec.
+
+There is no "unset" verb. Either don't set the key, or overwrite it with an
+empty string.
+
+<CodeGroup>
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: {
+    image: 'python',
+    env: [
+      `DATABASE_URL=${process.env.DATABASE_URL}`,
+      'LANG=en_US.UTF-8',
+    ],
+  },
+  timeoutMs: 300_000,
+})
+
+// Inherits DATABASE_URL and LANG.
+await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: { sandbox_id, cmd: 'python3', args: ['-c', 'import os; print(os.environ["LANG"])'] },
+  timeoutMs: 35_000,
+})
+
+// Layers REQUEST_ID on top for this call only.
+await iii.trigger({
+  function_id: 'sandbox::exec',
+  payload: {
+    sandbox_id,
+    cmd: 'python3',
+    args: ['-c', 'import os; print(os.environ["REQUEST_ID"])'],
+    env: ['REQUEST_ID=req-42'],
+  },
+  timeoutMs: 35_000,
+})
+```
+
+```python Python
+import os
+result = await iii.trigger({
+    "function_id": "sandbox::create",
+    "payload": {
+        "image": "python",
+        "env": [
+            f"DATABASE_URL={os.environ['DATABASE_URL']}",
+            "LANG=en_US.UTF-8",
+        ],
+    },
+    "timeout_ms": 300_000,
+})
+sandbox_id = result["sandbox_id"]
+
+# Inherits DATABASE_URL and LANG.
+await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", 'import os; print(os.environ["LANG"])']}, "timeout_ms": 35_000})
+
+# Layers REQUEST_ID on top for this call only.
+await iii.trigger({
+    "function_id": "sandbox::exec",
+    "payload": {
+        "sandbox_id": sandbox_id,
+        "cmd": "python3",
+        "args": ["-c", 'import os; print(os.environ["REQUEST_ID"])'],
+        "env": ["REQUEST_ID=req-42"],
+    },
+    "timeout_ms": 35_000,
+})
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let database_url = std::env::var("DATABASE_URL")?;
+    let result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({
+            "image": "python",
+            "env": [format!("DATABASE_URL={database_url}"), "LANG=en_US.UTF-8".to_string()],
+        }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = result["sandbox_id"].as_str().unwrap().to_string();
+
+    // Inherits DATABASE_URL and LANG.
+    let _: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "import os; print(os.environ['LANG'])"] }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+
+    // Layers REQUEST_ID on top for this call only.
+    let _: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({
+            "sandbox_id": sandbox_id,
+            "cmd": "python3",
+            "args": ["-c", "import os; print(os.environ['REQUEST_ID'])"],
+            "env": ["REQUEST_ID=req-42"],
+        }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+## Allowed images
+
+The daemon ships with two catalog presets:
+
+| Image | OCI reference | Use case |
+|---|---|---|
+| `python` | `docker.io/iiidev/python:latest` | CPython 3 + standard library |
+| `node` | `docker.io/iiidev/node:latest` | Node.js LTS |
+
+The catalog stores fully-qualified refs (registry / namespace / repo /
+tag) so they hash to the same rootfs-cache slug as managed-worker
+boots of the same image. A custom-images entry that uses the
+shorthand `iiidev/python:latest` would pull the same bytes into a
+second cache slug under `~/.iii/cache/` — always pin the registry.
+
+Your engine's `image_allowlist` in `config.yaml` controls which images
+are actually bootable at runtime. The allowlist is fail-closed — an
+image must appear in `image_allowlist` for `sandbox::create` to accept
+it, whether it's a preset or a custom image.
+
+Anything else a deployment needs ships through
+[`custom_images`](#custom-images).
+
+## Custom images
+
+Deployments can register additional OCI images under `custom_images` in
+the `iii-sandbox` config. Each entry maps a short name (used in
+`image_allowlist` and the `image` field on `sandbox::create`) to a
+fully-qualified OCI reference:
+
+```yaml
+workers:
+  - name: iii-sandbox
+    config:
+      image_allowlist:
+        - python
+        - my-app
+        - gpu-worker
+      custom_images:
+        my-app: ghcr.io/acme/my-app:1.2.3
+        gpu-worker: docker.io/tenant/gpu-worker:cuda12
+```
+
+Once `my-app` is in both `custom_images` and `image_allowlist`, callers
+boot it exactly like a preset:
+
+```typescript Node
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'my-app' },
+  timeoutMs: 300_000,
+})
+```
+
+**Rules.**
+
+- **Presets cannot be shadowed.** Declaring a `custom_images` entry with
+  a reserved preset name (`python`, `node`) is rejected at config load —
+  the daemon exits with an explicit error. This stops a mistyped or
+  malicious config from silently redirecting the trusted `python`
+  image to an attacker-controlled ref.
+- **Allowlist is still required.** An image in `custom_images` that is
+  not in `image_allowlist` returns `S100` on `sandbox::create`. Presence
+  in the catalog is not permission.
+- **Auto-install applies.** With `auto_install: true` (default), the
+  first `sandbox::create` for a custom image pulls it into
+  `~/.iii/cache/<slug>/` and reuses the cached rootfs on subsequent
+  boots. With `auto_install: false`, pre-pull with
+  `iii worker add <oci-ref>` or the sandbox returns `S101`.
+- **Image must ship a linux/`<host-arch>` manifest.** The sandbox boots
+  a microVM, not a container — an image missing a matching platform
+  manifest returns `S102` with a hint about the host architecture.
+- **Rootfs is shared with managed workers.** A custom image pulled via
+  the sandbox satisfies a managed worker boot of the same OCI ref, and
+  vice versa. One pull, one cache entry.
+
+See [Configure the engine](/0-11-0/how-to/configure-engine) for the full
+engine-level schema.
+
+## Error handling
+
+Every sandbox failure throws an error whose message begins with
+`handler error:` followed by a JSON envelope. The envelope is flat
+and always carries five fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `string` | Category: `validation`, `config`, `internal`, `transient`, `execution`, `filesystem`, or `platform`. |
+| `code` | `string` | Stable S-code (e.g. `S100`, `S211`). The wire ABI — the [S-codes table](#s-codes) is the canonical reference. |
+| `message` | `string` | Human-readable explanation. Often includes the offending path, image, or timeout value. |
+| `docs_url` | `string` | Permalink to the per-code troubleshooting page: `https://iii.dev/docs/errors/sandbox/<code>`. |
+| `retryable` | `boolean` | `true` only for transient codes (`S102`, `S218`). All other codes are caller-fixable, not retryable. |
+
+```
+handler error: {"type":"validation","code":"S002","message":"sandbox not found: <id>","docs_url":"https://iii.dev/docs/errors/sandbox/S002","retryable":false}
+handler error: {"type":"execution","code":"S200","message":"exec timed out after 500 ms","docs_url":"https://iii.dev/docs/errors/sandbox/S200","retryable":false}
+handler error: {"type":"transient","code":"S102","message":"auto-install failed for image 'python': network down","docs_url":"https://iii.dev/docs/errors/sandbox/S102","retryable":true}
+```
+
+Parse the envelope if you need the S-code or the `retryable` flag for
+targeted recovery:
+
+<CodeGroup>
+
+```typescript Node
+try {
+  const { sandbox_id } = await iii.trigger({
+    function_id: 'sandbox::create',
+    payload: { image: 'python' },
+    timeoutMs: 300_000,
+  })
+  await iii.trigger({
+    function_id: 'sandbox::exec',
+    payload: { sandbox_id, cmd: 'python3', args: ['-c', 'while True: pass'], timeout_ms: 500 },
+    timeoutMs: 35_000,
+  })
+} catch (err) {
+  const match = err?.message?.match(/handler error:\s*(\{.*\})/)
+  const envelope = match ? JSON.parse(match[1]) : null
+  if (envelope?.code === 'S200') {
+    console.warn('timed out; raise timeout_ms or split the work')
+  } else if (envelope?.code === 'S101') {
+    console.error('pre-pull with: iii worker add iiidev/<image>')
+  } else {
+    throw err
+  }
+}
+```
+
+```python Python
+import json, re
+
+try:
+    result = await iii.trigger({"function_id": "sandbox::create", "payload": {"image": "python"}, "timeout_ms": 300_000})
+    sandbox_id = result["sandbox_id"]
+    await iii.trigger({"function_id": "sandbox::exec", "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "while True: pass"], "timeout_ms": 500}, "timeout_ms": 35_000})
+except Exception as e:
+    m = re.search(r'handler error:\s*(\{.*\})', str(e))
+    envelope = json.loads(m.group(1)) if m else None
+    if envelope and envelope.get("code") == "S200":
+        print("timed out; raise timeout_ms or split the work")
+    elif envelope and envelope.get("code") == "S101":
+        print("pre-pull with: iii worker add iiidev/<image>")
+    else:
+        raise
+```
+
+```rust Rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let create_result: Value = iii.trigger(TriggerRequest {
+        function_id: "sandbox::create".into(),
+        payload: json!({ "image": "python" }),
+        action: None,
+        timeout_ms: Some(300_000),
+    }).await?;
+    let sandbox_id = create_result["sandbox_id"].as_str().unwrap().to_string();
+
+    match iii.trigger(TriggerRequest {
+        function_id: "sandbox::exec".into(),
+        payload: json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "while True: pass"], "timeout_ms": 500 }),
+        action: None,
+        timeout_ms: Some(35_000),
+    }).await {
+        Ok::<Value, _>(_out) => { /* ... */ }
+        Err(e) => {
+            let msg = e.to_string();
+            if let Some(json_str) = msg.strip_prefix("handler error: ") {
+                if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    match envelope["code"].as_str() {
+                        Some("S200") => eprintln!("timed out; raise the exec timeout or split the work"),
+                        Some("S101") => eprintln!("pre-pull with: iii worker add iiidev/<image>"),
+                        _ => eprintln!("sandbox error: {e}"),
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+### S-codes
+
+Both the S-code and the message are canonical: the daemon emits each
+code from a semantically matching error variant, and the
+`{type, code, message, docs_url, retryable}` payload is the stable
+SDK contract. Parse `code` from the `handler error: {...}` envelope
+for targeted recovery, and follow `docs_url` for the per-code
+troubleshooting page.
+
+| Code | Type | Retryable | Meaning | Typical fix |
+|---|---|---|---|---|
+| S001 | validation | false | Malformed request (bad UUID, bad base64 stdin) | Fix the caller |
+| S002 | validation | false | Well-formed `sandbox_id` but no live sandbox matches | Re-create |
+| S003 | validation | false | Another exec is in-flight on this sandbox | Serialize execs per handle |
+| S004 | validation | false | Called exec on a stopped sandbox | Create a new one |
+| S100 | config | false | Image not in engine allowlist | Use a preset or add to allowlist |
+| S101 | internal | false | Rootfs not on disk | Run `iii worker add iiidev/<image>` |
+| S102 | transient | **true** | Pull/unpack failed | Retry with backoff |
+| S200 | execution | false | `timeout_ms` exceeded | Raise the budget or split the work |
+| S210 | filesystem | false | Invalid `fs::*` request (bad path, malformed mode, empty pattern) | Fix the caller |
+| S211 | filesystem | false | Path not found | Check the path; create it first if needed |
+| S212 | filesystem | false | Wrong file type (e.g. `ls` on a file, `read` on a directory) | Match op to entry type |
+| S213 | filesystem | false | Path already exists (`mkdir` / `mv` without `overwrite`) | Pass `parents: true` / `overwrite: true`, or remove first |
+| S214 | filesystem | false | Directory not empty (`rm` without `recursive`) | Pass `recursive: true` |
+| S215 | filesystem | false | Permission denied inside the VM | Adjust mode/uid/gid via `fs::chmod` |
+| S216 | filesystem | false | I/O error (`EIO`, disk full, quota) | Inspect message; check VM disk health |
+| S217 | filesystem | false | Regex won't compile (`fs::grep` / `fs::sed`) | Fix the pattern (Rust regex flavor) |
+| S218 | filesystem | **true** | Channel closed before `FsEnd` (caller aborted upload mid-stream) | Retry with a fresh channel |
+| S219 | filesystem | false | FS ops not supported by this supervisor | Upgrade `iii-worker` (and restart it) |
+| S300 | platform | false | libkrun refused to boot | Check host reqs (macOS Apple Silicon / Linux KVM) |
+| S400 | config | false | cpus/memory over per-image cap | Lower request or raise cap |
+
+## CLI reference
+
+Five user-facing commands, in two flavors. The daemon itself runs as an internal `iii-worker` subcommand that the engine spawns automatically — you never invoke it yourself.
+
+**One-shot:** `run` creates a sandbox, executes a single command, and stops it. Use for batch scripts, CI, and quick evals.
+
+**Full lifecycle:** `create` → `exec` × N → `stop` keeps the sandbox alive between calls. Use for agent loops, REPLs, multi-step workflows, anything where you need to carry guest state across commands.
+
+### `iii sandbox run`
+
+Create a sandbox, run one command, stop.
+
+```bash
+iii sandbox run <image> [--cpus N] [--memory MiB] [--port P] -- <cmd> [args...]
+```
+
+| Flag | Description |
+|---|---|
+| `--cpus N` | vCPU count. Defaults to `1`. |
+| `--memory MiB` | RAM in MiB. Defaults to `512`. |
+| `--port P` | Override the engine WebSocket port (default `49134`). |
+
+Example:
+
+```bash
+iii sandbox run python --cpus 2 --memory 512 -- python3 -c 'print(2 ** 10)'
+```
+
+### `iii sandbox create`
+
+Boot a long-lived sandbox and print its id. The sandbox persists until you call `iii sandbox stop <id>` or the idle timeout fires.
+
+```bash
+iii sandbox create <image> [--cpus N] [--memory MiB] [--idle-timeout SECS] \
+                            [--name LABEL] [--network] [-e KEY=VAL]... [--port P]
+```
+
+| Flag | Description |
+|---|---|
+| `--cpus N` | vCPU count. Defaults to `1`. |
+| `--memory MiB` | RAM in MiB. Defaults to `512`. |
+| `--idle-timeout SECS` | Auto-stop after this many seconds of exec inactivity. Omit to use the engine's default. |
+| `--name LABEL` | Human-readable label, shown in `iii sandbox list`. |
+| `--network` | Enable guest network access. Default follows the engine policy (typically off). |
+| `-e KEY=VAL`, `--env KEY=VAL` | Repeatable. Entries without `=` are silently skipped. |
+| `--port P` | Engine WebSocket port (default `49134`). |
+
+Pipe-friendly: the sandbox id is the only thing written to stdout, so you can capture it in a shell:
+
+```bash
+SB=$(iii sandbox create python --idle-timeout 300)
+iii sandbox exec "$SB" -- python3 -c 'print(2+2)'
+iii sandbox exec "$SB" -- python3 -c 'import sys; print(sys.version)'
+iii sandbox stop "$SB"
+```
+
+<Note>
+When run interactively, the CLI prints `✓ sandbox ready in Xs` on **stderr**
+before the uuid hits stdout. Redirecting stderr (`2>/dev/null`) or piping
+stdout (`$(...)`) silences it automatically — the capture stays
+clean. First-time boots pull and unpack the rootfs (~5-30s depending on
+image size); subsequent boots with a cached rootfs take well under a
+second.
+</Note>
+
+### `iii sandbox exec`
+
+Run a command inside an already-running sandbox. Pipe-mode only — for interactive TTY sessions use `iii worker exec` against a managed worker instead.
+
+```bash
+iii sandbox exec <sandbox-id> [--timeout DUR] [-e KEY=VAL]... [--port P] -- <cmd> [args...]
+```
+
+| Flag | Description |
+|---|---|
+| `--timeout DUR` | Kill the child after this long (`30s`, `5m`, `500ms` — `humantime` syntax). On expiry the exec exits with code `124`, matching coreutils `timeout(1)`. |
+| `-e KEY=VAL`, `--env KEY=VAL` | Repeatable. Entries without `=` are silently skipped. |
+| `--port P` | Engine WebSocket port. |
+
+Stdout and stderr from the guest command are streamed to the CLI's stdout and stderr respectively; the CLI exits with the child's exit code.
+
+### `iii sandbox list`
+
+```bash
+iii sandbox list [--port P]
+```
+
+Prints the active-sandbox table. Always shows every sandbox the daemon
+knows about — the underlying RPC is owner-scoped for multi-tenant SDK
+callers, but the CLI has no authenticated identity, so it always
+requests the unscoped view. (Earlier releases exposed an `--all` flag;
+it is now a silent no-op, kept only so existing scripts keep working.)
+
+### `iii sandbox stop`
+
+```bash
+iii sandbox stop <sandbox-id> [--port P]
+```
+
+Graceful stop by UUID. The id comes from `iii sandbox create`, `iii sandbox list`, or the
+`sandbox_id` field returned by `sandbox::create`.
+
+### `iii sandbox upload`
+
+```bash
+iii sandbox upload <sandbox-id> <local-path|-> <remote-path> [--mode 0644] [--parents] [--port P]
+```
+
+Stream a local file into a running sandbox via an iii data channel — no JSON-envelope size cap. Atomic on disk: the supervisor writes to a temp sibling, fsyncs, and renames onto `remote-path`. The original target (if any) is preserved on caller abort and surfaces as `S218` (retryable).
+
+Pass `-` as the local path to read from stdin, which makes the command pipe-friendly:
+
+```bash
+# Push a local file
+iii sandbox upload "$SB" ./script.js /workspace/script.js
+
+# Stream a tar archive directly into the sandbox without an intermediate file
+tar -cf - ./srcdir | iii sandbox upload "$SB" - /workspace/src.tar
+
+# Auto-create parent directories and tighten permissions
+iii sandbox upload "$SB" ./key.pem /etc/keys/app.pem --mode 0600 --parents
+```
+
+Two of the eight non-streaming `sandbox::fs::*` ops have shell equivalents that work fine through `sandbox::exec` (see [SDK: filesystem operations](#sdk-filesystem-operations)) — `upload` and `download` exist as dedicated commands because host↔guest byte movement does *not* have a clean shell equivalent.
+
+### `iii sandbox download`
+
+```bash
+iii sandbox download <sandbox-id> <remote-path> <local-path|-> [--port P]
+```
+
+Stream a sandbox file out to disk (or stdout). Pass `-` as the local path to write to stdout for piping:
+
+```bash
+# Save to disk
+iii sandbox download "$SB" /workspace/output.json ./output.json
+
+# Pipe straight into another tool — no intermediate file
+iii sandbox download "$SB" /workspace/build.tar - | tar -tf -
+
+# Inspect a JSON artifact with jq
+iii sandbox download "$SB" /workspace/result.json - | jq '.summary'
+```
+
+Errors map to the S21x band: missing path → `S211`, directory instead of file → `S212`, permission denied → `S215`, mid-stream I/O failure → `S216`. See [S-codes](#s-codes).
+
+### Smoke testing upload / download
+
+End-to-end verification you can paste into a terminal. Boots a sandbox, exercises both directions, verifies bytes round-trip, and tears down.
+
+**Upload round-trip** — push a known file, then `cat` it from inside the VM and `diff` against the original:
+
+```bash
+SB=$(iii sandbox create node)
+
+# 1. Upload from a local file
+echo "hello from upload smoke" > /tmp/payload.txt
+iii sandbox upload "$SB" /tmp/payload.txt /tmp/upload.txt
+
+# 2. Read it back via exec and diff against the source
+iii sandbox exec "$SB" -- cat /tmp/upload.txt | diff -q - /tmp/payload.txt \
+  && echo "OK: bytes match"
+
+# 3. Stdin variant — pipe directly without a temp file
+echo "from stdin" | iii sandbox upload "$SB" - /tmp/upload-stdin.txt
+iii sandbox exec "$SB" -- cat /tmp/upload-stdin.txt
+
+# 4. mode + parents into a deep path
+echo "secret" | iii sandbox upload "$SB" - /a/b/c/secret.bin --mode 0600 --parents
+iii sandbox exec "$SB" -- stat -c '%a' /a/b/c/secret.bin   # expects: 600
+
+iii sandbox stop "$SB"
+```
+
+**Download round-trip** — seed a file in the VM, download, byte-compare:
+
+```bash
+SB=$(iii sandbox create node)
+
+# 1. Seed a known file inside the sandbox
+iii sandbox exec "$SB" -- sh -c 'printf "round-trip me\n" > /tmp/source.txt'
+
+# 2. Download to a local path and diff
+iii sandbox download "$SB" /tmp/source.txt /tmp/got.txt
+iii sandbox exec "$SB" -- cat /tmp/source.txt | diff -q - /tmp/got.txt \
+  && echo "OK: bytes match"
+
+# 3. Stdout variant — pipe straight to jq, sha256sum, etc.
+iii sandbox exec "$SB" -- sh -c 'echo {"ok":true} > /tmp/out.json'
+iii sandbox download "$SB" /tmp/out.json - | jq .ok   # → true
+
+# 4. Error path — missing file surfaces S211 on stderr, nonzero exit
+iii sandbox download "$SB" /tmp/no-such-file - ; echo "rc=$?"
+
+iii sandbox stop "$SB"
+```
+
+The 16 KiB binary round-trip is the strict check — generate the same buffer host-side and in-VM, then `cmp -s`:
+
+```bash
+SB=$(iii sandbox create node)
+
+iii sandbox exec "$SB" -- node -e '
+  const fs = require("node:fs"); const buf = Buffer.alloc(16 * 1024);
+  for (let i = 0; i < buf.length; i++) buf[i] = i & 0xff;
+  fs.writeFileSync("/tmp/random.bin", buf);
+'
+node -e '
+  const fs = require("node:fs"); const buf = Buffer.alloc(16 * 1024);
+  for (let i = 0; i < buf.length; i++) buf[i] = i & 0xff;
+  fs.writeFileSync("/tmp/expected.bin", buf);
+'
+
+iii sandbox download "$SB" /tmp/random.bin /tmp/got.bin
+cmp -s /tmp/expected.bin /tmp/got.bin && echo "OK: 16 KiB binary match"
+
+iii sandbox stop "$SB"
+```
+
+This catches off-by-one truncation, base64 decode bugs in the channel layer, and partial chunk loss. If you see a sha256 mismatch instead, run with `RUST_LOG=trace,iii_worker::cli::shell_relay=trace` to inspect the per-chunk relay flow.
+
+## Testing
+
+The `testing` subpaths (`iii-sdk/testing`, `iii.testing`, `iii_sdk::testing`)
+have been removed along with the SDK sugar. Unit-test sandbox-calling code
+by intercepting `iii.trigger()` calls at the mock/stub layer of your test
+framework. For Node, mock the `trigger` method directly:
+
+```typescript
+const mockIii = {
+  trigger: vi.fn().mockImplementation(async ({ function_id, payload }) => {
+    if (function_id === 'sandbox::create') return { sandbox_id: 'test-sb-uuid' }
+    if (function_id === 'sandbox::exec') return { stdout: 'hi\n', stderr: '', exit_code: 0, success: true, timed_out: false, duration_ms: 5 }
+    if (function_id === 'sandbox::stop') return {}
+    throw new Error(`unexpected function_id: ${function_id}`)
+  }),
+}
+```
+
+## Troubleshooting
+
+**`S101` on first create.** Run `iii worker add iiidev/<image>`
+to pre-pull the rootfs, or set `auto_install: true` in the daemon config
+so the daemon pulls on demand.
+
+**`S003` repeating after a timeout.** The sandbox's
+exec-in-progress flag clears when the shell session drops. If you keep
+getting `S003`, your client probably has a stuck connection or you're
+racing two exec calls on the same handle — serialize them.
+
+**`S300` with a stderr tail.** Sandboxes require
+macOS Apple Silicon or Linux with KVM. On other platforms, and on
+hosts where libkrun can't initialize (missing frameworks, dlopen
+failures), the adapter now appends the last 32 lines (≤ 4 KiB) of the
+VM process's stderr to the `BootFailed` message — read it first; the
+real reason is almost always in there. `dmesg` on Linux or the
+`iii-worker` logs back-fill anything the tail truncated.

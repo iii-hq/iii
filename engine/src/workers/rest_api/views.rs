@@ -399,6 +399,11 @@ pub async fn dynamic_handler(
                     }
                     axum::body::Bytes::from(buf)
                 };
+                if let Some(req_tx) = req_tx {
+                    if !body_bytes.is_empty() {
+                        let _ = req_tx.send(ChannelItem::Binary(body_bytes.clone())).await;
+                    }
+                }
                 serde_json::from_slice(&body_bytes).unwrap_or(Value::Null)
             } else if let Some(req_tx) = req_tx {
                 let mut body = body;
@@ -1477,6 +1482,33 @@ mod tests {
             .unwrap();
     }
 
+    async fn drain_request_body_channel(
+        engine: &Engine,
+        request: &HttpRequest,
+        timeout_message: &'static str,
+    ) -> Vec<u8> {
+        let mut rx = engine
+            .channel_manager
+            .take_receiver(
+                &request.request_body.channel_id,
+                &request.request_body.access_key,
+            )
+            .await
+            .expect("request body receiver");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut raw = Vec::new();
+            while let Some(item) = rx.recv().await {
+                if let ChannelItem::Binary(bytes) = item {
+                    raw.extend_from_slice(&bytes);
+                }
+            }
+            raw
+        })
+        .await
+        .expect(timeout_message)
+    }
+
     #[tokio::test]
     async fn test_dynamic_handler_route_not_found() {
         let engine = make_test_engine();
@@ -2082,6 +2114,140 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_handler_json_request_body_channel_reads_raw_bytes() {
+        let engine = make_test_engine();
+        let engine_for_handler = engine.clone();
+
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::json_raw_body".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let engine = engine_for_handler.clone();
+                async move {
+                    let request: HttpRequest = serde_json::from_value(input).unwrap();
+                    let raw = drain_request_body_channel(
+                        &engine,
+                        &request,
+                        "request body channel should close",
+                    )
+                    .await;
+
+                    FunctionResult::Success(Some(json!({
+                        "status_code": 200,
+                        "body": {
+                            "parsed_body": request.body,
+                            "raw_body": String::from_utf8(raw).unwrap()
+                        }
+                    })))
+                }
+            }),
+        );
+
+        let api_handler = make_test_api_handler(engine.clone());
+        register_test_route(&api_handler, "/json-raw", "POST", "test::json_raw_body").await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        let query_params: HashMap<String, String> = HashMap::new();
+
+        let response = dynamic_handler(
+            Method::POST,
+            "/json-raw".parse().unwrap(),
+            headers,
+            axum::extract::Extension(engine),
+            axum::extract::Extension(api_handler),
+            axum::extract::Extension("/json-raw".to_string()),
+            Query(query_params),
+            Body::from(r#"{"key":"value"}"#),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["parsed_body"], json!({"key": "value"}));
+        assert_eq!(value["raw_body"], r#"{"key":"value"}"#);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_handler_empty_json_request_body_channel_closes() {
+        let engine = make_test_engine();
+        let engine_for_handler = engine.clone();
+
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::empty_json_raw_body".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let engine = engine_for_handler.clone();
+                async move {
+                    let request: HttpRequest = serde_json::from_value(input).unwrap();
+                    let raw = drain_request_body_channel(
+                        &engine,
+                        &request,
+                        "empty request body channel should close",
+                    )
+                    .await;
+
+                    FunctionResult::Success(Some(json!({
+                        "status_code": 200,
+                        "body": {
+                            "parsed_is_null": request.body.is_null(),
+                            "raw_len": raw.len()
+                        }
+                    })))
+                }
+            }),
+        );
+
+        let api_handler = make_test_api_handler(engine.clone());
+        register_test_route(
+            &api_handler,
+            "/json-raw-empty",
+            "POST",
+            "test::empty_json_raw_body",
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        let query_params: HashMap<String, String> = HashMap::new();
+
+        let response = dynamic_handler(
+            Method::POST,
+            "/json-raw-empty".parse().unwrap(),
+            headers,
+            axum::extract::Extension(engine),
+            axum::extract::Extension(api_handler),
+            axum::extract::Extension("/json-raw-empty".to_string()),
+            Query(query_params),
+            Body::empty(),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["parsed_is_null"], json!(true));
+        assert_eq!(value["raw_len"], json!(0));
     }
 
     #[tokio::test]

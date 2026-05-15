@@ -2035,7 +2035,9 @@ modules:
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = occupied.local_addr().expect("local addr").port();
 
-        let err = EngineBuilder::new()
+        // Bind happens in `start_background_tasks` (not `build`/`initialize`),
+        // so we have to step through the worker lifecycle manually.
+        let builder = EngineBuilder::new()
             .add_worker(
                 "iii-stream",
                 Some(serde_json::json!({
@@ -2048,14 +2050,24 @@ modules:
             )
             .build()
             .await
+            .expect("build should succeed");
+
+        let stream_worker = builder
+            .running()
+            .iter()
+            .find(|rw| rw.entry.name == "iii-stream")
+            .expect("iii-stream worker should be running");
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let err = stream_worker
+            .worker
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
             .err()
-            .expect("build should fail when the stream port is occupied");
+            .expect("start_background_tasks should fail when the stream port is occupied");
+        std::mem::forget(shutdown_tx);
 
         let message = err.to_string();
-        assert!(
-            message.contains("iii-stream"),
-            "unexpected error message: {message}"
-        );
         assert!(
             message.contains(&format!("127.0.0.1:{port}")),
             "unexpected error message: {message}"

@@ -7,7 +7,7 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, RwLock as SyncRwLock},
+    sync::{Arc, Mutex as StdMutex, RwLock as SyncRwLock},
 };
 
 use axum::{
@@ -26,7 +26,7 @@ use iii_sdk::{
 };
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, task::AbortHandle};
 use tracing::Instrument;
 
 use crate::{
@@ -63,6 +63,7 @@ pub struct StreamWorker {
     engine: Arc<Engine>,
 
     pub triggers: Arc<StreamTriggers>,
+    task_aborts: Arc<StdMutex<Vec<AbortHandle>>>,
 }
 
 async fn ws_handler(
@@ -137,31 +138,21 @@ impl Worker for StreamWorker {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying StreamWorker");
+        let aborts: Vec<AbortHandle> = self
+            .task_aborts
+            .lock()
+            .expect("stream task_aborts mutex poisoned")
+            .drain(..)
+            .collect();
+        for abort in aborts {
+            abort.abort();
+        }
         let _ = self.adapter.destroy().await;
         Ok(())
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamWorker");
-
-        let socket_manager = Arc::new(StreamSocketManager::new(
-            self.engine.clone(),
-            self.adapter.clone(),
-            Arc::new(self.clone()),
-            self.config.auth_function.clone(),
-            self.triggers.clone(),
-        ));
-        let raw_addr = format!("{}:{}", self.config.host, self.config.port);
-        let addr: SocketAddr = raw_addr
-            .parse()
-            .map_err(|err| anyhow::anyhow!("invalid stream bind address {}: {}", raw_addr, err))?;
-        tracing::info!("Starting StreamWorker on {}", addr.to_string().purple());
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|err| crate::workers::traits::bind_address_error(addr, err))?;
-        let app = Router::new()
-            .route("/", get(ws_handler))
-            .with_state(socket_manager);
 
         let _ = self
             .engine
@@ -193,26 +184,82 @@ impl Worker for StreamWorker {
             ))
             .await;
 
-        tokio::spawn(async move {
+        Ok(())
+    }
+
+    async fn start_background_tasks(
+        &self,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
+    ) -> anyhow::Result<()> {
+        let socket_manager = Arc::new(StreamSocketManager::new(
+            self.engine.clone(),
+            self.adapter.clone(),
+            Arc::new(self.clone()),
+            self.config.auth_function.clone(),
+            self.triggers.clone(),
+        ));
+        let raw_addr = format!("{}:{}", self.config.host, self.config.port);
+        let addr: SocketAddr = raw_addr
+            .parse()
+            .map_err(|err| anyhow::anyhow!("invalid stream bind address {}: {}", raw_addr, err))?;
+        tracing::info!("Starting StreamWorker on {}", addr.to_string().purple());
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|err| crate::workers::traits::bind_address_error(addr, err))?;
+        let app = Router::new()
+            .route("/", get(ws_handler))
+            .with_state(socket_manager);
+
+        let mut server_shutdown_rx = shutdown_rx.clone();
+        let server_handle = tokio::spawn(async move {
             tracing::info!(
                 "Stream API listening on address: {}",
                 addr.to_string().purple()
             );
 
-            axum::serve(
+            let serve = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
             )
-            .await
-            .unwrap();
+            .with_graceful_shutdown(async move {
+                while server_shutdown_rx.changed().await.is_ok() {
+                    if *server_shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            });
+            if let Err(e) = serve.await {
+                tracing::error!(error = %e, "Stream server exited with error");
+            }
         });
 
         let adapter = self.adapter.clone();
-        tokio::spawn(async move {
-            if let Err(e) = adapter.watch_events().await {
-                tracing::error!(error = %e, "Failed to watch events");
+        let watch_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = adapter.watch_events() => {
+                    if let Err(e) = result {
+                        tracing::error!(error = %e, "Failed to watch events");
+                    }
+                }
+                _ = async {
+                    while shutdown_rx.changed().await.is_ok() {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                } => {
+                    tracing::info!("Stream watch_events shutdown signal received");
+                }
             }
         });
+
+        let mut aborts = self
+            .task_aborts
+            .lock()
+            .expect("stream task_aborts mutex poisoned");
+        aborts.push(server_handle.abort_handle());
+        aborts.push(watch_handle.abort_handle());
 
         Ok(())
     }
@@ -237,6 +284,7 @@ impl ConfigurableWorker for StreamWorker {
             adapter,
             engine,
             triggers: Arc::new(StreamTriggers::new()),
+            task_aborts: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -1934,8 +1982,24 @@ mod tests {
             .initialize()
             .await
             .expect("stream initialize should work");
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
+            .expect("start_background_tasks should succeed");
+        // Forget the Sender so it doesn't drop and trigger early shutdown via
+        // Receiver::changed() returning Err (all senders gone).
+        std::mem::forget(shutdown_tx);
+        // Poll for adapter.watch_events_called instead of fixed sleep — under
+        // load this otherwise flakes when the watch spawn hasn't scheduled yet.
+        // Generous budget (5s) so parallel cargo runs don't trip it.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            if adapter.watch_events_called.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         assert!(
             module
                 .engine
@@ -1964,7 +2028,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_initialize_returns_addr_in_use_error_with_address() {
+    async fn stream_start_background_tasks_returns_addr_in_use_error_with_address() {
         crate::workers::observability::metrics::ensure_default_meter();
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = occupied.local_addr().expect("local addr").port();
@@ -1985,10 +2049,17 @@ mod tests {
             adapter,
         );
 
-        let err = module
+        module
             .initialize()
             .await
-            .expect_err("stream init should fail when the port is occupied");
+            .expect("stream initialize should succeed");
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let err = module
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
+            .expect_err("stream bind should fail when the port is occupied");
+        std::mem::forget(shutdown_tx);
 
         let message = err.to_string();
         assert!(message.contains(&format!("127.0.0.1:{port}")));

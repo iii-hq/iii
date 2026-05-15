@@ -26,6 +26,16 @@ pub struct CreateArgs {
     /// Skip tool installation check (e.g., iii)
     pub skip_tool_check: bool,
 
+    /// Skip the post-scaffold dependency install step (`npm install` /
+    /// `uv sync`). Worker init sets this to true: the scaffold ships
+    /// runnable code but the user owns when to fetch deps.
+    pub skip_install: bool,
+
+    /// Skip the scaffolder's `next_steps` print. Worker init renders
+    /// its own per-language success message and doesn't want two
+    /// "Next steps" blocks back-to-back.
+    pub skip_next_steps: bool,
+
     /// Auto-confirm all prompts (non-interactive mode)
     pub yes: bool,
 }
@@ -95,11 +105,14 @@ pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &s
         &project_dir,
         &selected_languages,
         &language_files,
+        args.skip_install,
     )
     .await?;
 
-    // Step 8: Show next steps
-    print_next_steps(&project_dir, &manifest)?;
+    // Step 8: Show next steps (unless the caller renders its own).
+    if !args.skip_next_steps {
+        print_next_steps(&project_dir, &manifest)?;
+    }
 
     Ok(())
 }
@@ -531,6 +544,7 @@ async fn create_project(
     project_dir: &PathBuf,
     selected_languages: &[check::Language],
     language_files: &LanguageFiles,
+    skip_install: bool,
 ) -> Result<()> {
     let spinner = cliclack::spinner();
     spinner.start("Creating project...");
@@ -575,13 +589,15 @@ async fn create_project(
         project_dir.display()
     ));
 
-    let install_spinner = cliclack::spinner();
-    install_spinner.start("Installing dependencies (when applicable)...");
-    match telemetry::run_dependency_install(project_dir, selected_languages).await {
-        Ok(()) => install_spinner.stop("Dependency step finished"),
-        Err(e) => {
-            install_spinner.stop("Dependency installation failed");
-            return Err(e);
+    if !skip_install {
+        let install_spinner = cliclack::spinner();
+        install_spinner.start("Installing dependencies (when applicable)...");
+        match telemetry::run_dependency_install(project_dir, selected_languages).await {
+            Ok(()) => install_spinner.stop("Dependency step finished"),
+            Err(e) => {
+                install_spinner.stop("Dependency installation failed");
+                return Err(e);
+            }
         }
     }
 

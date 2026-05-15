@@ -39,6 +39,9 @@ import {
   injectBaggage,
   injectTraceparent,
   type OtelConfig,
+  recordSpanEvent,
+  redactAndTruncate,
+  resolveMaxBytesFromEnv,
   SeverityNumber,
   shutdownOtel,
   SpanKind,
@@ -319,11 +322,53 @@ class Sdk implements ISdk {
       this.functions.set(functionId, {
         message: fullMessage,
         handler: async (input, traceparent?: string, baggage?: string) => {
+          const tracePayloads = !(
+            process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
+            process.env.III_DISABLE_TRACE_PAYLOADS?.toLowerCase() === 'true'
+          )
+          const payloadMaxBytes = resolveMaxBytesFromEnv()
+
+          const runHandler = async () => {
+            if (tracePayloads) {
+              const { json, truncated } = redactAndTruncate(input, payloadMaxBytes)
+              recordSpanEvent('iii.invocation.input', {
+                'iii.payload.json': json,
+                'iii.payload.truncated': truncated,
+              })
+            }
+            try {
+              const result = await handler(input)
+              if (tracePayloads) {
+                const { json, truncated } = redactAndTruncate(result, payloadMaxBytes)
+                recordSpanEvent('iii.invocation.output', {
+                  'iii.payload.json': json,
+                  'iii.payload.truncated': truncated,
+                  'iii.payload.ok': true,
+                })
+              }
+              return result
+            } catch (err) {
+              if (tracePayloads) {
+                const errMsg = err instanceof Error ? err.message : String(err)
+                const { json, truncated } = redactAndTruncate(
+                  { error: errMsg },
+                  payloadMaxBytes,
+                )
+                recordSpanEvent('iii.invocation.output', {
+                  'iii.payload.json': json,
+                  'iii.payload.truncated': truncated,
+                  'iii.payload.ok': false,
+                })
+              }
+              throw err
+            }
+          }
+
           if (getTracer()) {
             const parentContext = extractContext(traceparent, baggage)
 
             return context.with(parentContext, () =>
-              withSpan(`call ${functionId}`, { kind: SpanKind.SERVER }, async () => await handler(input)),
+              withSpan(`call ${functionId}`, { kind: SpanKind.SERVER }, async () => await runHandler()),
             )
           }
 
@@ -331,7 +376,7 @@ class Sdk implements ISdk {
           const spanId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
           const syntheticSpan = trace.wrapSpanContext({ traceId, spanId, traceFlags: 1 })
 
-          return context.with(trace.setSpan(context.active(), syntheticSpan), async () => await handler(input))
+          return context.with(trace.setSpan(context.active(), syntheticSpan), async () => await runHandler())
         },
       })
     } else {

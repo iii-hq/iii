@@ -8,11 +8,11 @@ Motia was a higher-level framework built on top of `iii-sdk`. It handled file sc
 By moving to `iii-sdk` directly, you unlock the full power of the engine:
 
 - **Add new workers** that register their own functions and triggers, enabling multi-worker orchestration across services, languages, and runtimes.
-- **Connect from the browser** using `iii-browser-sdk` with [Worker RBAC](/how-to/worker-rbac) for secure, real-time frontends — no REST layer needed. See [Use iii in the browser](/how-to/use-iii-in-the-browser).
+- **Connect from the browser** using `iii-browser-sdk` with [Worker RBAC](/0-11-0/how-to/worker-rbac) for secure, real-time frontends — no REST layer needed. See [Use iii in the browser](/0-11-0/how-to/use-iii-in-the-browser).
 - **Treat Motia as one worker among many** instead of a standalone monolith. Your existing Motia code becomes just another worker in a larger iii deployment.
 - **Understand the primitives directly.** Working with `registerFunction`, `registerTrigger`, and `registerWorker` builds a mental model that transfers across all iii SDKs and documentation.
 
-<Callout type="tip">Before diving into this migration, we recommend reading the [iii documentation](/) to understand Workers, Functions, and Triggers. The [quickstart](/quickstart) and [Everything is a Worker](/changelog/0-11-0/everything-is-a-worker) pages are good starting points.</Callout>
+<Callout type="tip">Before diving into this migration, we recommend reading the [iii documentation](/0-11-0/) to understand Workers, Functions, and Triggers. The [quickstart](/0-11-0/quickstart) and [Everything is a Worker](/changelog/0-11-0/everything-is-a-worker) pages are good starting points.</Callout>
 
 ---
 
@@ -131,7 +131,7 @@ iii.registerTrigger({
 })
 ```
 
-<Callout type="info">Middleware functions must be registered separately with `registerFunction`. See [Use HTTP middleware](/how-to/use-http-middleware) for details.</Callout>
+<Callout type="info">Middleware functions must be registered separately with `registerFunction`. See [Use HTTP middleware](/0-11-0/how-to/use-http-middleware) for details.</Callout>
 </Tab>
 </Tabs>
 
@@ -310,7 +310,7 @@ iii.registerTrigger({
 
 ### Stream and State operations
 
-In Motia, you used the `Stream` class and `stateManager` to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/workers/iii-stream) and [State](/workers/iii-state) worker docs for the full list of operations.
+In Motia, you used the `Stream` class and `stateManager` to read and write data. Under the hood, these called `iii.trigger()` with built-in function IDs (`stream::get`, `state::set`, etc.). With iii-sdk, you call `iii.trigger()` directly. See the [Stream](/0-11-0/workers/iii-stream) and [State](/0-11-0/workers/iii-state) worker docs for the full list of operations.
 
 <Tabs>
 <Tab title="Stream">

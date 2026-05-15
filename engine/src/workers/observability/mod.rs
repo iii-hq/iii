@@ -82,6 +82,32 @@ pub struct TracesTreeInput {
     trace_id: String,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct TracesGroupByInput {
+    /// Span attribute key to group by. Spans without this attribute are skipped.
+    attribute: String,
+    /// Earliest end_time (ms since epoch) to include.
+    #[serde(default)]
+    since_ms: Option<u64>,
+    /// Max groups returned after sorting by `first_seen_ms` descending. Default 100.
+    #[serde(default)]
+    limit: Option<u32>,
+    /// Include engine-internal spans. Defaults to false, matching `traces::list`.
+    #[serde(default)]
+    include_internal: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct TraceGroup {
+    pub value: String,
+    pub trace_ids: Vec<String>,
+    pub span_count: u32,
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+    pub duration_ms: u32,
+    pub error_count: u32,
+}
+
 #[derive(Serialize)]
 pub struct SpanTreeNode {
     #[serde(flatten)]
@@ -637,9 +663,36 @@ impl ObservabilityWorker {
                         None
                     };
 
+                // Trace-level attribute match, mirroring `name_matched_trace_ids`:
+                // a root is included if any span in its trace matches all pairs.
+                let attributes_matched_trace_ids: Option<std::collections::HashSet<String>> =
+                    if search_all {
+                        if let Some(ref attrs) = input.attributes {
+                            Some(
+                                all_spans
+                                    .iter()
+                                    .filter(|s| {
+                                        attrs.iter().all(|pair| {
+                                            pair.len() == 2
+                                                && s.attributes
+                                                    .iter()
+                                                    .any(|(k, v)| k == &pair[0] && v == &pair[1])
+                                        })
+                                    })
+                                    .map(|s| s.trace_id.clone())
+                                    .collect(),
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
-                    .filter(|s| s.parent_span_id.is_none())
+                    // Root-only by default; `search_all_spans` widens to children too.
+                    .filter(|s| search_all || s.parent_span_id.is_none())
                     .filter(|s| {
                         // Exclude internal engine traces unless explicitly requested
                         if !include_internal {
@@ -705,12 +758,24 @@ impl ObservabilityWorker {
                             }
                         }
                         if let Some(ref attrs) = input.attributes {
-                            for pair in attrs {
-                                if pair.len() == 2 {
-                                    let key = &pair[0];
-                                    let value = &pair[1];
-                                    if !s.attributes.iter().any(|(k, v)| k == key && v == value) {
-                                        return false;
+                            if search_all {
+                                if let Some(ref matched_ids) = attributes_matched_trace_ids
+                                    && !matched_ids.contains(&s.trace_id)
+                                {
+                                    return false;
+                                }
+                            } else {
+                                // Root-only when search_all_spans=false, for
+                                // back-compat with callers querying root-tagged
+                                // attrs like `iii.function.kind`.
+                                for pair in attrs {
+                                    if pair.len() == 2 {
+                                        let key = &pair[0];
+                                        let value = &pair[1];
+                                        if !s.attributes.iter().any(|(k, v)| k == key && v == value)
+                                        {
+                                            return false;
+                                        }
                                     }
                                 }
                             }
@@ -799,6 +864,104 @@ impl ObservabilityWorker {
             Some(storage) => {
                 storage.clear();
                 FunctionResult::Success(Some(serde_json::json!({ "success": true })))
+            }
+            None => memory_exporter_not_enabled_error(),
+        }
+    }
+
+    /// Aggregate stored spans by one attribute value. Returns up to
+    /// `limit` groups (default 100), each with trace_ids, span_count,
+    /// duration, and error_count.
+    #[function(
+        id = "engine::traces::group_by",
+        description = "Group stored spans by an attribute value (only available when exporter is 'memory' or 'both')"
+    )]
+    pub async fn group_traces_by(
+        &self,
+        input: TracesGroupByInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        match otel::get_span_storage() {
+            Some(storage) => {
+                let all_spans = storage.get_spans();
+
+                let include_internal = input.include_internal.unwrap_or(false);
+                let since_ns = input.since_ms.map(|ms| ms.saturating_mul(1_000_000));
+                let limit = input.limit.unwrap_or(100) as usize;
+
+                struct GroupBuilder {
+                    trace_ids: std::collections::HashSet<String>,
+                    span_count: u32,
+                    first_seen_ns: u64,
+                    last_seen_ns: u64,
+                    error_count: u32,
+                }
+                let mut groups: std::collections::HashMap<String, GroupBuilder> =
+                    std::collections::HashMap::new();
+
+                for span in &all_spans {
+                    if !include_internal {
+                        let is_internal = span.attributes.iter().any(|(k, v)| {
+                            (k == "iii.function.kind" && v == "internal")
+                                || (k == "function_id" && v.starts_with("engine::"))
+                        });
+                        if is_internal {
+                            continue;
+                        }
+                    }
+                    if let Some(min_ns) = since_ns
+                        && span.end_time_unix_nano < min_ns
+                    {
+                        continue;
+                    }
+
+                    let value = match span.attributes.iter().find(|(k, _)| k == &input.attribute) {
+                        Some((_, v)) => v.clone(),
+                        None => continue,
+                    };
+
+                    let is_error = span.status.eq_ignore_ascii_case("error");
+                    let entry = groups.entry(value).or_insert_with(|| GroupBuilder {
+                        trace_ids: std::collections::HashSet::new(),
+                        span_count: 0,
+                        first_seen_ns: span.start_time_unix_nano,
+                        last_seen_ns: span.end_time_unix_nano,
+                        error_count: 0,
+                    });
+                    entry.trace_ids.insert(span.trace_id.clone());
+                    entry.span_count += 1;
+                    entry.first_seen_ns = entry.first_seen_ns.min(span.start_time_unix_nano);
+                    entry.last_seen_ns = entry.last_seen_ns.max(span.end_time_unix_nano);
+                    if is_error {
+                        entry.error_count += 1;
+                    }
+                }
+
+                let mut result: Vec<TraceGroup> = groups
+                    .into_iter()
+                    .map(|(value, b)| {
+                        let first_ms = b.first_seen_ns / 1_000_000;
+                        let last_ms = b.last_seen_ns / 1_000_000;
+                        // Saturate; durations beyond u32::MAX ms are diagnostic noise.
+                        let duration_ms =
+                            u32::try_from(last_ms.saturating_sub(first_ms)).unwrap_or(u32::MAX);
+                        let mut trace_ids: Vec<String> = b.trace_ids.into_iter().collect();
+                        trace_ids.sort();
+                        TraceGroup {
+                            value,
+                            trace_ids,
+                            span_count: b.span_count,
+                            first_seen_ms: first_ms,
+                            last_seen_ms: last_ms,
+                            duration_ms,
+                            error_count: b.error_count,
+                        }
+                    })
+                    .collect();
+
+                result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
+                result.truncate(limit);
+
+                FunctionResult::Success(Some(serde_json::json!({ "groups": result })))
             }
             None => memory_exporter_not_enabled_error(),
         }
@@ -4145,6 +4308,560 @@ mod tests {
             FunctionResult::Success(Some(_))
         ));
         assert_eq!(span_storage.len(), 0);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_list_attribute_filter_with_search_all_spans_matches_child() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "trace-with-msg",
+                "root",
+                None,
+                "handle_invocation harness::status",
+                "svc",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "trace-with-msg",
+                "child",
+                Some("root"),
+                "harness.status",
+                "svc",
+                1_100_000_000,
+                1_500_000_000,
+                "OK",
+                vec![("iii.message.id", "M-target")],
+            ),
+            make_span(
+                "trace-other",
+                "root-other",
+                None,
+                "handle_invocation other",
+                "svc",
+                1_000_000_000,
+                1_100_000_000,
+                "OK",
+                vec![("iii.message.id", "M-other")],
+            ),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                offset: Some(0),
+                limit: Some(10),
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: Some(vec![vec![
+                    "iii.message.id".to_string(),
+                    "M-target".to_string(),
+                ]]),
+                include_internal: Some(true),
+                search_all_spans: Some(true),
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                let spans = value["spans"].as_array().expect("spans array");
+                assert_eq!(
+                    spans.len(),
+                    2,
+                    "expected root + child of trace-with-msg, got {spans:?}"
+                );
+                let span_ids: std::collections::HashSet<String> = spans
+                    .iter()
+                    .map(|s| s["span_id"].as_str().unwrap().to_string())
+                    .collect();
+                assert!(span_ids.contains("root"));
+                assert!(span_ids.contains("child"));
+                for span in spans {
+                    assert_eq!(span["trace_id"], "trace-with-msg");
+                }
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_list_returns_children_only_when_search_all_spans() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "tid-1",
+                "root-1",
+                None,
+                "handle_invocation harness::status",
+                "iii",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "tid-1",
+                "child-1",
+                Some("root-1"),
+                "call harness::status",
+                "iii-rust-sdk",
+                1_100_000_000,
+                1_500_000_000,
+                "OK",
+                vec![],
+            ),
+        ]);
+
+        let result_root_only = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                offset: Some(0),
+                limit: Some(10),
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: None,
+                include_internal: Some(true),
+                search_all_spans: Some(false),
+            })
+            .await;
+        match result_root_only {
+            FunctionResult::Success(Some(value)) => {
+                let spans = value["spans"].as_array().expect("spans array");
+                assert_eq!(spans.len(), 1, "default mode = root only");
+                assert_eq!(spans[0]["span_id"], "root-1");
+            }
+            _ => panic!("expected success"),
+        }
+
+        let result_all = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                offset: Some(0),
+                limit: Some(10),
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: None,
+                include_internal: Some(true),
+                search_all_spans: Some(true),
+            })
+            .await;
+        match result_all {
+            FunctionResult::Success(Some(value)) => {
+                let spans = value["spans"].as_array().expect("spans array");
+                assert_eq!(spans.len(), 2, "widened mode = root + children");
+                let names: std::collections::HashSet<String> = spans
+                    .iter()
+                    .map(|s| s["name"].as_str().unwrap().to_string())
+                    .collect();
+                assert!(names.contains("handle_invocation harness::status"));
+                assert!(names.contains("call harness::status"));
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_list_attribute_filter_without_search_all_spans_stays_root_only() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "trace-with-msg",
+                "root",
+                None,
+                "root-name",
+                "svc",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "trace-with-msg",
+                "child",
+                Some("root"),
+                "child-name",
+                "svc",
+                1_100_000_000,
+                1_500_000_000,
+                "OK",
+                vec![("iii.message.id", "M-target")],
+            ),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                offset: Some(0),
+                limit: Some(10),
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: Some(vec![vec![
+                    "iii.message.id".to_string(),
+                    "M-target".to_string(),
+                ]]),
+                include_internal: Some(true),
+                search_all_spans: Some(false),
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                let spans = value["spans"].as_array().expect("spans array");
+                assert_eq!(
+                    spans.len(),
+                    0,
+                    "child-only attribute MUST not match under search_all_spans=false"
+                );
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_group_by_attribute_returns_correct_aggregates() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "trace-A",
+                "A1",
+                None,
+                "root-A",
+                "svc",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![("iii.message.id", "M-1")],
+            ),
+            make_span(
+                "trace-A",
+                "A2",
+                Some("A1"),
+                "child-A",
+                "svc",
+                1_100_000_000,
+                1_500_000_000,
+                "OK",
+                vec![("iii.message.id", "M-1")],
+            ),
+            make_span(
+                "trace-B",
+                "B1",
+                None,
+                "root-B",
+                "svc",
+                3_000_000_000,
+                4_000_000_000,
+                "OK",
+                vec![("iii.message.id", "M-2")],
+            ),
+            make_span(
+                "trace-B",
+                "B2",
+                Some("B1"),
+                "child-B-1",
+                "svc",
+                3_100_000_000,
+                3_500_000_000,
+                "Error",
+                vec![("iii.message.id", "M-2")],
+            ),
+            make_span(
+                "trace-B",
+                "B3",
+                Some("B1"),
+                "child-B-2",
+                "svc",
+                3_200_000_000,
+                3_800_000_000,
+                "OK",
+                vec![("iii.message.id", "M-2")],
+            ),
+            // No iii.message.id — must be skipped by group_by.
+            make_span(
+                "trace-C",
+                "C1",
+                None,
+                "root-C",
+                "svc",
+                5_000_000_000,
+                5_500_000_000,
+                "OK",
+                vec![("other.attr", "value")],
+            ),
+        ]);
+
+        let result = module
+            .group_traces_by(TracesGroupByInput {
+                attribute: "iii.message.id".to_string(),
+                since_ms: None,
+                limit: Some(100),
+                include_internal: Some(true),
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                let groups = value["groups"].as_array().expect("groups array");
+                assert_eq!(
+                    groups.len(),
+                    2,
+                    "expected 2 groups (M-1, M-2); trace-C has no iii.message.id"
+                );
+                // Sorted by first_seen_ms DESC.
+                assert_eq!(groups[0]["value"], "M-2");
+                assert_eq!(groups[0]["span_count"], 3);
+                assert_eq!(groups[0]["error_count"], 1);
+                let m2_trace_ids = groups[0]["trace_ids"].as_array().unwrap();
+                assert_eq!(m2_trace_ids.len(), 1);
+                assert_eq!(m2_trace_ids[0], "trace-B");
+
+                assert_eq!(groups[1]["value"], "M-1");
+                assert_eq!(groups[1]["span_count"], 2);
+                assert_eq!(groups[1]["error_count"], 0);
+                let m1_trace_ids = groups[1]["trace_ids"].as_array().unwrap();
+                assert_eq!(m1_trace_ids.len(), 1);
+                assert_eq!(m1_trace_ids[0], "trace-A");
+            }
+            _ => panic!("expected group_traces_by success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_group_by_since_ms_filters_old_spans() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "trace-old",
+                "old",
+                None,
+                "root-old",
+                "svc",
+                500_000_000,
+                1_000_000_000,
+                "OK",
+                vec![("iii.message.id", "M-old")],
+            ),
+            make_span(
+                "trace-new",
+                "new",
+                None,
+                "root-new",
+                "svc",
+                4_000_000_000,
+                5_000_000_000,
+                "OK",
+                vec![("iii.message.id", "M-new")],
+            ),
+        ]);
+
+        let result = module
+            .group_traces_by(TracesGroupByInput {
+                attribute: "iii.message.id".to_string(),
+                since_ms: Some(2000),
+                limit: Some(100),
+                include_internal: Some(true),
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                let groups = value["groups"].as_array().expect("groups array");
+                assert_eq!(groups.len(), 1, "only M-new should survive since_ms filter");
+                assert_eq!(groups[0]["value"], "M-new");
+            }
+            _ => panic!("expected group_traces_by success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_group_by_limit_truncates_to_n_groups() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        let spans: Vec<_> = (0..5)
+            .map(|i| {
+                let start_ns = 1_000_000_000_u64 + (i as u64) * 1_000_000_000;
+                make_span(
+                    &format!("trace-{i}"),
+                    &format!("span-{i}"),
+                    None,
+                    &format!("root-{i}"),
+                    "svc",
+                    start_ns,
+                    start_ns + 500_000_000,
+                    "OK",
+                    vec![("iii.message.id", &format!("M-{i}"))],
+                )
+            })
+            .collect();
+        span_storage.add_spans(spans);
+
+        let result = module
+            .group_traces_by(TracesGroupByInput {
+                attribute: "iii.message.id".to_string(),
+                since_ms: None,
+                limit: Some(2),
+                include_internal: Some(true),
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                let groups = value["groups"].as_array().expect("groups array");
+                assert_eq!(groups.len(), 2, "limit=2 must truncate the 5 groups to 2");
+                // Sorted by first_seen_ms DESC.
+                assert_eq!(groups[0]["value"], "M-4");
+                assert_eq!(groups[1]["value"], "M-3");
+            }
+            _ => panic!("expected group_traces_by success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_group_by_excludes_internal_spans_by_default() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "trace-internal-1",
+                "i1",
+                None,
+                "engine work",
+                "svc",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![
+                    ("iii.message.id", "M-internal"),
+                    ("iii.function.kind", "internal"),
+                ],
+            ),
+            make_span(
+                "trace-internal-2",
+                "i2",
+                None,
+                "engine work",
+                "svc",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![
+                    ("iii.message.id", "M-internal2"),
+                    ("function_id", "engine::traces::list"),
+                ],
+            ),
+            make_span(
+                "trace-user",
+                "u1",
+                None,
+                "user work",
+                "svc",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![("iii.message.id", "M-user")],
+            ),
+        ]);
+
+        let result = module
+            .group_traces_by(TracesGroupByInput {
+                attribute: "iii.message.id".to_string(),
+                since_ms: None,
+                limit: Some(100),
+                include_internal: None,
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                let groups = value["groups"].as_array().expect("groups array");
+                assert_eq!(
+                    groups.len(),
+                    1,
+                    "internal spans must be excluded by default"
+                );
+                assert_eq!(groups[0]["value"], "M-user");
+            }
+            _ => panic!("expected group_traces_by success"),
+        }
     }
 
     #[tokio::test]

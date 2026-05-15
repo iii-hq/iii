@@ -26,8 +26,8 @@ use crate::{
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
-        SpanExt, ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,
-        inject_baggage_from_context, inject_traceparent_from_context,
+        ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
+        inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
@@ -413,10 +413,10 @@ impl Engine {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
-            ?invocation_id,
+            invocation_id = %crate::logging::display_option(&invocation_id),
             function_id = function_id,
-            traceparent = ?traceparent,
-            baggage = ?baggage,
+            traceparent = %crate::logging::display_option(&traceparent),
+            baggage = %crate::logging::display_option(&baggage),
             "Remembering invocation for worker"
         );
 
@@ -468,16 +468,23 @@ impl Engine {
         baggage: &Option<String>,
         invocation_id: Option<Uuid>,
     ) {
-        let span = tracing::info_span!(
-            "handle_invocation",
-            otel.name = %format!("handle_invocation {}", function_id),
-            worker_id = %worker.id,
-            function_id = %function_id,
-            invocation_id = ?invocation_id,
-            otel.kind = "server",
-            otel.status_code = tracing::field::Empty,
-        )
-        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+        let span = {
+            // Parent context must be on `Context::current()` BEFORE span
+            // creation so `SpanProcessor::on_start` sees the baggage;
+            // `set_parent` after creation runs too late.
+            let parent_cx =
+                crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
+            let _guard = parent_cx.attach();
+            tracing::info_span!(
+                "handle_invocation",
+                otel.name = %format!("handle_invocation {}", function_id),
+                worker_id = %worker.id,
+                function_id = %function_id,
+                invocation_id = %crate::logging::display_option(&invocation_id),
+                otel.kind = "server",
+                otel.status_code = tracing::field::Empty,
+            )
+        };
 
         let engine = self.clone();
         let worker = worker.clone();
@@ -496,6 +503,13 @@ impl Engine {
         };
         let incoming_traceparent = traceparent.clone();
         let incoming_baggage = baggage.clone();
+        // Derive headers from the span we just opened so the downstream
+        // `call <fn>` becomes a child of `handle_invocation`, not a
+        // sibling of the original caller.
+        let downstream_traceparent =
+            inject_traceparent_from_context(&span.context()).or_else(|| traceparent.clone());
+        let downstream_baggage =
+            inject_baggage_from_context(&span.context()).or_else(|| baggage.clone());
 
         tokio::spawn(
             async move {
@@ -505,8 +519,8 @@ impl Engine {
                         invocation_id,
                         &function_id,
                         data,
-                        incoming_traceparent.clone(),
-                        incoming_baggage.clone(),
+                        downstream_traceparent.clone(),
+                        downstream_baggage.clone(),
                     )
                     .await;
 
@@ -796,10 +810,10 @@ impl Engine {
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
-                    invocation_id = ?invocation_id,
+                    invocation_id = %crate::logging::display_option(invocation_id),
                     function_id = %function_id,
-                    traceparent = ?traceparent,
-                    baggage = ?baggage,
+                    traceparent = %crate::logging::display_option(traceparent),
+                    baggage = %crate::logging::display_option(baggage),
                     action = ?action,
                     payload = ?data,
                     "InvokeFunction"
@@ -898,13 +912,22 @@ impl Engine {
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
 
-                        let span = tracing::info_span!(
-                            "enqueue_action",
-                            otel.name = %format!("enqueue {} → {}", function_id, queue),
-                            function_id = %function_id,
-                            queue = %queue,
-                        )
-                        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                        let span = {
+                            // Parent context must be on `Context::current()`
+                            // BEFORE span creation; `set_parent` after is too
+                            // late for `SpanProcessor::on_start`.
+                            let parent_cx = crate::telemetry::extract_context(
+                                traceparent.as_deref(),
+                                baggage.as_deref(),
+                            );
+                            let _guard = parent_cx.attach();
+                            tracing::info_span!(
+                                "enqueue_action",
+                                otel.name = %format!("enqueue {} → {}", function_id, queue),
+                                function_id = %function_id,
+                                queue = %queue,
+                            )
+                        };
 
                         tokio::spawn(
                             async move {

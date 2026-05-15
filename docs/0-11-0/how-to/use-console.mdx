@@ -1,0 +1,181 @@
+---
+title: 'Use the Console'
+description: 'Test functions, triggers, state, and queues interactively from the iii Console.'
+---
+
+The iii Console provides interactive tools for testing and debugging your iii engine in real time. This guide covers common tasks you can perform from the console UI.
+
+<Info title="Console reference">
+  For a complete overview of all console pages and their features, see the [Console Reference](/0-11-0/console).
+</Info>
+
+## Start the Console
+
+The console comes preinstalled with iii. Start it with:
+
+```bash
+iii console
+```
+
+Then open your browser to [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+<Warning title="Engine must be running">
+  The console connects to a running iii engine instance. Make sure your engine is started before launching the console. By default it expects the engine at `127.0.0.1:3111`.
+</Warning>
+
+## Invoke a Function
+
+You can invoke any registered function directly from the console without wiring up a trigger.
+
+1. Open the **Functions** page from the sidebar
+2. Click on a function to open its detail panel
+3. Enter a JSON payload in the input editor
+4. Click **Invoke**
+5. View the result or error in real time
+
+For example, to invoke `users::getProfile`:
+
+```json
+{
+  "user_id": "user-123"
+}
+```
+
+The console sends the payload to the engine via `POST /_console/invoke` and displays the JSON response inline.
+
+This is useful for:
+
+- **Testing** a function during development without wiring up a trigger
+- **Debugging** by sending specific payloads to reproduce an issue
+- **Ad-hoc operations** like running a migration function manually
+
+## Test an HTTP Trigger
+
+The console provides a built-in request builder for HTTP-type triggers.
+
+1. Open the **Triggers** page from the sidebar
+2. Select an HTTP trigger from the list
+3. Select the **HTTP method** (GET, POST, PUT, DELETE, PATCH)
+4. The **path** is pre-filled from the trigger configuration
+5. Add **query parameters** as key-value pairs
+6. Enter a **request body** (for POST/PUT/PATCH) as JSON
+7. Click **Send** to execute the request
+
+The response is displayed inline with status code, headers, and body.
+
+For example, for a trigger registered at `POST /api/users`:
+
+```json
+{
+  "name": "Alice",
+  "email": "alice@example.com"
+}
+```
+
+## Test a Cron Trigger
+
+You can manually fire a cron job without waiting for its next scheduled run.
+
+1. Open the **Triggers** page from the sidebar
+2. Select a cron trigger from the list
+3. View the configured schedule expression (e.g. `0 */5 * * * * *`)
+4. Click **Trigger Now** to fire the cron job immediately
+
+## Test an Event Trigger
+
+The console provides an event emitter for event-type triggers.
+
+1. Open the **Triggers** page from the sidebar
+2. Select an event trigger from the list
+3. The event name is pre-filled from the trigger configuration
+4. Enter a JSON payload
+5. Click **Emit** to publish the event
+
+## Manage State Entries
+
+The States page lets you create, edit, and delete key-value state entries.
+
+### Add a State Entry
+
+1. Open the **States** page from the sidebar
+2. Click **Add Item**
+3. Enter the scope, key, and JSON value
+4. Click **Save**
+
+The entry is persisted via `state::set`.
+
+### Edit a State Entry
+
+1. Select a group from the left panel
+2. Click an existing item
+3. Modify the JSON value in the detail panel
+4. Click **Save**
+
+If you have `state:updated` triggers registered, they will fire automatically.
+
+### Delete a State Entry
+
+1. Select a group from the left panel
+2. Click the delete icon on the item
+3. Confirm the deletion
+
+If you have `state:deleted` triggers registered, they will fire automatically.
+
+## Inspect a Trace
+
+The Traces page provides multiple visualization modes for understanding distributed operations.
+
+1. Open the **Traces** page from the sidebar
+2. Use filters to find a specific trace (by ID, service, span name, status, or duration)
+3. Click on a trace to open the detail view
+4. Select a visualization mode:
+   - **Waterfall Chart** — Timeline view of spans by start time and duration
+   - **Flame Graph** — Stack-based view where wider bars indicate longer duration
+   - **Service Breakdown** — Aggregate stats grouped by service
+   - **Trace Map** — Topology graph of service communication
+   - **Flow** — Node-based parent-child span relationships
+
+### View Span Details
+
+1. Click on any span in the trace visualization
+2. The detail panel shows:
+   - **Info** — Span name, service, duration, status, IDs
+   - **Tags** — Span attributes as key-value pairs
+   - **Logs** — Events attached to the span
+   - **Errors** — Error messages and stack traces
+   - **Baggage** — Trace context baggage
+
+## Navigate the Flow Graph
+
+The Flow page shows an interactive graph of your system architecture.
+
+<Warning title="Feature flag required">
+  Enable the Flow page by starting the console with `--enable-flow` or setting `III_ENABLE_FLOW=true`.
+</Warning>
+
+1. Open the **Flow** page from the sidebar
+2. **Pan** — drag to move the viewport
+3. **Zoom** — scroll to zoom in/out
+4. **Inspect** — click a node to view its details (function ID, trigger config, etc.)
+
+The layout is auto-arranged using a directed-graph algorithm (Dagre) and saved to the engine's state store.
+
+## Send a Test Message to a Queue
+
+The Queues page includes a JSON publisher for testing.
+
+1. Open the **Queues** page from the sidebar
+2. Click a topic to open the detail panel
+3. In the **Overview** tab, enter a JSON payload
+4. Click **Publish** to send the message
+
+## Manage Dead Letters
+
+Failed messages that exhausted retry handling appear in the Dead Letters tab.
+
+1. Open the **Queues** page from the sidebar
+2. Click a topic to open the detail panel
+3. Select the **Dead Letters** tab
+4. For each failed message, you can:
+   - **Retry** — redrive the message back to the queue
+   - **Delete** — discard the message permanently

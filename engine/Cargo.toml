@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.11.7-next.1"
+version = "0.11.7-next.4"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -127,6 +127,7 @@ colored = "3.0.0"
 cron = "0.15"
 once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
+clap-help = "1"
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"

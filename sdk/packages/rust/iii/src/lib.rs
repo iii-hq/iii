@@ -113,14 +113,21 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
 
 // OpenTelemetry re-exports
 pub use telemetry::{
+    baggage_span_processor::{BaggageSpanProcessor, DEFAULT_ALLOWLIST},
     context::{
-        current_span_id, current_trace_id, extract_baggage, extract_context, extract_traceparent,
-        get_all_baggage, get_baggage_entry, inject_baggage, inject_traceparent,
-        remove_baggage_entry, set_baggage_entry,
+        CapturedContext, capture_otel_context, current_span_id, current_trace_id, extract_baggage,
+        extract_context, extract_traceparent, get_all_baggage, get_baggage_entry, inject_baggage,
+        inject_traceparent, remove_baggage_entry, run_with_baggage, set_baggage_entry,
     },
     flush_otel, get_meter, get_tracer,
     http_instrumentation::execute_traced_request,
-    init_otel, is_initialized, shutdown_otel,
+    init_otel, is_initialized,
+    payload::{REDACTED_PLACEHOLDER, redact, redact_and_truncate, resolve_max_bytes_from_env},
+    run_in_span, shutdown_otel,
+    span_ops::{
+        current_span_is_recording, record_span_event, set_current_span_attribute,
+        set_current_span_error,
+    },
     types::OtelConfig,
     types::ReconnectionConfig,
     with_span,

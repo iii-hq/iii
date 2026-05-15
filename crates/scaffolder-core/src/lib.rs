@@ -10,6 +10,7 @@
 //! - **Workflow orchestration:** `ProductConfig` trait describing each product
 //! - **CLI/TUI interface:** cliclack-based prompts exposed via `run`
 
+pub mod cli;
 pub mod iii;
 pub mod product;
 pub mod runtime;

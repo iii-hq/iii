@@ -35,7 +35,11 @@ oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
+cliclack = "0.3"
+console = "0.16"
+ctrlc = "3.4"
 serde = { version = "1", features = ["derive"] }
+scaffolder-core = { workspace = true }
 serde_json = "1"
 serde_yaml = "0.9"
 semver = { workspace = true }

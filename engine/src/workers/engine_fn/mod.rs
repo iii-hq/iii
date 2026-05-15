@@ -57,6 +57,7 @@ pub struct TriggersListInput {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct WorkersListInput {
+    /// Restrict the listing to a single worker by id. Omit to list every connected worker.
     pub worker_id: Option<String>,
 }
 
@@ -146,15 +147,23 @@ pub struct RegisterWorkerResult {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RegisterWorkerInput {
+    /// Caller-supplied identifier of the connecting worker.
     #[serde(rename = "_caller_worker_id")]
     pub worker_id: String,
+    /// Worker runtime (e.g. `node`, `python`, `rust`).
     pub runtime: Option<String>,
+    /// Worker SDK version reported during the handshake.
     pub version: Option<String>,
+    /// Friendly worker name used in dashboards and logs.
     pub name: Option<String>,
+    /// Worker host operating system.
     pub os: Option<String>,
+    /// Telemetry metadata reported by the worker (anonymous device id, install kind, etc.).
     pub telemetry: Option<WorkerConnectionTelemetryMeta>,
+    /// Process id of the worker, when running as a managed process.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// Isolation backend used to run the worker (e.g. `vm`, `oci`).
     #[serde(default)]
     pub isolation: Option<String>,
 }

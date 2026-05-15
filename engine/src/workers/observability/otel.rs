@@ -637,7 +637,7 @@ impl SpanExporter for TeeSpanExporter {
         &self,
         batch: Vec<SpanData>,
     ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
-        // Store in memory first (for triggers and API access)
+        // Store in memory first (for triggers and API access).
         let stored: Vec<StoredSpan> = batch
             .iter()
             .map(|s| StoredSpan::from_span_data(s, &self.service_name))
@@ -739,6 +739,7 @@ where
                     let _ = IN_MEMORY_STORAGE.set(memory_storage);
 
                     SdkTracerProvider::builder()
+                        .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
                         .with_batch_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -757,6 +758,7 @@ where
                         config.service_name.clone(),
                     );
                     SdkTracerProvider::builder()
+                        .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
                         .with_simple_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -770,6 +772,7 @@ where
                 InMemorySpanExporter::new(config.memory_max_spans, config.service_name.clone());
 
             SdkTracerProvider::builder()
+                .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
                 .with_simple_exporter(exporter)
                 .with_sampler(sampler)
                 .with_id_generator(RandomIdGenerator::default())
@@ -818,6 +821,7 @@ where
                         config.service_name.clone(),
                     );
                     SdkTracerProvider::builder()
+                        .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
                         .with_simple_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -5900,5 +5904,93 @@ mod tests {
         assert!(!data.is_empty());
         let parsed: serde_json::Value = serde_json::from_str(&data).unwrap();
         assert!(parsed.get("log.data").is_some());
+    }
+
+    const SAMPLE_TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    const SAMPLE_TRACE_ID_HEX: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const SAMPLE_SPAN_ID_HEX: &str = "00f067aa0ba902b7";
+
+    #[test]
+    fn extract_context_round_trips_traceparent_header() {
+        let cx = extract_context(Some(SAMPLE_TRACEPARENT), None);
+        let round = inject_traceparent_from_context(&cx).expect("valid traceparent");
+        assert_eq!(round, SAMPLE_TRACEPARENT);
+    }
+
+    #[test]
+    fn extract_context_carries_caller_span_context_as_remote_parent() {
+        let cx = extract_context(Some(SAMPLE_TRACEPARENT), None);
+        let span_ref = cx.span();
+        let sc = span_ref.span_context();
+        assert!(
+            sc.is_valid(),
+            "extracted context must carry a valid span context"
+        );
+        assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
+        assert_eq!(format!("{:016x}", sc.span_id()), SAMPLE_SPAN_ID_HEX);
+        assert!(sc.is_remote(), "extracted parent must be flagged remote");
+    }
+
+    #[test]
+    fn extract_context_round_trips_baggage_header() {
+        let bg = "iii.session.id=s-1,iii.message.id=m-1,iii.function.id=auth::set_token";
+        let cx = extract_context(None, Some(bg));
+        let round = inject_baggage_from_context(&cx).expect("baggage present");
+        // Baggage entries are unordered; HashMap iteration order is non-deterministic.
+        let parse = |s: &str| {
+            s.split(',')
+                .map(|e| e.trim().to_string())
+                .collect::<std::collections::HashSet<_>>()
+        };
+        assert_eq!(parse(&round), parse(bg));
+    }
+
+    #[test]
+    fn extract_context_combines_traceparent_and_baggage() {
+        let bg = "iii.message.id=m-42";
+        let cx = extract_context(Some(SAMPLE_TRACEPARENT), Some(bg));
+        let span_ref = cx.span();
+        let sc = span_ref.span_context();
+        assert!(sc.is_valid());
+        assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
+        let injected_bg = inject_baggage_from_context(&cx).expect("baggage present");
+        assert!(injected_bg.contains("iii.message.id=m-42"));
+    }
+
+    #[test]
+    fn extract_context_with_no_headers_returns_empty_context() {
+        let cx = extract_context(None, None);
+        let span_ref = cx.span();
+        assert!(!span_ref.span_context().is_valid());
+        drop(span_ref);
+        assert!(inject_traceparent_from_context(&cx).is_none());
+        assert!(inject_baggage_from_context(&cx).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn attached_extracted_context_makes_baggage_visible_in_current_context() {
+        let bg = "iii.message.id=m-1,iii.session.id=s-1";
+        let parent_cx = extract_context(None, Some(bg));
+        {
+            let _guard = parent_cx.attach();
+            let injected = inject_baggage_from_context(&Context::current())
+                .expect("baggage visible inside the guard");
+            assert!(injected.contains("iii.message.id=m-1"));
+            assert!(injected.contains("iii.session.id=s-1"));
+        }
+        assert!(
+            inject_baggage_from_context(&Context::current()).is_none(),
+            "baggage must not leak past the guard"
+        );
+    }
+
+    #[test]
+    fn invalid_traceparent_extracts_to_invalid_context() {
+        let cx = extract_context(Some("not-a-valid-traceparent"), None);
+        let span_ref = cx.span();
+        assert!(!span_ref.span_context().is_valid());
+        drop(span_ref);
+        assert!(inject_traceparent_from_context(&cx).is_none());
     }
 }

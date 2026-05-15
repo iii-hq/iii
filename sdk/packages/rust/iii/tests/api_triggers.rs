@@ -110,6 +110,112 @@ async fn post_endpoint_with_body() {
 }
 
 #[tokio::test]
+async fn raw_json_request_body() {
+    let iii = common::shared_iii();
+    let raw_json = r#"{"z":2, "a":1}"#;
+
+    let iii_for_handler = iii.clone();
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::api::json::raw::rs".to_string()),
+        move |input: Value| {
+            let iii = iii_for_handler.clone();
+            async move {
+                let parsed_body = input.get("body").cloned().unwrap_or(Value::Null);
+                let refs = iii_sdk::extract_channel_refs(&input);
+
+                let writer_ref = refs
+                    .iter()
+                    .find(|(_, r)| matches!(r.direction, iii_sdk::ChannelDirection::Write))
+                    .map(|(_, r)| r.clone())
+                    .expect("missing writer ref");
+
+                let reader_ref = refs
+                    .iter()
+                    .find(|(k, r)| {
+                        k.contains("request_body")
+                            && matches!(r.direction, iii_sdk::ChannelDirection::Read)
+                    })
+                    .map(|(_, r)| r.clone())
+                    .expect("missing reader ref");
+
+                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
+                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
+                let raw = reader
+                    .read_all()
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+
+                writer
+                    .send_message(
+                        &serde_json::to_string(&json!({
+                            "type": "set_status", "status_code": 200
+                        }))
+                        .unwrap(),
+                    )
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+
+                writer
+                    .send_message(
+                        &serde_json::to_string(&json!({
+                            "type": "set_headers", "headers": {"content-type": "application/json"}
+                        }))
+                        .unwrap(),
+                    )
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+
+                let response_body = serde_json::to_vec(&json!({
+                    "parsed_body": parsed_body,
+                    "raw_body": String::from_utf8(raw)
+                        .map_err(|e| IIIError::Handler(e.to_string()))?,
+                }))
+                .map_err(|e| IIIError::Handler(e.to_string()))?;
+
+                writer
+                    .write(&response_body)
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                writer
+                    .close()
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+
+                Ok(Value::Null)
+            }
+        },
+    ));
+
+    let _trigger = iii
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: "test::api::json::raw::rs".to_string(),
+            config: json!({
+                "api_path": "/test/rs/json/raw",
+                "http_method": "POST",
+            }),
+            metadata: None,
+        })
+        .expect("register trigger");
+
+    common::settle().await;
+    sleep(Duration::from_millis(500)).await;
+
+    let resp = common::http_client()
+        .post(format!("{}/test/rs/json/raw", common::engine_http_url()))
+        .header("content-type", "application/json")
+        .body(raw_json.to_string())
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 200);
+    let data: Value = resp.json().await.expect("json parse");
+    assert_eq!(data["parsed_body"], json!({"z": 2, "a": 1}));
+    assert_eq!(data["raw_body"], raw_json);
+}
+
+#[tokio::test]
 async fn path_parameters() {
     let iii = common::shared_iii();
 

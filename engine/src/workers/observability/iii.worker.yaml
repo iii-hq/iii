@@ -8,7 +8,7 @@ config:
   service_name: iii
   service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}
   exporter: memory
-  memory_max_spans: 10000
+  memory_max_spans: 1000000
   metrics_enabled: true
   metrics_exporter: memory
   metrics_retention_seconds: 3600

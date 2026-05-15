@@ -16,7 +16,10 @@
 
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use scaffolder_core::{IiiConfig, TemplateFetcher, copy_template};
+use scaffolder_core::cli::{
+    apply_template_idempotent, build_fetcher, check_directory_state, print_err, resolve_root,
+};
+use scaffolder_core::{IiiConfig, TemplateFetcher};
 use std::path::{Path, PathBuf};
 
 #[derive(Args, Debug, Clone)]
@@ -57,23 +60,15 @@ pub struct InitArgs {
     #[arg(long = "template-dir")]
     pub template_dir: Option<String>,
 
-    /// Languages to include (comma-separated: ts,js,py).
-    #[arg(short, long, value_delimiter = ',')]
-    pub languages: Option<Vec<String>>,
-
     /// Skip the iii-engine version compatibility check.
     #[arg(long = "skip-iii")]
     pub skip_iii: bool,
 
-    /// Auto-confirm all prompts (non-interactive mode).
-    #[arg(short, long)]
-    pub yes: bool,
-
     /// Allow scaffolding into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
-    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`).
-    /// Re-running init in a directory with `.iii/project.ini` is always
-    /// allowed (idempotent re-init).
+    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An
+    /// existing `.iii/project.ini` is always rejected — delete the marker
+    /// or pick a different directory.
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
 }
@@ -100,9 +95,7 @@ pub struct GenerateDockerArgs {
 fn template_flow_requested(args: &InitArgs) -> bool {
     // Only --template triggers the interactive scaffolder TUI. The bare flow
     // also uses scaffolder-core under the hood, but goes through the
-    // non-interactive `apply_template` helper. --languages is meaningful
-    // only when paired with --template; we silently ignore it on the bare
-    // path rather than erroring (it'd be a confusing UX otherwise).
+    // non-interactive `apply_template` helper.
     args.template.is_some()
 }
 
@@ -139,7 +132,7 @@ async fn run_init(args: InitArgs) -> i32 {
         );
     }
 
-    if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
+    if let Err(e) = check_directory_state(&root, args.allow_non_empty, "project.ini") {
         crate::cli::telemetry::send_project_init_failed("non_empty_dir", &e);
         return print_err(
             "target directory is not empty",
@@ -169,7 +162,7 @@ async fn run_init(args: InitArgs) -> i32 {
         }
     };
 
-    if let Err(e) = apply_template(&mut fetcher, "bare", &root).await {
+    if let Err(e) = apply_template_idempotent(&mut fetcher, "bare", &root).await {
         crate::cli::telemetry::send_project_init_failed("apply_bare", &e.to_string());
         return print_err(
             "could not apply 'bare' template",
@@ -225,9 +218,11 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         template_dir: args.template_dir.as_ref().map(PathBuf::from),
         template: args.template.clone(),
         directory: target_dir.clone(),
-        languages: args.languages.clone(),
+        languages: None,
         skip_tool_check: args.skip_iii,
-        yes: args.yes,
+        skip_install: false,
+        skip_next_steps: false,
+        yes: false,
     };
 
     let result = scaffolder_core::run(&IiiConfig, create_args, env!("CARGO_PKG_VERSION")).await;
@@ -238,7 +233,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         return print_err(
             "template scaffold failed",
             &e.to_string(),
-            "see scaffolder output above; re-run with --template <name> --yes to skip prompts",
+            "see scaffolder output above",
         );
     }
 
@@ -338,67 +333,47 @@ async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
 // Helpers
 // ============================================================================
 
-fn build_fetcher(template_dir: Option<&str>) -> anyhow::Result<TemplateFetcher> {
-    if let Some(dir) = template_dir {
-        Ok(TemplateFetcher::from_local(
-            PathBuf::from(dir),
-            IiiConfig.name(),
-        ))
-    } else {
-        TemplateFetcher::from_config(&IiiConfig)
-    }
-}
-
-/// Apply a template via [`copy_template`] with no language selection. Used for
-/// 'bare' which has no language requirements; 'common' files (the shared
-/// `config.yaml`, `.gitignore`, `data/.gitkeep`) get copied via the root
-/// `language_files.common` patterns.
-///
-/// Merges the root manifest's `language_files` with the per-template overrides
-/// (same precedence as `scaffolder_core::run`).
-async fn apply_template(
-    fetcher: &mut TemplateFetcher,
-    template_name: &str,
-    target: &Path,
-) -> anyhow::Result<()> {
-    let root_manifest = fetcher.fetch_root_manifest().await?;
-    let manifest = fetcher.fetch_template_manifest(template_name).await?;
-    let mut language_files = root_manifest.language_files.clone();
-    language_files.merge(&manifest.language_files);
-    copy_template(
-        fetcher,
-        template_name,
-        &manifest,
-        target,
-        &[],
-        &language_files,
-    )
-    .await?;
-    Ok(())
-}
-
 /// Fetch the docker template's two files directly (skipping the shared_files
 /// merge that [`copy_template`] applies). We can't go through `copy_template`
 /// here because it'd re-copy `config.yaml` / `.gitignore` from `shared_files`
 /// and clobber any user customizations — the caller already has those from the
 /// 'bare' template or a prior `iii project init`.
 ///
-/// Generates `.env` with the device_id baked in as `III_HOST_USER_ID` and a
-/// fresh UUID-based RabbitMQ password.
+/// The Dockerfile template carries a literal `__III_DEVICE_ID__` placeholder
+/// that we substitute with the actual device_id before writing, so the image
+/// no longer needs an `III_HOST_USER_ID` env var at runtime. The generated
+/// `.env` only carries the RabbitMQ password (used by the commented-out
+/// rabbitmq service in docker-compose.yml).
+const DEVICE_ID_PLACEHOLDER: &str = "__III_DEVICE_ID__";
+
 async fn apply_docker(
     fetcher: &mut TemplateFetcher,
     target: &Path,
     device_id: &str,
 ) -> anyhow::Result<()> {
-    let dockerfile = fetcher.fetch_file_bytes("docker", "Dockerfile").await?;
+    let dockerfile_bytes = fetcher.fetch_file_bytes("docker", "Dockerfile").await?;
     let compose = fetcher
         .fetch_file_bytes("docker", "docker-compose.yml")
         .await?;
 
+    let dockerfile = substitute_device_id(&dockerfile_bytes, device_id)?;
+
     write_if_absent(&target.join("Dockerfile"), &dockerfile)?;
     write_if_absent(&target.join("docker-compose.yml"), &compose)?;
-    write_env_if_absent(target, device_id)?;
+    write_env_if_absent(target)?;
     Ok(())
+}
+
+fn substitute_device_id(bytes: &[u8], device_id: &str) -> anyhow::Result<Vec<u8>> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| anyhow::anyhow!("Dockerfile template is not valid UTF-8: {e}"))?;
+    if !text.contains(DEVICE_ID_PLACEHOLDER) {
+        anyhow::bail!(
+            "Dockerfile template is missing the {DEVICE_ID_PLACEHOLDER} \
+             placeholder — the template repo and engine are out of sync"
+        );
+    }
+    Ok(text.replace(DEVICE_ID_PLACEHOLDER, device_id).into_bytes())
 }
 
 fn write_if_absent(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -408,7 +383,7 @@ fn write_if_absent(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, contents)
 }
 
-fn write_env_if_absent(target: &Path, device_id: &str) -> std::io::Result<()> {
+fn write_env_if_absent(target: &Path) -> std::io::Result<()> {
     let path = target.join(".env");
     if path.exists() {
         return Ok(());
@@ -416,7 +391,6 @@ fn write_env_if_absent(target: &Path, device_id: &str) -> std::io::Result<()> {
     let rabbitmq_pass = uuid::Uuid::new_v4().simple().to_string();
     let contents = format!(
         "# Generated by `iii project generate-docker`. Do not commit.\n\
-         III_HOST_USER_ID={device_id}\n\
          RABBITMQ_USER=iii\n\
          RABBITMQ_PASS={rabbitmq_pass}\n",
     );
@@ -499,74 +473,6 @@ fn warn_missing_project_ini(root: &Path) {
     );
 }
 
-fn resolve_root(dir: Option<&str>) -> Result<PathBuf, String> {
-    match dir {
-        Some(d) if d.trim().is_empty() => Err("directory argument cannot be empty".to_string()),
-        Some(d) => Ok(PathBuf::from(d)),
-        None => std::env::current_dir().map_err(|e| format!("cannot read cwd: {}", e)),
-    }
-}
-
-/// Reject scaffolding into a non-empty directory unless the user opted in via
-/// `--allow-non-empty`, OR the directory is already an iii project (has
-/// `.iii/project.ini`). Hidden dotfiles (`.git/`, `.gitignore`, etc.) and
-/// the `data/` runtime directory are not considered "non-empty content" —
-/// they're either dev tooling or iii-managed state.
-fn check_directory_state(root: &Path, allow_non_empty: bool) -> Result<(), String> {
-    if !root.exists() {
-        return Ok(());
-    }
-    if !root.is_dir() {
-        return Err(format!("{} exists but is not a directory", root.display()));
-    }
-    // Idempotent re-init: an existing project.ini means we're scaffolding
-    // into a directory we previously initialized. Always allowed.
-    if root.join(".iii").join("project.ini").exists() {
-        return Ok(());
-    }
-    if allow_non_empty {
-        return Ok(());
-    }
-    let entries: Vec<String> = match std::fs::read_dir(root) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| {
-                // Hidden files/dirs (.git, .env.example, etc.) and iii's
-                // own runtime data directory are not "user content" for
-                // the purpose of this check.
-                !name.starts_with('.') && name != "data"
-            })
-            .collect(),
-        Err(e) => return Err(format!("read {}: {e}", root.display())),
-    };
-    if entries.is_empty() {
-        Ok(())
-    } else {
-        let mut sample = entries.clone();
-        sample.sort();
-        let preview: Vec<String> = sample.iter().take(5).cloned().collect();
-        let suffix = if sample.len() > 5 {
-            format!(", and {} more", sample.len() - 5)
-        } else {
-            String::new()
-        };
-        Err(format!(
-            "{} contains {}{}",
-            root.display(),
-            preview.join(", "),
-            suffix
-        ))
-    }
-}
-
-fn print_err(problem: &str, cause: &str, fix: &str) -> i32 {
-    eprintln!("{} {}", "error:".red().bold(), problem);
-    eprintln!("  {} {}", "cause:".dimmed(), cause);
-    eprintln!("  {} {}", "fix:".dimmed(), fix);
-    1
-}
-
 fn print_init_success(project_name: &str, root: &Path, target_specified: bool, docker: bool) {
     eprintln!();
     eprintln!(
@@ -597,7 +503,3 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
 }
-
-// `IiiConfig::name()` requires the trait in scope; bring it in here so the
-// `build_fetcher` helper above compiles.
-use scaffolder_core::ProductConfig;
