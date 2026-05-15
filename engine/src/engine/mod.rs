@@ -26,8 +26,8 @@ use crate::{
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
-        ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,
-        inject_baggage_from_context, inject_traceparent_from_context,
+        ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
+        inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
@@ -472,10 +472,8 @@ impl Engine {
             // Parent context must be on `Context::current()` BEFORE span
             // creation so `SpanProcessor::on_start` sees the baggage;
             // `set_parent` after creation runs too late.
-            let parent_cx = crate::telemetry::extract_context(
-                traceparent.as_deref(),
-                baggage.as_deref(),
-            );
+            let parent_cx =
+                crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
             let _guard = parent_cx.attach();
             tracing::info_span!(
                 "handle_invocation",

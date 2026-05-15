@@ -5906,8 +5906,7 @@ mod tests {
         assert!(parsed.get("log.data").is_some());
     }
 
-    const SAMPLE_TRACEPARENT: &str =
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    const SAMPLE_TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     const SAMPLE_TRACE_ID_HEX: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
     const SAMPLE_SPAN_ID_HEX: &str = "00f067aa0ba902b7";
 

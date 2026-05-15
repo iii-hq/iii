@@ -594,9 +594,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
 /// ```ignore
 /// tracing::debug!(invocation_id = %display_option(&invocation_id), "...");
 /// ```
-pub fn display_option<T: std::fmt::Display>(
-    opt: &Option<T>,
-) -> impl std::fmt::Display + '_ {
+pub fn display_option<T: std::fmt::Display>(opt: &Option<T>) -> impl std::fmt::Display + '_ {
     struct Inner<'a, T>(&'a Option<T>);
     impl<T: std::fmt::Display> std::fmt::Display for Inner<'_, T> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

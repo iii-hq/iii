@@ -772,10 +772,7 @@ impl ObservabilityWorker {
                                     if pair.len() == 2 {
                                         let key = &pair[0];
                                         let value = &pair[1];
-                                        if !s
-                                            .attributes
-                                            .iter()
-                                            .any(|(k, v)| k == key && v == value)
+                                        if !s.attributes.iter().any(|(k, v)| k == key && v == value)
                                         {
                                             return false;
                                         }
@@ -917,11 +914,7 @@ impl ObservabilityWorker {
                         continue;
                     }
 
-                    let value = match span
-                        .attributes
-                        .iter()
-                        .find(|(k, _)| k == &input.attribute)
-                    {
+                    let value = match span.attributes.iter().find(|(k, _)| k == &input.attribute) {
                         Some((_, v)) => v.clone(),
                         None => continue,
                     };
@@ -949,8 +942,8 @@ impl ObservabilityWorker {
                         let first_ms = b.first_seen_ns / 1_000_000;
                         let last_ms = b.last_seen_ns / 1_000_000;
                         // Saturate; durations beyond u32::MAX ms are diagnostic noise.
-                        let duration_ms = u32::try_from(last_ms.saturating_sub(first_ms))
-                            .unwrap_or(u32::MAX);
+                        let duration_ms =
+                            u32::try_from(last_ms.saturating_sub(first_ms)).unwrap_or(u32::MAX);
                         let mut trace_ids: Vec<String> = b.trace_ids.into_iter().collect();
                         trace_ids.sort();
                         TraceGroup {
