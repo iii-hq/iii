@@ -112,7 +112,7 @@ def init_otel(
     # attributes before the batch exporter reads them.
     from .baggage_span_processor import BaggageSpanProcessor
 
-    provider.add_span_processor(BaggageSpanProcessor())  # type: ignore[arg-type]
+    provider.add_span_processor(BaggageSpanProcessor())
     provider.add_span_processor(BatchSpanProcessor(span_exporter))  # type: ignore[arg-type]
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("iii-python-sdk")
