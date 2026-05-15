@@ -649,6 +649,49 @@ impl Engine {
                     error: error.clone(),
                 };
                 let _ = self.send_msg(&originator, forward).await;
+
+                let Some(trigger_entry) = self.trigger_registry.triggers.get(id) else {
+                    tracing::debug!(
+                        trigger_id = %id,
+                        "TriggerRegistrationResult for unknown trigger; ignoring"
+                    );
+                    return Ok(());
+                };
+                let originator_id = trigger_entry.worker_id;
+                drop(trigger_entry);
+
+                if error.is_some() {
+                    self.trigger_registry.triggers.remove(id);
+                }
+
+                if error.is_none() {
+                    return Ok(());
+                }
+
+                let Some(originator_id) = originator_id else {
+                    tracing::debug!(
+                        trigger_id = %id,
+                        "TriggerRegistrationResult for trigger without originator; ignoring"
+                    );
+                    return Ok(());
+                };
+
+                let Some(originator) = self.worker_registry.get_worker(&originator_id) else {
+                    tracing::debug!(
+                        trigger_id = %id,
+                        originator = %originator_id,
+                        "TriggerRegistrationResult originator no longer connected; dropping"
+                    );
+                    return Ok(());
+                };
+
+                let forward = Message::TriggerRegistrationResult {
+                    id: id.clone(),
+                    trigger_type: trigger_type.clone(),
+                    function_id: function_id.clone(),
+                    error: error.clone(),
+                };
+                let _ = self.send_msg(&originator, forward).await;
                 Ok(())
             }
             Message::RegisterTriggerType {
@@ -3468,7 +3511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_trigger_unknown_type_sends_generic_error() {
+    async fn test_register_trigger_unknown_type_recommends_workers_directory() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
@@ -3496,6 +3539,11 @@ mod tests {
         assert!(
             err.message.contains("totally-made-up"),
             "msg should name the missing type: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("https://workers.iii.dev/"),
+            "msg should recommend the workers directory: {}",
             err.message
         );
     }

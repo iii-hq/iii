@@ -52,12 +52,18 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), functio
 
 When the engine cannot register a trigger — most commonly because the trigger type's worker is not active in the project — it sends a `TriggerRegistrationResult` with an `error` body back to the worker that initiated the request. The SDK logs the error at `ERROR` level so the user sees it during development.
 
-For built-in trigger types (`http`, `cron`, `subscribe`, `state`, `durable:subscriber`, `stream`, `log`), the error message includes the install command for the missing worker.
+For built-in trigger types (`http`, `cron`, `subscribe`, `state`, `durable:subscriber`, `stream`, `log`), the error message includes the install command for the missing worker. For unknown trigger types that are not built-in, the error message points to the workers directory at <https://workers.iii.dev/>.
 
 Example log line when `iii-http` is not active:
 
 ```
 [iii] Trigger registration failed for "1c1b…" (http): Trigger type "http" not found — worker iii-http is missing. Run: iii worker add iii-http
+```
+
+Example log line for an unknown non-built-in trigger type:
+
+```
+[iii] Trigger registration failed for "1c1b…" (my-custom-trigger): Trigger type "my-custom-trigger" not found. Search for a worker that provides this trigger type at https://workers.iii.dev/
 ```
 
 Logging targets per SDK:

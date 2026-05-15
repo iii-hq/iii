@@ -41,7 +41,9 @@ pub enum RegisterTriggerError {
         trigger_type: String,
         worker: &'static str,
     },
-    #[error("Trigger type \"{trigger_type}\" not found")]
+    #[error(
+        "Trigger type \"{trigger_type}\" not found. Search for a worker that provides this trigger type at https://workers.iii.dev/"
+    )]
     Unknown { trigger_type: String },
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -262,7 +264,11 @@ impl TriggerRegistry {
                 });
             }
 
-            tracing::error!("Trigger type {} not found", trigger_type_id.purple());
+            tracing::error!(
+                "Trigger type {} not found. Search for a worker that provides this trigger type at {}",
+                trigger_type_id.purple().bold(),
+                "https://workers.iii.dev/".cyan().bold()
+            );
             return Err(RegisterTriggerError::Unknown {
                 trigger_type: trigger_type_id,
             });
@@ -491,6 +497,10 @@ mod tests {
         assert!(
             err_msg.contains("\"nonexistent\" not found"),
             "Expected unknown-type message, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("https://workers.iii.dev/"),
+            "Expected workers directory recommendation, got: {err_msg}"
         );
         assert!(registry.triggers.is_empty());
     }
