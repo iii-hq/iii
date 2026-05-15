@@ -8,7 +8,7 @@ use opentelemetry_sdk::trace::{Span, SpanData, SpanProcessor};
 
 /// DEFAULT_ALLOWLIST drift across languages would break worker chains;
 /// lockstep tests in each SDK pin this constant at CI time.
-pub const DEFAULT_ALLOWLIST: &[&str] = &["iii.session.id", "iii.message.id", "iii.function_id"];
+pub const DEFAULT_ALLOWLIST: &[&str] = &["iii.session.id", "iii.message.id", "iii.function.id"];
 
 #[derive(Debug, Clone)]
 pub struct BaggageSpanProcessor {
@@ -104,7 +104,7 @@ mod tests {
         let cx = Context::new().with_baggage(vec![
             KeyValue::new("iii.session.id", "S-1"),
             KeyValue::new("iii.message.id", "M-1"),
-            KeyValue::new("iii.function_id", "auth::set_token"),
+            KeyValue::new("iii.function.id", "auth::set_token"),
         ]);
 
         let span = tracer
@@ -121,7 +121,7 @@ mod tests {
             Some("M-1"),
         );
         assert_eq!(
-            first_span_attr(&exporter, "iii.function_id").as_deref(),
+            first_span_attr(&exporter, "iii.function.id").as_deref(),
             Some("auth::set_token"),
         );
     }
@@ -142,7 +142,7 @@ mod tests {
             Some("M-only"),
         );
         assert!(first_span_attr(&exporter, "iii.session.id").is_none());
-        assert!(first_span_attr(&exporter, "iii.function_id").is_none());
+        assert!(first_span_attr(&exporter, "iii.function.id").is_none());
     }
 
     #[test]
@@ -238,7 +238,7 @@ mod tests {
         // DEFAULT_ALLOWLIST drift across languages would break worker chains.
         assert_eq!(
             DEFAULT_ALLOWLIST,
-            &["iii.session.id", "iii.message.id", "iii.function_id"],
+            &["iii.session.id", "iii.message.id", "iii.function.id"],
         );
     }
 }

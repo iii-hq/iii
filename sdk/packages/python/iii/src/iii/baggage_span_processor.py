@@ -13,7 +13,7 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 DEFAULT_ALLOWLIST: tuple[str, ...] = (
     "iii.session.id",
     "iii.message.id",
-    "iii.function_id",
+    "iii.function.id",
 )
 
 

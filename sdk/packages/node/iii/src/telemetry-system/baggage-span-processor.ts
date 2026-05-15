@@ -9,7 +9,7 @@ import type { ReadableSpan, Span, SpanProcessor } from '@opentelemetry/sdk-trace
 export const DEFAULT_ALLOWLIST: readonly string[] = [
   'iii.session.id',
   'iii.message.id',
-  'iii.function_id',
+  'iii.function.id',
 ] as const
 
 export class BaggageSpanProcessor implements SpanProcessor {

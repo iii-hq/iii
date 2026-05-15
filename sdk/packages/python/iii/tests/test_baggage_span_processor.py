@@ -48,7 +48,7 @@ def test_copies_default_allowlist_from_baggage_to_attributes() -> None:
         {
             "iii.session.id": "S-1",
             "iii.message.id": "M-1",
-            "iii.function_id": "auth::set_token",
+            "iii.function.id": "auth::set_token",
         }
     )
     try:
@@ -59,7 +59,7 @@ def test_copies_default_allowlist_from_baggage_to_attributes() -> None:
 
     assert _first_span_attr(exporter, "iii.session.id") == "S-1"
     assert _first_span_attr(exporter, "iii.message.id") == "M-1"
-    assert _first_span_attr(exporter, "iii.function_id") == "auth::set_token"
+    assert _first_span_attr(exporter, "iii.function.id") == "auth::set_token"
 
 
 def test_missing_baggage_entry_means_attribute_not_set() -> None:
@@ -75,7 +75,7 @@ def test_missing_baggage_entry_means_attribute_not_set() -> None:
 
     assert _first_span_attr(exporter, "iii.message.id") == "M-only"
     assert _first_span_attr(exporter, "iii.session.id") is None
-    assert _first_span_attr(exporter, "iii.function_id") is None
+    assert _first_span_attr(exporter, "iii.function.id") is None
 
 
 def test_baggage_entries_not_in_allowlist_are_dropped() -> None:
@@ -158,5 +158,5 @@ def test_default_allowlist_matches_other_sdks() -> None:
     assert tuple(DEFAULT_ALLOWLIST) == (
         "iii.session.id",
         "iii.message.id",
-        "iii.function_id",
+        "iii.function.id",
     )

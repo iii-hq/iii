@@ -41,7 +41,7 @@ describe('BaggageSpanProcessor', () => {
       {
         'iii.session.id': 'S-1',
         'iii.message.id': 'M-1',
-        'iii.function_id': 'auth::set_token',
+        'iii.function.id': 'auth::set_token',
       },
       () => {
         const span = tracer.startSpan('inner')
@@ -51,7 +51,7 @@ describe('BaggageSpanProcessor', () => {
 
     expect(firstSpanAttr(exporter, 'iii.session.id')).toBe('S-1')
     expect(firstSpanAttr(exporter, 'iii.message.id')).toBe('M-1')
-    expect(firstSpanAttr(exporter, 'iii.function_id')).toBe('auth::set_token')
+    expect(firstSpanAttr(exporter, 'iii.function.id')).toBe('auth::set_token')
   })
 
   it('missing baggage entry means attribute not set', () => {
@@ -64,7 +64,7 @@ describe('BaggageSpanProcessor', () => {
 
     expect(firstSpanAttr(exporter, 'iii.message.id')).toBe('M-only')
     expect(firstSpanAttr(exporter, 'iii.session.id')).toBeUndefined()
-    expect(firstSpanAttr(exporter, 'iii.function_id')).toBeUndefined()
+    expect(firstSpanAttr(exporter, 'iii.function.id')).toBeUndefined()
   })
 
   it('baggage entries not in allowlist are dropped', () => {
@@ -146,7 +146,7 @@ describe('BaggageSpanProcessor', () => {
     expect([...DEFAULT_ALLOWLIST]).toEqual([
       'iii.session.id',
       'iii.message.id',
-      'iii.function_id',
+      'iii.function.id',
     ])
   })
 })
