@@ -48,6 +48,24 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), functio
 </Tab>
 </Tabs>
 
+## Registration errors
+
+When the engine cannot register a trigger — most commonly because the trigger type's worker is not active in the project — it sends a `TriggerRegistrationResult` with an `error` body back to the worker that initiated the request. The SDK logs the error at `ERROR` level so the user sees it during development.
+
+For built-in trigger types (`http`, `cron`, `subscribe`, `state`, `durable:subscriber`, `stream`, `log`), the error message includes the install command for the missing worker.
+
+Example log line when `iii-http` is not active:
+
+```
+[iii] Trigger registration failed for "1c1b…" (http): Trigger type "http" not found — worker iii-http is missing. Run: iii worker add iii-http
+```
+
+Logging targets per SDK:
+
+- **Node** — `console.error`
+- **Python** — the `iii` logger, level `ERROR`
+- **Rust** — `tracing::error!`
+
 ## Trigger Pipeline
 
 ```mermaid
