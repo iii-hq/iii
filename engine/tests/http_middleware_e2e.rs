@@ -50,6 +50,17 @@ async fn start_api_server(port: u16) -> (Arc<Engine>, String) {
         .await
         .expect("initialize should succeed");
 
+    // HttpWorker binds the listener in start_background_tasks now. The sender
+    // must outlive the helper or HttpWorker's graceful_shutdown future fires
+    // (Receiver::changed returns Err once all senders drop), tearing down the
+    // server before the test issues any request.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+        .await
+        .expect("start_background_tasks should succeed");
+    std::mem::forget(shutdown_tx);
+
     let base_url = format!("http://127.0.0.1:{port}");
     (engine, base_url)
 }
@@ -85,6 +96,17 @@ async fn start_api_server_with_global_middleware(
         .initialize()
         .await
         .expect("initialize should succeed");
+
+    // HttpWorker binds the listener in start_background_tasks now. The sender
+    // must outlive the helper or HttpWorker's graceful_shutdown future fires
+    // (Receiver::changed returns Err once all senders drop), tearing down the
+    // server before the test issues any request.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+        .await
+        .expect("start_background_tasks should succeed");
+    std::mem::forget(shutdown_tx);
 
     let base_url = format!("http://127.0.0.1:{port}");
     (engine, base_url)

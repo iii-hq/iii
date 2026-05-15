@@ -4,7 +4,10 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{pin::Pin, sync::Arc};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use anyhow::anyhow;
 use axum::{
@@ -15,7 +18,7 @@ use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{net::TcpListener, sync::RwLock, task::AbortHandle};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     cors::{Any as HTTP_Any, CorsLayer},
@@ -73,6 +76,7 @@ pub struct HttpWorker {
     pub config: RestApiConfig,
     pub routers_registry: Arc<DashMap<String, PathRouter>>,
     shared_routers: Arc<RwLock<Router>>,
+    server_abort: Arc<StdMutex<Option<AbortHandle>>>,
 }
 
 #[async_trait::async_trait]
@@ -97,6 +101,7 @@ impl Worker for HttpWorker {
             config,
             routers_registry,
             shared_routers,
+            server_abort: Arc::new(StdMutex::new(None)),
         }))
     }
 
@@ -115,6 +120,14 @@ impl Worker for HttpWorker {
             ))
             .await;
 
+        Ok(())
+    }
+
+    async fn start_background_tasks(
+        &self,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
+    ) -> anyhow::Result<()> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let listener = TcpListener::bind(&addr)
             .await
@@ -127,15 +140,40 @@ impl Worker for HttpWorker {
             inner: self.shared_routers.clone(),
             engine: self.engine.clone(),
         };
+        let make_service = MakeHotRouterService { router: hot_router };
+        let addr_display = addr.clone();
 
-        tokio::spawn(async move {
-            tracing::info!("API listening on address: {}", addr.purple());
-            let make_service = MakeHotRouterService {
-                router: hot_router.clone(),
-            };
-            axum::serve(listener, make_service).await.unwrap();
+        let handle = tokio::spawn(async move {
+            tracing::info!("API listening on address: {}", addr_display.purple());
+            let serve = axum::serve(listener, make_service).with_graceful_shutdown(async move {
+                while shutdown_rx.changed().await.is_ok() {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            });
+            if let Err(e) = serve.await {
+                tracing::error!(address = %addr_display, error = %e, "API server exited with error");
+            }
         });
 
+        *self
+            .server_abort
+            .lock()
+            .expect("server_abort mutex poisoned") = Some(handle.abort_handle());
+
+        Ok(())
+    }
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        let abort = self
+            .server_abort
+            .lock()
+            .expect("server_abort mutex poisoned")
+            .take();
+        if let Some(abort) = abort {
+            abort.abort();
+        }
         Ok(())
     }
 }
@@ -150,6 +188,7 @@ impl HttpWorker {
             config,
             routers_registry: Arc::new(DashMap::new()),
             shared_routers: Arc::new(RwLock::new(Router::new())),
+            server_abort: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -624,6 +663,7 @@ mod tests {
             config,
             routers_registry: Arc::new(DashMap::new()),
             shared_routers: Arc::new(RwLock::new(Router::new())),
+            server_abort: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -945,7 +985,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rest_api_initialize_returns_addr_in_use_error_with_address() {
+    async fn rest_api_start_background_tasks_returns_addr_in_use_error_with_address() {
         ensure_default_meter();
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = occupied.local_addr().expect("local addr").port();
@@ -963,14 +1003,60 @@ mod tests {
         .await
         .expect("module should be created");
 
-        let err = module
+        // initialize() no longer binds — only registers the trigger type.
+        module
             .initialize()
             .await
-            .expect_err("REST API init should fail when the port is occupied");
+            .expect("initialize should succeed");
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let err = module
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
+            .expect_err("REST API bind should fail when the port is occupied");
+        std::mem::forget(shutdown_tx);
 
         let message = err.to_string();
         assert!(message.contains(&format!("127.0.0.1:{port}")));
         assert!(message.contains("already in use"));
+    }
+
+    #[tokio::test]
+    async fn rest_api_destroy_aborts_running_server() {
+        ensure_default_meter();
+        let engine = Arc::new(crate::engine::Engine::new());
+
+        let module = <HttpWorker as Worker>::create(
+            engine,
+            Some(json!({
+                "host": "127.0.0.1",
+                "port": 0,
+                "default_timeout": 250,
+                "concurrency_request_limit": 8
+            })),
+        )
+        .await
+        .expect("module should be created");
+
+        module
+            .initialize()
+            .await
+            .expect("initialize should succeed");
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
+            .expect("start_background_tasks should succeed");
+        std::mem::forget(shutdown_tx);
+
+        module.destroy().await.expect("destroy should succeed");
+
+        // Second destroy is a no-op (abort handle already taken).
+        module
+            .destroy()
+            .await
+            .expect("second destroy should be no-op");
     }
 
     #[tokio::test]

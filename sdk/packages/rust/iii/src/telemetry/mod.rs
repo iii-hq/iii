@@ -1,3 +1,4 @@
+pub mod baggage_span_processor;
 pub mod connection;
 pub mod context;
 pub mod http_instrumentation;
@@ -5,7 +6,9 @@ pub mod json_serializer;
 pub mod log_exporter;
 pub mod metrics_exporter;
 pub mod otel_worker_gauges;
+pub mod payload;
 pub mod span_exporter;
+pub mod span_ops;
 pub mod types;
 pub mod worker_metrics;
 
@@ -52,6 +55,15 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
 /// The engine exposes `/otel` for telemetry-only WS connections. Appending
 /// the path here means the SDK never shows up in `worker_registry` as a
 /// ghost null-metadata worker. Handles trailing slashes, is idempotent
+fn detect_service_name_from_argv0() -> Option<String> {
+    let argv0 = std::env::args().next()?;
+    if argv0.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(&argv0);
+    path.file_name().and_then(|f| f.to_str()).map(String::from)
+}
+
 /// when the URL already ends in `/otel`, and preserves query strings and
 /// fragments by inserting `/otel` into the path segment only.
 fn append_otel_path(base: &str) -> String {
@@ -126,6 +138,48 @@ mod otel_path_tests {
     }
 }
 
+#[cfg(test)]
+mod service_name_tests {
+    //! `detect_service_name_from_argv0` reads `std::env::args()` directly,
+    //! so these tests exercise the extraction logic via a local shim.
+
+    use std::path::Path;
+
+    fn name_from_path(argv0: &str) -> Option<String> {
+        if argv0.is_empty() {
+            return None;
+        }
+        Path::new(argv0)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .map(String::from)
+    }
+
+    #[test]
+    fn extracts_binary_name_from_release_path() {
+        assert_eq!(
+            name_from_path("/path/to/workers/harness/target/release/harness").as_deref(),
+            Some("harness")
+        );
+        assert_eq!(
+            name_from_path("/path/to/workers/turn-orchestrator/target/release/turn-orchestrator")
+                .as_deref(),
+            Some("turn-orchestrator")
+        );
+    }
+
+    #[test]
+    fn extracts_bare_binary_name() {
+        assert_eq!(name_from_path("iii").as_deref(), Some("iii"));
+        assert_eq!(name_from_path("harness").as_deref(), Some("harness"));
+    }
+
+    #[test]
+    fn returns_none_for_empty_argv0() {
+        assert_eq!(name_from_path(""), None);
+    }
+}
+
 /// Initialize OpenTelemetry with the given configuration.
 ///
 /// Sets up distributed tracing, optional metrics, and optional log export
@@ -157,9 +211,23 @@ pub async fn init_otel(config: OtelConfig) -> bool {
         return false;
     }
 
+    // service.name resolution order (highest priority first):
+    //   1. explicit `OtelConfig::service_name`
+    //   2. `OTEL_SERVICE_NAME` env var
+    //   3. argv[0] basename — the binary's own filename
+    //      (`harness`, `turn-orchestrator`, `provider-anthropic`, ...).
+    //      We deliberately DON'T fall back to `detect_project_name`
+    //      (Cargo.toml-from-cwd) here because shared-cwd spawning
+    //      patterns (the harness Makefile spawns every worker from
+    //      `workers/harness/`) would make every worker report the
+    //      same service name. argv[0] is unique per binary regardless
+    //      of where it was launched from.
+    //   4. fallback literal `"iii-rust-sdk"` for cases where argv[0]
+    //      isn't a recognizable executable name (rare).
     let service_name = config
         .service_name
         .or_else(|| std::env::var("OTEL_SERVICE_NAME").ok())
+        .or_else(detect_service_name_from_argv0)
         .unwrap_or_else(|| "iii-rust-sdk".to_string());
 
     let service_version = config
@@ -216,10 +284,13 @@ pub async fn init_otel(config: OtelConfig) -> bool {
     ]);
     opentelemetry::global::set_text_map_propagator(propagator);
 
-    // Set up tracer provider with span exporter
+    // BaggageSpanProcessor must register first: on_start fires in
+    // registration order, so baggage entries are materialized as span
+    // attributes before the batch exporter reads them.
     let span_exporter = EngineSpanExporter::new(connection.clone());
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
+        .with_span_processor(baggage_span_processor::BaggageSpanProcessor::default())
         .with_batch_exporter(span_exporter)
         .build();
 
@@ -466,6 +537,29 @@ where
             Err(err)
         }
     }
+}
+
+/// Run a future inside a new span. Returns the future's output unchanged.
+///
+/// Does NOT set span status automatically — use [`with_span`] for
+/// automatic OK/Error status on `Result` returns, or call
+/// [`set_current_span_error`] from inside `f` to mark errors on typed
+/// `thiserror` paths.
+pub async fn run_in_span<F, Fut, T>(name: &str, kind: Option<SpanKind>, f: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    use opentelemetry::trace::FutureExt as OtelFutureExt;
+
+    let tracer = opentelemetry::global::tracer("iii-rust-sdk");
+    let parent_cx = OtelContext::current();
+    let span = tracer
+        .span_builder(name.to_string())
+        .with_kind(kind.unwrap_or(SpanKind::Internal))
+        .start_with_context(&tracer, &parent_cx);
+    let cx = parent_cx.with_span(span);
+    f().with_context(cx).await
 }
 
 /// Get a tracer instance for creating spans manually.

@@ -56,6 +56,11 @@ async fn handler_panic_does_not_crash_worker() {
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     // Enqueue a message that will cause a panic
     enqueue(

@@ -172,6 +172,56 @@ pub fn get_all_baggage() -> HashMap<String, String> {
         .collect()
 }
 
+/// Run `future` with the current OTel context augmented by `entries` in
+/// baggage. Duplicate keys are overwritten. The augmented context is
+/// dropped when the future completes -- entries do not leak into the
+/// calling scope.
+pub async fn run_with_baggage<F, T>(entries: &[(&str, &str)], future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    use opentelemetry::trace::FutureExt;
+
+    let cx = OtelContext::current();
+    let new_keys: std::collections::HashSet<&str> = entries.iter().map(|(k, _)| *k).collect();
+
+    // Overwrite semantics: nested wrappers must win for their scope
+    // without accumulating duplicate baggage entries.
+    let mut all_entries: Vec<KeyValue> = cx
+        .baggage()
+        .iter()
+        .filter(|(k, _)| !new_keys.contains(&k.as_str()))
+        .map(|(k, (v, _meta))| KeyValue::new(k.clone(), v.clone()))
+        .collect();
+    for (k, v) in entries {
+        all_entries.push(KeyValue::new(k.to_string(), v.to_string()));
+    }
+
+    future.with_context(cx.with_baggage(all_entries)).await
+}
+
+/// Snapshot of the current OTel context for use across `tokio::spawn`.
+///
+/// `tokio::spawn` does NOT carry OTel context into the spawned task;
+/// without this, child spans become orphan roots. Capture before spawn,
+/// then call `.attach(future)` inside the spawned block.
+#[derive(Clone)]
+pub struct CapturedContext(OtelContext);
+
+impl CapturedContext {
+    pub async fn attach<F, T>(self, future: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        use opentelemetry::trace::FutureExt;
+        future.with_context(self.0).await
+    }
+}
+
+pub fn capture_otel_context() -> CapturedContext {
+    CapturedContext(OtelContext::current())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

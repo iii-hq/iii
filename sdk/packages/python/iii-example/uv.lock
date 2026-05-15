@@ -30,9 +30,11 @@ requires-dist = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.10.0"
+version = "0.11.7.dev1"
 source = { editable = "../iii" }
 dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "websockets" },
 ]
@@ -43,10 +45,8 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "griffe", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
-    { name = "opentelemetry-api", marker = "extra == 'dev'", specifier = ">=1.25" },
-    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.25" },
-    { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.25" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.25" },
+    { name = "opentelemetry-api", specifier = ">=1.25" },
+    { name = "opentelemetry-sdk", specifier = ">=1.25" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -54,7 +54,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["otel", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "importlib-metadata"

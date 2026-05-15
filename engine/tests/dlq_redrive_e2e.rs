@@ -62,6 +62,15 @@ async fn create_engine_with_redrive(config: Value) -> Arc<Engine> {
         .await
         .expect("Module initialization should succeed");
 
+    // Consumer loops live in start_background_tasks now, not in initialize.
+    // Tasks are detached via tokio::spawn — they outlive `module` because
+    // AbortHandle::drop is a no-op (only explicit .abort() cancels).
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("Module start_background_tasks should succeed");
+
     engine
 }
 
@@ -215,6 +224,12 @@ async fn e2e_dlq_redrive_full_lifecycle() {
         .initialize()
         .await
         .expect("initialize should succeed");
+    // Consumer loops live in start_background_tasks (not initialize) now.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("start_background_tasks should succeed");
 
     // Verify DLQ starts empty
     assert_eq!(
@@ -302,6 +317,12 @@ async fn e2e_redrive_multiple_dlq_messages() {
         .initialize()
         .await
         .expect("initialize should succeed");
+    // Consumer loops live in start_background_tasks (not initialize) now.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("start_background_tasks should succeed");
 
     // Enqueue 3 messages that will all fail
     for i in 0..3 {
@@ -426,6 +447,12 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         .initialize()
         .await
         .expect("initialize should succeed");
+    // Consumer loops live in start_background_tasks (not initialize) now.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("start_background_tasks should succeed");
 
     enqueue(
         &engine,
@@ -488,6 +515,12 @@ async fn e2e_redrive_result_contains_metadata() {
         .initialize()
         .await
         .expect("initialize should succeed");
+    // Consumer loops live in start_background_tasks (not initialize) now.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("start_background_tasks should succeed");
 
     // Send 2 messages that will fail
     for i in 0..2 {

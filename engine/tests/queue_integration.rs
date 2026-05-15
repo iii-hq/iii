@@ -112,6 +112,11 @@ async fn full_roundtrip_enqueue_consume_invoke() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Enqueue a single message to the standard queue.
     enqueue(
@@ -156,6 +161,11 @@ async fn full_roundtrip_fifo_preserves_order() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Enqueue 5 messages to the FIFO queue with the same transaction_id
     // (same message group) so they are processed sequentially.
@@ -213,6 +223,11 @@ async fn retry_exhaustion_stops_redelivery() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     enqueue(
         &engine,
@@ -264,6 +279,11 @@ async fn exhausted_message_lands_in_dlq() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // DLQ should start empty
     assert_eq!(dlq_count(&engine, "default").await, 0);
@@ -313,6 +333,11 @@ async fn standard_queue_processes_concurrently() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     let start = std::time::Instant::now();
 
@@ -367,6 +392,11 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Enqueue to a nonexistent function first
     enqueue(&engine, "default", "test::ghost", json!({"should": "fail"}))
@@ -416,6 +446,11 @@ async fn multiple_queues_operate_independently() {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
 
     // Enqueue 3 messages to each queue
     for i in 0..3 {

@@ -295,6 +295,12 @@ impl Worker for BridgeClientWorker {
 
         Ok(())
     }
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::info!("Destroying BridgeClientWorker");
+        self.bridge.shutdown_async().await;
+        Ok(())
+    }
 }
 
 crate::register_worker!("iii-bridge", BridgeClientWorker);

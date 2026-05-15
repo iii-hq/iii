@@ -11,7 +11,8 @@ use iii::{
     workers::{queue::QueueWorker, traits::Worker},
 };
 
-/// Creates an Engine with a QueueWorker initialized from the given config.
+/// Creates an Engine with a QueueWorker initialized from the given config,
+/// including the consumer loops that live in start_background_tasks.
 pub async fn create_engine_with_queue(config: Value) -> Arc<Engine> {
     iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
@@ -22,6 +23,16 @@ pub async fn create_engine_with_queue(config: Value) -> Arc<Engine> {
         .initialize()
         .await
         .expect("Module initialization should succeed");
+
+    // Consumer loops live in start_background_tasks (not initialize). Spawned
+    // tasks are detached and outlive `module` because AbortHandle::drop is a
+    // no-op (only explicit .abort() cancels).
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("Module start_background_tasks should succeed");
+
     engine
 }
 
