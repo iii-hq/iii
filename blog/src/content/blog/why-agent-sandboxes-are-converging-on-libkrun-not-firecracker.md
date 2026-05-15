@@ -224,8 +224,4 @@ If you're building anything at all, the load-bearing engineering is in the init 
 
 And the composition shape (sandbox-as-worker, not sandbox-as-separate-product) is the most underrated piece. The agent and the sandbox and the queue and the state store and the HTTP front door should all be the same kind of thing in the same system with the same trace ID. We built iii because every other shape we tried had a "now correlate this across systems" failure mode that compounds quadratically with the number of agents in the loop. When the sandbox is a worker, that failure mode never gets a chance to exist.
 
-iii is open source. The sandbox daemon lives at `crates/iii-worker/src/sandbox_daemon/`. The init binary lives at `crates/iii-init/`. The host-side VM boot lives at `crates/iii-worker/src/cli/vm_boot.rs`.
-
-The cloud-side agent infra answer was Firecracker, and it's right that it isn't going anywhere. The local-side agent infra answer is libkrun, plus an init binary you wrote yourself, plus a system that treats the sandbox as one worker among many instead of a separate product. That's what we built. That's what I'd build again.
-
--> Rohit
+iii is open source. Get started with our [quickstart](https://docs.iii.dev).
