@@ -1,6 +1,6 @@
 {
   "name": "iii-browser-sdk",
-  "version": "0.14.0-next.1",
+  "version": "0.12.0",
   "private": false,
   "publishConfig": {
     "access": "public"
