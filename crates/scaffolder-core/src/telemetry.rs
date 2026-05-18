@@ -200,6 +200,25 @@ fn resolve_posthog_host() -> String {
         .unwrap_or_else(|| POSTHOG_DEFAULT_HOST.to_string())
 }
 
+fn resolve_posthog_api_key() -> Option<String> {
+    std::env::var("POSTHOG_PROJECT_API_KEY")
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+        .or_else(|| {
+            std::env::var("POSTHOG_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+        })
+        .or_else(|| {
+            let key = POSTHOG_PROJECT_API_KEY.to_string();
+            if key.trim().is_empty() {
+                None
+            } else {
+                Some(key)
+            }
+        })
+}
+
 fn redact_path_string(value: &str) -> String {
     const PLACEHOLDER: &str = "<REDACTED_PATH>";
 
@@ -287,12 +306,7 @@ async fn post_posthog(
     event_properties: serde_json::Value,
     user_properties: Option<serde_json::Value>,
 ) {
-    let Some(key) = std::env::var("POSTHOG_PROJECT_API_KEY")
-        .or_else(|_| std::env::var("POSTHOG_API_KEY"))
-        .ok()
-        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
-        .filter(|key| !key.trim().is_empty())
-    else {
+    let Some(key) = resolve_posthog_api_key() else {
         return;
     };
     let host = resolve_posthog_host();
@@ -337,8 +351,10 @@ async fn send_telemetry_failed(endpoint: &str, platform: &str, tools_version: &s
     if let Some(props) = user_properties.as_mut() {
         redact_path_values(props);
     }
-    post_posthog(event, event_properties, user_properties).await;
-    post_amplitude(endpoint, &payload).await;
+    tokio::join!(
+        post_posthog(event, event_properties, user_properties),
+        post_amplitude(endpoint, &payload)
+    );
 }
 
 async fn send_amplitude_to(
@@ -371,13 +387,14 @@ async fn send_amplitude_to(
         events: vec![event],
     };
     let event = &payload.events[0];
-    post_posthog(
-        event,
-        event.event_properties.clone(),
-        event.user_properties.clone(),
-    )
-    .await;
-    post_amplitude(endpoint, &payload).await;
+    tokio::join!(
+        post_posthog(
+            event,
+            event.event_properties.clone(),
+            event.user_properties.clone(),
+        ),
+        post_amplitude(endpoint, &payload)
+    );
 }
 
 async fn send_amplitude(
@@ -772,6 +789,20 @@ mod tests {
         assert_eq!(resolve_posthog_host(), POSTHOG_DEFAULT_HOST);
         unsafe {
             std::env::remove_var("POSTHOG_HOST");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(home_env)]
+    fn resolve_posthog_api_key_ignores_empty_env_before_fallback() {
+        unsafe {
+            std::env::set_var("POSTHOG_PROJECT_API_KEY", "   ");
+            std::env::set_var("POSTHOG_API_KEY", "fallback-key");
+        }
+        assert_eq!(resolve_posthog_api_key().as_deref(), Some("fallback-key"));
+        unsafe {
+            std::env::remove_var("POSTHOG_PROJECT_API_KEY");
+            std::env::remove_var("POSTHOG_API_KEY");
         }
     }
 
