@@ -153,9 +153,13 @@ receives the ref in JSON and reconstructs the reader with `ChannelReader::new(..
     import type { ChannelReader } from "iii-sdk";
 
     worker.registerFunction("files::process", async (input: { reader: ChannelReader }) => {
-      const bytes = await input.reader.readAll();
+      let bytes = 0;
 
-      return { bytes: bytes.length };
+      for await (const chunk of input.reader.stream) {
+        bytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      }
+
+      return { bytes };
     });
     ```
   </Tab>
@@ -186,9 +190,13 @@ receives the ref in JSON and reconstructs the reader with `ChannelReader::new(..
         .ok_or_else(|| IIIError::Handler("missing reader channel ref".to_string()))?;
 
     let reader = ChannelReader::new(iii.address(), &reader_ref);
-    let bytes = reader.read_all().await?;
+    let mut bytes = 0;
 
-    Ok(json!({ "bytes": bytes.len() }))
+    while let Some(chunk) = reader.next_binary().await? {
+        bytes += chunk.len();
+    }
+
+    Ok(json!({ "bytes": bytes }))
     ```
   </Tab>
 </Tabs>
