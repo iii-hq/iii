@@ -21,7 +21,7 @@ use crate::engine::Engine;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
-use self::amplitude::{AmplitudeClient, AmplitudeEvent, PostHogClient};
+use self::amplitude::{AmplitudeClient, AmplitudeEvent, POSTHOG_PROJECT_API_KEY, PostHogClient};
 use self::environment::EnvironmentInfo;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
@@ -67,6 +67,7 @@ fn resolve_posthog_api_key(config: &TelemetryConfig) -> Option<String> {
         .clone()
         .or_else(|| std::env::var("POSTHOG_PROJECT_API_KEY").ok())
         .or_else(|| std::env::var("POSTHOG_API_KEY").ok())
+        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
         .filter(|key| !key.trim().is_empty())
 }
 
@@ -1204,6 +1205,20 @@ mod tests {
         unsafe {
             env::remove_var("POSTHOG_PROJECT_API_KEY");
         }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_api_key_defaults_to_public_project_key() {
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+            env::remove_var("POSTHOG_API_KEY");
+        }
+        let config = TelemetryConfig::default();
+        assert_eq!(
+            resolve_posthog_api_key(&config).as_deref(),
+            Some(POSTHOG_PROJECT_API_KEY)
+        );
     }
 
     #[test]

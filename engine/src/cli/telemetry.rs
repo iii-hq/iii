@@ -12,7 +12,9 @@
 //! (`build_user_properties`), and the named event helpers
 //! (`send_cli_update_*`, `send_project_init_*`, `send_install_lifecycle_event`).
 
-use iii::workers::telemetry::amplitude::{API_KEY, AmplitudeClient, AmplitudeEvent, PostHogClient};
+use iii::workers::telemetry::amplitude::{
+    API_KEY, AmplitudeClient, AmplitudeEvent, POSTHOG_PROJECT_API_KEY, PostHogClient,
+};
 use iii::workers::telemetry::environment;
 
 fn is_telemetry_disabled() -> bool {
@@ -84,6 +86,7 @@ fn build_posthog_client_from_env() -> Option<PostHogClient> {
     let key = std::env::var("POSTHOG_PROJECT_API_KEY")
         .or_else(|_| std::env::var("POSTHOG_API_KEY"))
         .ok()
+        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
         .filter(|key| !key.trim().is_empty())?;
     let host =
         std::env::var("POSTHOG_HOST").unwrap_or_else(|_| "https://us.i.posthog.com".to_string());
@@ -322,13 +325,13 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_build_posthog_client_from_env_requires_key() {
+    fn test_build_posthog_client_from_env_defaults_to_public_project_key() {
         unsafe {
             env::remove_var("POSTHOG_PROJECT_API_KEY");
             env::remove_var("POSTHOG_API_KEY");
             env::remove_var("POSTHOG_HOST");
         }
-        assert!(build_posthog_client_from_env().is_none());
+        assert!(build_posthog_client_from_env().is_some());
     }
 
     #[test]

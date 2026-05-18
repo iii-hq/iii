@@ -14,6 +14,7 @@ const MAX_RETRIES: u32 = 3;
 /// copy) scaffolder-core. Kept here so anyone sending telemetry from the
 /// engine binary references one source of truth.
 pub const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
+pub const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
 
 /// Strip `/Users/<name>/`, `/home/<name>/`, and Windows `\Users\<name>\` /
 /// `\home\<name>\` prefixes from error strings, and cap the length so we

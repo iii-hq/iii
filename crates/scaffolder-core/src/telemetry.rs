@@ -9,6 +9,7 @@ use crate::runtime::check::Language;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
+const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
 const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const TELEMETRY_SCHEMA_VERSION: u8 = 2;
 
@@ -265,6 +266,7 @@ async fn post_posthog(
     let Some(key) = std::env::var("POSTHOG_PROJECT_API_KEY")
         .or_else(|_| std::env::var("POSTHOG_API_KEY"))
         .ok()
+        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
         .filter(|key| !key.trim().is_empty())
     else {
         return;
