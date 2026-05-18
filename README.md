@@ -61,6 +61,12 @@ iii                       # start the engine
 Need to install `iii` first? Full walkthrough at the
 [Quickstart guide](https://iii.dev/docs/quickstart).
 
+## Add Workers
+
+Install new capabilities into a project with `iii worker add`:
+
+![Adding a worker with iii worker add](.github/assets/workers-add.gif)
+
 ## SDKs
 
 | Language | Package                                            | Install                                     |
