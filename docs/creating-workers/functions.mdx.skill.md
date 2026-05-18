@@ -13,8 +13,6 @@ For how callers invoke functions (`worker.trigger` / `iii trigger` / event-bound
 [Using iii / Functions](/using-iii/functions) and
 [Using iii / Triggers](/using-iii/triggers). This page is about the authoring surface.
 
-{/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
-
 ## Register a function
 
 Inside the worker, register the function with the SDK. The `id` is what callers pass as
@@ -73,8 +71,6 @@ agent-readable skills.
   Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
   reject payloads or handler return values that don't match them.
 </Note>
-
-{/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -166,8 +162,37 @@ ones (throw / raise / return `Err`).
 
 ## Unregister a function
 
-`worker.unregisterFunction(id)` removes a function at runtime. When the worker disconnects, all of
-its functions are removed automatically and pending invocations error out.
+`registerFunction` returns a handle with an `unregister()` method that removes the function from
+the engine at runtime. When the worker disconnects, all of its functions are removed automatically
+and pending invocations error out.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const add = worker.registerFunction("math::add", async (payload) => {
+      return { c: payload.a + payload.b };
+    });
+
+    add.unregister();
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    add = worker.register_function("math::add", add_handler)
+
+    add.unregister()
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    let add = worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+        Ok(serde_json::json!({ "c": input.a + input.b }))
+    }));
+
+    add.unregister();
+    ```
+  </Tab>
+</Tabs>
 
 ## What goes in Worker Docs
 
