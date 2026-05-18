@@ -134,8 +134,7 @@ fn build_cli_usage_event(command_path: &str) -> Option<AmplitudeEvent> {
 
 pub async fn send_cli_usage(command_path: &str) {
     if let Some(event) = build_cli_usage_event(command_path) {
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_millis(750), send_direct(event)).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), send_direct(event)).await;
     }
 }
 
