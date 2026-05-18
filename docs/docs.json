@@ -272,12 +272,10 @@
               },
               {
                 "group": "Creating Workers",
-                "hidden": true,
                 "pages": [
                   "creating-workers/workers",
                   "creating-workers/functions",
-                  "creating-workers/triggers",
-                  "creating-workers/workers-registry"
+                  "creating-workers/triggers"
                 ]
               }
             ]
