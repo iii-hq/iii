@@ -75,10 +75,16 @@ fn build_event(
 
 async fn send_direct(event: AmplitudeEvent) {
     let posthog_event = event.clone();
-    let client = AmplitudeClient::new(API_KEY.to_string());
-    let _ = client.send_event(event).await;
-    if let Some(client) = build_posthog_client_from_env() {
-        let _ = client.send_event(posthog_event).await;
+    let amplitude_client = AmplitudeClient::new(API_KEY.to_string());
+    if let Some(posthog_client) = build_posthog_client_from_env() {
+        let (amplitude_result, posthog_result) = tokio::join!(
+            amplitude_client.send_event(event),
+            posthog_client.send_event(posthog_event)
+        );
+        let _ = amplitude_result;
+        let _ = posthog_result;
+    } else {
+        let _ = amplitude_client.send_event(event).await;
     }
 }
 

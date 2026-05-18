@@ -212,6 +212,57 @@ fn posthog_batch_url(host: &str) -> String {
     format!("{}/batch/", host.trim_end_matches('/'))
 }
 
+fn resolve_posthog_host() -> String {
+    std::env::var("POSTHOG_HOST")
+        .ok()
+        .filter(|host| !host.trim().is_empty())
+        .unwrap_or_else(|| POSTHOG_DEFAULT_HOST.to_string())
+}
+
+fn redact_path_string(value: &str) -> String {
+    const PLACEHOLDER: &str = "<REDACTED_PATH>";
+
+    if value.starts_with("~/") {
+        return PLACEHOLDER.to_string();
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+        && value.starts_with(&home)
+    {
+        return PLACEHOLDER.to_string();
+    }
+
+    let unix_home_path = value
+        .strip_prefix("/home/")
+        .or_else(|| value.strip_prefix("/Users/"));
+    if let Some(rest) = unix_home_path
+        && rest.split('/').nth(1).is_some()
+    {
+        return PLACEHOLDER.to_string();
+    }
+
+    value.to_string()
+}
+
+fn redact_path_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            *s = redact_path_string(s);
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values_mut() {
+                redact_path_values(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items {
+                redact_path_values(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn build_posthog_payload<'a>(
     api_key: &'a str,
     event: &AmplitudeEvent,
@@ -271,7 +322,7 @@ async fn post_posthog(
     else {
         return;
     };
-    let host = std::env::var("POSTHOG_HOST").unwrap_or_else(|_| POSTHOG_DEFAULT_HOST.to_string());
+    let host = resolve_posthog_host();
     let Some(client) = build_amplitude_client() else {
         return;
     };
@@ -307,12 +358,13 @@ async fn send_telemetry_failed(endpoint: &str, platform: &str, tools_version: &s
         events: vec![event],
     };
     let event = &payload.events[0];
-    post_posthog(
-        event,
-        event.event_properties.clone(),
-        event.user_properties.clone(),
-    )
-    .await;
+    let mut event_properties = event.event_properties.clone();
+    let mut user_properties = event.user_properties.clone();
+    redact_path_values(&mut event_properties);
+    if let Some(props) = user_properties.as_mut() {
+        redact_path_values(props);
+    }
+    post_posthog(event, event_properties, user_properties).await;
     post_amplitude(endpoint, &payload).await;
 }
 
@@ -738,5 +790,39 @@ mod tests {
         assert_eq!(event["properties"]["activity_signal"], "project_scaffold");
         assert_eq!(event["properties"]["project_id"], "proj-1");
         assert_eq!(event["properties"]["cli_version"], "0.3.0");
+    }
+
+    #[test]
+    #[serial_test::serial(home_env)]
+    fn resolve_posthog_host_ignores_empty_env() {
+        unsafe {
+            std::env::set_var("POSTHOG_HOST", "   ");
+        }
+        assert_eq!(resolve_posthog_host(), POSTHOG_DEFAULT_HOST);
+        unsafe {
+            std::env::remove_var("POSTHOG_HOST");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(home_env)]
+    fn redact_path_values_removes_home_paths() {
+        unsafe {
+            std::env::set_var("HOME", "/Users/alice");
+        }
+        let mut value = serde_json::json!({
+            "path": "/Users/alice/.iii/telemetry.yaml",
+            "nested": { "other": "/home/bob/.iii/telemetry.yaml" },
+            "tilde": "~/.iii/telemetry.yaml",
+            "safe": "/var/tmp/telemetry.yaml",
+        });
+        redact_path_values(&mut value);
+        assert_eq!(value["path"], "<REDACTED_PATH>");
+        assert_eq!(value["nested"]["other"], "<REDACTED_PATH>");
+        assert_eq!(value["tilde"], "<REDACTED_PATH>");
+        assert_eq!(value["safe"], "/var/tmp/telemetry.yaml");
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 }

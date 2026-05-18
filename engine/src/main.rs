@@ -186,10 +186,13 @@ fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
 }
 
 fn passthrough_command_path(command: &str, args: &[String]) -> String {
-    args.iter()
-        .find(|arg| !arg.starts_with('-'))
-        .map(|subcommand| format!("{command} {subcommand}"))
-        .unwrap_or_else(|| command.to_string())
+    for arg in args {
+        if arg.starts_with('-') {
+            break;
+        }
+        return format!("{command} {arg}");
+    }
+    command.to_string()
 }
 
 fn cli_usage_command_path(cli: &Cli) -> String {
@@ -441,6 +444,13 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "worker", "add", "--secret", "value"])
             .expect("should parse worker passthrough");
         assert_eq!(cli_usage_command_path(&cli), "worker add");
+    }
+
+    #[test]
+    fn cli_usage_command_path_does_not_capture_flag_values_as_subcommands() {
+        let cli = Cli::try_parse_from(["iii", "console", "--port", "3000"])
+            .expect("should parse console passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "console");
     }
 
     #[test]

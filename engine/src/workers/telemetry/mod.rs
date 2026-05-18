@@ -16,6 +16,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::engine::Engine;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
@@ -309,9 +310,21 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     m.insert("workers".into(), serde_json::json!(snap.wd.workers));
     m.insert(
         "worker_names".into(),
-        serde_json::json!(snap.wd.worker_names),
+        serde_json::json!(hashed_worker_names(&snap.wd.worker_names)),
     );
     m
+}
+
+fn hashed_worker_names(worker_names: &[String]) -> Vec<String> {
+    worker_names
+        .iter()
+        .map(|name| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"iii-worker-name-v1");
+            hasher.update(name.as_bytes());
+            format!("sha256:{:x}", hasher.finalize())
+        })
+        .collect()
 }
 
 // TODO: Re-enable delta metrics reporting once more important dashboards are ready.
@@ -659,9 +672,15 @@ async fn send_product_event(
     event: AmplitudeEvent,
 ) {
     let posthog_event = event.clone();
-    let _ = amplitude_client.send_event(event).await;
     if let Some(client) = posthog_client {
-        let _ = client.send_event(posthog_event).await;
+        let (amplitude_result, posthog_result) = tokio::join!(
+            amplitude_client.send_event(event),
+            client.send_event(posthog_event)
+        );
+        let _ = amplitude_result;
+        let _ = posthog_result;
+    } else {
+        let _ = amplitude_client.send_event(event).await;
     }
 }
 
@@ -2014,7 +2033,14 @@ mod tests {
         );
         assert_eq!(
             props["worker_names"],
-            serde_json::json!(["checkout-worker", "agent-memory-worker"])
+            serde_json::json!(hashed_worker_names(&[
+                "checkout-worker".to_string(),
+                "agent-memory-worker".to_string()
+            ]))
+        );
+        assert_ne!(
+            props["worker_names"],
+            serde_json::json!(["checkout-worker"])
         );
     }
 
