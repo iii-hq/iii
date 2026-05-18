@@ -119,7 +119,7 @@ to the registration in your language of choice. See each SDK's reference for the
 
 There is no special "fire" API. When the underlying event source delivers something (an incoming
 HTTP request, a cron tick, a webhook hit), your worker looks up the bindings it stashed in its
-`registerTrigger` callback and invokes each bound function via `iii.trigger(...)`.
+`registerTrigger` callback and invokes each bound function via `worker.trigger(...)`.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -158,9 +158,9 @@ HTTP request, a cron tick, a webhook hit), your worker looks up the bindings it 
   </Tab>
 </Tabs>
 
-The engine evaluates each consumer's `config` (and optional `condition_function_id`) when the
-binding is registered, then routes the invocation to the bound function and returns the result to
-the caller.
+On each dispatched event, the engine evaluates the consumer's `config` and optional
+`condition_function_id`, then routes matching invocations to the bound function and returns the
+result to the caller.
 
 ## Unregister a trigger type
 
