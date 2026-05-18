@@ -88,7 +88,7 @@ Need to install `iii` first? Full walkthrough at the
 
 Install new capabilities into a project with `iii worker add`:
 
-![Adding a worker with iii worker add](.github/assets/workers-add.gif)
+[![Adding a worker with iii worker add](.github/assets/workers-add.gif)](https://workers.iii.dev/)
 
 ## SDKs
 
