@@ -11,7 +11,7 @@
 
 ## What is iii?
 
-iii is the easiest way to compose, extend, and observe every service in your stack.
+iii is the easiest way to compose, extend, and observe every service in your stack in real time.
 
 Every backend starts as a project before the first line of business logic. Queues, cron, HTTP,
 state, observability, agents, and sandboxes each usually bring their own integration story. iii
