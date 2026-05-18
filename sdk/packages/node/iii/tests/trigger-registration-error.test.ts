@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { registerWorker } from '../src/iii'
-import type { ISdk } from '../src/iii-types'
+import type { ISdk } from '../src/types'
 
 describe('trigger registration error surfacing', () => {
   let wss: WebSocketServer

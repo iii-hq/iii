@@ -1575,18 +1575,16 @@ impl III {
                 id,
                 trigger_type,
                 function_id: _,
-                error,
+                error: Some(err),
             } => {
-                if let Some(err) = error {
-                    tracing::error!(
-                        trigger_id = %id,
-                        trigger_type = %trigger_type,
-                        code = %err.code,
-                        "[iii] Trigger registration failed for {:?}: {}",
-                        id,
-                        err.message
-                    );
-                }
+                tracing::error!(
+                    trigger_id = %id,
+                    trigger_type = %trigger_type,
+                    code = %err.code,
+                    "[iii] Trigger registration failed for {:?}: {}",
+                    id,
+                    err.message
+                );
             }
             _ => {}
         }
