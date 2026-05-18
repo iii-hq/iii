@@ -22,7 +22,10 @@ describe('trigger registration error surfacing', () => {
   })
 
   afterEach(async () => {
-    sdk?.shutdown?.()
+    if (sdk) {
+      await sdk.shutdown()
+    }
+    vi.restoreAllMocks()
     await new Promise<void>((resolve) => wss.close(() => resolve()))
   })
 
