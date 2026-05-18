@@ -27,6 +27,10 @@ iii worker add <anything>
 Each worker joins the live catalog. Every other worker is notified and can call it immediately.
 Browse available workers at [workers.iii.dev](https://workers.iii.dev/).
 
+That is the agent story too: when a task needs a capability the system does not have, an agent can
+add a worker, discover its functions, call them, and trace what happened. Same interface a developer
+uses.
+
 ### Three Primitives
 
 Worker * Function * Trigger is the entire mental model.
@@ -34,7 +38,8 @@ Worker * Function * Trigger is the entire mental model.
 **Workers** are processes that register with the iii engine and then register triggers and
 functions. A TypeScript API service is a worker. A Python data pipeline is a worker. A Rust
 microservice is a worker. Any functionality can be transformed into a worker with a few lines of
-code.
+code. Workers can also create other workers at runtime, so agents and applications can extend the
+system while it is running.
 
 **Triggers** are anything that causes a function to run. A trigger can be a direct call to a
 function, an HTTP endpoint, a cron schedule, a queue subscription, a state change, a stream event,
@@ -61,6 +66,9 @@ After iii:
 - `iii worker add observability`
 - `iii worker add queue`
 - Done. It is in the system, traceable, and callable.
+
+Platform teams publish workers. Application teams register functions and declare triggers. Agents
+use the same catalog and the same function calls.
 
 Extending iii is `iii worker add`. Composing iii is calling functions. Observing iii is opening the
 trace.
