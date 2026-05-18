@@ -11,27 +11,24 @@
 
 ## What is iii?
 
-Software engineering is an exercise in assembling categories of services. Each service has its own
-internals, its own lifecycle, its own integration story, and its own failure modes. The cost of
-every new service addition is quadratic. Every new service has potential integration points with
-every other service.
+iii is the easiest way to compose, extend, and observe every service in your stack.
 
-iii eliminates this integration effort by reducing every new addition to zero. Installing 4 workers
-or 20 workers is exactly the same. Each worker is simply able to interact with every other worker
-the moment it is registered with iii. The result is an infrastructure that behaves like a single
-application and composes effortlessly no matter how much it grows or changes over time.
+Every backend starts as a project before the first line of business logic. Queues, cron, HTTP,
+state, observability, agents, and sandboxes each usually bring their own integration story. iii
+collapses that into one live system surface.
 
-iii supports any language, and any runtime. It makes a new engineer productive on day one because
-their mental model never changes from one capability to the next. Likewise AI Agents can reliably
-reason about an entire system in a single context window because there is one set of primitives to
-learn and one always-accurate source of truth for what exists. As agents do more of the work of
-building and operating software, small primitives compound: easier to onboard, cheaper to prompt,
-faster to extend, simpler to maintain.
+```bash
+iii worker add queue
+iii worker add agent
+iii worker add sandbox
+iii worker add <anything>
+```
+
+Each worker joins the live catalog. Every other worker is notified and can call it immediately.
 
 ### Three Primitives
 
-iii's design collapses distributed software into three concepts: Worker, Trigger, Function.
-Something hosts work, something causes it, something does it.
+Worker * Function * Trigger is the entire mental model.
 
 **Workers** are processes that register with the iii engine and then register triggers and
 functions. A TypeScript API service is a worker. A Python data pipeline is a worker. A Rust
@@ -49,6 +46,23 @@ workers.
 
 By mapping everything a service can do to these three primitives iii creates a development process
 that is both effortlessly composable, and completely observable.
+
+## What Changes
+
+Before iii:
+
+- New observability tool: uncountable integrations
+- New agent harness: separate retry config, separate traces, separate timeouts
+- New queue: vendor evaluation, procurement, and weeks of integration
+
+After iii:
+
+- `iii worker add observability`
+- `iii worker add queue`
+- Done. It is in the system, traceable, and callable.
+
+Extending iii is `iii worker add`. Composing iii is calling functions. Observing iii is opening the
+trace.
 
 ## Quick Start
 
@@ -77,15 +91,14 @@ Install new capabilities into a project with `iii worker add`:
 
 ## Agent Skills
 
-Give your AI coding agent full context on iii:
+Install iii's agent-readable reference material:
 
 ```bash
 npx skillkit add iii-hq/iii/skills
 ```
 
-Skills covering every iii primitive — HTTP endpoints, queues, cron, state, streams, custom triggers,
-and more. Works with Claude Code, Cursor, Gemini CLI, Codex, and
-[30+ other agents](https://agentskills.io). See [skills/](skills/) for the full list.
+Skills cover every iii primitive: HTTP endpoints, queues, cron, state, streams, custom triggers, and
+more. See [skills/](skills/) for the full list.
 
 ## Console
 
@@ -100,7 +113,7 @@ triggers, queues, traces, logs, and real-time state. See the
 | `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
 | `sdk/`     | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)         |
 | `console/` | Developer console (React + Rust)                        | [console/README.md](console/README.md) |
-| `skills/`  | Agent skills for AI coding agents                       | [skills/README.md](skills/README.md)   |
+| `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md)   |
 | `website/` | iii website                                             | [website/](website/)                   |
 | `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
 
