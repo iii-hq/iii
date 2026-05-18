@@ -188,6 +188,13 @@ fn posthog_usage_context(event_type: &str) -> &'static str {
     }
 }
 
+fn posthog_user_mode(event_type: &str) -> &'static str {
+    match posthog_usage_context(event_type) {
+        "under_the_hood" => "using",
+        _ => "building",
+    }
+}
+
 fn posthog_activity_signal(event_type: &str) -> &'static str {
     match event_type {
         "project_created"
@@ -216,6 +223,10 @@ fn build_posthog_payload<'a>(
     properties.insert(
         "usage_context".into(),
         serde_json::json!(posthog_usage_context(&event.event_type)),
+    );
+    properties.insert(
+        "user_mode".into(),
+        serde_json::json!(posthog_user_mode(&event.event_type)),
     );
     properties.insert(
         "activity_signal".into(),
@@ -721,6 +732,7 @@ mod tests {
         assert_eq!(event["properties"]["distinct_id"], "device-1");
         assert_eq!(event["properties"]["$process_person_profile"], false);
         assert_eq!(event["properties"]["usage_context"], "active_development");
+        assert_eq!(event["properties"]["user_mode"], "building");
         assert_eq!(event["properties"]["activity_signal"], "project_scaffold");
         assert_eq!(event["properties"]["project_id"], "proj-1");
         assert_eq!(event["properties"]["cli_version"], "0.3.0");

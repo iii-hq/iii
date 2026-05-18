@@ -145,6 +145,13 @@ pub fn posthog_usage_context(event_type: &str) -> &'static str {
     }
 }
 
+pub fn posthog_user_mode(event_type: &str) -> &'static str {
+    match posthog_usage_context(event_type) {
+        "under_the_hood" => "using",
+        _ => "building",
+    }
+}
+
 pub fn posthog_activity_signal(event_type: &str) -> &'static str {
     match event_type {
         "heartbeat" | "engine_stopped" => "engine_runtime",
@@ -183,6 +190,10 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
     properties.insert(
         "usage_context".into(),
         serde_json::json!(posthog_usage_context(&event.event_type)),
+    );
+    properties.insert(
+        "user_mode".into(),
+        serde_json::json!(posthog_user_mode(&event.event_type)),
     );
     properties.insert(
         "activity_signal".into(),
@@ -542,6 +553,7 @@ mod tests {
         assert_eq!(event["properties"]["distinct_id"], "device-1");
         assert_eq!(event["properties"]["$process_person_profile"], false);
         assert_eq!(event["properties"]["usage_context"], "active_development");
+        assert_eq!(event["properties"]["user_mode"], "building");
         assert_eq!(event["properties"]["activity_signal"], "developer_action");
         assert_eq!(event["properties"]["key"], "value");
         assert_eq!(event["properties"]["plan"], "free");

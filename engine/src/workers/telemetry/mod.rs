@@ -286,6 +286,10 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     );
     m.insert("functions".into(), serde_json::json!(snap.ft.functions));
     m.insert(
+        "function_names".into(),
+        serde_json::json!(snap.ft.functions),
+    );
+    m.insert(
         "trigger_types".into(),
         serde_json::json!(snap.ft.trigger_types),
     );
@@ -302,6 +306,10 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
         m.insert(format!("worker_count_{fw}"), serde_json::json!(count));
     }
     m.insert("workers".into(), serde_json::json!(snap.wd.workers));
+    m.insert(
+        "worker_names".into(),
+        serde_json::json!(snap.wd.worker_names),
+    );
     m
 }
 
@@ -455,6 +463,7 @@ struct WorkerData {
     worker_count_by_framework: HashMap<String, u64>,
     worker_count_by_language: HashMap<String, u64>,
     workers: Vec<String>,
+    worker_names: Vec<String>,
     sdk_languages: Vec<String>,
     client_type: String,
     sdk_telemetry: Option<WorkerConnectionTelemetryMeta>,
@@ -466,6 +475,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     let mut best_telemetry: Option<(uuid::Uuid, WorkerConnectionTelemetryMeta)> = None;
     let mut worker_count_total = 0usize;
     let mut workers: Vec<String> = Vec::new();
+    let mut worker_names: Vec<String> = Vec::new();
 
     for entry in engine.worker_registry.workers.iter() {
         let worker = entry.value();
@@ -476,6 +486,10 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
 
         worker_count_total += 1;
         *runtime_counts.entry(runtime.clone()).or_insert(0) += 1;
+
+        if let Some(name) = worker.name.as_ref().filter(|name| !name.trim().is_empty()) {
+            worker_names.push(name.clone());
+        }
 
         let framework = worker
             .telemetry
@@ -521,6 +535,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
         worker_count_by_framework: framework_counts,
         worker_count_by_language: runtime_counts,
         workers,
+        worker_names,
         sdk_languages,
         client_type,
         sdk_telemetry,
@@ -1906,6 +1921,7 @@ mod tests {
         assert!(wd.worker_count_by_framework.is_empty());
         assert!(wd.sdk_telemetry.is_none());
         assert!(wd.sdk_languages.is_empty());
+        assert!(wd.worker_names.is_empty());
     }
 
     #[test]
@@ -1915,6 +1931,7 @@ mod tests {
         let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
         let mut worker1 = crate::worker_connections::WorkerConnection::new(tx1);
         worker1.runtime = Some("node".to_string());
+        worker1.name = Some("orders-worker".to_string());
         worker1.telemetry = Some(WorkerConnectionTelemetryMeta {
             language: Some("typescript".to_string()),
             project_name: Some("proj-a".to_string()),
@@ -1926,6 +1943,7 @@ mod tests {
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
         let mut worker2 = crate::worker_connections::WorkerConnection::new(tx2);
         worker2.runtime = Some("python".to_string());
+        worker2.name = Some("agent-memory-worker".to_string());
         worker2.telemetry = None;
         let w2_id = worker2.id;
         engine.worker_registry.workers.insert(w2_id, worker2);
@@ -1934,12 +1952,55 @@ mod tests {
 
         assert_eq!(wd.worker_count_total, 2);
         assert_eq!(wd.worker_count_by_framework.get("iii-node"), Some(&1));
+        assert!(wd.worker_names.contains(&"orders-worker".to_string()));
+        assert!(wd.worker_names.contains(&"agent-memory-worker".to_string()));
 
         assert!(wd.sdk_telemetry.is_some());
         let telem = wd.sdk_telemetry.unwrap();
         assert_eq!(telem.language, Some("typescript".to_string()));
         assert_eq!(telem.project_name, Some("proj-a".to_string()));
         assert_eq!(telem.framework, Some("iii-node".to_string()));
+    }
+
+    #[test]
+    fn test_build_base_properties_includes_short_term_names() {
+        let snap = EngineSnapshot {
+            ft: FunctionTriggerData {
+                function_count: 2,
+                functions: vec!["orders::charge".to_string(), "agent::memory".to_string()],
+                trigger_count: 1,
+                trigger_types: vec!["http".to_string()],
+            },
+            wd: WorkerData {
+                worker_count_total: 2,
+                worker_count_by_framework: HashMap::new(),
+                worker_count_by_language: HashMap::new(),
+                workers: vec!["node:iii-node".to_string(), "python".to_string()],
+                worker_names: vec![
+                    "checkout-worker".to_string(),
+                    "agent-memory-worker".to_string(),
+                ],
+                sdk_languages: vec!["iii-node".to_string(), "iii-py".to_string()],
+                client_type: "iii_direct".to_string(),
+                sdk_telemetry: None,
+            },
+            project: ProjectContext {
+                project_id: Some("proj-1".to_string()),
+                project_name: Some("checkout".to_string()),
+                source: Some("quickstart".to_string()),
+            },
+        };
+
+        let props = build_base_properties(&snap);
+        assert_eq!(props["project_name"], serde_json::json!("checkout"));
+        assert_eq!(
+            props["function_names"],
+            serde_json::json!(["orders::charge", "agent::memory"])
+        );
+        assert_eq!(
+            props["worker_names"],
+            serde_json::json!(["checkout-worker", "agent-memory-worker"])
+        );
     }
 
     #[test]
@@ -1957,6 +2018,7 @@ mod tests {
         assert_eq!(wd.worker_count_total, 0);
         assert!(wd.sdk_languages.is_empty());
         assert!(wd.workers.is_empty());
+        assert!(wd.worker_names.is_empty());
     }
 
     #[test]
