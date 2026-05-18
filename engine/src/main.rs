@@ -447,6 +447,31 @@ mod tests {
     }
 
     #[test]
+    fn cli_usage_command_path_covers_worker_commands() {
+        let cli = Cli::try_parse_from(["iii", "worker", "logs", "pdf-worker"])
+            .expect("should parse worker logs passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "worker logs");
+    }
+
+    #[test]
+    fn cli_usage_command_path_covers_cloud_commands() {
+        let cli = Cli::try_parse_from(["iii", "cloud", "deploy", "--config", "prod.yaml"])
+            .expect("should parse cloud deploy passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "cloud deploy");
+    }
+
+    #[test]
+    fn cli_usage_command_path_covers_update_modes() {
+        let cli =
+            Cli::try_parse_from(["iii", "update", "console"]).expect("should parse update target");
+        assert_eq!(cli_usage_command_path(&cli), "update target");
+
+        let cli = Cli::try_parse_from(["iii", "update", "--list-targets"])
+            .expect("should parse update --list-targets");
+        assert_eq!(cli_usage_command_path(&cli), "update list-targets");
+    }
+
+    #[test]
     fn cli_usage_command_path_does_not_capture_flag_values_as_subcommands() {
         let cli = Cli::try_parse_from(["iii", "console", "--port", "3000"])
             .expect("should parse console passthrough");

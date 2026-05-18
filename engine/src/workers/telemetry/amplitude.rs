@@ -139,33 +139,10 @@ pub struct PostHogClient {
     client: reqwest::Client,
 }
 
-pub fn posthog_usage_context(event_type: &str) -> &'static str {
-    match event_type {
-        "heartbeat" | "engine_stopped" => "under_the_hood",
-        _ => "active_development",
-    }
-}
-
 pub fn posthog_user_mode(event_type: &str) -> &'static str {
-    match posthog_usage_context(event_type) {
-        "under_the_hood" => "using",
-        _ => "building",
-    }
-}
-
-pub fn posthog_activity_signal(event_type: &str) -> &'static str {
     match event_type {
-        "heartbeat" | "engine_stopped" => "engine_runtime",
-        "first_run" | "install_started" | "install_succeeded" | "install_failed"
-        | "upgrade_started" | "upgrade_succeeded" | "upgrade_failed" => "install_or_upgrade",
-        "cli_command_invoked" => "cli_usage",
-        "cli_update_started" | "cli_update_succeeded" | "cli_update_failed" => "cli_update",
-        "project_created"
-        | "project_initialized"
-        | "project_init_succeeded"
-        | "project_init_failed" => "project_scaffold",
-        "template_success" | "template_failure" | "quickstart" => "template_execution",
-        _ => "developer_action",
+        "heartbeat" | "engine_stopped" => "using",
+        _ => "building",
     }
 }
 
@@ -189,16 +166,8 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
     properties.insert("distinct_id".into(), serde_json::json!(event.device_id));
     properties.insert("$process_person_profile".into(), serde_json::json!(false));
     properties.insert(
-        "usage_context".into(),
-        serde_json::json!(posthog_usage_context(&event.event_type)),
-    );
-    properties.insert(
         "user_mode".into(),
         serde_json::json!(posthog_user_mode(&event.event_type)),
-    );
-    properties.insert(
-        "activity_signal".into(),
-        serde_json::json!(posthog_activity_signal(&event.event_type)),
     );
     properties.insert("platform".into(), serde_json::json!(event.platform));
     properties.insert("os_name".into(), serde_json::json!(event.os_name));
@@ -511,29 +480,17 @@ mod tests {
     }
 
     #[test]
-    fn test_posthog_usage_context_classifies_runtime_as_under_the_hood() {
-        assert_eq!(posthog_usage_context("heartbeat"), "under_the_hood");
-        assert_eq!(posthog_usage_context("engine_stopped"), "under_the_hood");
+    fn test_posthog_user_mode_classifies_runtime_as_using() {
+        assert_eq!(posthog_user_mode("heartbeat"), "using");
+        assert_eq!(posthog_user_mode("engine_stopped"), "using");
     }
 
     #[test]
-    fn test_posthog_usage_context_classifies_cli_and_scaffolding_as_active_development() {
-        assert_eq!(
-            posthog_usage_context("install_started"),
-            "active_development"
-        );
-        assert_eq!(
-            posthog_usage_context("cli_update_started"),
-            "active_development"
-        );
-        assert_eq!(
-            posthog_usage_context("project_created"),
-            "active_development"
-        );
-        assert_eq!(
-            posthog_usage_context("template_success"),
-            "active_development"
-        );
+    fn test_posthog_user_mode_classifies_cli_and_scaffolding_as_building() {
+        assert_eq!(posthog_user_mode("install_started"), "building");
+        assert_eq!(posthog_user_mode("cli_update_started"), "building");
+        assert_eq!(posthog_user_mode("project_created"), "building");
+        assert_eq!(posthog_user_mode("template_success"), "building");
     }
 
     #[test]
@@ -553,9 +510,7 @@ mod tests {
         assert_eq!(event["uuid"], "ins-1");
         assert_eq!(event["properties"]["distinct_id"], "device-1");
         assert_eq!(event["properties"]["$process_person_profile"], false);
-        assert_eq!(event["properties"]["usage_context"], "active_development");
         assert_eq!(event["properties"]["user_mode"], "building");
-        assert_eq!(event["properties"]["activity_signal"], "developer_action");
         assert_eq!(event["properties"]["key"], "value");
         assert_eq!(event["properties"]["plan"], "free");
     }

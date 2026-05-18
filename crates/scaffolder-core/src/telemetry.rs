@@ -182,29 +182,10 @@ async fn post_amplitude(endpoint: &str, payload: &AmplitudePayload<'_>) {
     let _ = client.post(endpoint).json(payload).send().await;
 }
 
-fn posthog_usage_context(event_type: &str) -> &'static str {
-    match event_type {
-        "heartbeat" | "engine_stopped" => "under_the_hood",
-        _ => "active_development",
-    }
-}
-
 fn posthog_user_mode(event_type: &str) -> &'static str {
-    match posthog_usage_context(event_type) {
-        "under_the_hood" => "using",
-        _ => "building",
-    }
-}
-
-fn posthog_activity_signal(event_type: &str) -> &'static str {
     match event_type {
-        "project_created"
-        | "project_initialized"
-        | "project_init_succeeded"
-        | "project_init_failed" => "project_scaffold",
-        "install_started" | "install_succeeded" | "install_failed" | "upgrade_started"
-        | "upgrade_succeeded" | "upgrade_failed" => "install_or_upgrade",
-        _ => "developer_action",
+        "heartbeat" | "engine_stopped" => "using",
+        _ => "building",
     }
 }
 
@@ -273,16 +254,8 @@ fn build_posthog_payload<'a>(
     properties.insert("distinct_id".into(), serde_json::json!(event.device_id));
     properties.insert("$process_person_profile".into(), serde_json::json!(false));
     properties.insert(
-        "usage_context".into(),
-        serde_json::json!(posthog_usage_context(&event.event_type)),
-    );
-    properties.insert(
         "user_mode".into(),
         serde_json::json!(posthog_user_mode(&event.event_type)),
-    );
-    properties.insert(
-        "activity_signal".into(),
-        serde_json::json!(posthog_activity_signal(&event.event_type)),
     );
     properties.insert("platform".into(), serde_json::json!(event.platform));
     properties.insert("os_name".into(), serde_json::json!(event.os_name));
@@ -785,9 +758,7 @@ mod tests {
         assert_eq!(event["uuid"], "insert-1");
         assert_eq!(event["properties"]["distinct_id"], "device-1");
         assert_eq!(event["properties"]["$process_person_profile"], false);
-        assert_eq!(event["properties"]["usage_context"], "active_development");
         assert_eq!(event["properties"]["user_mode"], "building");
-        assert_eq!(event["properties"]["activity_signal"], "project_scaffold");
         assert_eq!(event["properties"]["project_id"], "proj-1");
         assert_eq!(event["properties"]["cli_version"], "0.3.0");
     }
