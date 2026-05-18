@@ -7,6 +7,7 @@
 use serde::Serialize;
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
+const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const MAX_RETRIES: u32 = 3;
 
 /// Canonical Amplitude API key used by the engine, the CLI, and (via its own
@@ -109,10 +110,107 @@ struct AmplitudePayload {
     events: Vec<AmplitudeEvent>,
 }
 
+#[derive(Serialize)]
+struct PostHogPayload {
+    api_key: String,
+    historical_migration: bool,
+    batch: Vec<PostHogEvent>,
+}
+
+#[derive(Serialize)]
+struct PostHogEvent {
+    event: String,
+    properties: serde_json::Value,
+    timestamp: String,
+    uuid: Option<String>,
+}
+
 /// Client for sending events to Amplitude.
 pub struct AmplitudeClient {
     api_key: String,
     client: reqwest::Client,
+}
+
+/// Client for sending anonymous product analytics to PostHog.
+pub struct PostHogClient {
+    api_key: String,
+    host: String,
+    client: reqwest::Client,
+}
+
+pub fn posthog_usage_context(event_type: &str) -> &'static str {
+    match event_type {
+        "heartbeat" | "engine_stopped" => "under_the_hood",
+        _ => "active_development",
+    }
+}
+
+pub fn posthog_activity_signal(event_type: &str) -> &'static str {
+    match event_type {
+        "heartbeat" | "engine_stopped" => "engine_runtime",
+        "first_run" | "install_started" | "install_succeeded" | "install_failed"
+        | "upgrade_started" | "upgrade_succeeded" | "upgrade_failed" => "install_or_upgrade",
+        "cli_command_invoked" => "cli_usage",
+        "cli_update_started" | "cli_update_succeeded" | "cli_update_failed" => "cli_update",
+        "project_created"
+        | "project_initialized"
+        | "project_init_succeeded"
+        | "project_init_failed" => "project_scaffold",
+        "template_success" | "template_failure" | "quickstart" => "template_execution",
+        _ => "developer_action",
+    }
+}
+
+fn posthog_batch_url(host: &str) -> String {
+    format!("{}/batch/", host.trim_end_matches('/'))
+}
+
+fn posthog_timestamp_millis(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339()
+}
+
+fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
+    sanitize_event_properties(&mut event.event_properties);
+    if let Some(props) = event.user_properties.as_mut() {
+        sanitize_event_properties(props);
+    }
+
+    let mut properties = serde_json::Map::new();
+    properties.insert("distinct_id".into(), serde_json::json!(event.device_id));
+    properties.insert("$process_person_profile".into(), serde_json::json!(false));
+    properties.insert(
+        "usage_context".into(),
+        serde_json::json!(posthog_usage_context(&event.event_type)),
+    );
+    properties.insert(
+        "activity_signal".into(),
+        serde_json::json!(posthog_activity_signal(&event.event_type)),
+    );
+    properties.insert("platform".into(), serde_json::json!(event.platform));
+    properties.insert("os_name".into(), serde_json::json!(event.os_name));
+    properties.insert("app_version".into(), serde_json::json!(event.app_version));
+    if let Some(language) = event.language {
+        properties.insert("language".into(), serde_json::json!(language));
+    }
+    if let Some(serde_json::Value::Object(user_props)) = event.user_properties {
+        for (key, value) in user_props {
+            properties.insert(key, value);
+        }
+    }
+    if let serde_json::Value::Object(event_props) = event.event_properties {
+        for (key, value) in event_props {
+            properties.insert(key, value);
+        }
+    }
+
+    PostHogEvent {
+        event: event.event_type,
+        properties: serde_json::Value::Object(properties),
+        timestamp: posthog_timestamp_millis(event.time),
+        uuid: event.insert_id,
+    }
 }
 
 impl AmplitudeClient {
@@ -180,6 +278,70 @@ impl AmplitudeClient {
         }
 
         tracing::debug!("Amplitude: all retry attempts exhausted, dropping events");
+        Ok(())
+    }
+}
+
+impl PostHogClient {
+    /// Create a new PostHog client with the given project API key and host.
+    pub fn new(api_key: String, host: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to build PostHog HTTP client with custom config, using defaults");
+                reqwest::Client::default()
+            });
+
+        Self {
+            api_key,
+            host: if host.trim().is_empty() {
+                POSTHOG_DEFAULT_HOST.to_string()
+            } else {
+                host
+            },
+            client,
+        }
+    }
+
+    /// Send a single anonymous event to PostHog.
+    pub async fn send_event(&self, event: AmplitudeEvent) -> anyhow::Result<()> {
+        self.send_batch(vec![event]).await
+    }
+
+    /// Send a batch of anonymous events to PostHog.
+    /// If the API key is empty, this silently skips sending (for dev/testing).
+    /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
+    /// and must never block or fail the caller.
+    pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
+        if self.api_key.is_empty() || events.is_empty() {
+            return Ok(());
+        }
+
+        let payload = PostHogPayload {
+            api_key: self.api_key.clone(),
+            historical_migration: false,
+            batch: events.into_iter().map(build_posthog_event).collect(),
+        };
+
+        let url = posthog_batch_url(&self.host);
+        let mut delay = std::time::Duration::from_secs(1);
+
+        for attempt in 1..=MAX_RETRIES {
+            match self.client.post(&url).json(&payload).send().await {
+                Ok(response) if response.status().is_success() => {
+                    return Ok(());
+                }
+                Ok(_) | Err(_) => {}
+            }
+
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+        }
+
+        tracing::debug!("PostHog: all retry attempts exhausted, dropping events");
         Ok(())
     }
 }
@@ -336,6 +498,55 @@ mod tests {
         assert!(json["events"].as_array().unwrap().is_empty());
     }
 
+    #[test]
+    fn test_posthog_usage_context_classifies_runtime_as_under_the_hood() {
+        assert_eq!(posthog_usage_context("heartbeat"), "under_the_hood");
+        assert_eq!(posthog_usage_context("engine_stopped"), "under_the_hood");
+    }
+
+    #[test]
+    fn test_posthog_usage_context_classifies_cli_and_scaffolding_as_active_development() {
+        assert_eq!(
+            posthog_usage_context("install_started"),
+            "active_development"
+        );
+        assert_eq!(
+            posthog_usage_context("cli_update_started"),
+            "active_development"
+        );
+        assert_eq!(
+            posthog_usage_context("project_created"),
+            "active_development"
+        );
+        assert_eq!(
+            posthog_usage_context("template_success"),
+            "active_development"
+        );
+    }
+
+    #[test]
+    fn test_posthog_payload_is_anonymous_batch_shape() {
+        let payload = PostHogPayload {
+            api_key: "phc_test".to_string(),
+            historical_migration: false,
+            batch: vec![build_posthog_event(sample_event())],
+        };
+
+        let json = serde_json::to_value(&payload).unwrap();
+        let event = &json["batch"][0];
+
+        assert_eq!(json["api_key"], "phc_test");
+        assert_eq!(json["historical_migration"], false);
+        assert_eq!(event["event"], "test_event");
+        assert_eq!(event["uuid"], "ins-1");
+        assert_eq!(event["properties"]["distinct_id"], "device-1");
+        assert_eq!(event["properties"]["$process_person_profile"], false);
+        assert_eq!(event["properties"]["usage_context"], "active_development");
+        assert_eq!(event["properties"]["activity_signal"], "developer_action");
+        assert_eq!(event["properties"]["key"], "value");
+        assert_eq!(event["properties"]["plan"], "free");
+    }
+
     // =========================================================================
     // AmplitudeClient::send_batch with empty key (no-op)
     // =========================================================================
@@ -361,6 +572,26 @@ mod tests {
         assert!(
             result.is_ok(),
             "send_event with empty API key should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_posthog_send_batch_empty_api_key_is_noop() {
+        let client = PostHogClient::new(String::new(), POSTHOG_DEFAULT_HOST.to_string());
+        let result = client.send_batch(vec![sample_event()]).await;
+        assert!(
+            result.is_ok(),
+            "empty PostHog API key should silently succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_posthog_send_batch_empty_events_is_noop() {
+        let client = PostHogClient::new("phc_test".to_string(), POSTHOG_DEFAULT_HOST.to_string());
+        let result = client.send_batch(vec![]).await;
+        assert!(
+            result.is_ok(),
+            "empty PostHog events vec should silently succeed"
         );
     }
 

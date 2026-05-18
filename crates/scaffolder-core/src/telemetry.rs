@@ -9,6 +9,7 @@ use crate::runtime::check::Language;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
+const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const TELEMETRY_SCHEMA_VERSION: u8 = 2;
 
 #[cfg(test)]
@@ -152,6 +153,20 @@ struct AmplitudePayload<'a> {
     events: Vec<AmplitudeEvent>,
 }
 
+#[derive(Serialize)]
+struct PostHogPayload<'a> {
+    api_key: &'a str,
+    historical_migration: bool,
+    batch: Vec<PostHogEvent>,
+}
+
+#[derive(Serialize)]
+struct PostHogEvent {
+    event: String,
+    properties: serde_json::Value,
+    uuid: String,
+}
+
 fn build_amplitude_client() -> Option<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -164,6 +179,95 @@ async fn post_amplitude(endpoint: &str, payload: &AmplitudePayload<'_>) {
         return;
     };
     let _ = client.post(endpoint).json(payload).send().await;
+}
+
+fn posthog_usage_context(event_type: &str) -> &'static str {
+    match event_type {
+        "heartbeat" | "engine_stopped" => "under_the_hood",
+        _ => "active_development",
+    }
+}
+
+fn posthog_activity_signal(event_type: &str) -> &'static str {
+    match event_type {
+        "project_created"
+        | "project_initialized"
+        | "project_init_succeeded"
+        | "project_init_failed" => "project_scaffold",
+        "install_started" | "install_succeeded" | "install_failed" | "upgrade_started"
+        | "upgrade_succeeded" | "upgrade_failed" => "install_or_upgrade",
+        _ => "developer_action",
+    }
+}
+
+fn posthog_batch_url(host: &str) -> String {
+    format!("{}/batch/", host.trim_end_matches('/'))
+}
+
+fn build_posthog_payload<'a>(
+    api_key: &'a str,
+    event: &AmplitudeEvent,
+    event_properties: serde_json::Value,
+    user_properties: Option<serde_json::Value>,
+) -> PostHogPayload<'a> {
+    let mut properties = serde_json::Map::new();
+    properties.insert("distinct_id".into(), serde_json::json!(event.device_id));
+    properties.insert("$process_person_profile".into(), serde_json::json!(false));
+    properties.insert(
+        "usage_context".into(),
+        serde_json::json!(posthog_usage_context(&event.event_type)),
+    );
+    properties.insert(
+        "activity_signal".into(),
+        serde_json::json!(posthog_activity_signal(&event.event_type)),
+    );
+    properties.insert("platform".into(), serde_json::json!(event.platform));
+    properties.insert("os_name".into(), serde_json::json!(event.os_name));
+    properties.insert("app_version".into(), serde_json::json!(event.app_version));
+    if let Some(serde_json::Value::Object(user_props)) = user_properties {
+        for (key, value) in user_props {
+            properties.insert(key, value);
+        }
+    }
+    if let serde_json::Value::Object(event_props) = event_properties {
+        for (key, value) in event_props {
+            properties.insert(key, value);
+        }
+    }
+
+    PostHogPayload {
+        api_key,
+        historical_migration: false,
+        batch: vec![PostHogEvent {
+            event: event.event_type.clone(),
+            properties: serde_json::Value::Object(properties),
+            uuid: event.insert_id.clone(),
+        }],
+    }
+}
+
+async fn post_posthog(
+    event: &AmplitudeEvent,
+    event_properties: serde_json::Value,
+    user_properties: Option<serde_json::Value>,
+) {
+    let Some(key) = std::env::var("POSTHOG_PROJECT_API_KEY")
+        .or_else(|_| std::env::var("POSTHOG_API_KEY"))
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+    else {
+        return;
+    };
+    let host = std::env::var("POSTHOG_HOST").unwrap_or_else(|_| POSTHOG_DEFAULT_HOST.to_string());
+    let Some(client) = build_amplitude_client() else {
+        return;
+    };
+    let payload = build_posthog_payload(&key, event, event_properties, user_properties);
+    let _ = client
+        .post(posthog_batch_url(&host))
+        .json(&payload)
+        .send()
+        .await;
 }
 
 /// Sends a lightweight failure event when telemetry.yaml is missing.
@@ -189,6 +293,13 @@ async fn send_telemetry_failed(endpoint: &str, platform: &str, tools_version: &s
         api_key: API_KEY,
         events: vec![event],
     };
+    let event = &payload.events[0];
+    post_posthog(
+        event,
+        event.event_properties.clone(),
+        event.user_properties.clone(),
+    )
+    .await;
     post_amplitude(endpoint, &payload).await;
 }
 
@@ -203,12 +314,13 @@ async fn send_amplitude_to(
         send_telemetry_failed(endpoint, platform, tools_version).await;
         return;
     };
+    let user_properties = Some(build_user_properties(tools_version, &device_id));
     let event = AmplitudeEvent {
         device_id: device_id.clone(),
         user_id: None,
         event_type: event_type.to_string(),
         event_properties,
-        user_properties: Some(build_user_properties(tools_version, &device_id)),
+        user_properties,
         platform: platform.to_string(),
         os_name: std::env::consts::OS.to_string(),
         app_version: tools_version.to_string(),
@@ -220,6 +332,13 @@ async fn send_amplitude_to(
         api_key: API_KEY,
         events: vec![event],
     };
+    let event = &payload.events[0];
+    post_posthog(
+        event,
+        event.event_properties.clone(),
+        event.user_properties.clone(),
+    )
+    .await;
     post_amplitude(endpoint, &payload).await;
 }
 
@@ -565,5 +684,45 @@ mod tests {
             "user_id should not be sent"
         );
         assert_eq!(event["event_properties"]["project_id"], "test-id");
+    }
+
+    #[test]
+    fn posthog_payload_marks_project_created_as_active_development() {
+        let event = AmplitudeEvent {
+            device_id: "device-1".to_string(),
+            user_id: None,
+            event_type: "project_created".to_string(),
+            event_properties: serde_json::json!({
+                "project_id": "proj-1",
+                "template": "quickstart",
+            }),
+            user_properties: Some(serde_json::json!({
+                "cli_version": "0.3.0",
+            })),
+            platform: "iii-tools".to_string(),
+            os_name: "linux".to_string(),
+            app_version: "0.3.0".to_string(),
+            time: 1,
+            insert_id: "insert-1".to_string(),
+            ip: Some("$remote".to_string()),
+        };
+        let payload = build_posthog_payload(
+            "phc_test",
+            &event,
+            event.event_properties.clone(),
+            event.user_properties.clone(),
+        );
+        let json = serde_json::to_value(payload).unwrap();
+        let event = &json["batch"][0];
+
+        assert_eq!(json["api_key"], "phc_test");
+        assert_eq!(event["event"], "project_created");
+        assert_eq!(event["uuid"], "insert-1");
+        assert_eq!(event["properties"]["distinct_id"], "device-1");
+        assert_eq!(event["properties"]["$process_person_profile"], false);
+        assert_eq!(event["properties"]["usage_context"], "active_development");
+        assert_eq!(event["properties"]["activity_signal"], "project_scaffold");
+        assert_eq!(event["properties"]["project_id"], "proj-1");
+        assert_eq!(event["properties"]["cli_version"], "0.3.0");
     }
 }

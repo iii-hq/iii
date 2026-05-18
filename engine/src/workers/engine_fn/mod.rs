@@ -361,6 +361,7 @@ impl EngineFunctionsWorker {
             input.pid,
             input.isolation,
         );
+        crate::workers::telemetry::collector::track_worker_registered();
     }
 }
 

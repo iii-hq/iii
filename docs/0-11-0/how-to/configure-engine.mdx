@@ -747,8 +747,12 @@ Anonymous product usage analytics for iii development. Helps the team understand
   Enable/disable anonymous telemetry. Set to `false` to opt out.
 </ResponseField>
 
-<ResponseField name="config.api_key" type="string">
-  API key for telemetry backend. Leave empty for anonymous tracking.
+<ResponseField name="config.posthog_api_key" type="string">
+  Optional PostHog project API key for sending the same anonymous product analytics events to PostHog. You can also set `POSTHOG_PROJECT_API_KEY` or `POSTHOG_API_KEY`.
+</ResponseField>
+
+<ResponseField name="config.posthog_host" type="string" default="https://us.i.posthog.com">
+  Optional PostHog ingest host. Set `POSTHOG_HOST=https://eu.i.posthog.com` for EU Cloud or your self-hosted ingest URL.
 </ResponseField>
 
 <ResponseField name="config.sdk_api_key" type="string">

@@ -21,7 +21,7 @@ use crate::engine::Engine;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
-use self::amplitude::{AmplitudeClient, AmplitudeEvent};
+use self::amplitude::{AmplitudeClient, AmplitudeEvent, PostHogClient};
 use self::environment::EnvironmentInfo;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
@@ -33,6 +33,10 @@ pub struct TelemetryConfig {
     pub enabled: bool,
     #[serde(default)]
     pub sdk_api_key: Option<String>,
+    #[serde(default)]
+    pub posthog_api_key: Option<String>,
+    #[serde(default)]
+    pub posthog_host: Option<String>,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
 }
@@ -50,9 +54,29 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             sdk_api_key: None,
+            posthog_api_key: None,
+            posthog_host: None,
             heartbeat_interval_secs: 6 * 60 * 60,
         }
     }
+}
+
+fn resolve_posthog_api_key(config: &TelemetryConfig) -> Option<String> {
+    config
+        .posthog_api_key
+        .clone()
+        .or_else(|| std::env::var("POSTHOG_PROJECT_API_KEY").ok())
+        .or_else(|| std::env::var("POSTHOG_API_KEY").ok())
+        .filter(|key| !key.trim().is_empty())
+}
+
+fn resolve_posthog_host(config: &TelemetryConfig) -> String {
+    config
+        .posthog_host
+        .clone()
+        .or_else(|| std::env::var("POSTHOG_HOST").ok())
+        .filter(|host| !host.trim().is_empty())
+        .unwrap_or_else(|| "https://us.i.posthog.com".to_string())
 }
 
 struct ProjectContext {
@@ -251,6 +275,14 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     m.insert(
         "trigger_count".into(),
         serde_json::json!(snap.ft.trigger_count),
+    );
+    m.insert(
+        "worker_registrations".into(),
+        serde_json::json!(
+            collector::collector()
+                .worker_registrations
+                .load(std::sync::atomic::Ordering::Relaxed)
+        ),
     );
     m.insert("functions".into(), serde_json::json!(snap.ft.functions));
     m.insert(
@@ -594,6 +626,7 @@ pub struct TelemetryWorker {
     config: TelemetryConfig,
     client: Arc<AmplitudeClient>,
     sdk_client: Option<Arc<AmplitudeClient>>,
+    posthog_client: Option<Arc<PostHogClient>>,
     ctx: TelemetryContext,
     start_time: Instant,
 }
@@ -601,6 +634,18 @@ pub struct TelemetryWorker {
 impl TelemetryWorker {
     fn active_client(&self) -> &Arc<AmplitudeClient> {
         self.sdk_client.as_ref().unwrap_or(&self.client)
+    }
+}
+
+async fn send_product_event(
+    amplitude_client: &AmplitudeClient,
+    posthog_client: Option<&PostHogClient>,
+    event: AmplitudeEvent,
+) {
+    let posthog_event = event.clone();
+    let _ = amplitude_client.send_event(event).await;
+    if let Some(client) = posthog_client {
+        let _ = client.send_event(posthog_event).await;
     }
 }
 
@@ -678,6 +723,12 @@ impl Worker for TelemetryWorker {
             .as_deref()
             .filter(|k| !k.is_empty())
             .map(|key| Arc::new(AmplitudeClient::new(key.to_owned())));
+        let posthog_client = resolve_posthog_api_key(&telemetry_config).map(|key| {
+            Arc::new(PostHogClient::new(
+                key,
+                resolve_posthog_host(&telemetry_config),
+            ))
+        });
 
         let ctx = TelemetryContext {
             device_id: device_id.clone(),
@@ -689,6 +740,7 @@ impl Worker for TelemetryWorker {
             config: telemetry_config,
             client,
             sdk_client,
+            posthog_client,
             ctx,
             start_time: Instant::now(),
         }))
@@ -705,12 +757,14 @@ impl Worker for TelemetryWorker {
     ) -> anyhow::Result<()> {
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(self.active_client());
+        let posthog_client = self.posthog_client.clone();
         let engine = Arc::clone(&self.engine);
         let ctx = self.ctx.clone();
         let start_time = self.start_time;
 
         let engine_for_started = Arc::clone(&self.engine);
         let client_for_started = Arc::clone(self.active_client());
+        let posthog_client_for_started = self.posthog_client.clone();
         let ctx_for_started = self.ctx.clone();
         tokio::spawn(async move {
             let user_invocation = collector::first_user_invocation_notify().notified();
@@ -732,7 +786,12 @@ impl Worker for TelemetryWorker {
                     }),
                     snap.wd.sdk_telemetry.as_ref(),
                 );
-                let _ = client_for_started.send_event(first_run_event).await;
+                send_product_event(
+                    &client_for_started,
+                    posthog_client_for_started.as_deref(),
+                    first_run_event,
+                )
+                .await;
             }
 
             let mut props = build_base_properties(&snap);
@@ -756,7 +815,12 @@ impl Worker for TelemetryWorker {
                 serde_json::Value::Object(props),
                 snap.wd.sdk_telemetry.as_ref(),
             );
-            let _ = client_for_started.send_event(boot_heartbeat).await;
+            send_product_event(
+                &client_for_started,
+                posthog_client_for_started.as_deref(),
+                boot_heartbeat,
+            )
+            .await;
         });
 
         tokio::spawn(async move {
@@ -786,7 +850,7 @@ impl Worker for TelemetryWorker {
 
                             let _ = tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
-                                client.send_event(event),
+                                send_product_event(&client, posthog_client.as_deref(), event),
                             )
                             .await;
 
@@ -811,7 +875,7 @@ impl Worker for TelemetryWorker {
                             snap.wd.sdk_telemetry.as_ref(),
                         );
 
-                        let _ = client.send_event(event).await;
+                        send_product_event(&client, posthog_client.as_deref(), event).await;
                     }
                 }
             }
@@ -822,6 +886,7 @@ impl Worker for TelemetryWorker {
         let project_ctx = resolve_project_context(None);
         if let Some(source) = project_ctx.source {
             let client_for_template = Arc::clone(self.active_client());
+            let posthog_client_for_template = self.posthog_client.clone();
             let ctx_for_template = self.ctx.clone();
             let project_for_template = resolve_project_context(None);
             tokio::spawn(async move {
@@ -847,7 +912,12 @@ impl Worker for TelemetryWorker {
                             &project_for_template,
                         );
                         let event = ctx_for_template.build_event(&event_type, props, None);
-                        let _ = client_for_template.send_event(event).await;
+                        send_product_event(
+                            &client_for_template,
+                            posthog_client_for_template.as_deref(),
+                            event,
+                        )
+                        .await;
                         success_sent = true;
                     }
 
@@ -859,7 +929,12 @@ impl Worker for TelemetryWorker {
                             &project_for_template,
                         );
                         let event = ctx_for_template.build_event(&event_type, props, None);
-                        let _ = client_for_template.send_event(event).await;
+                        send_product_event(
+                            &client_for_template,
+                            posthog_client_for_template.as_deref(),
+                            event,
+                        )
+                        .await;
                         failure_sent = true;
                     }
                 }
@@ -1012,10 +1087,13 @@ mod tests {
             config: TelemetryConfig {
                 enabled: true,
                 sdk_api_key: sdk_client.then(|| "sdk-test-key".to_string()),
+                posthog_api_key: None,
+                posthog_host: None,
                 heartbeat_interval_secs,
             },
             client: Arc::new(AmplitudeClient::new(String::new())),
             sdk_client: sdk_client.then(|| Arc::new(AmplitudeClient::new(String::new()))),
+            posthog_client: None,
             ctx: TelemetryContext {
                 device_id: "test-install-id".to_string(),
                 env_info: make_env_info(),
@@ -1043,6 +1121,8 @@ mod tests {
         let config = TelemetryConfig::default();
         assert!(config.enabled);
         assert!(config.sdk_api_key.is_none());
+        assert!(config.posthog_api_key.is_none());
+        assert!(config.posthog_host.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
     }
 
@@ -1052,6 +1132,8 @@ mod tests {
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(config.enabled);
         assert!(config.sdk_api_key.is_none());
+        assert!(config.posthog_api_key.is_none());
+        assert!(config.posthog_host.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
     }
 
@@ -1060,12 +1142,65 @@ mod tests {
         let json = serde_json::json!({
             "enabled": false,
             "sdk_api_key": "sdk-key",
+            "posthog_api_key": "phc-key",
+            "posthog_host": "https://eu.i.posthog.com",
             "heartbeat_interval_secs": 3600
         });
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(!config.enabled);
         assert_eq!(config.sdk_api_key, Some("sdk-key".to_string()));
+        assert_eq!(config.posthog_api_key, Some("phc-key".to_string()));
+        assert_eq!(
+            config.posthog_host,
+            Some("https://eu.i.posthog.com".to_string())
+        );
         assert_eq!(config.heartbeat_interval_secs, 3600);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_api_key_prefers_config_over_env() {
+        unsafe {
+            env::set_var("POSTHOG_PROJECT_API_KEY", "env-key");
+            env::remove_var("POSTHOG_API_KEY");
+        }
+        let config = TelemetryConfig {
+            posthog_api_key: Some("config-key".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_posthog_api_key(&config).as_deref(),
+            Some("config-key")
+        );
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_api_key_uses_env_when_config_missing() {
+        unsafe {
+            env::set_var("POSTHOG_PROJECT_API_KEY", "env-key");
+            env::remove_var("POSTHOG_API_KEY");
+        }
+        let config = TelemetryConfig::default();
+        assert_eq!(resolve_posthog_api_key(&config).as_deref(), Some("env-key"));
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_host_defaults_to_us_cloud() {
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert_eq!(
+            resolve_posthog_host(&TelemetryConfig::default()),
+            "https://us.i.posthog.com"
+        );
     }
 
     #[test]

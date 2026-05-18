@@ -6,6 +6,8 @@ description: Opt out of anonymous usage data collection.
 iii collects aggregated anonymous usage data to help improve the engine.
 No personal information is collected unless provided by you. Use this guide to opt out.
 
+When PostHog is configured with `POSTHOG_PROJECT_API_KEY`, iii sends the same anonymous product telemetry there as well. Events include a `usage_context` property so you can separate active development signals, such as CLI updates, installs, project scaffolding, and template execution, from under-the-hood runtime signals such as engine heartbeats.
+
 ## Steps
 
 Set the following environment variable before running iii:
@@ -23,7 +25,7 @@ source ~/.zshrc
 
 ## Result
 
-iii will no longer send any anonymous usage data.
+iii will no longer send any anonymous usage data to Amplitude or PostHog.
 
 <Info title="This is not OpenTelemetry">
   This setting controls anonymous usage data collection by the iii Engine. To disable OpenTelemetry observability instrumentation (traces, metrics, logs), set `OTEL_ENABLED=false` instead or pass `enabled=False` in your `OtelConfig`. See the [OpenTelemetry Integration](/0-11-0/advanced/telemetry) page for details.
