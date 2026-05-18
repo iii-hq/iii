@@ -25,6 +25,7 @@ iii worker add <anything>
 ```
 
 Each worker joins the live catalog. Every other worker is notified and can call it immediately.
+Browse available workers at [workers.iii.dev](https://workers.iii.dev/).
 
 ### Three Primitives
 
