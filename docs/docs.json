@@ -253,6 +253,7 @@
                   "using-iii/workers-registry",
                   "using-iii/triggers",
                   "using-iii/functions",
+                  "using-iii/channels",
                   "using-iii/engine",
                   "using-iii/console",
                   "using-iii/cli",
@@ -267,6 +268,7 @@
                   "understanding-iii/workers",
                   "understanding-iii/functions",
                   "understanding-iii/triggers",
+                  "understanding-iii/channels",
                   "understanding-iii/engine"
                 ]
               },
