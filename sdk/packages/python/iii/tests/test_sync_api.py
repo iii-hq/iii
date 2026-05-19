@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 import iii.iii as iii_module
-from iii import InitOptions, RegisterServiceInput, RegisterTriggerTypeInput
+from iii import InitOptions, RegisterTriggerTypeInput
 from iii.iii import III
 from iii.triggers import TriggerConfig, TriggerHandler
 
@@ -157,28 +157,6 @@ def test_register_function_accepts_async_handler(monkeypatch: pytest.MonkeyPatch
 
     client.shutdown()
 
-
-def test_register_service_accepts_input_object(monkeypatch: pytest.MonkeyPatch) -> None:
-    """register_service should store services by the provided service id."""
-    _patch_ws(monkeypatch)
-    client = III("ws://fake", InitOptions())
-    time.sleep(0.05)
-
-    client.register_service(
-        RegisterServiceInput(
-            id="svc.test",
-            name="Test Service",
-            description="service description",
-            parent_service_id="svc.parent",
-        )
-    )
-
-    assert "svc.test" in client._services
-    service = client._services["svc.test"]
-    assert service.name == "Test Service"
-    assert service.parent_service_id == "svc.parent"
-
-    client.shutdown()
 
 
 def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: pytest.MonkeyPatch) -> None:

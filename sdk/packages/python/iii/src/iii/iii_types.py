@@ -148,25 +148,6 @@ class RegisterTriggerInput(BaseModel):
     )
 
 
-class RegisterServiceInput(BaseModel):
-    """Input for registering a service (matches Node SDK's RegisterServiceInput).
-
-    Attributes:
-        id: Unique service identifier.
-        name: Human-readable service name.
-        description: Description of the service.
-        parent_service_id: ID of the parent service for hierarchical grouping.
-    """
-
-    id: str = Field(description="Unique service identifier.")
-    name: str | None = Field(default=None, description="Human-readable service name.")
-    description: str | None = Field(default=None, description="Description of the service.")
-    parent_service_id: str | None = Field(
-        default=None,
-        description="ID of the parent service for hierarchical grouping.",
-    )
-
-
 class RegisterTriggerMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -176,16 +157,6 @@ class RegisterTriggerMessage(BaseModel):
     config: Any
     metadata: dict[str, Any] | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
-
-
-class RegisterServiceMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    name: str | None = None
-    description: str | None = None
-    parent_service_id: str | None = Field(default=None)
-    message_type: MessageType = Field(default=MessageType.REGISTER_SERVICE, alias="type")
 
 
 class RegisterFunctionFormat(BaseModel):
@@ -678,7 +649,6 @@ IIIMessage = (
     | UnregisterFunctionMessage
     | InvokeFunctionMessage
     | InvocationResultMessage
-    | RegisterServiceMessage
     | RegisterTriggerMessage
     | RegisterTriggerTypeMessage
     | UnregisterTriggerMessage
