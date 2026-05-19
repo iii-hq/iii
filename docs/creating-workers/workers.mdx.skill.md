@@ -114,8 +114,6 @@ connection to the Engine and the function registrations are what matter. A Worke
 
 For the full manifest field schema, see [Using iii / Workers](/using-iii/workers).
 
-{/* TODO: link to the canonical iii.worker.yaml reference page once it exists. */}
-
 ## What a worker contributes
 
 Once connected, a worker exposes:
@@ -137,5 +135,3 @@ worker's registrations on disconnect.
 Set `III_URL` to point the worker at the remote engine (see
 [Connecting to the engine](#connecting-to-the-engine)), register the work the job needs to expose,
 and let the process exit when the job is done.
-
-{/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node / TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits cleanly. */}
