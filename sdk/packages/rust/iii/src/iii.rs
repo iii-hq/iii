@@ -36,8 +36,8 @@ use crate::{
     error::IIIError,
     protocol::{
         ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterTriggerInput,
-        RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
-        TriggerRequest, UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
