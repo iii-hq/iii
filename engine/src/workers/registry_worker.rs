@@ -303,7 +303,7 @@ impl ExternalWorkerProcess {
         // actual worker process.
         if let Some(binary) = resolve_iii_worker_binary() {
             let result = tokio::process::Command::new(&binary)
-                .args(["stop", &self.name])
+                .args(["stop", "-y", &self.name])
                 .output()
                 .await;
             match result {
