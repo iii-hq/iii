@@ -20,8 +20,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use iii_sdk::{
-    III, IIIConnectionState, InitOptions, RegisterFunction, RegisterServiceMessage,
-    RegisterTriggerInput, RegisterTriggerType, TriggerConfig, TriggerHandler, register_worker,
+    III, IIIConnectionState, InitOptions, RegisterFunction, RegisterTriggerInput,
+    RegisterTriggerType, TriggerConfig, TriggerHandler, register_worker,
 };
 
 use common::mock_engine::{MockEngine, count_register, count_type};
@@ -140,12 +140,6 @@ async fn mixed_registration_types_each_sent_once() {
     let iii = register_worker(mock.url(), InitOptions::default());
 
     iii.register_function(RegisterFunction::new("dedup::mixed::fn", greet));
-    iii.register_service(RegisterServiceMessage {
-        id: "dedup::mixed::svc".to_string(),
-        name: "mixed-svc".to_string(),
-        description: None,
-        parent_service_id: None,
-    });
     let trigger_type = iii.register_trigger_type(RegisterTriggerType::new(
         "dedup::mixed::tt",
         "noop",
@@ -166,7 +160,6 @@ async fn mixed_registration_types_each_sent_once() {
         &mock,
         |msgs| {
             count_register(msgs, "registerfunction", "dedup::mixed::fn") >= 1
-                && count_register(msgs, "registerservice", "dedup::mixed::svc") >= 1
                 && count_register(msgs, "registertriggertype", "dedup::mixed::tt") >= 1
                 && count_type(msgs, "registertrigger") >= 1
         },
@@ -179,11 +172,6 @@ async fn mixed_registration_types_each_sent_once() {
         count_register(&msgs, "registerfunction", "dedup::mixed::fn"),
         1,
         "RegisterFunction sent multiple times: {msgs:#?}"
-    );
-    assert_eq!(
-        count_register(&msgs, "registerservice", "dedup::mixed::svc"),
-        1,
-        "RegisterService sent multiple times: {msgs:#?}"
     );
     assert_eq!(
         count_register(&msgs, "registertriggertype", "dedup::mixed::tt"),
