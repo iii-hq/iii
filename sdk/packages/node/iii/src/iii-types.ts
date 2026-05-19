@@ -1,7 +1,7 @@
 export enum MessageType {
   RegisterFunction = 'registerfunction',
   UnregisterFunction = 'unregisterfunction',
-InvokeFunction = 'invokefunction',
+  InvokeFunction = 'invokefunction',
   InvocationResult = 'invocationresult',
   RegisterTriggerType = 'registertriggertype',
   RegisterTrigger = 'registertrigger',
