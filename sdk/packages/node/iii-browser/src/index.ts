@@ -38,7 +38,6 @@ export type {
   ISdk,
   RegisterFunctionInput,
   RegisterFunctionOptions,
-  RegisterServiceInput,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,

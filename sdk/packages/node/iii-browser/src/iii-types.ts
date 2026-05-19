@@ -1,7 +1,6 @@
 export enum MessageType {
   RegisterFunction = 'registerfunction',
   UnregisterFunction = 'unregisterfunction',
-  RegisterService = 'registerservice',
   InvokeFunction = 'invokefunction',
   InvocationResult = 'invocationresult',
   RegisterTriggerType = 'registertriggertype',
@@ -44,14 +43,6 @@ export type RegisterTriggerMessage = {
   type: string
   function_id: string
   config: unknown
-}
-
-export type RegisterServiceMessage = {
-  message_type: MessageType.RegisterService
-  id: string
-  name?: string
-  description?: string
-  parent_service_id?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -398,7 +389,6 @@ export type IIIMessage =
   | UnregisterFunctionMessage
   | InvokeFunctionMessage
   | InvocationResultMessage
-  | RegisterServiceMessage
   | RegisterTriggerMessage
   | RegisterTriggerTypeMessage
   | UnregisterTriggerMessage
