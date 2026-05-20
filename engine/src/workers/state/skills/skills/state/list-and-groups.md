@@ -61,7 +61,7 @@ The function takes no parameters. Send an empty object as the payload.
 
 ```json
 {
-  "groups": [        // Sorted, deduplicated list of scopes that currently contain at least one key.
+  "groups": [        // Sorted, deduplicated list of scope names the adapter is tracking.
     "orders",
     "sessions",
     "users"
@@ -69,8 +69,8 @@ The function takes no parameters. Send an empty object as the payload.
 }
 ```
 
-- `groups` is always present and is sorted lexicographically (ascending).
-- Scopes that have been fully drained by `state::delete` may still appear depending on the adapter, but the engine deduplicates before sorting so each name appears at most once.
+- `groups` is always present, sorted lexicographically (ascending), and deduplicated by the engine so each name appears at most once.
+- Whether a scope that has been fully drained by `state::delete` still appears is adapter-defined. The built-in `kv` adapter keeps the scope name visible after all its keys are removed; the Redis adapter drops it automatically. Treat presence in `groups` as "the adapter has seen this scope," not "this scope has values" — pair with `state::list` (or `state::get`) if you need to confirm contents.
 
 # Worked example
 
