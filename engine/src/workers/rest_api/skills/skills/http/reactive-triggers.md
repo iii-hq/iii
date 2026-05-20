@@ -99,12 +99,21 @@ The handler must return an `HttpResponse` envelope:
 
 # Worked example
 
-The typical pattern is a one-step registration:
+Expose `api::get-user` as `GET /users/:id` with auth + logging middleware on the route:
 
-- Register a function with `iii.registerFunction` to receive the `HttpRequest` payload above.
-- Bind it via `iii.registerTrigger({ type: 'http', function_id, config: { api_path, http_method } })`.
+```json
+{
+  "type":        "http",
+  "function_id": "api::get-user",
+  "config": {
+    "api_path":                "/users/:id",
+    "http_method":             "GET",
+    "middleware_function_ids": ["auth::require-bearer", "log::request"]
+  }
+}
+```
 
-For path parameters, use `:name` segments in `api_path`; the matching value arrives in `path_params[name]`. For per-route preHandlers (auth checks, rate limits), set `middleware_function_ids` on the trigger config — the chain runs after any global middleware configured in `iii-config.yaml`.
+For path parameters, use `:name` segments in `api_path`; the matching value arrives in `path_params[name]`. For per-route preHandlers (auth checks, rate limits), list them in `middleware_function_ids` — the chain runs after any global middleware configured in `iii-config.yaml`.
 
 For runnable scaffolds in TypeScript, Python, and Rust, see the http worker source and the SDK usage examples in [the iii main repo](https://github.com/iii-hq/iii).
 

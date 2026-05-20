@@ -110,10 +110,23 @@ The middleware must return one of two shapes:
 
 # Worked example
 
-The typical pattern is one middleware function per cross-cutting concern, wired up either globally or per-route:
+A bearer-auth middleware returns `respond` with 401 when the token is missing or invalid, and `continue` with `context` populated when it's valid:
 
-- **Global auth.** Register an auth middleware whose function id is in the global `middleware:` list with `phase: preHandler`. It inspects `headers.authorization`, returns `{ action: "respond", response: { status_code: 401, ... } }` on missing/invalid tokens, or `{ action: "continue", context: { user_id, scopes } }` on success — every handler then receives `HttpRequest.context.user_id` without parsing the header itself.
-- **Per-route admin gate.** On routes that need elevated privilege, set `middleware_function_ids: ["auth::require-admin"]`. The route condition (`condition_function_id`) is the right place for cheap boolean checks; middleware is the right place when you need to enrich `context` or return a structured error response.
+```json
+{
+  "action":   "respond",
+  "response": {
+    "status_code": 401,
+    "headers":     { "Content-Type": "application/json" },
+    "body":        { "error": "missing_or_invalid_bearer" }
+  }
+}
+```
+
+Three patterns reach for middleware in different ways:
+
+- **Global auth.** Register an auth middleware whose function id is in the global `middleware:` list with `phase: preHandler`. It inspects `headers.authorization`, returns the `respond` shape above on missing/invalid tokens, or `{ "action": "continue", "context": { "user_id": "u_1", "scopes": ["read", "write"] } }` on success — every handler then receives `HttpRequest.context.user_id` without parsing the header itself.
+- **Per-route admin gate.** On routes that need elevated privilege, set `middleware_function_ids: ["auth::require-admin"]` on the trigger config. The route's `condition_function_id` is the right place for cheap boolean checks; middleware is the right place when you need to enrich `context` or return a structured error response.
 - **Logging + rate-limit chain.** Stack multiple middleware globally with explicit priorities (`priority: 5` for rate-limit before `priority: 10` for auth), so the cheaper check runs first and rejects 429s before authentication work happens.
 
 For runnable scaffolds in TypeScript, Python, and Rust, see the http worker source and the SDK usage examples in [the iii main repo](https://github.com/iii-hq/iii).
