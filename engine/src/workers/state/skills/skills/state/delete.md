@@ -81,3 +81,4 @@ Remove a user profile and let any registered listeners react:
 - `state::set` — overwrite the value instead of deleting the key.
 - `state::get` — confirm whether the key exists before deciding to delete.
 - `state::update` — remove a single field while keeping the key.
+- [React to state changes](iii://iii-state/state/reactive-triggers) — register a `state` trigger so another function runs when this delete fires an event.

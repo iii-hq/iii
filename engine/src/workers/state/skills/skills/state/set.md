@@ -99,3 +99,4 @@ Response when the key is brand new:
 - `state::update` — change individual fields without rewriting the whole document.
 - `state::delete` — remove the key and fire `state:deleted`.
 - `state::list` — enumerate every value in the scope after writing.
+- [React to state changes](iii://iii-state/state/reactive-triggers) — register a `state` trigger so another function runs when this write fires an event.

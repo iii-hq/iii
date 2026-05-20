@@ -148,3 +148,4 @@ Append an event to a nested log, auto-creating missing intermediates:
 - `state::set` — replace the whole value when partial updates do not fit.
 - `state::get` — inspect the current value before designing an op list.
 - `state::delete` — remove the key when it should no longer exist.
+- [React to state changes](iii://iii-state/state/reactive-triggers) — register a `state` trigger so another function runs when this update fires an event.
