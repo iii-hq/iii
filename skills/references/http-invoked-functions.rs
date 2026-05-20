@@ -186,7 +186,7 @@ fn main() {
                     .map_err(|e| e.to_string())?;
 
                 let charge_id = charge_result["id"].as_str().unwrap_or("unknown");
-                logger.info("Payment charged", &json!({ "orderId": data.order_id, "chargeId": charge_id }));
+                logger.info("Payment charged", Some(json!({ "orderId": data.order_id, "chargeId": charge_id })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "state::set".into(),
@@ -281,7 +281,7 @@ fn main() {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                logger.info("Hourly heartbeat sent", &json!({}));
+                logger.info("Hourly heartbeat sent", Some(json!({})));
                 Ok(json!(null))
             }
         })

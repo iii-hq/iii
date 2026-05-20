@@ -80,7 +80,7 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("checkout::validate-cart", |data: CartInput| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Validating cart", &json!({ "cartId": data.cart_id }));
+            logger.info("Validating cart", Some(json!({ "cartId": data.cart_id })));
 
             let items = data.items.unwrap_or_default();
             if items.is_empty() {
@@ -96,7 +96,7 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("checkout::charge-payment", |data: ChargeInput| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Charging payment", &json!({ "cart_id": data.cart_id, "total": data.total }));
+            logger.info("Charging payment", Some(json!({ "cart_id": data.cart_id, "total": data.total })));
             Ok(json!({ "charged": true, "transaction_id": format!("txn_{}", chrono::Utc::now().timestamp_millis()) }))
         })
         .description("Charge payment for cart"),
@@ -105,7 +105,7 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("checkout::send-confirmation", |data: ConfirmationInput| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Sending order confirmation email", &json!({ "email": data.email }));
+            logger.info("Sending order confirmation email", Some(json!({ "email": data.email })));
             Ok(json!({ "sent": true }))
         })
         .description("Send order confirmation email"),
@@ -133,7 +133,7 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Sync result received", &json!({ "valid": result["valid"], "total": result["total"] }));
+                logger.info("Sync result received", Some(json!({ "valid": result["valid"], "total": result["total"] })));
                 Ok(result)
             }
         })
@@ -162,7 +162,7 @@ fn main() {
                 .await
                 .ok();
 
-                logger.info("Confirmation dispatched (fire-and-forget)", &json!({}));
+                logger.info("Confirmation dispatched (fire-and-forget)", Some(json!({})));
                 Ok(json!({ "dispatched": true }))
             }
         })
@@ -192,7 +192,7 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Payment enqueued", &json!({ "messageReceiptId": receipt["messageReceiptId"] }));
+                logger.info("Payment enqueued", Some(json!({ "messageReceiptId": receipt["messageReceiptId"] })));
                 Ok(receipt)
             }
         })
@@ -238,7 +238,7 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Payment queued", &json!({ "receiptId": receipt["messageReceiptId"] }));
+                logger.info("Payment queued", Some(json!({ "receiptId": receipt["messageReceiptId"] })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "checkout::send-confirmation".into(),

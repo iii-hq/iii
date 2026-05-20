@@ -21,7 +21,7 @@ import asyncio
 import os
 from datetime import datetime, timezone
 
-from iii import InitOptions, Logger, TriggerAction, register_worker
+from iii import HttpInvocationConfig, InitOptions, Logger, TriggerAction, register_worker
 
 iii = register_worker(
     address=os.environ.get("III_ENGINE_URL", "ws://localhost:49134"),
@@ -40,11 +40,7 @@ legacy_endpoints = [
 for ep in legacy_endpoints:
     iii.register_function(
         ep["id"],
-        {
-            "url": f"{legacy_base_url}{ep['path']}",
-            "method": "POST",
-            "timeout_ms": 8000,
-        },
+        HttpInvocationConfig(url=f"{legacy_base_url}{ep['path']}", method="POST", timeout_ms=8000),
     )
 
 # ---
@@ -52,16 +48,16 @@ for ep in legacy_endpoints:
 # ---
 iii.register_function(
     "integrations::slack-notify",
-    {
-        "url": "https://hooks.slack.example.com/services/incoming",
-        "method": "POST",
-        "timeout_ms": 5000,
-        "headers": {"Content-Type": "application/json"},
-        "auth": {
+    HttpInvocationConfig(
+        url="https://hooks.slack.example.com/services/incoming",
+        method="POST",
+        timeout_ms=5000,
+        headers={"Content-Type": "application/json"},
+        auth={
             "type": "bearer",
             "token_key": "SLACK_WEBHOOK_TOKEN",
         },
-    },
+    ),
 )
 
 # ---
@@ -69,17 +65,17 @@ iii.register_function(
 # ---
 iii.register_function(
     "integrations::stripe-charge",
-    {
-        "url": "https://api.stripe.example.com/v1/charges",
-        "method": "POST",
-        "timeout_ms": 10000,
-        "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-        "auth": {
+    HttpInvocationConfig(
+        url="https://api.stripe.example.com/v1/charges",
+        method="POST",
+        timeout_ms=10000,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        auth={
             "type": "api_key",
-            "header_name": "Authorization",
+            "header": "Authorization",
             "value_key": "STRIPE_API_KEY",
         },
-    },
+    ),
 )
 
 # ---
@@ -87,11 +83,11 @@ iii.register_function(
 # ---
 iii.register_function(
     "integrations::analytics-track",
-    {
-        "url": "https://analytics.internal.example.com/events",
-        "method": "POST",
-        "timeout_ms": 3000,
-    },
+    HttpInvocationConfig(
+        url="https://analytics.internal.example.com/events",
+        method="POST",
+        timeout_ms=3000,
+    ),
 )
 
 # ---
@@ -99,15 +95,15 @@ iii.register_function(
 # ---
 iii.register_function(
     "integrations::order-webhook",
-    {
-        "url": "https://fulfillment.partner.example.com/webhooks/orders",
-        "method": "POST",
-        "timeout_ms": 5000,
-        "auth": {
+    HttpInvocationConfig(
+        url="https://fulfillment.partner.example.com/webhooks/orders",
+        method="POST",
+        timeout_ms=5000,
+        auth={
             "type": "hmac",
             "secret_key": "ORDER_WEBHOOK_SECRET",
         },
-    },
+    ),
 )
 
 # ---
@@ -198,7 +194,7 @@ async def orders_enqueue_charge(data):
     result = await iii.trigger_async({
         "function_id": "integrations::stripe-charge",
         "payload": {"amount": data["amount"], "currency": "usd", "source": data["paymentToken"]},
-        "action": TriggerAction.Enqueue({"queue": "payments"}),
+        "action": TriggerAction.Enqueue(queue="payments"),
     })
 
     return {"messageReceiptId": result["messageReceiptId"]}

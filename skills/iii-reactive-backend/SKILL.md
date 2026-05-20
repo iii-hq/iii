@@ -19,6 +19,7 @@ Use the concepts below when they fit the task. Not every reactive backend needs 
 - **State triggers** fire automatically when any value in a scope changes
 - Side effects (notifications, metrics, stream pushes) are wired reactively, not imperatively
 - **Streams** deliver real-time updates to connected clients
+- Prefer state triggers, stream triggers, queue subscribers, and pub/sub over polling loops for iii-native data flow
 
 ## Architecture
 

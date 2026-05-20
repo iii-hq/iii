@@ -18,8 +18,9 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 - A **Trigger** binds an event source to a function — types include http, durable:subscriber, cron, state, stream, and subscribe
 - Functions invoke other functions via `trigger()` regardless of language or worker location
 - The engine handles serialization, routing, and delivery automatically
-- HTTP-invoked functions wrap external endpoints as callable function IDs
+- Functions may be local handlers or HTTP-invoked external endpoints registered with `HttpInvocationConfig`
 - Functions can declare **request/response formats** for documentation and discovery — auto-generated from types in Rust (via `schemars::JsonSchema`) and Python (via type hints / Pydantic), or manually provided in Node.js
+- Functions and triggers both support optional **metadata** for discovery, ownership, policy, and generated skills
 
 ## Architecture
 
@@ -30,7 +31,8 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 | Primitive                                                    | Purpose                            |
 | ------------------------------------------------------------ | ---------------------------------- |
 | `registerWorker(url, options?)`                              | Connect worker to engine           |
-| `registerFunction(id, handler)`                              | Define a function handler          |
+| `registerFunction(id, handler, options?)`                    | Define a local function handler    |
+| `registerFunction(id, HttpInvocationConfig, options?)`       | Define an HTTP-invoked function    |
 | `registerTrigger({ type, function_id, config, metadata? })`  | Bind an event source to a function |
 | `trigger({ function_id, payload })`                          | Invoke a function synchronously    |
 | `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation         |
@@ -49,12 +51,13 @@ Each reference shows the same patterns (function registration, trigger binding, 
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker('ws://localhost:49134', { workerName: 'my-worker' })` — connect to the engine
-- `registerFunction('namespace::name', async (input) => { ... })` — register a handler
+- `registerFunction('namespace::name', async (input) => { ... }, { description, metadata })` — register a local handler
+- `registerFunction('legacy::charge', { url, method: 'POST', timeout_ms, headers, auth })` — register an HTTP-invoked external endpoint
 - `registerTrigger({ type: 'http', function_id, config: { api_path, http_method, middleware_function_ids? } })` — HTTP trigger (with optional middleware)
 - `registerTrigger({ type: 'durable:subscriber', function_id, config: { topic } })` — queue trigger
 - `registerTrigger({ type: 'cron', function_id, config: { expression } })` — cron trigger
 - `registerTrigger({ type: 'state', function_id, config: { scope, key } })` — state change trigger
-- `registerTrigger({ type: 'stream', function_id, config: { stream } })` — stream trigger
+- `registerTrigger({ type: 'stream', function_id, config: { stream_name, group_id, item_id } })` — stream item trigger
 - `registerTrigger({ type: 'subscribe', function_id, config: { topic } })` — pubsub subscriber
 - Cross-language invocation: a TypeScript function can trigger a Python or Rust function by ID
 - `registerTrigger({ ..., metadata: { owner: 'team', priority: 'high' } })` — optional trigger metadata
@@ -74,6 +77,7 @@ Use the adaptations below when they apply to the task.
 - Replace placeholder handler logic with real business logic (API calls, DB queries, LLM calls)
 - Use `namespace::name` convention for function IDs to group related functions
 - For HTTP endpoints, configure `api_path` and `http_method` in the trigger config
+- For outbound external endpoints, register the function with `HttpInvocationConfig`; do not model it as an inbound HTTP trigger
 - For durable async work, use `TriggerAction.Enqueue({ queue })` instead of synchronous trigger
 - For fire-and-forget side effects, use `TriggerAction.Void()`
 - Multiple workers in different languages can register functions that invoke each other by ID
@@ -84,6 +88,8 @@ Use the adaptations below when they apply to the task.
 - For queue processing details (retries, concurrency, FIFO), prefer `iii-queue-processing`.
 - For cron scheduling details (expressions, timezones), prefer `iii-cron-scheduling`.
 - For invocation modes (sync vs void vs enqueue), prefer `iii-trigger-actions`.
+- For HTTP-invoked external functions, prefer `iii-http-invoked-functions`.
+- For built-in trigger config and payload shapes, prefer `iii-trigger-schemas`.
 - Stay with `iii-functions-and-triggers` when the primary problem is registering functions, binding triggers, or cross-language invocation.
 
 ## When to Use

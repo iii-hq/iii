@@ -92,7 +92,7 @@ fn main() {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                logger.info("Message stored in stream", &json!({ "room": data.room, "messageId": message_id }));
+                logger.info("Message stored in stream", Some(json!({ "room": data.room, "messageId": message_id })));
                 Ok(json!({ "messageId": message_id }))
             }
         })
@@ -240,7 +240,7 @@ fn main() {
                 .await
                 .ok();
 
-                logger.info("Message broadcast", &json!({ "room": data.room, "eventId": event_id }));
+                logger.info("Message broadcast", Some(json!({ "room": data.room, "eventId": event_id })));
                 Ok(json!({ "eventId": event_id }))
             }
         })

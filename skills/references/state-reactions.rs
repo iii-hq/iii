@@ -46,7 +46,7 @@ fn main() {
                     "updated"
                 };
 
-                logger.info("Order changed", &json!({ "key": event.key, "action": action, "event_type": event.event_type }));
+                logger.info("Order changed", Some(json!({ "key": event.key, "action": action, "event_type": event.event_type })));
 
                 let audit_id = format!("audit-{}", chrono::Utc::now().timestamp_millis());
                 iii.trigger(TriggerRequest {
@@ -108,7 +108,7 @@ fn main() {
                 let total = event.new_value.as_ref().and_then(|v| v["total"].as_f64()).unwrap_or(0.0);
                 let customer = event.new_value.as_ref().and_then(|v| v["customer"].clone().into());
 
-                logger.info("High-value order detected", &json!({ "key": event.key, "total": total }));
+                logger.info("High-value order detected", Some(json!({ "key": event.key, "total": total })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "alerts::notify-manager".into(),

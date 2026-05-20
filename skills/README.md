@@ -52,25 +52,40 @@ Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, 
 
 ### HOWTO Skills
 
-Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or capability. Reference implementations are available in TypeScript, Python, and Rust.
+Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one iii primitive or worker-backed capability. Reference implementations are available in TypeScript, Python, and Rust.
 
 | Skill | What it does |
 | --- | --- |
 | [iii-functions-and-triggers](./iii-functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
 | [iii-http-endpoints](./iii-http-endpoints) | Expose functions as REST API endpoints |
+| [iii-http-invoked-functions](./iii-http-invoked-functions) | Register external HTTP endpoints as iii functions |
 | [iii-http-middleware](./iii-http-middleware) | Engine-level middleware for HTTP triggers |
 | [iii-cron-scheduling](./iii-cron-scheduling) | Schedule recurring tasks with cron expressions |
 | [iii-queue-processing](./iii-queue-processing) | Async job processing with retries, concurrency, and ordering |
 | [iii-state-management](./iii-state-management) | Distributed key-value state across functions |
 | [iii-state-reactions](./iii-state-reactions) | Auto-trigger functions on state changes |
 | [iii-realtime-streams](./iii-realtime-streams) | Push live updates to WebSocket clients |
+| [iii-pubsub](./iii-pubsub) | Broadcast non-durable topic events to subscribers |
 | [iii-custom-triggers](./iii-custom-triggers) | Build custom trigger types for external events |
 | [iii-trigger-actions](./iii-trigger-actions) | Synchronous, fire-and-forget, and enqueue invocation modes |
 | [iii-trigger-conditions](./iii-trigger-conditions) | Gate trigger execution with condition functions |
+| [iii-trigger-schemas](./iii-trigger-schemas) | Built-in trigger config and handler payload schemas |
 | [iii-dead-letter-queues](./iii-dead-letter-queues) | Inspect and redrive failed queue jobs |
 | [iii-engine-config](./iii-engine-config) | Configure the iii engine via iii-config.yaml |
 | [iii-observability](./iii-observability) | OpenTelemetry tracing, metrics, and logging |
 | [iii-channels](./iii-channels) | Binary streaming between workers |
+| [iii-error-handling](./iii-error-handling) | Handle engine and SDK error codes across languages |
+| [iii-worker-lifecycle](./iii-worker-lifecycle) | Manage worker add/remove/start/stop/logs/exec commands |
+| [iii-worker-lockfile](./iii-worker-lockfile) | Reproduce registry-managed worker installs with iii.lock |
+| [iii-worker-rbac](./iii-worker-rbac) | Configure worker RBAC, filtered discovery, and FORBIDDEN behavior |
+
+### Worker Registry Skill
+
+One dynamic skill covers published workers from [workers.iii.dev](https://workers.iii.dev/) and the [iii-hq/workers](https://github.com/iii-hq/workers) source repo. Worker-specific skills live with the worker and should be loaded from the registry through `iii-directory`.
+
+| Skill | What it does |
+| --- | --- |
+| [iii-worker-catalog](./iii-worker-catalog) | Discover registry workers, install the right capability, and load worker-provided skills |
 
 ### Architecture Pattern Skills
 
@@ -81,7 +96,6 @@ Compose multiple iii primitives into common backend architectures. Each includes
 | [iii-agentic-backend](./iii-agentic-backend) | Multi-agent pipelines with queue handoffs and shared state |
 | [iii-reactive-backend](./iii-reactive-backend) | Real-time backends with state triggers and stream updates |
 | [iii-workflow-orchestration](./iii-workflow-orchestration) | Durable multi-step pipelines with retries and DLQ |
-| [iii-http-invoked-functions](./iii-http-invoked-functions) | Register external HTTP endpoints as iii functions |
 | [iii-effect-system](./iii-effect-system) | Composable, traceable function pipelines |
 | [iii-event-driven-cqrs](./iii-event-driven-cqrs) | CQRS with event sourcing and independent projections |
 | [iii-low-code-automation](./iii-low-code-automation) | Trigger-transform-action automation chains |

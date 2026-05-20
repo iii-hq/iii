@@ -17,6 +17,7 @@ Use the concepts below when they fit the task. Not every HTTP endpoint needs all
 - The handler receives an **ApiRequest** object containing `body`, `path_params`, `headers`, and `method`
 - Handlers return `{ status_code, body, headers }` to shape the HTTP response
 - **iii-http** serves all registered routes on port 3111
+- Install or enable it with `iii worker add iii-http`
 - Path parameters use colon syntax (e.g. `/users/:id`) and arrive in `path_params`
 - **Middleware** can run before handlers via `middleware_function_ids` in the trigger config — see `iii-http-middleware` for details
 
@@ -61,6 +62,7 @@ Code using this pattern commonly includes, when relevant:
 
 Use the adaptations below when they apply to the task.
 
+- If the HTTP worker is missing, add it first with `iii worker add iii-http`, then start/sync workers via `iii-worker-lifecycle`.
 - Add more routes by registering additional functions and HTTP triggers with distinct paths or methods
 - Use `path_params` for resource identifiers (e.g. `/orders/:orderId`)
 - Return appropriate status codes (201 for creation, 404 for not found, 400 for bad input)

@@ -49,7 +49,7 @@ async def payments_submit(data):
                 "currency": data.get("currency", "usd"),
                 "method": data["paymentMethod"],
             },
-            "action": TriggerAction.Enqueue({"queue": "payment"}),
+            "action": TriggerAction.Enqueue(queue="payment"),
         })
 
         logger.info("Payment enqueued", {
@@ -122,7 +122,7 @@ async def emails_enqueue(data):
             "body": data["body"],
             "template": data.get("template"),
         },
-        "action": TriggerAction.Enqueue({"queue": "email"}),
+        "action": TriggerAction.Enqueue(queue="email"),
     })
 
     logger.info("Email enqueued (FIFO)", {
@@ -178,13 +178,13 @@ async def orders_place(data):
     payment_receipt = await iii.trigger_async({
         "function_id": "payments::process",
         "payload": {"orderId": data["orderId"], "amount": data["total"], "currency": "usd", "method": data["method"]},
-        "action": TriggerAction.Enqueue({"queue": "payment"}),
+        "action": TriggerAction.Enqueue(queue="payment"),
     })
 
     email_receipt = await iii.trigger_async({
         "function_id": "emails::send",
         "payload": {"to": data["email"], "subject": "Order confirmed", "body": f"Order {data['orderId']}"},
-        "action": TriggerAction.Enqueue({"queue": "email"}),
+        "action": TriggerAction.Enqueue(queue="email"),
     })
 
     logger.info("Order placed", {

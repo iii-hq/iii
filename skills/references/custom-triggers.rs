@@ -1,26 +1,23 @@
 /// Pattern: Custom Triggers
-/// Comparable to: Custom event adapters, webhook connectors, polling integrators
+/// Comparable to: Custom event adapters, webhook connectors, subscription bridges
 ///
 /// Demonstrates how to define entirely new trigger types beyond the built-in
 /// http, durable:subscriber, cron, state, and subscribe triggers. A custom trigger type
 /// registers handler callbacks that the engine invokes when triggers of that
 /// type are created or removed, letting you bridge any external event source
-/// (webhooks, pollers) into the iii function graph.
+/// (webhooks, message subscriptions) into the iii function graph.
 ///
 /// How-to references:
 ///   - Custom trigger types: https://iii.dev/docs/how-to/create-custom-trigger-type
-
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, TriggerRequest, TriggerAction,
-    TriggerConfig, TriggerHandler,
+    register_worker, IIIError, InitOptions, RegisterFunction, RegisterTriggerInput,
+    RegisterTriggerType, TriggerConfig, TriggerHandler, TriggerRequest,
 };
 use serde_json::json;
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
 // Custom trigger type — Webhook receiver
@@ -39,7 +36,7 @@ struct WebhookTriggerHandler {
 }
 
 impl TriggerHandler for WebhookTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), String> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
         let path = config
             .config
             .get("path")
@@ -62,107 +59,72 @@ impl TriggerHandler for WebhookTriggerHandler {
 
     // NOTE: In production, an HTTP listener would match incoming requests
     // to endpoints and call iii.trigger(endpoint.function_id, payload)
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), String> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
         self.endpoints.lock().await.remove(&config.id);
         Ok(())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Custom trigger type — Polling with ETag
-// Periodically fetches a URL and fires only when the content changes.
+// Custom trigger type — External subscription
+// Bridges an event source that already pushes topic messages.
 // ---------------------------------------------------------------------------
 
-struct PollingTriggerHandler {
-    iii: iii_sdk::III,
-    tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+struct TopicBinding {
+    topic: String,
+    function_id: String,
 }
 
-impl TriggerHandler for PollingTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), String> {
-        let trigger_id = config.id.clone();
-        let function_id = config.function_id.clone();
-        let url = config
-            .config
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or("missing url in config")?
-            .to_string();
-        let interval_ms = match config.config.get("interval_ms").and_then(|v| v.as_u64()) {
-            Some(0) => return Err("interval_ms must be greater than 0".into()),
-            Some(ms) => ms,
-            None => 30_000,
-        };
+struct TopicSubscriptionHandler {
+    iii: iii_sdk::III,
+    bindings: Arc<Mutex<HashMap<String, TopicBinding>>>,
+}
 
-        let iii = self.iii.clone();
-
-        let handle = tokio::spawn(async move {
-            let client = reqwest::Client::new();
-            let mut last_etag: Option<String> = None;
-
-            loop {
-                let mut req = client.get(&url);
-                if let Some(ref etag) = last_etag {
-                    req = req.header("If-None-Match", etag);
-                }
-
-                match req.send().await {
-                    Ok(resp) => {
-                        let status = resp.status().as_u16();
-
-                        if status == 304 {
-                            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
-                            continue;
-                        }
-
-                        if !(200..300).contains(&status) {
-                            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
-                            continue;
-                        }
-
-                        let etag = resp
-                            .headers()
-                            .get("etag")
-                            .and_then(|v| v.to_str().ok())
-                            .map(|s| s.to_string());
-
-                        if etag.is_some() && etag != last_etag {
-                            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                                let result = iii
-                                    .trigger(TriggerRequest {
-                                        function_id: function_id.clone(),
-                                        payload: json!({
-                                            "source": "polling",
-                                            "trigger_id": trigger_id,
-                                            "etag": etag,
-                                            "data": body,
-                                        }),
-                                        action: None,
-                                        timeout_ms: None,
-                                    })
-                                    .await;
-
-                                if result.is_ok() {
-                                    last_etag = etag;
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {}
-                }
-
-                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+impl TopicSubscriptionHandler {
+    async fn emit(&self, topic: &str, message: serde_json::Value) {
+        let bindings = self.bindings.lock().await;
+        for (trigger_id, binding) in bindings.iter() {
+            if binding.topic == topic {
+                let _ = self
+                    .iii
+                    .trigger(TriggerRequest {
+                        function_id: binding.function_id.clone(),
+                        payload: json!({
+                            "source": "topic-subscription",
+                            "trigger_id": trigger_id,
+                            "topic": topic,
+                            "data": message.clone(),
+                        }),
+                        action: None,
+                        timeout_ms: None,
+                    })
+                    .await;
             }
-        });
+        }
+    }
+}
 
-        self.tasks.lock().await.insert(config.id.clone(), handle);
+impl TriggerHandler for TopicSubscriptionHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+        let topic = config
+            .config
+            .get("topic")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IIIError::Handler("missing topic in config".into()))?
+            .to_string();
+
+        self.bindings.lock().await.insert(
+            config.id.clone(),
+            TopicBinding {
+                topic,
+                function_id: config.function_id,
+            },
+        );
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), String> {
-        if let Some(handle) = self.tasks.lock().await.remove(&config.id) {
-            handle.abort();
-        }
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+        self.bindings.lock().await.remove(&config.id);
         Ok(())
     }
 }
@@ -198,31 +160,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         iii: iii.clone(),
         endpoints: Arc::new(Mutex::new(HashMap::new())),
     };
-    iii.register_trigger_type("webhook", webhook_handler)
-        .expect("failed to register webhook trigger type");
+    iii.register_trigger_type(RegisterTriggerType::new(
+        "webhook",
+        "Fires when an external service sends an HTTP POST to the registered endpoint",
+        webhook_handler,
+    ));
 
-    // Register polling trigger type
-    let polling_handler = PollingTriggerHandler {
+    // Register topic subscription trigger type
+    let topic_handler = TopicSubscriptionHandler {
         iii: iii.clone(),
-        tasks: Arc::new(Mutex::new(HashMap::new())),
+        bindings: Arc::new(Mutex::new(HashMap::new())),
     };
-    iii.register_trigger_type("polling", polling_handler)
-        .expect("failed to register polling trigger type");
+    iii.register_trigger_type(RegisterTriggerType::new(
+        "topic-subscription",
+        "Fires when an external event bus publishes to a topic",
+        topic_handler,
+    ));
 
     // Bind triggers using the custom types
-    iii.register_trigger_with_config(
-        "webhook",
-        "custom-triggers::on-event",
-        json!({ "path": "/hooks/github" }),
-    )
-    .expect("failed to register webhook trigger");
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "webhook".into(),
+        function_id: "custom-triggers::on-event".into(),
+        config: json!({ "path": "/hooks/github" }),
+        metadata: None,
+    })?;
 
-    iii.register_trigger_with_config(
-        "polling",
-        "custom-triggers::on-event",
-        json!({ "url": "https://api.example.com/status", "interval_ms": 60000 }),
-    )
-    .expect("failed to register polling trigger");
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "topic-subscription".into(),
+        function_id: "custom-triggers::on-event".into(),
+        config: json!({ "topic": "orders.created" }),
+        metadata: None,
+    })?;
 
     tokio::signal::ctrl_c().await.ok();
     iii.shutdown();

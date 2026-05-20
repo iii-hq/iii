@@ -17,6 +17,7 @@ Comparable to: Firebase onSnapshot, Convex mutations
 Use the concepts below when they fit the task. Not every state reaction needs all of them.
 
 - A **state trigger** fires whenever a value changes within a watched scope
+- Install or enable state triggers with `iii worker add iii-state`
 - The handler receives `{ new_value, old_value, key, event_type }` describing the change
 - **condition_function_id** gates execution — the reaction only fires if the condition returns truthy
 - Multiple reactions can **independently watch** the same scope
@@ -70,7 +71,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-iii-state must be enabled in iii-config.yaml for state triggers to fire. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Install/enable iii-state with `iii worker add iii-state`; state triggers fire from the state worker. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

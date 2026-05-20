@@ -8,7 +8,7 @@ Skills for building on the [iii engine](https://iii.dev) — a backend unificati
 
 ## HOWTO Skills
 
-Direct mappings to iii documentation HOWTOs. Each teaches one primitive or capability.
+Direct mappings to iii documentation HOWTOs. Each teaches one iii primitive or worker-backed capability.
 
 - [functions-and-triggers](iii-functions-and-triggers/SKILL.md) — Register functions and triggers across TypeScript, Python, and Rust
 - [http-endpoints](iii-http-endpoints/SKILL.md) — Expose functions as REST API endpoints
@@ -17,23 +17,35 @@ Direct mappings to iii documentation HOWTOs. Each teaches one primitive or capab
 - [state-management](iii-state-management/SKILL.md) — Distributed key-value state across functions
 - [state-reactions](iii-state-reactions/SKILL.md) — Auto-trigger functions on state changes
 - [realtime-streams](iii-realtime-streams/SKILL.md) — Push live updates to WebSocket clients
+- [pubsub](iii-pubsub/SKILL.md) — Broadcast non-durable topic events to subscribers
 - [custom-triggers](iii-custom-triggers/SKILL.md) — Build custom trigger types for external events
 - [trigger-actions](iii-trigger-actions/SKILL.md) — Synchronous, fire-and-forget, and enqueue invocation modes
 - [trigger-conditions](iii-trigger-conditions/SKILL.md) — Gate trigger execution with condition functions
+- [trigger-schemas](iii-trigger-schemas/SKILL.md) — Built-in trigger config and handler payload schemas
 - [dead-letter-queues](iii-dead-letter-queues/SKILL.md) — Inspect and redrive failed queue jobs
 - [engine-config](iii-engine-config/SKILL.md) — Configure the iii engine via iii-config.yaml
 - [observability](iii-observability/SKILL.md) — OpenTelemetry tracing, metrics, and logging
 - [channels](iii-channels/SKILL.md) — Binary streaming between workers
 - [http-middleware](iii-http-middleware/SKILL.md) — Engine-level middleware for HTTP triggers (auth, logging, rate limiting)
+- [http-invoked-functions](iii-http-invoked-functions/SKILL.md) — Register external HTTP endpoints as iii functions
+- [error-handling](iii-error-handling/SKILL.md) — Handle engine and SDK error codes across languages
+- [worker-lifecycle](iii-worker-lifecycle/SKILL.md) — Manage worker add/remove/start/stop/logs/exec commands
+- [worker-lockfile](iii-worker-lockfile/SKILL.md) — Reproduce registry-managed worker installs with iii.lock
+- [worker-rbac](iii-worker-rbac/SKILL.md) — Configure worker RBAC, filtered discovery, and FORBIDDEN behavior
+
+## Worker Registry Skill
+
+One dynamic skill covers published workers from workers.iii.dev and the iii-hq/workers source repo. Worker-specific skills live with the worker and should be loaded from the registry through `iii-directory`.
+
+- [worker-catalog](iii-worker-catalog/SKILL.md) — Discover registry workers, install the right capability, and load worker-provided skills
 
 ## Architecture Pattern Skills
 
-Compose multiple iii primitives into common backend architectures. Each includes a full working `reference.js`.
+Compose functions, triggers, workers, and worker-backed capabilities into common backend architectures. Each includes a full working `reference.js`.
 
 - [agentic-backend](iii-agentic-backend/SKILL.md) — Multi-agent pipelines with queue handoffs and shared state
 - [reactive-backend](iii-reactive-backend/SKILL.md) — Real-time backends with state triggers and stream updates
 - [workflow-orchestration](iii-workflow-orchestration/SKILL.md) — Durable multi-step pipelines with retries and DLQ
-- [http-invoked-functions](iii-http-invoked-functions/SKILL.md) — Register external HTTP endpoints as iii functions
 - [effect-system](iii-effect-system/SKILL.md) — Composable, traceable function pipelines
 - [event-driven-cqrs](iii-event-driven-cqrs/SKILL.md) — CQRS with event sourcing and independent projections
 - [low-code-automation](iii-low-code-automation/SKILL.md) — Trigger-transform-action automation chains

@@ -49,14 +49,14 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("payments::charge", |data: ChargeInput| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Attempting payment charge", &json!({ "orderId": data.order_id }));
+            logger.info("Attempting payment charge", Some(json!({ "orderId": data.order_id })));
 
             let gateway_up = rand::random::<f64>() > 0.7;
             if !gateway_up {
                 return Err("Payment gateway timeout - will be retried".into());
             }
 
-            logger.info("Payment succeeded", &json!({ "orderId": data.order_id }));
+            logger.info("Payment succeeded", Some(json!({ "orderId": data.order_id })));
             Ok(json!({ "charged": true, "order_id": data.order_id }))
         })
         .description("Charge payment (may fail for DLQ demo)"),
@@ -88,7 +88,7 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Payment enqueued", &json!({ "receiptId": receipt["messageReceiptId"] }));
+                logger.info("Payment enqueued", Some(json!({ "receiptId": receipt["messageReceiptId"] })));
                 Ok(receipt)
             }
         })
@@ -123,7 +123,7 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Redrive complete", &json!({ "queue": result["queue"], "redriven": result["redriven"] }));
+                logger.info("Redrive complete", Some(json!({ "queue": result["queue"], "redriven": result["redriven"] })));
                 Ok(result)
             }
         })
@@ -164,11 +164,11 @@ fn main() {
                         .await
                         .map_err(|e| e.to_string())?;
 
-                    logger.info("Queue status", &json!({
+                    logger.info("Queue status", Some(json!({
                         "queue": queue,
                         "dlq_count": info["dlq_count"],
                         "pending": info["pending"],
-                    }));
+                    })));
 
                     statuses.push(json!({
                         "queue": queue,
@@ -212,7 +212,7 @@ fn main() {
 
                 let redriven = result["redriven"].as_u64().unwrap_or(0);
                 if redriven > 0 {
-                    logger.info("Auto-redrive recovered messages", &json!({ "redriven": redriven }));
+                    logger.info("Auto-redrive recovered messages", Some(json!({ "redriven": redriven })));
                 }
 
                 Ok(result)
