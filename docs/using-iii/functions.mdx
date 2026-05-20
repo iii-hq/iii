@@ -61,17 +61,57 @@ and returns the result.
 ## Invoking functions
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
-once (direct CLI calls, an HTTP route, and a cron schedule, for example) without changing the
-handler.
+once — direct CLI calls (`iii trigger`), in-process SDK calls (`worker.trigger`), or bindings to
+event-source workers like iii-http, iii-cron, iii-queue, iii-state, and iii-stream — without
+changing the handler.
+
+The two most common ways to invoke a function directly are from worker code with `worker.trigger`
+or from the terminal with `iii trigger`:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "math::add",
+      payload: { a: 2, b: 3 },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "math::add",
+        "payload": {"a": 2, "b": 3},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::TriggerRequest;
+    use serde_json::json;
+
+    let result = worker
+        .trigger(TriggerRequest {
+            function_id: "math::add".into(),
+            payload: json!({ "a": 2, "b": 3 }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    ```
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    iii trigger math::add a=2 b=3
+    ```
+  </Tab>
+</Tabs>
 
 <Note>
-  Some trigger types are: [`iii trigger`](/using-iii/cli), [`worker.trigger`](/using-iii/triggers),
-  iii-http, iii-cron, iii-queue, iii-state, iii-stream.
-
-For how to call a registered function from worker code or the terminal (with optional delivery
-actions like fire-and-forget or queue-routed), see
-[Triggers / Call a function directly](/using-iii/triggers#call-a-function-directly).
-
+  Both calls are synchronous by default — they wait for the function to return. For
+  fire-and-forget (`TriggerAction.Void`), queue-routed delivery (`TriggerAction.Enqueue`),
+  per-worker custom actions, condition gating, and binding to event-source triggers, see [Triggers
+  / Call a function directly](/using-iii/triggers#call-a-function-directly).
 </Note>
 
 ## Define request and response formats
