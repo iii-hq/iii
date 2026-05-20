@@ -250,7 +250,7 @@ Both feed the iii console, the agent-readable skills, and the
 [`engine::trigger-types::list`](/using-iii/functions#engine-built-ins-engine) output so consumers
 know what to send and what they'll receive. Like
 [function request / response schemas](/creating-workers/functions#attach-request-and-response-schemas),
-they are **metadata only today** — the engine does not reject payloads or callbacks that don't match
+they are **metadata only today**: the engine does not reject payloads or callbacks that don't match
 them.
 
 Each SDK accepts these in its own idiomatic way:
@@ -273,9 +273,9 @@ disconnects, all trigger types it advertised are removed automatically and the e
 events that depended on them, so this step is only necessary if you want to drop a type while the
 worker stays connected.
 
-Call it any time after `registerTriggerType` while the worker stays connected — e.g. the underlying
+Call it any time after `registerTriggerType` while the worker stays connected (e.g. the underlying
 resource went into maintenance mode, a feature flag turned the surface off, or you want to rotate
-the type to a new schema without restarting. Continuing the `mini-http` example, here the worker
+the type to a new schema without restarting). Continuing the `mini-http` example, here the worker
 drops `mini-http` because its HTTP listener was disabled by config:
 
 <Tabs>
