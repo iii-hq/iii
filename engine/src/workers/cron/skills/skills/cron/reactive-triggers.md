@@ -89,9 +89,19 @@ The handler's return value is **ignored**. Errors from the handler are logged bu
 
 # Worked example
 
+Run a daily 02:00 UTC cleanup function:
+
+```json
+{
+  "type":        "cron",
+  "function_id": "jobs::cleanup-old-data",
+  "config":      { "expression": "0 0 2 * * * *" }
+}
+```
+
 Three patterns reach for `cron` in different ways:
 
-- **Single scheduled handler.** Register one function and one trigger. The handler receives `trigger: "cron"`, the configured `expression`, and a `(scheduled_time, actual_time)` pair on every firing — see the **Outputs** payload above for the exact shape.
+- **Single scheduled handler.** The registration above; the handler receives `trigger: "cron"`, the configured `job_id`, and a `(scheduled_time, actual_time)` pair on every firing — see the **Outputs** payload above for the exact shape.
 - **Conditionally gated firing.** Set `condition_function_id` on the trigger config to a function that returns truthy on days/states when the handler should run. The condition receives the same event payload the handler would; on `false` or error the handler is skipped and the lock is released so the next firing proceeds normally.
 - **Multiple schedules into one handler.** Register the same `function_id` against several triggers with distinct ids (e.g. `jobs::generate-report.hourly` and `jobs::generate-report.daily`). Inside the handler, branch on `event.job_id` to dispatch — the trigger id flows through as `job_id` in every event.
 
