@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from iii import FunctionInfo, TriggerAction
+from iii import TriggerAction
 from iii.iii import III
 
 
@@ -22,7 +22,7 @@ async def wait_for(condition, timeout=5.0, interval=0.1):
 async def test_connect_successfully(iii_client: III):
     """SDK connects to the engine and can list functions."""
     result = iii_client.trigger({"function_id": "engine::functions::list", "payload": {}})
-    functions = [FunctionInfo(**f) for f in result.get("functions", [])]
+    functions = result.get("functions", [])
     assert isinstance(functions, list)
 
 
@@ -93,8 +93,8 @@ async def test_list_registered_functions(iii_client: III):
 
     try:
         result = iii_client.trigger({"function_id": "engine::functions::list", "payload": {}})
-        functions = [FunctionInfo(**f) for f in result.get("functions", [])]
-        function_ids = [f.function_id for f in functions]
+        functions = result.get("functions", [])
+        function_ids = [f["function_id"] for f in functions]
 
         assert "test.bridge.py.list.func1" in function_ids
         assert "test.bridge.py.list.func2" in function_ids

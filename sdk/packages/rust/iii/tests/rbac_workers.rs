@@ -12,11 +12,20 @@ use serde_json::{Value, json};
 use serial_test::serial;
 
 use iii_sdk::{
-    AuthInput, AuthResult, FunctionInfo, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
+    AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
     OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
     OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
     RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
 };
+use serde::Deserialize;
+
+/// Minimal deserialization target for `engine::functions::list` rows used
+/// only by these integration tests. The SDK no longer carries a hand-written
+/// type for this — the engine surface will be auto-generated later.
+#[derive(Debug, Deserialize)]
+struct FnRow {
+    function_id: String,
+}
 
 static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<AuthInput>>>> = OnceLock::new();
 static RBAC_TT_REG_CALLS: OnceLock<Arc<Mutex<Vec<OnTriggerTypeRegistrationInput>>>> =
@@ -571,7 +580,7 @@ async fn should_only_list_allowed_functions_for_valid_token() {
         })
         .await
         .expect("function discovery request should succeed");
-    let functions: Vec<FunctionInfo> = serde_json::from_value(
+    let functions: Vec<FnRow> = serde_json::from_value(
         list_result
             .get("functions")
             .cloned()
@@ -634,7 +643,7 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
         })
         .await
         .expect("function discovery request should succeed");
-    let functions: Vec<FunctionInfo> = serde_json::from_value(
+    let functions: Vec<FnRow> = serde_json::from_value(
         list_result
             .get("functions")
             .cloned()

@@ -399,11 +399,10 @@ pub async fn dynamic_handler(
                     }
                     axum::body::Bytes::from(buf)
                 };
-                if let Some(req_tx) = req_tx {
-                    if !body_bytes.is_empty() {
+                if let Some(req_tx) = req_tx
+                    && !body_bytes.is_empty() {
                         let _ = req_tx.send(ChannelItem::Binary(body_bytes.clone())).await;
                     }
-                }
                 serde_json::from_slice(&body_bytes).unwrap_or(Value::Null)
             } else if let Some(req_tx) = req_tx {
                 let mut body = body;

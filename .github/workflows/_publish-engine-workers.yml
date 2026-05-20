@@ -103,8 +103,10 @@ jobs:
       - name: Snapshot engine trigger types baseline
         run: |
           set -euo pipefail
+          # `engine::trigger-types::list` was retired in the engine_fn rework.
+          # `engine::triggers::list` now returns trigger TYPES (templates).
           iii trigger \
-            'engine::trigger-types::list' \
+            'engine::triggers::list' \
             --json '{"include_internal": false}' \
             > trigger-types-baseline.json
           cat trigger-types-baseline.json

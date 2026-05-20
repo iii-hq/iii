@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import type { FunctionInfo } from '../../src/iii-types'
+type FunctionRow = { function_id: string }
 import { execute, iii, sleep } from './utils'
 
 describe('Functions Available (trigger)', () => {
   it('should notify when functions change via engine::functions-available trigger', async () => {
-    let latestFunctions: FunctionInfo[] = []
+    let latestFunctions: FunctionRow[] = []
     let callCount = 0
 
     const handlerFunctionId = `browser.test.fna.handler.${crypto.randomUUID()}`
     const handlerFn = iii.registerFunction(
       handlerFunctionId,
-      async ({ functions }: { functions: FunctionInfo[] }) => {
+      async ({ functions }: { functions: FunctionRow[] }) => {
         latestFunctions = functions
         callCount++
         return null
@@ -44,7 +44,7 @@ describe('Functions Available (trigger)', () => {
     const handlerFunctionId = `browser.test.fna.handler.${crypto.randomUUID()}`
     const handlerFn = iii.registerFunction(
       handlerFunctionId,
-      async (_: { functions: FunctionInfo[] }) => {
+      async (_: { functions: FunctionRow[] }) => {
         callCount++
         return null
       },

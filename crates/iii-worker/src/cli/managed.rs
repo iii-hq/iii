@@ -1058,7 +1058,7 @@ fn read_lockfile_or_default(
 
 fn write_engine_lock_entry(worker_name: &str, version: &str) -> Result<(), String> {
     let lock_path = super::lockfile::lockfile_path();
-    let mut lockfile = read_lockfile_or_default(&lock_path)?;
+    let mut lockfile = read_lockfile_or_default(lock_path)?;
     lockfile.workers.insert(
         worker_name.to_string(),
         super::lockfile::LockedWorker {
@@ -1068,7 +1068,7 @@ fn write_engine_lock_entry(worker_name: &str, version: &str) -> Result<(), Strin
             source: None,
         },
     );
-    lockfile.write_to(&lock_path)
+    lockfile.write_to(lock_path)
 }
 
 fn persist_engine_worker_config_and_lock(
@@ -1169,7 +1169,7 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     };
 
     let lock_path = super::lockfile::lockfile_path();
-    let mut lockfile = match read_lockfile_or_default(&lock_path) {
+    let mut lockfile = match read_lockfile_or_default(lock_path) {
         Ok(lockfile) => lockfile,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -1257,7 +1257,7 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     // drift detection until Slice A.2 adds project-wide scanning.
     populate_manifest_hash_fields(&mut lockfile);
 
-    if let Err(e) = lockfile.write_to(&lock_path) {
+    if let Err(e) = lockfile.write_to(lock_path) {
         eprintln!("{} {}", "error:".red(), e);
         config_snapshot.restore_after_failure();
         return 1;

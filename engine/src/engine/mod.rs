@@ -1561,10 +1561,10 @@ impl Engine {
                 // owner's fresh state. Keep ownership through teardown and
                 // CAS-release at the end so a racing claim reliably aborts
                 // us at the next ownership check.
-                if !self
+                if self
                     .external_function_owners
                     .get(function_id)
-                    .is_some_and(|r| *r == worker.id)
+                    .is_none_or(|r| *r != worker.id)
                 {
                     tracing::debug!(
                         worker_id = %worker.id,

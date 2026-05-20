@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .skip(1)
         .find(|a| !a.to_string_lossy().starts_with('-'))
-        .map_or(false, |a| a == "sandbox");
+        .is_some_and(|a| a == "sandbox");
 
     let mut cmd = Cli::command();
     if is_sandbox {

@@ -1,14 +1,11 @@
 import type { ChannelReader, ChannelWriter } from './channels'
 import type {
-  FunctionInfo,
   HttpInvocationConfig,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
   StreamChannelRef,
-  TriggerInfo,
   TriggerRequest,
-  TriggerTypeInfo,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
