@@ -7,7 +7,9 @@
 pub mod app;
 pub mod binary_download;
 pub mod builtin_defaults;
+pub mod bundle_download;
 pub mod config_file;
+pub mod download;
 pub mod firmware;
 pub mod host_shim;
 pub mod init;

@@ -16,6 +16,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Bundle worker orphan-staging sweep. If a previous `iii worker add
+    // <bundle>` invocation was killed mid-install (SIGKILL / power cut /
+    // OOM), the RAII StagingGuard could not run and left a directory
+    // behind under ~/.iii/workers-bundle/.staging/. Clear those at
+    // startup so they don't accumulate over time. Best-effort: errors
+    // are logged but never propagated. See T18 in the bundle plan.
+    let _ = iii_worker::cli::bundle_download::sweep_orphans();
+
     // The `iii` dispatcher routes `iii sandbox ...` here, but our root
     // bin_name is "iii worker" so clap renders `Usage: iii worker sandbox`.
     // Peek at argv: if the first non-flag arg is `sandbox`, override the
