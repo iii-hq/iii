@@ -48,6 +48,15 @@ When the call fails it returns a `FunctionResult::Failure` with one of:
 
 # Worked example
 
+Broadcast that an order shipped — every function subscribed to `orders.shipped` receives the payload:
+
+```json
+{
+  "topic": "orders.shipped",
+  "data":  { "orderId": "abc-123", "status": "shipped" }
+}
+```
+
 The typical pattern is one publish call per domain event the rest of the system should notice. Pick stable topic names that describe the event (`orders.shipped`, `users.deleted`, `auth.login_failed`) and let unrelated subscribers attach as needed. For runnable scaffolds, see the pubsub worker source and SDK examples in [the iii main repo](https://github.com/iii-hq/iii).
 
 # Related

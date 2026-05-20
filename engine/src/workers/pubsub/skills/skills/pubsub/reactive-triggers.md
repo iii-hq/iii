@@ -62,6 +62,16 @@ The handler's return value is **ignored**. Errors from the handler are logged bu
 
 # Worked example
 
+Subscribe a handler to the `orders.shipped` topic so it fires on every matching `publish`:
+
+```json
+{
+  "type":        "subscribe",
+  "function_id": "notifications::on-order-shipped",
+  "config":      { "topic": "orders.shipped" }
+}
+```
+
 The typical pattern is one trigger per (handler, topic) pair: a notifications handler subscribed to `orders.shipped`, an audit handler subscribed to `users.deleted`, etc. For multi-topic handlers, embed the topic in the `data` payload at publish time. For runnable scaffolds, see the pubsub worker source and SDK examples in [the iii main repo](https://github.com/iii-hq/iii).
 
 # Related
