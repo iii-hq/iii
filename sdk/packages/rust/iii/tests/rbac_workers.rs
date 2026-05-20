@@ -49,6 +49,50 @@ fn ew_url() -> String {
     std::env::var("III_RBAC_WORKER_URL").unwrap_or_else(|_| "ws://localhost:49135".to_string())
 }
 
+/// Poll until `function_id` shows up in the engine registry. RBAC-port
+/// registrations go through the on-function-registration hook on
+/// `shared_iii()`; under CI load that round-trip can exceed a fixed sleep,
+/// and the engine drops denied/slow registrations without surfacing an error
+/// to the registering client.
+async fn wait_until_function_registered(function_id: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let list_result = common::shared_iii()
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::list".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+
+        match &list_result {
+            Ok(result) => {
+                let functions: Vec<FnRow> = serde_json::from_value(
+                    result
+                        .get("functions")
+                        .cloned()
+                        .unwrap_or(Value::Array(vec![])),
+                )
+                .unwrap_or_default();
+                if functions.iter().any(|f| f.function_id == function_id) {
+                    return;
+                }
+            }
+            Err(_) => {}
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for {function_id} to appear in engine::functions::list \
+                 (last list result: {list_result:?}); RBAC worker registration may have been \
+                 denied by the on-function-registration hook or shared_iii setup had not finished"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 fn ensure_functions_registered() {
     RBAC_FUNCS_REGISTERED.get_or_init(|| {
         let iii = common::shared_iii();
@@ -766,7 +810,11 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
         },
     ));
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_until_function_registered(
+        "test::ew::carveout-logger-handler",
+        Duration::from_secs(10),
+    )
+    .await;
 
     let result = common::shared_iii()
         .trigger(TriggerRequest {
@@ -776,7 +824,11 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
             timeout_ms: None,
         })
         .await
-        .expect("handler that calls engine::log::info must complete under carve-out");
+        .expect(
+            "handler that calls engine::log::info must complete under carve-out; \
+             function_not_found means registration never reached the engine, FORBIDDEN \
+             means the INFRASTRUCTURE_FUNCTIONS carve-out regressed",
+        );
 
     assert_eq!(
         result["logged"], true,
