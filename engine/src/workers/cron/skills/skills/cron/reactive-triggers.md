@@ -89,78 +89,13 @@ The handler's return value is **ignored**. Errors from the handler are logged bu
 
 # Worked example
 
-Schedule a daily 02:00 UTC cleanup function.
+Three patterns reach for `cron` in different ways:
 
-Register the handler:
+- **Single scheduled handler.** Register one function and one trigger. The handler receives `trigger: "cron"`, the configured `expression`, and a `(scheduled_time, actual_time)` pair on every firing — see the **Outputs** payload above for the exact shape.
+- **Conditionally gated firing.** Set `condition_function_id` on the trigger config to a function that returns truthy on days/states when the handler should run. The condition receives the same event payload the handler would; on `false` or error the handler is skipped and the lock is released so the next firing proceeds normally.
+- **Multiple schedules into one handler.** Register the same `function_id` against several triggers with distinct ids (e.g. `jobs::generate-report.hourly` and `jobs::generate-report.daily`). Inside the handler, branch on `event.job_id` to dispatch — the trigger id flows through as `job_id` in every event.
 
-```json
-// iii.registerFunction — handler id only; no engine payload.
-{ "id": "jobs::cleanup-old-data" }
-```
-
-Register the trigger:
-
-```json
-{
-  "type":        "cron",
-  "function_id": "jobs::cleanup-old-data",
-  "config":      { "expression": "0 0 2 * * * *" }
-}
-```
-
-When the cron fires the handler receives:
-
-```json
-{
-  "trigger":        "cron",
-  "job_id":         "jobs::cleanup-old-data",
-  "scheduled_time": "2026-05-21T02:00:00.000+00:00",
-  "actual_time":    "2026-05-21T02:00:00.038+00:00"
-}
-```
-
-Gate firing on a runtime condition (skip on weekends). Register a condition function alongside the handler:
-
-```json
-{ "id": "jobs::is-weekday" }
-```
-
-Then bind both:
-
-```json
-{
-  "type":        "cron",
-  "function_id": "jobs::generate-daily-report",
-  "config": {
-    "expression":            "0 0 9 * * * *",
-    "condition_function_id": "jobs::is-weekday"
-  }
-}
-```
-
-`jobs::is-weekday` receives the same event payload (`trigger`, `job_id`, `scheduled_time`, `actual_time`); when it returns `false` the handler is skipped and the lock is released so the next firing proceeds normally.
-
-Bind multiple triggers to one handler and dispatch on `job_id` inside the handler:
-
-```json
-{
-  "type":        "cron",
-  "function_id": "jobs::generate-report",
-  "config":      { "expression": "0 0 * * * *" },
-  "id":          "jobs::generate-report.hourly"
-}
-```
-
-```json
-{
-  "type":        "cron",
-  "function_id": "jobs::generate-report",
-  "config":      { "expression": "0 0 0 * * * *" },
-  "id":          "jobs::generate-report.daily"
-}
-```
-
-The handler then sees `event.job_id` of either `"jobs::generate-report.hourly"` or `"jobs::generate-report.daily"` and can branch accordingly.
+For runnable scaffolds covering these patterns end-to-end (TypeScript, Python, and Rust), see the cron worker source and the SDK usage examples in [the iii main repo](https://github.com/iii-hq/iii).
 
 # Related
 
