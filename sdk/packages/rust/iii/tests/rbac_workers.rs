@@ -810,11 +810,8 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
         },
     ));
 
-    wait_until_function_registered(
-        "test::ew::carveout-logger-handler",
-        Duration::from_secs(10),
-    )
-    .await;
+    wait_until_function_registered("test::ew::carveout-logger-handler", Duration::from_secs(10))
+        .await;
 
     let result = common::shared_iii()
         .trigger(TriggerRequest {
