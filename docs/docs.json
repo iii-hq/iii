@@ -264,9 +264,6 @@
                 "expanded": false,
                 "pages": [
                   "understanding-iii/index",
-                  "understanding-iii/workers",
-                  "understanding-iii/triggers",
-                  "understanding-iii/functions",
                   "understanding-iii/engine",
                   "understanding-iii/channels"
                 ]
