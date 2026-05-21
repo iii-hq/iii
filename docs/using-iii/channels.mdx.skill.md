@@ -2,7 +2,7 @@
 
 
 Channels move large or binary payloads between iii workers without putting the data in a JSON
-function payload. Use one when the payload is too big to inline (files, images, datasets), above
+function payload. Use one when the payload is expected to be large (files, images, datasets), above
 roughly **16 MB**, intended to be streamed (audio, video), or you want incremental progress updates
 during long-running work. For small JSON, stick with a regular `worker.trigger(...)` call.
 
@@ -115,12 +115,24 @@ engine to whichever worker holds the matching `reader`.
 ## Pass a channel ref to another function
 
 Pass the `readerRef` (or `writerRef`) as part of a normal function invocation. The receiving
-function uses the ref to read from (or write to) the channel; only the small ref crosses the
-function-call boundary, not the payload itself.
+function uses the ref to read from (or write to) the channel.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import type { ChannelReader } from "iii-sdk";
+
+    worker.registerFunction(
+      "files::process",
+      async (input: { filename: string; reader: ChannelReader }) => {
+        let bytes = 0;
+        for await (const chunk of input.reader.stream) {
+          bytes += chunk.length;
+        }
+        return { filename: input.filename, bytes };
+      },
+    );
+
     const result = await worker.trigger({
       function_id: "files::process",
       payload: {
@@ -132,6 +144,15 @@ function-call boundary, not the payload itself.
   </Tab>
   <Tab title="Python">
     ```python
+    async def process_file(input: dict) -> dict:
+        reader = input["reader"]
+        total = 0
+        async for chunk in reader:
+            total += len(chunk)
+        return {"filename": input["filename"], "bytes": total}
+
+    iii_client.register_function("files::process", process_file)
+
     result = await iii_client.trigger_async({
         "function_id": "files::process",
         "payload": {
@@ -143,8 +164,28 @@ function-call boundary, not the payload itself.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerRequest;
+    use iii_sdk::{ChannelDirection, ChannelReader, IIIError, TriggerRequest};
     use serde_json::json;
+
+    let worker_addr = worker.address();
+    worker.register_function("files::process", move |input: serde_json::Value| {
+        let worker_addr = worker_addr.clone();
+        async move {
+            let refs = iii_sdk::extract_channel_refs(&input);
+            let reader_ref = refs
+                .iter()
+                .find(|(k, r)| k == "reader" && matches!(r.direction, ChannelDirection::Read))
+                .map(|(_, r)| r.clone())
+                .ok_or_else(|| IIIError::Handler("missing reader channel ref".into()))?;
+
+            let mut reader = ChannelReader::new(worker_addr, &reader_ref);
+            let mut bytes = 0;
+            while let Some(chunk) = reader.next_binary().await? {
+                bytes += chunk.len();
+            }
+            Ok(json!({ "bytes": bytes }))
+        }
+    });
 
     let result = worker
         .trigger(TriggerRequest {
