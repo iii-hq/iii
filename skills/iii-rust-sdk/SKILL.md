@@ -34,7 +34,7 @@ Add to `Cargo.toml`:
 | `TriggerAction::Enqueue { queue }`                 | Durable async invocation                                                         |
 | `IIIError`                                         | Error type for handler failures                                                  |
 | `Streams`                                          | Helper for atomic stream CRUD                                                    |
-| `with_span`, `get_tracer`, `get_meter`             | OpenTelemetry (requires `otel` feature)                                          |
+| `with_span`, `run_in_span`                         | OpenTelemetry custom spans (requires `otel` feature)                             |
 | `execute_traced_request`                           | HTTP client with trace context propagation                                       |
 
 ## Key Notes

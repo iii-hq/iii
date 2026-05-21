@@ -16,11 +16,11 @@ _SEVERITY_MAP = {
 }
 
 
-def is_initialized() -> bool:
-    """Return True if OTel has been initialized (importable without circular dep)."""
-    from .telemetry import is_initialized as _is_init
+def _is_initialized() -> bool:
+    """Internal: True if OTel has been initialized. Imported lazily to avoid a circular import."""
+    from .telemetry import _is_initialized as _check
 
-    return _is_init()
+    return _check()
 
 
 class Logger:
@@ -60,7 +60,7 @@ class Logger:
 
     def _emit_otel(self, level: str, message: str, data: Any = None) -> bool:
         """Emit an OTel LogRecord. Returns True if emitted, False if OTel not active."""
-        if not is_initialized():
+        if not _is_initialized():
             return False
         try:
             from opentelemetry import _logs, trace
