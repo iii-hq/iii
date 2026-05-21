@@ -241,6 +241,23 @@ export async function shutdownOtel(): Promise<void> {
 }
 
 /**
+ * Force-flush all OTel providers without tearing them down.
+ *
+ * Counterpart to {@link shutdownOtel}. Use before short-lived process exits
+ * where you want pending spans/metrics/logs delivered but plan to keep using
+ * OTel afterwards.
+ */
+export async function flushOtel(): Promise<void> {
+  await Promise.all(
+    [
+      tracerProvider?.forceFlush(),
+      meterProvider?.forceFlush(),
+      loggerProvider?.forceFlush(),
+    ].filter(Boolean),
+  )
+}
+
+/**
  * Get the OpenTelemetry tracer instance.
  */
 export function getTracer(): Tracer | null {
