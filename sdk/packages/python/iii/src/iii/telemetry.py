@@ -247,7 +247,7 @@ def _enable_fetch_instrumentation() -> None:
     original = _original_opener_open
 
     def _patched_open(self: Any, fullurl: Any, data: Any = None, timeout: Any = socket.getdefaulttimeout()) -> Any:
-        tracer = get_tracer()
+        tracer = _get_tracer()
         if tracer is None:
             return original(self, fullurl, data, timeout)
 
@@ -391,13 +391,13 @@ def attach_event_loop(loop: asyncio.AbstractEventLoop) -> None:
         _connection.start(loop)
 
 
-def get_tracer() -> Any:
-    """Return the active tracer, or None if OTel has not been initialized."""
+def _get_tracer() -> Any:
+    """Internal: return the active tracer, or None if OTel has not been initialized."""
     return _tracer
 
 
-def get_meter() -> Any:
-    """Return the active meter, or None if OTel metrics have not been initialized."""
+def _get_meter() -> Any:
+    """Internal: return the active meter, or None if OTel metrics have not been initialized."""
     return _meter
 
 
@@ -421,8 +421,8 @@ def current_span_id() -> str | None:
     return None
 
 
-def is_initialized() -> bool:
-    """Return True if OTel has been successfully initialized."""
+def _is_initialized() -> bool:
+    """Internal: return True if OTel has been successfully initialized."""
     return _initialized
 
 
@@ -456,7 +456,7 @@ async def with_span(
     Returns:
         The value returned by *fn*.
     """
-    tracer = get_tracer()
+    tracer = _get_tracer()
     if tracer is None:
 
         class _NoopSpan:

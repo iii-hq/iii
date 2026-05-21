@@ -72,7 +72,7 @@ def test_logger_emits_warn_severity():
 
     log_exporter = _setup_in_memory_log_provider()
 
-    with patch("iii.logger.is_initialized", return_value=True):
+    with patch("iii.logger._is_initialized", return_value=True):
         logger = Logger()
         logger.warn("watch out")
 
@@ -94,7 +94,7 @@ def test_logger_attaches_trace_context_from_active_span():
     trace.set_tracer_provider(tracer_provider)
     tracer = tracer_provider.get_tracer("test")
 
-    with patch("iii.logger.is_initialized", return_value=True):
+    with patch("iii.logger._is_initialized", return_value=True):
         with tracer.start_as_current_span("test-span") as span:
             logger = Logger(service_name="fn1")
             logger.info("inside span")
@@ -114,7 +114,7 @@ def test_logger_no_trace_context_outside_span():
 
     log_exporter = _setup_in_memory_log_provider()
 
-    with patch("iii.logger.is_initialized", return_value=True):
+    with patch("iii.logger._is_initialized", return_value=True):
         logger = Logger(service_name="fn1")
         logger.info("outside span")
 
