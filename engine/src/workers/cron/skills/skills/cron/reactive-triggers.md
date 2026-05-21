@@ -109,6 +109,6 @@ For runnable scaffolds covering these patterns end-to-end (TypeScript, Python, a
 
 # Related
 
-- `iii-cron` adapter config (see [the README](../../../README.md)) — the once-only-execution guarantee depends on `adapter.name: redis` for multi-instance deployments. The default `kv` adapter only locks process-local, so each engine instance fires the same scheduled run.
+- `iii-cron` adapter config (see [the README](https://github.com/iii-hq/iii/blob/main/engine/src/workers/cron/README.md)) — the once-only-execution guarantee depends on `adapter.name: redis` for multi-instance deployments. The default `kv` adapter only locks process-local, so each engine instance fires the same scheduled run.
 - `state` reactive trigger — fire on data changes instead of on the clock.
 - `stream` reactive trigger — fire on stream item changes; pair with `cron` for "every hour, refresh the projection of the last hour's stream events."
