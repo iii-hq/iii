@@ -5,6 +5,7 @@ members = [
   "engine/function-macros",
   "sdk/packages/rust/iii",
   "sdk/packages/rust/iii-example",
+  "sdk/packages/rust/observability",
   "console/packages/console-rust",
   "crates/iii-init",
   "crates/iii-filesystem",
@@ -26,6 +27,7 @@ homepage = "https://iii.dev"
 
 [workspace.dependencies]
 iii-sdk = { path = "sdk/packages/rust/iii" }
+iii-observability = { path = "sdk/packages/rust/observability" }
 scaffolder-core = { path = "crates/scaffolder-core" }
 
 # Shared dependencies used by tooling crates

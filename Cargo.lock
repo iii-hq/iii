@@ -2767,6 +2767,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-observability"
+version = "0.13.0-next.1"
+dependencies = [
+ "async-trait",
+ "ctor",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sysinfo 0.38.4",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-sdk"
 version = "0.13.0"
 dependencies = [
