@@ -16,3 +16,6 @@ pub use telemetry::span_ops::{
 };
 pub use telemetry::http_instrumentation::execute_traced_request;
 pub use telemetry::{flush_otel, init_otel, run_in_span, shutdown_otel, with_span};
+
+pub mod logger;
+pub use logger::Logger;
