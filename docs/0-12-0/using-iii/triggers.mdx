@@ -1,0 +1,174 @@
+---
+title: "Triggers"
+description: "Calling functions directly or by binding them to events in your iii project."
+owner: "devrel"
+type: "how-to"
+---
+
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
+## Call a function directly
+
+Call a function by its `function_id` from worker code (`worker.trigger(...)`) or from the terminal
+(`iii trigger`). The engine routes the call to whatever worker registered the function; no trigger
+registration is involved. The `action` field controls delivery: by default the call waits for the
+function to return its result, or for the configured timeout to fire. Pass a different
+`TriggerAction` to change that.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker, TriggerAction } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+
+    const result = await worker.trigger({
+      function_id: "math::add",
+      payload: { a: 2, b: 3 },
+      // action: TriggerAction.Void(),                       // fire-and-forget
+      // action: TriggerAction.Enqueue({ queue: "math" }),   // route through iii-queue
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions, TriggerAction
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="caller"),
+    )
+
+    result = worker.trigger({
+        "function_id": "math::add",
+        "payload": {"a": 2, "b": 3},
+        # "action": TriggerAction.Void(),                    # fire-and-forget
+        # "action": TriggerAction.Enqueue(queue="math"),     # route through iii-queue
+    })
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, TriggerAction, TriggerRequest, register_worker};
+    use serde_json::json;
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    let result = worker
+        .trigger(TriggerRequest {
+            function_id: "math::add".to_string(),
+            payload: json!({ "a": 2, "b": 3 }),
+            action: None,
+            // action: Some(TriggerAction::Void),                                  // fire-and-forget
+            // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through iii-queue
+            timeout_ms: None,
+        })
+        .await?;
+    ```
+
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    iii trigger math::add a=2 b=3
+    ```
+  </Tab>
+</Tabs>
+
+Some common actions are:
+
+- **Default (synchronous)**. No `action` set. The call waits for the function to return its result
+  or for the configured timeout to fire.
+- **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
+  but the caller doesn't see the result.
+- **`TriggerAction.Enqueue({ queue })`**. Provided by
+  iii-queue. Routes the invocation through a named
+  queue with retries; the call returns once the message is enqueued.
+
+<Note>
+  Workers can provide their own `TriggerAction`s. Check each [worker's
+  documentation](https://workers.iii.dev) for the action types it offers.
+</Note>
+
+## Register a trigger
+
+Functions can also run when a trigger is satisfied. A trigger can be any event that happens such as
+a request to an `http` endpoint, a `cron` job, a change in `state`, or any other trigger that a
+worker supports. You can also [write your own](/creating-workers/triggers).
+
+You bind triggers to functions via the `function_id`. The trigger declares its `type`, its `config`
+(defined by each type), and the function to invoke.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="my-worker"),
+    )
+
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, RegisterTriggerInput, register_worker};
+    use serde_json::json;
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".into(),
+        function_id: "math::add".into(),
+        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
+
+Per-type configuration is documented in each worker's Worker Docs (e.g.
+iii-http for the `http` type).
+
+## Bind multiple triggers to one function
+
+It's valid to bind multiple triggers to the same `function_id` and this can be done across any
+number of types. Register a second trigger with the same `function_id` and a different type or
+config; the function runs unchanged whether the call arrives over HTTP, on a cron schedule, or from
+a queue message.
+
+## Gate a trigger with a condition
+
+A trigger can carry an optional `condition_function_id`. When the trigger fires, the engine invokes
+the condition function first; the target `function_id` only runs if the condition returns truthy.
+Use this when the same event source should sometimes fire the function and sometimes skip it.
+
+## Unregister a trigger
+
+Trigger registration returns a handle. Pass that handle to `worker.unregisterTrigger(...)` to drop
+the trigger at runtime. When the worker disconnects, all of its triggers are removed automatically.
