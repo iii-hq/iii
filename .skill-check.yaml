@@ -8,6 +8,7 @@ docs:
     - "docs/0-10-0/**"
     - "docs/0-11-0/**"
     - "docs/changelog/**"
+    - "docs/**/changelog/**"
 ai_check:
   provider: anthropic
   model: claude-sonnet-4-6
