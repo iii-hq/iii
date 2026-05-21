@@ -5989,6 +5989,18 @@ iii.register_function(
   let stepEls = []; // dom nodes per step (sparse)
   let stepStates = []; // per-step transient state
 
+  // Analytics helper: emit one event per user-driven step advance (button click).
+  // Step reveals are tracked centrally in revealStep().
+  function trackStepAdvance(step, label){
+    iiiTrack('experience_step_advance', {
+      step_id: step.id,
+      step_index: HOMEPAGE_FLOW.indexOf(step),
+      step_type: step.type,
+      advance_method: 'button',
+      button_label: (label || '').trim().toLowerCase()
+    });
+  }
+
   const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   // -------- syntax highlighting (light, regex-based) --------
@@ -6092,6 +6104,11 @@ iii.register_function(
   function revealStep(i){
     visibleUpTo = i;
     const step = HOMEPAGE_FLOW[i];
+    iiiTrack('experience_step_reveal', {
+      step_id: step.id,
+      step_index: i,
+      step_type: step.type
+    });
     const wrap = document.createElement('div');
     wrap.className = 'seq-step';
     wrap.dataset.id = step.id;
@@ -6160,6 +6177,7 @@ iii.register_function(
           cta_label: (step.action.label || '').trim().toLowerCase(),
           step_id: step.id
         });
+        trackStepAdvance(step, step.action.label);
         // Drop the intro hero state on first interaction — text + spacing animate back to normal flow.
         seqScroll.classList.remove('is-intro');
         advance();
@@ -6172,7 +6190,7 @@ iii.register_function(
       const a = document.createElement('button');
       a.type = 'button'; a.className = 'continue-link';
       a.textContent = 'Continue';
-      a.addEventListener('click', advance);
+      a.addEventListener('click', () => { trackStepAdvance(step, 'Continue'); advance(); });
       ctaRow.appendChild(a);
     }
   }
@@ -6217,7 +6235,7 @@ iii.register_function(
           const btn = document.createElement('button');
           btn.type = 'button'; btn.className = 'send';
           btn.textContent = step.sendLabel || 'Send';
-          btn.addEventListener('click', advance);
+          btn.addEventListener('click', () => { trackStepAdvance(step, btn.textContent); advance(); });
           actions.appendChild(btn);
           pin();
         }
@@ -6279,7 +6297,7 @@ iii.register_function(
             const btn = document.createElement('button');
             btn.type = 'button'; btn.className = 'deploy';
             btn.textContent = step.doneLabel || 'Deploy';
-            btn.addEventListener('click', advance);
+            btn.addEventListener('click', () => { trackStepAdvance(step, btn.textContent); advance(); });
             actions.appendChild(btn);
             pin();
           }
@@ -6312,7 +6330,7 @@ iii.register_function(
       const a = document.createElement('button');
       a.type = 'button'; a.className = 'continue-link';
       a.textContent = 'continue';
-      a.addEventListener('click', advance);
+      a.addEventListener('click', () => { trackStepAdvance(step, 'continue'); advance(); });
       slot.appendChild(a);
     }
   }
@@ -6467,7 +6485,7 @@ iii.register_function(
         const btn = document.createElement('button');
         btn.type = 'button'; btn.className = 'deploy';
         btn.textContent = 'Continue';
-        btn.addEventListener('click', advance);
+        btn.addEventListener('click', () => { trackStepAdvance(step, 'Continue'); advance(); });
         actEl.appendChild(btn);
       }
     }, detailDelay));
@@ -6475,6 +6493,7 @@ iii.register_function(
 
   function renderFinish(){
     hideTypingDots();
+    iiiTrack('experience_complete', { steps_total: HOMEPAGE_FLOW.length });
     const el = document.createElement('div');
     el.className = 'seq-step';
     el.innerHTML = ''
@@ -6483,6 +6502,15 @@ iii.register_function(
       +   '<a href="https://iii.dev/docs/quickstart" class="quick" target="_blank" rel="noopener noreferrer">Quickstart Guide \u2192</a>'
       + '</div>';
     seqScroll.appendChild(el);
+    const quickLink = el.querySelector('.quick');
+    if (quickLink) quickLink.addEventListener('click', () => {
+      iiiTrack('cta_click', {
+        cta_id: 'quickstart',
+        cta_location: 'experience_finish',
+        cta_label: 'quickstart guide',
+        cta_href: quickLink.getAttribute('href') || ''
+      });
+    });
     pin();
   }
 
@@ -6521,11 +6549,17 @@ iii.register_function(
   let started = false;
   function startWhenVisible(){
     const xp = document.getElementById('experience');
-    if (!('IntersectionObserver' in window)){ startSession(); started = true; return; }
+    if (!('IntersectionObserver' in window)){
+      iiiTrack('experience_start', { trigger: 'no_intersection_observer' });
+      startSession();
+      started = true;
+      return;
+    }
     const io = new IntersectionObserver((entries) => {
       entries.forEach(e => {
         if (e.isIntersecting && !started){
           started = true;
+          iiiTrack('experience_start', { trigger: 'viewport' });
           startSession();
           io.disconnect();
         }
@@ -6535,7 +6569,10 @@ iii.register_function(
   }
   startWhenVisible();
 
-  seqRestart.addEventListener('click', () => { startSession(); });
+  seqRestart.addEventListener('click', () => {
+    iiiTrack('experience_restart', { reached_step_index: visibleUpTo, reached_step_id: (HOMEPAGE_FLOW[visibleUpTo] && HOMEPAGE_FLOW[visibleUpTo].id) || null });
+    startSession();
+  });
 </script>
 
 
@@ -6586,26 +6623,8 @@ iii.register_function(
       flashCopied();
     }
   }
-  if (installBtn) installBtn.addEventListener('click', () => {
-    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'nav', cta_label: 'install.sh' });
-    copyInstall();
-  });
-  if (installBtnM) installBtnM.addEventListener('click', () => {
-    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'mobile_menu', cta_label: 'install.sh' });
-    copyInstall();
-  });
-
-  // ============= CTA click tracking (nav + hero) =============
-  const trackCtaClick = (el, params) => {
-    if (!el) return;
-    el.addEventListener('click', () => iiiTrack('cta_click', params));
-  };
-  trackCtaClick(document.getElementById('dc-btn'),
-    { cta_id: 'discord', cta_location: 'nav', cta_label: 'discord' });
-  trackCtaClick(document.querySelector('.nav-right .gh-btn'),
-    { cta_id: 'github', cta_location: 'nav', cta_label: 'github' });
-  trackCtaClick(document.querySelector('.hero-cta .hero-btn'),
-    { cta_id: 'get_started', cta_location: 'hero', cta_label: 'get started' });
+  if (installBtn) installBtn.addEventListener('click', copyInstall);
+  if (installBtnM) installBtnM.addEventListener('click', copyInstall);
 
   // ============= Hero rotating descriptor =============
   const rotatingDescriptors = [
