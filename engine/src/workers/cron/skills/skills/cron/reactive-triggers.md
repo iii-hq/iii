@@ -48,7 +48,7 @@ Register any function id. The handler receives the event payload documented in O
 
 The supported grammar is **6- or 7-field**, ordered:
 
-```
+```text
 second  minute  hour  day-of-month  month  day-of-week  [year]
 ```
 
@@ -109,6 +109,6 @@ For runnable scaffolds covering these patterns end-to-end (TypeScript, Python, a
 
 # Related
 
-- `iii-cron` adapter config (see [the README](https://github.com/iii-hq/iii/blob/main/engine/src/workers/cron/README.md)) — the once-only-execution guarantee depends on `adapter.name: redis` for multi-instance deployments. The default `kv` adapter only locks process-local, so each engine instance fires the same scheduled run.
+- `iii-cron` adapter — the once-only-execution guarantee depends on `adapter.name: redis` for multi-instance deployments. The default `kv` adapter only locks process-local (config keys: `lock_ttl_ms`, `lock_index`); on a multi-instance fleet every engine instance fires the same scheduled run. Switch to `adapter.name: redis` (config key: `redis_url`) so the lock is shared across instances.
 - `state` reactive trigger — fire on data changes instead of on the clock.
 - `stream` reactive trigger — fire on stream item changes; pair with `cron` for "every hour, refresh the projection of the last hour's stream events."
