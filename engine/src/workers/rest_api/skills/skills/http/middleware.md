@@ -134,5 +134,5 @@ For runnable scaffolds in TypeScript, Python, and Rust, see the http worker sour
 # Related
 
 - [Expose a function as an HTTP endpoint](iii://iii-http/http/reactive-triggers) — the route how-to; `middleware_function_ids` is documented there as part of the trigger config.
-- `iii-http` worker config (see [the README](../../../README.md)) — full `middleware:` block schema with all defaults.
+- `iii-http` worker config (see [the README](https://github.com/iii-hq/iii/blob/main/engine/src/workers/rest_api/README.md)) — full `middleware:` block schema with all defaults.
 - `condition_function_id` (on the http trigger) — the lighter-weight gate when you only need a boolean check and don't need to attach context or shape the error response.
