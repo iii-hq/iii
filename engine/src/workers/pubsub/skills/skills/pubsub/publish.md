@@ -62,5 +62,5 @@ The typical pattern is one publish call per domain event the rest of the system 
 # Related
 
 - [React to topic publishes](iii://iii-pubsub/pubsub/reactive-triggers) — the matching subscribe side; handlers receive the `data` payload directly.
-- `iii-pubsub` adapter config (see [the README](https://github.com/iii-hq/iii/blob/main/engine/src/workers/pubsub/README.md)) — `local` is single-instance only; multi-instance fleets need `redis`.
+- `iii-pubsub` adapter — set `adapter.name: local` (in-process broadcast, single-instance only) or `adapter.name: redis` with `redis_url` (Redis Pub/Sub, propagates across multiple engine instances). Multi-instance fleets must use `redis` or events stay local to whichever instance handled the publish.
 - `iii-queue` topic mode — when delivery must survive offline subscribers, retries, or dead-letter handling. See the README's "PubSub vs Queue" comparison.

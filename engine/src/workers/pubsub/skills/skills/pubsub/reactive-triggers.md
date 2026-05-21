@@ -77,5 +77,5 @@ The typical pattern is one trigger per (handler, topic) pair: a notifications ha
 # Related
 
 - [`publish`](iii://iii-pubsub/pubsub/publish) — the broadcast side. Every event delivered to this trigger comes from a `publish` call.
-- `iii-pubsub` adapter config (see [the README](https://github.com/iii-hq/iii/blob/main/engine/src/workers/pubsub/README.md)) — `local` adapter only delivers to subscribers on the same engine instance; use `redis` for cross-instance fan-out.
+- `iii-pubsub` adapter — `adapter.name: local` (default; in-process broadcast channels) only delivers to subscribers on this engine instance. Switch to `adapter.name: redis` with `redis_url` for cross-instance fan-out via Redis Pub/Sub.
 - `iii-queue` topic-based subscribers (`durable:subscriber` trigger) — for reliable delivery with retries and dead-letter support; `subscribe` is fire-and-forget.
