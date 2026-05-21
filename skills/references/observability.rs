@@ -20,10 +20,14 @@ use schemars;
 
 #[cfg(feature = "otel")]
 use iii_sdk::{
-    with_span, get_tracer, get_meter, shutdown_otel, init_otel,
+    with_span, shutdown_otel, init_otel,
     current_trace_id, inject_traceparent, inject_baggage,
-    OtelConfig, SpanKind,
+    OtelConfig,
 };
+#[cfg(feature = "otel")]
+use iii_sdk::telemetry::get_meter;
+#[cfg(feature = "otel")]
+use opentelemetry::trace::SpanKind;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct OrderInput {

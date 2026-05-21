@@ -29,7 +29,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-node>
 | `TriggerAction.Void()`                                   | Fire-and-forget invocation mode                   |
 | `TriggerAction.Enqueue({ queue })`                       | Durable async invocation mode                     |
 | `Logger`                                                 | Structured logging                                |
-| `withSpan`, `getTracer`, `getMeter`                      | OpenTelemetry instrumentation                     |
+| `withSpan`                                               | OpenTelemetry custom spans                        |
 | `iii.createChannel()`                                    | Binary streaming between workers                  |
 | `iii.createStream(name, adapter)`                        | Custom stream implementation                      |
 | `iii.registerTriggerType(id, handler)`                   | Custom trigger type registration                  |
