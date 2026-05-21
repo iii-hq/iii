@@ -9,3 +9,8 @@ pub use telemetry::context::{
     inject_traceparent, remove_baggage_entry, run_with_baggage, set_baggage_entry,
 };
 pub use telemetry::types::{OtelConfig, ReconnectionConfig};
+pub use telemetry::baggage_span_processor::{BaggageSpanProcessor, DEFAULT_ALLOWLIST};
+pub use telemetry::payload::{REDACTED_PLACEHOLDER, redact, redact_and_truncate, resolve_max_bytes_from_env};
+pub use telemetry::span_ops::{
+    current_span_is_recording, record_span_event, set_current_span_attribute, set_current_span_error,
+};
