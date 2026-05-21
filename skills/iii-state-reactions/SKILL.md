@@ -1,11 +1,11 @@
 ---
 name: iii-state-reactions
 description: >-
-  Registers state-type triggers that automatically fire functions when key-value
-  state is created, updated, or deleted within a scope. Use when building
-  reactive side effects, change watchers, audit logs, cache invalidation,
-  notification dispatchers, or any observer pattern where data changes should
-  trigger downstream processing.
+  Registers reactive state triggers that automatically fire functions when
+  key-value state is created, updated, or deleted. Use whenever a requirement
+  says "when X changes, do Y", "after a record is created/updated/deleted",
+  keep derived data in sync, notify users, invalidate caches, write audit logs,
+  or run downstream work from data changes without polling or explicit calls.
 ---
 
 # State Reactions
@@ -82,7 +82,7 @@ Install/enable iii-state with `iii worker add iii-state`; state triggers fire fr
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-state-reactions` in the iii engine.
-- Use this skill when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill even when the request does not say "trigger" if the desired behavior is automatic work after a state change.
 
 ## Boundaries
 

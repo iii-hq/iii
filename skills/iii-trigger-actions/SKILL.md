@@ -1,10 +1,12 @@
 ---
 name: iii-trigger-actions
 description: >-
-  Selects how functions are invoked — synchronous calls that return results,
-  fire-and-forget void dispatches, or durable enqueue through named queues with
-  retries. Use when deciding between blocking RPC calls, background job
-  dispatch, async workers, or reliable message delivery with acknowledgement.
+  Selects how functions are invoked: synchronous result-returning calls,
+  fire-and-forget void dispatches, or durable `TriggerAction.Enqueue({ queue })`
+  background jobs. Use whenever a handler should not block the caller, work
+  should run later or reliably with retries, a request should return quickly,
+  or an agent must choose between inline RPC, optional side effects, and queued
+  async processing.
 ---
 
 # Trigger Actions
@@ -85,7 +87,7 @@ Use the adaptations below when they apply to the task.
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-trigger-actions` in the iii engine.
-- Triggers when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill even when the request does not say "enqueue" if work is slow, retryable, reliable, or should continue after the caller returns.
 
 ## Boundaries
 

@@ -1,10 +1,11 @@
 ---
 name: iii-reactive-backend
 description: >-
-  Builds reactive real-time backends on the iii engine. Use when building
-  event-driven apps where state changes automatically trigger side effects,
-  clients receive live updates via streams or websockets, or you need a
-  real-time database layer with pub/sub and CRUD endpoints.
+  Builds reactive real-time backends where functions react automatically to
+  state changes and stream events. Use when requirements say "after create/update
+  do this", "keep views/metrics/cache in sync", "notify clients when data
+  changes", "push live updates", or "avoid polling"; combine state triggers,
+  stream updates, pub/sub, and queued work instead of imperative follow-up calls.
 ---
 
 # Reactive Backend
@@ -78,7 +79,7 @@ Use the adaptations below when they apply to the task.
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-reactive-backend` in the iii engine.
-- Triggers when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill even when the request does not say "reactive" if the backend should respond automatically to changes or push updates to clients.
 
 ## Boundaries
 

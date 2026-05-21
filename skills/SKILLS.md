@@ -13,13 +13,13 @@ Direct mappings to iii documentation HOWTOs. Each teaches one iii primitive or w
 - [functions-and-triggers](iii-functions-and-triggers/SKILL.md) — Register functions and triggers across TypeScript, Python, and Rust
 - [http-endpoints](iii-http-endpoints/SKILL.md) — Expose functions as REST API endpoints
 - [cron-scheduling](iii-cron-scheduling/SKILL.md) — Schedule recurring tasks with cron expressions
-- [queue-processing](iii-queue-processing/SKILL.md) — Async job processing with retries, concurrency, and ordering
+- [queue-processing](iii-queue-processing/SKILL.md) — Enqueue slow or reliable background work with retries, concurrency, and ordering
 - [state-management](iii-state-management/SKILL.md) — Distributed key-value state across functions
-- [state-reactions](iii-state-reactions/SKILL.md) — Auto-trigger functions on state changes
+- [state-reactions](iii-state-reactions/SKILL.md) — React automatically when state changes: when X changes, do Y
 - [realtime-streams](iii-realtime-streams/SKILL.md) — Push live updates to WebSocket clients
 - [pubsub](iii-pubsub/SKILL.md) — Broadcast non-durable topic events to subscribers
 - [custom-triggers](iii-custom-triggers/SKILL.md) — Build custom trigger types for external events
-- [trigger-actions](iii-trigger-actions/SKILL.md) — Synchronous, fire-and-forget, and enqueue invocation modes
+- [trigger-actions](iii-trigger-actions/SKILL.md) — Choose sync, void, or durable enqueue when deciding how work should run
 - [trigger-conditions](iii-trigger-conditions/SKILL.md) — Gate trigger execution with condition functions
 - [trigger-schemas](iii-trigger-schemas/SKILL.md) — Built-in trigger config and handler payload schemas
 - [dead-letter-queues](iii-dead-letter-queues/SKILL.md) — Inspect and redrive failed queue jobs
@@ -44,7 +44,7 @@ One dynamic skill covers published workers from workers.iii.dev and the iii-hq/w
 Compose functions, triggers, workers, and worker-backed capabilities into common backend architectures. Each includes a full working `reference.js`.
 
 - [agentic-backend](iii-agentic-backend/SKILL.md) — Multi-agent pipelines with queue handoffs and shared state
-- [reactive-backend](iii-reactive-backend/SKILL.md) — Real-time backends with state triggers and stream updates
+- [reactive-backend](iii-reactive-backend/SKILL.md) — Change-driven backends with state triggers, stream updates, and no polling
 - [workflow-orchestration](iii-workflow-orchestration/SKILL.md) — Durable multi-step pipelines with retries and DLQ
 - [effect-system](iii-effect-system/SKILL.md) — Composable, traceable function pipelines
 - [event-driven-cqrs](iii-event-driven-cqrs/SKILL.md) — CQRS with event sourcing and independent projections

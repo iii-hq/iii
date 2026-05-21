@@ -1,10 +1,11 @@
 ---
 name: iii-queue-processing
 description: >-
-  Enqueues jobs, configures retry policies, sets concurrency limits, and orders
-  messages via named standard or FIFO queues. Use when building background job
-  workers, task queues, message queues, async pipelines, or any pattern needing
-  guaranteed delivery with exponential backoff and dead-letter handling.
+  Uses `TriggerAction.Enqueue({ queue })` and named queues for reliable
+  background work. Use when a request should hand off slow work and return
+  quickly, a task must retry on failure, jobs need concurrency limits or FIFO
+  ordering, or a workflow needs durable async processing, backoff, and
+  dead-letter handling.
 ---
 
 # Queue Processing
@@ -93,7 +94,7 @@ Install/enable the queue worker with `iii worker add iii-queue`. Use the `builti
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-queue-processing` in the iii engine.
-- Triggers when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill even when the request does not say "queue" or "enqueue" if the work is slow, retryable, durable, ordered, or should not block an HTTP/UI caller.
 
 ## Boundaries
 

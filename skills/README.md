@@ -61,13 +61,13 @@ Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teache
 | [iii-http-invoked-functions](./iii-http-invoked-functions) | Register external HTTP endpoints as iii functions |
 | [iii-http-middleware](./iii-http-middleware) | Engine-level middleware for HTTP triggers |
 | [iii-cron-scheduling](./iii-cron-scheduling) | Schedule recurring tasks with cron expressions |
-| [iii-queue-processing](./iii-queue-processing) | Async job processing with retries, concurrency, and ordering |
+| [iii-queue-processing](./iii-queue-processing) | Enqueue slow or reliable background work with retries, concurrency, and ordering |
 | [iii-state-management](./iii-state-management) | Distributed key-value state across functions |
-| [iii-state-reactions](./iii-state-reactions) | Auto-trigger functions on state changes |
+| [iii-state-reactions](./iii-state-reactions) | React automatically when state changes: when X changes, do Y |
 | [iii-realtime-streams](./iii-realtime-streams) | Push live updates to WebSocket clients |
 | [iii-pubsub](./iii-pubsub) | Broadcast non-durable topic events to subscribers |
 | [iii-custom-triggers](./iii-custom-triggers) | Build custom trigger types for external events |
-| [iii-trigger-actions](./iii-trigger-actions) | Synchronous, fire-and-forget, and enqueue invocation modes |
+| [iii-trigger-actions](./iii-trigger-actions) | Choose sync, void, or durable enqueue when deciding how work should run |
 | [iii-trigger-conditions](./iii-trigger-conditions) | Gate trigger execution with condition functions |
 | [iii-trigger-schemas](./iii-trigger-schemas) | Built-in trigger config and handler payload schemas |
 | [iii-dead-letter-queues](./iii-dead-letter-queues) | Inspect and redrive failed queue jobs |
@@ -94,7 +94,7 @@ Compose multiple iii primitives into common backend architectures. Each includes
 | Skill | What it does |
 | --- | --- |
 | [iii-agentic-backend](./iii-agentic-backend) | Multi-agent pipelines with queue handoffs and shared state |
-| [iii-reactive-backend](./iii-reactive-backend) | Real-time backends with state triggers and stream updates |
+| [iii-reactive-backend](./iii-reactive-backend) | Change-driven backends with state triggers, stream updates, and no polling |
 | [iii-workflow-orchestration](./iii-workflow-orchestration) | Durable multi-step pipelines with retries and DLQ |
 | [iii-effect-system](./iii-effect-system) | Composable, traceable function pipelines |
 | [iii-event-driven-cqrs](./iii-event-driven-cqrs) | CQRS with event sourcing and independent projections |
