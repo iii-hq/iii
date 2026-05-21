@@ -1,6 +1,10 @@
 //! iii-observability: shared OTel + Logger primitives for the iii Rust SDK.
 pub const VERSION: &str = "0.13.0-next.1";
 
+/// Re-export the raw `opentelemetry` crate so dependents can use OTel API
+/// types (traits, `KeyValue`, `global`, etc.) without a direct dep.
+pub use opentelemetry;
+
 pub mod telemetry;
 
 pub use telemetry::context::{

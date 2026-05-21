@@ -28,16 +28,10 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
-# OpenTelemetry
-opentelemetry = { version = "0.31" }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs", "metrics", "trace"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "trace", "metrics", "logs", "with-serde"] }
-prost = { version = "0.14" }
-sysinfo = { version = "0.38" }
+iii-observability = { workspace = true }
 
-# HTTP client tracing
+# HTTP client (non-traced; traced variant lives in iii-observability)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-opentelemetry-http = { version = "0.31", features = ["reqwest"] }
 
 [dev-dependencies]
 ctor = "0.6.3"

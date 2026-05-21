@@ -2772,6 +2772,7 @@ version = "0.13.0-next.1"
 dependencies = [
  "async-trait",
  "ctor",
+ "futures-util",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-proto",
@@ -2784,7 +2785,9 @@ dependencies = [
  "sysinfo 0.38.4",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.28.0",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2795,17 +2798,14 @@ dependencies = [
  "ctor",
  "futures-util",
  "hostname",
+ "iii-observability",
  "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-proto",
  "opentelemetry_sdk",
- "prost",
  "reqwest 0.12.28",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "serial_test",
- "sysinfo 0.38.4",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.28.0",

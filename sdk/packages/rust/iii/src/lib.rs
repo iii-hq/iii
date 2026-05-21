@@ -2,11 +2,9 @@ pub mod builtin_triggers;
 pub mod channels;
 pub mod error;
 pub mod iii;
-pub mod logger;
 pub mod protocol;
 pub mod stream;
 pub mod structs;
-pub mod telemetry;
 pub mod triggers;
 pub mod types;
 
@@ -24,7 +22,6 @@ pub use iii::{
     IntoFunctionRegistration, RegisterFunction, RegisterTriggerType, TriggerTypeRef,
     WorkerMetadata, iii_async_fn, iii_fn,
 };
-pub use logger::Logger;
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
     Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
@@ -61,7 +58,7 @@ pub struct InitOptions {
     /// Custom HTTP headers sent during the WebSocket handshake.
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
-    pub otel: Option<crate::telemetry::types::OtelConfig>,
+    pub otel: Option<iii_observability::OtelConfig>,
 }
 
 /// Create and return a connected SDK instance. The WebSocket connection is
@@ -111,24 +108,15 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
     iii
 }
 
-// OpenTelemetry re-exports
-pub use telemetry::{
-    baggage_span_processor::{BaggageSpanProcessor, DEFAULT_ALLOWLIST},
-    context::{
-        CapturedContext, capture_otel_context, current_span_id, current_trace_id, extract_baggage,
-        extract_context, extract_traceparent, get_all_baggage, get_baggage_entry, inject_baggage,
-        inject_traceparent, remove_baggage_entry, run_with_baggage, set_baggage_entry,
-    },
-    flush_otel,
-    http_instrumentation::execute_traced_request,
-    init_otel,
-    payload::{REDACTED_PLACEHOLDER, redact, redact_and_truncate, resolve_max_bytes_from_env},
-    run_in_span, shutdown_otel,
-    span_ops::{
-        current_span_is_recording, record_span_event, set_current_span_attribute,
-        set_current_span_error,
-    },
-    types::OtelConfig,
-    types::ReconnectionConfig,
-    with_span,
+// Re-exports from iii-observability for back-compat.
+// The next SDK major will remove these — import from iii-observability directly.
+pub use iii_observability::{
+    BaggageSpanProcessor, CapturedContext, DEFAULT_ALLOWLIST, Logger, OtelConfig,
+    REDACTED_PLACEHOLDER, ReconnectionConfig, capture_otel_context, current_span_id,
+    current_span_is_recording, current_trace_id, execute_traced_request, extract_baggage,
+    extract_context, extract_traceparent, flush_otel, get_all_baggage, get_baggage_entry,
+    init_otel, inject_baggage, inject_traceparent, record_span_event, redact,
+    redact_and_truncate, remove_baggage_entry, resolve_max_bytes_from_env, run_in_span,
+    run_with_baggage, set_baggage_entry, set_current_span_attribute, set_current_span_error,
+    shutdown_otel, with_span,
 };
