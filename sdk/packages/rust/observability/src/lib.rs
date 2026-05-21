@@ -14,3 +14,5 @@ pub use telemetry::payload::{REDACTED_PLACEHOLDER, redact, redact_and_truncate, 
 pub use telemetry::span_ops::{
     current_span_is_recording, record_span_event, set_current_span_attribute, set_current_span_error,
 };
+pub use telemetry::http_instrumentation::execute_traced_request;
+pub use telemetry::{flush_otel, init_otel, run_in_span, shutdown_otel, with_span};
