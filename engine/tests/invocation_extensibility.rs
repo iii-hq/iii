@@ -104,7 +104,8 @@ async fn worker_pid_is_stored_and_listed() {
     let worker_id = worker.id.to_string();
     engine.worker_registry.register_worker(worker);
 
-    // Register with pid
+    // Register with pid and a name so we can look the worker up via
+    // engine::workers::info (which is keyed by name, not by id).
     engine
         .call(
             "engine::workers::register",
@@ -112,13 +113,15 @@ async fn worker_pid_is_stored_and_listed() {
                 "_caller_worker_id": worker_id,
                 "runtime": "node",
                 "version": "20.0.0",
+                "name": "pid-test-worker",
                 "pid": 42000u32,
             }),
         )
         .await
         .expect("register call should succeed");
 
-    // List workers and verify pid is present
+    // List workers and verify our worker is present (pid is no longer in
+    // list responses — it lives on the info envelope).
     let list_result = engine
         .call("engine::workers::list", serde_json::json!({}))
         .await
@@ -130,12 +133,26 @@ async fn worker_pid_is_stored_and_listed() {
         .and_then(|v| v.as_array())
         .expect("workers array");
 
-    let found = workers
+    workers
         .iter()
         .find(|w| w.get("id").and_then(|v| v.as_str()) == Some(worker_id.as_str()))
         .expect("worker in list");
 
-    assert_eq!(found.get("pid").and_then(|v| v.as_u64()), Some(42000u64));
+    // engine::workers::info preserves the pid as an engine-local extra.
+    let info_result = engine
+        .call(
+            "engine::workers::info",
+            serde_json::json!({ "name": "pid-test-worker" }),
+        )
+        .await
+        .expect("info call succeeds")
+        .expect("info result is Some");
+
+    let worker_envelope = info_result.get("worker").expect("worker envelope");
+    assert_eq!(
+        worker_envelope.get("pid").and_then(|v| v.as_u64()),
+        Some(42000u64)
+    );
 }
 
 #[cfg(test)]

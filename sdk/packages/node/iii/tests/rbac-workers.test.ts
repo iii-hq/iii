@@ -12,8 +12,9 @@ import type {
 } from '../src/index'
 import { IIIInvocationError, registerWorker } from '../src/index'
 import { EngineFunctions } from '../src/iii-constants'
-import type { FunctionInfo } from '../src/iii-types'
 import { iii, sleep } from './utils'
+
+type FunctionRow = { function_id: string }
 
 const EW_URL = process.env.III_RBAC_WORKER_URL ?? 'ws://localhost:49135'
 
@@ -290,7 +291,7 @@ describe('RBAC Workers', () => {
     try {
       await sleep(1000)
 
-      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       })
@@ -316,7 +317,7 @@ describe('RBAC Workers', () => {
     try {
       await sleep(1000)
 
-      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       })

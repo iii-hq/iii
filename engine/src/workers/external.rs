@@ -336,10 +336,10 @@ impl Worker for ExternalWorker {
         tracing::info!("Destroying external worker '{}'", self.name);
         kill_child(&self.child).await;
 
-        if let Some(path) = self.config_file.lock().await.take() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!("failed to remove temp config {}: {}", path.display(), e);
-            }
+        if let Some(path) = self.config_file.lock().await.take()
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            tracing::warn!("failed to remove temp config {}: {}", path.display(), e);
         }
 
         Ok(())

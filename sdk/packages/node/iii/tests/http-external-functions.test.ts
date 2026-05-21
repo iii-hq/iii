@@ -2,8 +2,9 @@ import { createServer, type IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { EngineFunctions } from '../src/iii-constants'
-import type { FunctionInfo } from '../src/iii-types'
 import { execute, iii, sleep } from './utils'
+
+type FunctionRow = { function_id: string }
 
 type CapturedWebhook = {
   method: string
@@ -133,7 +134,7 @@ function uniqueTopic(prefix: string): string {
 describe('HTTP external functions', () => {
   it('delivers queue events to an externally registered HTTP function', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -185,7 +186,7 @@ describe('HTTP external functions', () => {
 
   it('registers and unregisters an HTTP function', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -209,7 +210,7 @@ describe('HTTP external functions', () => {
       await sleep(300)
 
       const afterRegister = await execute(async () =>
-        iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
           function_id: EngineFunctions.LIST_FUNCTIONS,
           payload: {},
         }),
@@ -222,7 +223,7 @@ describe('HTTP external functions', () => {
       await sleep(300)
 
       const afterUnregister = await execute(async () =>
-        iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+        iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
           function_id: EngineFunctions.LIST_FUNCTIONS,
           payload: {},
         }),
@@ -237,7 +238,7 @@ describe('HTTP external functions', () => {
 
   it('delivers events with custom headers to the webhook', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -294,7 +295,7 @@ describe('HTTP external functions', () => {
 
   it('delivers events to multiple external functions on different topics', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -376,7 +377,7 @@ describe('HTTP external functions', () => {
 
   it('stops delivering events after unregister', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -444,7 +445,7 @@ describe('HTTP external functions', () => {
 
   it('delivers events using PUT method', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),

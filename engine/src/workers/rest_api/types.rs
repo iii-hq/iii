@@ -119,10 +119,8 @@ impl HttpResponse {
                 }
             }
         }
-        if !content_type_set {
-            if let Some(ct) = default_content_type {
-                builder = builder.header("content-type", ct);
-            }
+        if !content_type_set && let Some(ct) = default_content_type {
+            builder = builder.header("content-type", ct);
         }
 
         builder

@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { TriggerAction } from '../src/iii'
 import { EngineFunctions } from '../src/iii-constants'
-import type { FunctionInfo } from '../src/iii-types'
 import { execute, iii, sleep } from './utils'
+
+type FunctionRow = { function_id: string }
 
 describe('Bridge Operations', () => {
   it('should connect successfully', async () => {
     expect(iii).toBeDefined()
     const result = await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -76,7 +77,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const result = await iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+    const result = await iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
       function_id: EngineFunctions.LIST_FUNCTIONS,
       payload: {},
     })

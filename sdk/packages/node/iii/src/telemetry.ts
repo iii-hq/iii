@@ -7,13 +7,7 @@ export {
   type IIIReconnectionConfig,
   LogFunctions,
 } from './iii-constants'
-export type {
-  FunctionInfo,
-  FunctionInfo as FunctionMessage,
-  RegisterFunctionFormat,
-  WorkerInfo,
-  WorkerStatus,
-} from './iii-types'
+export type { RegisterFunctionFormat } from './iii-types'
 export {
   registerWorkerGauges,
   stopWorkerGauges,

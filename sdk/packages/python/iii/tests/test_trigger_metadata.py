@@ -1,5 +1,5 @@
-"""Tests for metadata support in trigger registration types."""
-from iii.iii_types import RegisterTriggerInput, RegisterTriggerMessage, TriggerInfo
+"""Tests for metadata support in trigger registration protocol types."""
+from iii.iii_types import RegisterTriggerInput, RegisterTriggerMessage
 
 
 def test_register_trigger_input_accepts_metadata():
@@ -26,19 +26,3 @@ def test_register_trigger_message_includes_metadata():
         metadata={"env": "prod"},
     )
     assert msg.metadata == {"env": "prod"}
-
-
-def test_trigger_info_includes_metadata():
-    info = TriggerInfo(
-        id="t1",
-        trigger_type="http",
-        function_id="fn",
-        config={},
-        metadata={"team": "api"},
-    )
-    assert info.metadata == {"team": "api"}
-
-
-def test_trigger_info_metadata_defaults_none():
-    info = TriggerInfo(id="t2", trigger_type="cron", function_id="fn")
-    assert info.metadata is None
