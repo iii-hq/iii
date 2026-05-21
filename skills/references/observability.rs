@@ -25,9 +25,7 @@ use iii_sdk::{
     OtelConfig,
 };
 #[cfg(feature = "otel")]
-use iii_sdk::telemetry::get_meter;
-#[cfg(feature = "otel")]
-use opentelemetry::trace::SpanKind;
+use opentelemetry::{global, trace::SpanKind};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct OrderInput {
@@ -168,11 +166,13 @@ fn main() {
     .expect("failed");
 
     // ---
-    // 3. Custom metrics - counters and histograms via get_meter()
+    // 3. Custom metrics - counters and histograms via the OpenTelemetry global meter
+    // Once `init_otel` runs, any meter obtained from `opentelemetry::global` flows
+    // through the same exporter as the engine traces.
     // ---
     #[cfg(feature = "otel")]
     let order_counter = {
-        let meter = get_meter();
+        let meter = global::meter("my-service");
         meter
             .u64_counter("orders.processed")
             .with_description("Total number of orders processed")
@@ -181,7 +181,7 @@ fn main() {
 
     #[cfg(feature = "otel")]
     let latency_histogram = {
-        let meter = get_meter();
+        let meter = global::meter("my-service");
         meter
             .f64_histogram("orders.latency_ms")
             .with_description("Order processing latency in milliseconds")
