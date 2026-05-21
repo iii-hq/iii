@@ -65,6 +65,8 @@ export class EngineLogExporter implements LogRecordExporter {
     this.doExport(logs, resultCallback)
   }
 
+  async forceFlush(): Promise<void> {}
+
   async shutdown(): Promise<void> {
     for (const { callback } of this.pendingExports) {
       callback({ code: ExportResultCode.FAILED, error: new Error('Exporter shutdown') })
