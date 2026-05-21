@@ -66,20 +66,17 @@ async fn wait_until_function_registered(function_id: &str, timeout: Duration) {
             })
             .await;
 
-        match &list_result {
-            Ok(result) => {
-                let functions: Vec<FnRow> = serde_json::from_value(
-                    result
-                        .get("functions")
-                        .cloned()
-                        .unwrap_or(Value::Array(vec![])),
-                )
-                .unwrap_or_default();
-                if functions.iter().any(|f| f.function_id == function_id) {
-                    return;
-                }
+        if let Ok(result) = &list_result {
+            let functions: Vec<FnRow> = serde_json::from_value(
+                result
+                    .get("functions")
+                    .cloned()
+                    .unwrap_or(Value::Array(vec![])),
+            )
+            .unwrap_or_default();
+            if functions.iter().any(|f| f.function_id == function_id) {
+                return;
             }
-            Err(_) => {}
         }
 
         if tokio::time::Instant::now() >= deadline {
