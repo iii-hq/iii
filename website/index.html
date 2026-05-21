@@ -20,6 +20,25 @@
 </script>
 <!-- End Google Tag Manager -->
 
+<!-- Analytics: thin wrapper that pushes named events to the GTM dataLayer.
+     Safe no-op if GTM is blocked. Consumers call iiiTrack(name, { ...params }). -->
+<script>
+  (function () {
+    window.dataLayer = window.dataLayer || [];
+    window.iiiTrack = function (eventName, params) {
+      try {
+        var payload = { event: eventName };
+        if (params && typeof params === 'object') {
+          for (var k in params) {
+            if (Object.prototype.hasOwnProperty.call(params, k)) payload[k] = params[k];
+          }
+        }
+        window.dataLayer.push(payload);
+      } catch (_) {}
+    };
+  })();
+</script>
+
 <!-- Common Room: loads only after analytics consent (see cookie banner below) -->
 <script>
 (function () {
@@ -6135,6 +6154,12 @@ iii.register_function(
         + '</div>'
         + badgeStr;
       btn.addEventListener('click', () => {
+        iiiTrack('cta_click', {
+          cta_id: 'experience_start',
+          cta_location: 'experience',
+          cta_label: (step.action.label || '').trim().toLowerCase(),
+          step_id: step.id
+        });
         // Drop the intro hero state on first interaction — text + spacing animate back to normal flow.
         seqScroll.classList.remove('is-intro');
         advance();
@@ -6561,8 +6586,26 @@ iii.register_function(
       flashCopied();
     }
   }
-  if (installBtn) installBtn.addEventListener('click', copyInstall);
-  if (installBtnM) installBtnM.addEventListener('click', copyInstall);
+  if (installBtn) installBtn.addEventListener('click', () => {
+    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'nav', cta_label: 'install.sh' });
+    copyInstall();
+  });
+  if (installBtnM) installBtnM.addEventListener('click', () => {
+    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'mobile_menu', cta_label: 'install.sh' });
+    copyInstall();
+  });
+
+  // ============= CTA click tracking (nav + hero) =============
+  const trackCtaClick = (el, params) => {
+    if (!el) return;
+    el.addEventListener('click', () => iiiTrack('cta_click', params));
+  };
+  trackCtaClick(document.getElementById('dc-btn'),
+    { cta_id: 'discord', cta_location: 'nav', cta_label: 'discord' });
+  trackCtaClick(document.querySelector('.nav-right .gh-btn'),
+    { cta_id: 'github', cta_location: 'nav', cta_label: 'github' });
+  trackCtaClick(document.querySelector('.hero-cta .hero-btn'),
+    { cta_id: 'get_started', cta_location: 'hero', cta_label: 'get started' });
 
   // ============= Hero rotating descriptor =============
   const rotatingDescriptors = [
@@ -6623,6 +6666,7 @@ iii.register_function(
       e.preventDefault();
       const v = (emailInput.value || '').trim();
       if (!v) return;
+      iiiTrack('email_submit', { form_location: 'hero' });
       persistAccessRequest(v);
       emailForm.classList.add('submitted');
       emailInput.value = '';
@@ -6701,7 +6745,17 @@ iii.register_function(
   mobileScrim.addEventListener('click', closeMenu);
   mobileClose.addEventListener('click', closeMenu);
   document.querySelectorAll('.mobile-link').forEach(a => {
-    if (a.tagName === 'A') a.addEventListener('click', closeMenu);
+    if (a.tagName !== 'A') return;
+    a.addEventListener('click', () => {
+      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      iiiTrack('cta_click', {
+        cta_id: 'mobile_menu_link',
+        cta_location: 'mobile_menu',
+        cta_label: label,
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+    a.addEventListener('click', closeMenu);
   });
 
   // ============= GitHub stars =============
@@ -6954,7 +7008,10 @@ iii.register_function(
   // Always copies the full install command (same as the navbar). The button's
   // visible '.cmd' text is intentionally an abbreviated display version and is
   // restored after the shared `copied` flash reverts.
-  if (footInstallBtn) footInstallBtn.addEventListener('click', copyInstall);
+  if (footInstallBtn) footInstallBtn.addEventListener('click', () => {
+    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'footer', cta_label: 'install.sh' });
+    copyInstall();
+  });
 
   // ============= Footer email signup =============
   (function footEmail(){
@@ -6970,6 +7027,7 @@ iii.register_function(
       e.preventDefault();
       const v = (input.value || '').trim();
       if (!v) return;
+      iiiTrack('email_submit', { form_location: 'footer' });
       persistAccessRequest(v);
       form.classList.add('submitted');
       input.value = '';
