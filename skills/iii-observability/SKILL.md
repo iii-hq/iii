@@ -20,7 +20,7 @@ Use the concepts below when they fit the task. Not every worker needs custom spa
 - **Prometheus** metrics are exposed on port 9464
 - `registerWorker()` with `otel` config enables telemetry per worker
 - **Custom spans** via `withSpan(name, opts, fn)` wrap async work with trace context
-- **Custom metrics** via `getMeter()` create counters and histograms
+- **Custom metrics** via the OpenTelemetry API (`@opentelemetry/api` in Node, `opentelemetry` in Python/Rust) create counters and histograms
 
 ## Architecture
 
@@ -32,8 +32,6 @@ The worker SDK generates spans, metrics, and logs during function execution. The
 | ---------------------------- | --------------------------------------------- |
 | `registerWorker(url, { otel })`        | Connect worker with telemetry config          |
 | `withSpan(name, opts, fn)`   | Create a custom trace span                    |
-| `getTracer()`                | Access OpenTelemetry Tracer directly          |
-| `getMeter()`                 | Access OpenTelemetry Meter for custom metrics |
 | `currentTraceId()`           | Get active trace ID for correlation           |
 | `injectTraceparent()`        | Inject W3C trace context into outbound calls  |
 | `onLog(callback, { level })` | Subscribe to log events                       |
@@ -54,8 +52,8 @@ Code using this pattern commonly includes, when relevant:
 
 - `registerWorker('ws://localhost:49134', { otel: { enabled: true, serviceName: 'my-svc' } })` — enable telemetry
 - `withSpan('validate-order', {}, async (span) => { span.setAttribute('order.id', id); ... })` — custom span
-- `getMeter().createCounter('orders.processed')` — custom counter metric
-- `getMeter().createHistogram('request.duration')` — custom histogram metric
+- `metrics.getMeter('my-svc').createCounter('orders.processed')` — custom counter via `@opentelemetry/api`
+- `metrics.getMeter('my-svc').createHistogram('request.duration')` — custom histogram via `@opentelemetry/api`
 - `onLog((log) => { ... }, { level: 'warn' })` — subscribe to warnings and above
 - `currentTraceId()` — get active trace ID for correlation with external systems
 - `injectTraceparent()` — propagate trace context to outbound HTTP calls
