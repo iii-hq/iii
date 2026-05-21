@@ -6623,8 +6623,62 @@ iii.register_function(
       flashCopied();
     }
   }
-  if (installBtn) installBtn.addEventListener('click', copyInstall);
-  if (installBtnM) installBtnM.addEventListener('click', copyInstall);
+  if (installBtn) installBtn.addEventListener('click', () => {
+    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'nav', cta_label: 'install.sh' });
+    copyInstall();
+  });
+  if (installBtnM) installBtnM.addEventListener('click', () => {
+    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'mobile_menu', cta_label: 'install.sh' });
+    copyInstall();
+  });
+
+  // ============= CTA click tracking =============
+  const trackCtaClick = (el, params) => {
+    if (!el) return;
+    el.addEventListener('click', () => iiiTrack('cta_click', params));
+  };
+
+  // Nav social + hero CTA
+  trackCtaClick(document.getElementById('dc-btn'),
+    { cta_id: 'discord', cta_location: 'nav', cta_label: 'discord' });
+  trackCtaClick(document.querySelector('.nav-right .gh-btn'),
+    { cta_id: 'github', cta_location: 'nav', cta_label: 'github' });
+  trackCtaClick(document.querySelector('.hero-cta .hero-btn'),
+    { cta_id: 'get_started', cta_location: 'hero', cta_label: 'get started' });
+
+  // Desktop nav links — internal anchors and external destinations alike
+  document.querySelectorAll('.nav-links .nav-link').forEach(a => {
+    a.addEventListener('click', () => {
+      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      iiiTrack('cta_click', {
+        cta_id: 'nav_link',
+        cta_location: 'nav',
+        cta_label: label,
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+  });
+
+  // Workers section: "View the Worker Registry"
+  trackCtaClick(document.querySelector('.nw-cta-row .nw-cta'),
+    { cta_id: 'worker_registry', cta_location: 'workers_section', cta_label: 'view the worker registry' });
+
+  // Footer social + column links
+  trackCtaClick(document.querySelector('.foot-gh a'),
+    { cta_id: 'github', cta_location: 'footer_social', cta_label: 'github' });
+  trackCtaClick(document.querySelector('.foot-discord a'),
+    { cta_id: 'discord', cta_location: 'footer_social', cta_label: 'discord' });
+  document.querySelectorAll('.foot-col ul a').forEach(a => {
+    a.addEventListener('click', () => {
+      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      iiiTrack('cta_click', {
+        cta_id: 'footer_link',
+        cta_location: 'footer',
+        cta_label: label,
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+  });
 
   // ============= Hero rotating descriptor =============
   const rotatingDescriptors = [
