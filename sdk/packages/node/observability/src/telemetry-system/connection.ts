@@ -21,6 +21,7 @@ export class SharedEngineConnection {
   private config: ReconnectionConfig
   private state: ConnectionState = 'disconnected'
   private onConnectedCallbacks: Array<() => void> = []
+  private onFailedCallbacks: Array<() => void> = []
 
   constructor(wsUrl: string, config: Partial<ReconnectionConfig> = {}) {
     this.wsUrl = wsUrl
@@ -112,6 +113,11 @@ export class SharedEngineConnection {
       for (const { callback } of pending) {
         callback?.(failedError)
       }
+
+      // Notify failed callbacks so exporters can drain their own queues
+      for (const cb of this.onFailedCallbacks) {
+        cb()
+      }
       return
     }
 
@@ -167,6 +173,18 @@ export class SharedEngineConnection {
   }
 
   /**
+   * Register a callback to be called when the connection enters the failed
+   * terminal state (max retries reached). Exporters use this to drain their
+   * own pending queues so in-flight forceFlush() calls do not hang.
+   */
+  onFailed(callback: () => void): void {
+    this.onFailedCallbacks.push(callback)
+    if (this.state === 'failed') {
+      callback()
+    }
+  }
+
+  /**
    * Get the current connection state.
    */
   getState(): ConnectionState {
@@ -197,6 +215,7 @@ export class SharedEngineConnection {
       callback?.(shutdownError)
     }
     this.onConnectedCallbacks = []
+    this.onFailedCallbacks = []
     this.state = 'disconnected'
   }
 }

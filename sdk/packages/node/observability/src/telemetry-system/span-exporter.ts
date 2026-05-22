@@ -23,12 +23,21 @@ export class EngineSpanExporter implements SpanExporter {
   constructor(connection: SharedEngineConnection) {
     this.connection = connection
     this.connection.onConnected(() => this.flushPending())
+    this.connection.onFailed(() => this.failPending())
   }
 
   private flushPending(): void {
     const pending = this.pendingExports.splice(0, this.pendingExports.length)
     for (const { spans, resultCallback } of pending) {
       this.sendExport(spans, resultCallback)
+    }
+  }
+
+  private failPending(): void {
+    const pending = this.pendingExports.splice(0, this.pendingExports.length)
+    const error = new Error('Connection failed: dropping queued spans')
+    for (const { resultCallback } of pending) {
+      resultCallback?.({ code: ExportResultCode.FAILED, error })
     }
   }
 
@@ -55,7 +64,15 @@ export class EngineSpanExporter implements SpanExporter {
   }
 
   private doExport(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
-    if (this.connection.getState() !== 'connected') {
+    const state = this.connection.getState()
+    if (state === 'failed') {
+      resultCallback({
+        code: ExportResultCode.FAILED,
+        error: new Error('Connection failed: dropping spans'),
+      })
+      return
+    }
+    if (state !== 'connected') {
       if (this.pendingExports.length >= EngineSpanExporter.MAX_PENDING_EXPORTS) {
         const dropped = this.pendingExports.shift()
         dropped?.resultCallback?.({

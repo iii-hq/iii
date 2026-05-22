@@ -22,6 +22,7 @@ export class EngineLogExporter implements LogRecordExporter {
   constructor(connection: SharedEngineConnection) {
     this.connection = connection
     this.connection.onConnected(() => this.flushPending())
+    this.connection.onFailed(() => this.failPending())
   }
 
   private flushPending(): void {
@@ -31,11 +32,27 @@ export class EngineLogExporter implements LogRecordExporter {
     }
   }
 
+  private failPending(): void {
+    const pending = this.pendingExports.splice(0, this.pendingExports.length)
+    const error = new Error('Connection failed: dropping queued logs')
+    for (const { callback } of pending) {
+      callback({ code: ExportResultCode.FAILED, error })
+    }
+  }
+
   private doExport(
     logs: ReadableLogRecord[],
     resultCallback: (result: ExportResult) => void,
   ): void {
-    if (this.connection.getState() !== 'connected') {
+    const state = this.connection.getState()
+    if (state === 'failed') {
+      resultCallback({
+        code: ExportResultCode.FAILED,
+        error: new Error('Connection failed: dropping logs'),
+      })
+      return
+    }
+    if (state !== 'connected') {
       this.pendingExports.push({ logs, callback: resultCallback })
       return
     }
