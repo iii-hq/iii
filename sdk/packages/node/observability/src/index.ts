@@ -14,6 +14,8 @@ export {
   getAllBaggage,
   getBaggageEntry,
   getLogger,
+  getMeter,
+  getTracer,
   initOtel,
   injectBaggage,
   injectTraceparent,
@@ -28,10 +30,11 @@ export {
   setCurrentSpanError,
   SeverityNumber,
   shutdownOtel,
+  SpanKind,
   withSpan,
 } from './telemetry-system'
 export type {
-  Logger as OtelLogger,
+  OtelApiLogger as OtelLogger,
   Meter,
   OtelConfig,
   ReconnectionConfig,

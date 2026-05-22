@@ -323,4 +323,4 @@ export async function withSpan<T>(
 }
 
 // Re-export OTEL types for convenience
-export { SpanKind, SpanStatusCode, SeverityNumber, type Span, type Context, type Tracer, type Meter, type Logger }
+export { SpanKind, SpanStatusCode, SeverityNumber, type Span, type Context, type Tracer, type Meter, type Logger as OtelApiLogger }

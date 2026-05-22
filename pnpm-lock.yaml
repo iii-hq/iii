@@ -163,39 +163,12 @@ importers:
 
   sdk/packages/node/iii:
     dependencies:
+      '@iii-dev/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.0
-      '@opentelemetry/api-logs':
-        specifier: ^0.57.0
-        version: 0.57.2
-      '@opentelemetry/core':
-        specifier: ^1.30.0
-        version: 1.30.1(@opentelemetry/api@1.9.0)
-      '@opentelemetry/instrumentation':
-        specifier: ^0.57.0
-        version: 0.57.2(@opentelemetry/api@1.9.0)
-      '@opentelemetry/otlp-transformer':
-        specifier: ^0.57.0
-        version: 0.57.2(@opentelemetry/api@1.9.0)
-      '@opentelemetry/resources':
-        specifier: ^1.30.0
-        version: 1.30.1(@opentelemetry/api@1.9.0)
-      '@opentelemetry/sdk-logs':
-        specifier: ^0.57.0
-        version: 0.57.2(@opentelemetry/api@1.9.0)
-      '@opentelemetry/sdk-metrics':
-        specifier: ^1.30.0
-        version: 1.30.1(@opentelemetry/api@1.9.0)
-      '@opentelemetry/sdk-trace-base':
-        specifier: ^1.30.0
-        version: 1.30.1(@opentelemetry/api@1.9.0)
-      '@opentelemetry/sdk-trace-node':
-        specifier: ^1.30.0
-        version: 1.30.1(@opentelemetry/api@1.9.0)
-      '@opentelemetry/semantic-conventions':
-        specifier: ^1.28.0
-        version: 1.40.0
       ws:
         specifier: ^8.18.3
         version: 8.19.0
