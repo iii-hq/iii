@@ -487,6 +487,21 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  observability-rust:
+    name: Observability Rust Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/observability
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Observability Rust (cargo)
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   # ──────────────────────────────────────────────────────────────
   # Docker
   # ──────────────────────────────────────────────────────────────
