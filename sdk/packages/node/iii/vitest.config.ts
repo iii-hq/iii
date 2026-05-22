@@ -1,6 +1,15 @@
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { defineConfig } from 'vitest/config'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@iii-dev/observability': path.resolve(__dirname, '../observability/src/index.ts'),
+    },
+  },
   test: {
     globals: true,
     testTimeout: 30000,

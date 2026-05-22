@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { context, trace } from '@opentelemetry/api'
 import {
   BasicTracerProvider,
@@ -12,12 +12,29 @@ import {
   setCurrentSpanAttribute,
   setCurrentSpanError,
 } from '@iii-dev/observability'
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
+
+let activeProvider: BasicTracerProvider | null = null
+
+beforeAll(() => {
+  const cm = new AsyncLocalStorageContextManager()
+  cm.enable()
+  context.setGlobalContextManager(cm)
+})
+
+afterEach(async () => {
+  if (activeProvider) {
+    await activeProvider.shutdown()
+    activeProvider = null
+  }
+})
 
 function buildTestProvider() {
   const exporter = new InMemorySpanExporter()
   const provider = new BasicTracerProvider({
     spanProcessors: [new SimpleSpanProcessor(exporter)],
   })
+  activeProvider = provider
   const tracer = provider.getTracer('test')
   return { tracer, exporter, provider }
 }

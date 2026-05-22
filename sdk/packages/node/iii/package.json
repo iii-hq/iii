@@ -49,6 +49,7 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@opentelemetry/context-async-hooks": "^2.7.1",
     "@opentelemetry/instrumentation": "^0.57.0",
     "@opentelemetry/sdk-trace-base": "^1.30.0",
     "@types/ws": "^8.18.1",
