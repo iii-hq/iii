@@ -1,6 +1,6 @@
 """Tests for OtelConfig dataclass."""
 
-from iii.telemetry_types import OtelConfig
+from iii_observability import OtelConfig
 
 
 def test_otel_config_defaults():
