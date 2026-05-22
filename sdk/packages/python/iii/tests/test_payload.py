@@ -1,6 +1,6 @@
 import os
 
-from iii.payload import (
+from iii_observability import (
     REDACTED_PLACEHOLDER,
     redact,
     redact_and_truncate,

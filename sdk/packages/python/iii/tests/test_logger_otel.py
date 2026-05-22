@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def reset_otel():
-    from iii.telemetry import shutdown_otel
+    from iii_observability import shutdown_otel
 
     yield
     shutdown_otel()
@@ -49,9 +49,7 @@ def _setup_in_memory_log_provider():
 
 def test_logger_emits_otel_record_when_initialized():
     """Logger.info emits an OTel LogRecord with severity INFO when OTel is active."""
-    from iii.logger import Logger
-    from iii.telemetry import init_otel
-    from iii.telemetry_types import OtelConfig
+    from iii_observability import Logger, OtelConfig, init_otel
 
     log_exporter = _setup_in_memory_log_provider()
     init_otel(OtelConfig(enabled=True, logs_enabled=False))  # skip EngineLogExporter
@@ -68,11 +66,11 @@ def test_logger_emits_otel_record_when_initialized():
 def test_logger_emits_warn_severity():
     from opentelemetry._logs import SeverityNumber
 
-    from iii.logger import Logger
+    from iii_observability import Logger
 
     log_exporter = _setup_in_memory_log_provider()
 
-    with patch("iii.logger._is_initialized", return_value=True):
+    with patch("iii_observability.logger._is_initialized", return_value=True):
         logger = Logger()
         logger.warn("watch out")
 
@@ -86,7 +84,7 @@ def test_logger_attaches_trace_context_from_active_span():
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
 
-    from iii.logger import Logger
+    from iii_observability import Logger
 
     log_exporter = _setup_in_memory_log_provider()
 
@@ -94,7 +92,7 @@ def test_logger_attaches_trace_context_from_active_span():
     trace.set_tracer_provider(tracer_provider)
     tracer = tracer_provider.get_tracer("test")
 
-    with patch("iii.logger._is_initialized", return_value=True):
+    with patch("iii_observability.logger._is_initialized", return_value=True):
         with tracer.start_as_current_span("test-span") as span:
             logger = Logger(service_name="fn1")
             logger.info("inside span")
@@ -110,11 +108,11 @@ def test_logger_attaches_trace_context_from_active_span():
 
 def test_logger_no_trace_context_outside_span():
     """Logger emits zero trace_id/span_id when no active span."""
-    from iii.logger import Logger
+    from iii_observability import Logger
 
     log_exporter = _setup_in_memory_log_provider()
 
-    with patch("iii.logger._is_initialized", return_value=True):
+    with patch("iii_observability.logger._is_initialized", return_value=True):
         logger = Logger(service_name="fn1")
         logger.info("outside span")
 

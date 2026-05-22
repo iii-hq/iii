@@ -54,7 +54,7 @@ from .stream import (
     StreamListInput,
     StreamSetInput,
 )
-from .telemetry_types import OtelConfig
+from iii_observability import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
 
@@ -224,7 +224,7 @@ class III:
         from an async context.
         """
         self._running = True
-        from .telemetry import attach_event_loop, init_otel
+        from iii_observability.telemetry import attach_event_loop, init_otel
 
         loop = asyncio.get_running_loop()
         otel_cfg: OtelConfig | None = None
@@ -280,7 +280,7 @@ class III:
 
         self._set_connection_state("disconnected")
 
-        from .telemetry import shutdown_otel_async
+        from iii_observability.telemetry import shutdown_otel_async
 
         await shutdown_otel_async()
 
@@ -499,7 +499,7 @@ class III:
         tracer = trace.get_tracer("iii-python-sdk")
         import os
 
-        from .payload import redact_and_truncate, resolve_max_bytes_from_env
+        from iii_observability import redact_and_truncate, resolve_max_bytes_from_env
 
         trace_payloads = os.environ.get("III_DISABLE_TRACE_PAYLOADS", "").lower() not in (
             "1",

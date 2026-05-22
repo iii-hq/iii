@@ -10,7 +10,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 
-from iii.baggage_span_processor import (
+from iii_observability import (
     DEFAULT_ALLOWLIST,
     BaggageSpanProcessor,
 )
