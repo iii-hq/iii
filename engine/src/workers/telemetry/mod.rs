@@ -288,10 +288,6 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     );
     m.insert("functions".into(), serde_json::json!(snap.ft.functions));
     m.insert(
-        "function_names".into(),
-        serde_json::json!(snap.ft.functions),
-    );
-    m.insert(
         "trigger_types".into(),
         serde_json::json!(snap.ft.trigger_types),
     );
@@ -2028,8 +2024,12 @@ mod tests {
         let props = build_base_properties(&snap);
         assert_eq!(props["project_name"], serde_json::json!("checkout"));
         assert_eq!(
-            props["function_names"],
+            props["functions"],
             serde_json::json!(["orders::charge", "agent::memory"])
+        );
+        assert!(
+            !props.contains_key("function_names"),
+            "function_names duplicates functions and should not be sent"
         );
         assert_eq!(
             props["worker_names"],

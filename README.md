@@ -33,7 +33,7 @@ uses.
 
 ### Three Primitives
 
-Worker * Function * Trigger is the entire mental model.
+Worker _ Function _ Trigger is the entire mental model.
 
 **Workers** are processes that register with the iii engine and then register triggers and
 functions. A TypeScript API service is a worker. A Python data pipeline is a worker. A Rust
@@ -103,7 +103,7 @@ Install new capabilities into a project with `iii worker add`:
 Install iii's agent-readable reference material:
 
 ```bash
-npx skillkit add iii-hq/iii/skills
+npx skills add iii-hq/iii/skills
 ```
 
 Skills cover every iii primitive: HTTP endpoints, queues, cron, state, streams, custom triggers, and
