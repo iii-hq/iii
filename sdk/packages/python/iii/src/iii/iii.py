@@ -14,6 +14,7 @@ from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
 import websockets
+from iii_observability import OtelConfig
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
@@ -54,7 +55,6 @@ from .stream import (
     StreamListInput,
     StreamSetInput,
 )
-from iii_observability import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
 

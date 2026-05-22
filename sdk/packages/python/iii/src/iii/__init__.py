@@ -2,10 +2,10 @@
 
 from iii_observability import (
     DEFAULT_ALLOWLIST,
+    REDACTED_PLACEHOLDER,
     BaggageSpanProcessor,
     Logger,
     OtelConfig,
-    REDACTED_PLACEHOLDER,
     ReconnectionConfig,
     current_span_id,
     current_span_is_recording,
