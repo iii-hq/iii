@@ -393,7 +393,7 @@ jobs:
 
   sdk-npm:
     name: SDK Node Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-npm]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_npm.yml
     with:
@@ -410,7 +410,7 @@ jobs:
 
   sdk-npm-browser:
     name: SDK Browser Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-npm]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_npm.yml
     with:
@@ -444,7 +444,7 @@ jobs:
 
   sdk-py:
     name: SDK Python Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-py]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
@@ -474,7 +474,7 @@ jobs:
 
   sdk-rust:
     name: SDK Rust Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
