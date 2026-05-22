@@ -30,6 +30,9 @@ dependencies = [
 Homepage = "https://github.com/iii-hq/iii"
 Repository = "https://github.com/iii-hq/iii"
 
+[tool.uv.sources]
+iii-observability = { path = "../observability", editable = true }
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
