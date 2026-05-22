@@ -20,9 +20,14 @@ export async function executeTracedRequest(
 ): Promise<Response> {
   const tracer = init?.tracer ?? trace.getTracer('iii-node-sdk')
   const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-  const url = new URL(rawUrl)
+  let url: URL | null
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    url = null
+  }
   const method = (init?.method ?? (typeof input === 'object' && 'method' in input ? input.method : 'GET') ?? 'GET').toUpperCase()
-  const name = url.pathname ? `${method} ${url.pathname}` : method
+  const name = url?.pathname ? `${method} ${url.pathname}` : method
 
   return tracer.startActiveSpan(
     name,
@@ -30,13 +35,17 @@ export async function executeTracedRequest(
       kind: SpanKind.CLIENT,
       attributes: {
         'http.request.method': method,
-        'url.full': url.toString(),
-        'server.address': url.hostname,
-        'url.scheme': url.protocol.replace(':', ''),
-        'url.path': url.pathname,
+        'url.full': url?.toString() ?? rawUrl,
         'network.protocol.name': 'http',
-        ...(url.port ? { 'server.port': Number(url.port) } : {}),
-        ...(url.search ? { 'url.query': url.search.slice(1) } : {}),
+        ...(url
+          ? {
+              'server.address': url.hostname,
+              'url.scheme': url.protocol.replace(':', ''),
+              'url.path': url.pathname,
+            }
+          : {}),
+        ...(url?.port ? { 'server.port': Number(url.port) } : {}),
+        ...(url?.search ? { 'url.query': url.search.slice(1) } : {}),
       },
     },
     async (span) => {

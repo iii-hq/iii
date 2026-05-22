@@ -337,12 +337,15 @@ async def flush_otel() -> None:
     from opentelemetry import trace
 
     tracer_provider = trace.get_tracer_provider()
+    flushers: list[asyncio.Future[Any] | Any] = []
     if hasattr(tracer_provider, "force_flush"):
-        tracer_provider.force_flush()
-    if _meter_provider is not None:
-        _meter_provider.force_flush()
-    if _log_provider is not None:
-        _log_provider.force_flush()
+        flushers.append(asyncio.to_thread(tracer_provider.force_flush))
+    if _meter_provider is not None and hasattr(_meter_provider, "force_flush"):
+        flushers.append(asyncio.to_thread(_meter_provider.force_flush))
+    if _log_provider is not None and hasattr(_log_provider, "force_flush"):
+        flushers.append(asyncio.to_thread(_log_provider.force_flush))
+    if flushers:
+        await asyncio.gather(*flushers)
 
 
 def shutdown_otel() -> None:

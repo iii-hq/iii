@@ -6,7 +6,7 @@ export function safeStringify(value: unknown): string {
   const seen = new WeakSet<object>()
 
   try {
-    return JSON.stringify(value, (_key, val) => {
+    const result = JSON.stringify(value, (_key, val) => {
       // Handle BigInt
       if (typeof val === 'bigint') {
         return val.toString()
@@ -22,6 +22,7 @@ export function safeStringify(value: unknown): string {
 
       return val
     })
+    return result ?? '[unserializable]'
   } catch {
     return '[unserializable]'
   }
