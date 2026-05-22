@@ -94,6 +94,12 @@ not published returns **W110**.
 - Subsequent `worker::add` calls observe the new lock entry; pair with
   [`worker::clear`](iii://worker/clear) to reclaim disk after a
   `worker::remove`.
+- Publishes lifecycle events to the [`worker`](iii://worker/events)
+  trigger type: `started` → `downloading` → `downloaded` → `done` on
+  success, or `started` → `downloading` → `failed` on error.
+  Subscribers filter via `WorkerTriggerConfig`
+  (`{"operations": ["add"], "stages": ["downloaded"]}` for "fire when
+  the artifact lands").
 
 # Worked example
 
@@ -120,6 +126,8 @@ different version was previously pinned.
   `worker::clear` to free the cache).
 - `worker::schema` — discover the exact field shapes before constructing
   the request.
+- [`worker`](iii://worker/events) — subscribe to lifecycle events fired
+  by this op.
 
 ## Errors
 

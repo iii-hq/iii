@@ -69,6 +69,10 @@ applies to binary workers; OCI workers silently ignore it.
   [`worker::list`](iii://worker/list).
 - When `wait: true` (the default), the call blocks until the worker
   signals ready or the daemon's grace window expires.
+- Publishes lifecycle events to the [`worker`](iii://worker/events)
+  trigger type: `started` → `starting` → `done` on success, or
+  `started` → `starting` → `failed` on error. Subscribers filter via
+  `WorkerTriggerConfig`.
 
 # Worked example
 
@@ -87,6 +91,8 @@ second call with the same input returns the same `pid` and `port`
 - `worker::list` — confirm `running: true` after the call.
 - `worker::stop` — graceful shutdown (consent required).
 - `worker::add` — install the worker before you can start it.
+- [`worker`](iii://worker/events) — subscribe to lifecycle events fired
+  by this op.
 
 ## Errors
 

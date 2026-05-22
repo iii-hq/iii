@@ -8,7 +8,10 @@ title: worker
 Install, run, and uninstall workers owned by the `iii-worker-ops` daemon
 (auto-spawned as an engine sidecar). Every op is also callable as
 `iii worker <cmd>` on the CLI; the trigger surface documented here is the
-SDK path that other workers and the engine itself use.
+SDK path that other workers and the engine itself use. The daemon both
+**serves** `worker::*` calls and **publishes** lifecycle events to the
+[`worker`](iii://worker/events) custom trigger type so other workers
+can subscribe to install/remove/start/stop transitions without polling.
 
 `worker::add` is the single entry point for getting a worker on disk:
 registry slugs and full OCI refs both flow through it, write the entry to
@@ -29,8 +32,14 @@ surface.
 
 - **Worker** (`worker::*`) — install, run, and inspect lifecycle for
   every worker connected to this engine.
+- **Worker trigger type** (`worker`) — subscribe to lifecycle events
+  emitted by every `worker::*` op.
 
 ## How-tos
+
+### worker (trigger type)
+
+- [`worker`](iii://worker/events) — subscribe to lifecycle events emitted by every `worker::*` op (install, remove, start, stop, etc.). Filter by `operations` / `stages` / `workers`.
 
 ### `worker::*`
 

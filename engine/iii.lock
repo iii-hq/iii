@@ -1,0 +1,6 @@
+version: 1
+workers:
+  iii-http:
+    version: 0.13.0-next.1
+    type: engine
+    dependencies: {}

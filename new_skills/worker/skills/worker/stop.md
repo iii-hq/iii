@@ -71,6 +71,10 @@ than guess.
   the same `name`.
 - Does **not** touch `iii.config.yaml`, `iii.lock`, or
   `~/.iii/managed/{name}/` — only process state changes.
+- Publishes lifecycle events to the [`worker`](iii://worker/events)
+  trigger type: `started` → `stopping` → `done` on success, or
+  `started` → `stopping` → `failed` on error. Subscribers filter via
+  `WorkerTriggerConfig`.
 
 # Worked example
 
@@ -89,6 +93,8 @@ has exited within the grace window.
 - `worker::start` — bring the worker back up.
 - `worker::remove` — also drop the config entry (pairs with this op
   during decommission).
+- [`worker`](iii://worker/events) — subscribe to lifecycle events fired
+  by this op.
 
 ## Errors
 

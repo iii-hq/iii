@@ -24,7 +24,22 @@ pub async fn run(
         op: "update",
         worker: label.clone(),
     });
-    let outcome = shim.update(opts, ctx, events).await?;
+    events.emit(WorkerOpEvent::Stage {
+        op: "update",
+        stage: "updating",
+        worker: label.clone(),
+    });
+    let outcome = match shim.update(opts, ctx, events).await {
+        Ok(o) => o,
+        Err(e) => {
+            events.emit(WorkerOpEvent::Failed {
+                op: "update",
+                worker: label,
+                error: e.to_string(),
+            });
+            return Err(e);
+        }
+    };
     events.emit(WorkerOpEvent::Done {
         op: "update",
         worker: label,

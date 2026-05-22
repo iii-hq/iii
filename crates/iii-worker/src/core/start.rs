@@ -25,7 +25,23 @@ pub async fn run(
         op: "start",
         worker: opts.name.clone(),
     });
-    let outcome = shim.start(opts, ctx, events).await?;
+    events.emit(WorkerOpEvent::Stage {
+        op: "start",
+        stage: "starting",
+        worker: opts.name.clone(),
+    });
+    let name_for_failure = opts.name.clone();
+    let outcome = match shim.start(opts, ctx, events).await {
+        Ok(o) => o,
+        Err(e) => {
+            events.emit(WorkerOpEvent::Failed {
+                op: "start",
+                worker: name_for_failure,
+                error: e.to_string(),
+            });
+            return Err(e);
+        }
+    };
     events.emit(WorkerOpEvent::Done {
         op: "start",
         worker: outcome.name.clone(),

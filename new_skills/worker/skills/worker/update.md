@@ -66,6 +66,10 @@ re-resolve). Names not present in `iii.config.yaml` return **W110**.
   unchanged workers are preserved verbatim).
 - Does **not** touch `iii.config.yaml` — configs stay exactly as
   written.
+- Publishes lifecycle events to the [`worker`](iii://worker/events)
+  trigger type: `started` → `updating` → `done` on success, or
+  `started` → `updating` → `failed` on error. Subscribers filter via
+  `WorkerTriggerConfig`.
 
 # Worked example
 
@@ -94,6 +98,8 @@ A real change when one worker had a newer release waiting:
 - `worker::list` — verify the new versions landed in `iii.lock`.
 - `worker::start` — restart workers that picked up a new version (no
   hot-reload).
+- [`worker`](iii://worker/events) — subscribe to lifecycle events fired
+  by this op.
 
 ## Errors
 

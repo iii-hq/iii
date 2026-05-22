@@ -2637,6 +2637,7 @@ dependencies = [
  "http-body-util",
  "iana-time-zone",
  "iii-sdk",
+ "iii-worker",
  "indexmap 2.14.0",
  "indicatif 0.17.11",
  "inventory",

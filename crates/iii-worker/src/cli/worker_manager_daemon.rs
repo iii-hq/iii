@@ -5,22 +5,37 @@
 //! routes through the same `crate::core::*::run` + `CliHostShim` adapter
 //! that backs `iii worker <cmd>`, so a remote `iii.trigger("worker::add",
 //! ...)` and a local `iii worker add foo` exercise the same body.
+//!
+//! On top of the callable surface, the daemon also registers the
+//! `worker` custom trigger type so other workers can subscribe to
+//! lifecycle events via `iii.register_trigger("worker", config, fn)`.
+//! Each mutating op uses an `IIIEventSink` (replacing the historical
+//! `NullSink`) that fans `WorkerOpEvent`s out to matching subscribers.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crate::core::{
-    AddOptions, AddOutcome, ClearOptions, ClearOutcome, ListOptions, ListOutcome, NullSink,
-    ProjectCtx, RemoveOptions, RemoveOutcome, StartOptions, StartOutcome, StopOptions, StopOutcome,
-    UpdateOptions, UpdateOutcome, WorkerOpError, add as core_add, clear as core_clear,
+    AddOptions, AddOutcome, ClearOptions, ClearOutcome, EventSink, ListOptions, ListOutcome,
+    NullSink, ProjectCtx, RemoveOptions, RemoveOutcome, StartOptions, StartOutcome, StopOptions,
+    StopOutcome, UpdateOptions, UpdateOutcome, WorkerOpError, add as core_add, clear as core_clear,
     list as core_list, remove as core_remove, start as core_start, stop as core_stop,
     update as core_update,
 };
-use iii_sdk::{III, InitOptions, OtelConfig, RegisterFunction, WorkerMetadata, register_worker};
+use iii_sdk::{
+    III, InitOptions, OtelConfig, RegisterFunction, RegisterTriggerType, WorkerMetadata,
+    register_worker,
+};
 use schemars::{JsonSchema, schema_for};
 use serde_json::Value;
 
 use crate::cli::app::WorkerManagerDaemonArgs;
 use crate::cli::host_shim::CliHostShim;
+use crate::cli::worker_trigger::{
+    IIIEventSink, Subscriptions, WorkerCallRequest, WorkerTriggerConfig, WorkerTriggerHandler,
+};
+use crate::core::add::CallerMode;
 
 pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
     let project_root = args
@@ -43,7 +58,24 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
         },
     );
 
-    register_all(&iii, project_root);
+    // Register the `worker` trigger type and build a fan-out sink that
+    // shares the same subscription map. The handler stores subscriber
+    // configs; the sink reads them when an op emits a `WorkerOpEvent`.
+    let subs: Subscriptions = Arc::new(Mutex::new(HashMap::new()));
+    iii.register_trigger_type(
+        RegisterTriggerType::new(
+            "worker",
+            "Worker lifecycle events emitted by every worker::* op. \
+             Subscribe with `operations` / `stages` / `workers` filters.",
+            WorkerTriggerHandler::new(subs.clone()),
+        )
+        .trigger_request_format::<WorkerTriggerConfig>()
+        .call_request_format::<WorkerCallRequest>(),
+    );
+    let event_sink: Arc<IIIEventSink> =
+        Arc::new(IIIEventSink::new(iii.clone(), subs, CallerMode::Trigger));
+
+    register_all(&iii, project_root, event_sink);
 
     tracing::info!("worker-manager-daemon ready");
     if let Err(e) = tokio::signal::ctrl_c().await {
@@ -76,14 +108,14 @@ fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
 
-fn register_all(iii: &III, project_root: PathBuf) {
-    register_add(iii, project_root.clone());
-    register_remove(iii, project_root.clone());
-    register_update(iii, project_root.clone());
-    register_start(iii, project_root.clone());
-    register_stop(iii, project_root.clone());
+fn register_all(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+    register_add(iii, project_root.clone(), sink.clone());
+    register_remove(iii, project_root.clone(), sink.clone());
+    register_update(iii, project_root.clone(), sink.clone());
+    register_start(iii, project_root.clone(), sink.clone());
+    register_stop(iii, project_root.clone(), sink.clone());
     register_list(iii, project_root.clone());
-    register_clear(iii, project_root);
+    register_clear(iii, project_root, sink);
     register_schema(iii);
 }
 
@@ -208,10 +240,18 @@ fn register_schema(iii: &III) {
     );
 }
 
-fn register_add(iii: &III, project_root: PathBuf) {
+fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {
+    // `IIIEventSink` is the only mutating-op sink today, but the
+    // orchestrators take `&dyn EventSink` — this helper makes the
+    // coercion site explicit at every call site.
+    &**sink
+}
+
+fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         RegisterFunction::new_async("worker::add", move |payload: Value| {
             let project_root = project_root.clone();
+            let sink = sink.clone();
             async move {
                 let opts: AddOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::add", &e))?;
@@ -219,7 +259,7 @@ fn register_add(iii: &III, project_root: PathBuf) {
                 core_add::run(
                     opts,
                     &ctx,
-                    &NullSink,
+                    sink_ref(&sink),
                     &CliHostShim,
                     core_add::CallerMode::Trigger,
                 )
@@ -231,15 +271,16 @@ fn register_add(iii: &III, project_root: PathBuf) {
     );
 }
 
-fn register_remove(iii: &III, project_root: PathBuf) {
+fn register_remove(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         RegisterFunction::new_async("worker::remove", move |payload: Value| {
             let project_root = project_root.clone();
+            let sink = sink.clone();
             async move {
                 let opts: RemoveOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::remove", &e))?;
                 let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
-                core_remove::run(opts, &ctx, &NullSink, &CliHostShim)
+                core_remove::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
             }
@@ -248,15 +289,16 @@ fn register_remove(iii: &III, project_root: PathBuf) {
     );
 }
 
-fn register_update(iii: &III, project_root: PathBuf) {
+fn register_update(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         RegisterFunction::new_async("worker::update", move |payload: Value| {
             let project_root = project_root.clone();
+            let sink = sink.clone();
             async move {
                 let opts: UpdateOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::update", &e))?;
                 let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
-                core_update::run(opts, &ctx, &NullSink, &CliHostShim)
+                core_update::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
             }
@@ -265,15 +307,16 @@ fn register_update(iii: &III, project_root: PathBuf) {
     );
 }
 
-fn register_start(iii: &III, project_root: PathBuf) {
+fn register_start(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         RegisterFunction::new_async("worker::start", move |payload: Value| {
             let project_root = project_root.clone();
+            let sink = sink.clone();
             async move {
                 let opts: StartOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::start", &e))?;
                 let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
-                core_start::run(opts, &ctx, &NullSink, &CliHostShim)
+                core_start::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
             }
@@ -282,15 +325,16 @@ fn register_start(iii: &III, project_root: PathBuf) {
     );
 }
 
-fn register_stop(iii: &III, project_root: PathBuf) {
+fn register_stop(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         RegisterFunction::new_async("worker::stop", move |payload: Value| {
             let project_root = project_root.clone();
+            let sink = sink.clone();
             async move {
                 let opts: StopOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::stop", &e))?;
                 let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
-                core_stop::run(opts, &ctx, &NullSink, &CliHostShim)
+                core_stop::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
             }
@@ -323,15 +367,16 @@ fn register_list(iii: &III, project_root: PathBuf) {
     );
 }
 
-fn register_clear(iii: &III, project_root: PathBuf) {
+fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         RegisterFunction::new_async("worker::clear", move |payload: Value| {
             let project_root = project_root.clone();
+            let sink = sink.clone();
             async move {
                 let opts: ClearOptions = serde_json::from_value(payload)
                     .map_err(|e| bad_request_payload("worker::clear", &e))?;
                 let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
-                core_clear::run(opts, &ctx, &NullSink, &CliHostShim)
+                core_clear::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
                     .map_err(|e| err_payload(&e))
             }

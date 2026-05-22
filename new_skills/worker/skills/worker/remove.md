@@ -68,6 +68,11 @@ absent from the `removed` list).
   until [`worker::clear`](iii://worker/clear) is called.
 - Does **not** rewrite `iii.lock`; the pinned versions linger until a
   subsequent `worker::add` rewrites the lock.
+- Publishes lifecycle events to the [`worker`](iii://worker/events)
+  trigger type: `started` → `removing` → `done` on success, or
+  `started` → `removing` → `failed` on error. The sequence repeats per
+  name when removing several workers in one call. Subscribers filter
+  via `WorkerTriggerConfig`.
 
 # Worked example
 
@@ -94,6 +99,8 @@ Remove every installed worker (a full reset):
 - `worker::clear` — free the cached artifacts left behind on disk.
 - `worker::list` — verify the entries are gone after the call.
 - `worker::add` — re-install a worker that was just removed.
+- [`worker`](iii://worker/events) — subscribe to lifecycle events fired
+  by this op.
 
 ## Errors
 

@@ -62,6 +62,10 @@ returns **W104**.
   entry and pinned version stay exactly as they were.
 - After this call, the next [`worker::add`](iii://worker/add) (or a
   start that needs the cache) will re-download the artifact.
+- Publishes lifecycle events to the [`worker`](iii://worker/events)
+  trigger type: `started` → `clearing` → `done` on success, or
+  `started` → `clearing` → `failed` on error. Subscribers filter via
+  `WorkerTriggerConfig`.
 
 # Worked example
 
@@ -91,6 +95,8 @@ Returns the total bytes freed:
   `force: true` to guarantee a clean pull).
 - `worker::list` — confirm the worker entries are still configured
   after the clear.
+- [`worker`](iii://worker/events) — subscribe to lifecycle events fired
+  by this op.
 
 ## Errors
 
