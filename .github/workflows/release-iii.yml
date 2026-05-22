@@ -457,6 +457,21 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  observability-py:
+    name: Observability Python Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/observability
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Observability Python (pypi)
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   sdk-rust:
     name: SDK Rust Publish
     needs: [setup, create-iii-release]
