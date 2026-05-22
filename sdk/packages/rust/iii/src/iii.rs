@@ -1627,9 +1627,9 @@ impl III {
             let payload_max_bytes = iii_observability::resolve_max_bytes_from_env();
 
             if trace_payloads {
-                use iii_observability::redact_and_truncate;
                 use iii_observability::opentelemetry::KeyValue;
                 use iii_observability::opentelemetry::trace::TraceContextExt;
+                use iii_observability::redact_and_truncate;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
                     let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
@@ -1649,9 +1649,9 @@ impl III {
             };
 
             if trace_payloads {
-                use iii_observability::redact_and_truncate;
                 use iii_observability::opentelemetry::KeyValue;
                 use iii_observability::opentelemetry::trace::TraceContextExt;
+                use iii_observability::redact_and_truncate;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
                     let (output_json, truncated, ok) = match &result {
