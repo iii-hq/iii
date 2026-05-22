@@ -54,6 +54,7 @@
   } catch (_) {}
 })();
 </script>
+<script src="/posthog-consent.js"></script>
 
 <!-- Favicon -->
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -4339,6 +4340,7 @@
       } catch (_) {}
       banner.remove();
       if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
+      if (window.iiiLoadPostHog) window.iiiLoadPostHog();
     });
   }
   if (reject) {
