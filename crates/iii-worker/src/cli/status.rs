@@ -195,6 +195,9 @@ impl WorkerStatus {
         let (worker_type, worker_path) = match &resolved {
             ResolvedWorkerType::Local { worker_path } => ("local", Some(worker_path.clone())),
             ResolvedWorkerType::Oci { .. } => ("oci", None),
+            ResolvedWorkerType::Bundle { worker_path } => {
+                ("bundle", Some(worker_path.to_string_lossy().to_string()))
+            }
             ResolvedWorkerType::Binary { .. } => ("binary", None),
             ResolvedWorkerType::Config => ("config", None),
         };
@@ -354,6 +357,30 @@ impl WorkerStatus {
                 "sandbox:".dimmed(),
                 "n/a (binary worker runs on host)".dimmed()
             )
+        } else if self.worker_type == Some("bundle") {
+            // Bundle workers boot through the libkrun rails like local
+            // workers, but the bundle is immutable and dependencies are
+            // expected to be pre-packaged by the publisher (the strict
+            // manifest validator rejects scripts.setup / scripts.install).
+            // The honest statuses here mirror the OCI branch — no in-VM
+            // install phase, no `.iii-prepared` marker to wait on.
+            match (self.managed_dir_exists, self.alive) {
+                (false, _) => format!(
+                    "{:>12}  {}",
+                    "sandbox:".dimmed(),
+                    "no managed dir yet".dimmed()
+                ),
+                (true, true) => format!(
+                    "{:>12}  {} (bundle vendored)",
+                    "sandbox:".dimmed(),
+                    "running".green()
+                ),
+                (true, false) => format!(
+                    "{:>12}  {} (rootfs ready)",
+                    "sandbox:".dimmed(),
+                    "prepared".green()
+                ),
+            }
         } else if self.worker_type == Some("oci") {
             // OCI images bake deps at build time — no in-VM install, no
             // `.iii-prepared` marker. The honest statuses here are:

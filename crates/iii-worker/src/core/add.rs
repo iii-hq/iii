@@ -24,12 +24,12 @@ pub async fn run(
     shim: &dyn WorkerHostShim,
     mode: CallerMode,
 ) -> Result<AddOutcome, WorkerOpError> {
-    if mode == CallerMode::Trigger {
-        if let WorkerSource::Local { path } = &opts.source {
-            return Err(WorkerOpError::local_path_not_allowed_via_trigger(
-                path.display().to_string(),
-            ));
-        }
+    if mode == CallerMode::Trigger
+        && let WorkerSource::Local { path } = &opts.source
+    {
+        return Err(WorkerOpError::local_path_not_allowed_via_trigger(
+            path.display().to_string(),
+        ));
     }
     let label = source_label(&opts.source);
     events.emit(WorkerOpEvent::Started {

@@ -12,7 +12,9 @@
 //! (`build_user_properties`), and the named event helpers
 //! (`send_cli_update_*`, `send_project_init_*`, `send_install_lifecycle_event`).
 
-use iii::workers::telemetry::amplitude::{API_KEY, AmplitudeClient, AmplitudeEvent};
+use iii::workers::telemetry::amplitude::{
+    API_KEY, AmplitudeClient, AmplitudeEvent, POSTHOG_PROJECT_API_KEY, PostHogClient,
+};
 use iii::workers::telemetry::environment;
 
 fn is_telemetry_disabled() -> bool {
@@ -72,8 +74,29 @@ fn build_event(
 }
 
 async fn send_direct(event: AmplitudeEvent) {
-    let client = AmplitudeClient::new(API_KEY.to_string());
-    let _ = client.send_event(event).await;
+    let posthog_event = event.clone();
+    let amplitude_client = AmplitudeClient::new(API_KEY.to_string());
+    if let Some(posthog_client) = build_posthog_client_from_env() {
+        let (amplitude_result, posthog_result) = tokio::join!(
+            amplitude_client.send_event(event),
+            posthog_client.send_event(posthog_event)
+        );
+        let _ = amplitude_result;
+        let _ = posthog_result;
+    } else {
+        let _ = amplitude_client.send_event(event).await;
+    }
+}
+
+fn build_posthog_client_from_env() -> Option<PostHogClient> {
+    let key = std::env::var("POSTHOG_PROJECT_API_KEY")
+        .or_else(|_| std::env::var("POSTHOG_API_KEY"))
+        .ok()
+        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
+        .filter(|key| !key.trim().is_empty())?;
+    let host =
+        std::env::var("POSTHOG_HOST").unwrap_or_else(|_| "https://us.i.posthog.com".to_string());
+    Some(PostHogClient::new(key, host))
 }
 
 fn send_fire_and_forget(event: AmplitudeEvent) {
@@ -90,6 +113,28 @@ pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_js
     if let Some(mut event) = build_event(event_type, properties, install_method.as_deref()) {
         event.platform = "install-script".to_string();
         send_direct(event).await;
+    }
+}
+
+fn build_cli_usage_event(command_path: &str) -> Option<AmplitudeEvent> {
+    let normalized = command_path.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    build_event(
+        "cli_command_invoked",
+        serde_json::json!({
+            "command": "iii",
+            "command_path": normalized,
+            "install_method": environment::detect_install_method(),
+        }),
+        None,
+    )
+}
+
+pub async fn send_cli_usage(command_path: &str) {
+    if let Some(event) = build_cli_usage_event(command_path) {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), send_direct(event)).await;
     }
 }
 
@@ -263,5 +308,48 @@ mod tests {
         let e1 = build_event("evt", serde_json::json!({}), None).expect("event");
         let e2 = build_event("evt", serde_json::json!({}), None).expect("event");
         assert_ne!(e1.insert_id, e2.insert_id);
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_cli_usage_event_uses_sanitized_command_path() {
+        clear_opt_out_vars();
+        let event = build_cli_usage_event("project init").expect("event");
+        assert_eq!(event.event_type, "cli_command_invoked");
+        assert_eq!(event.event_properties["command"], "iii");
+        assert_eq!(event.event_properties["command_path"], "project init");
+        assert!(event.event_properties.get("install_method").is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_cli_usage_event_ignores_empty_command_path() {
+        clear_opt_out_vars();
+        assert!(build_cli_usage_event("   ").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_posthog_client_from_env_defaults_to_public_project_key() {
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+            env::remove_var("POSTHOG_API_KEY");
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert!(build_posthog_client_from_env().is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_posthog_client_from_env_accepts_project_key() {
+        unsafe {
+            env::set_var("POSTHOG_PROJECT_API_KEY", "phc_test");
+            env::set_var("POSTHOG_HOST", "https://eu.i.posthog.com");
+        }
+        assert!(build_posthog_client_from_env().is_some());
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+            env::remove_var("POSTHOG_HOST");
+        }
     }
 }

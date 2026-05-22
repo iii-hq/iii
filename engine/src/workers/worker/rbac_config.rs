@@ -578,9 +578,13 @@ mod tests {
     fn discovery_functions_still_gated() {
         let discovery_ids = [
             "engine::functions::list",
+            "engine::functions::info",
             "engine::workers::list",
+            "engine::workers::info",
             "engine::triggers::list",
-            "engine::trigger-types::list",
+            "engine::triggers::info",
+            "engine::registered-triggers::list",
+            "engine::registered-triggers::info",
             "engine::traces::list",
             "engine::queue::list_topics",
             "engine::health::check",

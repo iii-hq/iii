@@ -186,7 +186,7 @@ fn register_schema(iii: &III) {
             let filter = req.function_id.as_deref();
             let schemas: Vec<SchemaEntry> = all
                 .into_iter()
-                .filter(|(id, _, _, _)| filter.map_or(true, |f| f == *id))
+                .filter(|(id, _, _, _)| filter.is_none_or(|f| f == *id))
                 .map(|(id, desc, req, resp)| {
                     let (timeout_ms, idempotent) = op_metadata(id);
                     SchemaEntry {

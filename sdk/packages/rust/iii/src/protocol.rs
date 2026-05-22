@@ -178,15 +178,6 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
     },
-    RegisterService {
-        id: String,
-        #[serde(default)]
-        name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_service_id: Option<String>,
-    },
     Ping,
     Pong,
     WorkerRegistered {
@@ -314,27 +305,6 @@ impl RegisterFunctionMessage {
             response_format: self.response_format.clone(),
             metadata: self.metadata.clone(),
             invocation: self.invocation.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterServiceMessage {
-    pub id: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_service_id: Option<String>,
-}
-
-impl RegisterServiceMessage {
-    pub fn to_message(&self) -> Message {
-        Message::RegisterService {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            description: self.description.clone(),
-            parent_service_id: self.parent_service_id.clone(),
         }
     }
 }

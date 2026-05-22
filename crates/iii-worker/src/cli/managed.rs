@@ -30,8 +30,8 @@ use super::builtin_defaults::{get_builtin_default, is_any_builtin, resolve_built
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
-    BinaryWorkerResponse, MANIFEST_PATH, ResolvedWorkerGraph, WorkerInfoResponse,
-    fetch_resolved_worker_graph, fetch_worker_info, parse_worker_input,
+    BinaryWorkerResponse, BundleWorkerResponse, MANIFEST_PATH, ResolvedWorkerGraph,
+    WorkerInfoResponse, fetch_resolved_worker_graph, fetch_worker_info, parse_worker_input,
 };
 use super::worker_manager::state::WorkerDef;
 use std::collections::BTreeMap;
@@ -171,6 +171,183 @@ pub async fn handle_binary_add(
 
         // The engine's file watcher will detect the config change and
         // reload automatically — no need to start the worker here.
+    }
+    0
+}
+
+/// `iii worker add <bundle-name>` handler.
+///
+/// Runs the bundle install pipeline: acquire fslock + staging, stream
+/// archive, verify sha256, extract with bundle-tight limits, validate
+/// strict manifest, atomic install into `~/.iii/workers-bundle/{name}/`,
+/// and write a name-only entry to config.yaml so the resolver
+/// dispatches the worker on the next `iii worker start`.
+pub async fn handle_bundle_add(
+    worker_name: &str,
+    response: &BundleWorkerResponse,
+    brief: bool,
+) -> i32 {
+    // Operator kill switch (III_BUNDLE_WORKERS_DISABLED=1). The
+    // network/filesystem pipeline below downloads publisher-controlled
+    // archives; an operator who doesn't yet trust the registry CDN
+    // must be able to refuse every bundle install without touching
+    // config.yaml. Checked BEFORE any network I/O.
+    if super::bundle_download::bundle_workers_disabled() {
+        eprintln!(
+            "{} bundle workers are disabled via {}=1; refusing to install '{}'",
+            "error:".red(),
+            super::bundle_download::ENV_BUNDLE_WORKERS_DISABLED,
+            worker_name,
+        );
+        return 1;
+    }
+
+    if !brief {
+        eprintln!("  {} Resolved to bundle v{}", "✓".green(), response.version);
+    }
+
+    // 1. Acquire per-worker lock + staging directory.
+    let mut guard = match super::bundle_download::acquire_staging(worker_name).await {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+    let staging_dir = guard.staging_dir().to_path_buf();
+
+    // 2. Stream-download + sha256 verify into staging/.archive.tar.gz.
+    if !brief {
+        eprintln!("  Downloading archive...");
+    }
+    let archive_path = match super::bundle_download::download_archive(
+        &response.archive_url,
+        &response.sha256,
+        &staging_dir,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    // 3. Extract with bundle-tight limits + entry_type filter.
+    if !brief {
+        eprintln!("  Extracting...");
+    }
+    if let Err(e) = super::bundle_download::extract_bundle_safely(&archive_path, &staging_dir).await
+    {
+        eprintln!("{} {}", "error:".red(), e);
+        return 1;
+    }
+    // Archive blob is no longer needed; drop it so the staging->final
+    // rename doesn't carry it into the install dir. We MUST fail-hard
+    // if the unlink fails (ENOSPC, EBUSY on Windows, EPERM under
+    // hardened mounts): otherwise the next step is `atomic_install`,
+    // which renames `staging_dir` — including the leftover archive —
+    // straight into the worker's install root, where it would persist
+    // forever (a stale 64 MiB blob next to the bundle payload). The
+    // Drop guard on `staging_dir` cleans things up when we return Err
+    // here, so the failure is transactional.
+    if let Err(e) = std::fs::remove_file(&archive_path) {
+        eprintln!(
+            "{} failed to remove staged archive {}: {}",
+            "error:".red(),
+            archive_path.display(),
+            e,
+        );
+        return 1;
+    }
+
+    // 4. Strict manifest validation: rejects scripts.setup, scripts.install,
+    //    runtime.base_image; enforces name match + non-empty scripts.start.
+    if let Err(e) = super::bundle_download::validate_bundle_manifest(&staging_dir, worker_name) {
+        eprintln!("{} {}", "error:".red(), e);
+        return 1;
+    }
+
+    // 5. Resource clamp (engine-level caps not yet plumbed in).
+    let caps = super::bundle_download::ResourceCaps::default();
+    match super::bundle_download::parse_bundle_resources(&staging_dir, caps) {
+        Ok(res) => {
+            if let Some(requested) = res.clamped_cpus {
+                eprintln!(
+                    "  {} resources.cpus clamped from {} to {} (W182 BundleResourceClamped)",
+                    "warning:".yellow(),
+                    requested,
+                    res.cpus,
+                );
+            }
+            if let Some(requested) = res.clamped_memory_mb {
+                eprintln!(
+                    "  {} resources.memory clamped from {} MiB to {} MiB (W182 BundleResourceClamped)",
+                    "warning:".yellow(),
+                    requested,
+                    res.memory_mb,
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    }
+
+    // 6. Atomic rename staging → ~/.iii/workers-bundle/{name}/.
+    let final_dir = match super::bundle_download::atomic_install(guard.staging_dir(), worker_name) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+    guard.commit();
+
+    // 7. Write a name-only worker entry to config.yaml so `iii worker
+    //    list` and `iii worker start` see the worker.
+    //
+    //    We DO NOT write a `worker_path:` field here, even though we
+    //    know the absolute path. resolve_worker_type_from_content
+    //    (config_file.rs) checks worker_path FIRST and would return
+    //    ResolvedWorkerType::Local, which routes subsequent starts
+    //    through start_local_worker WITH the source watcher. By
+    //    writing only the name, the resolver falls through to
+    //    check_install_fallback, which sees the bundle dir +
+    //    iii.worker.yaml at the well-known location and returns
+    //    ResolvedWorkerType::Bundle. Bundle then dispatches to
+    //    start_bundle_worker, which skips the watcher (immutable
+    //    install).
+    if let Err(e) = super::config_file::append_worker(worker_name, None) {
+        eprintln!("{} {}", "error:".red(), e);
+        // Roll back the installed bundle dir so a retry isn't blocked
+        // by `AlreadyExists` from atomic_install. The StagingGuard has
+        // already committed by this point — final_dir is the only
+        // on-disk state we still own. Cleanup errors are logged but
+        // the install still fails (return 1).
+        if let Err(rm_err) = std::fs::remove_dir_all(&final_dir) {
+            eprintln!(
+                "  {} failed to roll back bundle install dir {}: {}",
+                "warning:".yellow(),
+                final_dir.display(),
+                rm_err,
+            );
+        }
+        return 1;
+    }
+
+    if !brief {
+        eprintln!(
+            "\n  {} Worker {} added as bundle (v{}) at {}",
+            "✓".green(),
+            worker_name.bold(),
+            response.version,
+            final_dir.display().to_string().dimmed(),
+        );
+    } else {
+        eprintln!("        {} {}", "✓".green(), worker_name.bold());
     }
     0
 }
@@ -489,6 +666,7 @@ fn skipped_unmanaged_config_workers(
             match super::config_file::resolve_worker_type(name) {
                 ResolvedWorkerType::Local { .. } => Some((name.clone(), "local-path worker")),
                 ResolvedWorkerType::Oci { .. } => Some((name.clone(), "direct OCI worker")),
+                ResolvedWorkerType::Bundle { .. } => Some((name.clone(), "bundle worker")),
                 ResolvedWorkerType::Binary { .. } | ResolvedWorkerType::Config => None,
             }
         })
@@ -572,6 +750,15 @@ async fn prepare_locked_worker(
                 name: name.to_string(),
                 version: worker.version.clone(),
             }))
+        }
+        super::lockfile::LockedSource::Bundle { .. } => {
+            // Bundle lockfile replay lands in T3 alongside the install
+            // pipeline. Until then we surface a clear error so `iii worker
+            // sync` doesn't silently skip bundle workers.
+            Err(format!(
+                "worker `{name}` is a bundle worker; `iii worker sync` replay is not yet implemented. \
+                 Fix: re-install with `iii worker add {name}`."
+            ))
         }
     }
 }
@@ -834,7 +1021,9 @@ fn should_verify_config_worker(lockfile: &super::lockfile::WorkerLockfile, name:
     }
 
     match super::config_file::resolve_worker_type(name) {
-        ResolvedWorkerType::Local { .. } | ResolvedWorkerType::Oci { .. } => false,
+        ResolvedWorkerType::Local { .. }
+        | ResolvedWorkerType::Oci { .. }
+        | ResolvedWorkerType::Bundle { .. } => false,
         ResolvedWorkerType::Binary { .. } | ResolvedWorkerType::Config => true,
     }
 }
@@ -964,6 +1153,21 @@ fn lockfile_from_graph(
                     })?,
                 }),
             ),
+            "bundle" => {
+                let archive_url = node.archive_url.clone().ok_or_else(|| {
+                    format!("resolved bundle worker '{}' has no archive_url", node.name)
+                })?;
+                let sha256 = node.sha256.clone().ok_or_else(|| {
+                    format!("resolved bundle worker '{}' has no sha256", node.name)
+                })?;
+                (
+                    super::lockfile::LockedWorkerType::Bundle,
+                    Some(super::lockfile::LockedSource::Bundle {
+                        archive_url,
+                        sha256,
+                    }),
+                )
+            }
             other => {
                 return Err(format!(
                     "resolved worker '{}' has unsupported type '{}'",
@@ -1058,7 +1262,7 @@ fn read_lockfile_or_default(
 
 fn write_engine_lock_entry(worker_name: &str, version: &str) -> Result<(), String> {
     let lock_path = super::lockfile::lockfile_path();
-    let mut lockfile = read_lockfile_or_default(&lock_path)?;
+    let mut lockfile = read_lockfile_or_default(lock_path)?;
     lockfile.workers.insert(
         worker_name.to_string(),
         super::lockfile::LockedWorker {
@@ -1068,7 +1272,7 @@ fn write_engine_lock_entry(worker_name: &str, version: &str) -> Result<(), Strin
             source: None,
         },
     );
-    lockfile.write_to(&lock_path)
+    lockfile.write_to(lock_path)
 }
 
 fn persist_engine_worker_config_and_lock(
@@ -1145,6 +1349,16 @@ fn populate_manifest_hash_fields(lockfile: &mut super::lockfile::WorkerLockfile)
 }
 
 async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> i32 {
+    // Enforce client-side dependency-graph bounds BEFORE touching any
+    // filesystem state. A compromised or malformed registry response
+    // must not be able to drive thousands of installs from a single
+    // `iii worker add`. See registry::enforce_dep_graph_bounds
+    // (MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS).
+    if let Err(e) = super::registry::enforce_dep_graph_bounds(graph) {
+        eprintln!("{} {}", "error:".red(), e);
+        return 1;
+    }
+
     for node in &graph.graph {
         if let Err(e) = super::registry::validate_worker_name(&node.name) {
             eprintln!(
@@ -1169,7 +1383,7 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     };
 
     let lock_path = super::lockfile::lockfile_path();
-    let mut lockfile = match read_lockfile_or_default(&lock_path) {
+    let mut lockfile = match read_lockfile_or_default(lock_path) {
         Ok(lockfile) => lockfile,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -1225,6 +1439,41 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
                 };
                 handle_oci_pull_and_add(&node.name, image, brief).await
             }
+            "bundle" => {
+                // Bundle install via the multi-worker /resolve path.
+                // The graph node carries archive_url + sha256 already
+                // (lockfile_from_graph above also enforces this);
+                // we just need to repackage them into a
+                // `BundleWorkerResponse` for the existing install
+                // pipeline so the legacy GET /download/<name> fallback
+                // and the /resolve fast-path share the same downstream
+                // code.
+                let Some(archive_url) = node.archive_url.clone() else {
+                    eprintln!(
+                        "{} Resolved bundle worker '{}' has no archive_url",
+                        "error:".red(),
+                        node.name,
+                    );
+                    config_snapshot.restore_after_failure();
+                    return 1;
+                };
+                let Some(sha256) = node.sha256.clone() else {
+                    eprintln!(
+                        "{} Resolved bundle worker '{}' has no sha256",
+                        "error:".red(),
+                        node.name,
+                    );
+                    config_snapshot.restore_after_failure();
+                    return 1;
+                };
+                let response = super::registry::BundleWorkerResponse {
+                    name: node.name.clone(),
+                    version: node.version.clone(),
+                    archive_url,
+                    sha256,
+                };
+                handle_bundle_add(&node.name, &response, brief).await
+            }
             other => {
                 eprintln!(
                     "{} Resolved worker '{}' has unsupported type '{}'",
@@ -1257,7 +1506,7 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     // drift detection until Slice A.2 adds project-wide scanning.
     populate_manifest_hash_fields(&mut lockfile);
 
-    if let Err(e) = lockfile.write_to(&lock_path) {
+    if let Err(e) = lockfile.write_to(lock_path) {
         eprintln!("{} {}", "error:".red(), e);
         config_snapshot.restore_after_failure();
         return 1;
@@ -1557,6 +1806,7 @@ pub async fn handle_managed_add(
             }
             handle_oci_pull_and_add(&r.name, &r.image_url, brief).await
         }
+        WorkerInfoResponse::Bundle(r) => handle_bundle_add(&name, &r, brief).await,
         WorkerInfoResponse::Engine(r) => {
             // Engine workers are built into the iii binary; telemetry was already
             // fired by fetch_worker_info via the 204 response path.
@@ -2416,6 +2666,31 @@ pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
         }
     }
 
+    // Bundle worker: ~/.iii/workers-bundle/{name}/. Without this branch,
+    // `iii worker remove foo` and `iii worker clear` would silently leak
+    // the bundle install dir, and `iii worker add foo --force` would
+    // hit `AlreadyExists` from atomic_install.
+    let bundle_dir = super::config_file::bundle_worker_path(worker_name);
+    if bundle_dir.is_dir() {
+        freed += dir_size(&bundle_dir);
+        if let Err(e) = std::fs::remove_dir_all(&bundle_dir) {
+            eprintln!(
+                "  {} Failed to remove {}: {}",
+                "warning:".yellow(),
+                bundle_dir.display(),
+                e
+            );
+        }
+    }
+    // NOTE: do NOT unlink the per-worker fslock file here. The lock
+    // file is tiny (~64 bytes) and can persist forever without harm.
+    // Removing it races with concurrent installers blocked at
+    // `LockFile::open` / `lock_with_pid`: process A unlinks the file,
+    // process C creates a NEW file at the same path and acquires its
+    // lock against a different inode while process B still believes
+    // it holds the original inode's lock. Both B and C then race
+    // through atomic_install.
+
     freed
 }
 
@@ -2781,6 +3056,22 @@ pub async fn handle_managed_start(
                 super::local_worker::start_local_worker(worker_name, &worker_path, port).await,
             )
         }
+        ResolvedWorkerType::Bundle { worker_path } => {
+            // Bundle workers run through the local-worker libkrun rails
+            // via `start_bundle_worker`, which is identical to
+            // `start_local_worker` except the host-side source watcher
+            // is suppressed (immutable install).
+            if config.is_some() {
+                tracing::warn!(
+                    worker = %worker_name,
+                    "--config ignored for bundle workers"
+                );
+            }
+            let path_str = worker_path.to_string_lossy().to_string();
+            StartOutcome::Exit(
+                super::local_worker::start_bundle_worker(worker_name, &path_str, port).await,
+            )
+        }
         ResolvedWorkerType::Binary { binary_path } => {
             StartOutcome::Exit(start_binary_worker(worker_name, &binary_path, config).await)
         }
@@ -2846,6 +3137,21 @@ pub async fn handle_managed_start(
             };
             let rc = start_oci_worker(worker_name, &worker_def, port).await;
             return finish_start(worker_name, rc, wait, port).await;
+        }
+        Ok(WorkerInfoResponse::Bundle(_)) => {
+            // Bundle install during `start` (auto-install fallback) is
+            // not supported. Bundle workers must be installed explicitly
+            // via `iii worker add <name>`, which runs the strict
+            // manifest validator and the SHA-256-verified download
+            // pipeline. Bundle workers are GA so this is purely a UX
+            // guard, not a feature flag.
+            eprintln!(
+                "{} '{}' is a bundle worker. Install it explicitly: `iii worker add {}`",
+                "error:".red(),
+                worker_name,
+                worker_name,
+            );
+            return 1;
         }
         Ok(WorkerInfoResponse::Engine(_)) => {
             if !super::config_file::worker_exists(worker_name) {
@@ -3166,6 +3472,7 @@ fn worker_list_type_label_from_resolved(name: &str, resolved: ResolvedWorkerType
     match resolved {
         ResolvedWorkerType::Local { .. } => "local",
         ResolvedWorkerType::Oci { .. } => "oci",
+        ResolvedWorkerType::Bundle { .. } => "bundle",
         ResolvedWorkerType::Binary { .. } => "binary",
         ResolvedWorkerType::Config if is_any_builtin(name) => "engine",
         ResolvedWorkerType::Config => "config",
@@ -3744,6 +4051,8 @@ mod tests {
             config: serde_json::Value::Null,
             binaries: Some(binaries),
             image: None,
+            archive_url: None,
+            sha256: None,
             dependencies: StdHashMap::new(),
         }
     }
@@ -3761,6 +4070,8 @@ mod tests {
             config: serde_json::Value::Null,
             binaries: None,
             image,
+            archive_url: None,
+            sha256: None,
             dependencies: StdHashMap::new(),
         }
     }
@@ -3774,6 +4085,8 @@ mod tests {
             config: serde_json::Value::Null,
             binaries: None,
             image: None,
+            archive_url: None,
+            sha256: None,
             dependencies: StdHashMap::new(),
         }
     }

@@ -185,6 +185,44 @@ fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
     cli.use_default_config
 }
 
+fn passthrough_command_path(command: &str, args: &[String]) -> String {
+    for arg in args {
+        if arg.starts_with('-') {
+            break;
+        }
+        return format!("{command} {arg}");
+    }
+    command.to_string()
+}
+
+fn cli_usage_command_path(cli: &Cli) -> String {
+    if cli.version {
+        return "version".to_string();
+    }
+    if cli.install_only_generate_ids {
+        return "install-only-generate-ids".to_string();
+    }
+
+    match &cli.command {
+        Some(Commands::Trigger(_)) => "trigger".to_string(),
+        Some(Commands::Console { args }) => passthrough_command_path("console", args),
+        Some(Commands::Cloud { args }) => passthrough_command_path("cloud", args),
+        Some(Commands::Worker { args }) => passthrough_command_path("worker", args),
+        Some(Commands::Project(args)) => match args.action {
+            cli::project::ProjectAction::Init(_) => "project init".to_string(),
+            cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
+        },
+        Some(Commands::Update {
+            list_targets: true, ..
+        }) => "update list-targets".to_string(),
+        Some(Commands::Update {
+            target: Some(_), ..
+        }) => "update target".to_string(),
+        Some(Commands::Update { target: None, .. }) => "update".to_string(),
+        None => "serve".to_string(),
+    }
+}
+
 async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
     let config = if cli.use_default_config {
         EngineConfig::default_config()
@@ -224,6 +262,8 @@ async fn main() -> anyhow::Result<()> {
             _ => err.exit(),
         },
     };
+
+    cli::telemetry::send_cli_usage(&cli_usage_command_path(&cli_args)).await;
 
     if cli_args.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
@@ -371,12 +411,14 @@ mod tests {
     fn no_subcommand_falls_through_to_serve() {
         let cli = Cli::try_parse_from(["iii"]).expect("should parse with no subcommand");
         assert!(cli.command.is_none());
+        assert_eq!(cli_usage_command_path(&cli), "serve");
     }
 
     #[test]
     fn version_flag_works_globally() {
         let cli = Cli::try_parse_from(["iii", "--version"]).expect("should parse --version");
         assert!(cli.version);
+        assert_eq!(cli_usage_command_path(&cli), "version");
     }
 
     #[test]
@@ -395,6 +437,52 @@ mod tests {
             }
             _ => panic!("expected Console subcommand"),
         }
+    }
+
+    #[test]
+    fn cli_usage_command_path_keeps_passthrough_command_but_not_values() {
+        let cli = Cli::try_parse_from(["iii", "worker", "add", "--secret", "value"])
+            .expect("should parse worker passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "worker add");
+    }
+
+    #[test]
+    fn cli_usage_command_path_covers_worker_commands() {
+        let cli = Cli::try_parse_from(["iii", "worker", "logs", "pdf-worker"])
+            .expect("should parse worker logs passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "worker logs");
+    }
+
+    #[test]
+    fn cli_usage_command_path_covers_cloud_commands() {
+        let cli = Cli::try_parse_from(["iii", "cloud", "deploy", "--config", "prod.yaml"])
+            .expect("should parse cloud deploy passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "cloud deploy");
+    }
+
+    #[test]
+    fn cli_usage_command_path_covers_update_modes() {
+        let cli =
+            Cli::try_parse_from(["iii", "update", "console"]).expect("should parse update target");
+        assert_eq!(cli_usage_command_path(&cli), "update target");
+
+        let cli = Cli::try_parse_from(["iii", "update", "--list-targets"])
+            .expect("should parse update --list-targets");
+        assert_eq!(cli_usage_command_path(&cli), "update list-targets");
+    }
+
+    #[test]
+    fn cli_usage_command_path_does_not_capture_flag_values_as_subcommands() {
+        let cli = Cli::try_parse_from(["iii", "console", "--port", "3000"])
+            .expect("should parse console passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "console");
+    }
+
+    #[test]
+    fn cli_usage_command_path_does_not_capture_trigger_function_id() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "orders::charge"])
+            .expect("should parse trigger");
+        assert_eq!(cli_usage_command_path(&cli), "trigger");
     }
 
     #[test]
@@ -644,6 +732,7 @@ mod tests {
     fn project_init_parses() {
         let cli =
             Cli::try_parse_from(["iii", "project", "init"]).expect("should parse project init");
+        assert_eq!(cli_usage_command_path(&cli), "project init");
         match cli.command {
             Some(Commands::Project(args)) => match args.action {
                 ProjectAction::Init(_) => {}
@@ -699,6 +788,7 @@ mod tests {
     fn project_generate_docker_parses() {
         let cli = Cli::try_parse_from(["iii", "project", "generate-docker"])
             .expect("should parse project generate-docker");
+        assert_eq!(cli_usage_command_path(&cli), "project generate-docker");
         match cli.command {
             Some(Commands::Project(args)) => match args.action {
                 ProjectAction::GenerateDocker(_) => {}

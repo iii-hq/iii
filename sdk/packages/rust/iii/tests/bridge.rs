@@ -10,7 +10,16 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{FunctionInfo, RegisterFunctionMessage, TriggerAction, TriggerRequest};
+use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
+use serde::Deserialize;
+
+/// Minimal deserialization target for `engine::functions::list` rows used
+/// only by these integration tests. The SDK no longer carries a hand-written
+/// type for this — the engine surface will be auto-generated later.
+#[derive(Debug, Deserialize)]
+struct FnRow {
+    function_id: String,
+}
 
 #[tokio::test]
 async fn connect_successfully() {
@@ -25,7 +34,7 @@ async fn connect_successfully() {
         })
         .await
         .expect("function discovery request should succeed");
-    let functions: Vec<FunctionInfo> = serde_json::from_value(
+    let functions: Vec<FnRow> = serde_json::from_value(
         result
             .get("functions")
             .cloned()
@@ -144,7 +153,7 @@ async fn list_registered_functions() {
         })
         .await
         .expect("function discovery request should succeed");
-    let functions: Vec<FunctionInfo> = serde_json::from_value(
+    let functions: Vec<FnRow> = serde_json::from_value(
         result
             .get("functions")
             .cloned()

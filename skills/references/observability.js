@@ -12,6 +12,7 @@
  */
 
 import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
+import { metrics } from '@opentelemetry/api'
 
 // ---------------------------------------------------------------------------
 // 1. SDK initialization with OpenTelemetry config
@@ -71,9 +72,11 @@ iii.registerTrigger({
 })
 
 // ---------------------------------------------------------------------------
-// 3. Custom metrics — counters and histograms via getMeter()
+// 3. Custom metrics — counters and histograms via the OpenTelemetry API
+// Once `registerWorker` initializes OTel, any meter obtained from
+// `@opentelemetry/api` flows through the same exporter as the engine traces.
 // ---------------------------------------------------------------------------
-const meter = iii.getMeter()
+const meter = metrics.getMeter('my-service')
 
 const orderCounter = meter.createCounter('orders.processed', {
   description: 'Total number of orders processed',

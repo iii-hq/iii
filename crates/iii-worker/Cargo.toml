@@ -53,6 +53,13 @@ sha2 = "0.10"
 hex = "0.4"
 flate2 = "1"
 tar = "0.4"
+# Used by the bundle archive cache to update mtime on cache hit so LRU
+# eviction reflects real recency, not initial-write time.
+filetime = "0.2"
+# Cross-process advisory file lock for serializing concurrent
+# `iii worker add <bundle-name>` calls during the extract+rename step.
+# Sync API: callers use tokio::task::spawn_blocking to acquire.
+fslock = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"

@@ -785,12 +785,7 @@ impl FsStreamReader {
                         break;
                     }
                     Err(e) => {
-                        let _ = tx
-                            .send(Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                e.to_string(),
-                            )))
-                            .await;
+                        let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
                         break;
                     }
                 };
@@ -816,10 +811,9 @@ impl FsStreamReader {
                     }
                     (_, _, ShellMessage::FsError { code, message }) => {
                         let _ = tx
-                            .send(Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("fs error {code}: {message}"),
-                            )))
+                            .send(Err(std::io::Error::other(format!(
+                                "fs error {code}: {message}"
+                            ))))
                             .await;
                         break;
                     }
@@ -944,9 +938,8 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut len_buf = [0u8; 4];
-    match read_exact_or_eof_generic(reader, &mut len_buf).await? {
-        None => return Ok(None),
-        Some(()) => {}
+    if read_exact_or_eof_generic(reader, &mut len_buf).await? == None {
+        return Ok(None);
     }
     let frame_len = u32::from_be_bytes(len_buf) as usize;
     if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {
@@ -999,9 +992,8 @@ async fn read_one_frame(
     reader: &mut tokio::net::unix::OwnedReadHalf,
 ) -> Result<Option<(u32, u8, ShellMessage)>, VmClientError> {
     let mut len_buf = [0u8; 4];
-    match read_exact_or_eof(reader, &mut len_buf).await? {
-        None => return Ok(None),
-        Some(()) => {}
+    if read_exact_or_eof(reader, &mut len_buf).await? == None {
+        return Ok(None);
     }
     let frame_len = u32::from_be_bytes(len_buf) as usize;
     if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {

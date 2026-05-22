@@ -34,8 +34,6 @@ from .iii_types import (
     RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
-    RegisterServiceInput,
-    RegisterServiceMessage,
     RegisterTriggerInput,
     RegisterTriggerMessage,
     RegisterTriggerTypeInput,
@@ -152,7 +150,6 @@ class III:
         self._options = options or InitOptions()
         self._ws: ClientConnection | None = None
         self._functions: dict[str, RemoteFunctionData] = {}
-        self._services: dict[str, RegisterServiceMessage] = {}
         self._pending: dict[str, _PendingInvocation] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
@@ -344,8 +341,6 @@ class III:
         # Re-register all (snapshot to avoid mutation from caller thread)
         for trigger_type_data in list(self._trigger_types.values()):
             await self._send(trigger_type_data.message)
-        for svc in list(self._services.values()):
-            await self._send(svc)
         for function_data in list(self._functions.values()):
             await self._send(function_data.message)
         for trigger in list(self._triggers.values()):
@@ -1030,40 +1025,6 @@ class III:
             self._send_if_connected(UnregisterFunctionMessage(id=func_id))
 
         return FunctionRef(id=func_id, unregister=unregister)
-
-    def register_service(self, service: RegisterServiceInput | dict[str, Any]) -> None:
-        """Register a logical service grouping with the engine.
-
-        Services provide an organisational hierarchy for functions.  A
-        service can optionally reference a ``parent_service_id`` to form
-        a tree visible in the engine dashboard.
-
-        Note:
-            Services are organizational groupings visible in the engine
-            dashboard.  They do not affect function invocation behavior.
-
-        Args:
-            service: A ``RegisterServiceInput`` or dict with ``id`` and
-                optional ``name``, ``description``, ``parent_service_id``.
-
-        Examples:
-            >>> iii.register_service({"id": "payments", "description": "Payment processing"})
-            >>> iii.register_service({
-            ...     "id": "payments::refunds",
-            ...     "description": "Refund sub-service",
-            ...     "parent_service_id": "payments",
-            ... })
-        """
-        if isinstance(service, dict):
-            service = RegisterServiceInput(**service)
-        msg = RegisterServiceMessage(
-            id=service.id,
-            name=service.name or service.id,
-            description=service.description,
-            parent_service_id=service.parent_service_id,
-        )
-        self._services[service.id] = msg
-        self._send_if_connected(msg)
 
     def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.

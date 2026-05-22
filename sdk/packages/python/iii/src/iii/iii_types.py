@@ -148,25 +148,6 @@ class RegisterTriggerInput(BaseModel):
     )
 
 
-class RegisterServiceInput(BaseModel):
-    """Input for registering a service (matches Node SDK's RegisterServiceInput).
-
-    Attributes:
-        id: Unique service identifier.
-        name: Human-readable service name.
-        description: Description of the service.
-        parent_service_id: ID of the parent service for hierarchical grouping.
-    """
-
-    id: str = Field(description="Unique service identifier.")
-    name: str | None = Field(default=None, description="Human-readable service name.")
-    description: str | None = Field(default=None, description="Description of the service.")
-    parent_service_id: str | None = Field(
-        default=None,
-        description="ID of the parent service for hierarchical grouping.",
-    )
-
-
 class RegisterTriggerMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -176,16 +157,6 @@ class RegisterTriggerMessage(BaseModel):
     config: Any
     metadata: dict[str, Any] | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
-
-
-class RegisterServiceMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    name: str | None = None
-    description: str | None = None
-    parent_service_id: str | None = Field(default=None)
-    message_type: MessageType = Field(default=MessageType.REGISTER_SERVICE, alias="type")
 
 
 class RegisterFunctionFormat(BaseModel):
@@ -533,115 +504,6 @@ class UnregisterFunctionMessage(BaseModel):
     message_type: MessageType = Field(default=MessageType.UNREGISTER_FUNCTION, alias="type")
 
 
-class FunctionInfo(BaseModel):
-    """Information about a registered function.
-
-    Attributes:
-        function_id: Unique identifier of the function.
-        description: Human-readable description.
-        request_format: Schema describing expected input (JSON Schema or custom format).
-        response_format: Schema describing expected output (JSON Schema or custom format).
-        metadata: Arbitrary metadata attached to the function.
-    """
-
-    function_id: str = Field(description="Unique identifier of the function.")
-    description: str | None = Field(default=None, description="Human-readable description.")
-    request_format: dict[str, Any] | None = Field(
-        default=None, description="Schema describing expected input (JSON Schema or custom format)."
-    )
-    response_format: dict[str, Any] | None = Field(
-        default=None, description="Schema describing expected output (JSON Schema or custom format)."
-    )
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Arbitrary metadata attached to the function."
-    )
-
-
-class TriggerInfo(BaseModel):
-    """Information about a registered trigger.
-
-    Attributes:
-        id: Unique trigger identifier.
-        trigger_type: Type of trigger (e.g. ``http``, ``queue``, ``cron``).
-        function_id: ID of the function this trigger invokes.
-        config: Trigger-type-specific configuration.
-        metadata: Arbitrary metadata attached to the trigger.
-    """
-
-    id: str = Field(description="Unique trigger identifier.")
-    trigger_type: str = Field(description="Type of trigger (e.g. ``http``, ``queue``, ``cron``).")
-    function_id: str = Field(description="ID of the function this trigger invokes.")
-    config: Any = Field(default=None, description="Trigger-type-specific configuration.")
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Arbitrary metadata attached to the trigger."
-    )
-
-
-class TriggerTypeInfo(BaseModel):
-    """Information about a registered trigger type.
-
-    Attributes:
-        id: Trigger type identifier (e.g. ``http``, ``cron``, ``queue``).
-        description: Human-readable description of the trigger type.
-        trigger_request_format: JSON Schema for the trigger configuration.
-        call_request_format: JSON Schema for the call request payload.
-    """
-
-    id: str = Field(description="Trigger type identifier.")
-    description: str = Field(description="Human-readable description.")
-    trigger_request_format: Any | None = Field(
-        default=None, description="JSON Schema for trigger configuration."
-    )
-    call_request_format: Any | None = Field(
-        default=None, description="JSON Schema for the call request payload."
-    )
-
-
-WorkerStatus = Literal["connected", "available", "busy", "disconnected"]
-
-
-class WorkerInfo(BaseModel):
-    """Information about a connected worker.
-
-    Attributes:
-        id: Engine-assigned unique worker ID.
-        name: Worker name from InitOptions.
-        runtime: SDK runtime (``python``, ``node``, ``rust``).
-        version: SDK version string.
-        os: Operating system identifier.
-        ip_address: Worker's IP address as seen by the engine.
-        status: Current status (``connected``, ``available``, ``busy``, ``disconnected``).
-        connected_at_ms: Connection timestamp in milliseconds since epoch.
-        function_count: Number of registered functions.
-        functions: List of registered function IDs.
-        active_invocations: Number of currently executing invocations.
-    """
-
-    id: str = Field(description="Engine-assigned unique worker ID.")
-    name: str | None = Field(default=None, description="Worker name from InitOptions.")
-    runtime: str | None = Field(
-        default=None,
-        description="SDK runtime (``python``, ``node``, ``rust``).",
-    )
-    version: str | None = Field(default=None, description="SDK version string.")
-    os: str | None = Field(default=None, description="Operating system identifier.")
-    ip_address: str | None = Field(
-        default=None,
-        description="Worker's IP address as seen by the engine.",
-    )
-    status: WorkerStatus = Field(
-        description="Current status (``connected``, ``available``, ``busy``, ``disconnected``)."
-    )
-    connected_at_ms: int = Field(description="Connection timestamp in milliseconds since epoch.")
-    function_count: int = Field(description="Number of registered functions.")
-    functions: list[str] = Field(description="List of registered function IDs.")
-    active_invocations: int = Field(description="Number of currently executing invocations.")
-    isolation: str | None = Field(
-        default=None,
-        description="Self-reported isolation context (e.g. ``libkrun``, ``docker``, ``k8s``).",
-    )
-
-
 class StreamChannelRef(BaseModel):
     """Reference to a streaming channel for worker-to-worker data transfer.
 
@@ -678,7 +540,6 @@ IIIMessage = (
     | UnregisterFunctionMessage
     | InvokeFunctionMessage
     | InvocationResultMessage
-    | RegisterServiceMessage
     | RegisterTriggerMessage
     | RegisterTriggerTypeMessage
     | UnregisterTriggerMessage

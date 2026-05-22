@@ -191,6 +191,42 @@ async fn discovery_function_denied_under_restricted_expose() {
     );
 }
 
+/// The new `::info` and `registered-triggers::*` discovery IDs added in the
+/// engine_fn rework must be gated identically to the existing list IDs.
+#[tokio::test]
+async fn new_discovery_functions_denied_under_restricted_expose() {
+    ensure_default_meter();
+
+    let new_discovery_ids = [
+        "engine::functions::info",
+        "engine::workers::info",
+        "engine::triggers::info",
+        "engine::registered-triggers::list",
+        "engine::registered-triggers::info",
+    ];
+
+    for id in new_discovery_ids {
+        let engine = Arc::new(Engine::new());
+        register_echo_handler(&engine, id);
+
+        let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+        let session = session_with(engine.clone(), restrictive_rbac(), vec![], None);
+        let worker = WorkerConnection::with_session(tx, session);
+
+        let (function_id, _result, error) = expect_result(&engine, &worker, &mut rx, id).await;
+
+        assert_eq!(function_id, id);
+        let err =
+            error.unwrap_or_else(|| panic!("expected FORBIDDEN for {id} under restricted expose"));
+        assert_eq!(err.code, "FORBIDDEN", "discovery id {id} must be gated");
+        assert!(
+            err.message.contains(id),
+            "FORBIDDEN message for {id} must name the offending function_id; got: {}",
+            err.message
+        );
+    }
+}
+
 #[tokio::test]
 async fn forbidden_list_still_wins_over_infrastructure_carve_out() {
     ensure_default_meter();

@@ -10,7 +10,6 @@ from .iii_types import (
     AuthInput,
     AuthResult,
     EnqueueResult,
-    FunctionInfo,
     HttpAuthConfig,
     HttpInvocationConfig,
     MessageType,
@@ -23,7 +22,6 @@ from .iii_types import (
     OnTriggerTypeRegistrationResult,
     RegisterFunctionFormat,
     RegisterFunctionMessage,
-    RegisterServiceInput,
     RegisterTriggerInput,
     RegisterTriggerMessage,
     RegisterTriggerTypeInput,
@@ -31,9 +29,7 @@ from .iii_types import (
     StreamChannelRef,
     TriggerActionEnqueue,
     TriggerActionVoid,
-    TriggerInfo,
     TriggerRequest,
-    TriggerTypeInfo,
 )
 from .logger import Logger
 from .payload import (
@@ -110,13 +106,11 @@ __all__ = [
     "OnTriggerTypeRegistrationResult",
     # Message types
     "EnqueueResult",
-    "FunctionInfo",
     "HttpAuthConfig",
     "HttpInvocationConfig",
     "MessageType",
     "RegisterFunctionFormat",
     "RegisterFunctionMessage",
-    "RegisterServiceInput",
     "RegisterTriggerInput",
     "RegisterTriggerMessage",
     "RegisterTriggerTypeInput",
@@ -124,9 +118,7 @@ __all__ = [
     "StreamChannelRef",
     "TriggerActionEnqueue",
     "TriggerActionVoid",
-    "TriggerInfo",
     "TriggerRequest",
-    "TriggerTypeInfo",
     # Logger
     "Logger",
     # Triggers
