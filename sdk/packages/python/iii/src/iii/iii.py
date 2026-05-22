@@ -709,7 +709,7 @@ class III:
             return
 
         trigger_id = data.get("id", "")
-        trigger_type = data.get("trigger_type") or data.get("type") or ""
+        trigger_type = data.get("trigger_type", "")
         message = error.get("message", "")
         log.error(
             "[iii] Trigger registration failed for %r (%s): %s",
