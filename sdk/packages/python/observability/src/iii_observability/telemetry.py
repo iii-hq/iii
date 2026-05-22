@@ -327,6 +327,24 @@ def _enable_fetch_instrumentation() -> None:
     _fetch_patched = True
 
 
+async def flush_otel() -> None:
+    """Force-flush all OTel providers without tearing them down.
+
+    Counterpart to :func:`shutdown_otel`. Use before short-lived process exits
+    where you want pending spans/metrics/logs delivered but plan to keep using
+    OTel afterwards.
+    """
+    from opentelemetry import trace
+
+    tracer_provider = trace.get_tracer_provider()
+    if hasattr(tracer_provider, "force_flush"):
+        tracer_provider.force_flush()
+    if _meter_provider is not None:
+        _meter_provider.force_flush()
+    if _log_provider is not None:
+        _log_provider.force_flush()
+
+
 def shutdown_otel() -> None:
     """Shut down OTel synchronously (best-effort; does not await WS flush)."""
     _reset_state()
