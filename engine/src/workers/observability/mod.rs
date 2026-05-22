@@ -667,24 +667,20 @@ impl ObservabilityWorker {
                 // a root is included if any span in its trace matches all pairs.
                 let attributes_matched_trace_ids: Option<std::collections::HashSet<String>> =
                     if search_all {
-                        if let Some(ref attrs) = input.attributes {
-                            Some(
-                                all_spans
-                                    .iter()
-                                    .filter(|s| {
-                                        attrs.iter().all(|pair| {
-                                            pair.len() == 2
-                                                && s.attributes
-                                                    .iter()
-                                                    .any(|(k, v)| k == &pair[0] && v == &pair[1])
-                                        })
+                        input.attributes.as_ref().map(|attrs| {
+                            all_spans
+                                .iter()
+                                .filter(|s| {
+                                    attrs.iter().all(|pair| {
+                                        pair.len() == 2
+                                            && s.attributes
+                                                .iter()
+                                                .any(|(k, v)| k == &pair[0] && v == &pair[1])
                                     })
-                                    .map(|s| s.trace_id.clone())
-                                    .collect(),
-                            )
-                        } else {
-                            None
-                        }
+                                })
+                                .map(|s| s.trace_id.clone())
+                                .collect()
+                        })
                     } else {
                         None
                     };

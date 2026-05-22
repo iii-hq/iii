@@ -39,6 +39,9 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
 
 
 def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
+    # `engine::workers::list` is lean post-rework (no per-worker `functions[]`),
+    # but we only need it to confirm the worker is reachable. The function
+    # surface is fetched via `engine::workers::info` below.
     deadline = time.monotonic() + wait_seconds
     workers_json = run_iii("engine::workers::list", {})
     while count_worker_matches(workers_json, worker_name) != 1 and time.monotonic() < deadline:
@@ -47,16 +50,57 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
     return workers_json
 
 
-def collect_trigger_types() -> dict[str, object]:
-    # Trigger types are the primary content for infrastructure workers
-    # (iii-http, iii-cron, iii-bridge, ...) — they register a trigger type
-    # and no RPC functions. Returning {} on failure would silently publish
-    # `triggers=[]` and the registry would accept it, masking the real
-    # surface of the worker. Fail closed instead.
-    try:
-        return run_iii("engine::trigger-types::list", {"include_internal": False})
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"could not collect trigger types: {exc}") from exc
+def collect_worker_info(worker_name: str) -> dict[str, object]:
+    # The detailed info envelope is the source of truth for a worker's surface
+    # in the new engine_fn world. The `worker` field mirrors a workers::list
+    # row; `functions`, `trigger_types`, and `registered_triggers` arrays are
+    # appended.
+    return run_iii("engine::workers::info", {"name": worker_name})
+
+
+def collect_function_details(function_ids: list[str]) -> list[dict[str, object]]:
+    # `engine::functions::list` is lean post-rework — schemas live behind
+    # `engine::functions::info`. We fetch detail for each function the
+    # worker owns so the registry payload still carries request/response
+    # schemas + metadata.
+    details: list[dict[str, object]] = []
+    for fn_id in function_ids:
+        try:
+            details.append(run_iii("engine::functions::info", {"function_id": fn_id}))
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"could not collect function info for {fn_id!r}: {exc}"
+            ) from exc
+    return details
+
+
+def collect_trigger_type_details(trigger_type_ids: list[str]) -> list[dict[str, object]]:
+    # Same shape concern as functions: `engine::triggers::list` is lean, so
+    # we fetch per-type schemas via `engine::triggers::info`. Trigger types
+    # are the primary content for infrastructure workers (iii-http, iii-cron,
+    # iii-bridge, ...) — failing closed if any lookup errors out is
+    # intentional to avoid masking the real surface of the worker.
+    details: list[dict[str, object]] = []
+    for tt_id in trigger_type_ids:
+        try:
+            details.append(run_iii("engine::triggers::info", {"id": tt_id}))
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"could not collect trigger type info for {tt_id!r}: {exc}"
+            ) from exc
+    return details
+
+
+def collect_baseline_trigger_type_ids(baseline_path: pathlib.Path) -> list[str]:
+    # The baseline snapshot is captured BEFORE the target worker is reloaded
+    # into the engine, so it contains the always-on (`mandatory`) trigger
+    # types. We use the lean `triggers::list` shape here — only ids are
+    # needed for diffing.
+    if not baseline_path.exists():
+        return []
+    raw = json.loads(baseline_path.read_text(encoding="utf-8"))
+    triggers = raw.get("triggers") or raw.get("trigger_types") or []
+    return [t.get("id") for t in triggers if isinstance(t, dict) and isinstance(t.get("id"), str)]
 
 
 def main() -> int:
@@ -67,22 +111,42 @@ def main() -> int:
     parser.add_argument("--trigger-types-baseline", default="")
     args = parser.parse_args()
 
-    baseline_json = None
+    baseline_ids: list[str] = []
     if args.trigger_types_baseline:
-        baseline_path = pathlib.Path(args.trigger_types_baseline)
-        if baseline_path.exists():
-            baseline_json = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline_ids = collect_baseline_trigger_type_ids(
+            pathlib.Path(args.trigger_types_baseline)
+        )
 
-    workers_json = wait_for_worker(args.worker, args.wait_seconds)
-    functions_json = run_iii("engine::functions::list", {"include_internal": True})
-    trigger_types_json = collect_trigger_types()
+    wait_for_worker(args.worker, args.wait_seconds)
+    worker_info = collect_worker_info(args.worker)
+
+    functions = worker_info.get("functions") or []
+    if not isinstance(functions, list):
+        raise ValueError("workers::info `functions` must be an array")
+    function_ids = [
+        f.get("function_id")
+        for f in functions
+        if isinstance(f, dict) and isinstance(f.get("function_id"), str)
+    ]
+
+    trigger_types = worker_info.get("trigger_types") or []
+    if not isinstance(trigger_types, list):
+        raise ValueError("workers::info `trigger_types` must be an array")
+    trigger_type_ids = [
+        t.get("id")
+        for t in trigger_types
+        if isinstance(t, dict) and isinstance(t.get("id"), str)
+    ]
+
+    function_details = collect_function_details(function_ids)
+    trigger_type_details = collect_trigger_type_details(trigger_type_ids)
 
     interface = normalize_worker_interface(
         worker_name=args.worker,
-        workers_json=workers_json,
-        functions_json=functions_json,
-        trigger_types_json=trigger_types_json,
-        baseline_trigger_types_json=baseline_json,
+        worker_info=worker_info,
+        function_details=function_details,
+        trigger_type_details=trigger_type_details,
+        baseline_trigger_type_ids=baseline_ids,
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))

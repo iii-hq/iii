@@ -156,6 +156,30 @@ fn posthog_timestamp_millis(ms: i64) -> String {
         .to_rfc3339()
 }
 
+fn should_skip_posthog_user_property(
+    key: &str,
+    properties: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    match key {
+        // app_version is the canonical PostHog field; iii_version is the Amplitude user prop alias.
+        "iii_version" => properties.contains_key("app_version"),
+        _ => false,
+    }
+}
+
+fn should_skip_posthog_event_property(
+    key: &str,
+    properties: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    match key {
+        "version" => {
+            properties.contains_key("app_version") || properties.contains_key("iii_version")
+        }
+        "function_names" => true, // deprecated alias of `functions`
+        _ => false,
+    }
+}
+
 fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
     sanitize_event_properties(&mut event.event_properties);
     if let Some(props) = event.user_properties.as_mut() {
@@ -177,11 +201,17 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
     }
     if let Some(serde_json::Value::Object(user_props)) = event.user_properties {
         for (key, value) in user_props {
+            if should_skip_posthog_user_property(&key, &properties) {
+                continue;
+            }
             properties.insert(key, value);
         }
     }
     if let serde_json::Value::Object(event_props) = event.event_properties {
         for (key, value) in event_props {
+            if should_skip_posthog_event_property(&key, &properties) {
+                continue;
+            }
             properties.insert(key, value);
         }
     }
@@ -513,6 +543,46 @@ mod tests {
         assert_eq!(event["properties"]["user_mode"], "building");
         assert_eq!(event["properties"]["key"], "value");
         assert_eq!(event["properties"]["plan"], "free");
+    }
+
+    #[test]
+    fn test_posthog_payload_dedupes_version_and_function_fields() {
+        let event = AmplitudeEvent {
+            device_id: "device-1".to_string(),
+            user_id: None,
+            event_type: "heartbeat".to_string(),
+            event_properties: serde_json::json!({
+                "version": "0.13.0-next.1",
+                "function_names": ["orders::charge", "agent::memory"],
+                "functions": ["orders::charge", "agent::memory"],
+                "project_name": "agentmemory",
+            }),
+            user_properties: Some(serde_json::json!({
+                "iii_version": "0.13.0-next.1",
+                "project_name": "agentmemory",
+            })),
+            platform: "iii-engine".to_string(),
+            os_name: "linux".to_string(),
+            app_version: "0.13.0-next.1".to_string(),
+            time: 1700000000000,
+            insert_id: Some("ins-2".to_string()),
+            country: None,
+            language: None,
+            ip: None,
+        };
+
+        let props = build_posthog_event(event).properties;
+        let props = props.as_object().expect("properties object");
+
+        assert_eq!(props.get("app_version").unwrap(), "0.13.0-next.1");
+        assert!(!props.contains_key("iii_version"));
+        assert!(!props.contains_key("version"));
+        assert!(!props.contains_key("function_names"));
+        assert_eq!(
+            props.get("functions").unwrap(),
+            &serde_json::json!(["orders::charge", "agent::memory"])
+        );
+        assert_eq!(props.get("project_name").unwrap(), "agentmemory");
     }
 
     // =========================================================================

@@ -183,15 +183,15 @@ async fn run_init(args: InitArgs) -> i32 {
         }
     };
 
-    if args.docker {
-        if let Err(e) = apply_docker(&mut fetcher, &root, &device_id).await {
-            crate::cli::telemetry::send_project_init_failed("apply_docker", &e.to_string());
-            return print_err(
-                "could not apply 'docker' template",
-                &e.to_string(),
-                "remove existing Dockerfile/docker-compose.yml or check write permissions",
-            );
-        }
+    if args.docker
+        && let Err(e) = apply_docker(&mut fetcher, &root, &device_id).await
+    {
+        crate::cli::telemetry::send_project_init_failed("apply_docker", &e.to_string());
+        return print_err(
+            "could not apply 'docker' template",
+            &e.to_string(),
+            "remove existing Dockerfile/docker-compose.yml or check write permissions",
+        );
     }
 
     crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id);

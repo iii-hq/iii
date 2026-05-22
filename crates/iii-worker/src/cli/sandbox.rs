@@ -387,8 +387,8 @@ pub async fn handle_list(_all: bool, port: u16) -> i32 {
     };
 
     println!(
-        "{:<36}  {:<10}  {:>8}  {}",
-        "SANDBOX_ID", "IMAGE", "AGE_SECS", "NAME"
+        "{:<36}  {:<10}  {:>8}  NAME",
+        "SANDBOX_ID", "IMAGE", "AGE_SECS"
     );
     if let Some(arr) = resp.get("sandboxes").and_then(|v| v.as_array()) {
         for s in arr {

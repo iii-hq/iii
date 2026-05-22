@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{pin::Pin, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
 use function_macros::{function, service};
@@ -18,7 +18,7 @@ use crate::{
     function::FunctionResult,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
-    worker_connections::WorkerConnectionTelemetryMeta,
+    worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionTelemetryMeta},
     workers::traits::Worker,
     workers::worker::rbac_session::Session,
 };
@@ -26,8 +26,14 @@ use crate::{
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
 pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 
+/// Maximum length of `config_summary` strings produced by
+/// `engine::registered-triggers::list`.
+const CONFIG_SUMMARY_MAX_LEN: usize = 80;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
+
+// ── Inputs ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct CreateChannelInput {
@@ -43,101 +49,241 @@ pub struct CreateChannelOutput {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct FunctionsListInput {
-    /// Include internal engine functions (engine.* prefix). Defaults to false.
+    /// Case-insensitive substring matched against `function_id` and
+    /// `description`.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Exact prefix match against `function_id`.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Exact worker-name match (resolved via the engine's worker registry).
+    #[serde(default)]
+    pub worker: Option<String>,
+    /// Include internal engine functions (`engine::*` prefix). Defaults to
+    /// false.
     #[serde(default)]
     pub include_internal: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct FunctionInfoInput {
+    pub function_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct TriggersListInput {
-    /// Include internal engine triggers (linked to engine.* functions). Defaults to false.
+    /// Case-insensitive substring matched against the trigger-type `id`
+    /// and `description`.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Exact prefix match on the trigger-type `id`.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Worker-name match (first `::` segment of the trigger-type `id`).
+    #[serde(default)]
+    pub worker: Option<String>,
+    /// Include internal engine trigger types (`engine::*` prefix).
+    /// Defaults to false.
     #[serde(default)]
     pub include_internal: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TriggerInfoInput {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
+pub struct RegisteredTriggersListInput {
+    /// Case-insensitive substring matched against `id`, `trigger_type`,
+    /// and `function_id`.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Exact trigger-type id match.
+    #[serde(default)]
+    pub trigger_type: Option<String>,
+    /// Exact function id match.
+    #[serde(default)]
+    pub function_id: Option<String>,
+    /// Worker-name match against the worker owning the target function.
+    #[serde(default)]
+    pub worker: Option<String>,
+    /// Include rows whose target function is internal (`engine::*`).
+    /// Defaults to false.
+    #[serde(default)]
+    pub include_internal: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct RegisteredTriggerInfoInput {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct WorkersListInput {
-    /// Restrict the listing to a single worker by id. Omit to list every connected worker.
-    pub worker_id: Option<String>,
+    /// Case-insensitive substring matched against the worker `name`.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Exact runtime match (e.g. `node`, `python`, `rust`).
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// Exact status match (e.g. `connected`, `disconnected`).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct WorkerInfoInput {
+    pub name: String,
+}
+
+// ── Outputs ─────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct FunctionInfo {
+pub struct FunctionSummary {
     pub function_id: String,
+    pub worker_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub request_format: Option<Value>,
-    pub response_format: Option<Value>,
-    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerInfo {
+pub struct RegisteredTriggerRef {
+    pub id: String,
+    pub trigger_type: String,
+    pub config: Value,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FunctionDetail {
+    pub function_id: String,
+    pub worker_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    pub registered_triggers: Vec<RegisteredTriggerRef>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TriggerTypeSummary {
+    pub id: String,
+    pub worker_name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TriggerTypeDetail {
+    pub id: String,
+    pub worker_name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_schema: Option<Value>,
+    pub instance_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RegisteredTriggerSummary {
     pub id: String,
     pub trigger_type: String,
     pub function_id: String,
-    pub config: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+    pub worker_name: String,
+    pub config_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct WorkerInfo {
+pub struct RegisteredTriggerDetail {
     pub id: String,
+    pub trigger_type: String,
+    pub function_id: String,
+    pub worker_name: String,
+    pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    /// Full trigger-type detail; `None` if the type was unregistered after
+    /// the instance was created.
+    pub trigger: Option<TriggerTypeDetail>,
+    /// Full function detail; `None` if the target function was
+    /// unregistered after the instance was created.
+    pub function: Option<FunctionDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct WorkerSummary {
     pub name: Option<String>,
-    pub runtime: Option<String>,
+    /// Always `null` for engine-side workers; carried as a shared core
+    /// field so a parser can walk both the engine and registry surfaces.
+    pub description: Option<String>,
     pub version: Option<String>,
+    pub id: String,
+    pub runtime: Option<String>,
     pub os: Option<String>,
-    pub ip_address: Option<String>,
-    #[serde(default)]
-    pub internal: bool,
     pub status: String,
-    pub connected_at_ms: u64,
     pub function_count: usize,
-    pub functions: Vec<String>,
+    pub connected_at_ms: u64,
     pub active_invocations: usize,
-    pub latest_metrics: Option<WorkerMetrics>,
+    pub isolation: Option<String>,
+    pub ip_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct WorkerDetailEnvelope {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub id: String,
+    pub runtime: Option<String>,
+    pub os: Option<String>,
+    pub status: String,
+    pub function_count: usize,
+    pub connected_at_ms: u64,
+    pub active_invocations: usize,
+    pub isolation: Option<String>,
+    pub ip_address: Option<String>,
+    /// Process id, when running as a managed process. Engine-local extra
+    /// (not present on the registry surface).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Whether this worker is an in-process engine module. Engine-local
+    /// extra.
+    pub internal: bool,
+    /// Latest worker metrics snapshot. Engine-local extra.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub isolation: Option<String>,
+    pub latest_metrics: Option<WorkerMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct WorkerInfoOutput {
+    pub worker: WorkerDetailEnvelope,
+    pub functions: Vec<FunctionSummary>,
+    pub trigger_types: Vec<TriggerTypeSummary>,
+    pub registered_triggers: Vec<RegisteredTriggerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FunctionsListResult {
-    pub functions: Vec<FunctionInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct WorkersListResult {
-    pub workers: Vec<WorkerInfo>,
-    pub timestamp: i64,
+    pub functions: Vec<FunctionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TriggersListResult {
-    pub triggers: Vec<TriggerInfo>,
+    pub triggers: Vec<TriggerTypeSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerTypeInfo {
-    pub id: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
-pub struct TriggerTypesListInput {
-    /// Include internal engine trigger types (engine::* prefix). Defaults to false.
-    #[serde(default)]
-    pub include_internal: Option<bool>,
+pub struct RegisteredTriggersListResult {
+    pub registered_triggers: Vec<RegisteredTriggerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerTypesListResult {
-    pub trigger_types: Vec<TriggerTypeInfo>,
+pub struct WorkersListResult {
+    pub workers: Vec<WorkerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -158,7 +304,8 @@ pub struct RegisterWorkerInput {
     pub name: Option<String>,
     /// Worker host operating system.
     pub os: Option<String>,
-    /// Telemetry metadata reported by the worker (anonymous device id, install kind, etc.).
+    /// Telemetry metadata reported by the worker (anonymous device id,
+    /// install kind, etc.).
     pub telemetry: Option<WorkerConnectionTelemetryMeta>,
     /// Process id of the worker, when running as a managed process.
     #[serde(default)]
@@ -167,6 +314,8 @@ pub struct RegisterWorkerInput {
     #[serde(default)]
     pub isolation: Option<String>,
 }
+
+// ── Worker ──────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct EngineFunctionsWorker {
@@ -200,104 +349,192 @@ impl EngineFunctionsWorker {
         }
     }
 
-    fn list_functions(&self) -> Vec<FunctionInfo> {
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    /// Returns the first `::` segment of `s`, or `s` itself if there is no
+    /// separator.
+    fn first_segment(s: &str) -> String {
+        s.split("::").next().unwrap_or(s).to_string()
+    }
+
+    /// Case-insensitive substring match against any of the given haystacks.
+    fn matches_search(needle: &str, haystacks: &[&str]) -> bool {
+        let lowered = needle.to_lowercase();
+        haystacks
+            .iter()
+            .any(|h| h.to_lowercase().contains(&lowered))
+    }
+
+    fn config_summary(config: &Value) -> String {
+        let raw = serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string());
+        if raw.chars().count() <= CONFIG_SUMMARY_MAX_LEN {
+            raw
+        } else {
+            let mut out: String = raw.chars().take(CONFIG_SUMMARY_MAX_LEN).collect();
+            out.push('…');
+            out
+        }
+    }
+
+    /// Builds a `function_id -> worker_name` map by scanning both the WS
+    /// worker registry and in-process runtime workers. The first entry wins
+    /// on collisions so that runtime workers (more stable identifiers) take
+    /// precedence.
+    async fn function_owner_index(&self) -> HashMap<String, String> {
+        let mut map: HashMap<String, String> = HashMap::new();
+
+        for runtime in self.engine.list_runtime_workers() {
+            let name = runtime.name.clone();
+            for fn_id in runtime.function_ids {
+                map.entry(fn_id).or_insert_with(|| name.clone());
+            }
+        }
+
+        for worker in self.engine.worker_registry.list_workers() {
+            let Some(name) = worker.name.clone() else {
+                continue;
+            };
+            for fn_id in worker.get_function_ids().await {
+                map.entry(fn_id).or_insert_with(|| name.clone());
+            }
+        }
+
+        map
+    }
+
+    fn worker_name_for_function_id(index: &HashMap<String, String>, function_id: &str) -> String {
+        if let Some(name) = index.get(function_id) {
+            return name.clone();
+        }
+        Self::first_segment(function_id)
+    }
+
+    /// Resolves the worker name that owns a trigger type. Falls back to the
+    /// first `::` segment of the trigger-type id.
+    fn worker_name_for_trigger_type(&self, tt_id: &str) -> String {
+        if let Some(tt) = self.engine.trigger_registry.trigger_types.get(tt_id)
+            && let Some(worker_id) = tt.worker_id
+            && let Some(worker) = self.engine.worker_registry.get_worker(&worker_id)
+            && let Some(name) = worker.name
+        {
+            return name;
+        }
+        Self::first_segment(tt_id)
+    }
+
+    fn instance_count_for_type(&self, tt_id: &str) -> usize {
+        self.engine
+            .trigger_registry
+            .triggers
+            .iter()
+            .filter(|entry| entry.value().trigger_type == tt_id)
+            .count()
+    }
+
+    fn registered_trigger_refs_for_function(&self, function_id: &str) -> Vec<RegisteredTriggerRef> {
+        self.engine
+            .trigger_registry
+            .triggers
+            .iter()
+            .filter(|entry| entry.value().function_id == function_id)
+            .map(|entry| {
+                let t = entry.value();
+                RegisteredTriggerRef {
+                    id: t.id.clone(),
+                    trigger_type: t.trigger_type.clone(),
+                    config: t.config.clone(),
+                }
+            })
+            .collect()
+    }
+
+    // ── Listing primitives ──────────────────────────────────────────────
+
+    async fn list_function_summaries(&self) -> Vec<FunctionSummary> {
+        let index = self.function_owner_index().await;
         self.engine
             .functions
             .iter()
             .map(|entry| {
                 let f = entry.value();
-                FunctionInfo {
+                let worker_name = Self::worker_name_for_function_id(&index, &f._function_id);
+                FunctionSummary {
                     function_id: f._function_id.clone(),
+                    worker_name,
                     description: f._description.clone(),
-                    request_format: f.request_format.clone(),
-                    response_format: f.response_format.clone(),
-                    metadata: f.metadata.clone(),
                 }
             })
             .collect()
     }
 
-    async fn list_trigger_infos(&self) -> Vec<TriggerInfo> {
-        self.engine
-            .trigger_registry
-            .triggers
-            .iter()
-            .map(|entry| {
-                let t = entry.value();
-                TriggerInfo {
-                    id: t.id.clone(),
-                    trigger_type: t.trigger_type.clone(),
-                    function_id: t.function_id.clone(),
-                    config: t.config.clone(),
-                    metadata: t.metadata.clone(),
-                }
-            })
-            .collect()
-    }
-
-    fn list_trigger_type_infos(&self) -> Vec<TriggerTypeInfo> {
+    fn list_trigger_type_summaries(&self) -> Vec<TriggerTypeSummary> {
         self.engine
             .trigger_registry
             .trigger_types
             .iter()
             .map(|entry| {
                 let tt = entry.value();
-                TriggerTypeInfo {
+                TriggerTypeSummary {
                     id: tt.id.clone(),
+                    worker_name: self.worker_name_for_trigger_type(&tt.id),
                     description: tt._description.clone(),
-                    trigger_request_format: tt.trigger_request_format.clone(),
-                    call_request_format: tt.call_request_format.clone(),
                 }
             })
             .collect()
     }
 
-    async fn list_worker_infos(&self, filter_worker_id: Option<&str>) -> Vec<WorkerInfo> {
-        use crate::workers::observability::metrics::get_worker_metrics_from_storage;
+    async fn list_registered_trigger_summaries(&self) -> Vec<RegisteredTriggerSummary> {
+        let index = self.function_owner_index().await;
+        self.engine
+            .trigger_registry
+            .triggers
+            .iter()
+            .map(|entry| {
+                let t = entry.value();
+                RegisteredTriggerSummary {
+                    id: t.id.clone(),
+                    trigger_type: t.trigger_type.clone(),
+                    function_id: t.function_id.clone(),
+                    worker_name: Self::worker_name_for_function_id(&index, &t.function_id),
+                    config_summary: Self::config_summary(&t.config),
+                }
+            })
+            .collect()
+    }
 
-        let workers = self.engine.worker_registry.list_workers();
-        let mut worker_infos = Vec::with_capacity(workers.len());
+    async fn list_worker_summaries(&self, filter_worker_id: Option<&str>) -> Vec<WorkerSummary> {
+        let mut worker_summaries: Vec<WorkerSummary> = Vec::new();
 
-        for w in workers {
+        for w in self.engine.worker_registry.list_workers() {
             let worker_id = w.id.to_string();
 
-            // Apply worker_id filter if provided
             if let Some(filter_id) = filter_worker_id
                 && worker_id != filter_id
             {
                 continue;
             }
 
-            // Hide workers that never reported a pid — usually engine internals
-            // registered via WorkerConnection::new without the metadata flow.
-            // Direct lookups bypass the filter so debug queries still work.
             if filter_worker_id.is_none() && w.pid.is_none() {
                 continue;
             }
 
-            let functions = w.get_function_ids().await;
-            let function_count = functions.len();
+            let function_count = w.get_function_ids().await.len();
             let active_invocations = w.invocation_count().await;
-            // Query latest metrics from OTEL storage
-            let latest_metrics = get_worker_metrics_from_storage(&worker_id);
-            let ip_address = w.session.map(|session| session.ip_address.clone());
+            let ip_address = w.session.as_ref().map(|session| session.ip_address.clone());
 
-            worker_infos.push(WorkerInfo {
-                id: worker_id,
+            worker_summaries.push(WorkerSummary {
                 name: w.name.clone(),
-                runtime: w.runtime.clone(),
+                description: None,
                 version: w.version.clone(),
+                id: worker_id,
+                runtime: w.runtime.clone(),
                 os: w.os.clone(),
-                ip_address,
-                internal: false,
                 status: w.status.as_str().to_string(),
-                connected_at_ms: w.connected_at.timestamp_millis() as u64,
                 function_count,
-                functions,
+                connected_at_ms: w.connected_at.timestamp_millis() as u64,
                 active_invocations,
-                latest_metrics,
-                pid: w.pid,
                 isolation: w.isolation.clone(),
+                ip_address,
             });
         }
 
@@ -309,26 +546,23 @@ impl EngineFunctionsWorker {
             }
 
             let functions = runtime_worker.function_ids.clone();
-            worker_infos.push(WorkerInfo {
-                id: runtime_worker.id,
-                name: Some(runtime_worker.name),
-                runtime: Some("engine".to_string()),
+            worker_summaries.push(WorkerSummary {
+                name: Some(runtime_worker.name.clone()),
+                description: None,
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                id: runtime_worker.id.clone(),
+                runtime: Some("engine".to_string()),
                 os: None,
-                ip_address: None,
-                internal: runtime_worker.internal,
                 status: "available".to_string(),
-                connected_at_ms: runtime_worker.connected_at.timestamp_millis() as u64,
                 function_count: functions.len(),
-                functions,
+                connected_at_ms: runtime_worker.connected_at.timestamp_millis() as u64,
                 active_invocations: 0,
-                latest_metrics: None,
-                pid: None,
                 isolation: Some("in-process".to_string()),
+                ip_address: None,
             });
         }
 
-        worker_infos.sort_by(|a, b| {
+        worker_summaries.sort_by(|a, b| {
             let a_display_name = a.name.as_deref().unwrap_or(a.id.as_str());
             let b_display_name = b.name.as_deref().unwrap_or(b.id.as_str());
 
@@ -337,7 +571,219 @@ impl EngineFunctionsWorker {
                 .then_with(|| a.id.cmp(&b.id))
         });
 
-        worker_infos
+        worker_summaries
+    }
+
+    // ── Detail builders ─────────────────────────────────────────────────
+
+    async fn build_function_detail(&self, function_id: &str) -> Option<FunctionDetail> {
+        let function = self.engine.functions.get(function_id)?;
+        let index = self.function_owner_index().await;
+        let worker_name = Self::worker_name_for_function_id(&index, function_id);
+
+        Some(FunctionDetail {
+            function_id: function_id.to_string(),
+            worker_name,
+            description: function._description.clone(),
+            request_schema: function.request_format.clone(),
+            response_schema: function.response_format.clone(),
+            metadata: function.metadata.clone(),
+            registered_triggers: self.registered_trigger_refs_for_function(function_id),
+        })
+    }
+
+    fn build_trigger_type_detail(&self, tt_id: &str) -> Option<TriggerTypeDetail> {
+        let tt = self.engine.trigger_registry.trigger_types.get(tt_id)?;
+        Some(TriggerTypeDetail {
+            id: tt.id.clone(),
+            worker_name: self.worker_name_for_trigger_type(&tt.id),
+            description: tt._description.clone(),
+            configuration_schema: tt.trigger_request_format.clone(),
+            request_schema: tt.call_request_format.clone(),
+            instance_count: self.instance_count_for_type(&tt.id),
+        })
+    }
+
+    async fn build_registered_trigger_detail(&self, id: &str) -> Option<RegisteredTriggerDetail> {
+        let trigger = self
+            .engine
+            .trigger_registry
+            .triggers
+            .get(id)
+            .map(|entry| entry.value().clone())?;
+
+        let index = self.function_owner_index().await;
+        let worker_name = Self::worker_name_for_function_id(&index, &trigger.function_id);
+
+        let trigger_detail = self.build_trigger_type_detail(&trigger.trigger_type);
+        let function_detail = self.build_function_detail(&trigger.function_id).await;
+
+        Some(RegisteredTriggerDetail {
+            id: trigger.id.clone(),
+            trigger_type: trigger.trigger_type.clone(),
+            function_id: trigger.function_id.clone(),
+            worker_name,
+            config: trigger.config.clone(),
+            metadata: trigger.metadata.clone(),
+            trigger: trigger_detail,
+            function: function_detail,
+        })
+    }
+
+    fn worker_detail_envelope_from_connection(
+        &self,
+        w: &WorkerConnection,
+        function_count: usize,
+        active_invocations: usize,
+        ip_address: Option<String>,
+        latest_metrics: Option<WorkerMetrics>,
+    ) -> WorkerDetailEnvelope {
+        WorkerDetailEnvelope {
+            name: w.name.clone(),
+            description: None,
+            version: w.version.clone(),
+            id: w.id.to_string(),
+            runtime: w.runtime.clone(),
+            os: w.os.clone(),
+            status: w.status.as_str().to_string(),
+            function_count,
+            connected_at_ms: w.connected_at.timestamp_millis() as u64,
+            active_invocations,
+            isolation: w.isolation.clone(),
+            ip_address,
+            pid: w.pid,
+            internal: false,
+            latest_metrics,
+        }
+    }
+
+    fn worker_detail_envelope_from_runtime(&self, w: &RuntimeWorkerInfo) -> WorkerDetailEnvelope {
+        let functions = w.function_ids.clone();
+        WorkerDetailEnvelope {
+            name: Some(w.name.clone()),
+            description: None,
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            id: w.id.clone(),
+            runtime: Some("engine".to_string()),
+            os: None,
+            status: "available".to_string(),
+            function_count: functions.len(),
+            connected_at_ms: w.connected_at.timestamp_millis() as u64,
+            active_invocations: 0,
+            isolation: Some("in-process".to_string()),
+            ip_address: None,
+            pid: None,
+            internal: w.internal,
+            latest_metrics: None,
+        }
+    }
+
+    async fn build_worker_detail(&self, name: &str) -> Option<WorkerInfoOutput> {
+        use crate::workers::observability::metrics::get_worker_metrics_from_storage;
+
+        let envelope: WorkerDetailEnvelope;
+        let function_ids: Vec<String>;
+
+        if let Some(runtime) = self
+            .engine
+            .list_runtime_workers()
+            .into_iter()
+            .find(|w| w.name == name)
+        {
+            envelope = self.worker_detail_envelope_from_runtime(&runtime);
+            function_ids = runtime.function_ids;
+        } else if let Some(worker) = self
+            .engine
+            .worker_registry
+            .list_workers()
+            .into_iter()
+            .find(|w| w.name.as_deref() == Some(name))
+        {
+            let function_count_async = worker.get_function_ids().await;
+            let function_count = function_count_async.len();
+            let active_invocations = worker.invocation_count().await;
+            let ip_address = worker.session.as_ref().map(|s| s.ip_address.clone());
+            let latest_metrics = get_worker_metrics_from_storage(&worker.id.to_string());
+            envelope = self.worker_detail_envelope_from_connection(
+                &worker,
+                function_count,
+                active_invocations,
+                ip_address,
+                latest_metrics,
+            );
+            function_ids = function_count_async;
+        } else {
+            return None;
+        }
+
+        let worker_id = envelope.id.clone();
+        let index = self.function_owner_index().await;
+        let mut functions: Vec<FunctionSummary> = function_ids
+            .into_iter()
+            .filter_map(|fn_id| {
+                let func = self.engine.functions.get(&fn_id)?;
+                Some(FunctionSummary {
+                    function_id: fn_id.clone(),
+                    worker_name: Self::worker_name_for_function_id(&index, &fn_id),
+                    description: func._description.clone(),
+                })
+            })
+            .collect();
+        functions.sort_by(|a, b| a.function_id.cmp(&b.function_id));
+
+        let mut trigger_types: Vec<TriggerTypeSummary> = self
+            .engine
+            .trigger_registry
+            .trigger_types
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .worker_id
+                    .and_then(|wid| self.engine.worker_registry.get_worker(&wid))
+                    .map(|w| w.id.to_string())
+                    .as_deref()
+                    == Some(&worker_id)
+            })
+            .map(|entry| {
+                let tt = entry.value();
+                TriggerTypeSummary {
+                    id: tt.id.clone(),
+                    worker_name: self.worker_name_for_trigger_type(&tt.id),
+                    description: tt._description.clone(),
+                }
+            })
+            .collect();
+        trigger_types.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let function_id_set: std::collections::HashSet<String> =
+            functions.iter().map(|f| f.function_id.clone()).collect();
+
+        let mut registered_triggers: Vec<RegisteredTriggerSummary> = self
+            .engine
+            .trigger_registry
+            .triggers
+            .iter()
+            .filter(|entry| function_id_set.contains(&entry.value().function_id))
+            .map(|entry| {
+                let t = entry.value();
+                RegisteredTriggerSummary {
+                    id: t.id.clone(),
+                    trigger_type: t.trigger_type.clone(),
+                    function_id: t.function_id.clone(),
+                    worker_name: Self::worker_name_for_function_id(&index, &t.function_id),
+                    config_summary: Self::config_summary(&t.config),
+                }
+            })
+            .collect();
+        registered_triggers.sort_by(|a, b| a.id.cmp(&b.id));
+
+        Some(WorkerInfoOutput {
+            worker: envelope,
+            functions,
+            trigger_types,
+            registered_triggers,
+        })
     }
 
     async fn register_worker_metadata(&self, input: RegisterWorkerInput) {
@@ -459,14 +905,13 @@ impl Worker for EngineFunctionsWorker {
                             tracing::info!("New functions detected, firing functions-available trigger");
                             current_functions_hash = new_functions_hash;
 
-                            let functions = worker_module.list_functions();
+                            let functions = worker_module.list_function_summaries().await;
 
                             let functions_data = serde_json::json!({
                                 "event": "functions_changed",
                                 "functions": functions,
                             });
 
-                            // Fire triggers directly from this module
                             let triggers_to_fire: Vec<Trigger> = triggers
                                 .iter()
                                 .filter(|entry| entry.value().trigger_type == TRIGGER_FUNCTIONS_AVAILABLE)
@@ -501,42 +946,63 @@ impl Worker for EngineFunctionsWorker {
     }
 }
 
+// ── Service block ───────────────────────────────────────────────────────
+
 #[service(name = "engine")]
 impl EngineFunctionsWorker {
     #[function(
         id = "engine::channels::create",
         description = "Create a streaming channel pair"
     )]
-    pub async fn create_function(
+    pub async fn create_channel(
         &self,
         input: CreateChannelInput,
     ) -> FunctionResult<CreateChannelOutput, ErrorBody> {
-        // We need to have the worker who called this function as the owner of the channel
-        // For now we can't really know what is the caller of this function, we will work
-        // On changing functions to know who is calling them.
-
         let channel_mgr = self.engine.channel_manager.clone();
         let buffer_size = input.buffer_size.unwrap_or(64).min(1024);
         let (writer_ref, reader_ref) = channel_mgr.create_channel(buffer_size, None);
 
-        let result = CreateChannelOutput {
+        FunctionResult::Success(CreateChannelOutput {
             writer: writer_ref,
             reader: reader_ref,
-        };
-
-        FunctionResult::Success(result)
+        })
     }
 
-    #[function(id = "engine::functions::list", description = "List all functions")]
-    pub async fn get_functions(
+    #[function(
+        id = "engine::functions::list",
+        description = "List registered functions with their owning worker name."
+    )]
+    pub async fn functions_list(
         &self,
         input: FunctionsListInput,
         session: Option<Arc<Session>>,
     ) -> FunctionResult<FunctionsListResult, ErrorBody> {
-        let mut functions = self.list_functions();
+        let mut functions = self.list_function_summaries().await;
 
         if !input.include_internal.unwrap_or(false) {
             functions.retain(|f| !f.function_id.starts_with("engine::"));
+        }
+
+        if let Some(prefix) = input.prefix.as_deref() {
+            functions.retain(|f| f.function_id.starts_with(prefix));
+        }
+
+        if let Some(worker) = input.worker.as_deref() {
+            functions.retain(|f| f.worker_name == worker);
+        }
+
+        if let Some(search) = input.search.as_deref()
+            && !search.is_empty()
+        {
+            functions.retain(|f| {
+                Self::matches_search(
+                    search,
+                    &[
+                        f.function_id.as_str(),
+                        f.description.as_deref().unwrap_or(""),
+                    ],
+                )
+            });
         }
 
         if let Some(session) = &session {
@@ -552,53 +1018,212 @@ impl EngineFunctionsWorker {
             });
         }
 
+        functions.sort_by(|a, b| a.function_id.cmp(&b.function_id));
+
         FunctionResult::Success(FunctionsListResult { functions })
     }
 
     #[function(
-        id = "engine::workers::list",
-        description = "List all workers with metrics"
+        id = "engine::functions::info",
+        description = "Inspect one function: schemas, owner, and registered triggers."
     )]
-    pub async fn get_workers(
+    pub async fn functions_info(
         &self,
-        input: WorkersListInput,
-    ) -> FunctionResult<WorkersListResult, ErrorBody> {
-        let workers = self.list_worker_infos(input.worker_id.as_deref()).await;
-        FunctionResult::Success(WorkersListResult {
-            workers,
-            timestamp: chrono::Utc::now().timestamp_millis(),
-        })
+        input: FunctionInfoInput,
+        session: Option<Arc<Session>>,
+    ) -> FunctionResult<FunctionDetail, ErrorBody> {
+        if let Some(session) = &session {
+            let function = self.engine.functions.get(&input.function_id);
+            let allowed = crate::workers::worker::rbac_config::is_function_allowed(
+                &input.function_id,
+                session.config.rbac.clone(),
+                &session.allowed_functions,
+                &session.forbidden_functions,
+                function.as_ref(),
+            );
+            if !allowed {
+                return FunctionResult::Failure(ErrorBody {
+                    code: "FORBIDDEN".into(),
+                    message: format!(
+                        "Function '{}' is not visible to this session.",
+                        input.function_id
+                    ),
+                    stacktrace: None,
+                });
+            }
+        }
+
+        match self.build_function_detail(&input.function_id).await {
+            Some(detail) => FunctionResult::Success(detail),
+            None => FunctionResult::Failure(ErrorBody {
+                code: "NOT_FOUND".into(),
+                message: format!("Function '{}' is not registered.", input.function_id),
+                stacktrace: None,
+            }),
+        }
     }
 
-    #[function(id = "engine::triggers::list", description = "List all triggers")]
-    pub async fn get_triggers(
+    #[function(
+        id = "engine::triggers::list",
+        description = "List trigger types registered with the engine."
+    )]
+    pub async fn triggers_list(
         &self,
         input: TriggersListInput,
     ) -> FunctionResult<TriggersListResult, ErrorBody> {
-        let mut triggers = self.list_trigger_infos().await;
+        let mut triggers = self.list_trigger_type_summaries();
 
         if !input.include_internal.unwrap_or(false) {
-            triggers.retain(|t| !t.function_id.starts_with("engine::"));
+            triggers.retain(|t| !t.id.starts_with("engine::"));
         }
+
+        if let Some(prefix) = input.prefix.as_deref() {
+            triggers.retain(|t| t.id.starts_with(prefix));
+        }
+
+        if let Some(worker) = input.worker.as_deref() {
+            triggers.retain(|t| t.worker_name == worker);
+        }
+
+        if let Some(search) = input.search.as_deref()
+            && !search.is_empty()
+        {
+            triggers
+                .retain(|t| Self::matches_search(search, &[t.id.as_str(), t.description.as_str()]));
+        }
+
+        triggers.sort_by(|a, b| a.id.cmp(&b.id));
 
         FunctionResult::Success(TriggersListResult { triggers })
     }
 
     #[function(
-        id = "engine::trigger-types::list",
-        description = "List all trigger types with their configuration and call request formats"
+        id = "engine::triggers::info",
+        description = "Inspect one trigger type: schemas, owner, and live instance count."
     )]
-    pub async fn get_trigger_types(
+    pub async fn triggers_info(
         &self,
-        input: TriggerTypesListInput,
-    ) -> FunctionResult<TriggerTypesListResult, ErrorBody> {
-        let mut trigger_types = self.list_trigger_type_infos();
+        input: TriggerInfoInput,
+    ) -> FunctionResult<TriggerTypeDetail, ErrorBody> {
+        match self.build_trigger_type_detail(&input.id) {
+            Some(detail) => FunctionResult::Success(detail),
+            None => FunctionResult::Failure(ErrorBody {
+                code: "NOT_FOUND".into(),
+                message: format!("Trigger type '{}' is not registered.", input.id),
+                stacktrace: None,
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine::registered-triggers::list",
+        description = "List registered trigger instances (subscriber rows)."
+    )]
+    pub async fn registered_triggers_list(
+        &self,
+        input: RegisteredTriggersListInput,
+    ) -> FunctionResult<RegisteredTriggersListResult, ErrorBody> {
+        let mut registered_triggers = self.list_registered_trigger_summaries().await;
 
         if !input.include_internal.unwrap_or(false) {
-            trigger_types.retain(|tt| !tt.id.starts_with("engine::"));
+            registered_triggers.retain(|t| !t.function_id.starts_with("engine::"));
         }
 
-        FunctionResult::Success(TriggerTypesListResult { trigger_types })
+        if let Some(trigger_type) = input.trigger_type.as_deref() {
+            registered_triggers.retain(|t| t.trigger_type == trigger_type);
+        }
+
+        if let Some(function_id) = input.function_id.as_deref() {
+            registered_triggers.retain(|t| t.function_id == function_id);
+        }
+
+        if let Some(worker) = input.worker.as_deref() {
+            registered_triggers.retain(|t| t.worker_name == worker);
+        }
+
+        if let Some(search) = input.search.as_deref()
+            && !search.is_empty()
+        {
+            registered_triggers.retain(|t| {
+                Self::matches_search(
+                    search,
+                    &[
+                        t.id.as_str(),
+                        t.trigger_type.as_str(),
+                        t.function_id.as_str(),
+                    ],
+                )
+            });
+        }
+
+        registered_triggers.sort_by(|a, b| a.id.cmp(&b.id));
+
+        FunctionResult::Success(RegisteredTriggersListResult {
+            registered_triggers,
+        })
+    }
+
+    #[function(
+        id = "engine::registered-triggers::info",
+        description = "Inspect one registered trigger instance with denormalized trigger and function detail."
+    )]
+    pub async fn registered_triggers_info(
+        &self,
+        input: RegisteredTriggerInfoInput,
+    ) -> FunctionResult<RegisteredTriggerDetail, ErrorBody> {
+        match self.build_registered_trigger_detail(&input.id).await {
+            Some(detail) => FunctionResult::Success(detail),
+            None => FunctionResult::Failure(ErrorBody {
+                code: "NOT_FOUND".into(),
+                message: format!("Registered trigger '{}' was not found.", input.id),
+                stacktrace: None,
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine::workers::list",
+        description = "List workers connected to the engine."
+    )]
+    pub async fn workers_list(
+        &self,
+        input: WorkersListInput,
+    ) -> FunctionResult<WorkersListResult, ErrorBody> {
+        let mut workers = self.list_worker_summaries(None).await;
+
+        if let Some(runtime) = input.runtime.as_deref() {
+            workers.retain(|w| w.runtime.as_deref() == Some(runtime));
+        }
+
+        if let Some(status) = input.status.as_deref() {
+            workers.retain(|w| w.status == status);
+        }
+
+        if let Some(search) = input.search.as_deref()
+            && !search.is_empty()
+        {
+            workers.retain(|w| Self::matches_search(search, &[w.name.as_deref().unwrap_or("")]));
+        }
+
+        FunctionResult::Success(WorkersListResult { workers })
+    }
+
+    #[function(
+        id = "engine::workers::info",
+        description = "Inspect one connected worker's full surface (functions, trigger types, registered triggers)."
+    )]
+    pub async fn workers_info(
+        &self,
+        input: WorkerInfoInput,
+    ) -> FunctionResult<WorkerInfoOutput, ErrorBody> {
+        match self.build_worker_detail(&input.name).await {
+            Some(detail) => FunctionResult::Success(detail),
+            None => FunctionResult::Failure(ErrorBody {
+                code: "NOT_FOUND".into(),
+                message: format!("Worker '{}' is not connected.", input.name),
+                stacktrace: None,
+            }),
+        }
     }
 
     #[function(
@@ -636,8 +1261,52 @@ mod tests {
     };
     use serde_json;
 
+    fn setup_engine_and_module() -> (Arc<Engine>, EngineFunctionsWorker) {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let module = EngineFunctionsWorker::new(engine.clone());
+        (engine, module)
+    }
+
+    fn register_simple_function(engine: &Engine, function_id: &str, description: Option<&str>) {
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: function_id.to_string(),
+                description: description.map(|s| s.to_string()),
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(
+                |_input: Value| async move { FunctionResult::Success(None) },
+            ),
+        );
+    }
+
+    fn insert_trigger_instance(
+        engine: &Engine,
+        id: &str,
+        trigger_type: &str,
+        function_id: &str,
+        config: Value,
+    ) {
+        engine.trigger_registry.triggers.insert(
+            id.to_string(),
+            crate::trigger::Trigger {
+                id: id.to_string(),
+                trigger_type: trigger_type.to_string(),
+                function_id: function_id.to_string(),
+                config,
+                worker_id: None,
+                metadata: None,
+            },
+        );
+    }
+
+    // ── Input deserialization tests ─────────────────────────────────────
+
     #[test]
-    fn test_register_worker_input_deserializes_telemetry() {
+    fn register_worker_input_deserializes_telemetry() {
         let json = serde_json::json!({
             "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
             "runtime": "node",
@@ -691,162 +1360,166 @@ mod tests {
     }
 
     #[test]
-    fn register_worker_input_isolation_defaults_to_none() {
+    fn register_worker_input_minimal_deserialization() {
         let json = serde_json::json!({
-            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
-            "runtime": "node"
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000"
         });
         let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
-        assert!(input.isolation.is_none());
+        assert_eq!(input.worker_id, "550e8400-e29b-41d4-a716-446655440000");
+        assert!(input.runtime.is_none());
+        assert!(input.version.is_none());
+        assert!(input.name.is_none());
+        assert!(input.os.is_none());
+        assert!(input.telemetry.is_none());
     }
-
-    fn setup_engine_and_module() -> (Arc<Engine>, EngineFunctionsWorker) {
-        ensure_default_meter();
-        let engine = Arc::new(Engine::new());
-        let module = EngineFunctionsWorker::new(engine.clone());
-        (engine, module)
-    }
-
-    // ---- list_functions tests ----
 
     #[test]
-    fn test_list_functions_empty_engine() {
+    fn empty_input_deserializes() {
+        let json = serde_json::json!({});
+        let _input: EmptyInput = serde_json::from_value(json).expect("deserialize");
+    }
+
+    #[test]
+    fn input_defaults_round_trip() {
+        let _: FunctionsListInput = serde_json::from_value(serde_json::json!({})).unwrap();
+        let _: TriggersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
+        let _: RegisteredTriggersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
+        let _: WorkersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
+        let info: FunctionInfoInput =
+            serde_json::from_value(serde_json::json!({"function_id": "test"})).unwrap();
+        assert_eq!(info.function_id, "test");
+    }
+
+    // ── list_function_summaries tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn list_function_summaries_empty_engine() {
         let (_engine, module) = setup_engine_and_module();
-        let functions = module.list_functions();
+        let functions = module.list_function_summaries().await;
         assert!(functions.is_empty());
     }
 
-    #[test]
-    fn test_list_functions_returns_registered_functions() {
+    #[tokio::test]
+    async fn list_function_summaries_returns_registered_functions() {
         let (engine, module) = setup_engine_and_module();
+        register_simple_function(&engine, "test::my_func", Some("A test function"));
 
-        // Register a function via the engine
-        engine.register_function_handler(
-            crate::engine::RegisterFunctionRequest {
-                function_id: "test::my_func".to_string(),
-                description: Some("A test function".to_string()),
-                request_format: Some(serde_json::json!({"type": "object"})),
-                response_format: None,
-                metadata: Some(serde_json::json!({"version": 1})),
-            },
-            crate::engine::Handler::new(
-                |_input: Value| async move { FunctionResult::Success(None) },
-            ),
-        );
-
-        let functions = module.list_functions();
+        let functions = module.list_function_summaries().await;
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].function_id, "test::my_func");
         assert_eq!(functions[0].description.as_deref(), Some("A test function"));
-        assert_eq!(
-            functions[0].request_format,
-            Some(serde_json::json!({"type": "object"}))
-        );
-        assert!(functions[0].response_format.is_none());
-        assert_eq!(
-            functions[0].metadata,
-            Some(serde_json::json!({"version": 1}))
-        );
+        assert_eq!(functions[0].worker_name, "test"); // fallback to first segment
     }
-
-    #[test]
-    fn test_list_functions_returns_multiple_functions() {
-        let (engine, module) = setup_engine_and_module();
-
-        for i in 0..3 {
-            engine.register_function_handler(
-                crate::engine::RegisterFunctionRequest {
-                    function_id: format!("test::func_{}", i),
-                    description: None,
-                    request_format: None,
-                    response_format: None,
-                    metadata: None,
-                },
-                crate::engine::Handler::new(|_input: Value| async move {
-                    FunctionResult::Success(None)
-                }),
-            );
-        }
-
-        let functions = module.list_functions();
-        assert_eq!(functions.len(), 3);
-        let mut ids: Vec<String> = functions.iter().map(|f| f.function_id.clone()).collect();
-        ids.sort();
-        assert_eq!(ids, vec!["test::func_0", "test::func_1", "test::func_2"]);
-    }
-
-    // ---- list_trigger_infos tests ----
 
     #[tokio::test]
-    async fn test_list_trigger_infos_empty() {
+    async fn list_function_summaries_resolves_worker_name_via_runtime_worker() {
+        let (engine, module) = setup_engine_and_module();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+        register_simple_function(&engine, "state::get", None);
+
+        let functions = module.list_function_summaries().await;
+        let entry = functions
+            .iter()
+            .find(|f| f.function_id == "state::get")
+            .unwrap();
+        assert_eq!(entry.worker_name, "iii-state");
+    }
+
+    // ── list_registered_trigger_summaries tests ─────────────────────────
+
+    #[tokio::test]
+    async fn list_registered_trigger_summaries_empty() {
         let (_engine, module) = setup_engine_and_module();
-        let triggers = module.list_trigger_infos().await;
+        let triggers = module.list_registered_trigger_summaries().await;
         assert!(triggers.is_empty());
     }
 
     #[tokio::test]
-    async fn test_list_trigger_infos_returns_registered_triggers() {
+    async fn list_registered_trigger_summaries_returns_registered_triggers() {
         let (engine, module) = setup_engine_and_module();
+        insert_trigger_instance(
+            &engine,
+            "trig-1",
+            "cron",
+            "test::handler",
+            serde_json::json!({"interval": 5}),
+        );
 
-        // Directly insert a trigger into the engine's trigger registry
-        let trigger = crate::trigger::Trigger {
-            id: "trig-1".to_string(),
-            trigger_type: "cron".to_string(),
-            function_id: "test::handler".to_string(),
-            config: serde_json::json!({"interval": 5}),
-            worker_id: None,
-            metadata: None,
-        };
-        engine
-            .trigger_registry
-            .triggers
-            .insert(trigger.id.clone(), trigger);
-
-        let infos = module.list_trigger_infos().await;
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].id, "trig-1");
-        assert_eq!(infos[0].trigger_type, "cron");
-        assert_eq!(infos[0].function_id, "test::handler");
-        assert_eq!(infos[0].config, serde_json::json!({"interval": 5}));
+        let summaries = module.list_registered_trigger_summaries().await;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "trig-1");
+        assert_eq!(summaries[0].trigger_type, "cron");
+        assert_eq!(summaries[0].function_id, "test::handler");
+        assert_eq!(summaries[0].worker_name, "test"); // fallback first segment
+        assert!(summaries[0].config_summary.contains("interval"));
     }
 
-    // ---- list_worker_infos tests ----
+    #[tokio::test]
+    async fn list_registered_trigger_summaries_truncates_long_config() {
+        let (engine, module) = setup_engine_and_module();
+        let huge = "x".repeat(200);
+        insert_trigger_instance(
+            &engine,
+            "trig-long",
+            "cron",
+            "test::handler",
+            serde_json::json!({"data": huge}),
+        );
+
+        let summaries = module.list_registered_trigger_summaries().await;
+        assert_eq!(summaries.len(), 1);
+        let summary = &summaries[0].config_summary;
+        let char_count = summary.chars().count();
+        assert!(
+            char_count <= CONFIG_SUMMARY_MAX_LEN + 1,
+            "got {} chars",
+            char_count
+        );
+        assert!(summary.ends_with('…'));
+    }
+
+    // ── list_worker_summaries tests ─────────────────────────────────────
 
     #[tokio::test]
-    async fn test_list_worker_infos_empty() {
+    async fn list_worker_summaries_empty() {
         let (_engine, module) = setup_engine_and_module();
-        let workers = module.list_worker_infos(None).await;
+        let workers = module.list_worker_summaries(None).await;
         assert!(workers.is_empty());
     }
 
     #[tokio::test]
-    async fn test_list_worker_infos_with_filter_no_match() {
+    async fn list_worker_summaries_with_filter_no_match() {
         let (_engine, module) = setup_engine_and_module();
         let workers = module
-            .list_worker_infos(Some("nonexistent-worker-id"))
+            .list_worker_summaries(Some("nonexistent-worker-id"))
             .await;
         assert!(workers.is_empty());
     }
 
     #[tokio::test]
-    async fn test_list_worker_infos_hides_workers_without_pid() {
+    async fn list_worker_summaries_hides_workers_without_pid() {
         let (engine, module) = setup_engine_and_module();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let worker = crate::worker_connections::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
         engine.worker_registry.register_worker(worker);
 
-        // Unfiltered listing hides the pid-less worker.
-        let all = module.list_worker_infos(None).await;
+        let all = module.list_worker_summaries(None).await;
         assert!(all.is_empty());
 
-        // Direct lookup by id still returns it (debug escape hatch).
-        let direct = module.list_worker_infos(Some(&worker_id)).await;
+        let direct = module.list_worker_summaries(Some(&worker_id)).await;
         assert_eq!(direct.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_list_worker_infos_includes_runtime_worker_snapshots() {
+    async fn list_worker_summaries_includes_runtime_worker_snapshots() {
         let (engine, module) = setup_engine_and_module();
 
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
@@ -858,8 +1531,7 @@ mod tests {
             internal: false,
         });
 
-        let workers = module.list_worker_infos(None).await;
-
+        let workers = module.list_worker_summaries(None).await;
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].id, "iii-state");
         assert_eq!(workers[0].name.as_deref(), Some("iii-state"));
@@ -867,15 +1539,12 @@ mod tests {
         assert_eq!(workers[0].isolation.as_deref(), Some("in-process"));
         assert_eq!(workers[0].status, "available");
         assert_eq!(workers[0].function_count, 2);
-        assert_eq!(
-            workers[0].functions,
-            vec!["state::get".to_string(), "state::set".to_string()]
-        );
-        assert!(!workers[0].internal);
+        // Description is always null on the engine surface.
+        assert!(workers[0].description.is_none());
     }
 
     #[tokio::test]
-    async fn test_list_worker_infos_hides_pidless_socket_but_shows_runtime_snapshot() {
+    async fn list_worker_summaries_hides_pidless_socket_but_shows_runtime_snapshot() {
         let (engine, module) = setup_engine_and_module();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let socket_worker = crate::worker_connections::WorkerConnection::new(tx);
@@ -890,18 +1559,16 @@ mod tests {
             internal: false,
         });
 
-        let workers = module.list_worker_infos(None).await;
-
+        let workers = module.list_worker_summaries(None).await;
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].id, "iii-stream");
     }
 
-    // ---- register_worker_metadata tests ----
+    // ── register_worker_metadata tests ──────────────────────────────────
 
     #[tokio::test]
-    async fn test_register_worker_metadata_invalid_uuid() {
+    async fn register_worker_metadata_invalid_uuid() {
         let (_engine, module) = setup_engine_and_module();
-
         let input = RegisterWorkerInput {
             worker_id: "not-a-valid-uuid".to_string(),
             runtime: Some("node".to_string()),
@@ -912,16 +1579,12 @@ mod tests {
             pid: None,
             isolation: None,
         };
-
-        // Should not panic, just log an error and return
         module.register_worker_metadata(input).await;
     }
 
     #[tokio::test]
-    async fn test_register_worker_metadata_defaults_runtime_to_unknown() {
+    async fn register_worker_metadata_defaults_runtime_to_unknown() {
         let (engine, module) = setup_engine_and_module();
-
-        // Create a worker in the registry first
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let worker = crate::worker_connections::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
@@ -929,7 +1592,7 @@ mod tests {
 
         let input = RegisterWorkerInput {
             worker_id: worker_id.clone(),
-            runtime: None, // Should default to "unknown"
+            runtime: None,
             version: Some("2.0".to_string()),
             name: Some("my-worker".to_string()),
             os: Some("darwin".to_string()),
@@ -940,8 +1603,7 @@ mod tests {
 
         module.register_worker_metadata(input).await;
 
-        // Verify the worker was updated
-        let workers = module.list_worker_infos(Some(&worker_id)).await;
+        let workers = module.list_worker_summaries(Some(&worker_id)).await;
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].runtime.as_deref(), Some("unknown"));
         assert_eq!(workers[0].version.as_deref(), Some("2.0"));
@@ -950,10 +1612,10 @@ mod tests {
         assert_eq!(workers[0].isolation.as_deref(), Some("libkrun"));
     }
 
-    // ---- TriggerRegistrator implementation tests ----
+    // ── TriggerRegistrator implementation tests ─────────────────────────
 
     #[tokio::test]
-    async fn test_trigger_registrator_register_and_unregister() {
+    async fn trigger_registrator_register_and_unregister() {
         let (_engine, module) = setup_engine_and_module();
 
         let trigger = crate::trigger::Trigger {
@@ -965,20 +1627,18 @@ mod tests {
             metadata: None,
         };
 
-        // Register
         let result = module.register_trigger(trigger.clone()).await;
         assert!(result.is_ok());
         assert_eq!(module.triggers.len(), 1);
         assert!(module.triggers.contains_key("eng-trig-1"));
 
-        // Unregister
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
         assert!(module.triggers.is_empty());
     }
 
     #[tokio::test]
-    async fn test_trigger_registrator_register_multiple() {
+    async fn trigger_registrator_register_multiple() {
         let (_engine, module) = setup_engine_and_module();
 
         for i in 0..3 {
@@ -996,13 +1656,11 @@ mod tests {
         assert_eq!(module.triggers.len(), 3);
     }
 
-    // ---- fire_triggers tests ----
+    // ── fire_triggers tests ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_fire_triggers_no_matching_triggers() {
+    async fn fire_triggers_no_matching_triggers() {
         let (_engine, module) = setup_engine_and_module();
-
-        // Register a trigger of a different type
         let trigger = crate::trigger::Trigger {
             id: "trig-1".to_string(),
             trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
@@ -1013,7 +1671,6 @@ mod tests {
         };
         module.register_trigger(trigger).await.unwrap();
 
-        // Fire triggers for a different type -- should not panic
         module
             .fire_triggers(
                 TRIGGER_WORKERS_AVAILABLE,
@@ -1023,10 +1680,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fire_triggers_with_matching_trigger() {
+    async fn fire_triggers_with_matching_trigger() {
         let (engine, module) = setup_engine_and_module();
 
-        // Register a function that the trigger will call
         let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
         let tx_clone = tx.clone();
@@ -1050,7 +1706,6 @@ mod tests {
             }),
         );
 
-        // Register a trigger that matches the type we will fire
         let trigger = crate::trigger::Trigger {
             id: "trig-workers".to_string(),
             trigger_type: TRIGGER_WORKERS_AVAILABLE.to_string(),
@@ -1066,7 +1721,6 @@ mod tests {
             .fire_triggers(TRIGGER_WORKERS_AVAILABLE, data.clone())
             .await;
 
-        // Wait for the spawned task to complete
         let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
             .expect("timed out waiting for trigger fire")
@@ -1075,121 +1729,96 @@ mod tests {
         assert_eq!(received, data);
     }
 
-    // ---- Serialization tests ----
+    // ── Serialization tests ─────────────────────────────────────────────
 
     #[test]
-    fn test_register_worker_input_minimal_deserialization() {
-        let json = serde_json::json!({
-            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000"
-        });
-        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(input.worker_id, "550e8400-e29b-41d4-a716-446655440000");
-        assert!(input.runtime.is_none());
-        assert!(input.version.is_none());
-        assert!(input.name.is_none());
-        assert!(input.os.is_none());
-        assert!(input.telemetry.is_none());
-    }
-
-    #[test]
-    fn test_empty_input_deserializes() {
-        let json = serde_json::json!({});
-        let _input: EmptyInput = serde_json::from_value(json).expect("deserialize");
-    }
-
-    #[test]
-    fn test_functions_list_input_defaults() {
-        let json = serde_json::json!({});
-        let input: FunctionsListInput = serde_json::from_value(json).expect("deserialize");
-        assert!(input.include_internal.is_none());
-    }
-
-    #[test]
-    fn test_triggers_list_input_defaults() {
-        let json = serde_json::json!({});
-        let input: TriggersListInput = serde_json::from_value(json).expect("deserialize");
-        assert!(input.include_internal.is_none());
-    }
-
-    #[test]
-    fn test_workers_list_input_defaults() {
-        let json = serde_json::json!({});
-        let input: WorkersListInput = serde_json::from_value(json).expect("deserialize");
-        assert!(input.worker_id.is_none());
-    }
-
-    #[test]
-    fn test_create_channel_input_defaults() {
-        let input = CreateChannelInput::default();
-        assert!(input.buffer_size.is_none());
-    }
-
-    #[test]
-    fn test_function_info_serializes() {
-        let info = FunctionInfo {
+    fn function_summary_serializes() {
+        let summary = FunctionSummary {
             function_id: "my::func".to_string(),
+            worker_name: "my".to_string(),
             description: Some("desc".to_string()),
-            request_format: None,
-            response_format: Some(serde_json::json!({"type": "string"})),
-            metadata: None,
         };
-        let json = serde_json::to_value(&info).expect("serialize");
+        let json = serde_json::to_value(&summary).expect("serialize");
         assert_eq!(json["function_id"], "my::func");
+        assert_eq!(json["worker_name"], "my");
         assert_eq!(json["description"], "desc");
-        assert!(json["request_format"].is_null());
-        assert_eq!(
-            json["response_format"],
-            serde_json::json!({"type": "string"})
-        );
     }
 
     #[test]
-    fn test_trigger_info_serializes() {
-        let info = TriggerInfo {
+    fn function_summary_omits_null_description() {
+        let summary = FunctionSummary {
+            function_id: "my::func".to_string(),
+            worker_name: "my".to_string(),
+            description: None,
+        };
+        let json = serde_json::to_value(&summary).expect("serialize");
+        assert!(json.get("description").is_none());
+    }
+
+    #[test]
+    fn registered_trigger_summary_serializes() {
+        let summary = RegisteredTriggerSummary {
             id: "t-1".to_string(),
             trigger_type: "cron".to_string(),
             function_id: "fn::handler".to_string(),
-            config: serde_json::json!({"schedule": "* * * * *"}),
-            metadata: None,
+            worker_name: "fn".to_string(),
+            config_summary: "{\"x\":1}".to_string(),
         };
-        let json = serde_json::to_value(&info).expect("serialize");
+        let json = serde_json::to_value(&summary).expect("serialize");
         assert_eq!(json["id"], "t-1");
         assert_eq!(json["trigger_type"], "cron");
         assert_eq!(json["function_id"], "fn::handler");
+        assert_eq!(json["worker_name"], "fn");
+        assert_eq!(json["config_summary"], "{\"x\":1}");
     }
 
     #[test]
-    fn test_trigger_info_serializes_with_metadata() {
-        let info = TriggerInfo {
-            id: "t-2".to_string(),
-            trigger_type: "http".to_string(),
-            function_id: "fn::api".to_string(),
-            config: serde_json::json!({"path": "/users"}),
-            metadata: Some(serde_json::json!({"team": "api"})),
+    fn trigger_type_detail_uses_request_schema_alias() {
+        let detail = TriggerTypeDetail {
+            id: "http".to_string(),
+            worker_name: "iii-http".to_string(),
+            description: "HTTP trigger".to_string(),
+            configuration_schema: Some(serde_json::json!({"type": "object"})),
+            request_schema: Some(serde_json::json!({"type": "object"})),
+            instance_count: 2,
         };
-        let json = serde_json::to_value(&info).expect("serialize");
-        assert_eq!(json["metadata"], serde_json::json!({"team": "api"}));
+        let json = serde_json::to_value(&detail).expect("serialize");
+        assert!(json.get("configuration_schema").is_some());
+        assert!(json.get("request_schema").is_some());
+        assert!(json.get("call_request_format").is_none());
+        assert!(json.get("trigger_request_format").is_none());
+        assert_eq!(json["instance_count"], 2);
     }
 
     #[test]
-    fn test_trigger_info_omits_null_metadata() {
-        let info = TriggerInfo {
-            id: "t-3".to_string(),
-            trigger_type: "cron".to_string(),
-            function_id: "fn::cleanup".to_string(),
-            config: serde_json::json!({}),
-            metadata: None,
+    fn worker_summary_serializes_with_description_null() {
+        let summary = WorkerSummary {
+            name: Some("agent-memory".to_string()),
+            description: None,
+            version: Some("0.4.0".to_string()),
+            id: "w-abc".to_string(),
+            runtime: Some("rust".to_string()),
+            os: Some("darwin".to_string()),
+            status: "connected".to_string(),
+            function_count: 9,
+            connected_at_ms: 1_715_520_000_000,
+            active_invocations: 0,
+            isolation: None,
+            ip_address: None,
         };
-        let json = serde_json::to_value(&info).expect("serialize");
-        assert!(json.get("metadata").is_none());
+        let json = serde_json::to_value(&summary).expect("serialize");
+        assert!(json.get("description").is_some());
+        assert!(json["description"].is_null());
+        assert_eq!(json["name"], "agent-memory");
+        assert_eq!(json["function_count"], 9);
     }
+
+    // ── Lifecycle tests ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_initialize_registers_engine_trigger_types() {
+    async fn initialize_registers_engine_trigger_types() {
         let (engine, module) = setup_engine_and_module();
-
         module.initialize().await.unwrap();
-
         assert!(
             engine
                 .trigger_registry
@@ -1205,7 +1834,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_background_tasks_shutdown_is_clean() {
+    async fn start_background_tasks_shutdown_is_clean() {
         let (_engine, module) = setup_engine_and_module();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -1217,12 +1846,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    #[tokio::test]
-    async fn test_create_function_returns_channel_refs() {
-        let (engine, module) = setup_engine_and_module();
+    // ── create_channel test ─────────────────────────────────────────────
 
+    #[tokio::test]
+    async fn create_channel_returns_channel_refs() {
+        let (engine, module) = setup_engine_and_module();
         let result = module
-            .create_function(CreateChannelInput {
+            .create_channel(CreateChannelInput {
                 buffer_size: Some(2048),
             })
             .await;
@@ -1237,33 +1867,25 @@ mod tests {
                 );
                 assert_eq!(output.writer.channel_id, output.reader.channel_id);
             }
-            _ => panic!("expected create_function success"),
+            _ => panic!("expected create_channel success"),
         }
     }
 
+    // ── functions_list service tests ────────────────────────────────────
+
     #[tokio::test]
-    async fn test_get_functions_filters_internal_by_default() {
+    async fn functions_list_filters_internal_by_default() {
         let (engine, module) = setup_engine_and_module();
 
         for function_id in ["engine::internal", "user::visible"] {
-            engine.register_function_handler(
-                crate::engine::RegisterFunctionRequest {
-                    function_id: function_id.to_string(),
-                    description: None,
-                    request_format: None,
-                    response_format: None,
-                    metadata: None,
-                },
-                crate::engine::Handler::new(|_input: Value| async move {
-                    FunctionResult::Success(None)
-                }),
-            );
+            register_simple_function(&engine, function_id, None);
         }
 
         let filtered = module
-            .get_functions(
+            .functions_list(
                 FunctionsListInput {
                     include_internal: None,
+                    ..Default::default()
                 },
                 None,
             )
@@ -1273,13 +1895,14 @@ mod tests {
                 assert_eq!(result.functions.len(), 1);
                 assert_eq!(result.functions[0].function_id, "user::visible");
             }
-            _ => panic!("expected get_functions success"),
+            _ => panic!("expected functions_list success"),
         }
 
         let all = module
-            .get_functions(
+            .functions_list(
                 FunctionsListInput {
                     include_internal: Some(true),
+                    ..Default::default()
                 },
                 None,
             )
@@ -1288,65 +1911,528 @@ mod tests {
             FunctionResult::Success(result) => {
                 assert_eq!(result.functions.len(), 2);
             }
-            _ => panic!("expected get_functions success"),
+            _ => panic!("expected functions_list success"),
         }
     }
 
     #[tokio::test]
-    async fn test_get_triggers_filters_internal_by_default() {
-        let (_engine, module) = setup_engine_and_module();
+    async fn functions_list_applies_prefix_and_search() {
+        let (engine, module) = setup_engine_and_module();
+        register_simple_function(&engine, "alpha::one", Some("first"));
+        register_simple_function(&engine, "alpha::two", Some("second"));
+        register_simple_function(&engine, "beta::one", Some("first beta"));
 
-        module.engine.trigger_registry.triggers.insert(
-            "internal".to_string(),
-            crate::trigger::Trigger {
-                id: "internal".to_string(),
-                trigger_type: "cron".to_string(),
-                function_id: "engine::internal".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-            },
-        );
-        module.engine.trigger_registry.triggers.insert(
-            "user".to_string(),
-            crate::trigger::Trigger {
-                id: "user".to_string(),
-                trigger_type: "cron".to_string(),
-                function_id: "user::visible".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-            },
-        );
+        let by_prefix = module
+            .functions_list(
+                FunctionsListInput {
+                    prefix: Some("alpha::".to_string()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match by_prefix {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.functions.len(), 2);
+                assert!(
+                    result
+                        .functions
+                        .iter()
+                        .all(|f| f.function_id.starts_with("alpha::"))
+                );
+            }
+            _ => panic!("expected success"),
+        }
+
+        let by_search = module
+            .functions_list(
+                FunctionsListInput {
+                    search: Some("two".to_string()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match by_search {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.functions.len(), 1);
+                assert_eq!(result.functions[0].function_id, "alpha::two");
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_list_filters_by_worker_name() {
+        let (engine, module) = setup_engine_and_module();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+        register_simple_function(&engine, "state::get", None);
+        register_simple_function(&engine, "user::other", None);
 
         let filtered = module
-            .get_triggers(TriggersListInput {
-                include_internal: None,
-            })
+            .functions_list(
+                FunctionsListInput {
+                    worker: Some("iii-state".to_string()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await;
         match filtered {
             FunctionResult::Success(result) => {
-                assert_eq!(result.triggers.len(), 1);
-                assert_eq!(result.triggers[0].function_id, "user::visible");
+                assert_eq!(result.functions.len(), 1);
+                assert_eq!(result.functions[0].function_id, "state::get");
+                assert_eq!(result.functions[0].worker_name, "iii-state");
             }
-            _ => panic!("expected get_triggers success"),
+            _ => panic!("expected success"),
+        }
+    }
+
+    // ── functions_info service tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn functions_info_returns_full_detail() {
+        let (engine, module) = setup_engine_and_module();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: "test::detailed".to_string(),
+                description: Some("a detailed function".to_string()),
+                request_format: Some(serde_json::json!({"type": "object"})),
+                response_format: Some(serde_json::json!({"type": "string"})),
+                metadata: Some(serde_json::json!({"v": 1})),
+            },
+            crate::engine::Handler::new(
+                |_input: Value| async move { FunctionResult::Success(None) },
+            ),
+        );
+
+        insert_trigger_instance(
+            &engine,
+            "trig-d",
+            "cron",
+            "test::detailed",
+            serde_json::json!({"interval": 5}),
+        );
+
+        let result = module
+            .functions_info(
+                FunctionInfoInput {
+                    function_id: "test::detailed".to_string(),
+                },
+                None,
+            )
+            .await;
+
+        match result {
+            FunctionResult::Success(detail) => {
+                assert_eq!(detail.function_id, "test::detailed");
+                assert_eq!(detail.description.as_deref(), Some("a detailed function"));
+                assert_eq!(
+                    detail.request_schema,
+                    Some(serde_json::json!({"type": "object"}))
+                );
+                assert_eq!(
+                    detail.response_schema,
+                    Some(serde_json::json!({"type": "string"}))
+                );
+                assert_eq!(detail.metadata, Some(serde_json::json!({"v": 1})));
+                assert_eq!(detail.registered_triggers.len(), 1);
+                assert_eq!(detail.registered_triggers[0].id, "trig-d");
+                assert_eq!(detail.registered_triggers[0].trigger_type, "cron");
+            }
+            _ => panic!("expected functions_info success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_info_not_found_returns_failure() {
+        let (_engine, module) = setup_engine_and_module();
+        let result = module
+            .functions_info(
+                FunctionInfoInput {
+                    function_id: "does::not::exist".to_string(),
+                },
+                None,
+            )
+            .await;
+        match result {
+            FunctionResult::Failure(err) => {
+                assert_eq!(err.code, "NOT_FOUND");
+            }
+            _ => panic!("expected NOT_FOUND failure"),
+        }
+    }
+
+    // ── triggers_list / triggers_info ───────────────────────────────────
+
+    #[tokio::test]
+    async fn triggers_list_returns_trigger_types_not_instances() {
+        let (engine, module) = setup_engine_and_module();
+        engine.trigger_registry.trigger_types.insert(
+            "user-type".to_string(),
+            crate::trigger::TriggerType::new(
+                "user-type",
+                "User type",
+                Box::new(module.clone()),
+                None,
+            ),
+        );
+        engine.trigger_registry.trigger_types.insert(
+            "engine::internal-type".to_string(),
+            crate::trigger::TriggerType::new(
+                "engine::internal-type",
+                "Internal",
+                Box::new(module.clone()),
+                None,
+            ),
+        );
+
+        let filtered = module.triggers_list(TriggersListInput::default()).await;
+        match filtered {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.triggers.len(), 1);
+                assert_eq!(result.triggers[0].id, "user-type");
+            }
+            _ => panic!("expected success"),
         }
 
         let all = module
-            .get_triggers(TriggersListInput {
+            .triggers_list(TriggersListInput {
                 include_internal: Some(true),
+                ..Default::default()
             })
             .await;
         match all {
             FunctionResult::Success(result) => {
-                assert_eq!(result.triggers.len(), 2);
+                assert!(
+                    result
+                        .triggers
+                        .iter()
+                        .any(|t| t.id == "engine::internal-type")
+                );
+                assert!(result.triggers.iter().any(|t| t.id == "user-type"));
             }
-            _ => panic!("expected get_triggers success"),
+            _ => panic!("expected success"),
         }
     }
 
     #[tokio::test]
-    async fn test_get_workers_returns_registered_worker_and_metrics() {
+    async fn triggers_info_returns_schemas_and_instance_count() {
+        let (engine, module) = setup_engine_and_module();
+        // Use a builtin trigger type id so default schemas are populated.
+        let tt = crate::trigger::TriggerType::new(
+            "cron",
+            "Cron trigger",
+            Box::new(module.clone()),
+            None,
+        );
+        engine
+            .trigger_registry
+            .register_trigger_type(tt)
+            .await
+            .unwrap();
+
+        insert_trigger_instance(
+            &engine,
+            "trig-a",
+            "cron",
+            "test::handler_a",
+            serde_json::json!({"expression": "* * * * * *"}),
+        );
+        insert_trigger_instance(
+            &engine,
+            "trig-b",
+            "cron",
+            "test::handler_b",
+            serde_json::json!({"expression": "* * * * * *"}),
+        );
+
+        let result = module
+            .triggers_info(TriggerInfoInput {
+                id: "cron".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                assert_eq!(detail.id, "cron");
+                assert_eq!(detail.instance_count, 2);
+                assert!(detail.configuration_schema.is_some());
+                assert!(detail.request_schema.is_some());
+            }
+            _ => panic!("expected triggers_info success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn triggers_info_not_found_returns_failure() {
+        let (_engine, module) = setup_engine_and_module();
+        let result = module
+            .triggers_info(TriggerInfoInput {
+                id: "nope".to_string(),
+            })
+            .await;
+        assert!(matches!(result, FunctionResult::Failure(_)));
+    }
+
+    // ── registered_triggers_list / info ─────────────────────────────────
+
+    #[tokio::test]
+    async fn registered_triggers_list_filters_internal_by_default() {
+        let (engine, module) = setup_engine_and_module();
+        insert_trigger_instance(
+            &engine,
+            "internal-row",
+            "cron",
+            "engine::internal",
+            serde_json::json!({}),
+        );
+        insert_trigger_instance(
+            &engine,
+            "user-row",
+            "cron",
+            "user::handler",
+            serde_json::json!({}),
+        );
+
+        let filtered = module
+            .registered_triggers_list(RegisteredTriggersListInput::default())
+            .await;
+        match filtered {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.registered_triggers.len(), 1);
+                assert_eq!(result.registered_triggers[0].id, "user-row");
+            }
+            _ => panic!("expected success"),
+        }
+
+        let all = module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                include_internal: Some(true),
+                ..Default::default()
+            })
+            .await;
+        match all {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.registered_triggers.len(), 2);
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_triggers_list_filters_by_trigger_type_and_function_id() {
+        let (engine, module) = setup_engine_and_module();
+        insert_trigger_instance(&engine, "a", "cron", "user::a", serde_json::json!({}));
+        insert_trigger_instance(&engine, "b", "http", "user::b", serde_json::json!({}));
+
+        let by_type = module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                trigger_type: Some("http".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match by_type {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.registered_triggers.len(), 1);
+                assert_eq!(result.registered_triggers[0].id, "b");
+            }
+            _ => panic!("expected success"),
+        }
+
+        let by_function = module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                function_id: Some("user::a".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match by_function {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.registered_triggers.len(), 1);
+                assert_eq!(result.registered_triggers[0].id, "a");
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_triggers_info_returns_composite_with_function_and_trigger() {
+        let (engine, module) = setup_engine_and_module();
+        register_simple_function(&engine, "user::target", Some("target function"));
+        let tt = crate::trigger::TriggerType::new("cron", "Cron", Box::new(module.clone()), None);
+        engine
+            .trigger_registry
+            .register_trigger_type(tt)
+            .await
+            .unwrap();
+        insert_trigger_instance(
+            &engine,
+            "compose-1",
+            "cron",
+            "user::target",
+            serde_json::json!({"expression": "0 0 * * * *"}),
+        );
+
+        let result = module
+            .registered_triggers_info(RegisteredTriggerInfoInput {
+                id: "compose-1".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                assert_eq!(detail.id, "compose-1");
+                assert_eq!(detail.trigger_type, "cron");
+                assert_eq!(detail.function_id, "user::target");
+                assert!(detail.trigger.is_some());
+                assert!(detail.function.is_some());
+                let f = detail.function.unwrap();
+                assert_eq!(f.function_id, "user::target");
+                assert_eq!(f.description.as_deref(), Some("target function"));
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_triggers_info_returns_null_for_dangling_pointers() {
+        let (engine, module) = setup_engine_and_module();
+        insert_trigger_instance(
+            &engine,
+            "dangling",
+            "unknown-type",
+            "missing::function",
+            serde_json::json!({}),
+        );
+
+        let result = module
+            .registered_triggers_info(RegisteredTriggerInfoInput {
+                id: "dangling".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                assert!(detail.trigger.is_none());
+                assert!(detail.function.is_none());
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    // ── workers_list / workers_info ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn workers_list_returns_runtime_workers_with_filters() {
+        let (engine, module) = setup_engine_and_module();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-queue".to_string(),
+            name: "iii-queue".to_string(),
+            worker_type: "iii-queue".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec![],
+            internal: false,
+        });
+
+        let all = module.workers_list(WorkersListInput::default()).await;
+        match all {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.workers.len(), 2);
+            }
+            _ => panic!("expected success"),
+        }
+
+        let by_search = module
+            .workers_list(WorkersListInput {
+                search: Some("queue".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match by_search {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.workers.len(), 1);
+                assert_eq!(result.workers[0].name.as_deref(), Some("iii-queue"));
+            }
+            _ => panic!("expected success"),
+        }
+
+        let by_runtime = module
+            .workers_list(WorkersListInput {
+                runtime: Some("engine".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match by_runtime {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.workers.len(), 2);
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workers_info_returns_full_surface() {
+        let (engine, module) = setup_engine_and_module();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string(), "state::set".to_string()],
+            internal: false,
+        });
+        register_simple_function(&engine, "state::get", Some("get state"));
+        register_simple_function(&engine, "state::set", Some("set state"));
+        insert_trigger_instance(
+            &engine,
+            "trg-state",
+            "cron",
+            "state::get",
+            serde_json::json!({}),
+        );
+
+        let result = module
+            .workers_info(WorkerInfoInput {
+                name: "iii-state".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                assert_eq!(detail.worker.name.as_deref(), Some("iii-state"));
+                assert_eq!(detail.functions.len(), 2);
+                assert_eq!(detail.registered_triggers.len(), 1);
+                assert_eq!(detail.registered_triggers[0].id, "trg-state");
+                assert!(detail.worker.internal == false);
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workers_info_not_found_returns_failure() {
+        let (_engine, module) = setup_engine_and_module();
+        let result = module
+            .workers_info(WorkerInfoInput {
+                name: "nope".to_string(),
+            })
+            .await;
+        assert!(matches!(result, FunctionResult::Failure(_)));
+    }
+
+    #[tokio::test]
+    async fn workers_list_returns_registered_worker_with_metrics_when_filtered() {
         let (engine, module) = setup_engine_and_module();
 
         init_metric_storage(Some(128), Some(3600));
@@ -1358,8 +2444,23 @@ mod tests {
         let worker = crate::worker_connections::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
         worker.include_function_id("user::visible").await;
+        // Give the worker a name + pid so it appears in the unfiltered list.
         engine.worker_registry.register_worker(worker);
+        engine.worker_registry.update_worker_metadata(
+            &uuid::Uuid::parse_str(&worker_id).unwrap(),
+            "node".to_string(),
+            Some("1.0.0".to_string()),
+            Some("named-worker".to_string()),
+            Some("linux".to_string()),
+            None,
+            Some(4242),
+            None,
+        );
 
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
         if let Some(storage) = get_metric_storage() {
             storage.add_metrics(vec![StoredMetric {
                 name: "iii.worker.cpu.percent".to_string(),
@@ -1369,33 +2470,50 @@ mod tests {
                 data_points: vec![StoredDataPoint::Number(StoredNumberDataPoint {
                     value: 42.0,
                     attributes: vec![("worker.id".to_string(), worker_id.clone())],
-                    timestamp_unix_nano: 2_000_000_000,
+                    timestamp_unix_nano: now_ns,
                 })],
                 service_name: "svc".to_string(),
-                timestamp_unix_nano: 2_000_000_000,
+                timestamp_unix_nano: now_ns,
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
             }]);
         }
 
         let result = module
-            .get_workers(WorkersListInput {
-                worker_id: Some(worker_id.clone()),
+            .workers_list(WorkersListInput {
+                search: Some("named".to_string()),
+                ..Default::default()
             })
             .await;
-
         match result {
             FunctionResult::Success(result) => {
                 assert_eq!(result.workers.len(), 1);
-                assert_eq!(result.workers[0].id, worker_id);
+                assert_eq!(result.workers[0].name.as_deref(), Some("named-worker"));
                 assert_eq!(result.workers[0].function_count, 1);
             }
-            _ => panic!("expected get_workers success"),
+            _ => panic!("expected workers_list success"),
+        }
+
+        // workers::info should also surface latest_metrics for this worker.
+        let info_result = module
+            .workers_info(WorkerInfoInput {
+                name: "named-worker".to_string(),
+            })
+            .await;
+        match info_result {
+            FunctionResult::Success(detail) => {
+                assert_eq!(detail.worker.id, worker_id);
+                assert_eq!(detail.worker.pid, Some(4242));
+                assert!(detail.worker.latest_metrics.is_some());
+            }
+            _ => panic!("expected workers_info success"),
         }
     }
 
+    // ── register_worker service ─────────────────────────────────────────
+
     #[tokio::test]
-    async fn test_register_worker_service_fires_worker_trigger() {
+    async fn register_worker_service_fires_worker_trigger() {
         let (engine, module) = setup_engine_and_module();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
@@ -1463,7 +2581,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_destroy_returns_ok() {
+    async fn destroy_returns_ok() {
         let (_engine, module) = setup_engine_and_module();
         module.destroy().await.unwrap();
     }

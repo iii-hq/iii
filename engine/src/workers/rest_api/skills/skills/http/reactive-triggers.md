@@ -13,7 +13,7 @@ Reach for it when:
 - You want to expose a function as a REST endpoint without standing up a separate HTTP server.
 - You need URL path parameters (`/users/:id`) or query strings parsed and surfaced to the handler.
 - You want condition-gated routes (the trigger's `condition_function_id` is invoked with the request and the handler is skipped on falsy/error) or per-route preHandler middleware (see [Add request preHandler middleware](iii://iii-http/http/middleware)).
-- You want a single not-found handler for unmatched routes (configure `not_found_function` on the worker — see [the README](../../../README.md)).
+- You want a single not-found handler for unmatched routes — configure `not_found_function: <fn-id>` on the `iii-http` worker; the function receives the same `HttpRequest` payload a regular handler would.
 
 Use [middleware](iii://iii-http/http/middleware) instead when the work is cross-cutting and should run before *every* matching request rather than be the route handler itself.
 
@@ -99,17 +99,26 @@ The handler must return an `HttpResponse` envelope:
 
 # Worked example
 
-The typical pattern is a one-step registration:
+Expose `api::get-user` as `GET /users/:id` with auth + logging middleware on the route:
 
-- Register a function with `iii.registerFunction` to receive the `HttpRequest` payload above.
-- Bind it via `iii.registerTrigger({ type: 'http', function_id, config: { api_path, http_method } })`.
+```json
+{
+  "type":        "http",
+  "function_id": "api::get-user",
+  "config": {
+    "api_path":                "/users/:id",
+    "http_method":             "GET",
+    "middleware_function_ids": ["auth::require-bearer", "log::request"]
+  }
+}
+```
 
-For path parameters, use `:name` segments in `api_path`; the matching value arrives in `path_params[name]`. For per-route preHandlers (auth checks, rate limits), set `middleware_function_ids` on the trigger config — the chain runs after any global middleware configured in `iii-config.yaml`.
+For path parameters, use `:name` segments in `api_path`; the matching value arrives in `path_params[name]`. For per-route preHandlers (auth checks, rate limits), list them in `middleware_function_ids` — the chain runs after any global middleware configured in `iii-config.yaml`.
 
 For runnable scaffolds in TypeScript, Python, and Rust, see the http worker source and the SDK usage examples in [the iii main repo](https://github.com/iii-hq/iii).
 
 # Related
 
 - [Add request preHandler middleware](iii://iii-http/http/middleware) — the matching how-to for cross-cutting concerns; `middleware_function_ids` on a trigger references middleware ids documented there.
-- `iii-http` worker config (see [the README](../../../README.md)) — `port`, `host`, `default_timeout`, `concurrency_request_limit`, `cors`, `body_limit`, `trust_proxy`, `request_id_header`, `ignore_trailing_slash`, `not_found_function`.
+- `iii-http` worker config — `port` (default `3111`), `host` (default `0.0.0.0`), `default_timeout` (default `30000`), `concurrency_request_limit` (default `1024`), `body_limit` (default `1048576`), `trust_proxy` (default `false`), `request_id_header` (default `x-request-id`), `ignore_trailing_slash` (default `false`), `not_found_function`, `cors.allowed_origins`, `cors.allowed_methods`. The `middleware:` block is documented in [Add request preHandler middleware](iii://iii-http/http/middleware).
 - `state`/`stream`/`cron` reactive triggers — pair with `http` when an inbound request should kick off a state mutation that fans out via reactive triggers.

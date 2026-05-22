@@ -328,15 +328,15 @@ impl ExternalWorkerProcess {
 
         let _ = self.child.lock().await.take();
 
-        if let Some(path) = self.config_file.lock().expect("poisoned").take() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!(
-                    worker = %self.name,
-                    config_path = %path.display(),
-                    error = %e,
-                    "failed to remove temp config"
-                );
-            }
+        if let Some(path) = self.config_file.lock().expect("poisoned").take()
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            tracing::warn!(
+                worker = %self.name,
+                config_path = %path.display(),
+                error = %e,
+                "failed to remove temp config"
+            );
         }
     }
 }
@@ -346,10 +346,10 @@ impl ExternalWorkerProcess {
 /// path so the happy path is a no-op here.
 impl Drop for ExternalWorkerProcess {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.config_file.lock() {
-            if let Some(path) = guard.take() {
-                let _ = std::fs::remove_file(&path);
-            }
+        if let Ok(mut guard) = self.config_file.lock()
+            && let Some(path) = guard.take()
+        {
+            let _ = std::fs::remove_file(&path);
         }
     }
 }

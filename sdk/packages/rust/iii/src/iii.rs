@@ -48,55 +48,6 @@ use crate::telemetry::types::OtelConfig;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// Worker information returned by `engine::workers::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerInfo {
-    pub id: String,
-    pub name: Option<String>,
-    pub runtime: Option<String>,
-    pub version: Option<String>,
-    pub os: Option<String>,
-    pub ip_address: Option<String>,
-    pub status: String,
-    pub connected_at_ms: u64,
-    pub function_count: usize,
-    pub functions: Vec<String>,
-    pub active_invocations: usize,
-    #[serde(default)]
-    pub isolation: Option<String>,
-}
-
-/// Function information returned by `engine::functions::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionInfo {
-    pub function_id: String,
-    pub description: Option<String>,
-    pub request_format: Option<Value>,
-    pub response_format: Option<Value>,
-    pub metadata: Option<Value>,
-}
-
-/// Trigger information returned by `engine::triggers::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerInfo {
-    pub id: String,
-    pub trigger_type: String,
-    pub function_id: String,
-    pub config: Value,
-    pub metadata: Option<Value>,
-}
-
-/// Trigger type information returned by `engine::trigger-types::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerTypeInfo {
-    pub id: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
-}
-
 /// Builder for registering a custom trigger type with optional format schemas.
 ///
 /// Type parameters:

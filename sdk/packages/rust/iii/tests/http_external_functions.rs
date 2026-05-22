@@ -12,9 +12,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use iii_sdk::{
-    FunctionInfo, HttpInvocationConfig, HttpMethod, RegisterFunctionMessage, RegisterTriggerInput,
-    TriggerRequest,
+    HttpInvocationConfig, HttpMethod, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest,
 };
+use serde::Deserialize;
+
+/// Minimal deserialization target for `engine::functions::list` rows used
+/// only by these integration tests. The SDK no longer carries a hand-written
+/// type for this — the engine surface will be auto-generated later.
+#[derive(Debug, Deserialize)]
+struct FnRow {
+    function_id: String,
+}
 
 fn unique_function_id(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -212,7 +220,7 @@ async fn registers_and_unregisters_external_http_function() {
             })
             .await
             .expect("function discovery request failed");
-        let functions: Vec<FunctionInfo> = serde_json::from_value(
+        let functions: Vec<FnRow> = serde_json::from_value(
             list_result
                 .get("functions")
                 .cloned()
@@ -236,7 +244,7 @@ async fn registers_and_unregisters_external_http_function() {
             })
             .await
             .expect("function discovery request failed");
-        let functions: Vec<FunctionInfo> = serde_json::from_value(
+        let functions: Vec<FnRow> = serde_json::from_value(
             list_result
                 .get("functions")
                 .cloned()
