@@ -398,7 +398,7 @@
 
   /* Install button */
   /* reference-style install pill */
-  .install-btn{
+  .cta-install{
     display:inline-flex; align-items:center; gap:6px;
     border:1px solid var(--ink);
     background:var(--bg);
@@ -411,20 +411,20 @@
     transition: background .15s, color .15s, border-color .15s;
     white-space:nowrap;
   }
-  .install-btn:hover{
+  .cta-install:hover{
     background:var(--ink);
     color:var(--bg);
   }
-  .install-btn.copied{
+  .cta-install.copied{
     border-color:var(--accent);
     color:var(--accent);
     background:var(--bg);
   }
-  .install-btn.copied:hover{ background:var(--bg); color:var(--accent); }
-  .install-btn svg{ width:12px; height:12px; flex-shrink:0; }
+  .cta-install.copied:hover{ background:var(--bg); color:var(--accent); }
+  .cta-install svg{ width:12px; height:12px; flex-shrink:0; }
 
   /* GitHub button */
-  .gh-btn{
+  .cta-github{
     display:inline-flex; align-items:center; gap:8px;
     border:1px solid var(--rule);
     background:var(--bg);
@@ -435,11 +435,11 @@
     text-decoration:none;
     transition: border-color .15s, background .15s;
   }
-  .gh-btn:hover{ border-color:var(--ink); background:var(--panel); }
-  .gh-btn svg{ width:14px; height:14px; flex-shrink:0; }
+  .cta-github:hover{ border-color:var(--ink); background:var(--panel); }
+  .cta-github svg{ width:14px; height:14px; flex-shrink:0; }
 
   /* Discord button (navbar) */
-  .dc-btn{
+  .cta-discord{
     display:inline-flex; align-items:center; gap:8px;
     border:1px solid var(--rule);
     background:var(--bg);
@@ -450,10 +450,10 @@
     text-decoration:none;
     transition: border-color .15s, background .15s;
   }
-  .dc-btn:hover{ border-color:var(--ink); background:var(--panel); }
-  .dc-btn svg{ width:14px; height:14px; flex-shrink:0; }
-  .dc-btn .count{ font-variant-numeric:tabular-nums; }
-  .gh-btn .stars{
+  .cta-discord:hover{ border-color:var(--ink); background:var(--panel); }
+  .cta-discord svg{ width:14px; height:14px; flex-shrink:0; }
+  .cta-discord .count{ font-variant-numeric:tabular-nums; }
+  .cta-github .stars{
     font-family:'Chivo Mono', ui-monospace, monospace;
     font-weight:500; font-size:12px;
     color:var(--ink);
@@ -623,7 +623,7 @@
     align-items:stretch;
   }
   /* Reference solid + ghost buttons */
-  .hero-btn{
+  .cta-get-started{
     display:inline-flex; align-items:center; gap:10px;
     font-family:'Chivo Mono', ui-monospace, monospace;
     font-size:13px; font-weight:500;
@@ -635,11 +635,11 @@
     text-decoration:none;
     transition: background .12s, color .12s;
   }
-  .hero-btn:hover{ background:var(--bg); color:var(--ink); }
-  .hero-btn{ flex-shrink:0; }
-  .hero-btn.ghost{ background:transparent; color:var(--ink); }
-  .hero-btn.ghost:hover{ background:var(--ink); color:var(--bg); }
-  .hero-btn .arrow{ font-weight:400; }
+  .cta-get-started:hover{ background:var(--bg); color:var(--ink); }
+  .cta-get-started{ flex-shrink:0; }
+  .cta-get-started.ghost{ background:transparent; color:var(--ink); }
+  .cta-get-started.ghost:hover{ background:var(--ink); color:var(--bg); }
+  .cta-get-started .arrow{ font-weight:400; }
 
   /* ============= HERO PROTOCOL PREVIEW (right column) ============= */
   .hero-proto{
@@ -1105,7 +1105,7 @@
   .term-btn .copy-ico svg{ width:13px; height:13px; }
 
   /* Email signup */
-  .email-form{
+  .cta-email{
     position:relative;
     min-width:200px;
     flex: 0 1 240px;
@@ -1152,9 +1152,9 @@
     font-size:13px;
   }
   .email-thanks svg{ width:14px; height:14px; }
-  .email-form.submitted .email-row{ display:none; }
-  .email-form.submitted .email-thanks{ display:inline-flex; }
-  .email-form.submitted .email-helper{ display:none; }
+  .cta-email.submitted .email-row{ display:none; }
+  .cta-email.submitted .email-thanks{ display:inline-flex; }
+  .cta-email.submitted .email-helper{ display:none; }
 
   /* Hero meta strip — removed per design */
 
@@ -1168,7 +1168,7 @@
     .hero-viz-canvas{ overflow:hidden; max-width:100%; }
     .hero-viz-head .label{ display:none; }
     .email-row input{ width:100%; }
-    .email-form{ width:100%; max-width:none; }
+    .cta-email{ width:100%; max-width:none; }
   }
 
   /* ============= III EXPERIENCE ============= */
@@ -1901,18 +1901,18 @@
   @media (max-width: 1100px){
     .nav-center{ display:none; }
     .nav-links{ display:none; }
-    .install-btn svg{ display:none; }
-    .install-btn{ padding-left:14px; padding-right:14px; }
+    .cta-install svg{ display:none; }
+    .cta-install{ padding-left:14px; padding-right:14px; }
     .menu-btn{ display:inline-flex; }
   }
   @media (max-width: 800px){
-    .install-btn{ display:none; }
+    .cta-install{ display:none; }
     .mode-toggle{ display:none; }
   }
   @media (max-width: 520px){
     .nav{ padding:14px 18px; }
     .content{ padding:24px 18px 0; }
-    .gh-btn{ padding:7px 10px; gap:6px; }
+    .cta-github{ padding:7px 10px; gap:6px; }
     .ticket-card .ticket-stamp{ display:none; }
   }
 
@@ -4403,7 +4403,7 @@
     </div>
 
     <div class="nav-right">
-      <button id="install-btn" class="install-btn" aria-label="Copy install command">
+      <button id="cta-install" class="cta-install" data-cta-location="nav" aria-label="Copy install command">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="2" y="3" width="12" height="10" rx="0"/>
           <path d="M5 7 L7 9 L5 11"/>
@@ -4412,12 +4412,12 @@
         <span id="install-label">install.sh</span>
       </button>
 
-      <a class="dc-btn" id="dc-btn" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer" aria-label="Join Discord">
+      <a class="cta-discord" id="cta-discord" data-cta-location="nav" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer" aria-label="Join Discord">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.245.197.372.292a.077.077 0 0 1-.006.128 12.299 12.299 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
         <span class="count" id="dc-count">—</span>
       </a>
 
-      <a class="gh-btn" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+      <a class="cta-github" id="gh-btn" data-cta-location="nav" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
           <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
         </svg>
@@ -4460,14 +4460,14 @@
       <a class="mobile-link docs" href="/docs">docs</a>
       <a class="mobile-link" href="/blog/">blog</a>
       <a class="mobile-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry</a>
-      <a class="mobile-link" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">
+      <a class="mobile-link cta-github" id="gh-btn-m" data-cta-location="mobile_menu" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">
         <span style="display:inline-flex;align-items:center;gap:8px;">
           <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="width:14px;height:14px;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
           GitHub
         </span>
         <span id="gh-stars-m">—</span>
       </a>
-      <a class="mobile-link" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer">
+      <a class="mobile-link cta-discord" id="dc-btn-m" data-cta-location="mobile_menu" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer">
         <span style="display:inline-flex;align-items:center;gap:8px;">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:14px;height:14px;"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
           Discord
@@ -4475,7 +4475,7 @@
         <span id="dc-count-m">—</span>
       </a>
       <hr class="mobile-divider"/>
-      <button id="install-btn-m" class="mobile-link install">
+      <button id="cta-install-m" class="mobile-link cta-install" data-cta-location="mobile_menu">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="2" y="3" width="12" height="10"/>
           <path d="M5 7 L7 9 L5 11"/>
@@ -4560,12 +4560,12 @@
       </aside>
 
       <div class="hero-cta">
-        <a class="hero-btn" href="https://iii.dev/docs/install">
+        <a class="cta-get-started" id="get-started-btn" data-cta-location="hero" href="https://iii.dev/docs/install">
           <span>get started</span>
           <span class="arrow">→</span>
         </a>
 
-        <form class="email-form" id="email-form" novalidate>
+        <form class="cta-email" id="cta-email" data-cta-location="hero" novalidate>
           <div class="email-row">
             <input type="email" name="email" id="email-input" placeholder="your@email.here" required />
             <button class="submit" type="submit" aria-label="Submit email">
@@ -5694,7 +5694,7 @@ iii.register_function(
       <p class="foot-sub">install the engine, check out the code, chat with us, or subscribe for updates.</p>
 
       <div class="foot-row">
-        <button class="foot-install" id="foot-install" type="button" aria-label="Copy install command">
+        <button class="foot-install cta-install" id="foot-install" data-cta-location="footer" type="button" aria-label="Copy install command">
           <span class="prompt">$</span>
           <span class="cmd">curl -fsSL install.sh | sh</span>
           <span class="copy-ico" aria-hidden="true">
@@ -5704,7 +5704,7 @@ iii.register_function(
             </svg>
           </span>
         </button>
-        <form class="foot-email" id="foot-email" novalidate>
+        <form class="foot-email cta-email" id="foot-email" data-cta-location="footer" novalidate>
           <div class="row" style="display:flex; align-items:center; width:100%;">
             <input type="email" name="email" id="foot-email-input" placeholder="your@email.here" required />
             <button type="submit" aria-label="Submit email">
@@ -5724,13 +5724,13 @@ iii.register_function(
 
       <div class="foot-social">
         <div class="foot-gh">
-          <a href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">
+          <a class="cta-github" id="foot-gh-btn" data-cta-location="footer" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">
             <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             GitHub
           </a>
         </div>
         <div class="foot-discord is-loading" id="foot-discord">
-          <a href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer" aria-label="Join Discord">
+          <a class="cta-discord" id="foot-dc-btn" data-cta-location="footer" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer" aria-label="Join Discord">
             <svg class="dc-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.245.197.372.292a.077.077 0 0 1-.006.128 12.299 12.299 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
             <span class="dc-label">Discord</span>
             <span class="dc-sep" aria-hidden="true"></span>
@@ -6588,9 +6588,9 @@ iii.register_function(
 
   // ============= Install copy =============
   const INSTALL_CMD = 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh';
-  const installBtn = document.getElementById('install-btn');
+  const installBtn = document.getElementById('cta-install');
   const installLabel = document.getElementById('install-label');
-  const installBtnM = document.getElementById('install-btn-m');
+  const installBtnM = document.getElementById('cta-install-m');
   const installLabelM = document.getElementById('install-label-m');
   const footInstallBtn = document.getElementById('foot-install');
   const footInstallCmd = footInstallBtn ? footInstallBtn.querySelector('.cmd') : null;
@@ -6623,30 +6623,31 @@ iii.register_function(
       flashCopied();
     }
   }
-  if (installBtn) installBtn.addEventListener('click', () => {
-    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'nav', cta_label: 'install.sh' });
-    copyInstall();
-  });
-  if (installBtnM) installBtnM.addEventListener('click', () => {
-    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'mobile_menu', cta_label: 'install.sh' });
-    copyInstall();
-  });
-
   // ============= CTA click tracking =============
-  const trackCtaClick = (el, params) => {
-    if (!el) return;
-    el.addEventListener('click', () => iiiTrack('cta_click', params));
-  };
+  // Unified tracking for all cta-* elements using data-cta-location attributes
+  [
+    ['cta-install', 'install', 'install.sh'],
+    ['cta-discord', 'discord', 'discord'],
+    ['cta-github', 'github', 'github'],
+    ['cta-get-started', 'get_started', 'get started'],
+  ].forEach(([cls, ctaId, ctaLabel]) => {
+    document.querySelectorAll('.' + cls).forEach(el => {
+      el.addEventListener('click', () => {
+        iiiTrack('cta_click', {
+          cta_id: ctaId,
+          cta_location: el.dataset.ctaLocation || 'unknown',
+          cta_label: ctaLabel
+        });
+      });
+    });
+  });
 
-  // Nav social + hero CTA
-  trackCtaClick(document.getElementById('dc-btn'),
-    { cta_id: 'discord', cta_location: 'nav', cta_label: 'discord' });
-  trackCtaClick(document.querySelector('.nav-right .gh-btn'),
-    { cta_id: 'github', cta_location: 'nav', cta_label: 'github' });
-  trackCtaClick(document.querySelector('.hero-cta .hero-btn'),
-    { cta_id: 'get_started', cta_location: 'hero', cta_label: 'get started' });
+  // Install buttons also need copyInstall() behavior
+  document.querySelectorAll('.cta-install').forEach(el => {
+    el.addEventListener('click', copyInstall);
+  });
 
-  // Desktop nav links — internal anchors and external destinations alike
+  // Desktop nav links — internal anchors and external destinations
   document.querySelectorAll('.nav-links .nav-link').forEach(a => {
     a.addEventListener('click', () => {
       const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
@@ -6660,14 +6661,18 @@ iii.register_function(
   });
 
   // Workers section: "View the Worker Registry"
-  trackCtaClick(document.querySelector('.nw-cta-row .nw-cta'),
-    { cta_id: 'worker_registry', cta_location: 'workers_section', cta_label: 'view the worker registry' });
+  const workerCta = document.querySelector('.nw-cta-row .nw-cta');
+  if (workerCta) {
+    workerCta.addEventListener('click', () => {
+      iiiTrack('cta_click', {
+        cta_id: 'worker_registry',
+        cta_location: 'workers_section',
+        cta_label: 'view the worker registry'
+      });
+    });
+  }
 
-  // Footer social + column links
-  trackCtaClick(document.querySelector('.foot-gh a'),
-    { cta_id: 'github', cta_location: 'footer_social', cta_label: 'github' });
-  trackCtaClick(document.querySelector('.foot-discord a'),
-    { cta_id: 'discord', cta_location: 'footer_social', cta_label: 'discord' });
+  // Footer column links (not already covered by cta-* classes)
   document.querySelectorAll('.foot-col ul a').forEach(a => {
     a.addEventListener('click', () => {
       const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
@@ -6727,7 +6732,7 @@ iii.register_function(
   }
 
   // ============= Hero email signup =============
-  const emailForm = document.getElementById('email-form');
+  const emailForm = document.getElementById('cta-email');
   const emailInput = document.getElementById('email-input');
   if (emailForm){
     try {
@@ -6819,6 +6824,9 @@ iii.register_function(
   mobileClose.addEventListener('click', closeMenu);
   document.querySelectorAll('.mobile-link').forEach(a => {
     if (a.tagName !== 'A') return;
+    a.addEventListener('click', closeMenu);
+    // Skip elements already tracked by cta-* classes
+    if (a.matches('.cta-discord, .cta-github, .cta-install')) return;
     a.addEventListener('click', () => {
       const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
       iiiTrack('cta_click', {
@@ -6828,7 +6836,6 @@ iii.register_function(
         cta_href: a.getAttribute('href') || ''
       });
     });
-    a.addEventListener('click', closeMenu);
   });
 
   // ============= GitHub stars =============
@@ -7076,15 +7083,6 @@ iii.register_function(
     }
     setInterval(tick, HOP_MS + DWELL_MS);
   })();
-
-  // ============= Footer install copy =============
-  // Always copies the full install command (same as the navbar). The button's
-  // visible '.cmd' text is intentionally an abbreviated display version and is
-  // restored after the shared `copied` flash reverts.
-  if (footInstallBtn) footInstallBtn.addEventListener('click', () => {
-    iiiTrack('cta_click', { cta_id: 'install', cta_location: 'footer', cta_label: 'install.sh' });
-    copyInstall();
-  });
 
   // ============= Footer email signup =============
   (function footEmail(){
@@ -7465,16 +7463,19 @@ iii.register_function(
     };
 
     if (flowPrevBtn) flowPrevBtn.addEventListener('click', () => {
+      iiiTrack('flow_control', { control_group: 'hello_flow', action: 'prev' });
       stopFlow();
       const next = (flowIdx - 1 + FLOW_STEPS.length) % FLOW_STEPS.length;
       applyFlowStep(next);
     });
     if (flowNextBtn) flowNextBtn.addEventListener('click', () => {
+      iiiTrack('flow_control', { control_group: 'hello_flow', action: 'next' });
       stopFlow();
       const next = (flowIdx + 1) % FLOW_STEPS.length;
       applyFlowStep(next);
     });
     if (flowPlayBtn) flowPlayBtn.addEventListener('click', () => {
+      iiiTrack('flow_control', { control_group: 'hello_flow', action: flowPlaying ? 'pause' : 'play' });
       if (flowPlaying) stopFlow();
       else startFlow();
     });
@@ -7546,14 +7547,17 @@ iii.register_function(
 
       // Buttons
       if (mPrev) mPrev.addEventListener('click', () => {
+        iiiTrack('flow_control', { control_group: 'hello_flow_mobile', action: 'prev' });
         stopFlow();
         applyFlowStep((flowIdx - 1 + FLOW_STEPS.length) % FLOW_STEPS.length);
       });
       if (mNext) mNext.addEventListener('click', () => {
+        iiiTrack('flow_control', { control_group: 'hello_flow_mobile', action: 'next' });
         stopFlow();
         applyFlowStep((flowIdx + 1) % FLOW_STEPS.length);
       });
       if (mPlay) mPlay.addEventListener('click', () => {
+        iiiTrack('flow_control', { control_group: 'hello_flow_mobile', action: flowPlaying ? 'pause' : 'play' });
         if (flowPlaying) stopFlow();
         else startFlow();
       });
@@ -8187,6 +8191,11 @@ iii.register_function(
     // chip clicks: behave per-mode
     navItems.forEach((el, i) => {
       el.addEventListener('click', () => {
+        iiiTrack('nav_click', {
+          nav_group: 'console',
+          nav_idx: i,
+          nav_label: labels[i] || ''
+        });
         if (isMobile()){
           setPanel(i);
         } else {
@@ -8424,6 +8433,11 @@ iii.register_function(
 
   $tabs.forEach(b => {
     b.addEventListener('click', () => {
+      iiiTrack('tab_switch', {
+        tab_group: 'hero_viz',
+        tab_id: b.dataset.stage,
+        tab_label: b.textContent.trim().toLowerCase()
+      });
       userPinned = true;
       stopCycle();
       setStage(b.dataset.stage);
@@ -9029,6 +9043,11 @@ iii.register_function(
 
   document.querySelectorAll('#ag-frame-a .agent-frame-tabs button').forEach(b => {
     b.addEventListener('click', () => {
+      iiiTrack('tab_switch', {
+        tab_group: 'agents',
+        tab_id: b.dataset.stage,
+        tab_label: b.textContent.trim().toLowerCase()
+      });
       setAStage(b.dataset.stage);
       stopAAuto();
     });
@@ -9459,7 +9478,7 @@ iii.register_function(
       }
     });
     // install pill
-    const ib = document.getElementById('install-btn');
+    const ib = document.getElementById('cta-install');
     if (ib){
       if (TWEAKS.installPill === 'solid'){
         ib.style.background = 'var(--ink)';
