@@ -19,16 +19,12 @@ pub mod stop;
 pub use errors::SandboxError;
 pub use registry::SandboxRegistry;
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{
-    IIIError, InitOptions, OtelConfig, RegisterFunctionMessage, WorkerMetadata, register_worker,
-};
-use serde_json::Value;
+use iii_sdk::{InitOptions, OtelConfig, RegisterFunction, WorkerMetadata, register_worker};
 
 use crate::sandbox_daemon::config::SandboxConfig;
+use crate::sandbox_daemon::errors::SandboxErrorWire;
 
 pub async fn run(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> {
     tracing::info!(url = %engine_url, "connecting to III engine");
@@ -96,42 +92,29 @@ fn register_sandbox_create(
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
     launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let cfg = cfg.clone();
-        let launcher = launcher.clone();
-        Box::pin(async move {
-            let req: crate::sandbox_daemon::create::CreateRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match crate::sandbox_daemon::create::handle_create(
-                req,
-                &cfg,
-                &registry,
-                &*launcher,
-                |e| {
-                    tracing::info!(event = ?e, "sandbox create event");
-                },
-            )
-            .await
-            {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
-            }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::create".to_string(),
-            description: Some("Create an ephemeral sandbox VM from a preset image".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+    let _ = iii.register_function(
+        RegisterFunction::new_async(
+            "sandbox::create",
+            move |req: crate::sandbox_daemon::create::CreateRequest| {
+                let registry = registry.clone();
+                let cfg = cfg.clone();
+                let launcher = launcher.clone();
+                async move {
+                    crate::sandbox_daemon::create::handle_create(
+                        req,
+                        &cfg,
+                        &registry,
+                        &*launcher,
+                        |e| {
+                            tracing::info!(event = ?e, "sandbox create event");
+                        },
+                    )
+                    .await
+                    .map_err(SandboxErrorWire)
+                }
+            },
+        )
+        .description("Create an ephemeral sandbox VM from a preset image"),
     );
 }
 
@@ -140,31 +123,20 @@ fn register_sandbox_exec(
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     runner: Arc<crate::sandbox_daemon::adapters::ShellProtoRunner>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        Box::pin(async move {
-            let req: crate::sandbox_daemon::exec::ExecRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match crate::sandbox_daemon::exec::handle_exec(req, &registry, &*runner).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
-            }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::exec".to_string(),
-            description: Some("Execute a command inside a live sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+    let _ = iii.register_function(
+        RegisterFunction::new_async(
+            "sandbox::exec",
+            move |req: crate::sandbox_daemon::exec::ExecRequest| {
+                let registry = registry.clone();
+                let runner = runner.clone();
+                async move {
+                    crate::sandbox_daemon::exec::handle_exec(req, &registry, &*runner)
+                        .await
+                        .map_err(SandboxErrorWire)
+                }
+            },
+        )
+        .description("Execute a command inside a live sandbox"),
     );
 }
 
@@ -173,31 +145,20 @@ fn register_sandbox_stop(
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let stopper = stopper.clone();
-        Box::pin(async move {
-            let req: crate::sandbox_daemon::stop::StopRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match crate::sandbox_daemon::stop::handle_stop(req, &registry, &*stopper).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
-            }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::stop".to_string(),
-            description: Some("Stop and remove a running sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+    let _ = iii.register_function(
+        RegisterFunction::new_async(
+            "sandbox::stop",
+            move |req: crate::sandbox_daemon::stop::StopRequest| {
+                let registry = registry.clone();
+                let stopper = stopper.clone();
+                async move {
+                    crate::sandbox_daemon::stop::handle_stop(req, &registry, &*stopper)
+                        .await
+                        .map_err(SandboxErrorWire)
+                }
+            },
+        )
+        .description("Stop and remove a running sandbox"),
     );
 }
 
@@ -205,24 +166,29 @@ fn register_sandbox_list(
     iii: &iii_sdk::III,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        Box::pin(async move {
-            let req: crate::sandbox_daemon::list::ListRequest =
-                serde_json::from_value(payload).unwrap_or_default();
-            let resp = crate::sandbox_daemon::list::handle_list(req, &registry).await;
-            serde_json::to_value(resp).map_err(|e| IIIError::Handler(format!("serialize: {e}")))
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::list".to_string(),
-            description: Some("List active sandboxes".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+    // Note: pre-migration this handler used
+    // `serde_json::from_value(payload).unwrap_or_default()`, silently
+    // coercing `null`/non-object payloads into an empty `ListRequest`.
+    // `new_async` is strict, so a literal `null` payload now returns an
+    // S001-style handler error instead of an empty list. The only
+    // production caller (`cli::sandbox::handle_list`, which sends
+    // `json!({})`) is unaffected; an empty object still deserializes to
+    // the unit `ListRequest`.
+    let _ = iii.register_function(
+        RegisterFunction::new_async(
+            "sandbox::list",
+            move |req: crate::sandbox_daemon::list::ListRequest| {
+                let registry = registry.clone();
+                async move {
+                    // handle_list is infallible — Result wrapping is just
+                    // so the closure satisfies IntoAsyncHandler's
+                    // `Result<R, E>` shape. The Err arm is unreachable.
+                    Ok::<_, SandboxErrorWire>(
+                        crate::sandbox_daemon::list::handle_list(req, &registry).await,
+                    )
+                }
+            },
+        )
+        .description("List active sandboxes"),
     );
 }

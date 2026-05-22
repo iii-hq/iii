@@ -1,17 +1,19 @@
 use crate::sandbox_daemon::{
     errors::SandboxError, overlay::OverlayLayout, registry::SandboxRegistry,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct StopRequest {
     pub sandbox_id: String,
+    /// Block until the VM is fully reaped before returning.
     #[serde(default)]
     pub wait: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct StopResponse {
     pub sandbox_id: String,
     pub stopped: bool,
