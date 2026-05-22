@@ -1,6 +1,6 @@
 import logging
 
-from iii.logger import Logger
+from iii_observability import Logger
 
 
 def test_logger_uses_service_name() -> None:

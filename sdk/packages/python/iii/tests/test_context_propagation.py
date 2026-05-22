@@ -7,8 +7,7 @@ import pytest
 import iii.iii as iii_module
 from iii.iii import III
 from iii.iii_constants import InitOptions
-from iii.telemetry import init_otel, shutdown_otel
-from iii.telemetry_types import OtelConfig
+from iii_observability import OtelConfig, init_otel, shutdown_otel
 
 
 @pytest.fixture(autouse=True)

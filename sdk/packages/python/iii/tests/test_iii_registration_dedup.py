@@ -17,7 +17,7 @@ def reset_otel():
     # III.connect() calls init_otel() which sets global providers;
     # reset them so subsequent test files start with a clean slate.
     try:
-        from iii.telemetry import shutdown_otel
+        from iii_observability import shutdown_otel
 
         shutdown_otel()
     except Exception:
