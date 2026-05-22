@@ -13,6 +13,8 @@ import os
 import uuid
 from typing import Any, cast
 
+from opentelemetry import trace
+
 from .telemetry_types import OtelConfig
 
 _tracer: Any = None
@@ -334,8 +336,6 @@ async def flush_otel() -> None:
     where you want pending spans/metrics/logs delivered but plan to keep using
     OTel afterwards.
     """
-    from opentelemetry import trace
-
     tracer_provider = trace.get_tracer_provider()
     flushers: list[asyncio.Future[Any] | Any] = []
     if hasattr(tracer_provider, "force_flush"):

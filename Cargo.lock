@@ -2636,6 +2636,7 @@ dependencies = [
  "hostname",
  "http-body-util",
  "iana-time-zone",
+ "iii-observability",
  "iii-sdk",
  "iii-worker",
  "indexmap 2.14.0",
@@ -2697,6 +2698,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
+ "iii-observability",
  "iii-sdk",
  "mime_guess",
  "reqwest 0.12.28",
@@ -2715,6 +2717,7 @@ name = "iii-example"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "iii-observability",
  "iii-sdk",
  "reqwest 0.12.28",
  "schemars 0.8.22",
@@ -2874,6 +2877,7 @@ dependencies = [
  "humantime",
  "iii-filesystem",
  "iii-network",
+ "iii-observability",
  "iii-sdk",
  "iii-shell-client",
  "iii-shell-proto",

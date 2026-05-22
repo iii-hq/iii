@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
             "OpenTelemetry enabled (service: {})",
             args.otel_service_name
         );
-        Some(iii_sdk::OtelConfig {
+        Some(iii_observability::OtelConfig {
             enabled: Some(true),
             service_name: Some(args.otel_service_name),
             service_version: Some(env!("CARGO_PKG_VERSION").to_string()),

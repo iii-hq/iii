@@ -12,7 +12,7 @@ async fn init_with_runtime_returns_sdk_instance() {
 
 #[tokio::test]
 async fn init_applies_otel_config_before_auto_connect() {
-    use iii_sdk::OtelConfig;
+    use iii_observability::OtelConfig;
 
     let client = register_worker(
         "ws://127.0.0.1:49134",

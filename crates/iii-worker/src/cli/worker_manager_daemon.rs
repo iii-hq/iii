@@ -23,9 +23,9 @@ use crate::core::{
     list as core_list, remove as core_remove, start as core_start, stop as core_stop,
     update as core_update,
 };
+use iii_observability::OtelConfig;
 use iii_sdk::{
-    III, InitOptions, OtelConfig, RegisterFunction, RegisterTriggerType, WorkerMetadata,
-    register_worker,
+    III, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata, register_worker,
 };
 use schemars::{JsonSchema, schema_for};
 use serde_json::Value;

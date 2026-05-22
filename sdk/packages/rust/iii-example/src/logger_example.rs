@@ -1,4 +1,5 @@
-use iii_sdk::{III, IIIError, Logger, RegisterFunction};
+use iii_observability::Logger;
+use iii_sdk::{III, IIIError, RegisterFunction};
 use serde_json::{Value, json};
 
 pub fn setup(iii: &III) {

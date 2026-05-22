@@ -91,6 +91,7 @@ rabbitmq = ["lapin"]
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
+iii-observability = { workspace = true }
 scaffolder-core = { workspace = true }
 console = { workspace = true }
 ctrlc = { workspace = true }

@@ -1,7 +1,5 @@
 """iii-observability: shared OTel + Logger primitives."""
 
-__version__ = "0.13.0.dev1"
-
 from .baggage_span_processor import DEFAULT_ALLOWLIST, BaggageSpanProcessor
 from .http_instrumentation import execute_traced_request
 from .logger import Logger

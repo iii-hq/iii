@@ -107,16 +107,3 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
 
     iii
 }
-
-// Re-exports from iii-observability for back-compat.
-// The next SDK major will remove these — import from iii-observability directly.
-pub use iii_observability::{
-    BaggageSpanProcessor, CapturedContext, DEFAULT_ALLOWLIST, Logger, OtelConfig,
-    REDACTED_PLACEHOLDER, ReconnectionConfig, capture_otel_context, current_span_id,
-    current_span_is_recording, current_trace_id, execute_traced_request, extract_baggage,
-    extract_context, extract_traceparent, flush_otel, get_all_baggage, get_baggage_entry,
-    init_otel, inject_baggage, inject_traceparent, record_span_event, redact, redact_and_truncate,
-    remove_baggage_entry, resolve_max_bytes_from_env, run_in_span, run_with_baggage,
-    set_baggage_entry, set_current_span_attribute, set_current_span_error, shutdown_otel,
-    with_span,
-};
