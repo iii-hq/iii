@@ -2,7 +2,6 @@
 
 # Quickstart
 
-
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
 <Info title="Install iii before proceeding">
@@ -227,7 +226,8 @@ see [Understanding iii](/understanding-iii). It uses this project as the worked 
   documentation](/using-iii/console) for details.
 </Tip>
 
-{/* TODO: re-add the "Give your coding agent context" Tip with `npx skills add -g iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}
+{/_ TODO: re-add the "Give your coding agent context" Tip with `npx skills add iii-hq/iii/skills`
+once the iii skills worker (owned by Sergio) ships. _/}
 
 ## Next Steps
 
