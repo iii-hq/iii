@@ -636,6 +636,9 @@ jobs:
       - sdk-npm-browser
       - sdk-py
       - sdk-rust
+      - observability-npm
+      - observability-py
+      - observability-rust
       - docker-engine
       - homebrew-engine
       - homebrew-console
@@ -659,6 +662,9 @@ jobs:
           SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
           SDK_PY_RESULT: ${{ needs.sdk-py.result }}
           SDK_RUST_RESULT: ${{ needs.sdk-rust.result }}
+          OBS_NPM_RESULT: ${{ needs.observability-npm.result }}
+          OBS_PY_RESULT: ${{ needs.observability-py.result }}
+          OBS_RUST_RESULT: ${{ needs.observability-rust.result }}
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
@@ -685,6 +691,9 @@ jobs:
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
           LINES="$LINES$(icon "$SDK_RUST_RESULT") SDK Rust\n"
+          LINES="$LINES$(icon "$OBS_NPM_RESULT") Observability Node\n"
+          LINES="$LINES$(icon "$OBS_PY_RESULT") Observability Python\n"
+          LINES="$LINES$(icon "$OBS_RUST_RESULT") Observability Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
           LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
@@ -694,7 +703,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 
