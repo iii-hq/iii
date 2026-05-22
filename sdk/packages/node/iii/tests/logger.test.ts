@@ -4,9 +4,9 @@ import { iii } from './utils'
 
 const emit = vi.fn()
 
-vi.mock('../src/telemetry-system', async () => {
-  const actual = await vi.importActual<typeof import('../src/telemetry-system')>(
-    '../src/telemetry-system',
+vi.mock('@iii-dev/observability', async () => {
+  const actual = await vi.importActual<typeof import('@iii-dev/observability')>(
+    '@iii-dev/observability',
   )
 
   return {
@@ -24,7 +24,7 @@ describe('Logger', () => {
 
   it('uses the active span when no explicit trace ids are provided', async () => {
     vi.resetModules()
-    const { Logger } = await import('../src/logger')
+    const { Logger } = await import('@iii-dev/observability')
 
     const span = trace.wrapSpanContext({
       traceId: '11111111111111111111111111111111',

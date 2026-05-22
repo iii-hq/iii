@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WorkerMetricsCollector } from '../src/worker-metrics'
-import { registerWorkerGauges, stopWorkerGauges } from '../src/otel-worker-gauges'
+import { WorkerMetricsCollector, registerWorkerGauges, stopWorkerGauges } from '@iii-dev/observability'
 
 type FakeGauge = { name: string }
 

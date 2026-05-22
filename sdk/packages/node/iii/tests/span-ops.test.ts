@@ -11,7 +11,7 @@ import {
   recordSpanEvent,
   setCurrentSpanAttribute,
   setCurrentSpanError,
-} from '../src/telemetry-system/span-ops'
+} from '@iii-dev/observability'
 
 function buildTestProvider() {
   const exporter = new InMemorySpanExporter()

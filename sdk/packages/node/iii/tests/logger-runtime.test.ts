@@ -13,9 +13,9 @@ vi.mock('ws', () => {
   return { WebSocket: MockWebSocket, default: { WebSocket: MockWebSocket } }
 })
 
-vi.mock('../src/telemetry-system', async () => {
-  const actual = await vi.importActual<typeof import('../src/telemetry-system')>(
-    '../src/telemetry-system',
+vi.mock('@iii-dev/observability', async () => {
+  const actual = await vi.importActual<typeof import('@iii-dev/observability')>(
+    '@iii-dev/observability',
   )
 
   return {

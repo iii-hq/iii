@@ -34,11 +34,11 @@ describe('Package Exports', () => {
     expect(typeof getLogger).toBe('function')
   })
 
-  it('should not expose internal tracer/meter accessors on public telemetry surface', async () => {
+  it('should expose tracer/meter accessors and span utilities on public telemetry surface', async () => {
     const telemetryExports = await import('../src/telemetry')
     const keys = Object.keys(telemetryExports)
-    expect(keys).not.toContain('getTracer')
-    expect(keys).not.toContain('getMeter')
-    expect(keys).not.toContain('SpanStatusCode')
+    expect(keys).toContain('getTracer')
+    expect(keys).toContain('getMeter')
+    expect(keys).toContain('SpanKind')
   })
 })

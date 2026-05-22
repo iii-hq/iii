@@ -73,7 +73,7 @@ import {
   getTracer,
   getMeter,
   getLogger,
-} from '../src/telemetry-system/index'
+} from '@iii-dev/observability'
 
 describe('OTel default-enabled behavior', () => {
   const originalEnv = process.env

@@ -52,24 +52,7 @@ vi.mock('@opentelemetry/sdk-trace-base', () => ({
   BatchSpanProcessor: vi.fn().mockImplementation(() => ({})),
 }))
 
-// Mock exporters
-vi.mock('../src/telemetry-system/exporters', () => ({
-  EngineSpanExporter: vi.fn().mockImplementation(() => ({})),
-  EngineMetricsExporter: vi.fn().mockImplementation(() => ({})),
-  EngineLogExporter: vi.fn().mockImplementation(() => ({})),
-}))
-
-// Mock the shared connection
-vi.mock('../src/telemetry-system/connection', () => ({
-  SharedEngineConnection: vi.fn().mockImplementation(() => ({
-    send: vi.fn(),
-    onConnected: vi.fn(),
-    getState: vi.fn().mockReturnValue('disconnected'),
-    shutdown: vi.fn().mockResolvedValue(undefined),
-  })),
-}))
-
-import { initOtel, shutdownOtel, getTracer } from '../src/telemetry-system/index'
+import { initOtel, shutdownOtel, getTracer } from '@iii-dev/observability'
 
 describe('Fetch instrumentation', () => {
   const originalEnv = process.env
@@ -195,7 +178,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -244,7 +227,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -284,7 +267,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -318,7 +301,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -353,7 +336,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -387,7 +370,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -419,7 +402,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -455,7 +438,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -487,7 +470,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -532,7 +515,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -571,7 +554,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -606,7 +589,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
