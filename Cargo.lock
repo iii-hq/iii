@@ -1932,6 +1932,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fslock"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04412b8935272e3a9bae6f48c7bfff74c2911f60525404edfdd28e49884c3bfb"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "function-macros"
 version = "0.1.0"
 dependencies = [
@@ -2600,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.12.0"
+version = "0.13.0-next.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2680,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "iii-console"
-version = "0.12.0"
+version = "0.13.0-next.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2757,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.12.0"
+version = "0.13.0-next.1"
 dependencies = [
  "async-trait",
  "ctor",
@@ -2822,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.12.0"
+version = "0.13.0-next.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2833,7 +2843,9 @@ dependencies = [
  "console 0.16.3",
  "ctrlc",
  "dirs 6.0.0",
+ "filetime",
  "flate2",
+ "fslock",
  "futures",
  "hex",
  "humantime",
@@ -3533,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.12.0"
+version = "0.13.0-next.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5243,7 +5255,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.12.0"
+version = "0.13.0-next.1"
 dependencies = [
  "anyhow",
  "clap",

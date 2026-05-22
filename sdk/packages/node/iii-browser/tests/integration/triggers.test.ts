@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import type { TriggerInfo } from '../../src/iii-types'
 import { iii, sleep } from './utils'
 
-const fetchRegisteredTriggers = async (includeInternal = false): Promise<TriggerInfo[]> => {
-  const { triggers } = await iii.trigger<
+type RegisteredTriggerRow = {
+  id: string
+  trigger_type: string
+  function_id: string
+  worker_name: string
+  config_summary: string
+}
+
+// `engine::triggers::list` now returns trigger TYPES (templates).
+// Subscriber rows (instances) live behind
+// `engine::registered-triggers::list`.
+const fetchRegisteredTriggers = async (includeInternal = false): Promise<RegisteredTriggerRow[]> => {
+  const { registered_triggers } = await iii.trigger<
     { include_internal: boolean },
-    { triggers: TriggerInfo[] }
+    { registered_triggers: RegisteredTriggerRow[] }
   >({
-    function_id: 'engine::triggers::list',
+    function_id: 'engine::registered-triggers::list',
     payload: { include_internal: includeInternal },
   })
-  return triggers
+  return registered_triggers
 }
 
 describe('Trigger Registration', () => {

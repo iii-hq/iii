@@ -12,6 +12,7 @@ target/
 .bin/
 
 # Runtime data
+tmp/
 data/
 *.log
 app.log

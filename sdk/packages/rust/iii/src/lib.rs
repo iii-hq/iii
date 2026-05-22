@@ -20,15 +20,15 @@ pub use channels::{
 };
 pub use error::IIIError;
 pub use iii::{
-    FunctionInfo, FunctionRef, III, IIIAsyncFn, IIIConnectionState, IIIFn, IntoFunctionHandler,
-    IntoFunctionRegistration, RegisterFunction, RegisterTriggerType, TriggerInfo, TriggerTypeInfo,
-    TriggerTypeRef, WorkerInfo, WorkerMetadata, iii_async_fn, iii_fn,
+    FunctionRef, III, IIIAsyncFn, IIIConnectionState, IIIFn, IntoFunctionHandler,
+    IntoFunctionRegistration, RegisterFunction, RegisterTriggerType, TriggerTypeRef,
+    WorkerMetadata, iii_async_fn, iii_fn,
 };
 pub use logger::Logger;
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
-    Message, RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerInput,
-    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+    Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
+    RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream::UpdateBuilder;
 pub use structs::{
@@ -119,9 +119,9 @@ pub use telemetry::{
         extract_context, extract_traceparent, get_all_baggage, get_baggage_entry, inject_baggage,
         inject_traceparent, remove_baggage_entry, run_with_baggage, set_baggage_entry,
     },
-    flush_otel, get_meter, get_tracer,
+    flush_otel,
     http_instrumentation::execute_traced_request,
-    init_otel, is_initialized,
+    init_otel,
     payload::{REDACTED_PLACEHOLDER, redact, redact_and_truncate, resolve_max_bytes_from_env},
     run_in_span, shutdown_otel,
     span_ops::{
@@ -132,7 +132,3 @@ pub use telemetry::{
     types::ReconnectionConfig,
     with_span,
 };
-
-// Re-export commonly used OpenTelemetry types for convenience
-pub use opentelemetry::trace::SpanKind;
-pub use opentelemetry::trace::Status as SpanStatus;

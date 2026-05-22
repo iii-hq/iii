@@ -9,7 +9,6 @@ export type {
   AuthInput,
   AuthResult,
   EnqueueResult,
-  FunctionInfo,
   MessageType,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
@@ -23,9 +22,7 @@ export type {
   RegisterTriggerTypeMessage,
   StreamChannelRef,
   TriggerAction as TriggerActionType,
-  TriggerInfo,
   TriggerRequest,
-  TriggerTypeInfo,
 } from './iii-types'
 
 export type { TriggerConfig, TriggerHandler } from './triggers'
@@ -38,7 +35,6 @@ export type {
   ISdk,
   RegisterFunctionInput,
   RegisterFunctionOptions,
-  RegisterServiceInput,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,

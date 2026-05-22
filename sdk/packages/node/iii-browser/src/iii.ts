@@ -11,7 +11,6 @@ import {
   type InvokeFunctionMessage,
   MessageType,
   type RegisterFunctionMessage,
-  type RegisterServiceMessage,
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type StreamChannelRef,
@@ -69,7 +68,6 @@ export type InitOptions = {
 class Sdk implements ISdk {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
-  private services = new Map<string, Omit<RegisterServiceMessage, 'functions'>>()
   private invocations = new Map<string, Invocation & { timeout?: ReturnType<typeof setTimeout> }>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
@@ -261,12 +259,6 @@ class Sdk implements ISdk {
         this.functions.delete(functionId)
       },
     }
-  }
-
-  registerService = (message: Omit<RegisterServiceMessage, 'message_type'>): void => {
-    const msg = { ...message, name: message.name ?? message.id }
-    this.sendMessage(MessageType.RegisterService, msg, true)
-    this.services.set(message.id, { ...msg, message_type: MessageType.RegisterService })
   }
 
   /**
@@ -547,9 +539,6 @@ class Sdk implements ISdk {
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
-    })
-    this.services.forEach((service) => {
-      this.sendMessage(MessageType.RegisterService, service, true)
     })
     this.functions.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterFunction, message, true)

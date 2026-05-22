@@ -47,6 +47,7 @@ pub struct TelemetryCollector {
     // Registrations
     pub function_registrations: AtomicU64,
     pub trigger_registrations: AtomicU64,
+    pub worker_registrations: AtomicU64,
 
     // Workers
     pub peak_active_workers: AtomicU64,
@@ -75,6 +76,7 @@ impl Default for TelemetryCollector {
             api_requests: AtomicU64::new(0),
             function_registrations: AtomicU64::new(0),
             trigger_registrations: AtomicU64::new(0),
+            worker_registrations: AtomicU64::new(0),
             peak_active_workers: AtomicU64::new(0),
         }
     }
@@ -104,6 +106,7 @@ impl TelemetryCollector {
             "api_requests": self.api_requests.load(Ordering::Relaxed),
             "function_registrations": self.function_registrations.load(Ordering::Relaxed),
             "trigger_registrations": self.trigger_registrations.load(Ordering::Relaxed),
+            "worker_registrations": self.worker_registrations.load(Ordering::Relaxed),
             "peak_active_workers": self.peak_active_workers.load(Ordering::Relaxed),
         })
     }
@@ -221,6 +224,12 @@ pub fn track_trigger_registered() {
         .fetch_add(1, Ordering::Relaxed);
 }
 
+pub fn track_worker_registered() {
+    collector()
+        .worker_registrations
+        .fetch_add(1, Ordering::Relaxed);
+}
+
 pub fn track_peak_workers(current_active: u64) {
     let peak = &collector().peak_active_workers;
     loop {
@@ -268,6 +277,7 @@ mod tests {
         assert_eq!(c.api_requests.load(Ordering::Relaxed), 0);
         assert_eq!(c.function_registrations.load(Ordering::Relaxed), 0);
         assert_eq!(c.trigger_registrations.load(Ordering::Relaxed), 0);
+        assert_eq!(c.worker_registrations.load(Ordering::Relaxed), 0);
         assert_eq!(c.peak_active_workers.load(Ordering::Relaxed), 0);
     }
 
@@ -300,6 +310,7 @@ mod tests {
         assert_eq!(snap["api_requests"], 0);
         assert_eq!(snap["function_registrations"], 0);
         assert_eq!(snap["trigger_registrations"], 0);
+        assert_eq!(snap["worker_registrations"], 0);
         assert_eq!(snap["peak_active_workers"], 0);
     }
 
@@ -315,6 +326,7 @@ mod tests {
         c.api_requests.fetch_add(42, Ordering::Relaxed);
         c.function_registrations.fetch_add(2, Ordering::Relaxed);
         c.trigger_registrations.fetch_add(4, Ordering::Relaxed);
+        c.worker_registrations.fetch_add(3, Ordering::Relaxed);
         c.peak_active_workers.store(6, Ordering::Relaxed);
         c.kv_sets.fetch_add(11, Ordering::Relaxed);
         c.kv_gets.fetch_add(20, Ordering::Relaxed);
@@ -334,6 +346,7 @@ mod tests {
         assert_eq!(snap["api_requests"], 42);
         assert_eq!(snap["function_registrations"], 2);
         assert_eq!(snap["trigger_registrations"], 4);
+        assert_eq!(snap["worker_registrations"], 3);
         assert_eq!(snap["peak_active_workers"], 6);
         assert_eq!(snap["kv_sets"], 11);
         assert_eq!(snap["kv_gets"], 20);
@@ -369,6 +382,7 @@ mod tests {
             "api_requests",
             "function_registrations",
             "trigger_registrations",
+            "worker_registrations",
             "peak_active_workers",
         ];
         for key in &expected_keys {
@@ -559,6 +573,14 @@ mod tests {
         let before = collector().trigger_registrations.load(Ordering::Relaxed);
         track_trigger_registered();
         let after = collector().trigger_registrations.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_worker_registered_increments() {
+        let before = collector().worker_registrations.load(Ordering::Relaxed);
+        track_worker_registered();
+        let after = collector().worker_registrations.load(Ordering::Relaxed);
         assert_eq!(after, before + 1);
     }
 

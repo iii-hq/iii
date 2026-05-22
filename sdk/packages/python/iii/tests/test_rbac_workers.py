@@ -8,7 +8,6 @@ import pytest
 from iii import (
     AuthInput,
     AuthResult,
-    FunctionInfo,
     IIIForbiddenError,
     IIIInvocationError,
     InitOptions,
@@ -291,8 +290,8 @@ class TestRbacWorkers:
             result = iii_client.trigger(
                 {"function_id": "engine::functions::list", "payload": {}}
             )
-            functions = [FunctionInfo(**f) for f in result.get("functions", [])]
-            function_ids = [f.function_id for f in functions]
+            functions = result.get("functions", [])
+            function_ids = [f["function_id"] for f in functions]
 
             assert "test::ew::valid-token-echo" in function_ids
             assert "test::ew::public::echo" in function_ids
@@ -315,8 +314,8 @@ class TestRbacWorkers:
             result = iii_client.trigger(
                 {"function_id": "engine::functions::list", "payload": {}}
             )
-            functions = [FunctionInfo(**f) for f in result.get("functions", [])]
-            function_ids = [f.function_id for f in functions]
+            functions = result.get("functions", [])
+            function_ids = [f["function_id"] for f in functions]
 
             assert "test::ew::public::echo" in function_ids
             assert "test::ew::meta-public" in function_ids

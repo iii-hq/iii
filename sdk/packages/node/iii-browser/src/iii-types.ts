@@ -1,7 +1,6 @@
 export enum MessageType {
   RegisterFunction = 'registerfunction',
   UnregisterFunction = 'unregisterfunction',
-  RegisterService = 'registerservice',
   InvokeFunction = 'invokefunction',
   InvocationResult = 'invocationresult',
   RegisterTriggerType = 'registertriggertype',
@@ -44,14 +43,6 @@ export type RegisterTriggerMessage = {
   type: string
   function_id: string
   config: unknown
-}
-
-export type RegisterServiceMessage = {
-  message_type: MessageType.RegisterService
-  id: string
-  name?: string
-  description?: string
-  parent_service_id?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -331,50 +322,6 @@ export type InvocationResultMessage = {
   baggage?: string
 }
 
-/**
- * Metadata about a registered function, returned by the `engine::functions::list` trigger.
- */
-export type FunctionInfo = {
-  /** Unique function identifier. */
-  function_id: string
-  /** Human-readable description. */
-  description?: string
-  /** Schema describing expected request format. */
-  request_format?: RegisterFunctionFormat
-  /** Schema describing expected response format. */
-  response_format?: RegisterFunctionFormat
-  /** Arbitrary metadata attached to the function. */
-  metadata?: Record<string, unknown>
-}
-
-/**
- * Information about a registered trigger.
- */
-export type TriggerInfo = {
-  /** Unique trigger identifier. */
-  id: string
-  /** Type of the trigger (e.g. `http`, `cron`, `queue`). */
-  trigger_type: string
-  /** ID of the function this trigger is bound to. */
-  function_id: string
-  /** Trigger-specific configuration. */
-  config?: unknown
-}
-
-/**
- * Information about a registered trigger type, returned by the `engine::trigger-types::list` trigger.
- */
-export type TriggerTypeInfo = {
-  /** Trigger type identifier (e.g. `http`, `cron`, `queue`). */
-  id: string
-  /** Human-readable description of the trigger type. */
-  description: string
-  /** JSON Schema for the trigger configuration. */
-  trigger_request_format?: unknown
-  /** JSON Schema for the call request payload. */
-  call_request_format?: unknown
-}
-
 export type UnregisterFunctionMessage = {
   message_type: MessageType.UnregisterFunction
   id: string
@@ -398,7 +345,6 @@ export type IIIMessage =
   | UnregisterFunctionMessage
   | InvokeFunctionMessage
   | InvocationResultMessage
-  | RegisterServiceMessage
   | RegisterTriggerMessage
   | RegisterTriggerTypeMessage
   | UnregisterTriggerMessage

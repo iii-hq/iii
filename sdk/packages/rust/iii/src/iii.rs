@@ -35,9 +35,9 @@ use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::IIIError,
     protocol::{
-        ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterServiceMessage,
-        RegisterTriggerInput, RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
-        TriggerRequest, UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterTriggerInput,
+        RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
@@ -47,55 +47,6 @@ use crate::telemetry;
 use crate::telemetry::types::OtelConfig;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-
-/// Worker information returned by `engine::workers::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerInfo {
-    pub id: String,
-    pub name: Option<String>,
-    pub runtime: Option<String>,
-    pub version: Option<String>,
-    pub os: Option<String>,
-    pub ip_address: Option<String>,
-    pub status: String,
-    pub connected_at_ms: u64,
-    pub function_count: usize,
-    pub functions: Vec<String>,
-    pub active_invocations: usize,
-    #[serde(default)]
-    pub isolation: Option<String>,
-}
-
-/// Function information returned by `engine::functions::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionInfo {
-    pub function_id: String,
-    pub description: Option<String>,
-    pub request_format: Option<Value>,
-    pub response_format: Option<Value>,
-    pub metadata: Option<Value>,
-}
-
-/// Trigger information returned by `engine::triggers::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerInfo {
-    pub id: String,
-    pub trigger_type: String,
-    pub function_id: String,
-    pub config: Value,
-    pub metadata: Option<Value>,
-}
-
-/// Trigger type information returned by `engine::trigger-types::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerTypeInfo {
-    pub id: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
-}
 
 /// Builder for registering a custom trigger type with optional format schemas.
 ///
@@ -715,7 +666,6 @@ struct IIIInner {
     functions: Mutex<HashMap<String, RemoteFunctionData>>,
     trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
-    services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
     connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -750,7 +700,6 @@ impl III {
             functions: Mutex::new(HashMap::new()),
             trigger_types: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
-            services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
             connection_thread: Mutex::new(None),
@@ -955,18 +904,6 @@ impl III {
     ) -> FunctionRef {
         let handler = handler.into_parts(&mut message);
         self.register_function_inner(message, handler)
-    }
-
-    /// Register a service with the engine.
-    ///
-    /// # Arguments
-    /// * `message` - Service registration message with id, name, and optional metadata.
-    pub fn register_service(&self, message: RegisterServiceMessage) {
-        self.inner
-            .services
-            .lock_or_recover()
-            .insert(message.id.clone(), message.clone());
-        let _ = self.send_message(message.to_message());
     }
 
     /// Register a custom trigger type with the engine.
@@ -1410,10 +1347,6 @@ impl III {
             messages.push(trigger_type.message.to_message());
         }
 
-        for service in self.inner.services.lock_or_recover().values() {
-            messages.push(service.to_message());
-        }
-
         for function in self.inner.functions.lock_or_recover().values() {
             messages.push(function.message.to_message());
         }
@@ -1436,7 +1369,6 @@ impl III {
             Message::RegisterTriggerType { id, .. } => Some(format!("trigger_type:{id}")),
             Message::RegisterTrigger { id, .. } => Some(format!("trigger:{id}")),
             Message::RegisterFunction { id, .. } => Some(format!("function:{id}")),
-            Message::RegisterService { id, .. } => Some(format!("service:{id}")),
             _ => None,
         }
     }
@@ -2117,15 +2049,6 @@ mod tests {
         }
     }
 
-    fn make_register_service(id: &str) -> Message {
-        Message::RegisterService {
-            id: id.to_string(),
-            name: "svc".to_string(),
-            description: None,
-            parent_service_id: None,
-        }
-    }
-
     fn make_invoke(function_id: &str) -> Message {
         Message::InvokeFunction {
             invocation_id: None,
@@ -2150,10 +2073,6 @@ mod tests {
         assert_eq!(
             III::registration_key(&make_register_trigger_type("tt1")),
             Some("trigger_type:tt1".to_string())
-        );
-        assert_eq!(
-            III::registration_key(&make_register_service("svc1")),
-            Some("service:svc1".to_string())
         );
     }
 
@@ -2184,13 +2103,10 @@ mod tests {
             .unwrap();
         tx.send(Outbound::Message(make_register_trigger("new-trig")))
             .unwrap();
-        tx.send(Outbound::Message(make_register_service("dup-svc")))
-            .unwrap();
 
         let snapshot_ids: HashSet<String> = [
             "function:dup-fn".to_string(),
             "trigger:dup-trig".to_string(),
-            "service:dup-svc".to_string(),
         ]
         .into_iter()
         .collect();

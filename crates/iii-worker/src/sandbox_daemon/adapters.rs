@@ -505,14 +505,14 @@ impl ShellRunner for ShellProtoRunner {
                         // the substring rationale. All other dispatcher
                         // errors fall through to the original
                         // BootFailed mapping.
-                        if let iii_shell_client::VmClientError::DispatcherError(msg) = &e {
-                            if let Some(resp) = classify_dispatcher_spawn_error(
+                        if let iii_shell_client::VmClientError::DispatcherError(msg) = &e
+                            && let Some(resp) = classify_dispatcher_spawn_error(
                                 msg,
                                 &cmd_for_err,
                                 started.elapsed().as_millis() as u64,
-                            ) {
-                                return Ok(resp);
-                            }
+                            )
+                        {
+                            return Ok(resp);
                         }
                         return Err(SandboxError::BootFailed(format!("shell run: {e}")));
                     }

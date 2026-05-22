@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { registerWorker, Logger } from '../src/index'
-import { initOtel, shutdownOtel, getTracer, getMeter, getLogger } from '../src/telemetry'
+import { initOtel, shutdownOtel, getLogger } from '../src/telemetry'
 import { iii } from './utils'
 
 beforeAll(() => {
@@ -25,16 +25,20 @@ describe('Package Exports', () => {
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
   })
 
-  it('should export telemetry utilities', () => {
+  it('should export supported telemetry utilities', () => {
     expect(initOtel).toBeDefined()
     expect(typeof initOtel).toBe('function')
     expect(shutdownOtel).toBeDefined()
     expect(typeof shutdownOtel).toBe('function')
-    expect(getTracer).toBeDefined()
-    expect(typeof getTracer).toBe('function')
-    expect(getMeter).toBeDefined()
-    expect(typeof getMeter).toBe('function')
     expect(getLogger).toBeDefined()
     expect(typeof getLogger).toBe('function')
+  })
+
+  it('should not expose internal tracer/meter accessors on public telemetry surface', async () => {
+    const telemetryExports = await import('../src/telemetry')
+    const keys = Object.keys(telemetryExports)
+    expect(keys).not.toContain('getTracer')
+    expect(keys).not.toContain('getMeter')
+    expect(keys).not.toContain('SpanStatusCode')
   })
 })

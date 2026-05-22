@@ -8,8 +8,8 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use iii_sdk::{
-    III, IIIError, InitOptions, RegisterFunctionMessage, RegisterServiceMessage, TriggerAction,
-    TriggerRequest, register_worker,
+    III, IIIError, InitOptions, RegisterFunctionMessage, TriggerAction, TriggerRequest,
+    register_worker,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,10 +26,6 @@ use crate::{
 pub struct BridgeClientConfig {
     #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
-    pub service_id: Option<String>,
-    #[serde(default)]
-    pub service_name: Option<String>,
     #[serde(default)]
     pub expose: Vec<ExposeFunctionConfig>,
     #[serde(default)]
@@ -244,20 +240,6 @@ impl Worker for BridgeClientWorker {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        if let Some(service_id) = &self.config.service_id {
-            let name = self
-                .config
-                .service_name
-                .clone()
-                .unwrap_or_else(|| service_id.clone());
-            self.bridge.register_service(RegisterServiceMessage {
-                id: service_id.clone(),
-                name,
-                description: None,
-                parent_service_id: None,
-            });
-        }
-
         for expose in &self.config.expose {
             let bridge = self.bridge.clone();
             let engine = self.engine.clone();
@@ -327,7 +309,6 @@ mod tests {
     }
 
     async fn spawn_bridge_server(
-        service_names: Arc<Mutex<Vec<(String, String)>>>,
         registered_functions: Arc<Mutex<Vec<String>>>,
         exposed_result_tx: tokio::sync::oneshot::Sender<(String, serde_json::Value)>,
     ) -> String {
@@ -352,12 +333,6 @@ mod tests {
                     serde_json::from_str::<Message>(&text).expect("decode sdk protocol frame");
 
                 match protocol {
-                    Message::RegisterService { id, name, .. } => {
-                        service_names
-                            .lock()
-                            .expect("lock service names")
-                            .push((id, name));
-                    }
                     Message::RegisterFunction { id, .. } => {
                         registered_functions
                             .lock()
@@ -442,8 +417,6 @@ mod tests {
 
         let config = BridgeClientConfig {
             url: Some("ws://127.0.0.1:9".to_string()),
-            service_id: Some("svc-1".to_string()),
-            service_name: Some("Bridge Service".to_string()),
             expose: vec![ExposeFunctionConfig {
                 local_function: "local.echo".to_string(),
                 remote_function: Some("remote.echo".to_string()),
@@ -532,20 +505,12 @@ mod tests {
 
     #[tokio::test]
     async fn bridge_client_initialize_covers_fallbacks_and_async_deserialization_errors() {
-        let service_names = Arc::new(Mutex::new(Vec::new()));
         let registered_functions = Arc::new(Mutex::new(Vec::new()));
         let (exposed_result_tx, _exposed_result_rx) = tokio::sync::oneshot::channel();
-        let url = spawn_bridge_server(
-            service_names.clone(),
-            registered_functions.clone(),
-            exposed_result_tx,
-        )
-        .await;
+        let url = spawn_bridge_server(registered_functions.clone(), exposed_result_tx).await;
 
         let config = BridgeClientConfig {
             url: Some(url),
-            service_id: Some("svc-fallback".to_string()),
-            service_name: None,
             expose: vec![ExposeFunctionConfig {
                 local_function: "local.echo".to_string(),
                 remote_function: None,

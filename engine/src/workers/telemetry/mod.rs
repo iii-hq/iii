@@ -16,12 +16,13 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::engine::Engine;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
-use self::amplitude::{AmplitudeClient, AmplitudeEvent};
+use self::amplitude::{AmplitudeClient, AmplitudeEvent, POSTHOG_PROJECT_API_KEY, PostHogClient};
 use self::environment::EnvironmentInfo;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
@@ -33,6 +34,10 @@ pub struct TelemetryConfig {
     pub enabled: bool,
     #[serde(default)]
     pub sdk_api_key: Option<String>,
+    #[serde(default)]
+    pub posthog_api_key: Option<String>,
+    #[serde(default)]
+    pub posthog_host: Option<String>,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
 }
@@ -50,9 +55,30 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             sdk_api_key: None,
+            posthog_api_key: None,
+            posthog_host: None,
             heartbeat_interval_secs: 6 * 60 * 60,
         }
     }
+}
+
+fn resolve_posthog_api_key(config: &TelemetryConfig) -> Option<String> {
+    config
+        .posthog_api_key
+        .clone()
+        .or_else(|| std::env::var("POSTHOG_PROJECT_API_KEY").ok())
+        .or_else(|| std::env::var("POSTHOG_API_KEY").ok())
+        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
+        .filter(|key| !key.trim().is_empty())
+}
+
+fn resolve_posthog_host(config: &TelemetryConfig) -> String {
+    config
+        .posthog_host
+        .clone()
+        .or_else(|| std::env::var("POSTHOG_HOST").ok())
+        .filter(|host| !host.trim().is_empty())
+        .unwrap_or_else(|| "https://us.i.posthog.com".to_string())
 }
 
 struct ProjectContext {
@@ -252,7 +278,19 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
         "trigger_count".into(),
         serde_json::json!(snap.ft.trigger_count),
     );
+    m.insert(
+        "worker_registrations".into(),
+        serde_json::json!(
+            collector::collector()
+                .worker_registrations
+                .load(std::sync::atomic::Ordering::Relaxed)
+        ),
+    );
     m.insert("functions".into(), serde_json::json!(snap.ft.functions));
+    m.insert(
+        "function_names".into(),
+        serde_json::json!(snap.ft.functions),
+    );
     m.insert(
         "trigger_types".into(),
         serde_json::json!(snap.ft.trigger_types),
@@ -270,7 +308,23 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
         m.insert(format!("worker_count_{fw}"), serde_json::json!(count));
     }
     m.insert("workers".into(), serde_json::json!(snap.wd.workers));
+    m.insert(
+        "worker_names".into(),
+        serde_json::json!(hashed_worker_names(&snap.wd.worker_names)),
+    );
     m
+}
+
+fn hashed_worker_names(worker_names: &[String]) -> Vec<String> {
+    worker_names
+        .iter()
+        .map(|name| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"iii-worker-name-v1");
+            hasher.update(name.as_bytes());
+            format!("sha256:{:x}", hasher.finalize())
+        })
+        .collect()
 }
 
 // TODO: Re-enable delta metrics reporting once more important dashboards are ready.
@@ -423,6 +477,7 @@ struct WorkerData {
     worker_count_by_framework: HashMap<String, u64>,
     worker_count_by_language: HashMap<String, u64>,
     workers: Vec<String>,
+    worker_names: Vec<String>,
     sdk_languages: Vec<String>,
     client_type: String,
     sdk_telemetry: Option<WorkerConnectionTelemetryMeta>,
@@ -434,6 +489,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     let mut best_telemetry: Option<(uuid::Uuid, WorkerConnectionTelemetryMeta)> = None;
     let mut worker_count_total = 0usize;
     let mut workers: Vec<String> = Vec::new();
+    let mut worker_names: Vec<String> = Vec::new();
 
     for entry in engine.worker_registry.workers.iter() {
         let worker = entry.value();
@@ -444,6 +500,10 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
 
         worker_count_total += 1;
         *runtime_counts.entry(runtime.clone()).or_insert(0) += 1;
+
+        if let Some(name) = worker.name.as_ref().filter(|name| !name.trim().is_empty()) {
+            worker_names.push(name.clone());
+        }
 
         let framework = worker
             .telemetry
@@ -489,6 +549,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
         worker_count_by_framework: framework_counts,
         worker_count_by_language: runtime_counts,
         workers,
+        worker_names,
         sdk_languages,
         client_type,
         sdk_telemetry,
@@ -594,6 +655,7 @@ pub struct TelemetryWorker {
     config: TelemetryConfig,
     client: Arc<AmplitudeClient>,
     sdk_client: Option<Arc<AmplitudeClient>>,
+    posthog_client: Option<Arc<PostHogClient>>,
     ctx: TelemetryContext,
     start_time: Instant,
 }
@@ -601,6 +663,24 @@ pub struct TelemetryWorker {
 impl TelemetryWorker {
     fn active_client(&self) -> &Arc<AmplitudeClient> {
         self.sdk_client.as_ref().unwrap_or(&self.client)
+    }
+}
+
+async fn send_product_event(
+    amplitude_client: &AmplitudeClient,
+    posthog_client: Option<&PostHogClient>,
+    event: AmplitudeEvent,
+) {
+    let posthog_event = event.clone();
+    if let Some(client) = posthog_client {
+        let (amplitude_result, posthog_result) = tokio::join!(
+            amplitude_client.send_event(event),
+            client.send_event(posthog_event)
+        );
+        let _ = amplitude_result;
+        let _ = posthog_result;
+    } else {
+        let _ = amplitude_client.send_event(event).await;
     }
 }
 
@@ -678,6 +758,12 @@ impl Worker for TelemetryWorker {
             .as_deref()
             .filter(|k| !k.is_empty())
             .map(|key| Arc::new(AmplitudeClient::new(key.to_owned())));
+        let posthog_client = resolve_posthog_api_key(&telemetry_config).map(|key| {
+            Arc::new(PostHogClient::new(
+                key,
+                resolve_posthog_host(&telemetry_config),
+            ))
+        });
 
         let ctx = TelemetryContext {
             device_id: device_id.clone(),
@@ -689,6 +775,7 @@ impl Worker for TelemetryWorker {
             config: telemetry_config,
             client,
             sdk_client,
+            posthog_client,
             ctx,
             start_time: Instant::now(),
         }))
@@ -705,12 +792,14 @@ impl Worker for TelemetryWorker {
     ) -> anyhow::Result<()> {
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(self.active_client());
+        let posthog_client = self.posthog_client.clone();
         let engine = Arc::clone(&self.engine);
         let ctx = self.ctx.clone();
         let start_time = self.start_time;
 
         let engine_for_started = Arc::clone(&self.engine);
         let client_for_started = Arc::clone(self.active_client());
+        let posthog_client_for_started = self.posthog_client.clone();
         let ctx_for_started = self.ctx.clone();
         tokio::spawn(async move {
             let user_invocation = collector::first_user_invocation_notify().notified();
@@ -732,7 +821,12 @@ impl Worker for TelemetryWorker {
                     }),
                     snap.wd.sdk_telemetry.as_ref(),
                 );
-                let _ = client_for_started.send_event(first_run_event).await;
+                send_product_event(
+                    &client_for_started,
+                    posthog_client_for_started.as_deref(),
+                    first_run_event,
+                )
+                .await;
             }
 
             let mut props = build_base_properties(&snap);
@@ -756,7 +850,12 @@ impl Worker for TelemetryWorker {
                 serde_json::Value::Object(props),
                 snap.wd.sdk_telemetry.as_ref(),
             );
-            let _ = client_for_started.send_event(boot_heartbeat).await;
+            send_product_event(
+                &client_for_started,
+                posthog_client_for_started.as_deref(),
+                boot_heartbeat,
+            )
+            .await;
         });
 
         tokio::spawn(async move {
@@ -786,7 +885,7 @@ impl Worker for TelemetryWorker {
 
                             let _ = tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
-                                client.send_event(event),
+                                send_product_event(&client, posthog_client.as_deref(), event),
                             )
                             .await;
 
@@ -811,7 +910,7 @@ impl Worker for TelemetryWorker {
                             snap.wd.sdk_telemetry.as_ref(),
                         );
 
-                        let _ = client.send_event(event).await;
+                        send_product_event(&client, posthog_client.as_deref(), event).await;
                     }
                 }
             }
@@ -822,6 +921,7 @@ impl Worker for TelemetryWorker {
         let project_ctx = resolve_project_context(None);
         if let Some(source) = project_ctx.source {
             let client_for_template = Arc::clone(self.active_client());
+            let posthog_client_for_template = self.posthog_client.clone();
             let ctx_for_template = self.ctx.clone();
             let project_for_template = resolve_project_context(None);
             tokio::spawn(async move {
@@ -847,7 +947,12 @@ impl Worker for TelemetryWorker {
                             &project_for_template,
                         );
                         let event = ctx_for_template.build_event(&event_type, props, None);
-                        let _ = client_for_template.send_event(event).await;
+                        send_product_event(
+                            &client_for_template,
+                            posthog_client_for_template.as_deref(),
+                            event,
+                        )
+                        .await;
                         success_sent = true;
                     }
 
@@ -859,7 +964,12 @@ impl Worker for TelemetryWorker {
                             &project_for_template,
                         );
                         let event = ctx_for_template.build_event(&event_type, props, None);
-                        let _ = client_for_template.send_event(event).await;
+                        send_product_event(
+                            &client_for_template,
+                            posthog_client_for_template.as_deref(),
+                            event,
+                        )
+                        .await;
                         failure_sent = true;
                     }
                 }
@@ -1012,10 +1122,13 @@ mod tests {
             config: TelemetryConfig {
                 enabled: true,
                 sdk_api_key: sdk_client.then(|| "sdk-test-key".to_string()),
+                posthog_api_key: None,
+                posthog_host: None,
                 heartbeat_interval_secs,
             },
             client: Arc::new(AmplitudeClient::new(String::new())),
             sdk_client: sdk_client.then(|| Arc::new(AmplitudeClient::new(String::new()))),
+            posthog_client: None,
             ctx: TelemetryContext {
                 device_id: "test-install-id".to_string(),
                 env_info: make_env_info(),
@@ -1043,6 +1156,8 @@ mod tests {
         let config = TelemetryConfig::default();
         assert!(config.enabled);
         assert!(config.sdk_api_key.is_none());
+        assert!(config.posthog_api_key.is_none());
+        assert!(config.posthog_host.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
     }
 
@@ -1052,6 +1167,8 @@ mod tests {
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(config.enabled);
         assert!(config.sdk_api_key.is_none());
+        assert!(config.posthog_api_key.is_none());
+        assert!(config.posthog_host.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
     }
 
@@ -1060,12 +1177,79 @@ mod tests {
         let json = serde_json::json!({
             "enabled": false,
             "sdk_api_key": "sdk-key",
+            "posthog_api_key": "phc-key",
+            "posthog_host": "https://eu.i.posthog.com",
             "heartbeat_interval_secs": 3600
         });
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(!config.enabled);
         assert_eq!(config.sdk_api_key, Some("sdk-key".to_string()));
+        assert_eq!(config.posthog_api_key, Some("phc-key".to_string()));
+        assert_eq!(
+            config.posthog_host,
+            Some("https://eu.i.posthog.com".to_string())
+        );
         assert_eq!(config.heartbeat_interval_secs, 3600);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_api_key_prefers_config_over_env() {
+        unsafe {
+            env::set_var("POSTHOG_PROJECT_API_KEY", "env-key");
+            env::remove_var("POSTHOG_API_KEY");
+        }
+        let config = TelemetryConfig {
+            posthog_api_key: Some("config-key".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_posthog_api_key(&config).as_deref(),
+            Some("config-key")
+        );
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_api_key_uses_env_when_config_missing() {
+        unsafe {
+            env::set_var("POSTHOG_PROJECT_API_KEY", "env-key");
+            env::remove_var("POSTHOG_API_KEY");
+        }
+        let config = TelemetryConfig::default();
+        assert_eq!(resolve_posthog_api_key(&config).as_deref(), Some("env-key"));
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_api_key_defaults_to_public_project_key() {
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+            env::remove_var("POSTHOG_API_KEY");
+        }
+        let config = TelemetryConfig::default();
+        assert_eq!(
+            resolve_posthog_api_key(&config).as_deref(),
+            Some(POSTHOG_PROJECT_API_KEY)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_posthog_host_defaults_to_us_cloud() {
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert_eq!(
+            resolve_posthog_host(&TelemetryConfig::default()),
+            "https://us.i.posthog.com"
+        );
     }
 
     #[test]
@@ -1771,6 +1955,7 @@ mod tests {
         assert!(wd.worker_count_by_framework.is_empty());
         assert!(wd.sdk_telemetry.is_none());
         assert!(wd.sdk_languages.is_empty());
+        assert!(wd.worker_names.is_empty());
     }
 
     #[test]
@@ -1780,6 +1965,7 @@ mod tests {
         let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
         let mut worker1 = crate::worker_connections::WorkerConnection::new(tx1);
         worker1.runtime = Some("node".to_string());
+        worker1.name = Some("orders-worker".to_string());
         worker1.telemetry = Some(WorkerConnectionTelemetryMeta {
             language: Some("typescript".to_string()),
             project_name: Some("proj-a".to_string()),
@@ -1791,6 +1977,7 @@ mod tests {
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
         let mut worker2 = crate::worker_connections::WorkerConnection::new(tx2);
         worker2.runtime = Some("python".to_string());
+        worker2.name = Some("agent-memory-worker".to_string());
         worker2.telemetry = None;
         let w2_id = worker2.id;
         engine.worker_registry.workers.insert(w2_id, worker2);
@@ -1799,12 +1986,62 @@ mod tests {
 
         assert_eq!(wd.worker_count_total, 2);
         assert_eq!(wd.worker_count_by_framework.get("iii-node"), Some(&1));
+        assert!(wd.worker_names.contains(&"orders-worker".to_string()));
+        assert!(wd.worker_names.contains(&"agent-memory-worker".to_string()));
 
         assert!(wd.sdk_telemetry.is_some());
         let telem = wd.sdk_telemetry.unwrap();
         assert_eq!(telem.language, Some("typescript".to_string()));
         assert_eq!(telem.project_name, Some("proj-a".to_string()));
         assert_eq!(telem.framework, Some("iii-node".to_string()));
+    }
+
+    #[test]
+    fn test_build_base_properties_includes_short_term_names() {
+        let snap = EngineSnapshot {
+            ft: FunctionTriggerData {
+                function_count: 2,
+                functions: vec!["orders::charge".to_string(), "agent::memory".to_string()],
+                trigger_count: 1,
+                trigger_types: vec!["http".to_string()],
+            },
+            wd: WorkerData {
+                worker_count_total: 2,
+                worker_count_by_framework: HashMap::new(),
+                worker_count_by_language: HashMap::new(),
+                workers: vec!["node:iii-node".to_string(), "python".to_string()],
+                worker_names: vec![
+                    "checkout-worker".to_string(),
+                    "agent-memory-worker".to_string(),
+                ],
+                sdk_languages: vec!["iii-node".to_string(), "iii-py".to_string()],
+                client_type: "iii_direct".to_string(),
+                sdk_telemetry: None,
+            },
+            project: ProjectContext {
+                project_id: Some("proj-1".to_string()),
+                project_name: Some("checkout".to_string()),
+                source: Some("quickstart".to_string()),
+            },
+        };
+
+        let props = build_base_properties(&snap);
+        assert_eq!(props["project_name"], serde_json::json!("checkout"));
+        assert_eq!(
+            props["function_names"],
+            serde_json::json!(["orders::charge", "agent::memory"])
+        );
+        assert_eq!(
+            props["worker_names"],
+            serde_json::json!(hashed_worker_names(&[
+                "checkout-worker".to_string(),
+                "agent-memory-worker".to_string()
+            ]))
+        );
+        assert_ne!(
+            props["worker_names"],
+            serde_json::json!(["checkout-worker"])
+        );
     }
 
     #[test]
@@ -1822,6 +2059,7 @@ mod tests {
         assert_eq!(wd.worker_count_total, 0);
         assert!(wd.sdk_languages.is_empty());
         assert!(wd.workers.is_empty());
+        assert!(wd.worker_names.is_empty());
     }
 
     #[test]

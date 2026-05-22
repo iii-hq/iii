@@ -63,18 +63,35 @@ async fn handle_workers(bridge: &III) -> Value {
 }
 
 async fn handle_triggers_list(bridge: &III, input: Value) -> Value {
+    // The console `/triggers` route historically returned INSTANCES (subscriber
+    // rows). After the engine_fn rework, `engine::triggers::list` returns
+    // trigger TYPES, while instances now live behind
+    // `engine::registered-triggers::list`. We forward to the new builtin and
+    // re-key the response to `{ triggers: [...] }` so the existing frontend
+    // fetcher pattern doesn't drift further.
     let include_internal = parse_bool_param(&input, "include_internal");
     let effective_input = json!({ "include_internal": include_internal });
     match bridge
         .trigger(TriggerRequest {
-            function_id: "engine::triggers::list".to_string(),
+            function_id: "engine::registered-triggers::list".to_string(),
             payload: effective_input,
             action: None,
             timeout_ms: Some(5000),
         })
         .await
     {
-        Ok(triggers_data) => success_response(triggers_data),
+        Ok(mut data) => {
+            // Rebrand the canonical key to `triggers` for HTTP compat.
+            if let Some(rows) = data
+                .as_object_mut()
+                .and_then(|obj| obj.remove("registered_triggers"))
+            {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("triggers".to_string(), rows);
+                }
+            }
+            success_response(data)
+        }
         Err(err) => error_response(err),
     }
 }
@@ -147,6 +164,11 @@ async fn handle_status(bridge: &III) -> Value {
 }
 
 async fn handle_trigger_types(bridge: &III) -> Value {
+    // After the engine_fn rework, `engine::triggers::list` returns trigger
+    // TYPES directly with their `id` field. We just collect the ids — no need
+    // to derive them from instances. The legacy static seeds are preserved as
+    // a fallback when the engine call fails (keeps the devtools dropdown
+    // populated even if the underlying call is briefly unavailable).
     let static_types = vec![
         "api",
         "event",
@@ -177,9 +199,8 @@ async fn handle_trigger_types(bridge: &III) -> Value {
 
             if let Some(triggers) = triggers_data.get("triggers").and_then(|v| v.as_array()) {
                 for trigger in triggers {
-                    if let Some(trigger_type) = trigger.get("trigger_type").and_then(|v| v.as_str())
-                    {
-                        types.insert(trigger_type.to_string());
+                    if let Some(id) = trigger.get("id").and_then(|v| v.as_str()) {
+                        types.insert(id.to_string());
                     }
                 }
             }
@@ -550,6 +571,9 @@ async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
 }
 
 async fn handle_adapters(bridge: &III) -> Value {
+    // `handle_adapters` reads INSTANCE rows to derive which modules + trigger
+    // handlers are active, so it points at `engine::registered-triggers::list`
+    // now (the old `engine::triggers::list` returns TYPES post-rework).
     let (workers_result, triggers_result, health_result) = tokio::join!(
         bridge.trigger(TriggerRequest {
             function_id: "engine::workers::list".to_string(),
@@ -558,7 +582,7 @@ async fn handle_adapters(bridge: &III) -> Value {
             timeout_ms: Some(5000),
         }),
         bridge.trigger(TriggerRequest {
-            function_id: "engine::triggers::list".to_string(),
+            function_id: "engine::registered-triggers::list".to_string(),
             payload: json!({ "include_internal": true }),
             action: None,
             timeout_ms: Some(5000),
@@ -584,7 +608,10 @@ async fn handle_adapters(bridge: &III) -> Value {
     let mut seen_modules = HashSet::new();
 
     if let Ok(triggers_data) = &triggers_result {
-        if let Some(triggers) = triggers_data.get("triggers").and_then(|v| v.as_array()) {
+        if let Some(triggers) = triggers_data
+            .get("registered_triggers")
+            .and_then(|v| v.as_array())
+        {
             for trigger in triggers {
                 let trigger_type = trigger
                     .get("trigger_type")
@@ -877,9 +904,12 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
     let function_id = if let Some(function_id) = provided_function_id {
         function_id
     } else {
+        // Look up the subscriber row to find the target function. Post the
+        // engine_fn rework `engine::registered-triggers::list` is the
+        // instance-level catalog.
         let triggers_data = match bridge
             .trigger(TriggerRequest {
-                function_id: "engine::triggers::list".to_string(),
+                function_id: "engine::registered-triggers::list".to_string(),
                 payload: json!({ "include_internal": true }),
                 action: None,
                 timeout_ms: Some(5000),
@@ -891,7 +921,7 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
         };
 
         let trigger_match = triggers_data
-            .get("triggers")
+            .get("registered_triggers")
             .and_then(|v| v.as_array())
             .and_then(|triggers| {
                 triggers.iter().find(|trigger| {

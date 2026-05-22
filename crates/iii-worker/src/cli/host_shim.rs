@@ -473,7 +473,7 @@ impl WorkerHostShim for CliHostShim {
             config_names.iter().map(String::as_str).collect();
 
         let candidate_names: std::collections::BTreeSet<String> =
-            disk_names.into_iter().chain(ps_names.into_iter()).collect();
+            disk_names.into_iter().chain(ps_names).collect();
         let orphan_names: Vec<String> = candidate_names
             .into_iter()
             .filter(|n| !config_set.contains(n.as_str()))

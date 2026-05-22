@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from .iii_types import (
     HttpInvocationConfig,
     RegisterFunctionMessage,
-    RegisterServiceInput,
     RegisterTriggerInput,
     RegisterTriggerTypeInput,
     RegisterTriggerTypeMessage,
@@ -81,8 +80,6 @@ class IIIClient(Protocol):
     """Protocol for III client implementations."""
 
     def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
-
-    def register_service(self, service: RegisterServiceInput | dict[str, Any]) -> None: ...
 
     def register_function(
         self,

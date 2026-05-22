@@ -77,6 +77,13 @@ impl EngineConfig {
 
     /// Loads config strictly from the given file path.
     /// Returns a clear error if the file does not exist or cannot be parsed.
+    ///
+    /// This function is called from BOTH engine startup
+    /// (`run_serve`) AND the async reload path
+    /// (`workers::reload::ReloadManager::parse_and_normalize`). It must
+    /// therefore not mutate process-global env state, because
+    /// `std::env::set_var` while tokio workers are running is undefined
+    /// behavior on multiple platforms.
     pub fn config_file(path: &str) -> anyhow::Result<Self> {
         let yaml_content = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {

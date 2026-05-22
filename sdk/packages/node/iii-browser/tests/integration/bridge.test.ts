@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { TriggerAction } from '../../src/iii'
-import type { FunctionInfo } from '../../src/iii-types'
 import { execute, iii, sleep } from './utils'
 
-const fetchRegisteredFunctions = async (): Promise<FunctionInfo[]> => {
-  const { functions } = await iii.trigger<Record<string, never>, { functions: FunctionInfo[] }>({
+type FunctionRow = { function_id: string }
+
+const fetchRegisteredFunctions = async (): Promise<FunctionRow[]> => {
+  const { functions } = await iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
     function_id: 'engine::functions::list',
     payload: {},
   })

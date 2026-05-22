@@ -391,20 +391,20 @@ impl LibkrunAdapter {
             match std::fs::metadata(&parent) {
                 Ok(meta) => {
                     let mode = meta.permissions().mode() & 0o777;
-                    if mode != 0o700 {
-                        if let Err(e) = std::fs::set_permissions(
+                    if mode != 0o700
+                        && let Err(e) = std::fs::set_permissions(
                             &parent,
                             std::fs::Permissions::from_mode(0o700),
-                        ) {
-                            tracing::warn!(
-                                path = %parent.display(),
-                                current_mode = format!("{mode:o}"),
-                                error = %e,
-                                "could not tighten ~/.iii/managed to 0o700; \
-                                 per-worker dirs still land 0o700 but TOCTOU \
-                                 window remains on socket create",
-                            );
-                        }
+                        )
+                    {
+                        tracing::warn!(
+                            path = %parent.display(),
+                            current_mode = format!("{mode:o}"),
+                            error = %e,
+                            "could not tighten ~/.iii/managed to 0o700; \
+                             per-worker dirs still land 0o700 but TOCTOU \
+                             window remains on socket create",
+                        );
                     }
                 }
                 Err(e) => {

@@ -13,7 +13,6 @@ from iii import (
     RegisterTriggerTypeInput,
     TriggerConfig,
     TriggerHandler,
-    TriggerTypeInfo,
 )
 from pydantic import BaseModel, Field
 
@@ -173,22 +172,22 @@ def setup(iii: IIIClient) -> None:
 
 
 def print_trigger_type_catalog(iii: IIIClient) -> None:
-    """List all trigger types and print their schemas."""
+    """List all trigger types.
+
+    `engine::trigger-types::list` was retired in favor of
+    `engine::triggers::list` (which now returns trigger TYPES). The list
+    shape is lean — call `engine::triggers::info` per id for schemas.
+    """
     print("\n--- Listing all trigger types ---")
 
     result = iii.trigger(
         {
-            "function_id": "engine::trigger-types::list",
+            "function_id": "engine::triggers::list",
             "payload": {"include_internal": False},
         }
     )
-    trigger_types = [TriggerTypeInfo(**t) for t in result.get("trigger_types", [])]
+    trigger_types = result.get("triggers", [])
 
     print(f"Found {len(trigger_types)} trigger types:\n")
     for tt in trigger_types:
-        print(f"  [{tt.id}] {tt.description}")
-        if tt.trigger_request_format:
-            print(f"    trigger_request_format: {tt.trigger_request_format}")
-        if tt.call_request_format:
-            print(f"    call_request_format: {tt.call_request_format}")
-        print()
+        print(f"  [{tt['id']}] ({tt['worker_name']}) {tt['description']}")

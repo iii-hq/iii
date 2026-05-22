@@ -32,6 +32,10 @@ pub enum WorkerOpErrorKind {
     StartTimeout,                  // W161
     StopTimeout,                   // W162
     Cancelled,                     // W170
+    BundleManifestRejected,        // W180
+    BundleArchiveUnsafe,           // W181
+    BundleResourceClamped,         // W182  (carried by warn events, not Err returns)
+    BundleDepGraphExceeded,        // W183
     Internal,                      // W900
 }
 
@@ -60,6 +64,10 @@ impl WorkerOpErrorKind {
             Self::StartTimeout => "W161",
             Self::StopTimeout => "W162",
             Self::Cancelled => "W170",
+            Self::BundleManifestRejected => "W180",
+            Self::BundleArchiveUnsafe => "W181",
+            Self::BundleResourceClamped => "W182",
+            Self::BundleDepGraphExceeded => "W183",
             Self::Internal => "W900",
         }
     }
@@ -153,6 +161,24 @@ pub enum WorkerOpError {
     #[error("operation cancelled")]
     Cancelled,
 
+    #[error(
+        "bundle manifest rejected: field {field:?} is not allowed for bundle workers: {reason}"
+    )]
+    BundleManifestRejected { field: String, reason: String },
+
+    #[error("bundle archive contains unsafe entry{}: {reason}", match entry { Some(e) => format!(" {:?}", e), None => String::new() })]
+    BundleArchiveUnsafe {
+        reason: String,
+        entry: Option<String>,
+    },
+
+    #[error("bundle dependency graph {dimension} exceeded: limit {limit}, found {actual}")]
+    BundleDepGraphExceeded {
+        dimension: String,
+        limit: u32,
+        actual: u32,
+    },
+
     #[error("internal: {message}")]
     Internal { message: String },
 }
@@ -183,6 +209,9 @@ impl WorkerOpError {
             Self::StartTimeout { .. } => K::StartTimeout,
             Self::StopTimeout { .. } => K::StopTimeout,
             Self::Cancelled => K::Cancelled,
+            Self::BundleManifestRejected { .. } => K::BundleManifestRejected,
+            Self::BundleArchiveUnsafe { .. } => K::BundleArchiveUnsafe,
+            Self::BundleDepGraphExceeded { .. } => K::BundleDepGraphExceeded,
             Self::Internal { .. } => K::Internal,
         }
     }
@@ -235,6 +264,19 @@ impl WorkerOpError {
                 json!({ "worker": worker, "waited_secs": waited_secs })
             }
             Self::Cancelled => json!({}),
+            Self::BundleManifestRejected { field, reason } => {
+                json!({ "field": field, "reason": reason })
+            }
+            Self::BundleArchiveUnsafe { reason, entry } => {
+                json!({ "reason": reason, "entry": entry })
+            }
+            Self::BundleDepGraphExceeded {
+                dimension,
+                limit,
+                actual,
+            } => {
+                json!({ "dimension": dimension, "limit": limit, "actual": actual })
+            }
             Self::Internal { message } => json!({ "message": message }),
         };
         json!({

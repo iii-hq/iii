@@ -1,89 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import type { ChannelReader } from '../src'
 import { EngineFunctions } from '../src/iii-constants'
-import type { TriggerInfo, TriggerTypeInfo } from '../src/iii-types'
 import { iii, sleep } from './utils'
 
-describe('Service Registration', () => {
-  it('should register a service with just an id', async () => {
-    iii.registerService({ id: 'test.svc.basic' })
-    await sleep(300)
+type RegisteredTriggerRow = {
+  id: string
+  trigger_type: string
+  function_id: string
+  worker_name: string
+  config_summary: string
+}
 
-    const fn = iii.registerFunction('test.svc.basic.hello', async () => ({ ok: true }))
+type TriggerTypeRow = {
+  id: string
+  worker_name: string
+  description: string
+}
 
-    await sleep(300)
-
-    const result = await iii.trigger<Record<string, never>, { ok: boolean }>({
-      function_id: 'test.svc.basic.hello',
-      payload: {},
-    })
-    expect(result.ok).toBe(true)
-
-    fn.unregister()
-  })
-
-  it('should register a service with a custom name', async () => {
-    iii.registerService({ id: 'test.svc.named', name: 'My Named Service' })
-    await sleep(300)
-
-    const fn = iii.registerFunction('test.svc.named.ping', async () => ({ pong: true }))
-
-    await sleep(300)
-
-    const result = await iii.trigger<Record<string, never>, { pong: boolean }>({
-      function_id: 'test.svc.named.ping',
-      payload: {},
-    })
-    expect(result.pong).toBe(true)
-
-    fn.unregister()
-  })
-
-  it('should register a service with description and parent', async () => {
-    iii.registerService({ id: 'test.svc.parent' })
-    iii.registerService({
-      id: 'test.svc.child',
-      description: 'A child service',
-      parent_service_id: 'test.svc.parent',
-    })
-
-    await sleep(300)
-
-    const fn = iii.registerFunction('test.svc.child.action', async (data: { value: number }) => ({
-      doubled: data.value * 2,
-    }))
-
-    await sleep(300)
-
-    const result = await iii.trigger<{ value: number }, { doubled: number }>({
-      function_id: 'test.svc.child.action',
-      payload: { value: 5 },
-    })
-    expect(result.doubled).toBe(10)
-
-    fn.unregister()
-  })
-
-  it('should default name to id when name is not provided', async () => {
-    iii.registerService({ id: 'test.svc.default-name', description: 'No explicit name' })
-    await sleep(300)
-
-    const fn = iii.registerFunction('test.svc.default-name.check', async () => ({ status: 'ok' }))
-
-    await sleep(300)
-
-    const result = await iii.trigger<Record<string, never>, { status: string }>({
-      function_id: 'test.svc.default-name.check',
-      payload: {},
-    })
-    expect(result.status).toBe('ok')
-
-    fn.unregister()
-  })
-})
-
-describe('List Triggers', () => {
-  it('should list registered triggers', async () => {
+describe('List Registered Triggers', () => {
+  it('should list registered trigger instances', async () => {
     const fn = iii.registerFunction('test.triggers.list.func', async () => ({ ok: true }))
 
     const trigger = iii.registerTrigger({
@@ -94,84 +29,77 @@ describe('List Triggers', () => {
 
     await sleep(500)
 
-    const { triggers } = await iii.trigger<{ include_internal: boolean }, { triggers: TriggerInfo[] }>({
-      function_id: EngineFunctions.LIST_TRIGGERS,
+    const { registered_triggers } = await iii.trigger<
+      { include_internal: boolean },
+      { registered_triggers: RegisteredTriggerRow[] }
+    >({
+      function_id: EngineFunctions.LIST_REGISTERED_TRIGGERS,
       payload: { include_internal: false },
     })
-    expect(Array.isArray(triggers)).toBe(true)
+    expect(Array.isArray(registered_triggers)).toBe(true)
 
-    const found = triggers.find((t) => t.function_id === 'test.triggers.list.func')
+    const found = registered_triggers.find((t) => t.function_id === 'test.triggers.list.func')
     expect(found).toBeDefined()
     expect(found?.trigger_type).toBe('http')
+    // Each row carries the resolved owning worker name and a truncated
+    // config summary (use the info function for the full config block).
+    expect(typeof found?.worker_name).toBe('string')
+    expect(typeof found?.config_summary).toBe('string')
 
     trigger.unregister()
     fn.unregister()
   })
 
-  it('should return an array even when no triggers exist', async () => {
-    const { triggers } = await iii.trigger<{ include_internal: boolean }, { triggers: TriggerInfo[] }>({
-      function_id: EngineFunctions.LIST_TRIGGERS,
+  it('should return an array even when no registered triggers exist', async () => {
+    const { registered_triggers } = await iii.trigger<
+      { include_internal: boolean },
+      { registered_triggers: RegisteredTriggerRow[] }
+    >({
+      function_id: EngineFunctions.LIST_REGISTERED_TRIGGERS,
       payload: { include_internal: false },
     })
-    expect(Array.isArray(triggers)).toBe(true)
-  })
-
-  it('should accept includeInternal parameter', async () => {
-    const { triggers } = await iii.trigger<{ include_internal: boolean }, { triggers: TriggerInfo[] }>({
-      function_id: EngineFunctions.LIST_TRIGGERS,
-      payload: { include_internal: false },
-    })
-    expect(Array.isArray(triggers)).toBe(true)
+    expect(Array.isArray(registered_triggers)).toBe(true)
   })
 })
 
-describe('List Trigger Types', () => {
-  it('should list registered trigger types', async () => {
-    const { trigger_types: triggerTypes } = await iii.trigger<
+describe('List Triggers (trigger TYPES)', () => {
+  it('should list trigger types (templates), not instances', async () => {
+    const { triggers } = await iii.trigger<
       { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
+      { triggers: TriggerTypeRow[] }
     >({
-      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
+      function_id: EngineFunctions.LIST_TRIGGERS,
       payload: { include_internal: false },
     })
-    expect(Array.isArray(triggerTypes)).toBe(true)
+    expect(Array.isArray(triggers)).toBe(true)
 
-    // The engine always registers the built-in 'http' trigger type
-    const httpType = triggerTypes.find((tt) => tt.id === 'http')
+    // The engine always registers the built-in 'http' trigger type.
+    const httpType = triggers.find((t) => t.id === 'http')
     expect(httpType).toBeDefined()
     expect(httpType?.description).toBeDefined()
-  })
-
-  it('should return an array even when called with no custom trigger types', async () => {
-    const { trigger_types: triggerTypes } = await iii.trigger<
-      { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
-    >({
-      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
-      payload: { include_internal: false },
-    })
-    expect(Array.isArray(triggerTypes)).toBe(true)
+    // Schemas are NOT on the list response — they live on
+    // `engine::triggers::info` only.
+    expect((httpType as unknown as { configuration_schema?: unknown }).configuration_schema).toBeUndefined()
   })
 
   it('should accept includeInternal parameter', async () => {
-    const { trigger_types: triggerTypes } = await iii.trigger<
+    const { triggers } = await iii.trigger<
       { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
+      { triggers: TriggerTypeRow[] }
     >({
-      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
+      function_id: EngineFunctions.LIST_TRIGGERS,
       payload: { include_internal: false },
     })
-    expect(Array.isArray(triggerTypes)).toBe(true)
-
-    const { trigger_types: triggerTypesWithInternal } = await iii.trigger<
+    const { triggers: withInternal } = await iii.trigger<
       { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
+      { triggers: TriggerTypeRow[] }
     >({
-      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
+      function_id: EngineFunctions.LIST_TRIGGERS,
       payload: { include_internal: true },
     })
-    expect(Array.isArray(triggerTypesWithInternal)).toBe(true)
-    expect(triggerTypesWithInternal.length).toBeGreaterThanOrEqual(triggerTypes.length)
+    expect(Array.isArray(triggers)).toBe(true)
+    expect(Array.isArray(withInternal)).toBe(true)
+    expect(withInternal.length).toBeGreaterThanOrEqual(triggers.length)
   })
 })
 

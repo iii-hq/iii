@@ -563,6 +563,15 @@ jobs:
       registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
     secrets: inherit
 
+  publish-worker-skills:
+    name: Publish worker skills
+    needs: [setup, publish-builtin-workers]
+    if: needs.setup.outputs.dry_run != 'true'
+    uses: ./.github/workflows/_publish-worker-skills.yml
+    with:
+      registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
+    secrets: inherit
+
   # ──────────────────────────────────────────────────────────────
   # Notification: Complete
   # ──────────────────────────────────────────────────────────────
@@ -584,6 +593,7 @@ jobs:
       - homebrew-engine
       - homebrew-console
       - publish-builtin-workers
+      - publish-worker-skills
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -606,6 +616,7 @@ jobs:
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
           BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
+          WORKER_SKILLS_RESULT: ${{ needs.publish-worker-skills.result }}
         run: |
           icon() {
             case "$1" in
@@ -628,6 +639,7 @@ jobs:
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
           LINES="$LINES$(icon "$SDK_RUST_RESULT") SDK Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
+          LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
@@ -635,7 +647,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$BUILTIN_WORKERS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

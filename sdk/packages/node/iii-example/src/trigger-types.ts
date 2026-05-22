@@ -8,8 +8,19 @@
  */
 
 import { EngineFunctions } from 'iii-sdk'
-import type { TriggerConfig, TriggerHandler, TriggerTypeInfo, TriggerTypeRef } from 'iii-sdk'
+import type { TriggerConfig, TriggerHandler, TriggerTypeRef } from 'iii-sdk'
 import { iii } from './iii'
+
+/**
+ * Minimal row type for `engine::triggers::list` responses, inlined here
+ * because the SDK no longer ships a hand-written discovery type. The engine
+ * surface will be auto-generated later.
+ */
+type TriggerTypeRow = {
+  id: string
+  worker_name: string
+  description: string
+}
 
 // ── Webhook trigger type ─────────────────────────────────────────────────
 
@@ -135,23 +146,16 @@ iii.registerTrigger({
 export async function printTriggerTypeCatalog() {
   console.log('\n--- Listing all trigger types ---')
 
-  const { trigger_types: triggerTypes } = await iii.trigger<
-    { include_internal: boolean },
-    { trigger_types: TriggerTypeInfo[] }
-  >({
-    function_id: EngineFunctions.LIST_TRIGGER_TYPES,
+  // `engine::trigger-types::list` was retired in favor of
+  // `engine::triggers::list`, which now returns trigger TYPES. The list
+  // shape is lean — call `engine::triggers::info` per id for schemas.
+  const { triggers } = await iii.trigger<{ include_internal: boolean }, { triggers: TriggerTypeRow[] }>({
+    function_id: EngineFunctions.LIST_TRIGGERS,
     payload: { include_internal: false },
   })
 
-  console.log(`Found ${triggerTypes.length} trigger types:\n`)
-  for (const tt of triggerTypes) {
-    console.log(`  [${tt.id}] ${tt.description}`)
-    if (tt.trigger_request_format) {
-      console.log(`    trigger_request_format: ${JSON.stringify(tt.trigger_request_format)}`)
-    }
-    if (tt.call_request_format) {
-      console.log(`    call_request_format: ${JSON.stringify(tt.call_request_format)}`)
-    }
-    console.log()
+  console.log(`Found ${triggers.length} trigger types:\n`)
+  for (const tt of triggers) {
+    console.log(`  [${tt.id}] (${tt.worker_name}) ${tt.description}`)
   }
 }

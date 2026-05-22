@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-const CONFIG_FILE: &str = "config.yaml";
+pub(crate) const CONFIG_FILE: &str = "config.yaml";
 
 /// Resolve the engine's effective `iii-worker-manager` port from config.yaml.
 ///
@@ -71,6 +71,10 @@ pub enum ResolvedWorkerType {
     Local { worker_path: String },
     /// Binary worker — executable at ~/.iii/workers/{name}
     Binary { binary_path: std::path::PathBuf },
+    /// Bundle worker — extracted archive at ~/.iii/workers-bundle/{name}/
+    /// containing iii.worker.yaml. Dispatched through the local-worker
+    /// rails (libkrun boot) but with watcher disabled (immutable install).
+    Bundle { worker_path: std::path::PathBuf },
     /// Config-only / builtin worker — no image, path, or binary
     Config,
 }
@@ -633,22 +637,56 @@ fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorker
 }
 
 /// Resolve the canonical worker type for a named worker.
-/// Reads config.yaml once and checks the filesystem for binary workers.
-/// Priority: local (worker_path) > OCI (image) > binary (~/.iii/workers/{name}) > config.
+/// Reads config.yaml once and checks the filesystem for binary/bundle workers.
+/// Priority: local (worker_path) > OCI (image) > bundle (~/.iii/workers-bundle/{name}/)
+/// > binary (~/.iii/workers/{name}) > config.
+///
+/// Bundle takes precedence over binary because the bundle install root is a
+/// distinct, newer install type (introduced for registry-published JS/Python
+/// workers). The two roots should never collide for the same name in
+/// practice; the `iii worker add` path returns W111 AlreadyExists if they do.
 pub fn resolve_worker_type(name: &str) -> ResolvedWorkerType {
     let path = std::path::Path::new(CONFIG_FILE);
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return check_binary_fallback(name),
+        Err(_) => return check_install_fallback(name),
     };
 
     match resolve_worker_type_from_content(&content, name) {
-        ResolvedWorkerType::Config => check_binary_fallback(name),
+        ResolvedWorkerType::Config => check_install_fallback(name),
         other => other,
     }
 }
 
-fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
+/// Returns the directory where bundle workers are installed:
+/// `~/.iii/workers-bundle/`. Kept separate from `~/.iii/workers/` (used by
+/// binary workers) so the install-type resolver can disambiguate without
+/// content inspection.
+pub fn bundle_workers_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".iii")
+        .join("workers-bundle")
+}
+
+/// Returns the install directory of a named bundle worker:
+/// `~/.iii/workers-bundle/{name}/`.
+pub fn bundle_worker_path(name: &str) -> std::path::PathBuf {
+    bundle_workers_dir().join(name)
+}
+
+/// Filesystem fallback precedence: bundle → binary → config-only.
+///
+/// A bundle install is detected by the presence of `iii.worker.yaml` inside
+/// the bundle directory (not just dir existence) so a stray empty directory
+/// or escaped staging dir doesn't trigger a false-positive Bundle resolve.
+fn check_install_fallback(name: &str) -> ResolvedWorkerType {
+    let bundle_dir = bundle_worker_path(name);
+    if bundle_dir.is_dir() && bundle_dir.join("iii.worker.yaml").is_file() {
+        return ResolvedWorkerType::Bundle {
+            worker_path: bundle_dir,
+        };
+    }
     let binary_path = dirs::home_dir()
         .unwrap_or_default()
         .join(".iii/workers")
@@ -658,6 +696,15 @@ fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
     } else {
         ResolvedWorkerType::Config
     }
+}
+
+/// Backwards-compatible alias kept so external callers and tests that grew
+/// up alongside the binary-only resolver continue to compile. Internally
+/// delegates to `check_install_fallback`, which extends the precedence to
+/// cover bundle workers.
+#[allow(dead_code)]
+fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
+    check_install_fallback(name)
 }
 
 /// Returns the `config:` block for a named worker as a flat `HashMap<String, String>`.

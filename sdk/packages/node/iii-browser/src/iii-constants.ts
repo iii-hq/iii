@@ -2,12 +2,24 @@
  * Constants for the III module.
  */
 
-/** Engine function paths for internal operations */
+/**
+ * Engine function paths for internal operations.
+ *
+ * Naming note: `LIST_TRIGGERS` / `INFO_TRIGGERS` cover trigger TYPES
+ * (templates). `LIST_REGISTERED_TRIGGERS` / `INFO_REGISTERED_TRIGGERS`
+ * cover trigger INSTANCES (subscriber rows). The old
+ * `engine::trigger-types::list` builtin has been removed and is now
+ * served by `engine::triggers::list`.
+ */
 export const EngineFunctions = {
   LIST_FUNCTIONS: 'engine::functions::list',
+  INFO_FUNCTIONS: 'engine::functions::info',
   LIST_WORKERS: 'engine::workers::list',
+  INFO_WORKERS: 'engine::workers::info',
   LIST_TRIGGERS: 'engine::triggers::list',
-  LIST_TRIGGER_TYPES: 'engine::trigger-types::list',
+  INFO_TRIGGERS: 'engine::triggers::info',
+  LIST_REGISTERED_TRIGGERS: 'engine::registered-triggers::list',
+  INFO_REGISTERED_TRIGGERS: 'engine::registered-triggers::info',
   REGISTER_WORKER: 'engine::workers::register',
 } as const
 
