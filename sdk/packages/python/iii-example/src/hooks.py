@@ -1,7 +1,8 @@
 import uuid
 from typing import Any, Awaitable, Callable
 
-from iii import ApiRequest, ApiResponse, IIIClient, Logger
+from iii import ApiRequest, ApiResponse, IIIClient
+from iii_observability import Logger
 
 
 def use_api(
