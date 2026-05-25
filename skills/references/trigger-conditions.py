@@ -117,7 +117,7 @@ async def on_placed(data):
     await iii.trigger_async({
         "function_id": "orders::fulfill",
         "payload": {"order_id": data["order_id"]},
-        "action": TriggerAction.Enqueue({"queue": "fulfillment"}),
+        "action": TriggerAction.Enqueue(queue="fulfillment"),
     })
 
     return {"processed": True, "order_id": data["order_id"]}

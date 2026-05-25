@@ -34,9 +34,29 @@ pub async fn run(
     let label = source_label(&opts.source);
     events.emit(WorkerOpEvent::Started {
         op: "add",
-        worker: label,
+        worker: label.clone(),
     });
-    let outcome = shim.add(opts, ctx, events).await?;
+    events.emit(WorkerOpEvent::Stage {
+        op: "add",
+        stage: "downloading",
+        worker: label.clone(),
+    });
+    let outcome = match shim.add(opts, ctx, events).await {
+        Ok(o) => o,
+        Err(e) => {
+            events.emit(WorkerOpEvent::Failed {
+                op: "add",
+                worker: label,
+                error: e.to_string(),
+            });
+            return Err(e);
+        }
+    };
+    events.emit(WorkerOpEvent::Stage {
+        op: "add",
+        stage: "downloaded",
+        worker: outcome.name.clone(),
+    });
     events.emit(WorkerOpEvent::Done {
         op: "add",
         worker: outcome.name.clone(),
@@ -193,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emits_started_and_done_events() {
+    async fn emits_started_downloading_downloaded_done_in_order() {
         let dir = TempDir::new().unwrap();
         let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
         let sink = CapturingSink::new();
@@ -210,13 +230,136 @@ mod tests {
             .await
             .unwrap();
         let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 4, "expected 4 events on success: {events:?}");
         assert!(matches!(
             &events[0],
             WorkerOpEvent::Started { op: "add", .. }
         ));
         assert!(matches!(
-            &events.last().unwrap(),
-            WorkerOpEvent::Done { op: "add", .. }
+            &events[1],
+            WorkerOpEvent::Stage {
+                op: "add",
+                stage: "downloading",
+                ..
+            }
         ));
+        assert!(matches!(
+            &events[2],
+            WorkerOpEvent::Stage {
+                op: "add",
+                stage: "downloaded",
+                ..
+            }
+        ));
+        assert!(matches!(&events[3], WorkerOpEvent::Done { op: "add", .. }));
+    }
+
+    /// Stub shim whose `add` always fails — used to verify the
+    /// `Failed` event fires before the error is propagated.
+    struct FailingShim;
+
+    #[async_trait]
+    impl WorkerHostShim for FailingShim {
+        async fn add(
+            &self,
+            _opts: AddOptions,
+            _ctx: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<AddOutcome, WorkerOpError> {
+            Err(WorkerOpError::not_found("pdfkit".to_string()))
+        }
+        async fn remove(
+            &self,
+            _o: crate::core::RemoveOptions,
+            _c: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<crate::core::RemoveOutcome, WorkerOpError> {
+            unimplemented!()
+        }
+        async fn update(
+            &self,
+            _o: crate::core::UpdateOptions,
+            _c: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<crate::core::UpdateOutcome, WorkerOpError> {
+            unimplemented!()
+        }
+        async fn start(
+            &self,
+            _o: crate::core::StartOptions,
+            _c: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<crate::core::StartOutcome, WorkerOpError> {
+            unimplemented!()
+        }
+        async fn stop(
+            &self,
+            _o: crate::core::StopOptions,
+            _c: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<crate::core::StopOutcome, WorkerOpError> {
+            unimplemented!()
+        }
+        async fn list(
+            &self,
+            _o: crate::core::ListOptions,
+            _c: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<crate::core::ListOutcome, WorkerOpError> {
+            unimplemented!()
+        }
+        async fn clear(
+            &self,
+            _o: crate::core::ClearOptions,
+            _c: &ProjectCtx,
+            _e: &dyn EventSink,
+        ) -> Result<crate::core::ClearOutcome, WorkerOpError> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn emits_failed_on_shim_error() {
+        let dir = TempDir::new().unwrap();
+        let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
+        let sink = CapturingSink::new();
+        let opts = AddOptions {
+            source: WorkerSource::Registry {
+                name: "pdfkit".into(),
+                version: None,
+            },
+            force: false,
+            reset_config: false,
+            wait: true,
+        };
+        let res = run(opts, &ctx, &sink, &FailingShim, CallerMode::Trigger).await;
+        assert!(matches!(res, Err(WorkerOpError::NotFound { .. })));
+
+        let events = sink.events.lock().unwrap();
+        // started → downloading → failed (no downloaded, no done).
+        assert_eq!(events.len(), 3, "expected 3 events on failure: {events:?}");
+        assert!(matches!(
+            &events[0],
+            WorkerOpEvent::Started { op: "add", .. }
+        ));
+        assert!(matches!(
+            &events[1],
+            WorkerOpEvent::Stage {
+                op: "add",
+                stage: "downloading",
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[2],
+            WorkerOpEvent::Failed { op: "add", .. }
+        ));
+        // The Failed event carries the underlying error message.
+        if let WorkerOpEvent::Failed { error, .. } = &events[2] {
+            assert!(
+                error.contains("pdfkit"),
+                "error should mention worker: {error}"
+            );
+        }
     }
 }

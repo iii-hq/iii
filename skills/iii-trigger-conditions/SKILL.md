@@ -2,9 +2,9 @@
 name: iii-trigger-conditions
 description: >-
   Registers a boolean condition function and attaches it to triggers via
-  condition_function_id so handlers only fire when the condition passes. Use
-  when gating triggers on business rules, checking user permissions, validating
-  data before processing, filtering high-value orders, rate-limiting events, or
+  condition_function_id so handlers only fire when the condition passes. Use when
+  gating triggers on business rules, checking user permissions, validating data
+  before processing, filtering high-value orders, rate-limiting events, or
   conditionally skipping handlers based on payload content.
 ---
 

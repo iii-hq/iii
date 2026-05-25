@@ -1,15 +1,14 @@
 """
 Pattern: Custom Triggers
-Comparable to: Custom event adapters, webhook connectors, polling integrators
+Comparable to: Custom event adapters, webhook connectors, subscription bridges
 
 Demonstrates how to define entirely new trigger types beyond the built-in
 http, durable:subscriber, cron, state, and subscribe triggers. A custom trigger type
 registers handler callbacks that the engine invokes when triggers of that
 type are created or removed, letting you bridge any external event source
-(webhooks, pollers) into the iii function graph.
+(webhooks, message subscriptions) into the iii function graph.
 
 Note: File watcher is omitted — it requires the watchdog dependency.
-Polling uses asyncio.create_task instead of setInterval.
 
 How-to references:
   - Custom trigger types: https://iii.dev/docs/how-to/create-custom-trigger-type
@@ -17,8 +16,9 @@ How-to references:
 
 import asyncio
 import os
+from collections import defaultdict
 
-from iii import InitOptions, Logger, TriggerAction, register_worker
+from iii import InitOptions, Logger, TriggerHandler, register_worker
 
 iii = register_worker(
     address=os.environ.get("III_ENGINE_URL", "ws://localhost:49134"),
@@ -57,85 +57,77 @@ async def webhook_unregister(trigger_config):
     webhook_endpoints.pop(trigger_config["id"], None)
 
 
+class WebhookHandler(TriggerHandler):
+    async def register_trigger(self, config):
+        await webhook_register(config.model_dump())
+
+    async def unregister_trigger(self, config):
+        await webhook_unregister(config.model_dump())
+
+
 iii.register_trigger_type({
     "id": "webhook",
     "description": "Fires when an external service sends an HTTP POST to the registered endpoint",
-    "handler": {
-        "register_trigger": webhook_register,
-        "unregister_trigger": webhook_unregister,
-    },
-})
+}, WebhookHandler())
 
 # ---
-# Custom trigger type — Polling with ETag
-# Periodically fetches a URL and fires only when the content changes.
-# Uses asyncio.create_task for the polling loop instead of setInterval.
+# Custom trigger type — External subscription
+# Bridges an event source that already pushes topic messages.
 # ---
-pollers = {}
+class PushBus:
+    def __init__(self):
+        self._handlers = defaultdict(list)
+
+    def subscribe(self, topic, handler):
+        self._handlers[topic].append(handler)
+
+    def unsubscribe(self, topic, handler):
+        self._handlers[topic] = [h for h in self._handlers[topic] if h is not handler]
+
+    async def publish(self, topic, message):
+        for handler in list(self._handlers[topic]):
+            await handler(message)
 
 
-async def _poll_loop(trigger_id, function_id, url, interval_ms):
-    import urllib.request
-    import json
-
-    last_etag = None
-    interval_s = interval_ms / 1000
-
-    while True:
-        try:
-            req = urllib.request.Request(url, method="GET")
-            if last_etag:
-                req.add_header("If-None-Match", last_etag)
-
-            resp = await asyncio.to_thread(urllib.request.urlopen, req)
-
-            if resp.status == 304:
-                await asyncio.sleep(interval_s)
-                continue
-
-            etag = resp.headers.get("ETag")
-            if etag and etag != last_etag:
-                last_etag = etag
-                body = json.loads(resp.read().decode())
-
-                await iii.trigger_async({
-                    "function_id": function_id,
-                    "payload": {"source": "polling", "trigger_id": trigger_id, "etag": etag, "data": body},
-                })
-        except asyncio.CancelledError:
-            break
-        except Exception as err:
-            logger = Logger()
-            logger.error("Polling failed", {"id": trigger_id, "url": url, "error": str(err)})
-
-        await asyncio.sleep(interval_s)
+push_bus = PushBus()
+topic_subscriptions = {}
 
 
-async def polling_register(trigger_config):
+async def topic_register(trigger_config):
     trigger_id = trigger_config["id"]
     function_id = trigger_config["function_id"]
     config = trigger_config["config"]
-    url = config["url"]
-    interval_ms = config.get("interval_ms", 30000)
+    topic = config["topic"]
 
-    task = asyncio.create_task(_poll_loop(trigger_id, function_id, url, interval_ms))
-    pollers[trigger_id] = task
+    async def handler(message):
+        await iii.trigger_async({
+            "function_id": function_id,
+            "payload": {"source": "topic-subscription", "trigger_id": trigger_id, "topic": topic, "data": message},
+        })
+
+    push_bus.subscribe(topic, handler)
+    topic_subscriptions[trigger_id] = (topic, handler)
 
 
-async def polling_unregister(trigger_config):
-    task = pollers.pop(trigger_config["id"], None)
-    if task:
-        task.cancel()
+async def topic_unregister(trigger_config):
+    subscription = topic_subscriptions.pop(trigger_config["id"], None)
+    if subscription:
+        topic, handler = subscription
+        push_bus.unsubscribe(topic, handler)
+
+
+class TopicSubscriptionHandler(TriggerHandler):
+    async def register_trigger(self, config):
+        await topic_register(config.model_dump())
+
+    async def unregister_trigger(self, config):
+        await topic_unregister(config.model_dump())
 
 
 iii.register_trigger_type({
-    "id": "polling",
-    "description": "Polls a URL at a fixed interval and fires when the ETag changes",
-    "handler": {
-        "register_trigger": polling_register,
-        "unregister_trigger": polling_unregister,
-    },
-})
+    "id": "topic-subscription",
+    "description": "Fires when an external event bus publishes to a topic",
+}, TopicSubscriptionHandler())
 
 # ---
 # Handler function — processes events from any custom trigger above
@@ -160,9 +152,9 @@ iii.register_trigger({
 })
 
 iii.register_trigger({
-    "type": "polling",
+    "type": "topic-subscription",
     "function_id": "custom-triggers::on-event",
-    "config": {"url": "https://api.example.com/status", "interval_ms": 60000},
+    "config": {"topic": "orders.created"},
 })
 
 

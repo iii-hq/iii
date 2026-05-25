@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -170,3 +170,7 @@ wiremock = "0.6"
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }
 libc = "0.2"
+# Pulled in by engine/tests/worker_trigger_e2e.rs to spawn the
+# `iii-worker-ops` daemon in-process so the test can assert on the
+# `worker` custom trigger type without subprocess overhead.
+iii-worker = { path = "../crates/iii-worker" }

@@ -90,7 +90,7 @@ fn main() {
 
                 #[cfg(feature = "otel")]
                 let validation = with_span("validate-order", None, Some(SpanKind::Internal), || async {
-                    logger.info("Validating order inside span", &json!({ "orderId": data.order_id }));
+                    logger.info("Validating order inside span", Some(json!({ "orderId": data.order_id })));
 
                     if items.is_empty() {
                         return Err("Empty cart".into());
@@ -231,7 +231,7 @@ fn main() {
             #[cfg(feature = "otel")]
             {
                 let trace_id = current_trace_id();
-                logger.info("Current trace", &json!({ "traceId": trace_id }));
+                logger.info("Current trace", Some(json!({ "traceId": trace_id })));
 
                 let mut headers = std::collections::HashMap::new();
                 if let Some(tp) = inject_traceparent() {
@@ -246,7 +246,7 @@ fn main() {
 
             #[cfg(not(feature = "otel"))]
             {
-                logger.info("Trace propagation requires otel feature", &json!({}));
+                logger.info("Trace propagation requires otel feature", Some(json!({})));
                 Ok(json!({ "traceId": null, "propagated": false }))
             }
         })
@@ -261,9 +261,9 @@ fn main() {
         RegisterFunction::new("debug::log-demo", |data: LogDemoInput| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
 
-            logger.info("Processing request", &json!({ "requestId": data.id }));
-            logger.warn("Slow query detected", &json!({ "query": data.query, "duration_ms": 1200 }));
-            logger.error("Unexpected state", &json!({ "expected": "active", "actual": data.status }));
+            logger.info("Processing request", Some(json!({ "requestId": data.id })));
+            logger.warn("Slow query detected", Some(json!({ "query": data.query, "duration_ms": 1200 })));
+            logger.error("Unexpected state", Some(json!({ "expected": "active", "actual": data.status })));
 
             Ok(json!({ "logged": true }))
         })

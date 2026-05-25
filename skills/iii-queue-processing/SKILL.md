@@ -1,10 +1,11 @@
 ---
 name: iii-queue-processing
 description: >-
-  Enqueues jobs, configures retry policies, sets concurrency limits, and orders
-  messages via named standard or FIFO queues. Use when building background job
-  workers, task queues, message queues, async pipelines, or any pattern needing
-  guaranteed delivery with exponential backoff and dead-letter handling.
+  Uses `TriggerAction.Enqueue({ queue })` and named queues for reliable
+  background work. Use when a request should hand off slow work and return
+  quickly, a task must retry on failure, jobs need concurrency limits or FIFO
+  ordering, or a workflow needs durable async processing, backoff, and
+  dead-letter handling.
 ---
 
 # Queue Processing
@@ -18,6 +19,8 @@ Use the concepts below when they fit the task. Not every queue setup needs all o
 - **Named queues** are declared in `iii-config.yaml` under `queue_configs`
 - **Standard queues** process jobs concurrently; **FIFO queues** preserve ordering
 - `TriggerAction.Enqueue({ queue })` dispatches a job to a named queue
+- Install or enable queues with `iii worker add iii-queue`
+- Topic-based durable fanout uses `iii::durable::publish` plus trigger type `durable:subscriber`
 - Failed jobs **auto-retry** with exponential backoff up to `max_retries`
 - Jobs that exhaust retries land in a **dead letter queue** for inspection
 - Each consumer function receives the job payload and a `messageReceiptId`
@@ -38,6 +41,8 @@ Use the concepts below when they fit the task. Not every queue setup needs all o
 | ------------------------------------------------------------ | ---------------------------------------------- |
 | `registerFunction`                                           | Define the consumer that processes jobs        |
 | `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Dispatch a job to a named queue                |
+| `trigger({ function_id: 'iii::durable::publish', payload })` | Publish a durable topic event to subscribers   |
+| `registerTrigger({ type: 'durable:subscriber' })`            | Subscribe a function to a durable topic        |
 | `messageReceiptId`                                           | Acknowledge or track individual job processing |
 | `queue_configs` in `iii-config.yaml`                         | Declare queues with concurrency and retries    |
 
@@ -56,6 +61,8 @@ Code using this pattern commonly includes, when relevant:
 - `registerWorker(url, { workerName })` — worker initialization
 - `registerFunction(id, handler)` — define the consumer
 - `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` — enqueue a job
+- `trigger({ function_id: 'iii::durable::publish', payload: { topic, data } })` — durable fanout event
+- `registerTrigger({ type: 'durable:subscriber', config: { topic } })` — durable topic consumer
 - `payload.messageReceiptId` — track or acknowledge the job
 - `trigger({ function_id: 'state::set', payload })` — persist results after processing
 - `const logger = new Logger()` — structured logging per job
@@ -69,10 +76,13 @@ Use the adaptations below when they apply to the task.
 - Chain multiple queues for multi-stage pipelines (queue A consumer enqueues to queue B)
 - For idempotency, check state before processing to avoid duplicate work on retries
 - Use fan-out by enqueuing to multiple consumer functions when a single event requires parallel processing (e.g. payment + notification + audit)
+- Use topic-based durable queues when many functions should receive the same event with retry/DLQ semantics.
 
 ## Engine Configuration
 
 Named queues are declared in iii-config.yaml under `queue_configs` with per-queue `max_retries`, `concurrency`, `type`, and `backoff_ms`. Fan-out is a pattern (one producer triggers multiple consumer functions), not a queue config key. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+
+Install/enable the queue worker with `iii worker add iii-queue`. Use the `builtin` adapter for local/single-instance deployments and RabbitMQ for multi-instance named queues with retries, FIFO, and DLQ. Redis is for topic-style pub/sub and publish-only named queue paths, not full named queue consumption.
 
 ## Pattern Boundaries
 
@@ -84,7 +94,7 @@ Named queues are declared in iii-config.yaml under `queue_configs` with per-queu
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-queue-processing` in the iii engine.
-- Triggers when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill even when the request does not say "queue" or "enqueue" if the work is slow, retryable, durable, ordered, or should not block an HTTP/UI caller.
 
 ## Boundaries
 

@@ -4,7 +4,7 @@
 //! `worker::clear` orchestrator.
 
 use crate::core::error::WorkerOpError;
-use crate::core::events::EventSink;
+use crate::core::events::{EventSink, WorkerOpEvent};
 use crate::core::host::WorkerHostShim;
 use crate::core::project::ProjectCtx;
 use crate::core::types::{ClearOptions, ClearOutcome};
@@ -15,7 +15,36 @@ pub async fn run(
     events: &dyn EventSink,
     shim: &dyn WorkerHostShim,
 ) -> Result<ClearOutcome, WorkerOpError> {
-    shim.clear(opts, ctx, events).await
+    let label = if opts.names.is_empty() {
+        "<all>".to_string()
+    } else {
+        opts.names.join(",")
+    };
+    events.emit(WorkerOpEvent::Started {
+        op: "clear",
+        worker: label.clone(),
+    });
+    events.emit(WorkerOpEvent::Stage {
+        op: "clear",
+        stage: "clearing",
+        worker: label.clone(),
+    });
+    let outcome = match shim.clear(opts, ctx, events).await {
+        Ok(o) => o,
+        Err(e) => {
+            events.emit(WorkerOpEvent::Failed {
+                op: "clear",
+                worker: label,
+                error: e.to_string(),
+            });
+            return Err(e);
+        }
+    };
+    events.emit(WorkerOpEvent::Done {
+        op: "clear",
+        worker: label,
+    });
+    Ok(outcome)
 }
 
 #[cfg(test)]

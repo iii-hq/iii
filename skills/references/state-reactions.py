@@ -103,7 +103,7 @@ async def high_value_alert(event):
             "total": new_value["total"],
             "customer": new_value.get("customer"),
         },
-        "action": TriggerAction.Enqueue({"queue": "alerts"}),
+        "action": TriggerAction.Enqueue(queue="alerts"),
     })
 
     return {"alerted": True, "orderId": key}

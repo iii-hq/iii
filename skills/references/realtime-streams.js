@@ -6,7 +6,7 @@
  * Clients connect at: ws://host:3112/stream/{stream_name}/{group_id}
  *
  * Built-in stream operations: stream::set, stream::get, stream::list,
- * stream::delete, stream::send. Use createStream for custom adapters.
+ * stream::delete, stream::send.
  *
  * How-to references:
  *   - Realtime streams: https://iii.dev/docs/how-to/stream-realtime-data
@@ -141,64 +141,6 @@ iii.registerFunction('chat::broadcast', async (data) => {
 
   logger.info('Message broadcast', { room: data.room, eventId })
   return { eventId }
-})
-
-// ---------------------------------------------------------------------------
-// createStream — Custom stream adapter with get/set/delete/list/listGroups
-// Useful for integrating external data sources as stream backends.
-// ---------------------------------------------------------------------------
-iii.createStream('presence', {
-  get: async ({ group_id, item_id }) => {
-    return await iii.trigger({
-      function_id: 'state::get',
-      payload: { scope: `presence::${group_id}`, key: item_id },
-    })
-  },
-  set: async ({ group_id, item_id, data }) => {
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: `presence::${group_id}`,
-        key: item_id,
-        value: { ...data, updated_at: new Date().toISOString() },
-      },
-    })
-
-    // Maintain presence registry so listGroups() returns accurate data
-    const registry = await iii.trigger({ function_id: 'state::get', payload: { scope: 'presence-registry', key: 'groups' } })
-    const groups = registry?.groups || []
-    if (!groups.includes(group_id)) {
-      groups.push(group_id)
-      await iii.trigger({ function_id: 'state::set', payload: { scope: 'presence-registry', key: 'groups', value: { groups } } })
-    }
-  },
-  delete: async ({ group_id, item_id }) => {
-    await iii.trigger({
-      function_id: 'state::delete',
-      payload: { scope: `presence::${group_id}`, key: item_id },
-    })
-
-    // Remove empty groups from registry
-    const remaining = await iii.trigger({ function_id: 'state::list', payload: { scope: `presence::${group_id}` } })
-    if (!remaining || remaining.length === 0) {
-      const registry = await iii.trigger({ function_id: 'state::get', payload: { scope: 'presence-registry', key: 'groups' } })
-      const groups = (registry?.groups || []).filter(g => g !== group_id)
-      await iii.trigger({ function_id: 'state::set', payload: { scope: 'presence-registry', key: 'groups', value: { groups } } })
-    }
-  },
-  list: async ({ group_id }) => {
-    return await iii.trigger({
-      function_id: 'state::list',
-      payload: { scope: `presence::${group_id}` },
-    })
-  },
-  listGroups: async () => {
-    const registry = await iii.trigger({
-      function_id: 'state::get',
-      payload: { scope: 'presence-registry', key: 'groups' },
-    })
-    return registry?.groups || []
-  },
 })
 
 // ---------------------------------------------------------------------------

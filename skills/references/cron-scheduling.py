@@ -48,7 +48,7 @@ async def hourly_cleanup(data):
             iii.trigger({
                 "function_id": "cleanup::process-expired",
                 "payload": {"sessionId": session["id"]},
-                "action": TriggerAction.Enqueue({"queue": "cleanup"}),
+                "action": TriggerAction.Enqueue(queue="cleanup"),
             })
             cleaned += 1
 
@@ -86,7 +86,7 @@ async def daily_report(data):
             "date": datetime.now(timezone.utc).isoformat().split("T")[0],
             "metrics": metrics or {"signups": 0, "orders": 0, "revenue": 0},
         },
-        "action": TriggerAction.Enqueue({"queue": "reports"}),
+        "action": TriggerAction.Enqueue(queue="reports"),
     })
 
     logger.info("Daily report enqueued", {"messageReceiptId": result["messageReceiptId"]})
@@ -143,7 +143,7 @@ async def health_check(data):
         iii.trigger({
             "function_id": "alerts::send",
             "payload": {"type": "health-check-failed", "timestamp": timestamp},
-            "action": TriggerAction.Enqueue({"queue": "alerts"}),
+            "action": TriggerAction.Enqueue(queue="alerts"),
         })
 
     return {"healthy": healthy, "checked_at": timestamp}

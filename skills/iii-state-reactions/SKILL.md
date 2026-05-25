@@ -1,11 +1,11 @@
 ---
 name: iii-state-reactions
 description: >-
-  Registers state-type triggers that automatically fire functions when key-value
-  state is created, updated, or deleted within a scope. Use when building
-  reactive side effects, change watchers, audit logs, cache invalidation,
-  notification dispatchers, or any observer pattern where data changes should
-  trigger downstream processing.
+  Registers reactive state triggers that automatically fire functions when
+  key-value state is created, updated, or deleted. Use whenever a requirement
+  says "when X changes, do Y", "after a record is created/updated/deleted",
+  keep derived data in sync, notify users, invalidate caches, write audit logs,
+  or run downstream work from data changes without polling or explicit calls.
 ---
 
 # State Reactions
@@ -17,6 +17,7 @@ Comparable to: Firebase onSnapshot, Convex mutations
 Use the concepts below when they fit the task. Not every state reaction needs all of them.
 
 - A **state trigger** fires whenever a value changes within a watched scope
+- Install or enable state triggers with `iii worker add iii-state`
 - The handler receives `{ new_value, old_value, key, event_type }` describing the change
 - **condition_function_id** gates execution — the reaction only fires if the condition returns truthy
 - Multiple reactions can **independently watch** the same scope
@@ -70,7 +71,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-iii-state must be enabled in iii-config.yaml for state triggers to fire. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Install/enable iii-state with `iii worker add iii-state`; state triggers fire from the state worker. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 
@@ -81,7 +82,7 @@ iii-state must be enabled in iii-config.yaml for state triggers to fire. See [..
 ## When to Use
 
 - Use this skill when the task is primarily about `iii-state-reactions` in the iii engine.
-- Use this skill when the request directly asks for this pattern or an equivalent implementation.
+- Use this skill even when the request does not say "trigger" if the desired behavior is automatic work after a state change.
 
 ## Boundaries
 

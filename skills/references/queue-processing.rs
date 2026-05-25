@@ -98,10 +98,10 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Payment enqueued", &json!({
+                logger.info("Payment enqueued", Some(json!({
                     "orderId": data.order_id,
                     "messageReceiptId": result["messageReceiptId"],
-                }));
+                })));
 
                 Ok(json!({ "status": "queued", "messageReceiptId": result["messageReceiptId"] }))
             }
@@ -118,7 +118,7 @@ fn main() {
             let iii = iii_clone.clone();
             async move {
                 let logger = Logger::new();
-                logger.info("Processing payment", &json!({ "orderId": data.order_id, "amount": data.amount }));
+                logger.info("Processing payment", Some(json!({ "orderId": data.order_id, "amount": data.amount })));
 
                 let charge_id = format!("ch-{}", chrono::Utc::now().timestamp_millis());
 
@@ -151,7 +151,7 @@ fn main() {
                 .await
                 .ok();
 
-                logger.info("Payment captured", &json!({ "orderId": data.order_id, "chargeId": charge_id }));
+                logger.info("Payment captured", Some(json!({ "orderId": data.order_id, "chargeId": charge_id })));
                 Ok(json!({ "chargeId": charge_id, "status": "captured" }))
             }
         })
@@ -185,10 +185,10 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Email enqueued (FIFO)", &json!({
+                logger.info("Email enqueued (FIFO)", Some(json!({
                     "to": data.to,
                     "messageReceiptId": result["messageReceiptId"],
-                }));
+                })));
 
                 Ok(json!({ "status": "queued", "messageReceiptId": result["messageReceiptId"] }))
             }
@@ -205,7 +205,7 @@ fn main() {
             let iii = iii_clone.clone();
             async move {
                 let logger = Logger::new();
-                logger.info("Sending email", &json!({ "to": data.to, "subject": data.subject }));
+                logger.info("Sending email", Some(json!({ "to": data.to, "subject": data.subject })));
 
                 let message_id = format!("msg-{}", chrono::Utc::now().timestamp_millis());
 
@@ -228,7 +228,7 @@ fn main() {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                logger.info("Email sent", &json!({ "messageId": message_id, "to": data.to }));
+                logger.info("Email sent", Some(json!({ "messageId": message_id, "to": data.to })));
                 Ok(json!({ "messageId": message_id, "status": "sent" }))
             }
         })
@@ -274,11 +274,11 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Order placed", &json!({
+                logger.info("Order placed", Some(json!({
                     "orderId": data.order_id,
                     "paymentReceipt": payment_receipt["messageReceiptId"],
                     "emailReceipt": email_receipt["messageReceiptId"],
-                }));
+                })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "state::set".into(),

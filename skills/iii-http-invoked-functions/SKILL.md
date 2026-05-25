@@ -23,8 +23,26 @@ Use this pattern when iii should call external HTTP endpoints as functions.
 
 - `registerFunction(id, HttpInvocationConfig, options?)` registers an outbound HTTP-invoked function.
 - `trigger({ function_id, payload })` invokes it like any other function.
-- Trigger payload becomes request body for JSON-based calls.
+- Trigger payload is forwarded as the HTTP request body for JSON-based calls.
+- Static headers from `HttpInvocationConfig.headers` are sent with the request.
+- Auth headers are resolved at invocation time from environment variables.
+- `timeout_ms` bounds the external call; if omitted, the worker invocation timeout applies.
 - Non-2xx and network failures are treated as invocation failures.
+
+## Auth Modes
+
+- HMAC: `{ type: 'hmac', secret_key: 'WEBHOOK_SECRET' }`
+- Bearer: `{ type: 'bearer', token_key: 'API_TOKEN' }`
+- API key: `{ type: 'api_key', header: 'X-API-Key', value_key: 'API_KEY' }`
+
+The `*_key` fields name environment variables. Never store raw secrets in skill-generated code or config.
+
+## When to Choose This
+
+- Use HTTP-invoked functions when iii should call an existing external endpoint that cannot or should not run inside a worker.
+- Use local handlers when you control the implementation and want lower latency, richer tracing, typed SDK handlers, and in-process error handling.
+- Use inbound HTTP triggers when iii owns the public route and should receive HTTP requests.
+- Treat each HTTP-invoked function as a security boundary: validate payloads, constrain URLs, configure timeouts, and restrict which workers may register or invoke them.
 
 ## Common shape
 
@@ -33,6 +51,7 @@ Use this pattern when iii should call external HTTP endpoints as functions.
   - `[{ path, id }]`
   - `registerFunction(id, { url: base + path, method: 'POST' })`
 - Optional auth config with env var keys (`token_key`, `secret_key`, `value_key`)
+- Optional function metadata: `{ owner, capability, external: true }`
 
 ## Guardrails
 
