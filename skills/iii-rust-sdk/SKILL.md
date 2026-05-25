@@ -17,7 +17,11 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-rust>
 
 Add to `Cargo.toml`:
 
-`iii-sdk = { version = "0.13", features = ["otel"] }`
+```toml
+iii-sdk = "0.13"
+# Optional: OpenTelemetry + Logger primitives live in a separate crate.
+iii-observability = "0.13"
+```
 
 ## Key Types and Functions
 
