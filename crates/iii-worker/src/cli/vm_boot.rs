@@ -287,8 +287,7 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
 ///
 /// The caller-supplied env wins: if `args.env` already carries
 /// `PATH`, this constant is not used.
-pub const DEFAULT_GUEST_PATH: &str =
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+pub const DEFAULT_GUEST_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// True when any `KEY=VALUE` entry in `env` has the literal key `PATH`.
 /// Case-sensitive: env var names are case-sensitive on Unix.
@@ -1133,7 +1132,6 @@ mod tests {
         let result = shell_quote("it's a test");
         assert_eq!(result, "'it'\\''s a test'");
     }
-
 
     // --- 6.3: env_has_path / DEFAULT_GUEST_PATH (guards the npm
     // shebang fallback added when a rootfs cache lacks
