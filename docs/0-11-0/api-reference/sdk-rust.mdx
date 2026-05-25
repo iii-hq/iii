@@ -100,7 +100,7 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `impl Into<String>` | Yes | Function identifier. |
-| `registration` | `RegisterFunction` | Yes | Built via [`RegisterFunction::new`], [`RegisterFunction::new_async`], [`RegisterFunction::new_async`], or [`RegisterFunction::http`]. Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`, `.response_format(...)` as needed. |
+| `registration` | `RegisterFunction` | Yes | Built via [`RegisterFunction::new`], [`RegisterFunction::new_async`], or [`RegisterFunction::http`]. Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`, `.response_format(...)` as needed. |
 
 #### Example
 
@@ -215,7 +215,6 @@ let trigger = iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".to_string(),
     function_id: "greet".to_string(),
     config: json!({ "api_path": "/greet", "http_method": "GET" }),
-    metadata: None,
 })?;
 // Later...
 trigger.unregister();
