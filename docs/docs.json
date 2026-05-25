@@ -236,7 +236,7 @@
         ]
       },
       {
-        "version": "0.13.x",
+        "version": "0.14.x",
         "tag": "Next",
         "tabs": [
           {
@@ -312,6 +312,91 @@
                   "changelog/0-11-0/migrating-from-motia-js",
                   "changelog/0-11-0/migrating-from-motia-py",
                   "changelog/0-11-0/migrated-examples"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+
+      {
+        "version": "0.13.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": ["0-13-0/index", "0-13-0/install", "0-13-0/quickstart"]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-13-0/using-iii/workers",
+                  "0-13-0/using-iii/workers-registry",
+                  "0-13-0/using-iii/triggers",
+                  "0-13-0/using-iii/functions",
+                  "0-13-0/using-iii/channels",
+                  "0-13-0/using-iii/engine",
+                  "0-13-0/using-iii/console",
+                  "0-13-0/using-iii/cli",
+                  "0-13-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-13-0/understanding-iii/index",
+                  "0-13-0/understanding-iii/workers",
+                  "0-13-0/understanding-iii/functions",
+                  "0-13-0/understanding-iii/triggers",
+                  "0-13-0/understanding-iii/channels",
+                  "0-13-0/understanding-iii/engine"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-13-0/creating-workers/workers",
+                  "0-13-0/creating-workers/functions",
+                  "0-13-0/creating-workers/triggers"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": ["0-13-0/sdk-reference/engine-sdk"]
+              },
+              {
+                "group": "Language SDKs",
+                "pages": [
+                  "0-13-0/sdk-reference/node-sdk",
+                  "0-13-0/sdk-reference/python-sdk",
+                  "0-13-0/sdk-reference/rust-sdk",
+                  "0-13-0/sdk-reference/browser-sdk"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "pages": ["0-13-0/changelog/index"]
+              },
+              {
+                "group": "0.11.0",
+                "pages": [
+                  "0-13-0/changelog/0-11-0/everything-is-a-worker",
+                  "0-13-0/changelog/0-11-0/migrating-from-motia-js",
+                  "0-13-0/changelog/0-11-0/migrating-from-motia-py",
+                  "0-13-0/changelog/0-11-0/migrated-examples"
                 ]
               }
             ]
