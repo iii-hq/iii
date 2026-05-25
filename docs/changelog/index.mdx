@@ -54,6 +54,54 @@ type: "reference"
   tracer = trace.get_tracer("my-service")
   meter = metrics.get_meter("my-service")
   ```
+
+  ## `Logger` and OpenTelemetry primitives moved to `iii-observability`
+
+  The `Logger`, `OtelConfig`, `ReconnectionConfig` (OTel variant), and the full OTel surface (`init_otel` / `shutdown_otel` / `flush_otel` / `with_span` / `execute_traced_request`, baggage and traceparent helpers, `current_span_id` / `current_trace_id`, span ops, payload redaction, `BaggageSpanProcessor`) now ship from a new shared package in every supported language:
+
+  | Language | Package | Import |
+  |---|---|---|
+  | Node    | `@iii-dev/observability` (npm) | `import { Logger, initOtel, withSpan, executeTracedRequest } from '@iii-dev/observability'` |
+  | Python  | `iii-observability` (PyPI)     | `from iii_observability import Logger, init_otel, with_span, execute_traced_request` |
+  | Rust    | `iii-observability` (crates.io)| `use iii_observability::{Logger, init_otel, with_span, execute_traced_request};` |
+
+  This isolates telemetry concerns from the SDK transport so workers that don't need OTel pull a smaller dependency set, and so the surface stays consistent across languages.
+
+  Two helpers that previously only existed in the Rust SDK are now available in Node and Python as well:
+
+  - `flush_otel` / `flushOtel` — force-flushes every provider without tearing OTel down. Use it before short-lived process exits where you still need pending spans, metrics, and logs delivered.
+  - `execute_traced_request` / `executeTracedRequest` — wraps an outgoing HTTP call (httpx in Python, `fetch` in Node) in an OTel `CLIENT` span. Injects W3C traceparent, records HTTP semantic-convention attributes, sets `ERROR` status on `>= 400` responses, and records exceptions on network errors.
+
+  ### Migration
+
+  All three SDKs continue to re-export the moved symbols for back-compat, except for Node where the `iii-sdk/telemetry` subpath entry point has been removed (the named exports from `iii-sdk` itself stay — `import { Logger } from 'iii-sdk'` keeps working). Direct imports from the new packages are preferred:
+
+  ```typescript
+  // Before (Node)
+  import { Logger, initOtel, withSpan } from 'iii-sdk'
+
+  // After (Node)
+  import { Logger, initOtel, withSpan } from '@iii-dev/observability'
+  ```
+
+  ```python
+  # Before (Python)
+  from iii import Logger
+  from iii.telemetry import init_otel, with_span
+
+  # After (Python)
+  from iii_observability import Logger, init_otel, with_span
+  ```
+
+  ```rust
+  // Before (Rust)
+  use iii_sdk::{Logger, OtelConfig, init_otel, with_span, execute_traced_request};
+
+  // After (Rust)
+  use iii_observability::{Logger, OtelConfig, init_otel, with_span, execute_traced_request};
+  ```
+
+  The new packages publish in lock-step with the rest of the monorepo on the same `iii/v*` release tag, so versions stay aligned with `iii-sdk`.
 </Update>
 
 <Update label="0.12.0" description="May 2026">
