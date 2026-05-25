@@ -17,8 +17,10 @@ Comparable to: Redis, DynamoDB, Memcached
 Use the concepts below when they fit the task. Not every state operation needs all of them.
 
 - State is a **scoped key-value store** accessed via built-in trigger functions
+- Install or enable state with `iii worker add iii-state`
 - **state::set** writes a value; **state::get** reads it (returns `null` for missing keys)
 - **state::list** retrieves all keys in a scope; **state::delete** removes a key
+- **state::list_groups** lists scopes that contain state data
 - **state::update** performs a **partial merge** using an `ops` array for fine-grained changes
 - Payloads use `scope`, `key`, and `value` to address state entries
 - State is shared across all functions — use meaningful scope names to avoid collisions
@@ -40,6 +42,7 @@ Use the concepts below when they fit the task. Not every state operation needs a
 | `trigger({ function_id: 'state::set', payload })`             | Write a value to state              |
 | `trigger({ function_id: 'state::get', payload })`             | Read a value from state             |
 | `trigger({ function_id: 'state::list', payload })`            | List all keys in a scope            |
+| `trigger({ function_id: 'state::list_groups', payload })`     | List state scopes                   |
 | `trigger({ function_id: 'state::delete', payload })`          | Remove a key from state             |
 | `trigger({ function_id: 'state::update', payload: { ops } })` | Partial merge with operations array |
 
@@ -60,6 +63,7 @@ Code using this pattern commonly includes, when relevant:
 - `trigger({ function_id: 'state::get', payload: { scope, key } })` — read state (returns `null` if missing)
 - `trigger({ function_id: 'state::update', payload: { scope, key, ops } })` — partial merge
 - `trigger({ function_id: 'state::list', payload: { scope } })` — enumerate keys
+- `trigger({ function_id: 'state::list_groups', payload: {} })` — enumerate scopes
 - `trigger({ function_id: 'state::delete', payload: { scope, key } })` — remove entry
 - `const logger = new Logger()` — structured logging
 
@@ -74,7 +78,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-iii-state must be enabled in iii-config.yaml with either the `kv` adapter (file-based or in-memory) or the separate `redis` adapter. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Install/enable iii-state with `iii worker add iii-state`. Configure either the `kv` adapter (file-based or in-memory) or Redis. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

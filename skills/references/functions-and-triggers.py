@@ -14,7 +14,7 @@ How-to references:
 import asyncio
 import os
 
-from iii import InitOptions, Logger, TriggerAction, register_worker
+from iii import HttpInvocationConfig, InitOptions, Logger, TriggerAction, register_worker
 
 engine_url = os.environ.get("III_ENGINE_URL", "ws://localhost:49134")
 iii = register_worker(
@@ -134,7 +134,7 @@ async def create_order(data):
     await iii.trigger_async({
         "function_id": "orders::fulfill",
         "payload": {"order_id": data.get("order_id"), "items": data.get("items")},
-        "action": TriggerAction.Enqueue({"queue": "fulfillment"}),
+        "action": TriggerAction.Enqueue(queue="fulfillment"),
     })
 
     return {"order_id": data.get("order_id"), "status": "accepted"}
@@ -150,18 +150,18 @@ iii.register_trigger({
 # ---------------------------------------------------------------------------
 # 8. External HTTP-invoked function (HttpInvocationConfig)
 # ---------------------------------------------------------------------------
-iii.register_function({
-    "id": "external::payment-gateway",
-    "invocation": {
-        "url": "https://api.stripe.com/v1/charges",
-        "method": "POST",
-        "timeout_ms": 10000,
-        "auth": {
+iii.register_function(
+    "external::payment-gateway",
+    HttpInvocationConfig(
+        url="https://api.stripe.com/v1/charges",
+        method="POST",
+        timeout_ms=10000,
+        auth={
             "type": "bearer",
-            "token": os.environ.get("STRIPE_API_KEY", ""),
+            "token_key": "STRIPE_API_KEY",
         },
-    },
-})
+    ),
+)
 
 # Keep the process alive for event processing
 async def main():

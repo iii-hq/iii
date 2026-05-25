@@ -6,10 +6,8 @@ Push live data to connected WebSocket clients.
 Clients connect at: ws://host:3112/stream/{stream_name}/{group_id}
 
 Built-in stream operations: stream::set, stream::get, stream::list,
-stream::delete, stream::send.
-
-Note: The Python SDK does not support createStream for custom adapters.
-Use the built-in stream operations and state-backed presence instead.
+stream::delete, stream::send. Presence in this example is implemented with
+state-backed stream items.
 
 How-to references:
   - Realtime streams: https://iii.dev/docs/how-to/stream-realtime-data
@@ -171,7 +169,6 @@ iii.register_function("chat::broadcast", broadcast)
 
 # ---
 # Presence tracking — user joins/leaves
-# Uses state-backed storage since Python SDK lacks createStream.
 # Clients connect at: ws://host:3112/stream/presence/{room}
 # ---
 

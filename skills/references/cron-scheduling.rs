@@ -36,7 +36,7 @@ fn main() {
             let iii = iii_clone.clone();
             async move {
                 let logger = Logger::new();
-                logger.info("Hourly cleanup started", &json!({}));
+                logger.info("Hourly cleanup started", Some(json!({})));
 
                 let expired_items = iii
                     .trigger(TriggerRequest {
@@ -75,7 +75,7 @@ fn main() {
                     }
                 }
 
-                logger.info("Hourly cleanup enqueued", &json!({ "cleaned": cleaned }));
+                logger.info("Hourly cleanup enqueued", Some(json!({ "cleaned": cleaned })));
                 Ok(json!({ "cleaned": cleaned }))
             }
         })
@@ -98,7 +98,7 @@ fn main() {
             let iii = iii_clone.clone();
             async move {
                 let logger = Logger::new();
-                logger.info("Daily report generation started", &json!({}));
+                logger.info("Daily report generation started", Some(json!({})));
 
                 let metrics = iii
                     .trigger(TriggerRequest {
@@ -132,7 +132,7 @@ fn main() {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                logger.info("Daily report enqueued", &json!({ "messageReceiptId": result["messageReceiptId"] }));
+                logger.info("Daily report enqueued", Some(json!({ "messageReceiptId": result["messageReceiptId"] })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "state::set".into(),
@@ -202,7 +202,7 @@ fn main() {
                 .map_err(|e| e.to_string())?;
 
                 if !healthy {
-                    logger.warn("Health check failed", &json!({ "timestamp": timestamp }));
+                    logger.warn("Health check failed", Some(json!({ "timestamp": timestamp })));
 
                     iii.trigger(TriggerRequest {
                         function_id: "alerts::send".into(),
@@ -245,7 +245,7 @@ fn main() {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                logger.info("Expired session cleaned up", &json!({ "sessionId": data.session_id }));
+                logger.info("Expired session cleaned up", Some(json!({ "sessionId": data.session_id })));
                 Ok(json!({ "deleted": data.session_id }))
             }
         })

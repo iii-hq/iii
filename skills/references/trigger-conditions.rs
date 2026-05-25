@@ -62,7 +62,7 @@ fn main() {
             async move {
                 let logger = Logger::new();
                 let total = data.new_value.as_ref().and_then(|v| v["total"].as_f64()).unwrap_or(0.0);
-                logger.info("High-value order detected", &json!({ "key": data.key, "total": total }));
+                logger.info("High-value order detected", Some(json!({ "key": data.key, "total": total })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "state::update".into(),
@@ -114,7 +114,7 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("api::protected-endpoint", |data: HttpRequestEvent| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Authenticated request", &json!({ "path": data.path }));
+            logger.info("Authenticated request", Some(json!({ "path": data.path })));
             Ok(json!({ "message": "Access granted" }))
         })
         .description("Protected API endpoint"),
@@ -150,7 +150,7 @@ fn main() {
             async move {
                 let logger = Logger::new();
                 let order_id = data.order_id.clone().unwrap_or_default();
-                logger.info("Processing order.placed event", &json!({ "orderId": order_id }));
+                logger.info("Processing order.placed event", Some(json!({ "orderId": order_id })));
 
                 iii.trigger(TriggerRequest {
                     function_id: "orders::fulfill".into(),
@@ -170,7 +170,7 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("orders::fulfill", |data: serde_json::Value| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Fulfilling order", &json!({ "orderId": data["order_id"] }));
+            logger.info("Fulfilling order", Some(json!({ "orderId": data["order_id"] })));
             Ok(json!({ "fulfilled": true }))
         })
         .description("Fulfill an order"),
@@ -202,7 +202,7 @@ fn main() {
     iii.register_function(
         RegisterFunction::new("reports::weekday-digest", |_: serde_json::Value| -> Result<serde_json::Value, String> {
             let logger = Logger::new();
-            logger.info("Running weekday digest", &json!({}));
+            logger.info("Running weekday digest", Some(json!({})));
             Ok(json!({ "generated": true }))
         })
         .description("Generate weekday digest report"),

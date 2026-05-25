@@ -49,7 +49,7 @@ fn main() {
                 .await
                 .map_err(|e| e.to_string())?;
 
-                logger.info("User created", &json!({ "event": "user_created", "id": id }));
+                logger.info("User created", Some(json!({ "event": "user_created", "id": id })));
 
                 Ok(json!({
                     "status_code": 201,

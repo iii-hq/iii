@@ -74,7 +74,7 @@ iii.registerFunction(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     auth: {
       type: 'api_key',
-      header_name: 'Authorization',
+      header: 'Authorization',
       value_key: 'STRIPE_API_KEY',
     },
   },

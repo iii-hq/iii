@@ -7,29 +7,45 @@ use crate::sandbox_daemon::{
     overlay::OverlayLayout,
     registry::{SandboxRegistry, SandboxState},
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateRequest {
+    /// Catalog name of the image to boot. Bundled presets are
+    /// `"python"` and `"node"`; pass either string verbatim. The only
+    /// other accepted values are the literal keys of
+    /// `sandbox.custom_images` in `iii.config.yaml` — set by the
+    /// operator. Do NOT pass an OCI ref like
+    /// `"ghcr.io/iii-hq/node:latest"` or `"docker.io/library/node:20"`
+    /// unless that exact string is the catalog key. Unknown values
+    /// return S100 with the allowed set in the error message.
     pub image: String,
+    /// vCPU count; daemon/image default applies when omitted.
     #[serde(default)]
     pub cpus: Option<u32>,
+    /// Memory cap in MiB; daemon/image default applies when omitted.
     #[serde(default)]
     pub memory_mb: Option<u32>,
+    /// Human label surfaced by `sandbox::list`; not an identifier.
     #[serde(default)]
     pub name: Option<String>,
+    /// Whether the VM gets outbound networking; daemon default when omitted.
     #[serde(default)]
     pub network: Option<bool>,
+    /// Auto-stop the VM after this many seconds of inactivity; daemon
+    /// default applies when omitted.
     #[serde(default)]
     pub idle_timeout_secs: Option<u64>,
+    /// `"K=V"` entries injected into the VM's environment.
     #[serde(default)]
     pub env: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CreateResponse {
     pub sandbox_id: String,
     pub image: String,

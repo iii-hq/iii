@@ -1,8 +1,8 @@
 ---
 name: iii-workflow-orchestration
 description: >-
-  Orchestrates durable multi-step workflow pipelines on the iii engine. Use
-  when building order fulfillment, data pipelines, task orchestration, or any
+  Orchestrates durable multi-step workflow pipelines on the iii engine. Use when
+  building order fulfillment, data pipelines, task orchestration, or any
   sequential process requiring retries, backoff, step tracking, scheduled
   cleanup, or dead letter queue (DLQ) handling.
 ---

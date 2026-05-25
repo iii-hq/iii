@@ -122,7 +122,7 @@ async def enqueue_call(data):
     receipt = await iii.trigger_async({
         "function_id": "checkout::charge-payment",
         "payload": {"cart_id": data["cart_id"], "total": data["total"]},
-        "action": TriggerAction.Enqueue({"queue": "payments"}),
+        "action": TriggerAction.Enqueue(queue="payments"),
     })
 
     logger.info("Payment enqueued", {"messageReceiptId": receipt["messageReceiptId"]})
@@ -153,7 +153,7 @@ async def checkout_process(data):
     receipt = await iii.trigger_async({
         "function_id": "checkout::charge-payment",
         "payload": {"cart_id": data["cart_id"], "total": validation["total"]},
-        "action": TriggerAction.Enqueue({"queue": "payments"}),
+        "action": TriggerAction.Enqueue(queue="payments"),
     })
 
     logger.info("Payment queued", {"receiptId": receipt["messageReceiptId"]})

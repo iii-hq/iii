@@ -121,6 +121,31 @@ impl tokio::io::AsyncRead for ChannelReaderAdapter {
 // Request / response types
 // ---------------------------------------------------------------------------
 
+/// File body for `sandbox::fs::write`. Untagged so the JSON shape
+/// decides which variant runs:
+///
+/// - A bare JSON string (`"console.log('hi')"`) → [`WriteContent::Utf8`].
+///   This is what LLM agents naturally pass and the recommended form
+///   for source files / configs / small text.
+/// - An object that matches [`StreamChannelRef`] → [`WriteContent::Stream`].
+///   The existing channel-streaming path for large or binary payloads
+///   coming from a programmatic caller that can construct a channel.
+///
+/// Serde tries variants in declaration order; `Utf8` matches first
+/// because every JSON string deserialises into `String`, and
+/// `StreamChannelRef` requires an object. Binary inline data uses the
+/// separate `content_b64` field on [`WriteRequest`] (not a variant
+/// here, so a caller can't accidentally pass base64 expecting it to be
+/// decoded — they have to opt in by name).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum WriteContent {
+    /// Inline UTF-8 string. Written to the file verbatim.
+    Utf8(String),
+    /// Streaming channel for large / binary uploads.
+    Stream(StreamChannelRef),
+}
+
 #[derive(Debug, Deserialize)]
 pub struct WriteRequest {
     pub sandbox_id: String,
@@ -129,7 +154,15 @@ pub struct WriteRequest {
     pub mode: String,
     #[serde(default)]
     pub parents: bool,
-    pub content: StreamChannelRef,
+    /// File body — pass a UTF-8 string for source/text, or a
+    /// `StreamChannelRef` object for streaming. Mutually exclusive
+    /// with `content_b64`; exactly one of the two must be set.
+    #[serde(default)]
+    pub content: Option<WriteContent>,
+    /// Base64-encoded inline body for small binary payloads.
+    /// Mutually exclusive with `content`.
+    #[serde(default)]
+    pub content_b64: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -184,22 +217,64 @@ pub async fn handle_write_with_reader<R: FsRunner + ?Sized>(
     }
 }
 
-/// Public trigger handler. Constructs a `ChannelReader` from the caller's
-/// `StreamChannelRef` and delegates to `handle_write_with_reader`.
+/// Public trigger handler. Dispatches on the body shape and delegates
+/// to [`handle_write_with_reader`].
+///
+/// Accepts three input shapes (exactly one must be present):
+///
+/// - `content: "<utf-8 string>"` — inline UTF-8 body, wrapped in a
+///   `Cursor` and written verbatim. The path LLM agents naturally take
+///   when they pass `content` as a string. No channel setup required.
+/// - `content_b64: "<base64>"` — inline binary body. Decoded, then
+///   wrapped in a `Cursor` like the UTF-8 form. Use for files with
+///   bytes the JSON layer would mangle (NUL, invalid UTF-8, etc.).
+/// - `content: { reader_ref: …, … }` — a `StreamChannelRef`. The
+///   original streaming path, for large uploads from programmatic
+///   callers that can construct a channel.
 pub async fn handle_write<R: FsRunner + ?Sized>(
     req: WriteRequest,
     registry: &SandboxRegistry,
     runner: &R,
     engine_address: &str,
 ) -> Result<WriteResponse, SandboxError> {
-    let ch_reader = ChannelReader::new(engine_address, &req.content);
-    let adapter = ChannelReaderAdapter::new(ch_reader);
+    use base64::Engine as _;
+    use std::io::Cursor;
+
+    let reader: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match (req.content, req.content_b64)
+    {
+        (Some(WriteContent::Utf8(s)), None) => Box::new(Cursor::new(s.into_bytes())),
+        (Some(WriteContent::Stream(ref_)), None) => {
+            let ch_reader = ChannelReader::new(engine_address, &ref_);
+            Box::new(ChannelReaderAdapter::new(ch_reader))
+        }
+        (None, Some(b64)) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64.as_bytes())
+                .map_err(|e| {
+                    SandboxError::InvalidRequest(format!("content_b64 is not valid base64: {e}"))
+                })?;
+            Box::new(Cursor::new(bytes))
+        }
+        (Some(_), Some(_)) => {
+            return Err(SandboxError::InvalidRequest(
+                "set either `content` (string or StreamChannelRef) or `content_b64`, not both"
+                    .into(),
+            ));
+        }
+        (None, None) => {
+            return Err(SandboxError::InvalidRequest(
+                "missing file body: set `content` (string or StreamChannelRef) or `content_b64`"
+                    .into(),
+            ));
+        }
+    };
+
     handle_write_with_reader(
         req.sandbox_id,
         req.path,
         req.mode,
         req.parents,
-        Box::new(adapter),
+        reader,
         registry,
         runner,
     )
@@ -377,5 +452,141 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code().as_str(), "S002");
+    }
+
+    // ── public handle_write — body-shape dispatch (option A) ────────────
+
+    /// `content: "<utf-8 string>"` is the path agents naturally take.
+    /// It must just work — no channel setup, no base64, write the bytes.
+    #[tokio::test]
+    async fn handle_write_accepts_inline_utf8_content() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner {
+            captured: captured.clone(),
+        };
+        let req = WriteRequest {
+            sandbox_id: id.to_string(),
+            path: "/workspace/app.js".into(),
+            mode: "0644".into(),
+            parents: false,
+            content: Some(WriteContent::Utf8("console.log('hi')\n".into())),
+            content_b64: None,
+        };
+        let resp = handle_write(req, &reg, &runner, "irrelevant")
+            .await
+            .unwrap();
+        assert_eq!(resp.bytes_written, "console.log('hi')\n".len() as u64);
+        assert_eq!(*captured.lock().await, b"console.log('hi')\n");
+    }
+
+    /// `content_b64` is the inline path for binary or shell-fragile bytes.
+    #[tokio::test]
+    async fn handle_write_accepts_inline_content_b64() {
+        use base64::Engine as _;
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner {
+            captured: captured.clone(),
+        };
+        let payload = b"\x00\x01\x02binary\xffbytes";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let req = WriteRequest {
+            sandbox_id: id.to_string(),
+            path: "/workspace/blob.bin".into(),
+            mode: "0644".into(),
+            parents: false,
+            content: None,
+            content_b64: Some(b64),
+        };
+        let resp = handle_write(req, &reg, &runner, "irrelevant")
+            .await
+            .unwrap();
+        assert_eq!(resp.bytes_written, payload.len() as u64);
+        assert_eq!(&*captured.lock().await, payload);
+    }
+
+    #[tokio::test]
+    async fn handle_write_rejects_invalid_base64() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner { captured };
+        let req = WriteRequest {
+            sandbox_id: id.to_string(),
+            path: "/x".into(),
+            mode: "0644".into(),
+            parents: false,
+            content: None,
+            content_b64: Some("not!valid!base64!".into()),
+        };
+        let err = handle_write(req, &reg, &runner, "irrelevant")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "S001");
+        assert!(err.to_string().contains("not valid base64"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn handle_write_rejects_both_content_and_content_b64() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner { captured };
+        let req = WriteRequest {
+            sandbox_id: id.to_string(),
+            path: "/x".into(),
+            mode: "0644".into(),
+            parents: false,
+            content: Some(WriteContent::Utf8("a".into())),
+            content_b64: Some("YQ==".into()),
+        };
+        let err = handle_write(req, &reg, &runner, "irrelevant")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "S001");
+        assert!(err.to_string().contains("not both"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn handle_write_rejects_neither_content_nor_content_b64() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner { captured };
+        let req = WriteRequest {
+            sandbox_id: id.to_string(),
+            path: "/x".into(),
+            mode: "0644".into(),
+            parents: false,
+            content: None,
+            content_b64: None,
+        };
+        let err = handle_write(req, &reg, &runner, "irrelevant")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "S001");
+        assert!(err.to_string().contains("missing file body"), "got: {err}");
+    }
+
+    /// Serde dispatch: a bare JSON string lands as `Utf8`; an object
+    /// matching `StreamChannelRef` lands as `Stream`. We don't test the
+    /// `Stream` path end-to-end here (it requires a live engine for
+    /// `ChannelReader`); the unit test covers the JSON → enum shape.
+    #[tokio::test]
+    async fn write_content_deserialises_string_as_utf8_variant() {
+        let v: WriteContent = serde_json::from_value(serde_json::json!("hello"))
+            .expect("string must deserialise as Utf8");
+        match v {
+            WriteContent::Utf8(s) => assert_eq!(s, "hello"),
+            other => panic!("expected Utf8, got {other:?}"),
+        }
     }
 }

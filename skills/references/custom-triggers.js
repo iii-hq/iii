@@ -1,17 +1,19 @@
 /**
  * Pattern: Custom Triggers
- * Comparable to: Custom event adapters, webhook connectors, polling integrators
+ * Comparable to: Custom event adapters, webhook connectors, subscription bridges
  *
  * Demonstrates how to define entirely new trigger types beyond the built-in
  * http, durable:subscriber, cron, state, and subscribe triggers. A custom trigger type
  * registers handler callbacks that the engine invokes when triggers of that
  * type are created or removed, letting you bridge any external event source
- * (webhooks, file-system watchers, pollers) into the iii function graph.
+ * (webhooks, file-system watchers, message subscriptions) into the iii function graph.
  *
  * How-to references:
  *   - Custom trigger types: https://iii.dev/docs/how-to/create-custom-trigger-type
  */
 
+import fs from 'fs'
+import { EventEmitter } from 'events'
 import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134', {
@@ -25,10 +27,12 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 // ---------------------------------------------------------------------------
 const webhookEndpoints = new Map()
 
-iii.registerTriggerType({
-  id: 'webhook',
-  description: 'Fires when an external service sends an HTTP POST to the registered endpoint',
-  handler: {
+iii.registerTriggerType(
+  {
+    id: 'webhook',
+    description: 'Fires when an external service sends an HTTP POST to the registered endpoint',
+  },
+  {
     // Called when a trigger of this type is created via registerTrigger
     // TriggerConfig shape: { id, function_id, config }
     registerTrigger: async (triggerConfig) => {
@@ -60,20 +64,20 @@ iii.registerTriggerType({
       webhookEndpoints.delete(triggerConfig.id)
     },
   },
-})
+)
 
 // ---------------------------------------------------------------------------
 // Custom trigger type — File watcher
 // Uses fs.watch to fire the bound function whenever a file changes.
 // ---------------------------------------------------------------------------
-import fs from 'fs'
-
 const fileWatchers = new Map()
 
-iii.registerTriggerType({
-  id: 'file-watch',
-  description: 'Fires when a file on the local filesystem changes',
-  handler: {
+iii.registerTriggerType(
+  {
+    id: 'file-watch',
+    description: 'Fires when a file on the local filesystem changes',
+  },
+  {
     registerTrigger: async (triggerConfig) => {
       const { id, function_id, config } = triggerConfig
       const filePath = config.file_path
@@ -97,60 +101,44 @@ iii.registerTriggerType({
       }
     },
   },
-})
+)
 
 // ---------------------------------------------------------------------------
-// Custom trigger type — Polling with ETag
-// Periodically fetches a URL and fires only when the content changes.
+// Custom trigger type — External subscription
+// Bridges an event source that already pushes topic messages.
 // ---------------------------------------------------------------------------
-const pollers = new Map()
+const externalBus = new EventEmitter()
+const topicSubscriptions = new Map()
 
-iii.registerTriggerType({
-  id: 'polling',
-  description: 'Polls a URL at a fixed interval and fires when the ETag changes',
-  handler: {
+iii.registerTriggerType(
+  {
+    id: 'topic-subscription',
+    description: 'Fires when an external event bus publishes to a topic',
+  },
+  {
     registerTrigger: async (triggerConfig) => {
       const { id, function_id, config } = triggerConfig
-      const { url, interval_ms = 30000 } = config
-      let lastETag = null
+      const topic = config.topic
+      const handler = async (message) => {
+        await iii.trigger({
+          function_id,
+          payload: { source: 'topic-subscription', trigger_id: id, topic, data: message },
+        })
+      }
 
-      const timer = setInterval(async () => {
-        try {
-          const res = await fetch(url, {
-            method: 'GET',
-            headers: lastETag ? { 'If-None-Match': lastETag } : {},
-          })
-
-          if (res.status === 304) return // no change
-
-          const etag = res.headers.get('etag')
-          if (etag && etag !== lastETag) {
-            lastETag = etag
-            const body = await res.json()
-
-            await iii.trigger({
-              function_id,
-              payload: { source: 'polling', trigger_id: id, etag, data: body },
-            })
-          }
-        } catch (err) {
-          const logger = new Logger()
-          logger.error('Polling failed', { id, url, error: err.message })
-        }
-      }, interval_ms)
-
-      pollers.set(id, timer)
+      externalBus.on(topic, handler)
+      topicSubscriptions.set(id, { topic, handler })
     },
 
     unregisterTrigger: async (triggerConfig) => {
-      const timer = pollers.get(triggerConfig.id)
-      if (timer) {
-        clearInterval(timer)
-        pollers.delete(triggerConfig.id)
+      const subscription = topicSubscriptions.get(triggerConfig.id)
+      if (subscription) {
+        externalBus.off(subscription.topic, subscription.handler)
+        topicSubscriptions.delete(triggerConfig.id)
       }
     },
   },
-})
+)
 
 // ---------------------------------------------------------------------------
 // Handler function — processes events from any custom trigger above
@@ -177,12 +165,12 @@ iii.registerTrigger({
 })
 
 iii.registerTrigger({
-  type: 'polling',
+  type: 'topic-subscription',
   function_id: 'custom-triggers::on-event',
-  config: { url: 'https://api.example.com/status', interval_ms: 60000 },
+  config: { topic: 'orders.created' },
 })
 
 // ---------------------------------------------------------------------------
 // Cleanup — unregister a trigger type when it is no longer needed
 // ---------------------------------------------------------------------------
-// iii.unregisterTriggerType('polling')
+// iii.unregisterTriggerType({ id: 'topic-subscription', description: 'Fires when an external event bus publishes to a topic' })

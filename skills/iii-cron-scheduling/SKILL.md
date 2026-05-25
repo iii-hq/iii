@@ -3,9 +3,8 @@ name: iii-cron-scheduling
 description: >-
   Registers cron triggers with 7-field expressions to run functions on
   recurring schedules. Use when scheduling periodic jobs, timed automation,
-  crontab replacements, cleanup routines, report generation, health checks,
-  batch processing, or any task that should run every N seconds, minutes, hours,
-  or on a weekly/monthly calendar.
+  crontab replacements, cleanup routines, report generation, batch processing,
+  or calendar-based work that is genuinely time-driven.
 ---
 
 # Cron Scheduling
@@ -19,6 +18,7 @@ Use the concepts below when they fit the task. Not every scheduled job needs all
 - Cron expressions use a **7-field format**: `second minute hour day month weekday year`
 - The cron parser also accepts 5-field (no seconds) and 6-field (no year) expressions, but 7-field is the standard.
 - **iii-cron** evaluates expressions and fires triggers on schedule
+- Install or enable it with `iii worker add iii-cron`
 - Handlers should be **fast** — enqueue heavy work to a queue instead of blocking the cron handler
 - Each cron trigger binds one expression to one function
 - Overlapping schedules are fine; each trigger fires independently
@@ -67,12 +67,13 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-iii-cron must be enabled in iii-config.yaml. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Install/enable iii-cron with `iii worker add iii-cron`. Use the `kv` adapter for one engine instance; use Redis for distributed locking across multiple engine instances. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 
 - If the task is about one-off async work rather than recurring schedules, prefer `iii-queue-processing`.
 - If the trigger should fire on state changes rather than time, prefer `iii-state-reactions`.
+- Do not use cron as a polling loop for iii-native state, stream, queue, or pub/sub changes; use reactive triggers/subscribers instead.
 - Stay with `iii-cron-scheduling` when the primary need is time-based periodic execution.
 
 ## When to Use

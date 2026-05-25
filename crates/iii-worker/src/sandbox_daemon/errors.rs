@@ -256,6 +256,52 @@ impl SandboxError {
     }
 }
 
+/// Display-as-JSON wire adapter for `RegisterFunction::new_async`.
+///
+/// The new async-handler builder collapses errors via `Display`, but the
+/// `sandbox::*` wire contract — preserved across the
+/// `register_function_with` → `register_function` migration — is the
+/// structured payload produced by [`SandboxError::to_payload`]
+/// (`code`/`type`/`message`/`docs_url`/`retryable`). Wrapping the error
+/// in `SandboxErrorWire` and `map_err`-ing into it makes `Display` emit
+/// that JSON, so callers (CLI, agents, engine clients) see the exact
+/// same body they did when handlers wrote
+/// `IIIError::Handler(serde_json::to_string(&e.to_payload())…)` by hand.
+///
+/// SDK contract dependency: this wrapper is load-bearing only as long as
+/// `iii_sdk::IntoAsyncHandler` collapses `E` via `e.to_string()` (i.e.
+/// the `Display` impl). If the SDK ever switches to a structured error
+/// trait or to `Debug`, the wire format will drift silently — the
+/// `sandbox_error_wire_display_matches_to_payload_json` test pins the
+/// local invariant but cannot catch SDK-side regressions. Re-audit this
+/// adapter whenever `iii-sdk`'s handler-error path changes.
+pub struct SandboxErrorWire(pub SandboxError);
+
+impl From<SandboxError> for SandboxErrorWire {
+    fn from(err: SandboxError) -> Self {
+        SandboxErrorWire(err)
+    }
+}
+
+impl std::fmt::Display for SandboxErrorWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Falls back to the inner `thiserror` Display only if the JSON
+        // payload itself cannot be serialized — matching the
+        // `unwrap_or_else(|_| e.to_string())` branch of the legacy
+        // hand-written handlers.
+        match serde_json::to_string(&self.0.to_payload()) {
+            Ok(json) => f.write_str(&json),
+            Err(_) => std::fmt::Display::fmt(&self.0, f),
+        }
+    }
+}
+
+impl std::fmt::Debug for SandboxErrorWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +415,31 @@ mod tests {
                 *expected,
                 "variant {err:?} expected to serialize with code {expected}"
             );
+        }
+    }
+
+    /// Pins the wire format `RegisterFunction::new_async` callers see for
+    /// `sandbox::*` errors. Before the migration, handlers wrote
+    /// `IIIError::Handler(serde_json::to_string(&e.to_payload())…)`
+    /// directly; after, they `map_err` into `SandboxErrorWire` and the
+    /// SDK's async-handler glue calls `Display`. This test asserts both
+    /// paths produce the same JSON bytes, so callers branching on
+    /// `code` / `type` / `retryable` keep working.
+    #[test]
+    fn sandbox_error_wire_display_matches_to_payload_json() {
+        let cases: &[SandboxError] = &[
+            SandboxError::InvalidRequest("cmd must be a single binary".into()),
+            SandboxError::NotFound("11111111-1111-1111-1111-111111111111".into()),
+            SandboxError::ExecTimedOut { timeout_ms: 1500 },
+            SandboxError::FsUnsupported,
+        ];
+        for err in cases {
+            let expected = serde_json::to_string(&err.to_payload()).unwrap();
+            let actual = SandboxErrorWire(err.clone()).to_string();
+            assert_eq!(actual, expected, "wire format drift for {err:?}");
+            // And the embedded code stays parseable by clients.
+            let parsed: serde_json::Value = serde_json::from_str(&actual).unwrap();
+            assert_eq!(parsed["code"], err.code().as_str());
         }
     }
 }

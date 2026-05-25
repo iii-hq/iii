@@ -58,9 +58,8 @@ npm install iii-sdk
 # Python
 pip install iii-sdk
 
-# Rust — add to Cargo.toml
-# [dependencies]
-# iii-sdk = "*"
+# Rust
+cargo add iii-sdk
 ```
 
 ## Step 5: Write Your First Worker
@@ -103,32 +102,32 @@ def greet(data):
     logger.info("Greeting user", {"name": name})
     return {"message": f"Hello, {name}!"}
 
-iii.register_function({"id": "hello::greet", "description": "Greet a user by name"}, greet)
+iii.register_function("hello::greet", greet, description="Greet a user by name")
 iii.register_trigger({"type": "http", "function_id": "hello::greet", "config": {"api_path": "/hello", "http_method": "POST"}})
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, RegisterTriggerInput};
 use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunctionMessage::with_id("hello::greet".into()),
-    |input: serde_json::Value| async move {
+    RegisterFunction::new("hello::greet", |input: serde_json::Value| -> Result<serde_json::Value, String> {
         let logger = Logger::new();
         let name = input["name"].as_str().unwrap_or("world");
-        logger.info("Greeting user", Some(&json!({ "name": name })));
+        logger.info("Greeting user", Some(json!({ "name": name })));
         Ok(json!({ "message": format!("Hello, {}!", name) }))
-    },
+    }).description("Greet a user by name"),
 );
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "hello::greet".into(),
     config: json!({ "api_path": "/hello", "http_method": "POST" }),
+    metadata: None,
 })?;
 ```
 

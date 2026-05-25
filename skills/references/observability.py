@@ -4,9 +4,9 @@ Comparable to: Datadog, Grafana, Honeycomb, OpenTelemetry SDK
 
 iii has built-in OpenTelemetry support for traces, metrics, and logs.
 The Python SDK provides get_context() for trace correlation and Logger
-for structured logging. with_span and get_meter are JS SDK features
-that do not exist in the Python SDK — this file uses what is actually
-available.
+for structured logging. Node examples may use iii.withSpan plus
+@opentelemetry/api metrics, but those are not Python SDK APIs — this
+file uses what is actually available.
 
 How-to references:
   - Telemetry & observability: https://iii.dev/docs/advanced/telemetry

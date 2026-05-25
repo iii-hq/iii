@@ -76,7 +76,7 @@ async def submit_payment(data):
     receipt = await iii.trigger_async({
         "function_id": "payments::charge",
         "payload": {"order_id": order_id, "amount": amount},
-        "action": TriggerAction.Enqueue({"queue": "payment"}),
+        "action": TriggerAction.Enqueue(queue="payment"),
     })
 
     logger.info("Payment enqueued", {"receiptId": receipt["messageReceiptId"]})
