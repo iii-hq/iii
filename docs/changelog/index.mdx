@@ -5,6 +5,57 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.13.0" description="May 2026">
+  ## Telemetry re-exports removed from public SDK surface
+
+  **Breaking.** Convenience re-exports of OpenTelemetry accessors were dropped from the Rust, Node, Python, and browser SDKs. Underlying behavior is unchanged — only the public surface is smaller. Users who need a tracer or meter directly should depend on the OpenTelemetry library for their language.
+
+  Removed symbols by language:
+
+  | Symbol | Rust (`iii::*`) | Node (`iii-sdk/telemetry`) | Python (`iii.telemetry` / `iii.logger`) | Browser |
+  |---|---|---|---|---|
+  | `get_tracer` / `getTracer` | dropped (still at `iii::telemetry::get_tracer`) | dropped | renamed `_get_tracer` | already absent (asserted) |
+  | `get_meter` / `getMeter` | dropped (still at `iii::telemetry::get_meter`) | dropped | renamed `_get_meter` | already absent (asserted) |
+  | `is_initialized` | dropped (still at `iii::telemetry::is_initialized`) | n/a | renamed `_is_initialized` | already absent (asserted) |
+  | `SpanKind` | dropped (use `opentelemetry::trace::SpanKind`) | n/a | n/a | already absent (asserted) |
+  | `SpanStatus` / `SpanStatusCode` | dropped (use `opentelemetry::trace::Status`) | dropped | n/a | already absent (asserted) |
+
+  ### Migration
+
+  - For custom spans, prefer `withSpan` / `with_span` / `run_in_span`. These preserve trace context.
+  - To obtain a tracer or meter directly, depend on `@opentelemetry/api` (Node) or the `opentelemetry` crate / Python package and call its accessors. Rust users can also keep using `iii::telemetry::get_tracer` / `iii::telemetry::get_meter`.
+
+  ```typescript
+  // Before (Node)
+  import { getTracer, getMeter, SpanStatusCode } from 'iii-sdk/telemetry'
+
+  // After (Node)
+  import { trace, metrics, SpanStatusCode } from '@opentelemetry/api'
+  const tracer = trace.getTracer('my-service')
+  const meter = metrics.getMeter('my-service')
+  ```
+
+  ```rust
+  // Before (Rust)
+  use iii::{get_tracer, get_meter, SpanKind, SpanStatus};
+
+  // After (Rust)
+  use opentelemetry::global;
+  use opentelemetry::trace::{SpanKind, Status};
+  let meter = global::meter("my-service");
+  ```
+
+  ```python
+  # Before (Python)
+  from iii.telemetry import get_tracer, get_meter, is_initialized
+
+  # After (Python)
+  from opentelemetry import trace, metrics
+  tracer = trace.get_tracer("my-service")
+  meter = metrics.get_meter("my-service")
+  ```
+</Update>
+
 <Update label="0.12.0" description="May 2026">
   ## `iii sandbox` subcommand removed
 

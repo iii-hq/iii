@@ -37,6 +37,13 @@ impl EventSink for StderrSink {
             WorkerOpEvent::PullProgress { worker, fraction } => {
                 eprintln!("  ↓ {} {:.0}%", worker.bold(), fraction * 100.0);
             }
+            WorkerOpEvent::Failed {
+                op: _,
+                worker,
+                error,
+            } => {
+                eprintln!("  {} {}: {}", "error:".red(), worker.bold(), error);
+            }
         }
     }
 }

@@ -21,8 +21,29 @@ pub async fn run(
             op: "remove",
             worker: name.clone(),
         });
+        events.emit(WorkerOpEvent::Stage {
+            op: "remove",
+            stage: "removing",
+            worker: name.clone(),
+        });
     }
-    let outcome = shim.remove(opts, ctx, events).await?;
+    let names_for_failure = opts.names.clone();
+    let outcome = match shim.remove(opts, ctx, events).await {
+        Ok(o) => o,
+        Err(e) => {
+            // Emit `failed` for every name we previously announced as
+            // started — the shim doesn't tell us which subset failed,
+            // and partial-remove isn't a thing today.
+            for name in &names_for_failure {
+                events.emit(WorkerOpEvent::Failed {
+                    op: "remove",
+                    worker: name.clone(),
+                    error: e.to_string(),
+                });
+            }
+            return Err(e);
+        }
+    };
     for name in &outcome.removed {
         events.emit(WorkerOpEvent::Done {
             op: "remove",

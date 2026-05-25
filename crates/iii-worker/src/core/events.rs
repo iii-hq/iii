@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 /// Progress events emitted during long-running ops. CLI binds this to
-/// stderr; the daemon binds this to `tracing::info!` events.
+/// stderr; the daemon binds this to the `worker` SDK trigger type.
 #[derive(Debug, Clone)]
 pub enum WorkerOpEvent {
     Started {
@@ -23,6 +23,14 @@ pub enum WorkerOpEvent {
     Done {
         op: &'static str,
         worker: String,
+    },
+    /// Terminal failure event. Emitted by orchestrators before
+    /// returning an `Err` from the host shim so subscribers see the
+    /// lifecycle terminate cleanly alongside the typed error envelope.
+    Failed {
+        op: &'static str,
+        worker: String,
+        error: String,
     },
 }
 
