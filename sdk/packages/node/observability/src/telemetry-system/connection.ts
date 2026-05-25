@@ -116,7 +116,11 @@ export class SharedEngineConnection {
 
       // Notify failed callbacks so exporters can drain their own queues
       for (const cb of this.onFailedCallbacks) {
-        cb()
+        try {
+          cb()
+        } catch (err) {
+          console.error('[OTel] onFailed callback threw:', err)
+        }
       }
       return
     }
@@ -180,7 +184,11 @@ export class SharedEngineConnection {
   onFailed(callback: () => void): void {
     this.onFailedCallbacks.push(callback)
     if (this.state === 'failed') {
-      callback()
+      try {
+        callback()
+      } catch (err) {
+        console.error('[OTel] onFailed callback threw:', err)
+      }
     }
   }
 

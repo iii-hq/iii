@@ -9,7 +9,8 @@
 ///   - HttpFunctionsModule enabled in iii engine config
 ///   - Env vars: SLACK_WEBHOOK_TOKEN, STRIPE_API_KEY, ORDER_WEBHOOK_SECRET
 
-use iii_sdk::{HttpAuthConfig, HttpInvocationConfig, IIITrigger, InitOptions, Logger, RegisterFunction, TriggerAction, TriggerRequest, builtin_triggers::*, protocol::HttpMethod as ProtoHttpMethod, register_worker};
+use iii_observability::Logger;
+use iii_sdk::{HttpAuthConfig, HttpInvocationConfig, IIITrigger, InitOptions, RegisterFunction, TriggerAction, TriggerRequest, builtin_triggers::*, protocol::HttpMethod as ProtoHttpMethod, register_worker};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;

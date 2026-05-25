@@ -50,7 +50,14 @@ export async function executeTracedRequest(
     },
     async (span) => {
       try {
-        const headers = new Headers(init?.headers)
+        // Seed with the Request's own headers so they survive when caller
+        // passes a Request object; init.headers (if any) then overrides.
+        const baseHeaders =
+          typeof input === 'object' && 'headers' in input ? input.headers : undefined
+        const headers = new Headers(baseHeaders)
+        if (init?.headers) {
+          for (const [k, v] of new Headers(init.headers).entries()) headers.set(k, v)
+        }
         const carrier: Record<string, string> = {}
         propagation.inject(otelContext.active(), carrier)
         for (const [k, v] of Object.entries(carrier)) headers.set(k, v)

@@ -17,7 +17,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-rust>
 
 Add to `Cargo.toml`:
 
-`iii-sdk = { version = "0.10", features = ["otel"] }`
+`iii-sdk = { version = "0.13", features = ["otel"] }`
 
 ## Key Types and Functions
 

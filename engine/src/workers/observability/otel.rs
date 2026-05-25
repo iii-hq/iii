@@ -803,6 +803,7 @@ where
                     );
 
                     SdkTracerProvider::builder()
+                        .with_span_processor(iii_observability::BaggageSpanProcessor::default())
                         .with_batch_exporter(tee_exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
