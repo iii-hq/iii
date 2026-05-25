@@ -25,11 +25,9 @@ called while `main` is still running.
 ```rust
 use iii_sdk::{register_worker, InitOptions};
 
-fn main() {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    // register functions, handle events, etc.
-    iii.shutdown(); // cleanly stops the connection thread
-}
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
+// register functions, handle events, etc.
+iii.shutdown(); // cleanly stops the connection thread
 ```
 
 ## Methods
@@ -55,8 +53,8 @@ set_headers(headers: HashMap<String, String>)
 Shutdown the III client and wait for the connection thread to finish.
 
 This stops the connection loop, sends a shutdown signal, and joins
-the background connection thread. When the `otel` feature is enabled,
-telemetry is flushed inside the connection thread before it exits.
+the background connection thread. Telemetry is flushed inside the
+connection thread before it exits.
 
 **Signature**
 
@@ -73,10 +71,10 @@ does not join `connection_thread`.
 
 Unlike [`shutdown`](#shutdown), this method does **not** block
 to wait for `run_connection()` to finish, making it safe to call from
-an async context without stalling the executor. When the `otel`
-feature is enabled, `telemetry::shutdown_otel()` still runs inside the
-connection thread after `run_connection()` returns, so it may not
-complete unless [`shutdown`](#shutdown) is used to join the thread.
+an async context without stalling the executor.
+`telemetry::shutdown_otel()` still runs inside the connection thread
+after `run_connection()` returns, so it may not complete unless
+[`shutdown`](#shutdown) is used to join the thread.
 
 **Signature**
 
@@ -88,54 +86,44 @@ async shutdown_async()
 
 Register a function with the engine.
 
-Pass a closure/async fn for local execution, or an [`HttpInvocationConfig`]
-for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+Argument order matches the Node and Python SDKs:
+`(id, registration)`.
 
 **Signature**
 
 ```rust
-register_function(registration: R) -> FunctionRef
+register_function(id: impl Into<String>, registration: RegisterFunction) -> FunctionRef
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `registration` | `R` | Yes | - |
+| `id` | `impl Into<String>` | Yes | Function identifier. |
+| `registration` | `RegisterFunction` | Yes | Built via [`RegisterFunction::new`], [`RegisterFunction::new_async`], [`RegisterFunction::new_async`], or [`RegisterFunction::http`]. Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`, `.response_format(...)` as needed. |
 
 #### Example
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
-use serde::Deserialize;
+use iii_sdk::{register_worker, InitOptions, IIIError, RegisterFunction};
+use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 
 #[derive(Deserialize, JsonSchema)]
 struct Input { name: String }
-fn greet(input: Input) -> Result<String, String> {
-    Ok(format!("Hello, {}!", input.name))
+#[derive(Serialize, JsonSchema)]
+struct Output { message: String }
+
+async fn greet(input: Input) -> Result<Output, IIIError> {
+    Ok(Output { message: format!("Hello, {}!", input.name) })
 }
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
-iii.register_function(RegisterFunction::new("greet", greet));
+iii.register_function(
+    "greet",
+    RegisterFunction::new_async(greet).description("Greets a user"),
+);
 ```
-
-### register_function_with
-
-Register a function with a message and handler directly.
-
-**Signature**
-
-```rust
-register_function_with(message: RegisterFunctionMessage, handler: H) -> FunctionRef
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `message` | [`RegisterFunctionMessage`](#registerfunctionmessage) | Yes | - |
-| `handler` | `H` | Yes | - |
 
 ### register_service
 
@@ -182,7 +170,7 @@ let my_trigger = iii.register_trigger_type(
 );
 
 // Compile-time safe: config must be MyConfig, function input must be MyRequest
-my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, String> {
+my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
     Ok(serde_json::json!({ "data": req.data }))
 });
 my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
@@ -218,7 +206,7 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, IIIError>
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `input` | `RegisterTriggerInput` | Yes | Trigger registration input with trigger_type, function_id, config, and optional metadata. |
+| `input` | `RegisterTriggerInput` | Yes | Trigger registration input with trigger_type, function_id, and config. |
 
 #### Example
 
@@ -419,7 +407,7 @@ logger.debug("Cache lookup", Some(json!({ "key": "user:42", "hit": false })));
 
 ## Types
 
-[`InitOptions`](#initoptions) · [`IIIError`](#iiierror) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerRequest`](#triggerrequest) · [`TriggerAction`](#triggeraction) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpMethod`](#httpmethod) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ChannelDirection`](#channeldirection) · [`StreamChannelRef`](#streamchannelref) · [`FunctionInfo`](#functioninfo) · [`FunctionRef`](#functionref) · [`TriggerInfo`](#triggerinfo) · [`WorkerInfo`](#workerinfo) · [`WorkerMetadata`](#workermetadata) · [`Trigger`](#trigger) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceMessage`](#registerservicemessage) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
+[`InitOptions`](#initoptions) · [`IIIError`](#iiierror) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerRequest`](#triggerrequest) · [`TriggerAction`](#triggeraction) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ChannelDirection`](#channeldirection) · [`StreamChannelRef`](#streamchannelref) · [`FunctionRef`](#functionref) · [`WorkerMetadata`](#workermetadata) · [`Trigger`](#trigger) · [`RegisterServiceMessage`](#registerservicemessage) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
 
 ### InitOptions
 
@@ -429,7 +417,7 @@ Configuration options passed to [`register_worker`].
 | --- | --- | --- | --- |
 | `metadata` | Option&lt;[`WorkerMetadata`](#workermetadata)&gt; | No | Custom worker metadata. Auto-detected if `None`. |
 | `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake. |
-| `otel` | Option&lt;[`OtelConfig`](#otelconfig)&gt; | No | OpenTelemetry configuration. Requires the `otel` feature. |
+| `otel` | Option&lt;[`OtelConfig`](#otelconfig)&gt; | No | OpenTelemetry configuration. |
 
 ### IIIError
 
@@ -482,43 +470,6 @@ the invocation.
 | `Enqueue` | `{ queue: String }` | Yes | Routes the invocation through a named queue. |
 | `Void` | `unit` | Yes | Fire-and-forget routing. |
 
-### HttpInvocationConfig
-
-Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
-Workers, etc.) instead of a local handler.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `url` | `String` | Yes | - |
-| `method` | [`HttpMethod`](#httpmethod) | Yes | - |
-| `timeout_ms` | `Option<u64>` | No | - |
-| `headers` | `HashMap<String, String>` | Yes | - |
-| `auth` | Option&lt;[`HttpAuthConfig`](#httpauthconfig)&gt; | No | - |
-
-### HttpAuthConfig
-
-Authentication configuration for HTTP-invoked functions.
-
-- `Hmac` -- HMAC signature verification using a shared secret.
-- `Bearer` -- Bearer token authentication.
-- `ApiKey` -- API key sent via a custom header.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Hmac` | `{ secret_key: String }` | Yes | - |
-| `Bearer` | `{ token_key: String }` | Yes | - |
-| `ApiKey` | `{ header: String, value_key: String }` | Yes | - |
-
-### HttpMethod
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Get` | `unit` | Yes | - |
-| `Post` | `unit` | Yes | - |
-| `Put` | `unit` | Yes | - |
-| `Patch` | `unit` | Yes | - |
-| `Delete` | `unit` | Yes | - |
-
 ### Channel
 
 A streaming channel pair for worker-to-worker data transfer.
@@ -566,54 +517,12 @@ WebSocket-backed writer for streaming binary data and text messages.
 | `access_key` | `String` | Yes | - |
 | `direction` | [`ChannelDirection`](#channeldirection) | Yes | - |
 
-### FunctionInfo
-
-Function information returned by `engine::functions::list`
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `function_id` | `String` | Yes | - |
-| `description` | `Option<String>` | No | - |
-| `request_format` | `Option<Value>` | No | - |
-| `response_format` | `Option<Value>` | No | - |
-| `metadata` | `Option<Value>` | No | - |
-
 ### FunctionRef
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `String` | Yes | - |
 | `unregister` | `fn()` | Yes | - |
-
-### TriggerInfo
-
-Trigger information returned by `engine::triggers::list`
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | `String` | Yes | - |
-| `trigger_type` | `String` | Yes | - |
-| `function_id` | `String` | Yes | - |
-| `config` | `Value` | Yes | - |
-| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
-
-### WorkerInfo
-
-Worker information returned by `engine::workers::list`
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | `String` | Yes | - |
-| `name` | `Option<String>` | No | - |
-| `runtime` | `Option<String>` | No | - |
-| `version` | `Option<String>` | No | - |
-| `os` | `Option<String>` | No | - |
-| `ip_address` | `Option<String>` | No | - |
-| `status` | `String` | Yes | - |
-| `connected_at_ms` | `u64` | Yes | - |
-| `function_count` | `usize` | Yes | - |
-| `functions` | `Vec<String>` | Yes | - |
-| `active_invocations` | `usize` | Yes | - |
 
 ### WorkerMetadata
 
@@ -627,6 +536,7 @@ Worker metadata for auto-registration
 | `os` | `String` | Yes | - |
 | `pid` | `Option<u32>` | No | - |
 | `telemetry` | `Option<WorkerTelemetryMeta>` | No | - |
+| `isolation` | `Option<String>` | No | - |
 
 ### Trigger
 
@@ -636,20 +546,6 @@ Call `unregister` to remove the trigger from the engine.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `unregister` | `fn()` | Yes | Remove this trigger from the engine. |
-
-### RegisterFunctionMessage
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | `String` | Yes | - |
-| `description` | `Option<String>` | No | - |
-| `request_format` | `Option<Value>` | No | - |
-| `response_format` | `Option<Value>` | No | - |
-| `metadata` | `Option<Value>` | No | - |
-| `invocation` | Option&lt;[`HttpInvocationConfig`](#httpinvocationconfig)&gt; | No | - |
-| `with_id` | `fn(name: String) -> Self` | Yes | - |
-| `with_description` | `fn(description: String) -> Self` | Yes | - |
-| `to_message` | `fn() -> Message` | Yes | - |
 
 ### RegisterServiceMessage
 

@@ -199,7 +199,7 @@ Register a logical service grouping with the engine.
 
 Services provide an organisational hierarchy for functions.  A
 service can optionally reference a ``parent_service_id`` to form
-a tree visible in the console.
+a tree visible in the engine dashboard.
 
 **Signature**
 
@@ -529,7 +529,27 @@ logger.warn('Retry attempt', {'attempt': 3, 'max_retries': 5, 'endpoint': '/api/
 
 ## Types
 
-[`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`OtelConfig`](#otelconfig) · [`TriggerHandler`](#triggerhandler)
+[`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`TriggerAction`](#triggeraction) · [`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`EnqueueResult`](#enqueueresult) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`StreamChannelRef`](#streamchannelref) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`EngineLogExporter`](#enginelogexporter) · [`EngineMetricsExporter`](#enginemetricsexporter) · [`OtelConfig`](#otelconfig) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerTypeRef`](#triggertyperef) · [`Channel`](#channel)
+
+### ChannelReader
+
+WebSocket-backed reader for streaming binary data and text messages.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | `Any` | No | - |
+
+### ChannelWriter
+
+WebSocket-backed writer for streaming binary data and text messages.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | `Any` | No | - |
+
+### TriggerAction
+
+Factory for creating trigger actions used with ``trigger()``.
 
 ### InitOptions
 
@@ -564,9 +584,17 @@ Telemetry metadata to be reported to the engine.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `amplitude_api_key` | `str \| None` | No | Amplitude API key for product analytics. |
-| `framework` | `str \| None` | No | Framework name, if applicable. |
+| `framework` | `str \| None` | No | Framework name (e.g. ``motia``) if applicable. |
 | `language` | `str \| None` | No | Programming language of the worker (e.g. ``python``). |
 | `project_name` | `str \| None` | No | Name of the project this worker belongs to. |
+
+### EnqueueResult
+
+Result returned when a function is invoked with ``TriggerAction.Enqueue``.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messageReceiptId` | `str` | No | UUID assigned by the engine to the enqueued job. |
 
 ### HttpInvocationConfig
 
@@ -626,6 +654,16 @@ Input for registering a trigger type.
 | `id` | `str` | No | Unique identifier for the trigger type. |
 | `trigger_request_format` | `Any \| None` | No | JSON Schema describing the expected trigger config. |
 
+### StreamChannelRef
+
+Reference to a streaming channel for worker-to-worker data transfer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `str` | No | Secret key for authenticating channel access. |
+| `channel_id` | `str` | No | Unique channel identifier. |
+| `direction` | `Literal['read', 'write']` | No | Channel direction (``read`` or ``write``). |
+
 ### TriggerActionEnqueue
 
 Routes the invocation through a named queue for async processing.
@@ -658,6 +696,16 @@ Request object for ``trigger()``.
 
 Abstract interface for stream operations.
 
+### EngineLogExporter
+
+LogExporter that sends OTLP JSON over the engine WebSocket connection.
+
+### EngineMetricsExporter
+
+MetricExporter that sends OTLP JSON over the engine WebSocket connection.
+
+Implements the PushMetricExporter interface from opentelemetry.sdk.metrics.export.
+
 ### OtelConfig
 
 Configuration for OpenTelemetry initialization.
@@ -677,6 +725,30 @@ Configuration for OpenTelemetry initialization.
 | `service_namespace` | `str \| None` | No | Service namespace attribute. |
 | `service_version` | `str \| None` | No | Service version. Defaults to env SERVICE_VERSION or 'unknown'. |
 
+### Trigger
+
+Represents a registered trigger.
+
 ### TriggerHandler
 
 Abstract base class for trigger handlers.
+
+### TriggerTypeRef
+
+Typed handle returned by :meth:`III.register_trigger_type`.
+
+Type parameters:
+
+- ``C`` — configuration type for :meth:`register_trigger`
+- ``R`` — call-request type for :meth:`register_function`
+
+### Channel
+
+A streaming channel pair for worker-to-worker data transfer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reader` | [`ChannelReader`](#channelreader) | Yes | - |
+| `reader_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
+| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
+| `writer_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
