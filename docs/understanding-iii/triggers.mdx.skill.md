@@ -80,34 +80,3 @@ Trigger fires, the Engine invokes the condition function with the same payload t
 receive. If the condition returns a truthy value, the handler runs; if not, the invocation is
 skipped. Use this when the same event source should sometimes fire the Function and sometimes not,
 without splitting the Trigger into separate event-source registrations.
-
-## Registration errors
-
-When the Engine cannot register a Trigger — most commonly because the Trigger type's Worker is not
-active in the project — it sends a `TriggerRegistrationResult` with an `error` body back to the
-Worker that initiated the request. The SDK logs the error at `ERROR` level so the user sees it
-during development.
-
-For built-in Trigger types — `http`, `cron`, `subscribe`, `state`, `durable:subscriber`, `stream`,
-`stream:join`, `stream:leave`, and `log` — the error message includes the install command for the
-missing Worker (the exact name reported matches what the Worker registers, e.g. `stream:join`
-rather than the generic `stream`). For unknown Trigger types that are not built-in, the error
-message points to the workers directory at <https://workers.iii.dev/>.
-
-Example log line when `iii-http` is not active:
-
-```
-[iii] Trigger registration failed for "1c1b…" (http): Trigger type "http" not found — worker iii-http is missing. Run: iii worker add iii-http
-```
-
-Example log line for an unknown non-built-in Trigger type:
-
-```
-[iii] Trigger registration failed for "1c1b…" (my-custom-trigger): Trigger type "my-custom-trigger" not found. Search for a worker that provides this trigger type at https://workers.iii.dev/
-```
-
-Logging targets per SDK:
-
-- **Node** — `console.error`
-- **Python** — the `iii` logger, level `ERROR`
-- **Rust** — `tracing::error!`
