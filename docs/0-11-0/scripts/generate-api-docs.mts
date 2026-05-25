@@ -61,7 +61,11 @@ function filterReferencedTypes(doc: SdkDoc): SdkDoc {
         referenced.add(name)
         const typeDef = typesByName.get(name)
         if (typeDef) {
-          for (const field of typeDef.fields) scan(field.type)
+          scan(typeDef.description)
+          for (const field of typeDef.fields) {
+            scan(field.type)
+            scan(field.description)
+          }
           if (typeDef.codeBlock) scan(typeDef.codeBlock)
         }
       }
@@ -69,9 +73,15 @@ function filterReferencedTypes(doc: SdkDoc): SdkDoc {
   }
 
   function scanFunction(fn: FunctionDoc) {
-    for (const param of fn.params) scan(param.type)
+    for (const param of fn.params) {
+      scan(param.type)
+      scan(param.description)
+    }
     scan(fn.returns.type)
+    scan(fn.returns.description)
     scan(fn.signature)
+    scan(fn.description)
+    for (const example of fn.examples) scan(example)
   }
 
   scanFunction(doc.initialization.entryPoint)

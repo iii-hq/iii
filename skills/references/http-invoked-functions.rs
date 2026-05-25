@@ -9,12 +9,7 @@
 ///   - HttpFunctionsModule enabled in iii engine config
 ///   - Env vars: SLACK_WEBHOOK_TOKEN, STRIPE_API_KEY, ORDER_WEBHOOK_SECRET
 
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, RegisterFunctionMessage,
-    TriggerRequest, TriggerAction, HttpInvocationConfig, HttpAuthConfig,
-    builtin_triggers::*, IIITrigger, Logger,
-    protocol::HttpMethod as ProtoHttpMethod,
-};
+use iii_sdk::{HttpAuthConfig, HttpInvocationConfig, IIITrigger, InitOptions, Logger, RegisterFunction, TriggerAction, TriggerRequest, builtin_triggers::*, protocol::HttpMethod as ProtoHttpMethod, register_worker};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -54,28 +49,25 @@ fn main() {
     ];
 
     for (path, id) in legacy_endpoints {
-        let mut msg = RegisterFunctionMessage::with_id(id.into())
-            .with_description(format!("Proxy legacy endpoint {path}"));
-
-        iii.register_function_with(
-            msg,
-            HttpInvocationConfig {
+        iii.register_function(
+            id,
+            RegisterFunction::http(HttpInvocationConfig {
                 url: format!("{legacy_base_url}{path}"),
                 method: ProtoHttpMethod::Post,
                 timeout_ms: Some(8000),
                 headers: HashMap::new(),
                 auth: None,
-            },
+            })
+                .description(format!("Proxy legacy endpoint {path}")),
         );
     }
 
     // ---
     // HTTP-invoked function: Slack webhook (bearer auth)
     // ---
-    iii.register_function_with(
-        RegisterFunctionMessage::with_id("integrations::slack-notify".into())
-            .with_description("POST notification to Slack webhook".into()),
-        HttpInvocationConfig {
+    iii.register_function(
+        "integrations::slack-notify",
+        RegisterFunction::http(HttpInvocationConfig {
             url: "https://hooks.slack.example.com/services/incoming".into(),
             method: ProtoHttpMethod::Post,
             timeout_ms: Some(5000),
@@ -87,16 +79,16 @@ fn main() {
             auth: Some(HttpAuthConfig::Bearer {
                 token_key: "SLACK_WEBHOOK_TOKEN".into(),
             }),
-        },
+        })
+            .description("POST notification to Slack webhook".into()),
     );
 
     // ---
     // HTTP-invoked function: Stripe charges (api_key auth)
     // ---
-    iii.register_function_with(
-        RegisterFunctionMessage::with_id("integrations::stripe-charge".into())
-            .with_description("Create a charge via Stripe API".into()),
-        HttpInvocationConfig {
+    iii.register_function(
+        "integrations::stripe-charge",
+        RegisterFunction::http(HttpInvocationConfig {
             url: "https://api.stripe.example.com/v1/charges".into(),
             method: ProtoHttpMethod::Post,
             timeout_ms: Some(10000),
@@ -109,31 +101,31 @@ fn main() {
                 header: "Authorization".into(),
                 value_key: "STRIPE_API_KEY".into(),
             }),
-        },
+        })
+            .description("Create a charge via Stripe API".into()),
     );
 
     // ---
     // HTTP-invoked function: Analytics endpoint (no auth)
     // ---
-    iii.register_function_with(
-        RegisterFunctionMessage::with_id("integrations::analytics-track".into())
-            .with_description("POST event to analytics service".into()),
-        HttpInvocationConfig {
+    iii.register_function(
+        "integrations::analytics-track",
+        RegisterFunction::http(HttpInvocationConfig {
             url: "https://analytics.internal.example.com/events".into(),
             method: ProtoHttpMethod::Post,
             timeout_ms: Some(3000),
             headers: HashMap::new(),
             auth: None,
-        },
+        })
+            .description("POST event to analytics service".into()),
     );
 
     // ---
     // HTTP-invoked function: Order status webhook (hmac auth)
     // ---
-    iii.register_function_with(
-        RegisterFunctionMessage::with_id("integrations::order-webhook".into())
-            .with_description("POST order status change to fulfillment partner".into()),
-        HttpInvocationConfig {
+    iii.register_function(
+        "integrations::order-webhook",
+        RegisterFunction::http(HttpInvocationConfig {
             url: "https://fulfillment.partner.example.com/webhooks/orders".into(),
             method: ProtoHttpMethod::Post,
             timeout_ms: Some(5000),
@@ -141,7 +133,8 @@ fn main() {
             auth: Some(HttpAuthConfig::Hmac {
                 secret_key: "ORDER_WEBHOOK_SECRET".into(),
             }),
-        },
+        })
+            .description("POST order status change to fulfillment partner".into()),
     );
 
     // ---
