@@ -8,7 +8,8 @@ description: "API reference for the iii SDK for Node.js / TypeScript."
 ## Installation
 
 ```bash
-npm install iii-sdk
+pnpm add iii-sdk
+# or: npm install iii-sdk
 ```
 
 ## Initialization
@@ -187,7 +188,7 @@ registerTrigger(trigger: RegisterTriggerInput) => Trigger
 const trigger = iii.registerTrigger({
   type: 'cron',
   function_id: 'my-service::process-batch',
-  config: { schedule: '*/5 * * * *' },
+  config: { expression: '0 */5 * * * * *' },
 })
 
 // Later, remove the trigger
@@ -214,13 +215,13 @@ registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandl
 #### Example
 
 ```typescript
-type CronConfig = { schedule: string }
+type CronConfig = { expression: string }
 
 iii.registerTriggerType<CronConfig>(
   { id: 'cron', description: 'Fires on a cron schedule' },
   {
     async registerTrigger({ id, function_id, config }) {
-      startCronJob(id, config.schedule, () =>
+      startCronJob(id, config.expression, () =>
         iii.trigger({ function_id, payload: {} }),
       )
     },

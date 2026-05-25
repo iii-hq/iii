@@ -5,30 +5,6 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.14.0" description="May 2026">
-  ## Single `register_function` entry point in the Rust SDK
-
-  **Breaking.** The Rust SDK's function registration is collapsed into a single entry point that mirrors Node and Python:
-
-  ```rust
-  iii.register_function("greet", RegisterFunction::new(greet));
-  iii.register_function(
-      "http::fetch",
-      RegisterFunction::new_async(fetch).description("Fetches a URL"),
-  );
-  iii.register_function(
-      "ext::lambda",
-      RegisterFunction::http(http_config),
-  );
-  ```
-
-  `RegisterFunction` carries the handler plus all optional metadata. There are three constructors — `new`, `new_async`, `http` — and `Value` is accepted by `new` / `new_async`, so no separate `untyped` constructor is needed. `register_function_with`, the tuple form, `untyped`, `IntoFunctionRegistration`, `IntoFunctionHandler`, `RegisterFunctionOptions`, `iii_fn`, `iii_async_fn`, `IIIFn`, and `IIIAsyncFn` are removed.
-
-  Handler error type is fixed to `IIIError`. `IIIError` now implements `From<String>` / `From<&str>` so existing `Result<R, String>` handlers can migrate by updating the return type and relying on `?`-propagation.
-
-  See [the migration entry](/changelog/0-14-0/align-rust-register-function-with-signature) for the full before/after diff, builder methods, and step-by-step migration.
-</Update>
-
 <Update label="0.13.0" description="May 2026">
   ## Telemetry re-exports removed from public SDK surface
 
