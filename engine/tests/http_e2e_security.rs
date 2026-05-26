@@ -23,6 +23,7 @@ fn make_endpoint<'a>(
         timeout_ms,
         headers,
         auth,
+        trusted_internal: false,
     }
 }
 

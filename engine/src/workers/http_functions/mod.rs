@@ -66,6 +66,7 @@ impl HttpFunctionsWorker {
                     timeout_ms: &timeout_ms,
                     headers: &headers,
                     auth: &auth,
+                    trusted_internal: config.trusted_internal,
                 };
 
                 match invoker
@@ -90,15 +91,17 @@ impl HttpFunctionsWorker {
         &self,
         config: HttpFunctionConfig,
     ) -> Result<(), ErrorBody> {
-        self.http_invoker
-            .url_validator()
-            .validate(&config.url)
-            .await
-            .map_err(|e| ErrorBody {
-                code: "url_validation_failed".into(),
-                message: e.to_string(),
-                stacktrace: None,
-            })?;
+        if !config.trusted_internal {
+            self.http_invoker
+                .url_validator()
+                .validate(&config.url)
+                .await
+                .map_err(|e| ErrorBody {
+                    code: "url_validation_failed".into(),
+                    message: e.to_string(),
+                    stacktrace: None,
+                })?;
+        }
 
         let auth = config.auth.as_ref().map(resolve_auth_ref).transpose()?;
 
@@ -122,7 +125,13 @@ impl HttpFunctionsWorker {
     }
 
     pub async fn unregister_http_function(&self, function_path: &str) -> Result<(), ErrorBody> {
-        self.http_functions.remove(function_path);
+        if self.http_functions.remove(function_path).is_none() {
+            return Err(ErrorBody {
+                code: "function_not_found".to_string(),
+                message: format!("HTTP function {function_path} not found"),
+                stacktrace: None,
+            });
+        }
         self.engine.functions.remove(function_path);
         Ok(())
     }
@@ -174,7 +183,11 @@ impl Worker for HttpFunctionsWorker {
     }
 }
 
-crate::register_worker!("iii-http-functions", HttpFunctionsWorker);
+crate::register_worker!(
+    "iii-http-functions",
+    HttpFunctionsWorker,
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {
@@ -321,6 +334,7 @@ mod tests {
             request_format: None,
             response_format: None,
             metadata: None,
+            trusted_internal: false,
             registered_at: None,
             updated_at: None,
         }
@@ -469,6 +483,35 @@ mod tests {
             _ => panic!("expected url validation failure"),
         }
         assert!(!module.http_functions.contains_key("remote.bad"));
+    }
+
+    #[tokio::test]
+    async fn register_http_function_skips_url_validation_when_trusted_internal() {
+        ensure_default_meter();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = build_module(engine);
+
+        let mut config = make_function_config("trusted.bad", "://bad-url".to_string());
+        config.trusted_internal = true;
+
+        module
+            .register_http_function(config)
+            .await
+            .expect("trusted internal function should register");
+        assert!(module.http_functions.contains_key("trusted.bad"));
+    }
+
+    #[tokio::test]
+    async fn unregister_http_function_returns_not_found_for_missing_path() {
+        ensure_default_meter();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = build_module(engine);
+
+        let err = module
+            .unregister_http_function("does.not.exist")
+            .await
+            .expect_err("missing function should error");
+        assert_eq!(err.code, "function_not_found");
     }
 
     #[tokio::test]

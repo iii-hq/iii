@@ -9,6 +9,7 @@ pub mod condition;
 pub mod config;
 pub mod engine;
 pub mod function;
+pub(crate) mod generated_workers;
 pub mod invocation;
 pub mod logging;
 pub mod protocol;

@@ -282,6 +282,94 @@ def test_unregister_removes_function_from_sent_messages(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_exposes_generated_http_functions_as_normal_engine_worker_group() -> None:
+    client = _make_integration_client()
+
+    probe = WebhookProbe()
+    await probe.start()
+
+    suffix = f"{int(time.time() * 1000)}_{random.randrange(1_000_000)}"
+    worker_name = f"generated-python-{suffix}"
+    function_id = f"generated_python_{suffix}::search"
+    payload = {"query": "sessions", "limit": 4}
+    http_fn = None
+
+    try:
+        http_fn = client.register_function(
+            function_id,
+            HttpInvocationConfig(url=probe.url("/generated"), method="POST", timeout_ms=3000),
+            description="Generated MCP search function",
+            metadata={
+                "spec": {
+                    "schema": "spec-to-worker.http-invocation.v1",
+                    "sourceType": "mcp",
+                    "source": "stdio:npx -y some-mcp-server",
+                    "workerName": worker_name,
+                },
+                "iii": {"generatedWorker": {"name": worker_name}},
+            },
+        )
+        time.sleep(0.5)
+
+        result = await asyncio.to_thread(client.trigger, {"function_id": function_id, "payload": payload})
+        webhook = await probe.wait_for_webhook(7.0)
+
+        assert result == {"ok": True}
+        assert webhook["method"] == "POST"
+        assert webhook["url"] == "/generated"
+        assert webhook["body"]["query"] == payload["query"]
+        assert webhook["body"]["limit"] == payload["limit"]
+
+        workers_result = client.trigger({"function_id": "engine::workers::list", "payload": {}})
+        worker = next((w for w in workers_result.get("workers", []) if w.get("id") == worker_name), None)
+
+        assert worker is not None, f"{worker_name} not found in workers list"
+        assert worker["name"] == worker_name
+        assert worker["runtime"] == "engine"
+        assert worker["function_count"] == 1
+        assert "functions" not in worker
+        assert worker.get("internal") is None
+        assert "generated_worker" not in worker
+        assert "generatedWorker" not in worker
+        assert "virtual_worker" not in worker
+        assert "virtualWorker" not in worker
+
+        worker_info = client.trigger(
+            {"function_id": "engine::workers::info", "payload": {"name": worker_name}}
+        )
+        assert worker_info["worker"]["id"] == worker_name
+        assert worker_info["worker"]["runtime"] == "engine"
+        assert worker_info["worker"]["function_count"] == 1
+        assert worker_info["worker"]["internal"] is False
+        worker_function_ids = [function["function_id"] for function in worker_info["functions"]]
+        assert function_id in worker_function_ids
+
+        functions_result = client.trigger(
+            {"function_id": "engine::functions::list", "payload": {"include_internal": True}}
+        )
+        listed = next(
+            (f for f in functions_result.get("functions", []) if f.get("function_id") == function_id),
+            None,
+        )
+
+        assert listed is not None, f"{function_id} not found in functions list"
+        assert "metadata" not in listed
+
+        registered = client.trigger(
+            {"function_id": "engine::functions::info", "payload": {"function_id": function_id}}
+        )
+        assert registered["worker_name"] == worker_name
+        assert registered["metadata"]["spec"]["sourceType"] == "mcp"
+        assert registered["metadata"]["spec"]["workerName"] == worker_name
+        assert "iii" not in registered["metadata"]
+    finally:
+        if http_fn:
+            http_fn.unregister()
+        await probe.close()
+        client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_delivers_queue_events_to_external_http_function() -> None:
     client = _make_integration_client()
 

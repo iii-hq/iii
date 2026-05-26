@@ -74,6 +74,7 @@ fn session_with(
         allowed_trigger_types: None,
         allow_function_registration: true,
         allow_trigger_type_registration: true,
+        trusted_internal: false,
         context: json!({}),
         function_registration_prefix: None,
     }

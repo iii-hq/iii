@@ -4,7 +4,10 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket},
@@ -18,10 +21,12 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use url::{Host, Url};
 use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
+    generated_workers::{GeneratedWorkerRegistry, take_generated_worker_name},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
@@ -245,6 +250,7 @@ pub struct Engine {
     /// HTTP-invocation variant of `function_owners`, separate because external
     /// functions live in their own per-worker set on `WorkerConnection`.
     pub(crate) external_function_owners: Arc<DashMap<String, Uuid>>,
+    pub(crate) generated_workers: Arc<GeneratedWorkerRegistry>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     /// Effective `iii-worker-manager` port, resolved from config at build
     /// time. Set once by `EngineBuilder::build`; subsequent reads see the
@@ -264,6 +270,38 @@ fn resolve_registration_id(worker: &WorkerConnection, id: &str) -> String {
     } else {
         id.to_string()
     }
+}
+
+fn is_loopback_http_url(value: &str) -> bool {
+    Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "http"
+            && url.host().is_some_and(|host| match host {
+                Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+                Host::Ipv4(addr) => addr.is_loopback(),
+                Host::Ipv6(addr) => addr.is_loopback(),
+            })
+    })
+}
+
+fn is_trusted_bridge_session(session: &Session) -> bool {
+    session.trusted_internal
+        || session.ip_address.eq_ignore_ascii_case("localhost")
+        || session
+            .ip_address
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn trusted_generated_worker_name(
+    worker: &WorkerConnection,
+    metadata: &mut Option<Value>,
+) -> Option<String> {
+    let name = take_generated_worker_name(metadata)?;
+    worker
+        .session
+        .as_ref()
+        .is_some_and(|session| is_trusted_bridge_session(session))
+        .then_some(name)
 }
 
 impl Default for Engine {
@@ -286,6 +324,7 @@ impl Engine {
             queue_module: Arc::new(tokio::sync::RwLock::new(None)),
             function_owners: Arc::new(DashMap::new()),
             external_function_owners: Arc::new(DashMap::new()),
+            generated_workers: Arc::new(GeneratedWorkerRegistry::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
         }
@@ -394,6 +433,7 @@ impl Engine {
 
     fn remove_function(&self, function_id: &str) {
         self.functions.remove(function_id);
+        self.generated_workers.remove_function(function_id);
     }
 
     fn remove_function_from_engine(&self, function_id: &str) {
@@ -1194,8 +1234,10 @@ impl Engine {
                                     error = ?err,
                                     "Failed to unregister external function"
                                 );
+                                self.remove_function(&resolved_id);
                             }
                         }
+                        self.generated_workers.remove_function(&resolved_id);
                         self.service_registry
                             .remove_function_from_services(&resolved_id);
                     } else {
@@ -1282,6 +1324,11 @@ impl Engine {
                 }
 
                 reg_id = resolve_registration_id(worker, &reg_id);
+                let generated_worker_name =
+                    trusted_generated_worker_name(worker, &mut reg_metadata);
+                let is_external_registration = invocation.is_some();
+                let had_existing_external_function =
+                    is_external_registration && self.functions.get(&reg_id).is_some();
 
                 // Claim ownership BEFORE mutating any engine-global state. An
                 // old worker's `cleanup_worker` running on another task can
@@ -1289,11 +1336,16 @@ impl Engine {
                 // id, and tear down the registration we're about to write.
                 // Claiming first makes the CAS release in cleanup see the new
                 // owner and bail out for every subsequent step.
-                if invocation.is_some() {
-                    self.claim_external_function(worker.id, &reg_id);
+                let previous_external_owner = if is_external_registration {
+                    let previous_owner =
+                        self.claim_external_function_for_registration(worker.id, &reg_id);
+                    had_existing_external_function
+                        .then_some(previous_owner)
+                        .flatten()
                 } else {
                     self.claim_function(worker.id, &reg_id);
-                }
+                    None
+                };
 
                 self.service_registry
                     .register_service_from_function_id(&reg_id);
@@ -1308,9 +1360,18 @@ impl Engine {
                             function_id = %reg_id,
                             "HTTP functions module not loaded"
                         );
-                        self.release_external_function_if_owner(&worker.id, &reg_id);
+                        let rolled_back = self.rollback_external_function_claim(
+                            &worker.id,
+                            &reg_id,
+                            previous_external_owner,
+                        );
+                        if rolled_back && !had_existing_external_function {
+                            self.service_registry.remove_function_from_services(&reg_id);
+                        }
                         return Ok(());
                     };
+                    let trusted_internal =
+                        generated_worker_name.is_some() && is_loopback_http_url(&invocation.url);
 
                     let config = HttpFunctionConfig {
                         function_path: reg_id.clone(),
@@ -1323,6 +1384,7 @@ impl Engine {
                         request_format: req.clone(),
                         response_format: res.clone(),
                         metadata: reg_metadata.clone(),
+                        trusted_internal,
                         registered_at: Some(Utc::now()),
                         updated_at: None,
                     };
@@ -1334,10 +1396,27 @@ impl Engine {
                             error = ?err,
                             "Failed to register HTTP invocation function"
                         );
-                        self.release_external_function_if_owner(&worker.id, &reg_id);
+                        let rolled_back = self.rollback_external_function_claim(
+                            &worker.id,
+                            &reg_id,
+                            previous_external_owner,
+                        );
+                        if rolled_back && !had_existing_external_function {
+                            self.service_registry.remove_function_from_services(&reg_id);
+                        }
                         return Ok(());
                     }
 
+                    if let Some(worker_name) = generated_worker_name {
+                        self.generated_workers.claim_function(
+                            worker_name,
+                            worker.id,
+                            trusted_internal,
+                            &reg_id,
+                        );
+                    } else {
+                        self.generated_workers.remove_function(&reg_id);
+                    }
                     worker.include_external_function_id(&reg_id).await;
                     return Ok(());
                 }
@@ -1353,6 +1432,7 @@ impl Engine {
                     Box::new(worker.clone()),
                 );
 
+                self.generated_workers.remove_function(&reg_id);
                 worker.include_function_id(&reg_id).await;
                 Ok(())
             }
@@ -1694,8 +1774,13 @@ impl Engine {
                 // CAS-release ownership. A racing claim will have overwritten
                 // the entry with a new owner id; that predicate fails and we
                 // leave their ownership intact.
-                self.external_function_owners
-                    .remove_if(function_id, |_, owner| *owner == worker.id);
+                if self
+                    .external_function_owners
+                    .remove_if(function_id, |_, owner| *owner == worker.id)
+                    .is_some()
+                {
+                    self.generated_workers.remove_function(function_id);
+                }
             }
         }
 
@@ -1741,11 +1826,15 @@ impl Engine {
         }
     }
 
-    /// HTTP-invocation variant of `claim_function`.
-    fn claim_external_function(&self, worker_id: Uuid, function_id: &str) {
-        if let Some(previous) = self
+    fn claim_external_function_for_registration(
+        &self,
+        worker_id: Uuid,
+        function_id: &str,
+    ) -> Option<Uuid> {
+        let previous = self
             .external_function_owners
-            .insert(function_id.to_string(), worker_id)
+            .insert(function_id.to_string(), worker_id);
+        if let Some(previous) = previous
             && previous != worker_id
             && self.worker_registry.workers.contains_key(&previous)
         {
@@ -1756,6 +1845,26 @@ impl Engine {
                 "External function ownership transferred between two live workers — possible cross-worker overwrite"
             );
         }
+        previous
+    }
+
+    fn rollback_external_function_claim(
+        &self,
+        worker_id: &Uuid,
+        function_id: &str,
+        previous_owner: Option<Uuid>,
+    ) -> bool {
+        if let Some(previous_owner) = previous_owner {
+            if let Some(mut owner) = self.external_function_owners.get_mut(function_id)
+                && *owner == *worker_id
+            {
+                *owner = previous_owner;
+                return true;
+            }
+            return false;
+        }
+
+        self.release_external_function_if_owner(worker_id, function_id)
     }
 
     /// Atomically removes `function_id` from the engine ONLY if `worker_id`
@@ -1996,6 +2105,16 @@ mod tests {
     }
 
     #[test]
+    fn loopback_http_url_matches_ipv4_ipv6_and_localhost() {
+        assert!(super::is_loopback_http_url("http://localhost/worker"));
+        assert!(super::is_loopback_http_url("http://127.0.0.1/worker"));
+        assert!(super::is_loopback_http_url("http://127.0.0.2/worker"));
+        assert!(super::is_loopback_http_url("http://[::1]/worker"));
+        assert!(!super::is_loopback_http_url("https://localhost/worker"));
+        assert!(!super::is_loopback_http_url("http://example.com/worker"));
+    }
+
+    #[test]
     fn runtime_worker_registry_upserts_lists_and_removes() {
         let engine = Engine::new();
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
@@ -2186,6 +2305,7 @@ mod tests {
             allowed_trigger_types: None,
             allow_function_registration: true,
             allow_trigger_type_registration: true,
+            trusted_internal: false,
             context: serde_json::json!({}),
             function_registration_prefix: Some(prefix.to_string()),
         }
@@ -2336,6 +2456,330 @@ mod tests {
                 .http_functions()
                 .contains_key("test-prefix::my_lambda"),
             "http module must drop the prefixed registration on unregister (iii-hq/iii#1508)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_external_function_generated_worker_is_internal() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(
+            tx,
+            crate::workers::worker::rbac_session::Session {
+                engine: engine.clone(),
+                config: Arc::new(crate::workers::worker::WorkerManagerConfig::default()),
+                ip_address: "127.0.0.1".to_string(),
+                session_id: uuid::Uuid::new_v4(),
+                allowed_functions: vec![],
+                forbidden_functions: vec![],
+                allowed_trigger_types: None,
+                allow_function_registration: true,
+                allow_trigger_type_registration: true,
+                trusted_internal: true,
+                context: json!({}),
+                function_registration_prefix: None,
+            },
+        );
+        let register_msg = Message::RegisterFunction {
+            id: "hackernews::top_stories".to_string(),
+            description: Some("top stories".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: Some(json!({
+                "spec": { "source": "https://example.com/openapi.json" },
+                "iii": { "generatedWorker": { "name": "hackernews" } }
+            })),
+            invocation: Some(HttpInvocationRef {
+                url: "http://127.0.0.1/hackernews/top-stories".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register external function should succeed");
+
+        let generated_worker = engine
+            .generated_workers
+            .get("hackernews")
+            .expect("generated worker should be tracked internally");
+        assert_eq!(generated_worker.name, "hackernews");
+        assert!(generated_worker.trusted_internal);
+        assert!(
+            generated_worker
+                .function_ids
+                .contains("hackernews::top_stories")
+        );
+
+        let function = engine
+            .functions
+            .get("hackernews::top_stories")
+            .expect("function should be visible as a normal function");
+        assert_eq!(
+            function.metadata,
+            Some(json!({ "spec": { "source": "https://example.com/openapi.json" } }))
+        );
+
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert_eq!(
+            http_module
+                .http_functions()
+                .get("hackernews::top_stories")
+                .expect("http function config should exist")
+                .metadata,
+            Some(json!({ "spec": { "source": "https://example.com/openapi.json" } }))
+        );
+        assert!(
+            http_module
+                .http_functions()
+                .get("hackernews::top_stories")
+                .expect("http function config should exist")
+                .trusted_internal
+        );
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::UnregisterFunction {
+                    id: "hackernews::top_stories".to_string(),
+                },
+            )
+            .await
+            .expect("unregister external function should succeed");
+
+        assert!(!engine.generated_workers.contains_worker("hackernews"));
+    }
+
+    #[tokio::test]
+    async fn test_local_external_function_generated_worker_bridge_is_internal() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(
+            tx,
+            crate::workers::worker::rbac_session::Session {
+                engine: engine.clone(),
+                config: Arc::new(crate::workers::worker::WorkerManagerConfig::default()),
+                ip_address: "127.0.0.1".to_string(),
+                session_id: uuid::Uuid::new_v4(),
+                allowed_functions: vec![],
+                forbidden_functions: vec![],
+                allowed_trigger_types: None,
+                allow_function_registration: true,
+                allow_trigger_type_registration: true,
+                trusted_internal: false,
+                context: json!({}),
+                function_registration_prefix: None,
+            },
+        );
+        let register_msg = Message::RegisterFunction {
+            id: "local_api::echo".to_string(),
+            description: Some("echo".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: Some(json!({
+                "spec": { "source": "http://127.0.0.1/openapi.json" },
+                "iii": { "generatedWorker": { "name": "local-api" } }
+            })),
+            invocation: Some(HttpInvocationRef {
+                url: "http://127.0.0.1/local-api/echo".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register external function should succeed");
+
+        let generated_worker = engine
+            .generated_workers
+            .get("local-api")
+            .expect("generated worker should be tracked internally");
+        assert_eq!(generated_worker.name, "local-api");
+        assert!(generated_worker.trusted_internal);
+        assert!(generated_worker.function_ids.contains("local_api::echo"));
+
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(
+            http_module
+                .http_functions()
+                .get("local_api::echo")
+                .expect("http function config should exist")
+                .trusted_internal
+        );
+    }
+
+    #[tokio::test]
+    async fn test_untrusted_worker_generated_worker_metadata_is_ignored() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let register_msg = Message::RegisterFunction {
+            id: "hackernews::latest".to_string(),
+            description: Some("latest stories".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: Some(json!({
+                "spec": { "source": "https://example.com/openapi.json" },
+                "iii": { "generatedWorker": { "name": "hackernews" } }
+            })),
+            invocation: Some(HttpInvocationRef {
+                url: "http://127.0.0.1/hackernews/latest".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register external function should succeed");
+
+        assert!(engine.generated_workers.get("hackernews").is_none());
+        let function = engine
+            .functions
+            .get("hackernews::latest")
+            .expect("function should still be visible as a normal function");
+        assert_eq!(
+            function.metadata,
+            Some(json!({ "spec": { "source": "https://example.com/openapi.json" } }))
+        );
+
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(
+            !http_module
+                .http_functions()
+                .get("hackernews::latest")
+                .expect("http function config should exist")
+                .trusted_internal
+        );
+    }
+
+    #[tokio::test]
+    async fn test_regular_function_generated_worker_metadata_is_ignored() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(
+            tx,
+            crate::workers::worker::rbac_session::Session {
+                engine: engine.clone(),
+                config: Arc::new(crate::workers::worker::WorkerManagerConfig::default()),
+                ip_address: "127.0.0.1".to_string(),
+                session_id: uuid::Uuid::new_v4(),
+                allowed_functions: vec![],
+                forbidden_functions: vec![],
+                allowed_trigger_types: None,
+                allow_function_registration: true,
+                allow_trigger_type_registration: true,
+                trusted_internal: true,
+                context: json!({}),
+                function_registration_prefix: None,
+            },
+        );
+        let register_msg = Message::RegisterFunction {
+            id: "hackernews::regular".to_string(),
+            description: Some("regular function".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: Some(json!({
+                "spec": { "source": "https://example.com/openapi.json" },
+                "iii": { "generatedWorker": { "name": "hackernews" } }
+            })),
+            invocation: None,
+        };
+
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register regular function should succeed");
+
+        assert!(engine.generated_workers.get("hackernews").is_none());
+        let function = engine
+            .functions
+            .get("hackernews::regular")
+            .expect("function should be visible as a normal function");
+        assert_eq!(
+            function.metadata,
+            Some(json!({ "spec": { "source": "https://example.com/openapi.json" } }))
         );
     }
 
@@ -2935,6 +3379,62 @@ mod tests {
                 .has_external_function_id("external.without_module")
                 .await
         );
+        assert!(!engine.service_registry.services.contains_key("external"));
+    }
+
+    #[tokio::test]
+    async fn test_router_msg_register_http_invocation_failure_rolls_back_service() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(HttpFunctionsConfig::default()).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let register_message = Message::RegisterFunction {
+            id: "external::invalid_url".to_string(),
+            description: Some("external function".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: "http://example.com/lambda".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        engine
+            .router_msg(&worker, &register_message)
+            .await
+            .expect("register message should not fail");
+
+        assert!(engine.functions.get("external::invalid_url").is_none());
+        assert!(
+            !worker
+                .has_external_function_id("external::invalid_url")
+                .await
+        );
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert!(
+            !http_module
+                .http_functions()
+                .contains_key("external::invalid_url")
+        );
+        assert!(!engine.service_registry.services.contains_key("external"));
     }
 
     #[tokio::test]
@@ -2945,32 +3445,89 @@ mod tests {
         let worker = WorkerConnection::new(tx);
 
         engine.register_function_handler(
-            make_request("external.cleanup"),
+            make_request("external::cleanup"),
             super::Handler::new(|_input| async move { FunctionResult::Success(None) }),
         );
         engine
             .service_registry
-            .register_service_from_function_id("external.cleanup");
+            .register_service_from_function_id("external::cleanup");
         worker
-            .include_external_function_id("external.cleanup")
+            .include_external_function_id("external::cleanup")
             .await;
         // Ownership gate on UnregisterFunction requires the worker to be the
         // recorded owner. This test sidesteps `router_msg` to seed state, so
         // populate the owner map directly to match the production invariant.
-        engine.claim_external_function(worker.id, "external.cleanup");
+        let _ = engine.claim_external_function_for_registration(worker.id, "external::cleanup");
 
         engine
             .router_msg(
                 &worker,
                 &Message::UnregisterFunction {
-                    id: "external.cleanup".to_string(),
+                    id: "external::cleanup".to_string(),
                 },
             )
             .await
             .expect("unregister should succeed");
 
-        assert!(engine.functions.get("external.cleanup").is_none());
-        assert!(!worker.has_external_function_id("external.cleanup").await);
+        assert!(engine.functions.get("external::cleanup").is_none());
+        assert!(!worker.has_external_function_id("external::cleanup").await);
+        assert!(!engine.service_registry.services.contains_key("external"));
+    }
+
+    #[tokio::test]
+    async fn test_router_msg_unregister_external_missing_http_config_removes_function() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.register_function_handler(
+            make_request("external::missing_config"),
+            super::Handler::new(|_input| async move { FunctionResult::Success(None) }),
+        );
+        engine
+            .service_registry
+            .register_service_from_function_id("external::missing_config");
+        worker
+            .include_external_function_id("external::missing_config")
+            .await;
+        let _ =
+            engine.claim_external_function_for_registration(worker.id, "external::missing_config");
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::UnregisterFunction {
+                    id: "external::missing_config".to_string(),
+                },
+            )
+            .await
+            .expect("unregister should succeed");
+
+        assert!(engine.functions.get("external::missing_config").is_none());
+        assert!(
+            !worker
+                .has_external_function_id("external::missing_config")
+                .await
+        );
         assert!(!engine.service_registry.services.contains_key("external"));
     }
 
@@ -3891,6 +4448,93 @@ mod tests {
         );
         assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
         assert!(engine.worker_registry.workers.contains_key(&new_worker.id));
+    }
+
+    #[tokio::test]
+    async fn test_failed_external_reregister_restores_previous_owner() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["example.com".to_string()],
+            },
+        };
+        let http_functions_module = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let make_msg = |url: &str| Message::RegisterFunction {
+            id: "external::rollback".to_string(),
+            description: Some("rollback external".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: url.to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(old_worker.clone());
+        engine
+            .router_msg(&old_worker, &make_msg("http://example.com/shared"))
+            .await
+            .expect("old worker register should succeed");
+
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsWorker>("http_functions")
+            .expect("http_functions service registered");
+        assert_eq!(
+            *engine
+                .external_function_owners
+                .get("external::rollback")
+                .expect("external owner present"),
+            old_worker.id
+        );
+
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(new_worker.clone());
+        engine
+            .router_msg(&new_worker, &make_msg("http://evil.com/shared"))
+            .await
+            .expect("failed reregister should not surface transport error");
+
+        assert_eq!(
+            *engine
+                .external_function_owners
+                .get("external::rollback")
+                .expect("external owner restored"),
+            old_worker.id
+        );
+        assert!(
+            !new_worker
+                .has_external_function_id("external::rollback")
+                .await
+        );
+        assert!(engine.functions.get("external::rollback").is_some());
+        assert!(engine.service_registry.services.contains_key("external"));
+        let config = http_module
+            .http_functions()
+            .get("external::rollback")
+            .expect("previous http config should survive");
+        assert_eq!(config.url, "http://example.com/shared");
     }
 
     #[tokio::test]

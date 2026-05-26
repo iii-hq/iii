@@ -410,6 +410,7 @@ mod tests {
             allowed_trigger_types: Some(vec![]),
             allow_function_registration: false,
             allow_trigger_type_registration: false,
+            trusted_internal: false,
             context: serde_json::json!({}),
             function_registration_prefix: None,
         };

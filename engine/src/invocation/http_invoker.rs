@@ -39,6 +39,7 @@ pub struct HttpEndpointParams<'a> {
     pub timeout_ms: &'a Option<u64>,
     pub headers: &'a HashMap<String, String>,
     pub auth: &'a Option<HttpAuth>,
+    pub trusted_internal: bool,
 }
 
 pub struct HttpInvokerConfig {
@@ -247,7 +248,9 @@ impl HttpInvoker {
         caller_function: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<Option<Value>, ErrorBody> {
-        self.validate_url(endpoint.url).await?;
+        if !endpoint.trusted_internal {
+            self.validate_url(endpoint.url).await?;
+        }
         let (timestamp, body) = self.prepare_request(&data)?;
 
         let mut request = self.build_base_request(
@@ -459,6 +462,7 @@ mod tests {
             timeout_ms: &timeout_ms,
             headers: &headers,
             auth: &no_auth,
+            trusted_internal: false,
         };
         let payload = br#"{"hello":"world"}"#.to_vec();
         let timestamp = 1_700_000_000;
@@ -648,6 +652,7 @@ mod tests {
             timeout_ms: &timeout_ms,
             headers: &headers,
             auth: &auth,
+            trusted_internal: false,
         };
 
         let success = invoker
@@ -696,6 +701,7 @@ mod tests {
             timeout_ms: &empty_timeout,
             headers: &empty_headers,
             auth: &no_auth,
+            trusted_internal: false,
         };
         let empty = invoker
             .invoke_http(
@@ -718,6 +724,7 @@ mod tests {
             timeout_ms: &invalid_timeout,
             headers: &invalid_headers,
             auth: &no_auth,
+            trusted_internal: false,
         };
         let invalid = invoker
             .invoke_http(
@@ -740,6 +747,7 @@ mod tests {
             timeout_ms: &error_timeout,
             headers: &error_headers,
             auth: &no_auth,
+            trusted_internal: false,
         };
         let error = invoker
             .invoke_http(
@@ -775,6 +783,7 @@ mod tests {
             timeout_ms: &timeout_ms,
             headers: &headers,
             auth: &auth,
+            trusted_internal: false,
         };
 
         invoker
@@ -837,6 +846,7 @@ mod tests {
             timeout_ms: &timeout_ms,
             headers: &headers,
             auth: &no_auth,
+            trusted_internal: false,
         };
 
         let error = invoker

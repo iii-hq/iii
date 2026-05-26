@@ -41,6 +41,7 @@ pub struct Session {
     pub allowed_trigger_types: Option<Vec<String>>,
     pub allow_trigger_type_registration: bool,
     pub allow_function_registration: bool,
+    pub trusted_internal: bool,
     pub context: Value,
     pub function_registration_prefix: Option<String>,
 }
@@ -57,6 +58,8 @@ pub(crate) struct AuthResult {
     allow_trigger_type_registration: bool,
     #[serde(default = "default_true")]
     allow_function_registration: bool,
+    #[serde(default)]
+    trusted_internal: bool,
     #[serde(default = "default_context")]
     context: Value,
     #[serde(default)]
@@ -80,6 +83,7 @@ impl Session {
                 allowed_trigger_types: None,
                 allow_trigger_type_registration: true,
                 allow_function_registration: true,
+                trusted_internal: false,
                 context: json!({}),
                 function_registration_prefix: None,
             });
@@ -138,6 +142,7 @@ pub async fn handle_session(
         allowed_trigger_types: auth.allowed_trigger_types,
         allow_trigger_type_registration: auth.allow_trigger_type_registration,
         allow_function_registration: auth.allow_function_registration,
+        trusted_internal: auth.trusted_internal,
         context: auth.context,
         function_registration_prefix: auth.function_registration_prefix,
     })
