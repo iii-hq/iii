@@ -55,3 +55,16 @@ def bump_json_top_level_version(text: str, new_version: str) -> str:
     indent, sp1, sp2 = m.group(1), m.group(2), m.group(3)
     replacement = f'{indent}"version"{sp1}:{sp2}"{new_version}"'
     return f'{text[:m.start()]}{replacement}{text[m.end():]}'
+
+
+def bump_pep440_dep_pin(text: str, dep_name: str, new_pep440: str) -> str:
+    """Replace ``"<dep_name>==<old>"`` with ``"<dep_name>==<new_pep440>"``.
+
+    Used for the ``iii-observability`` pin inside the python iii
+    ``pyproject.toml`` ``dependencies = [...]`` array.
+    """
+    line_re = re.compile(rf'"{re.escape(dep_name)}==[^"]*"')
+    m = line_re.search(text)
+    if m is None:
+        raise ValueError(f"no pinned dependency entry for {dep_name!r}")
+    return f'{text[:m.start()]}"{dep_name}=={new_pep440}"{text[m.end():]}'

@@ -11,6 +11,7 @@ import pytest
 from bump_manifests import bump_cargo_package_version
 from bump_manifests import bump_cargo_workspace_dep_version
 from bump_manifests import bump_json_top_level_version
+from bump_manifests import bump_pep440_dep_pin
 
 
 class TestBumpCargoPackageVersion:
@@ -78,3 +79,21 @@ class TestBumpJsonTopLevelVersion:
         src = '{ "name": "x" }\n'
         with pytest.raises(ValueError, match="no top-level version"):
             bump_json_top_level_version(src, "1.0.0")
+
+
+class TestBumpPep440DepPin:
+    def test_replaces_pin(self):
+        src = (
+            'dependencies = [\n'
+            '    "websockets>=12.0",\n'
+            '    "iii-observability==0.13.0.dev1",\n'
+            ']\n'
+        )
+        out = bump_pep440_dep_pin(src, "iii-observability", "0.16.0.dev2")
+        assert '"iii-observability==0.16.0.dev2"' in out
+        assert '"websockets>=12.0"' in out
+
+    def test_raises_when_dep_missing(self):
+        src = 'dependencies = [\n    "websockets>=12.0",\n]\n'
+        with pytest.raises(ValueError, match="iii-observability"):
+            bump_pep440_dep_pin(src, "iii-observability", "0.16.0.dev2")
