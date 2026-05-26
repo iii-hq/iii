@@ -68,3 +68,49 @@ def bump_pep440_dep_pin(text: str, dep_name: str, new_pep440: str) -> str:
     if m is None:
         raise ValueError(f"no pinned dependency entry for {dep_name!r}")
     return f'{text[:m.start()]}"{dep_name}=={new_pep440}"{text[m.end():]}'
+
+
+from pathlib import Path
+
+
+_CARGO_PACKAGE_FILES = (
+    "engine/Cargo.toml",
+    "sdk/packages/rust/iii/Cargo.toml",
+    "sdk/packages/rust/observability/Cargo.toml",
+    "console/packages/console-rust/Cargo.toml",
+)
+_JSON_PACKAGE_FILES = (
+    "sdk/packages/node/iii/package.json",
+    "sdk/packages/node/iii-browser/package.json",
+    "sdk/packages/node/observability/package.json",
+)
+
+
+def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
+    """Rewrite every release manifest under ``root`` in lockstep."""
+    # Cargo package versions
+    for rel in _CARGO_PACKAGE_FILES:
+        path = root / rel
+        path.write_text(bump_cargo_package_version(path.read_text(), new_version))
+
+    # Workspace root: bump both the workspace.package version and the
+    # iii-observability workspace-dep version pin.
+    workspace_path = root / "Cargo.toml"
+    body = bump_cargo_package_version(workspace_path.read_text(), new_version)
+    body = bump_cargo_workspace_dep_version(body, "iii-observability", new_version)
+    workspace_path.write_text(body)
+
+    # JSON package versions
+    for rel in _JSON_PACKAGE_FILES:
+        path = root / rel
+        path.write_text(bump_json_top_level_version(path.read_text(), new_version))
+
+    # Python iii: top-level version + iii-observability pin
+    py_iii = root / "sdk/packages/python/iii/pyproject.toml"
+    body = bump_cargo_package_version(py_iii.read_text(), new_py_version)
+    body = bump_pep440_dep_pin(body, "iii-observability", new_py_version)
+    py_iii.write_text(body)
+
+    # Python observability: top-level version only
+    py_obs = root / "sdk/packages/python/observability/pyproject.toml"
+    py_obs.write_text(bump_cargo_package_version(py_obs.read_text(), new_py_version))
