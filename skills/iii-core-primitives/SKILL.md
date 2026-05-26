@@ -2,8 +2,9 @@
 name: iii-core-primitives
 description: >-
   Use when registering iii functions, binding triggers, selecting sync/void/enqueue invocation,
-  authoring custom triggers, moving channel data, or adapting external HTTP functions across
-  TypeScript, Python, and Rust.
+  creating workers, inspecting the live worker registry, installing registry workers, authoring
+  custom triggers, moving channel data, or adapting external HTTP functions across TypeScript,
+  Python, and Rust.
 ---
 
 # Core Primitives
@@ -30,6 +31,58 @@ iii should call an existing external endpoint.
 
 Functions and triggers can carry metadata for ownership, discovery, and generated skills. Do not put
 secrets in metadata.
+
+## Workers and Registry
+
+A worker is any process that connects to the engine and registers functions or trigger types. There
+are two common paths:
+
+| Task | Use |
+| --- | --- |
+| Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, and `registerTrigger` |
+| Add an existing capability | Browse `https://workers.iii.dev/`, then run `iii worker add <name>` |
+| Pin a worker version | `iii worker add <name>@<version>` |
+| Add an OCI worker | `iii worker add ghcr.io/org/worker:tag` |
+| Add a local worker during development | `iii worker add ./workers/my-worker` |
+| Replay installed workers | Commit `iii.lock`, then run `iii worker sync` |
+
+The public worker registry at `workers.iii.dev` is for installable workers such as HTTP, state,
+queue, pub/sub, cron, observability, sandbox, database, shell, console, and other capability
+workers. Those workers may ship their own function-level skills; do not duplicate every capability
+as a top-level iii skill.
+
+### Worker Manifest
+
+Use `iii.worker.yaml` when iii should start a local worker project:
+
+```yaml
+name: math-worker
+runtime:
+  kind: python
+  package_manager: pip
+  entry: math_worker.py
+scripts:
+  install: "pip install -r requirements.txt"
+  start: "python math_worker.py"
+```
+
+The manifest describes how to start the process. Once running, the WebSocket connection and function
+registrations are what make the worker part of iii.
+
+### Live Engine Registry
+
+The engine keeps a live registry of connected workers, registered functions, triggers, and trigger
+types. Read it through the built-in discovery functions:
+
+| Function | Returns |
+| --- | --- |
+| `engine::workers::list` | Connected workers and metrics |
+| `engine::functions::list` | Registered functions |
+| `engine::triggers::list` | Registered triggers |
+| `engine::trigger-types::list` | Advertised trigger types and schemas |
+
+For topology changes, bind triggers to `engine::workers-available` or
+`engine::functions-available`.
 
 ## Built-In Trigger Shapes
 
@@ -173,7 +226,8 @@ iii.register_trigger(RegisterTriggerInput {
 ## When to Use
 
 - Use this skill for function registration, trigger binding, trigger payload shapes, invocation mode
-  decisions, trigger conditions, custom trigger types, channels, and HTTP-invoked functions.
+  decisions, worker creation, worker registry access, trigger conditions, custom trigger types,
+  channels, and HTTP-invoked functions.
 - Use this when a task spans TypeScript, Python, or Rust examples for the same iii primitive.
 
 ## Boundaries

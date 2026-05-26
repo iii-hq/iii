@@ -177,6 +177,7 @@ workers:
 
 ### Managed Workers and Lockfiles
 
+- Browse registry workers at `https://workers.iii.dev/`.
 - Registry workers are installed with `iii worker add NAME[@VERSION]`.
 - Direct OCI workers use image references such as `ghcr.io/org/worker:tag`.
 - Local workers point at local binary or development paths when supported by the worker config.

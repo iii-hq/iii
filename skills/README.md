@@ -1,9 +1,10 @@
 # iii Skills
 
 Top-level skills for building with the [iii engine](https://github.com/iii-hq/iii). The catalog is
-intentionally small: it teaches the iii mental model, SDK usage, engine config, architecture
-patterns, and error handling. Worker-backed capability skills stay with the worker docs instead of
-duplicating queue, pub/sub, state, cron, stream, or observability here.
+intentionally small: it teaches the iii mental model, worker creation and registry access, SDK
+usage, engine config, architecture patterns, and error handling. Worker-backed capability skills
+stay with the worker docs and [workers.iii.dev](https://workers.iii.dev/) instead of duplicating
+queue, pub/sub, state, cron, stream, or observability here.
 
 ## Install
 
@@ -21,8 +22,8 @@ npx skills add iii-hq/iii/skills --skill iii-core-primitives
 
 | Skill                                                  | What it does |
 | ------------------------------------------------------ | ------------ |
-| [iii-getting-started](./iii-getting-started)           | Install iii, create a project, and write your first worker |
-| [iii-core-primitives](./iii-core-primitives)           | Functions, triggers, invocation modes, trigger schemas, custom triggers, channels, and HTTP-invoked functions |
+| [iii-getting-started](./iii-getting-started)           | Install iii, create a project, write your first worker, and add registry workers |
+| [iii-core-primitives](./iii-core-primitives)           | Functions, triggers, workers, registry access, invocation modes, trigger schemas, custom triggers, channels, and HTTP-invoked functions |
 | [iii-sdk-reference](./iii-sdk-reference)               | Node.js, browser, Python, and Rust SDK usage in one place |
 | [iii-engine-config](./iii-engine-config)               | Configure ports, workers, adapters, queues, worker manager, RBAC, and observability |
 | [iii-architecture-patterns](./iii-architecture-patterns) | Workflows, reactive backends, agentic pipelines, CQRS, effect pipelines, and automation chains |

@@ -145,6 +145,21 @@ Expected response:
 { "message": "Hello, iii!" }
 ```
 
+## Add Existing Workers
+
+To add a capability that already exists, browse `https://workers.iii.dev/` and install the worker by
+name:
+
+```bash
+iii worker add iii-state
+iii worker add iii-queue
+iii worker add image-resize@0.1.2
+```
+
+`iii worker add` writes project config, installs the worker artifact, starts it, and records the pin
+in `iii.lock` when the worker comes from the registry. Commit `iii.lock` with your config so other
+machines can replay the same worker set with `iii worker sync`.
+
 ## Install Agent Skills
 
 Get all iii skills for your AI coding agent:
@@ -153,9 +168,9 @@ Get all iii skills for your AI coding agent:
 npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent the top-level iii model: functions, triggers, workers, SDKs, engine
-configuration, architecture patterns, and error handling. Worker-backed capabilities live with the
-worker docs.
+Skills teach your agent the top-level iii model: functions, triggers, workers, registry access,
+SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
+live with the worker docs and registry entries.
 
 ## Adapting This Pattern
 
@@ -167,12 +182,13 @@ worker docs.
 - Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
 - Use `state::get` / `state::set` to persist data across function calls
+- Use `iii worker add <name>` when the capability already exists in the worker registry
 
 ## Recommended Next Steps
 
 After getting your first worker running:
 
-1. **Register functions and triggers** — See `iii-core-primitives`
+1. **Register functions, triggers, and workers** — See `iii-core-primitives`
 2. **Choose the right SDK APIs** — See `iii-sdk-reference`
 3. **Configure the engine** — See `iii-engine-config`
 4. **Explore backend patterns** — See `iii-architecture-patterns`
@@ -189,8 +205,9 @@ After getting your first worker running:
 
 ## Pattern Boundaries
 
-- For function and trigger registration patterns, trigger payload schemas, invocation modes,
-  channels, custom triggers, and HTTP-invoked functions, prefer `iii-core-primitives`
+- For function and trigger registration patterns, worker creation, worker registry access, trigger
+  payload schemas, invocation modes, channels, custom triggers, and HTTP-invoked functions, prefer
+  `iii-core-primitives`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`
 - For engine configuration, prefer `iii-engine-config`
 - For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker docs under `engine/src/workers/**/skills`
