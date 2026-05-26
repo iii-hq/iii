@@ -1,6 +1,6 @@
 //! Integration tests for HTTP API trigger endpoints.
 //!
-//! Requires a running III engine. Set III_URL and III_HTTP_URL, or use localhost:49134 defaults.
+//! Requires a running III engine. Set III_URL and III_HTTP_URL, or use the IPv4 loopback defaults.
 
 mod common;
 
@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use serial_test::serial;
 use tokio::sync::Mutex;
 
-use iii_sdk::{IIIError, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput};
 use tokio::time::sleep;
 
 fn test_pdf_path() -> PathBuf {
@@ -27,18 +28,19 @@ fn test_pdf_path() -> PathBuf {
 }
 
 #[tokio::test]
+#[serial]
 async fn get_endpoint() {
     let iii = common::shared_iii();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::get::rs".to_string()),
-        |_input: Value| async move {
+    iii.register_function(
+        "test::api::get::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
                 "body": {"message": "Hello from GET"},
             }))
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
@@ -67,19 +69,20 @@ async fn get_endpoint() {
 }
 
 #[tokio::test]
+#[serial]
 async fn post_endpoint_with_body() {
     let iii = common::shared_iii();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::post::rs".to_string()),
-        |input: Value| async move {
+    iii.register_function(
+        "test::api::post::rs",
+        RegisterFunction::new_async(|input: Value| async move {
             let body = input.get("body").cloned().unwrap_or(Value::Null);
             Ok(json!({
                 "status_code": 201,
                 "body": {"received": body, "created": true},
             }))
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -115,9 +118,9 @@ async fn raw_json_request_body() {
     let raw_json = r#"{"z":2, "a":1}"#;
 
     let iii_for_handler = iii.clone();
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::json::raw::rs".to_string()),
-        move |input: Value| {
+    iii.register_function(
+        "test::api::json::raw::rs",
+        RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_handler.clone();
             async move {
                 let parsed_body = input.get("body").cloned().unwrap_or(Value::Null);
@@ -183,8 +186,8 @@ async fn raw_json_request_body() {
 
                 Ok(Value::Null)
             }
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -216,12 +219,13 @@ async fn raw_json_request_body() {
 }
 
 #[tokio::test]
+#[serial]
 async fn path_parameters() {
     let iii = common::shared_iii();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::getbyid::rs".to_string()),
-        |input: Value| async move {
+    iii.register_function(
+        "test::api::getbyid::rs",
+        RegisterFunction::new_async(|input: Value| async move {
             let id = input
                 .get("path_params")
                 .and_then(|p| p.get("id"))
@@ -229,8 +233,8 @@ async fn path_parameters() {
                 .unwrap_or_default()
                 .to_string();
             Ok(json!({"status_code": 200, "body": {"id": id}}))
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -262,18 +266,19 @@ async fn path_parameters() {
 }
 
 #[tokio::test]
+#[serial]
 async fn query_parameters() {
     let iii = common::shared_iii();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::search::rs".to_string()),
-        |input: Value| async move {
+    iii.register_function(
+        "test::api::search::rs",
+        RegisterFunction::new_async(|input: Value| async move {
             let qp = input.get("query_params").cloned().unwrap_or(json!({}));
             let q = qp.get("q").and_then(|v| v.as_str()).unwrap_or_default();
             let limit = qp.get("limit").and_then(|v| v.as_str()).unwrap_or_default();
             Ok(json!({"status_code": 200, "body": {"query": q, "limit": limit}}))
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -306,14 +311,16 @@ async fn query_parameters() {
 }
 
 #[tokio::test]
+#[serial]
 async fn custom_status_code() {
     let iii = common::shared_iii();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::notfound::rs".to_string()),
-        |_input: Value| async move {
-        Ok(json!({"status_code": 404, "body": {"error": "Not found"}}))
-    }));
+    iii.register_function(
+        "test::api::notfound::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
+            Ok(json!({"status_code": 404, "body": {"error": "Not found"}}))
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -342,22 +349,23 @@ async fn custom_status_code() {
 }
 
 #[tokio::test]
+#[serial]
 async fn content_type_on_api_response_return() {
     let iii = common::shared_iii();
 
     let xml_body =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><note><to>user</to><body>hello</body></note>";
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::xml::return::rs".to_string()),
-        move |_input: Value| async move {
+    iii.register_function(
+        "test::api::xml::return::rs",
+        RegisterFunction::new_async(move |_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
                 "headers": { "Content-Type": "text/xml" },
                 "body": xml_body,
             }))
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -391,6 +399,7 @@ async fn content_type_on_api_response_return() {
 }
 
 #[tokio::test]
+#[serial]
 async fn download_pdf_streaming() {
     let pdf_path = test_pdf_path();
 
@@ -405,9 +414,9 @@ async fn download_pdf_streaming() {
 
     let pdf_data = original_pdf.clone();
     let iii_for_handler = iii.clone();
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::download::pdf::rs".to_string()),
-        move |input: Value| {
+    iii.register_function(
+        "test::api::download::pdf::rs",
+        RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_handler.clone();
             let pdf_data = pdf_data.clone();
             async move {
@@ -451,8 +460,8 @@ async fn download_pdf_streaming() {
 
                 Ok(Value::Null)
             }
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -492,6 +501,7 @@ async fn download_pdf_streaming() {
 }
 
 #[tokio::test]
+#[serial]
 async fn upload_pdf_streaming() {
     let pdf_path = test_pdf_path();
 
@@ -508,9 +518,9 @@ async fn upload_pdf_streaming() {
     let received_clone = received.clone();
 
     let iii_for_handler = iii.clone();
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::upload::pdf::rs".to_string()),
-        move |input: Value| {
+    iii.register_function(
+        "test::api::upload::pdf::rs",
+        RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_handler.clone();
             let received = received_clone.clone();
             async move {
@@ -574,8 +584,8 @@ async fn upload_pdf_streaming() {
 
                 Ok(Value::Null)
             }
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -610,6 +620,7 @@ async fn upload_pdf_streaming() {
 }
 
 #[tokio::test]
+#[serial]
 async fn sse_streaming() {
     let iii = common::shared_iii();
 
@@ -622,9 +633,9 @@ async fn sse_streaming() {
 
     let events_clone = events.clone();
     let iii_for_handler = iii.clone();
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::sse::rs".to_string()),
-        move |input: Value| {
+    iii.register_function(
+        "test::api::sse::rs",
+        RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_handler.clone();
             let events = events_clone.clone();
             async move {
@@ -683,8 +694,8 @@ async fn sse_streaming() {
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
                 Ok(Value::Null)
             }
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -748,13 +759,14 @@ async fn sse_streaming() {
 }
 
 #[tokio::test]
+#[serial]
 async fn urlencoded_form_data() {
     let iii = common::shared_iii();
 
     let iii_for_handler = iii.clone();
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::form::urlencoded::rs".to_string()),
-        move |input: Value| {
+    iii.register_function(
+        "test::api::form::urlencoded::rs",
+        RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_handler.clone();
             async move {
                 let refs = iii_sdk::extract_channel_refs(&input);
@@ -833,8 +845,8 @@ async fn urlencoded_form_data() {
 
                 Ok(Value::Null)
             }
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -889,6 +901,7 @@ fn urlencoding_decode(s: &str) -> String {
 }
 
 #[tokio::test]
+#[serial]
 async fn multipart_form_data() {
     let pdf_path = test_pdf_path();
 
@@ -902,9 +915,9 @@ async fn multipart_form_data() {
     let iii = common::shared_iii();
 
     let iii_for_handler = iii.clone();
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::api::form::multipart::rs".to_string()),
-        move |input: Value| {
+    iii.register_function(
+        "test::api::form::multipart::rs",
+        RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_handler.clone();
             async move {
                 let refs = iii_sdk::extract_channel_refs(&input);
@@ -987,8 +1000,8 @@ async fn multipart_form_data() {
 
                 Ok(Value::Null)
             }
-        },
-    ));
+        }),
+    );
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {

@@ -302,6 +302,12 @@ impl std::fmt::Debug for SandboxErrorWire {
     }
 }
 
+impl From<SandboxErrorWire> for iii_sdk::IIIError {
+    fn from(err: SandboxErrorWire) -> Self {
+        iii_sdk::IIIError::Handler(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

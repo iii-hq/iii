@@ -177,11 +177,12 @@ fn register_subscriber(iii: &III, function_id: &str, filter: Value) -> Subscribe
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     let tx_for_handler = tx.clone();
     iii.register_function(
-        RegisterFunction::new_async(function_id, move |req: Value| {
+        function_id,
+        RegisterFunction::new_async(move |req: Value| {
             let tx = tx_for_handler.clone();
             async move {
                 let _ = tx.send(req);
-                Ok::<_, String>(json!({}))
+                Ok::<_, iii_sdk::IIIError>(json!({}))
             }
         })
         .description("e2e test subscriber"),

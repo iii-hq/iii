@@ -31,6 +31,18 @@ impl From<serde_json::Error> for IIIError {
     }
 }
 
+impl From<String> for IIIError {
+    fn from(msg: String) -> Self {
+        IIIError::Handler(msg)
+    }
+}
+
+impl From<&str> for IIIError {
+    fn from(msg: &str) -> Self {
+        IIIError::Handler(msg.to_string())
+    }
+}
+
 impl From<tokio_tungstenite::tungstenite::Error> for IIIError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
         IIIError::WebSocket(err.to_string())
