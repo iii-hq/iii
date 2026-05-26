@@ -44,10 +44,43 @@ HTTP request
 | `trigger({ function_id: 'publish', payload, action: TriggerAction.Void() })` | Broadcast completion to any listeners        |
 | `registerTrigger({ type: 'http' })`                                          | Entry point                                  |
 
-## Reference Implementation
+## Code Example
 
-See [../references/agentic-backend.js](../references/agentic-backend.js) for the full working example — a multi-agent research pipeline
-where a researcher gathers findings, a critic reviews them, and a synthesizer produces a final report.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "agentic-backend" });
+
+iii.registerFunction("agents::researcher", async (task) => {
+  await iii.trigger({
+    function_id: "state::set",
+    payload: { scope: "research", key: task.id, value: { findings: ["initial finding"] } },
+  });
+  return iii.trigger({
+    function_id: "agents::critic",
+    payload: task,
+    action: TriggerAction.Enqueue({ queue: "agent-tasks" }),
+  });
+});
+
+iii.registerFunction("agents::critic", async (task) => {
+  const context = await iii.trigger({
+    function_id: "state::get",
+    payload: { scope: "research", key: task.id },
+  });
+  return iii.trigger({
+    function_id: "agents::synthesizer",
+    payload: { ...task, context },
+    action: TriggerAction.Enqueue({ queue: "agent-tasks" }),
+  });
+});
+
+iii.registerTrigger({
+  type: "http",
+  function_id: "agents::researcher",
+  config: { api_path: "/research", http_method: "POST" },
+});
+```
 
 ## Common Patterns
 
@@ -74,7 +107,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-Named queues for agent handoffs are declared in iii-config.yaml under `queue_configs`. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Named queues for agent handoffs are declared in iii-config.yaml under `queue_configs`.
 
 ## Pattern Boundaries
 

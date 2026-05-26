@@ -49,11 +49,44 @@ Queue configs (iii-config.yaml):
 | `registerTrigger({ type: 'cron' })`                          | Scheduled maintenance                     |
 | `registerTrigger({ type: 'http' })`                          | Entry point                               |
 
-## Reference Implementation
+## Code Example
 
-See [../references/workflow-orchestration.js](../references/workflow-orchestration.js) for the full working example — an order fulfillment pipeline
-with validate → charge → ship steps, retry configuration, stream-based progress tracking,
-and hourly stale-order cleanup.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "order-workflow" });
+
+async function track(orderId, step, status) {
+  await iii.trigger({
+    function_id: "state::update",
+    payload: { scope: "orders", key: orderId, ops: [{ op: "set", path: `/steps/${step}`, value: status }] },
+  });
+}
+
+iii.registerFunction("orders::validate", async (order) => {
+  await track(order.id, "validate", "done");
+  return iii.trigger({
+    function_id: "orders::charge",
+    payload: order,
+    action: TriggerAction.Enqueue({ queue: "order-payment" }),
+  });
+});
+
+iii.registerFunction("orders::charge", async (order) => {
+  await track(order.id, "payment", "done");
+  return iii.trigger({
+    function_id: "orders::ship",
+    payload: order,
+    action: TriggerAction.Enqueue({ queue: "order-ship" }),
+  });
+});
+
+iii.registerTrigger({
+  type: "http",
+  function_id: "orders::validate",
+  config: { api_path: "/orders", http_method: "POST" },
+});
+```
 
 ## Common Patterns
 
@@ -81,7 +114,7 @@ Use the adaptations below when they apply to the task.
 
 ## Engine Configuration
 
-Named queues for pipeline steps are declared in iii-config.yaml under `queue_configs` with per-queue retry, concurrency, and FIFO settings. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+Named queues for pipeline steps are declared in iii-config.yaml under `queue_configs` with per-queue retry, concurrency, and FIFO settings.
 
 ## Pattern Boundaries
 

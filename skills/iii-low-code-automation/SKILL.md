@@ -46,10 +46,40 @@ Automation 3: Payment webhook → Validate → Update → Notify
 | `registerTrigger({ type: 'http' })`                          | Webhook entry points                     |
 | `registerTrigger({ type: 'cron' })`                          | Scheduled automations                    |
 
-## Reference Implementation
+## Code Example
 
-See [../references/low-code-automation.js](../references/low-code-automation.js) for the full working example — three automation chains:
-form-to-Slack notification, RSS feed aggregation, and payment webhook processing.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "automation-worker" });
+
+iii.registerFunction("auto::enrich-lead", async (lead) => {
+  const enriched = { ...lead, score: lead.email.endsWith("@company.com") ? 100 : 20 };
+  return iii.trigger({
+    function_id: "auto::store-lead",
+    payload: enriched,
+    action: TriggerAction.Enqueue({ queue: "automation" }),
+  });
+});
+
+iii.registerFunction("auto::store-lead", async (lead) => {
+  await iii.trigger({
+    function_id: "state::set",
+    payload: { scope: "leads", key: lead.email, value: lead },
+  });
+  return iii.trigger({
+    function_id: "auto::notify-slack",
+    payload: lead,
+    action: TriggerAction.Void(),
+  });
+});
+
+iii.registerTrigger({
+  type: "http",
+  function_id: "auto::enrich-lead",
+  config: { api_path: "/webhooks/lead", http_method: "POST" },
+});
+```
 
 ## Common Patterns
 

@@ -34,13 +34,66 @@ When a trigger fires, the engine first invokes the condition function with the e
 | `registerFunction(id, handler)` (handler)                                   | Register the handler function                     |
 | `registerTrigger({ type, function_id, config: { condition_function_id } })` | Bind trigger with condition gate                  |
 
-## Reference Implementation
+## Code Examples
 
-See [../references/trigger-conditions.js](../references/trigger-conditions.js) for the full working example — a condition-gated trigger where a business rule function filters events before the handler processes them.
+TypeScript:
 
-Also available in **Python**: [../references/trigger-conditions.py](../references/trigger-conditions.py)
+```typescript
+iii.registerFunction("conditions::is-high-value", async (event) => {
+  return Number(event.new_value?.amount ?? 0) >= 1000;
+});
 
-Also available in **Rust**: [../references/trigger-conditions.rs](../references/trigger-conditions.rs)
+iii.registerFunction("orders::notify-high-value", async (event) => {
+  await sendNotification(event.new_value);
+  return { notified: true };
+});
+
+iii.registerTrigger({
+  type: "state",
+  function_id: "orders::notify-high-value",
+  config: {
+    scope: "orders",
+    condition_function_id: "conditions::is-high-value",
+  },
+});
+```
+
+Python:
+
+```python
+def is_high_value(event):
+    return float(event.get("new_value", {}).get("amount", 0)) >= 1000
+
+def notify_high_value(event):
+    return {"notified": True, "order": event.get("new_value")}
+
+iii.register_function("conditions::is-high-value", is_high_value)
+iii.register_function("orders::notify-high-value", notify_high_value)
+iii.register_trigger({
+    "type": "state",
+    "function_id": "orders::notify-high-value",
+    "config": {"scope": "orders", "condition_function_id": "conditions::is-high-value"},
+})
+```
+
+Rust:
+
+```rust
+iii.register_function(RegisterFunction::new("conditions::is-high-value", |event: serde_json::Value| {
+    let amount = event["new_value"]["amount"].as_f64().unwrap_or(0.0);
+    Ok(serde_json::Value::Bool(amount >= 1000.0))
+}))?;
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "state".into(),
+    function_id: "orders::notify-high-value".into(),
+    config: json!({
+        "scope": "orders",
+        "condition_function_id": "conditions::is-high-value"
+    }),
+    metadata: None,
+})?;
+```
 
 ## Common Patterns
 
@@ -66,7 +119,7 @@ Use the adaptations below when they apply to the task.
 ## Pattern Boundaries
 
 - For registering functions and triggers in general, prefer `iii-functions-and-triggers`.
-- For state change triggers specifically, prefer `iii-state-reactions`.
+- For built-in trigger payload shapes, prefer `iii-trigger-schemas`.
 - For invocation modes (sync/void/enqueue), prefer `iii-trigger-actions`.
 - Stay with `iii-trigger-conditions` when the primary problem is gating trigger execution with a condition check.
 
