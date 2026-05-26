@@ -154,7 +154,7 @@ npx skills add iii-hq/iii/skills
 ```
 
 Skills teach your agent the top-level iii model: functions, triggers, workers, SDKs, engine
-configuration, channels, and architecture patterns. Worker-backed capabilities live with the engine
+configuration, architecture patterns, and error handling. Worker-backed capabilities live with the
 worker docs.
 
 ## Adapting This Pattern
@@ -172,13 +172,11 @@ worker docs.
 
 After getting your first worker running:
 
-1. **Register more functions and triggers** — See `iii-functions-and-triggers`
-2. **Choose invocation modes** — See `iii-trigger-actions`
-3. **Validate trigger payloads** — See `iii-trigger-schemas`
-4. **Configure the engine** — See `iii-engine-config`
-5. **Move binary data between workers** — See `iii-channels`
-6. **Explore architecture patterns** — See `iii-agentic-backend`, `iii-reactive-backend`,
-   `iii-workflow-orchestration`
+1. **Register functions and triggers** — See `iii-core-primitives`
+2. **Choose the right SDK APIs** — See `iii-sdk-reference`
+3. **Configure the engine** — See `iii-engine-config`
+4. **Explore backend patterns** — See `iii-architecture-patterns`
+5. **Handle failures well** — See `iii-error-handling`
 
 ## Key Resources
 
@@ -191,9 +189,9 @@ After getting your first worker running:
 
 ## Pattern Boundaries
 
-- For function and trigger registration patterns, prefer `iii-functions-and-triggers`
-- For trigger payload schemas, prefer `iii-trigger-schemas`
-- For invocation mode choices, prefer `iii-trigger-actions`
+- For function and trigger registration patterns, trigger payload schemas, invocation modes,
+  channels, custom triggers, and HTTP-invoked functions, prefer `iii-core-primitives`
+- For language-specific SDK APIs, prefer `iii-sdk-reference`
 - For engine configuration, prefer `iii-engine-config`
 - For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker docs under `engine/src/workers/**/skills`
 - Stay with `iii-getting-started` for installation, initial setup, and first-worker guidance

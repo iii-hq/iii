@@ -94,7 +94,9 @@ Browser trigger calls reject with JavaScript errors. Preserve the engine-provide
 
 ## Pattern Boundaries
 
-- For invocation modes and retries, prefer `iii-trigger-actions`.
+- For invocation modes and enqueue decisions, prefer `iii-core-primitives`.
+- For SDK-specific exception classes and syntax, prefer `iii-sdk-reference`.
+- For workflow-level retry and DLQ design, prefer `iii-architecture-patterns`.
 - For RBAC policy design and logs/traces around worker failures, use the matching worker docs under `engine/src/workers/**/skills`.
 
 ## When to Use
