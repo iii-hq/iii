@@ -24,7 +24,22 @@ pub fn map_vm_error(e: VmClientError) -> SandboxError {
     match e {
         VmClientError::FsError { code, message } => match code.as_str() {
             "S210" => SandboxError::FsInvalidRequest(message),
-            "S211" => SandboxError::fs_not_found(message),
+            "S211" => {
+                // The in-VM shell uses S211 for both "the target path
+                // doesn't exist" and "an intermediate parent directory
+                // doesn't exist". Split them here so the daemon-side
+                // error carries the recovery hint: parent-missing maps
+                // to FsParentNotFound, which `fix_hint()` enriches with
+                // a structured `{ "parents": true }` payload the agent
+                // can resubmit verbatim.
+                if message.contains("parent not found")
+                    || message.contains("parent directory not found")
+                {
+                    SandboxError::FsParentNotFound { path: message }
+                } else {
+                    SandboxError::fs_not_found(message)
+                }
+            }
             "S212" => SandboxError::fs_wrong_type(message),
             "S213" => SandboxError::fs_already_exists(message),
             "S214" => SandboxError::fs_not_empty(message),

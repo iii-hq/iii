@@ -66,7 +66,7 @@ pub mod flags {
 /// `mode` is the octal permission string (e.g. `"0644"`); `mtime` is
 /// Unix seconds. `is_symlink` reflects the entry itself — FS handlers
 /// never follow symlinks unless the op doc-comment says otherwise.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct FsEntry {
     pub name: String,
     pub is_dir: bool,
@@ -79,7 +79,7 @@ pub struct FsEntry {
 /// Single grep hit. `line` is 1-based. `content` is already truncated
 /// to `max_line_bytes` (with a trailing `…`) if the original line was
 /// longer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct FsMatch {
     #[serde(alias = "file")]
     pub path: String,
@@ -89,7 +89,7 @@ pub struct FsMatch {
 
 /// One `sed` file-level outcome. `success=false` carries the human
 /// failure message in `error`; otherwise `error` is absent.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct FsSedFileResult {
     #[serde(alias = "file")]
     pub path: String,
@@ -238,7 +238,7 @@ pub enum FsResult {
 
 /// Metadata frame sent by the supervisor at the start of a
 /// `ReadStart` sequence (one per session, before any `FsChunk`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct FsReadMeta {
     pub size: u64,
     pub mode: String,

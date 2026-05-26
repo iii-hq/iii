@@ -35,7 +35,7 @@ use uuid::Uuid;
 use iii_worker::sandbox_daemon::config::SandboxConfig;
 use iii_worker::sandbox_daemon::create::{CreateRequest, handle_create};
 use iii_worker::sandbox_daemon::errors::SandboxError;
-use iii_worker::sandbox_daemon::exec::{ExecRequest, ExecResponse, handle_exec};
+use iii_worker::sandbox_daemon::exec::{EnvShape, ExecRequest, ExecResponse, handle_exec};
 use iii_worker::sandbox_daemon::list::{ListRequest, handle_list};
 use iii_worker::sandbox_daemon::registry::{SandboxRegistry, SandboxState};
 use iii_worker::sandbox_daemon::stop::{StopRequest, handle_stop};
@@ -74,8 +74,10 @@ fn build_req(id: Uuid, cmd: impl Into<String>) -> ExecRequest {
         sandbox_id: id.to_string(),
         cmd: cmd.into(),
         args: vec![],
+
+        argv: vec![],
         stdin: None,
-        env: vec![],
+        env: EnvShape::default(),
         timeout_ms: None,
         workdir: None,
     }
@@ -117,7 +119,7 @@ async fn create_resource_limit_returns_s400_before_allowlist() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &reg,
@@ -155,7 +157,7 @@ async fn create_image_not_in_catalog_skips_launcher() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &reg,
@@ -293,8 +295,10 @@ async fn exec_argv_passed_verbatim_no_shell_interpretation() {
         sandbox_id: id.to_string(),
         cmd: "/bin/echo".into(),
         args: nasty.clone(),
+
+        argv: vec![],
         stdin: None,
-        env: vec![],
+        env: EnvShape::default(),
         timeout_ms: None,
         workdir: None,
     };

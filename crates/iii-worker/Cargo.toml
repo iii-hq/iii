@@ -85,6 +85,10 @@ once_cell = "1"
 thiserror = "2"
 
 schemars = "0.8"
+# Used by sandbox::exec to shlex-split `cmd` when an agent passes a shell-style
+# line (e.g. `cmd: "node script.js"`). Lets the existing argv-based runner stay
+# argv-pure while accepting the agent-natural input shape.
+shlex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

@@ -1,27 +1,37 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::IIIError;
+use iii_sdk::RegisterFunction;
 use iii_shell_proto::{FsEntry, FsOp, FsResult};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+    errors::{SandboxError, SandboxErrorWire},
+    fs::adapter::FsRunner,
+    registry::SandboxRegistry,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "ls_request_example")]
 pub struct LsRequest {
+    /// UUID returned by `sandbox::create`.
     pub sandbox_id: String,
+    /// Absolute path of the directory to list inside the sandbox guest.
     pub path: String,
 }
 
-#[derive(Debug, Serialize)]
+fn ls_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "sandbox_id": "00000000-0000-0000-0000-000000000000",
+        "path": "/home/app"
+    })
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct LsResponse {
     pub entries: Vec<FsEntry>,
 }
@@ -60,25 +70,28 @@ pub(super) fn register(
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        Box::pin(async move {
-            let req: LsRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match handle_ls(req, &registry, &*runner).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
-            }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
     let _ = iii.register_function(
         "sandbox::fs::ls",
-        iii_sdk::RegisterFunction::new_async(handler)
-            .description("List directory contents inside a sandbox".to_string()),
+        RegisterFunction::new_async(move |req: LsRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            async move {
+                let sid = req.sandbox_id.clone();
+                let start = std::time::Instant::now();
+                let result = handle_ls(req, &registry, &*runner).await;
+                crate::sandbox_daemon::log_handler_result(
+                    "sandbox::fs::ls",
+                    Some(&sid),
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
+            }
+        })
+        .description(
+            "List directory contents inside a sandbox. \
+             Example: { sandbox_id: \"...\", path: \"/home/app\" }",
+        ),
     );
 }
 
