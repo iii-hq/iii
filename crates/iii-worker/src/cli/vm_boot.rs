@@ -268,6 +268,34 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
         .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
 }
 
+/// Default PATH for the guest VM when neither the caller nor the OCI
+/// image config provides one. Mirrors the value every standard
+/// Debian/Ubuntu image (and most other distros) ships in
+/// `/etc/profile`.
+///
+/// Why this matters: libkrun starts iii-init (PID 1) with whatever
+/// env we pass to `set_env`, and only that. When `args.env` doesn't
+/// carry `PATH`, PID 1 has none — and neither does any process it
+/// spawns (the worker boot script, the shell dispatcher, `iii worker
+/// exec` children). dash's compile-time default fills `$PATH`
+/// internally so `node` typed at a shell prompt still works, but
+/// **dash does not mark that internal default as exported**. So a
+/// `#!/usr/bin/env <prog>` shebang re-execs through `/usr/bin/env`,
+/// which inherits the empty env, falls back to libc's
+/// `_PATH_DEFPATH` (`/usr/bin:/bin`), and can't find anything in
+/// `/usr/local/bin` — breaking npm/npx/yarn/pip/etc.
+///
+/// The caller-supplied env wins: if `args.env` already carries
+/// `PATH`, this constant is not used.
+pub const DEFAULT_GUEST_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// True when any `KEY=VALUE` entry in `env` has the literal key `PATH`.
+/// Case-sensitive: env var names are case-sensitive on Unix.
+pub fn env_has_path(env: &[String]) -> bool {
+    env.iter()
+        .any(|kv| matches!(kv.split_once('='), Some(("PATH", _))))
+}
+
 /// Conditionally rewrite localhost/loopback URLs.
 ///
 /// `None` means networking is disabled — no virtio-net device is attached,
@@ -820,6 +848,16 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
                 e = e.env(key, &rewritten_value);
             }
         }
+        // Fallback PATH for rootfs caches that pre-date the
+        // `.oci-config.json` write step (`oci.rs:604`) — `read_oci_env`
+        // returns [] on those, so PATH never makes it into `args.env`,
+        // and shebang scripts like `#!/usr/bin/env node` then fail to
+        // resolve binaries that live in /usr/local/bin. The check runs
+        // after the caller loop so an explicit `--env PATH=...` (or an
+        // OCI image that does ship PATH) always wins.
+        if !env_has_path(&args.env) {
+            e = e.env("PATH", DEFAULT_GUEST_PATH);
+        }
         e
     });
 
@@ -1093,5 +1131,69 @@ mod tests {
     fn test_shell_quote_with_embedded_single_quotes() {
         let result = shell_quote("it's a test");
         assert_eq!(result, "'it'\\''s a test'");
+    }
+
+    // --- 6.3: env_has_path / DEFAULT_GUEST_PATH (guards the npm
+    // shebang fallback added when a rootfs cache lacks
+    // `.oci-config.json`). See the `DEFAULT_GUEST_PATH` docstring for
+    // the full rationale.
+    #[test]
+    fn env_has_path_detects_present() {
+        let env = vec![
+            "FOO=bar".to_string(),
+            "PATH=/usr/bin".to_string(),
+            "QUX=quux".to_string(),
+        ];
+        assert!(env_has_path(&env));
+    }
+
+    #[test]
+    fn env_has_path_returns_false_when_missing() {
+        let env = vec!["FOO=bar".to_string(), "QUX=quux".to_string()];
+        assert!(!env_has_path(&env));
+    }
+
+    #[test]
+    fn env_has_path_empty_is_false() {
+        let env: Vec<String> = vec![];
+        assert!(!env_has_path(&env));
+    }
+
+    #[test]
+    fn env_has_path_is_case_sensitive() {
+        // Unix env names are case-sensitive; `Path` and `path` must not
+        // mask the missing `PATH` and suppress the fallback.
+        let env = vec!["Path=/usr/bin".to_string(), "path=/bin".to_string()];
+        assert!(!env_has_path(&env));
+    }
+
+    #[test]
+    fn env_has_path_ignores_path_prefix_keys() {
+        // `PATHFOO=...` and `MY_PATH=...` must not be confused with the
+        // literal `PATH` key — split_once('=') anchors the comparison.
+        let env = vec!["PATHFOO=/x".to_string(), "MY_PATH=/y".to_string()];
+        assert!(!env_has_path(&env));
+    }
+
+    #[test]
+    fn env_has_path_handles_empty_value() {
+        // `PATH=` (empty value) is technically a set PATH — exporting
+        // an empty PATH is a real user choice (e.g. forcing absolute
+        // paths). Don't override it.
+        let env = vec!["PATH=".to_string()];
+        assert!(env_has_path(&env));
+    }
+
+    #[test]
+    fn default_guest_path_matches_debian_default() {
+        // Smoke test: keep the constant aligned with `/etc/profile` on
+        // the Debian-family base images the worker rootfs ships from.
+        // If you change this, also bump the constant docstring and the
+        // related test that asserts the fallback fix for shebang
+        // scripts in /usr/local/bin.
+        assert_eq!(
+            DEFAULT_GUEST_PATH,
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        );
     }
 }
