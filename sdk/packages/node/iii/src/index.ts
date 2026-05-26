@@ -28,7 +28,7 @@ export type {
   TriggerRequest,
 } from './iii-types'
 
-export { Logger } from './logger'
+export { Logger } from '@iii-dev/observability'
 
 export type { TriggerConfig, TriggerHandler } from './triggers'
 

@@ -15,73 +15,40 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-rust>
 
 ## Install
 
-Use Cargo:
+Add to `Cargo.toml`:
 
-```bash
-cargo add iii-sdk
+```toml
+iii-sdk = "0.13"
+# Optional: OpenTelemetry + Logger primitives live in a separate crate.
+iii-observability = "0.13"
 ```
 
 ## Key Types and Functions
 
-| Export                                                        | Purpose                                                                         |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `register_worker(url, InitOptions)`                           | Connect to the engine, returns `III` client                                     |
-| `InitOptions { metadata, headers, otel }`                     | Worker metadata, auth headers, OpenTelemetry config                             |
-| `III::register_function(RegisterFunction::new(id, handler))`  | Register a sync function using the builder API                                  |
-| `III::register_function(RegisterFunction::new_async(id, handler))` | Register an async function using the builder API                          |
-| `III::register_function_with(message, handler_or_http_config)` | Register from a full message, including HTTP-invoked functions                 |
-| `RegisterFunction`                                            | Builder with `.description()` and `.metadata()`                                 |
-| `HttpInvocationConfig` / `HttpAuthConfig`                     | External HTTP endpoint invocation config                                        |
-| `IIITrigger`                                                  | Typed built-in trigger builders                                                 |
-| `RegisterTriggerType` / `TriggerTypeRef`                      | Typed custom trigger type builders                                              |
-| `III::register_trigger(RegisterTriggerInput)`                 | Bind a trigger to a function                                                    |
-| `III::trigger(TriggerRequest)`                                | Invoke a function                                                               |
-| `TriggerAction::Void`                                         | Fire-and-forget invocation                                                      |
-| `TriggerAction::Enqueue { queue }`                            | Durable async invocation                                                        |
-| `IIIError`                                                    | SDK, handler, timeout, and remote error type                                    |
-| `ChannelReader` / `ChannelWriter` / `extract_channel_refs()`  | Binary/text channel APIs                                                        |
-| `Logger`                                                     | Structured logs                                                                 |
-| `with_span`, `run_in_span`, `OtelConfig`                      | OpenTelemetry instrumentation                                                   |
-| `execute_traced_request`                                      | HTTP client with trace context propagation                                      |
+| Export                                             | Purpose                                                                          |
+| -------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `register_worker(url, InitOptions)`                | Connect to the engine, returns `III` client                                      |
+| `III::register_function(id, RegisterFunction::new(handler))` | Register a sync function. Accepts typed handlers (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, IIIError>` closures. Handler error type must be `IIIError`. |
+| `III::register_function(id, RegisterFunction::new_async(handler))` | Async equivalent of `new`. Same dual-shape support. |
+| `III::register_function(id, RegisterFunction::http(http_config))` | Register an HTTP-invoked function (Lambda, Workers, etc.) — no local handler. |
+| `RegisterFunction`                                 | Builder with `.description()`, `.metadata()`, `.request_format()`, `.response_format()` |
+| `III::register_trigger(type, function_id, config)` | Bind a trigger to a function                                                     |
+| `III::trigger(TriggerRequest)`                     | Invoke a function                                                                |
+| `TriggerAction::Void`                              | Fire-and-forget invocation                                                       |
+| `TriggerAction::Enqueue { queue }`                 | Durable async invocation                                                         |
+| `IIIError`                                         | Error type for handler failures                                                  |
+| `Streams`                                          | Helper for atomic stream CRUD                                                    |
+| `with_span`, `get_tracer`, `get_meter`             | OpenTelemetry (requires `otel` feature)                                          |
+| `execute_traced_request`                           | HTTP client with trace context propagation                                       |
 
 ## Key Notes
 
+- Add `features = ["otel"]` to `Cargo.toml` for OpenTelemetry support
 - Use `RegisterFunction::new("id", handler)` for sync handlers, `RegisterFunction::new_async("id", handler)` for async
-- Handler input/output types that derive `schemars::JsonSchema` get auto-generated request and response schemas
-- Chain `.description("...")` and `.metadata(json!(...))` on `RegisterFunction` to document the function
+- Handler input types that derive `schemars::JsonSchema` get auto-generated request schemas
+- Chain `.description("...")` on `RegisterFunction` to document the function
 - Keep the tokio runtime alive (e.g., `tokio::time::sleep` loop) for event processing
 - `register_trigger` returns `Ok(())` on success; propagate errors with `?`
-
-## HTTP-Invoked Functions
-
-Use `register_function_with(RegisterFunctionMessage, HttpInvocationConfig)` when a function ID should call an external HTTP endpoint instead of a local Rust handler.
-
-Auth modes:
-
-- `HttpAuthConfig::Hmac { secret_key }`
-- `HttpAuthConfig::Bearer { token_key }`
-- `HttpAuthConfig::ApiKey { header, value_key }`
-
-`secret_key`, `token_key`, and `value_key` name environment variables. Do not put raw credentials in config.
-
-## Typed Trigger Builders
-
-- `RegisterTriggerType::new(id, description, handler)` registers a custom trigger type.
-- Chain `.trigger_request_format::<T>()` for trigger config schema and `.call_request_format::<T>()` for function payload schema.
-- The returned `TriggerTypeRef<C, R>` has typed `register_trigger`, `register_trigger_with_metadata`, `register_function`, and `register_function_async`.
-- Use `IIITrigger` for typed built-in trigger builders when authoring Rust workers that bind HTTP, cron, queue, state, stream, or log triggers.
-
-## Channels
-
-- `let channel = iii.create_channel(None).await?`
-- Pass `channel.reader_ref` or `channel.writer_ref` through a trigger payload.
-- Use `ChannelReader::new(engine_ws_base, &reader_ref)` and `ChannelWriter::new(engine_ws_base, &writer_ref)` when reconstructing refs from payloads.
-- Use `next_binary()` for incremental chunks, `read_all()` for full buffers, and `send_message()` for text messages.
-- Use `extract_channel_refs(&serde_json::Value)` to find refs inside nested payloads.
-
-## Errors
-
-`IIIError::Remote { code, message, stacktrace }` carries engine error codes such as `FORBIDDEN`, `TIMEOUT`, `function_not_found`, `function_not_invokable`, `invocation_failed`, and `invocation_stopped`. `IIIError::Timeout`, `IIIError::NotConnected`, `IIIError::Handler`, `IIIError::Serde`, and `IIIError::WebSocket` describe SDK/local failures.
 
 ## Pattern Boundaries
 

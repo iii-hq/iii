@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.14.0-next.2"
+version = "0.15.0-next.1"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -91,6 +91,7 @@ rabbitmq = ["lapin"]
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
+iii-observability = { workspace = true }
 scaffolder-core = { workspace = true }
 console = { workspace = true }
 ctrlc = { workspace = true }

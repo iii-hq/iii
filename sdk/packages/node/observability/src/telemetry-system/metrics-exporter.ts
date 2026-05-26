@@ -23,12 +23,21 @@ export class EngineMetricsExporter implements PushMetricExporter {
   constructor(connection: SharedEngineConnection) {
     this.connection = connection
     this.connection.onConnected(() => this.flushPending())
+    this.connection.onFailed(() => this.failPending())
   }
 
   private flushPending(): void {
     const pending = this.pendingExports.splice(0, this.pendingExports.length)
     for (const { metrics, resultCallback } of pending) {
       this.sendExport(metrics, resultCallback)
+    }
+  }
+
+  private failPending(): void {
+    const pending = this.pendingExports.splice(0, this.pendingExports.length)
+    const error = new Error('Connection failed: dropping queued metrics')
+    for (const { resultCallback } of pending) {
+      resultCallback?.({ code: ExportResultCode.FAILED, error })
     }
   }
 
@@ -61,7 +70,15 @@ export class EngineMetricsExporter implements PushMetricExporter {
     metricsData: ResourceMetrics,
     resultCallback: (result: ExportResult) => void,
   ): void {
-    if (this.connection.getState() !== 'connected') {
+    const state = this.connection.getState()
+    if (state === 'failed') {
+      resultCallback({
+        code: ExportResultCode.FAILED,
+        error: new Error('Connection failed: dropping metrics'),
+      })
+      return
+    }
+    if (state !== 'connected') {
       if (this.pendingExports.length >= EngineMetricsExporter.MAX_PENDING_EXPORTS) {
         const dropped = this.pendingExports.shift()
         dropped?.resultCallback?.({

@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.14.0-next.2"
+version = "0.15.0-next.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2636,6 +2636,7 @@ dependencies = [
  "hostname",
  "http-body-util",
  "iana-time-zone",
+ "iii-observability",
  "iii-sdk",
  "iii-worker",
  "indexmap 2.14.0",
@@ -2692,12 +2693,13 @@ dependencies = [
 
 [[package]]
 name = "iii-console"
-version = "0.14.0-next.2"
+version = "0.15.0-next.1"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
  "futures-util",
+ "iii-observability",
  "iii-sdk",
  "mime_guess",
  "reqwest 0.12.28",
@@ -2716,6 +2718,7 @@ name = "iii-example"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "iii-observability",
  "iii-sdk",
  "reqwest 0.12.28",
  "schemars 0.8.22",
@@ -2768,24 +2771,45 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-sdk"
-version = "0.14.0-next.2"
+name = "iii-observability"
+version = "0.13.0-next.1"
 dependencies = [
  "async-trait",
  "ctor",
  "futures-util",
- "hostname",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
  "reqwest 0.12.28",
- "schemars 0.8.22",
  "serde",
  "serde_json",
  "serial_test",
  "sysinfo 0.38.4",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-sdk"
+version = "0.15.0-next.1"
+dependencies = [
+ "async-trait",
+ "ctor",
+ "futures-util",
+ "hostname",
+ "iii-observability",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "reqwest 0.12.28",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "serial_test",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.28.0",
@@ -2835,7 +2859,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.14.0-next.2"
+version = "0.15.0-next.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2854,6 +2878,7 @@ dependencies = [
  "humantime",
  "iii-filesystem",
  "iii-network",
+ "iii-observability",
  "iii-sdk",
  "iii-shell-client",
  "iii-shell-proto",
@@ -3548,7 +3573,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.14.0-next.2"
+version = "0.15.0-next.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5258,7 +5283,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.14.0-next.2"
+version = "0.15.0-next.1"
 dependencies = [
  "anyhow",
  "clap",

@@ -26,7 +26,7 @@ import {
   type TriggerRequest,
   type WorkerRegisteredMessage,
 } from './iii-types'
-import { registerWorkerGauges, stopWorkerGauges } from './otel-worker-gauges'
+import { registerWorkerGauges, stopWorkerGauges } from '@iii-dev/observability'
 import type { IStream } from './stream'
 import { detectProjectName } from './utils'
 import {
@@ -45,7 +45,7 @@ import {
   shutdownOtel,
   SpanKind,
   withSpan,
-} from './telemetry-system'
+} from '@iii-dev/observability'
 import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,

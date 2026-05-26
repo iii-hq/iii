@@ -2,8 +2,8 @@
 
 use std::sync::Mutex;
 
-use iii_sdk::BaggageSpanProcessor;
-use iii_sdk::telemetry::payload::redact_and_truncate;
+use iii_observability::BaggageSpanProcessor;
+use iii_observability::redact_and_truncate;
 use opentelemetry::trace::{Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};

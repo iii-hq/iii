@@ -17,7 +17,7 @@ def reset_otel():
     # III.connect() calls init_otel() which sets global providers;
     # reset them so subsequent test files start with a clean slate.
     try:
-        from iii.telemetry import shutdown_otel
+        from iii_observability import shutdown_otel
 
         shutdown_otel()
     except Exception:
@@ -73,8 +73,8 @@ def test_preconnect_registration_sent_once(monkeypatch: pytest.MonkeyPatch) -> N
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
 
     client = III("ws://fake")
@@ -110,8 +110,8 @@ def test_reconnect_replays_durable_state_once_per_connection(
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
 
     client = III("ws://fake")
@@ -153,8 +153,8 @@ def test_call_void_queued_while_disconnected_flushes_after_connect(
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
 
     client = III("ws://fake")

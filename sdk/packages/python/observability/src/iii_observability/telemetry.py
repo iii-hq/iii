@@ -13,6 +13,8 @@ import os
 import uuid
 from typing import Any, cast
 
+from opentelemetry import trace
+
 from .telemetry_types import OtelConfig
 
 _tracer: Any = None
@@ -325,6 +327,25 @@ def _enable_fetch_instrumentation() -> None:
 
     urllib.request.OpenerDirector.open = _patched_open  # type: ignore[method-assign]
     _fetch_patched = True
+
+
+async def flush_otel() -> None:
+    """Force-flush all OTel providers without tearing them down.
+
+    Counterpart to :func:`shutdown_otel`. Use before short-lived process exits
+    where you want pending spans/metrics/logs delivered but plan to keep using
+    OTel afterwards.
+    """
+    tracer_provider = trace.get_tracer_provider()
+    flushers: list[asyncio.Future[Any] | Any] = []
+    if hasattr(tracer_provider, "force_flush"):
+        flushers.append(asyncio.to_thread(tracer_provider.force_flush))
+    if _meter_provider is not None and hasattr(_meter_provider, "force_flush"):
+        flushers.append(asyncio.to_thread(_meter_provider.force_flush))
+    if _log_provider is not None and hasattr(_log_provider, "force_flush"):
+        flushers.append(asyncio.to_thread(_log_provider.force_flush))
+    if flushers:
+        await asyncio.gather(*flushers)
 
 
 def shutdown_otel() -> None:

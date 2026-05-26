@@ -22,6 +22,7 @@ vi.mock('ws', () => {
 vi.mock('@opentelemetry/sdk-trace-node', () => ({
   NodeTracerProvider: vi.fn().mockImplementation(() => ({
     register: vi.fn(),
+    forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),
 }))
@@ -30,6 +31,7 @@ vi.mock('@opentelemetry/sdk-trace-node', () => ({
 vi.mock('@opentelemetry/sdk-metrics', () => ({
   MeterProvider: vi.fn().mockImplementation(() => ({
     getMeter: vi.fn().mockReturnValue({ createCounter: vi.fn() }),
+    forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),
   PeriodicExportingMetricReader: vi.fn().mockImplementation(() => ({})),
@@ -40,25 +42,38 @@ vi.mock('@opentelemetry/sdk-logs', () => ({
   LoggerProvider: vi.fn().mockImplementation(() => ({
     getLogger: vi.fn().mockReturnValue({ emit: vi.fn() }),
     addLogRecordProcessor: vi.fn(),
+    forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),
   SimpleLogRecordProcessor: vi.fn().mockImplementation(() => ({})),
+  BatchLogRecordProcessor: vi.fn().mockImplementation(() => ({})),
 }))
 
 // Mock span processor
 vi.mock('@opentelemetry/sdk-trace-base', () => ({
-  SimpleSpanProcessor: vi.fn().mockImplementation(() => ({})),
+  SimpleSpanProcessor: vi.fn().mockImplementation(() => ({
+    forceFlush: vi.fn().mockResolvedValue(undefined),
+    onStart: vi.fn(),
+    onEnd: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  })),
+  BatchSpanProcessor: vi.fn().mockImplementation(() => ({
+    forceFlush: vi.fn().mockResolvedValue(undefined),
+    onStart: vi.fn(),
+    onEnd: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  })),
 }))
 
 // Mock exporters to avoid real exporter instantiation
-vi.mock('../src/telemetry-system/exporters', () => ({
+vi.mock('../../observability/src/telemetry-system/exporters', () => ({
   EngineSpanExporter: vi.fn().mockImplementation(() => ({})),
   EngineMetricsExporter: vi.fn().mockImplementation(() => ({})),
   EngineLogExporter: vi.fn().mockImplementation(() => ({})),
 }))
 
 // Mock the shared connection to avoid real WebSocket connections
-vi.mock('../src/telemetry-system/connection', () => ({
+vi.mock('../../observability/src/telemetry-system/connection', () => ({
   SharedEngineConnection: vi.fn().mockImplementation(() => ({
     send: vi.fn(),
     onConnected: vi.fn(),
@@ -73,7 +88,7 @@ import {
   getTracer,
   getMeter,
   getLogger,
-} from '../src/telemetry-system/index'
+} from '@iii-dev/observability'
 
 describe('OTel default-enabled behavior', () => {
   const originalEnv = process.env

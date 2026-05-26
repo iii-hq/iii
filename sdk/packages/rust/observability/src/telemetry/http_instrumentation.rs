@@ -8,7 +8,7 @@
 //!
 //! # Example
 //! ```no_run
-//! use iii_sdk::telemetry::http_instrumentation::execute_traced_request;
+//! use iii_observability::telemetry::http_instrumentation::execute_traced_request;
 //!
 //! # async fn example() -> Result<(), reqwest::Error> {
 //! let client = reqwest::Client::new();

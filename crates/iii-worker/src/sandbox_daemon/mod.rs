@@ -21,7 +21,8 @@ pub use registry::SandboxRegistry;
 
 use std::sync::Arc;
 
-use iii_sdk::{InitOptions, OtelConfig, RegisterFunction, WorkerMetadata, register_worker};
+use iii_observability::OtelConfig;
+use iii_sdk::{InitOptions, RegisterFunction, WorkerMetadata, register_worker};
 
 use crate::sandbox_daemon::config::SandboxConfig;
 use crate::sandbox_daemon::errors::SandboxErrorWire;

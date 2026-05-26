@@ -1,11 +1,37 @@
 """III SDK for Python."""
 
-from .baggage_span_processor import DEFAULT_ALLOWLIST, BaggageSpanProcessor
+from iii_observability import (
+    DEFAULT_ALLOWLIST,
+    REDACTED_PLACEHOLDER,
+    BaggageSpanProcessor,
+    Logger,
+    OtelConfig,
+    ReconnectionConfig,
+    current_span_id,
+    current_span_is_recording,
+    current_trace_id,
+    execute_traced_request,
+    extract_baggage,
+    extract_traceparent,
+    flush_otel,
+    init_otel,
+    inject_baggage,
+    inject_traceparent,
+    record_span_event,
+    redact,
+    redact_and_truncate,
+    resolve_max_bytes_from_env,
+    set_current_span_attribute,
+    set_current_span_error,
+    shutdown_otel,
+    with_span,
+)
+
 from .channels import ChannelReader, ChannelWriter
 from .errors import IIIForbiddenError, IIIInvocationError, IIITimeoutError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
-from .iii_constants import FunctionRef, InitOptions, ReconnectionConfig, TelemetryOptions
+from .iii_constants import FunctionRef, InitOptions, TelemetryOptions
 from .iii_types import (
     AuthInput,
     AuthResult,
@@ -31,19 +57,6 @@ from .iii_types import (
     TriggerActionVoid,
     TriggerRequest,
 )
-from .logger import Logger
-from .payload import (
-    REDACTED_PLACEHOLDER,
-    redact,
-    redact_and_truncate,
-    resolve_max_bytes_from_env,
-)
-from .span_ops import (
-    current_span_is_recording,
-    record_span_event,
-    set_current_span_attribute,
-    set_current_span_error,
-)
 from .stream import (
     IStream,
     StreamChangeEvent,
@@ -53,7 +66,6 @@ from .stream import (
     StreamJoinLeaveTriggerConfig,
     StreamTriggerConfig,
 )
-from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
     ApiRequest,
@@ -72,13 +84,24 @@ __all__ = [
     "BaggageSpanProcessor",
     "DEFAULT_ALLOWLIST",
     "REDACTED_PLACEHOLDER",
+    "current_span_id",
     "current_span_is_recording",
+    "current_trace_id",
+    "execute_traced_request",
+    "extract_baggage",
+    "extract_traceparent",
+    "flush_otel",
+    "init_otel",
+    "inject_baggage",
+    "inject_traceparent",
     "record_span_event",
-    "set_current_span_attribute",
-    "set_current_span_error",
     "redact",
     "redact_and_truncate",
     "resolve_max_bytes_from_env",
+    "set_current_span_attribute",
+    "set_current_span_error",
+    "shutdown_otel",
+    "with_span",
     # Channels
     "ChannelReader",
     "ChannelWriter",

@@ -4,7 +4,7 @@ import {
   redactAndTruncate,
   REDACTED_PLACEHOLDER,
   resolveMaxBytesFromEnv,
-} from '../src/telemetry-system/payload'
+} from '@iii-dev/observability'
 
 describe('redact', () => {
   it('redacts top-level sensitive keys', () => {

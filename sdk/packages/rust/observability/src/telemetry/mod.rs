@@ -1,3 +1,4 @@
+//! Telemetry module: OTel init, context propagation, span helpers.
 pub mod baggage_span_processor;
 pub mod connection;
 pub mod context;

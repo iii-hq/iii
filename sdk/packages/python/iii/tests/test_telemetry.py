@@ -4,8 +4,8 @@ import urllib.request
 
 import pytest
 
-from iii.telemetry import _get_tracer, _is_initialized, init_otel, shutdown_otel, shutdown_otel_async
-from iii.telemetry_types import OtelConfig
+from iii_observability.telemetry import _get_tracer, _is_initialized, init_otel, shutdown_otel, shutdown_otel_async
+from iii_observability import OtelConfig
 
 # URLLibInstrumentor patches OpenerDirector.open, not urlopen directly
 ORIGINAL_OPENER_OPEN = urllib.request.OpenerDirector.open
@@ -87,8 +87,8 @@ def test_shutdown_without_init_is_safe():
 
 
 def test_telemetry_apis_importable_from_submodules():
-    from iii.telemetry import _get_tracer, _is_initialized, init_otel, shutdown_otel
-    from iii.telemetry_types import OtelConfig
+    from iii_observability.telemetry import _get_tracer, _is_initialized, init_otel, shutdown_otel
+    from iii_observability import OtelConfig
 
     assert callable(init_otel)
     assert callable(shutdown_otel)
@@ -103,7 +103,7 @@ def test_init_configures_engine_span_exporter():
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    from iii.telemetry_exporters import EngineSpanExporter
+    from iii_observability.telemetry_exporters import EngineSpanExporter
 
     init_otel(OtelConfig(enabled=True))
     provider = trace.get_tracer_provider()
@@ -139,7 +139,7 @@ def test_shutdown_closes_connection():
     import asyncio
     from unittest.mock import AsyncMock, patch
 
-    from iii.telemetry_exporters import SharedEngineConnection
+    from iii_observability.telemetry_exporters import SharedEngineConnection
 
     with (
         patch.object(SharedEngineConnection, "start"),

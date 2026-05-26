@@ -10,6 +10,13 @@ export const bridgeIII = registerWorker(BRIDGE_WS_URL, {
     initialDelayMs: 100,
     maxDelayMs: 1000,
   },
+  otel: {
+    reconnectionConfig: {
+      maxRetries: 3,
+      initialDelayMs: 100,
+      maxDelayMs: 1000,
+    },
+  },
 })
 
 export const logger = new Logger()

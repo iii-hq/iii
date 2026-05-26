@@ -6,7 +6,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
-from iii.span_ops import (
+from iii_observability import (
     current_span_is_recording,
     record_span_event,
     set_current_span_attribute,

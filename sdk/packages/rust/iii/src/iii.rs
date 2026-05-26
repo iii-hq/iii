@@ -43,8 +43,8 @@ use crate::{
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
 };
 
-use crate::telemetry;
-use crate::telemetry::types::OtelConfig;
+use iii_observability as telemetry;
+use iii_observability::OtelConfig;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
@@ -315,7 +315,7 @@ type WsTx = futures_util::stream::SplitSink<
 
 /// Inject trace context headers for outbound messages.
 fn inject_trace_headers() -> (Option<String>, Option<String>) {
-    use crate::telemetry::context;
+    use iii_observability as context;
     (context::inject_traceparent(), context::inject_baggage())
 }
 
@@ -1608,11 +1608,11 @@ impl III {
             // We use FutureExt::with_context() instead of cx.attach() because
             // ContextGuard is !Send and can't be held across .await in tokio::spawn.
             let otel_cx = {
-                use crate::telemetry::context::extract_context;
-                use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
+                use iii_observability::extract_context;
+                use iii_observability::opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
 
                 let parent_cx = extract_context(traceparent.as_deref(), baggage.as_deref());
-                let tracer = opentelemetry::global::tracer("iii-rust-sdk");
+                let tracer = iii_observability::opentelemetry::global::tracer("iii-rust-sdk");
                 let span = tracer
                     .span_builder(format!("call {}", function_id))
                     .with_kind(SpanKind::Server)
@@ -1624,12 +1624,12 @@ impl III {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
 
-            let payload_max_bytes = crate::telemetry::payload::resolve_max_bytes_from_env();
+            let payload_max_bytes = iii_observability::resolve_max_bytes_from_env();
 
             if trace_payloads {
-                use crate::telemetry::payload::redact_and_truncate;
-                use opentelemetry::KeyValue;
-                use opentelemetry::trace::TraceContextExt;
+                use iii_observability::opentelemetry::KeyValue;
+                use iii_observability::opentelemetry::trace::TraceContextExt;
+                use iii_observability::redact_and_truncate;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
                     let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
@@ -1644,14 +1644,14 @@ impl III {
             }
 
             let result = {
-                use opentelemetry::trace::FutureExt as OtelFutureExt;
+                use iii_observability::opentelemetry::trace::FutureExt as OtelFutureExt;
                 handler(data).with_context(otel_cx.clone()).await
             };
 
             if trace_payloads {
-                use crate::telemetry::payload::redact_and_truncate;
-                use opentelemetry::KeyValue;
-                use opentelemetry::trace::TraceContextExt;
+                use iii_observability::opentelemetry::KeyValue;
+                use iii_observability::opentelemetry::trace::TraceContextExt;
+                use iii_observability::redact_and_truncate;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
                     let (output_json, truncated, ok) = match &result {
@@ -1679,8 +1679,8 @@ impl III {
             // Record span status based on result
             let mut error_stacktrace: Option<String> = None;
             {
-                use opentelemetry::KeyValue;
-                use opentelemetry::trace::{Status, TraceContextExt};
+                use iii_observability::opentelemetry::KeyValue;
+                use iii_observability::opentelemetry::trace::{Status, TraceContextExt};
                 let span = otel_cx.span();
                 match &result {
                     Ok(_) => span.set_status(Status::Ok),

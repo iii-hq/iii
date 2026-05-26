@@ -739,7 +739,7 @@ where
                     let _ = IN_MEMORY_STORAGE.set(memory_storage);
 
                     SdkTracerProvider::builder()
-                        .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
+                        .with_span_processor(iii_observability::BaggageSpanProcessor::default())
                         .with_batch_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -758,7 +758,7 @@ where
                         config.service_name.clone(),
                     );
                     SdkTracerProvider::builder()
-                        .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
+                        .with_span_processor(iii_observability::BaggageSpanProcessor::default())
                         .with_simple_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -772,7 +772,7 @@ where
                 InMemorySpanExporter::new(config.memory_max_spans, config.service_name.clone());
 
             SdkTracerProvider::builder()
-                .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
+                .with_span_processor(iii_observability::BaggageSpanProcessor::default())
                 .with_simple_exporter(exporter)
                 .with_sampler(sampler)
                 .with_id_generator(RandomIdGenerator::default())
@@ -803,6 +803,7 @@ where
                     );
 
                     SdkTracerProvider::builder()
+                        .with_span_processor(iii_observability::BaggageSpanProcessor::default())
                         .with_batch_exporter(tee_exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -821,7 +822,7 @@ where
                         config.service_name.clone(),
                     );
                     SdkTracerProvider::builder()
-                        .with_span_processor(iii_sdk::BaggageSpanProcessor::default())
+                        .with_span_processor(iii_observability::BaggageSpanProcessor::default())
                         .with_simple_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())

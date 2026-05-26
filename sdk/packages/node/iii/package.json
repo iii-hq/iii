@@ -1,6 +1,6 @@
 {
   "name": "iii-sdk",
-  "version": "0.14.0-next.2",
+  "version": "0.15.0-next.1",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -36,28 +36,17 @@
       "types": "./dist/state.d.ts",
       "import": "./dist/state.mjs",
       "require": "./dist/state.cjs"
-    },
-    "./telemetry": {
-      "types": "./dist/telemetry.d.ts",
-      "import": "./dist/telemetry.mjs",
-      "require": "./dist/telemetry.cjs"
     }
   },
   "dependencies": {
+    "@iii-dev/observability": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/api-logs": "^0.57.0",
-    "@opentelemetry/core": "^1.30.0",
-    "@opentelemetry/instrumentation": "^0.57.0",
-    "@opentelemetry/otlp-transformer": "^0.57.0",
-    "@opentelemetry/resources": "^1.30.0",
-    "@opentelemetry/sdk-logs": "^0.57.0",
-    "@opentelemetry/sdk-metrics": "^1.30.0",
-    "@opentelemetry/sdk-trace-base": "^1.30.0",
-    "@opentelemetry/sdk-trace-node": "^1.30.0",
-    "@opentelemetry/semantic-conventions": "^1.28.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@opentelemetry/context-async-hooks": "^2.7.1",
+    "@opentelemetry/instrumentation": "^0.57.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^2.1.0",
     "tsdown": "^0.21.4",

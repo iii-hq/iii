@@ -43,7 +43,7 @@ fn json_value_to_anyvalue(v: &Value) -> AnyValue {
 /// # Examples
 ///
 /// ```rust
-/// use iii_sdk::Logger;
+/// use iii_observability::Logger;
 /// use serde_json::json;
 ///
 /// let logger = Logger::new();
@@ -114,7 +114,7 @@ impl Logger {
     /// # Examples
     ///
     /// ```rust
-    /// # use iii_sdk::Logger;
+    /// # use iii_observability::Logger;
     /// # use serde_json::json;
     /// # let logger = Logger::new();
     /// logger.info("Order processed", Some(json!({ "order_id": "ord_123", "status": "completed" })));
@@ -138,7 +138,7 @@ impl Logger {
     /// # Examples
     ///
     /// ```rust
-    /// # use iii_sdk::Logger;
+    /// # use iii_observability::Logger;
     /// # use serde_json::json;
     /// # let logger = Logger::new();
     /// logger.warn("Retry attempt", Some(json!({ "attempt": 3, "max_retries": 5, "endpoint": "/api/charge" })));
@@ -162,7 +162,7 @@ impl Logger {
     /// # Examples
     ///
     /// ```rust
-    /// # use iii_sdk::Logger;
+    /// # use iii_observability::Logger;
     /// # use serde_json::json;
     /// # let logger = Logger::new();
     /// logger.error("Payment failed", Some(json!({ "order_id": "ord_123", "gateway": "stripe", "error_code": "card_declined" })));
@@ -186,7 +186,7 @@ impl Logger {
     /// # Examples
     ///
     /// ```rust
-    /// # use iii_sdk::Logger;
+    /// # use iii_observability::Logger;
     /// # use serde_json::json;
     /// # let logger = Logger::new();
     /// logger.debug("Cache lookup", Some(json!({ "key": "user:42", "hit": false })));

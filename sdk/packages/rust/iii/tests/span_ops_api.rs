@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use iii_sdk::{
+use iii_observability::{
     BaggageSpanProcessor, current_span_is_recording, get_baggage_entry, record_span_event,
     run_with_baggage, set_current_span_attribute, set_current_span_error,
 };
