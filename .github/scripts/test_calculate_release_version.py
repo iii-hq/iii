@@ -565,3 +565,305 @@ class TestToPep440:
     def test_unknown_label_passes_through(self):
         # Dry-run tags aren't valid PEP 440 prereleases; we just leave them.
         assert to_pep440("0.12.0-dry-run.1") == "0.12.0-dry-run.1"
+
+    def test_unknown_label_matching_regex_passes_through(self):
+        # `dev` is [a-z]+ so it matches PRERELEASE_RE but isn't in the channel
+        # mapping. Must passthrough untouched rather than producing garbage.
+        assert to_pep440("1.2.3-dev.4") == "1.2.3-dev.4"
+        assert to_pep440("1.2.3-foo.4") == "1.2.3-foo.4"
+
+
+# ---------- Adversarial (post-merge hardening) ----------
+#
+# These tests document behavior we discovered while attacking the algorithm
+# after the initial port. They lock in current behavior — including a few
+# documented footguns — so future refactors don't silently drift.
+
+
+class TestPromotionFootguns:
+    """Promotion to `none` always returns the current base, regardless of bump.
+
+    This is intentional ("drop the prerelease suffix, keep the base") but is a
+    sharp edge: a user on `0.15.0-next.5` who runs `patch + none` expecting
+    `0.15.1` will get `0.15.0`. Documented here so the surprise is visible.
+    """
+
+    def test_promote_ignores_patch_bump(self):
+        assert (
+            calculate_version("0.15.0-next.5", "patch", "none", "0.14.0", ["iii/v0.14.0"], "iii")
+            == "0.15.0"
+        )
+
+    def test_promote_ignores_minor_bump(self):
+        assert (
+            calculate_version("0.15.0-next.5", "minor", "none", "0.14.0", ["iii/v0.14.0"], "iii")
+            == "0.15.0"
+        )
+
+    def test_promote_ignores_major_bump(self):
+        assert (
+            calculate_version("0.15.0-next.5", "major", "none", "0.14.0", ["iii/v0.14.0"], "iii")
+            == "0.15.0"
+        )
+
+    def test_stable_to_stable_does_not_promote(self):
+        # No prerelease label on current → promotion branch skipped → real bump.
+        assert (
+            calculate_version("0.15.0", "patch", "none", "0.15.0", ["iii/v0.15.0"], "iii")
+            == "0.15.1"
+        )
+
+
+class TestCurrentBehindLatestStable:
+    """If engine/Cargo.toml falls behind the latest stable tag (manual
+    downgrade, bad merge), the algorithm anchors from the *current* base
+    rather than `latest_stable`. That can produce a tag that overlaps an
+    earlier train. Locked in here so we notice if the behavior changes.
+    """
+
+    def test_minor_below_stable_anchors_from_current(self):
+        assert (
+            calculate_version(
+                "0.12.0-next.5", "minor", "next", "0.15.0", ["iii/v0.15.0"], "iii"
+            )
+            == "0.13.0-next.1"
+        )
+
+    def test_major_jump_when_current_minor_below_stable_major(self):
+        # Current's major < stable's major → detect_current_level returns None
+        # → falls into the "no level" branch → bumps the current base.
+        assert (
+            calculate_version(
+                "0.5.0-next.1", "minor", "next", "1.2.0", ["iii/v1.2.0"], "iii"
+            )
+            == "0.6.0-next.1"
+        )
+
+    def test_current_equals_stable_no_level_minor(self):
+        # cur == stable → detect_current_level None → bump current base.
+        assert (
+            calculate_version("0.13.0", "minor", "next", "0.13.0", ["iii/v0.13.0"], "iii")
+            == "0.14.0-next.1"
+        )
+
+
+class TestChannelSwitchPicksUpExistingCounter:
+    """Switching channels (e.g. rc → next) uses the next_prerelease_counter
+    scan on the target base, which resumes from any existing tags. This is
+    intentional (avoids clobbering published prereleases) but can surprise
+    someone who expects `.1` after a fresh switch.
+    """
+
+    def test_switch_resumes_counter_from_existing_target_tag(self):
+        tags = ["iii/v0.16.0-next.3", "iii/v0.13.0"]
+        # rc.2 → minor + next bumps base to 0.16.0; existing 0.16.0-next.3
+        # forces counter to 4 rather than 1.
+        assert (
+            calculate_version("0.15.0-rc.2", "minor", "next", "0.13.0", tags, "iii")
+            == "0.16.0-next.4"
+        )
+
+    def test_switch_starts_at_1_when_no_existing_on_target_base(self):
+        tags = ["iii/v0.13.0", "iii/v0.15.0-rc.2"]
+        assert (
+            calculate_version("0.15.0-rc.2", "minor", "next", "0.13.0", tags, "iii")
+            == "0.16.0-next.1"
+        )
+
+
+class TestSameChannelStaysIsolatedFromOtherChannels:
+    """A `next` release must not be polluted by `rc` (or alpha/beta) tags."""
+
+    def test_next_ignores_rc_tags_at_same_base(self):
+        tags = [
+            "iii/v0.15.0-rc.5",
+            "iii/v0.15.0-rc.6",
+            "iii/v0.15.0-rc.7",
+            "iii/v0.15.0-next.1",
+        ]
+        assert (
+            calculate_version("0.15.0-next.1", "minor", "next", "0.13.0", tags, "iii")
+            == "0.15.0-next.2"
+        )
+
+    def test_rc_ignores_next_tags_at_same_base(self):
+        tags = [
+            "iii/v0.15.0-next.5",
+            "iii/v0.15.0-next.6",
+            "iii/v0.15.0-rc.1",
+        ]
+        assert (
+            calculate_version("0.15.0-rc.1", "minor", "rc", "0.13.0", tags, "iii")
+            == "0.15.0-rc.2"
+        )
+
+
+class TestCounterAtZero:
+    """A `.next.0` tag in the wild shouldn't break counter math."""
+
+    def test_zero_counter_increments(self):
+        tags = ["iii/v0.15.0-next.0"]
+        assert (
+            calculate_version("0.15.0-next.0", "minor", "next", "0.13.0", tags, "iii")
+            == "0.15.0-next.1"
+        )
+
+
+class TestNoLatestStable:
+    """First-ever release: no stable tag yet, current is the seed prerelease."""
+
+    def test_same_channel_minor_bumps_current_when_no_stable(self):
+        assert (
+            calculate_version("0.5.0-next.5", "minor", "next", None, ["iii/v0.5.0-next.5"], "iii")
+            == "0.6.0-next.1"
+        )
+
+    def test_same_channel_patch_advances_patch_when_no_stable(self):
+        assert (
+            calculate_version("0.5.0-next.5", "patch", "next", None, [], "iii")
+            == "0.5.1-next.1"
+        )
+
+
+class TestEscalationRestartsFromStable:
+    """When the requested bump escalates beyond the current train's level,
+    we restart from the latest stable rather than the current base.
+    """
+
+    def test_major_from_minor_train_anchors_at_stable(self):
+        # current 0.20.0-next.1, stable 0.13.0 → current_level=minor, request=major
+        # → escalate → anchor=latest_stable=0.13.0 → bump major → 1.0.0
+        assert (
+            calculate_version(
+                "0.20.0-next.1", "major", "next", "0.13.0", ["iii/v0.13.0"], "iii"
+            )
+            == "1.0.0-next.1"
+        )
+
+    def test_minor_from_patch_train_anchors_at_stable(self):
+        # current 0.13.5-next.1 (patch train above stable 0.13.0), request minor
+        # → escalate → anchor=0.13.0 → bump minor → 0.14.0
+        assert (
+            calculate_version(
+                "0.13.5-next.1", "minor", "next", "0.13.0", ["iii/v0.13.0"], "iii"
+            )
+            == "0.14.0-next.1"
+        )
+
+
+class TestCargoVersionParsing:
+    """`_read_cargo_version` returns the FIRST line that starts with
+    `version = `. A Cargo.toml whose first such line is in a dependency
+    table (rather than `[package]`) would yield the wrong version. Locked
+    in so we catch any regression in the parser.
+    """
+
+    def test_picks_first_line_starting_with_version(self, tmp_path):
+        from calculate_release_version import _read_cargo_version
+
+        p = tmp_path / "Cargo.toml"
+        p.write_text('[package]\nname = "iii"\nversion = "1.2.3"\n')
+        assert _read_cargo_version(str(p)) == "1.2.3"
+
+    def test_indented_version_lines_are_skipped(self, tmp_path):
+        # `startswith("version = ")` requires column-0, so indented version
+        # lines inside dependency tables are correctly ignored.
+        from calculate_release_version import _read_cargo_version
+
+        p = tmp_path / "Cargo.toml"
+        p.write_text(
+            '[dependencies.foo]\n    version = "9.9.9"\n[package]\nversion = "1.2.3"\n'
+        )
+        assert _read_cargo_version(str(p)) == "1.2.3"
+
+    def test_missing_version_raises(self, tmp_path):
+        from calculate_release_version import _read_cargo_version
+
+        p = tmp_path / "Cargo.toml"
+        p.write_text("[package]\nname = \"iii\"\n")
+        with pytest.raises(RuntimeError):
+            _read_cargo_version(str(p))
+
+
+class TestCalculateRejectsBadInputs:
+    def test_unknown_bump_type_raises(self):
+        with pytest.raises(ValueError):
+            calculate_version("0.13.0", "bogus", "next", "0.13.0", [], "iii")
+
+    def test_unknown_prerelease_raises(self):
+        with pytest.raises(ValueError):
+            calculate_version("0.13.0", "minor", "bogus", "0.13.0", [], "iii")
+
+    def test_empty_prerelease_string_raises(self):
+        with pytest.raises(ValueError):
+            calculate_version("0.13.0", "minor", "", "0.13.0", [], "iii")
+
+    def test_uppercase_prerelease_raises(self):
+        # Only lowercase channel labels are accepted; CLI should normalize
+        # upstream if it ever supports anything else.
+        with pytest.raises(ValueError):
+            calculate_version("0.13.0", "minor", "NEXT", "0.13.0", [], "iii")
+
+    def test_unparseable_current_raises(self):
+        with pytest.raises(ValueError):
+            calculate_version("not-a-version", "minor", "next", "0.13.0", [], "iii")
+
+
+class TestDryRunInteraction:
+    """`--dry-run` is applied after `calculate_version`. It splits on the
+    first `-` of whatever calculate produced and tacks on a dry-run counter.
+    Verify the boundary cases.
+    """
+
+    def test_dry_run_counter_on_stable_base(self):
+        from calculate_release_version import next_dry_run_counter
+
+        tags = ["iii/v0.16.0-dry-run.1", "iii/v0.16.0-dry-run.5"]
+        assert next_dry_run_counter("0.16.0", tags, "iii") == 6
+
+    def test_dry_run_counter_starts_at_1_when_none(self):
+        from calculate_release_version import next_dry_run_counter
+
+        assert next_dry_run_counter("0.16.0", [], "iii") == 1
+
+    def test_dry_run_ignores_other_prefixes(self):
+        from calculate_release_version import next_dry_run_counter
+
+        tags = ["other/v0.16.0-dry-run.99", "iii/v0.16.0-dry-run.1"]
+        assert next_dry_run_counter("0.16.0", tags, "iii") == 2
+
+
+class TestLargeCounterMath:
+    def test_counter_well_above_int32(self):
+        # Python ints are unbounded; ensure huge counters work.
+        tags = [f"iii/v0.15.0-next.{2**40}"]
+        assert (
+            calculate_version("0.15.0-next.1", "minor", "next", "0.13.0", tags, "iii")
+            == f"0.15.0-next.{2**40 + 1}"
+        )
+
+
+class TestTagPatternRejectsImpostors:
+    """Bogus or malformed entries in the tag list must not affect counters."""
+
+    def test_partial_match_does_not_count(self):
+        tags = [
+            "iii/v0.15.0-next.1abc",  # trailing garbage — must be rejected
+            "iii/v0.15.0-next.",  # missing number
+            "iii/v0.15.0-next",  # missing dot+number
+            "iii/v0.15.0-NEXT.5",  # uppercase channel
+            "iii/v0.15.0-next.1",  # only this one should count
+        ]
+        assert (
+            calculate_version("0.15.0-next.1", "minor", "next", "0.13.0", tags, "iii")
+            == "0.15.0-next.2"
+        )
+
+    def test_blank_lines_in_tag_list(self):
+        # `_git_tags` filters blanks but `next_prerelease_counter` should be
+        # robust regardless of upstream filtering.
+        tags = ["", "iii/v0.15.0-next.3", ""]
+        assert (
+            calculate_version("0.15.0-next.1", "minor", "next", "0.13.0", tags, "iii")
+            == "0.15.0-next.4"
+        )
