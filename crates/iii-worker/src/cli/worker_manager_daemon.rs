@@ -25,7 +25,8 @@ use crate::core::{
 };
 use iii_observability::OtelConfig;
 use iii_sdk::{
-    III, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata, register_worker,
+    III, IIIError, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata,
+    register_worker,
 };
 use schemars::{JsonSchema, schema_for};
 use serde_json::Value;
@@ -104,6 +105,18 @@ pub fn bad_request_payload(input_label: &str, e: &serde_json::Error) -> String {
     err_payload(&err)
 }
 
+fn handler_error(payload: String) -> IIIError {
+    IIIError::Handler(payload)
+}
+
+fn op_error(e: &WorkerOpError) -> IIIError {
+    handler_error(err_payload(e))
+}
+
+fn bad_request_error(input_label: &str, e: &serde_json::Error) -> IIIError {
+    handler_error(bad_request_payload(input_label, e))
+}
+
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
@@ -162,9 +175,10 @@ struct SchemaResponse {
 
 fn register_schema(iii: &III) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::schema", |payload: Value| async move {
+        "worker::schema",
+        RegisterFunction::new_async(|payload: Value| async move {
             let req: SchemaRequest = serde_json::from_value(payload)
-                .map_err(|e| bad_request_payload("worker::schema", &e))?;
+                .map_err(|e| bad_request_error("worker::schema", &e))?;
             let all = vec![
                 (
                     "worker::add",
@@ -231,7 +245,7 @@ fn register_schema(iii: &III) {
                     }
                 })
                 .collect();
-            Ok::<_, String>(SchemaResponse { schemas })
+            Ok::<_, IIIError>(SchemaResponse { schemas })
         })
         .description(
             "Introspect request/response schemas for worker::* triggers. \
@@ -249,13 +263,14 @@ fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {
 
 fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::add", move |payload: Value| {
+        "worker::add",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             let sink = sink.clone();
             async move {
                 let opts: AddOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_payload("worker::add", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
+                    .map_err(|e| bad_request_error("worker::add", &e))?;
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
                 core_add::run(
                     opts,
                     &ctx,
@@ -264,7 +279,7 @@ fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
                     core_add::CallerMode::Trigger,
                 )
                 .await
-                .map_err(|e| err_payload(&e))
+                .map_err(|e| op_error(&e))
             }
         })
         .description("Install a worker from registry name or OCI ref"),
@@ -273,16 +288,17 @@ fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
 
 fn register_remove(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::remove", move |payload: Value| {
+        "worker::remove",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             let sink = sink.clone();
             async move {
                 let opts: RemoveOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_payload("worker::remove", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
+                    .map_err(|e| bad_request_error("worker::remove", &e))?;
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
                 core_remove::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
-                    .map_err(|e| err_payload(&e))
+                    .map_err(|e| op_error(&e))
             }
         })
         .description("Uninstall workers and clear their artifacts"),
@@ -291,16 +307,17 @@ fn register_remove(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
 
 fn register_update(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::update", move |payload: Value| {
+        "worker::update",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             let sink = sink.clone();
             async move {
                 let opts: UpdateOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_payload("worker::update", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
+                    .map_err(|e| bad_request_error("worker::update", &e))?;
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
                 core_update::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
-                    .map_err(|e| err_payload(&e))
+                    .map_err(|e| op_error(&e))
             }
         })
         .description("Reinstall workers preserving config"),
@@ -309,16 +326,17 @@ fn register_update(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
 
 fn register_start(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::start", move |payload: Value| {
+        "worker::start",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             let sink = sink.clone();
             async move {
                 let opts: StartOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_payload("worker::start", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
+                    .map_err(|e| bad_request_error("worker::start", &e))?;
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
                 core_start::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
-                    .map_err(|e| err_payload(&e))
+                    .map_err(|e| op_error(&e))
             }
         })
         .description("Start a configured worker"),
@@ -327,16 +345,17 @@ fn register_start(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
 
 fn register_stop(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::stop", move |payload: Value| {
+        "worker::stop",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             let sink = sink.clone();
             async move {
                 let opts: StopOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_payload("worker::stop", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
+                    .map_err(|e| bad_request_error("worker::stop", &e))?;
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
                 core_stop::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
-                    .map_err(|e| err_payload(&e))
+                    .map_err(|e| op_error(&e))
             }
         })
         .description("Stop a running worker"),
@@ -345,7 +364,8 @@ fn register_stop(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
 
 fn register_list(iii: &III, project_root: PathBuf) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::list", move |payload: Value| {
+        "worker::list",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             async move {
                 // Lenient default only for null or empty object. Other shapes
@@ -355,12 +375,12 @@ fn register_list(iii: &III, project_root: PathBuf) {
                     Value::Null => ListOptions::default(),
                     Value::Object(map) if map.is_empty() => ListOptions::default(),
                     _ => serde_json::from_value(payload)
-                        .map_err(|e| bad_request_payload("worker::list", &e))?,
+                        .map_err(|e| bad_request_error("worker::list", &e))?,
                 };
                 let ctx = ProjectCtx::open_unlocked(project_root);
                 core_list::run(opts, &ctx, &NullSink, &CliHostShim)
                     .await
-                    .map_err(|e| err_payload(&e))
+                    .map_err(|e| op_error(&e))
             }
         })
         .description("List installed workers"),
@@ -369,16 +389,17 @@ fn register_list(iii: &III, project_root: PathBuf) {
 
 fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
-        RegisterFunction::new_async("worker::clear", move |payload: Value| {
+        "worker::clear",
+        RegisterFunction::new_async(move |payload: Value| {
             let project_root = project_root.clone();
             let sink = sink.clone();
             async move {
                 let opts: ClearOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_payload("worker::clear", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| err_payload(&e))?;
+                    .map_err(|e| bad_request_error("worker::clear", &e))?;
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
                 core_clear::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
                     .await
-                    .map_err(|e| err_payload(&e))
+                    .map_err(|e| op_error(&e))
             }
         })
         .description("Wipe worker artifacts"),

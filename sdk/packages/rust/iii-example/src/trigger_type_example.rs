@@ -81,7 +81,7 @@ pub fn setup(iii: &III) {
         .expect("failed to register webhook trigger");
 }
 
-fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, String> {
+fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, IIIError> {
     Ok(serde_json::json!({
         "processed": true,
         "method": input.method,

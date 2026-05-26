@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::{
-    III, InitOptions, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest, UpdateOp,
-    UpdateResult, register_worker,
+    III, InitOptions, RegisterTriggerInput, TriggerRequest, UpdateOp, UpdateResult,
+    register_worker,
     types::{DeleteResult, SetResult},
 };
 use serde_json::Value;
@@ -251,16 +251,9 @@ impl StreamAdapter for BridgeAdapter {
     async fn watch_events(&self) -> anyhow::Result<()> {
         let handler_function_id = self.handler_function_id.clone();
         let pub_sub = self.pub_sub.clone();
-        self.bridge.register_function((
-            RegisterFunctionMessage {
-                id: handler_function_id.clone(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-                invocation: None,
-            },
-            move |data| {
+        self.bridge.register_function(
+            handler_function_id.clone(),
+            iii_sdk::RegisterFunction::new_async(move |data| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
@@ -280,8 +273,8 @@ impl StreamAdapter for BridgeAdapter {
                         }
                     }
                 }
-            },
-        ));
+            }),
+        );
 
         let _ = self.bridge.register_trigger(RegisterTriggerInput {
             trigger_type: "subscribe".to_string(),

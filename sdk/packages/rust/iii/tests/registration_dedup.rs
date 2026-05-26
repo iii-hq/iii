@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use iii_sdk::{
-    III, IIIConnectionState, InitOptions, RegisterFunction, RegisterTriggerInput,
+    III, IIIConnectionState, IIIError, InitOptions, RegisterFunction, RegisterTriggerInput,
     RegisterTriggerType, TriggerConfig, TriggerHandler, register_worker,
 };
 
@@ -31,7 +31,7 @@ struct GreetInput {
     name: String,
 }
 
-fn greet(input: GreetInput) -> Result<String, String> {
+fn greet(input: GreetInput) -> Result<String, IIIError> {
     Ok(format!("Hello, {}", input.name))
 }
 
@@ -40,7 +40,7 @@ struct EchoInput {
     payload: Value,
 }
 
-fn echo(input: EchoInput) -> Result<Value, String> {
+fn echo(input: EchoInput) -> Result<Value, IIIError> {
     Ok(input.payload)
 }
 
@@ -83,7 +83,7 @@ async fn single_function_before_connect_sends_one_registerfunction() {
     let mock = MockEngine::start().await;
     let iii = register_worker(mock.url(), InitOptions::default());
 
-    iii.register_function(RegisterFunction::new("dedup::greet", greet));
+    iii.register_function("dedup::greet", RegisterFunction::new(greet));
 
     let msgs = assert_stable(
         &mock,
@@ -107,9 +107,9 @@ async fn multiple_functions_before_connect_each_sent_once() {
     let mock = MockEngine::start().await;
     let iii = register_worker(mock.url(), InitOptions::default());
 
-    iii.register_function(RegisterFunction::new("dedup::a", greet));
-    iii.register_function(RegisterFunction::new("dedup::b", echo));
-    iii.register_function(RegisterFunction::new("dedup::c", greet));
+    iii.register_function("dedup::a", RegisterFunction::new(greet));
+    iii.register_function("dedup::b", RegisterFunction::new(echo));
+    iii.register_function("dedup::c", RegisterFunction::new(greet));
 
     let msgs = assert_stable(
         &mock,
@@ -139,7 +139,7 @@ async fn mixed_registration_types_each_sent_once() {
     let mock = MockEngine::start().await;
     let iii = register_worker(mock.url(), InitOptions::default());
 
-    iii.register_function(RegisterFunction::new("dedup::mixed::fn", greet));
+    iii.register_function("dedup::mixed::fn", RegisterFunction::new(greet));
     let trigger_type = iii.register_trigger_type(RegisterTriggerType::new(
         "dedup::mixed::tt",
         "noop",
@@ -207,7 +207,7 @@ async fn register_after_connected_sends_one_frame() {
         )
         .await;
 
-    iii.register_function(RegisterFunction::new("dedup::late", greet));
+    iii.register_function("dedup::late", RegisterFunction::new(greet));
 
     let msgs = assert_stable(
         &mock,
@@ -231,8 +231,8 @@ async fn reconnect_resends_each_registration_once() {
     let mock = MockEngine::start().await;
     let iii = register_worker(mock.url(), InitOptions::default());
 
-    iii.register_function(RegisterFunction::new("dedup::reconnect::a", greet));
-    iii.register_function(RegisterFunction::new("dedup::reconnect::b", echo));
+    iii.register_function("dedup::reconnect::a", RegisterFunction::new(greet));
+    iii.register_function("dedup::reconnect::b", RegisterFunction::new(echo));
 
     let _ = assert_stable(
         &mock,

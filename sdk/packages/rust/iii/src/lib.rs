@@ -18,9 +18,8 @@ pub use channels::{
 };
 pub use error::IIIError;
 pub use iii::{
-    FunctionRef, III, IIIAsyncFn, IIIConnectionState, IIIFn, IntoFunctionHandler,
-    IntoFunctionRegistration, RegisterFunction, RegisterTriggerType, TriggerTypeRef,
-    WorkerMetadata, iii_async_fn, iii_fn,
+    FunctionInfo, FunctionRef, III, IIIConnectionState, RegisterFunction, RegisterTriggerType,
+    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata,
 };
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
