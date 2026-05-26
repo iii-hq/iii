@@ -72,8 +72,10 @@ jobs:
           if [[ "$TARGET" == "iii" ]]; then
             for f in engine/Cargo.toml \
                      sdk/packages/rust/iii/Cargo.toml \
+                     sdk/packages/rust/observability/Cargo.toml \
                      sdk/packages/node/iii/package.json \
                      sdk/packages/node/iii-browser/package.json \
+                     sdk/packages/node/observability/package.json \
                      sdk/packages/python/iii/pyproject.toml \
                      console/packages/console-rust/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
@@ -89,120 +91,20 @@ jobs:
         id: versions
         env:
           TARGET: ${{ inputs.target }}
-          BUMP: ${{ inputs.bump }}
-          PRERELEASE: ${{ inputs.prerelease }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          read_cargo_version() { grep '^version = ' "$1" | head -n1 | cut -d'"' -f2; }
-          read_json_version()  { grep '"version":' "$1" | head -n1 | cut -d'"' -f4; }
-
-          bump_version() {
-            local current="$1"
-            local tag_prefix="$2"
-            local bump_type="$3"
-            local base="${current%%-*}"
-            IFS='.' read -r major minor patch <<< "$base"
-
-            # Check if current version already has the requested pre-release label
-            local current_pre=""
-            if [[ "$current" =~ -([a-z]+)\.[0-9]+$ ]]; then
-              current_pre="${BASH_REMATCH[1]}"
-            fi
-
-            local new_base
-            if [[ "$PRERELEASE" != "none" && "$current_pre" == "$PRERELEASE" && "$bump_type" == "patch" ]]; then
-              # Same pre-release channel + patch: keep base, increment counter
-              # e.g. 0.12.0-next.1 + patch → 0.12.0-next.2
-              new_base="$base"
-            elif [[ "$PRERELEASE" == "none" && -n "$current_pre" ]]; then
-              # Promoting pre-release to stable: use base as-is
-              # e.g. 0.12.0-next.3 → 0.12.0
-              new_base="$base"
-            else
-              # Apply the requested bump to the base. Covers:
-              # - Stable → stable: 0.11.0 + minor → 0.12.0
-              # - Stable → new pre-release: 0.11.0 + minor + next → 0.12.0-next.1
-              # - Same pre-release channel + minor/major: 0.11.7-next.2 + minor + next → 0.12.0-next.1
-              case "$bump_type" in
-                major) major=$((major + 1)); minor=0; patch=0 ;;
-                minor) minor=$((minor + 1)); patch=0 ;;
-                patch) patch=$((patch + 1)) ;;
-              esac
-              new_base="${major}.${minor}.${patch}"
-            fi
-
-            if [[ "$PRERELEASE" != "none" ]]; then
-              local existing
-              existing=$(git tag -l "${tag_prefix}/v${new_base}-${PRERELEASE}.*" 2>/dev/null | sort -V)
-              local pre_num=1
-              if [[ -n "$existing" ]]; then
-                local latest_pre
-                latest_pre=$(echo "$existing" | tail -n1)
-                pre_num=$(echo "$latest_pre" | grep -oE '\.[0-9]+$' | tr -d '.')
-                pre_num=$((pre_num + 1))
-              fi
-              echo "${new_base}-${PRERELEASE}.${pre_num}"
-            else
-              echo "$new_base"
-            fi
-          }
-
-          next_dry_run_version() {
-            local base="$1"
-            local tag_prefix="$2"
-            local existing
-            existing=$(git tag -l "${tag_prefix}/v${base}-dry-run.*" 2>/dev/null | sort -V)
-            local num=1
-            if [[ -n "$existing" ]]; then
-              local latest
-              latest=$(echo "$existing" | tail -n1)
-              num=$(echo "$latest" | grep -oE '\.[0-9]+$' | tr -d '.')
-              num=$((num + 1))
-            fi
-            echo "${base}-dry-run.${num}"
-          }
-
-          to_pep440() {
-            local version="$1"
-            if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-([a-z]+)\.([0-9]+)$ ]]; then
-              local base="${BASH_REMATCH[1]}"
-              local label="${BASH_REMATCH[2]}"
-              local num="${BASH_REMATCH[3]}"
-              case "$label" in
-                rc)    echo "${base}rc${num}" ;;
-                alpha) echo "${base}a${num}" ;;
-                beta)  echo "${base}b${num}" ;;
-                next)  echo "${base}.dev${num}" ;;
-              esac
-            else
-              echo "$version"
-            fi
-          }
-
-          if [[ "$PRERELEASE" != "none" ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=$PRERELEASE" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
-          fi
-
           if [[ "$TARGET" == "iii" ]]; then
-            current=$(read_cargo_version "engine/Cargo.toml")
-            new_ver=$(bump_version "$current" "iii" "$BUMP")
-
-            if [[ "$DRY_RUN" == "true" ]]; then
-              base_ver="${new_ver%%-*}"
-              new_ver=$(next_dry_run_version "$base_ver" "iii")
-            fi
-
-            py_ver=$(to_pep440 "$new_ver")
-            echo "version=$new_ver" >> "$GITHUB_OUTPUT"
-            echo "python_version=$py_ver" >> "$GITHUB_OUTPUT"
-            echo "tag=iii/v${new_ver}" >> "$GITHUB_OUTPUT"
-            echo "current=$current" >> "$GITHUB_OUTPUT"
-            echo "::notice::iii: $current -> $new_ver (python: $py_ver)"
+            current_version_file="engine/Cargo.toml"
+          else
+            echo "::error::unknown target: $TARGET"
+            exit 1
           fi
+
+          python3 .github/scripts/calculate_release_version.py \
+            --target "$TARGET" \
+            --bump "${{ inputs.bump }}" \
+            --prerelease "${{ inputs.prerelease }}" \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            --current-version-file "$current_version_file"
 
       - name: Update iii manifests
         if: inputs.target == 'iii' && inputs.dry_run != true
@@ -216,11 +118,17 @@ jobs:
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" sdk/packages/rust/iii/Cargo.toml
           echo "Updated sdk/packages/rust/iii/Cargo.toml to $NEW_VERSION"
 
+          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" sdk/packages/rust/observability/Cargo.toml
+          echo "Updated sdk/packages/rust/observability/Cargo.toml to $NEW_VERSION"
+
           jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/iii/package.json > tmp.json && mv tmp.json sdk/packages/node/iii/package.json
           echo "Updated sdk/packages/node/iii/package.json to $NEW_VERSION"
 
           jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/iii-browser/package.json > tmp.json && mv tmp.json sdk/packages/node/iii-browser/package.json
           echo "Updated sdk/packages/node/iii-browser/package.json to $NEW_VERSION"
+
+          jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/observability/package.json > tmp.json && mv tmp.json sdk/packages/node/observability/package.json
+          echo "Updated sdk/packages/node/observability/package.json to $NEW_VERSION"
 
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${PY_VERSION}\"/}" sdk/packages/python/iii/pyproject.toml
           echo "Updated sdk/packages/python/iii/pyproject.toml to $PY_VERSION"
@@ -267,8 +175,10 @@ jobs:
           if [[ "$TARGET" == "iii" ]]; then
             check_cargo "engine/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/iii/Cargo.toml" "$VERSION"
+            check_cargo "sdk/packages/rust/observability/Cargo.toml" "$VERSION"
             check_json "sdk/packages/node/iii/package.json" "$VERSION"
             check_json "sdk/packages/node/iii-browser/package.json" "$VERSION"
+            check_json "sdk/packages/node/observability/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
