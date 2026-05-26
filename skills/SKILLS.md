@@ -5,10 +5,12 @@ Skills for building on the [iii engine](https://iii.dev) — a backend unificati
 ## Getting Started
 
 - [getting-started](iii-getting-started/SKILL.md) — Install iii, create a project, write your first worker
+- [examples](iii-examples/SKILL.md) — Copyable examples for functions, triggers, enqueue, reactions, channels, and worker discovery
 
 ## HOWTO Skills
 
 Direct mappings to iii documentation HOWTOs. Each teaches one iii primitive or worker-backed capability.
+Use `iii-examples` when an agent needs a concrete code shape before choosing a deeper skill.
 
 - [functions-and-triggers](iii-functions-and-triggers/SKILL.md) — Register functions and triggers across TypeScript, Python, and Rust
 - [http-endpoints](iii-http-endpoints/SKILL.md) — Expose functions as REST API endpoints

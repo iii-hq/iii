@@ -10,6 +10,7 @@ description: >-
 # Worker Registry
 
 The public worker surface is registry-first. This repo should not hardcode one static skill per worker because workers publish their own skills in `iii-hq/workers` and the registry. Use this skill to discover the right worker, install it, then load the worker-provided skill/docs before generating code.
+For a compact copyable registry flow, see [iii-examples: Registry Worker Capability](../iii-examples/SKILL.md#registry-worker-capability).
 
 ## Flow
 

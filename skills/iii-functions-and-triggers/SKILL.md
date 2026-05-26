@@ -45,6 +45,7 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 - **Rust**: [../references/functions-and-triggers.rs](../references/functions-and-triggers.rs)
 
 Each reference shows the same patterns (function registration, trigger binding, cross-function invocation) in its respective language.
+For a compact copyable example map across primitives, see [iii-examples](../iii-examples/SKILL.md).
 
 ## Common Patterns
 
@@ -90,6 +91,7 @@ Use the adaptations below when they apply to the task.
 - For invocation modes (sync vs void vs enqueue), prefer `iii-trigger-actions`.
 - For HTTP-invoked external functions, prefer `iii-http-invoked-functions`.
 - For built-in trigger config and payload shapes, prefer `iii-trigger-schemas`.
+- For compact copyable examples across primitives, prefer `iii-examples`.
 - Stay with `iii-functions-and-triggers` when the primary problem is registering functions, binding triggers, or cross-language invocation.
 
 ## When to Use

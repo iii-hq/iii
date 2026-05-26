@@ -157,6 +157,12 @@ Skills teach your agent how to use every iii primitive — HTTP endpoints, cron 
 state management, streams, channels, and more. Available for Claude Code, Cursor, Codex, Gemini CLI,
 and 30+ other agents.
 
+## Copyable Examples
+
+Use [iii-examples](../iii-examples/SKILL.md) when an agent needs concrete starting code for HTTP
+functions, enqueue, reactive state triggers, channels, or registry-worker discovery before loading a
+deeper skill.
+
 ## Adapting This Pattern
 
 - Add more functions to the same worker — each gets its own `registerFunction` + `registerTrigger`
@@ -179,6 +185,7 @@ After getting your first worker running:
 5. **Add observability** — Use `iii-observability` skill for tracing and metrics
 6. **Explore architecture patterns** — See `iii-agentic-backend`, `iii-reactive-backend`,
    `iii-workflow-orchestration`
+7. **Copy a concrete pattern** — Use `iii-examples` when the implementation shape is unclear
 
 ## Key Resources
 
@@ -196,6 +203,7 @@ After getting your first worker running:
 - For queue/async job patterns, prefer `iii-queue-processing`
 - For state persistence patterns, prefer `iii-state-management`
 - For engine configuration, prefer `iii-engine-config`
+- For compact copyable examples across primitives, prefer `iii-examples`
 - Stay with `iii-getting-started` for installation, initial setup, and first-worker guidance
 
 ## When to Use

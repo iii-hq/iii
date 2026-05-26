@@ -53,6 +53,7 @@ A function creates a channel via `createChannel()`, receiving a writer and reade
 - **Rust**: [../references/channels.rs](../references/channels.rs)
 
 Each reference shows the same patterns (channel creation, binary streaming, text messages, cross-function handoff) in its respective language.
+For a shorter copyable channel handoff example, see [iii-examples: Channel Handoff](../iii-examples/SKILL.md#channel-handoff).
 
 ## Common Patterns
 
@@ -82,6 +83,7 @@ Use the adaptations below when they apply to the task.
 - For key-value state persistence, prefer `iii-state-management`.
 - For stream CRUD (named streams with groups/keys), prefer `iii-realtime-streams`.
 - For pub/sub messaging, prefer triggers with `subscribe` type.
+- For compact copyable examples across primitives, prefer `iii-examples`.
 - Stay with `iii-channels` when the primary problem is binary data streaming between workers.
 - Do not use this skill for removed service APIs or adapter-extension APIs.
 

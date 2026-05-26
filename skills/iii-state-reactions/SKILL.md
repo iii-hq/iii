@@ -47,6 +47,7 @@ See [../references/state-reactions.js](../references/state-reactions.js) for the
 Also available in **Python**: [../references/state-reactions.py](../references/state-reactions.py)
 
 Also available in **Rust**: [../references/state-reactions.rs](../references/state-reactions.rs)
+For a shorter copyable state reaction example, see [iii-examples: Reactive State Trigger](../iii-examples/SKILL.md#reactive-state-trigger).
 
 ## Common Patterns
 
@@ -77,6 +78,7 @@ Install/enable iii-state with `iii worker add iii-state`; state triggers fire fr
 
 - If the task is about directly reading or writing state without reactions, prefer `iii-state-management`.
 - If the task needs conditional trigger logic shared across trigger types, prefer `iii-trigger-conditions`.
+- For compact copyable examples across primitives, prefer `iii-examples`.
 - Stay with `iii-state-reactions` when the primary need is automatic side effects on state changes.
 
 ## When to Use

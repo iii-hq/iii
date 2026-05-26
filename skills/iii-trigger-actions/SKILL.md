@@ -44,6 +44,7 @@ Also available in **Python**: [../references/trigger-actions.py](../references/t
 
 Also available in **Rust**: [../references/trigger-actions.rs](../references/trigger-actions.rs)
 invocation modes showing when and how to use sync, void, and enqueue patterns.
+For a shorter copyable enqueue example, see [iii-examples: Durable Enqueue](../iii-examples/SKILL.md#durable-enqueue).
 
 ## Common Patterns
 
@@ -82,6 +83,7 @@ Use the adaptations below when they apply to the task.
 - For DLQ handling when enqueued jobs exhaust retries, prefer `iii-dead-letter-queues`.
 - For error handling, prefer `iii-error-handling`.
 - For function registration and trigger binding, prefer `iii-functions-and-triggers`.
+- For compact copyable examples across primitives, prefer `iii-examples`.
 - Stay with `iii-trigger-actions` when the primary problem is choosing the right invocation mode.
 
 ## When to Use

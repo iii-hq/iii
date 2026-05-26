@@ -53,11 +53,13 @@ Code, GitHub Copilot, and more.
 | Skill                                        | What it does                                           |
 | -------------------------------------------- | ------------------------------------------------------ |
 | [iii-getting-started](./iii-getting-started) | Install iii, create a project, write your first worker |
+| [iii-examples](./iii-examples)               | Copyable examples for functions, triggers, enqueue, reactions, channels, and worker discovery |
 
 ### HOWTO Skills
 
 Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or
-capability. Reference implementations are available in TypeScript, Python, and Rust.
+capability. Use `iii-examples` for compact copyable starting points, then load the deeper skill for
+the exact API surface. Reference implementations are available in TypeScript, Python, and Rust.
 
 | Skill                                                      | What it does                                                             |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -113,6 +115,8 @@ Each skill follows the [Agent Skills specification](https://agentskills.io/speci
 
 ```text
 skills/
+├── iii-examples/
+│   └── SKILL.md                # Copyable iii examples
 ├── iii-http-endpoints/
 │   └── SKILL.md                # YAML frontmatter (name + description) + markdown instructions
 ├── iii-channels/
