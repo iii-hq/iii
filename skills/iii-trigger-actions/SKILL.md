@@ -36,15 +36,71 @@ The caller invokes `trigger()` with an optional action parameter. Synchronous mo
 | `iii trigger --function-id=ID --payload=JSON`                | CLI trigger (part of the engine binary)        |
 | `--timeout-ms`                                               | CLI flag to set trigger timeout (default 30s)  |
 
-## Reference Implementation
+## Code Examples
 
-See [../references/trigger-actions.js](../references/trigger-actions.js) for the full working example — a comparison of all three
+TypeScript:
 
-Also available in **Python**: [../references/trigger-actions.py](../references/trigger-actions.py)
+```typescript
+import { TriggerAction } from "iii-sdk";
 
-Also available in **Rust**: [../references/trigger-actions.rs](../references/trigger-actions.rs)
-invocation modes showing when and how to use sync, void, and enqueue patterns.
-For a shorter copyable enqueue example, see [iii-examples: Durable Enqueue](../iii-examples/SKILL.md#durable-enqueue).
+const validated = await iii.trigger({
+  function_id: "orders::validate",
+  payload: order,
+});
+
+await iii.trigger({
+  function_id: "analytics::track",
+  payload: { event: "order_created", orderId: order.id },
+  action: TriggerAction.Void(),
+});
+
+const queued = await iii.trigger({
+  function_id: "orders::charge",
+  payload: validated,
+  action: TriggerAction.Enqueue({ queue: "payments" }),
+});
+```
+
+Python:
+
+```python
+validated = iii.trigger({"function_id": "orders::validate", "payload": order})
+
+iii.trigger({
+    "function_id": "analytics::track",
+    "payload": {"event": "order_created", "orderId": order["id"]},
+    "action": {"type": "void"},
+})
+
+queued = iii.trigger({
+    "function_id": "orders::charge",
+    "payload": validated,
+    "action": {"type": "enqueue", "queue": "payments"},
+})
+```
+
+Rust:
+
+```rust
+use iii_sdk::{TriggerAction, TriggerRequest};
+use serde_json::json;
+
+let validated = iii.trigger(TriggerRequest::new("orders::validate", order)).await?;
+
+iii.trigger(TriggerRequest {
+    function_id: "analytics::track".into(),
+    payload: json!({ "event": "order_created" }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
+
+let queued = iii.trigger(TriggerRequest {
+    function_id: "orders::charge".into(),
+    payload: validated,
+    action: Some(TriggerAction::Enqueue { queue: "payments".into() }),
+    timeout_ms: None,
+}).await?;
+```
 
 ## Common Patterns
 
@@ -80,10 +136,9 @@ Use the adaptations below when they apply to the task.
 ## Pattern Boundaries
 
 - For queue configuration (retries, concurrency, FIFO ordering), prefer `iii-engine-config`.
-- For DLQ handling when enqueued jobs exhaust retries, prefer `iii-dead-letter-queues`.
+- For queue execution and DLQ behavior, use the queue worker docs under `engine/src/workers/**/skills`.
 - For error handling, prefer `iii-error-handling`.
 - For function registration and trigger binding, prefer `iii-functions-and-triggers`.
-- For compact copyable examples across primitives, prefer `iii-examples`.
 - Stay with `iii-trigger-actions` when the primary problem is choosing the right invocation mode.
 
 ## When to Use

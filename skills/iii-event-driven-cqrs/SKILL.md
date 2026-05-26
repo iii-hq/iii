@@ -48,10 +48,36 @@ HTTP GET /inventory (query)
 | `registerTrigger({ type: 'http' })`                         | Command and query endpoints               |
 | `trigger({ ..., action: TriggerAction.Void() })`            | Fire-and-forget notifications             |
 
-## Reference Implementation
+## Code Example
 
-See [../references/event-driven-cqrs.js](../references/event-driven-cqrs.js) for the full working example — an inventory management system
-with commands that publish domain events and multiple projections building query-optimized views.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "inventory-cqrs" });
+
+iii.registerFunction("cmd::add-inventory-item", async (input) => {
+  const event = { type: "inventory.item-added", itemId: input.itemId, quantity: input.quantity };
+  await iii.trigger({
+    function_id: "state::set",
+    payload: { scope: "inventory-events", key: `${Date.now()}-${input.itemId}`, value: event },
+  });
+  await iii.trigger({ function_id: "publish", payload: { topic: event.type, data: event } });
+  return { accepted: true };
+});
+
+iii.registerFunction("proj::inventory-list", async (event) => {
+  return iii.trigger({
+    function_id: "state::set",
+    payload: { scope: "inventory-list", key: event.itemId, value: event },
+  });
+});
+
+iii.registerTrigger({
+  type: "subscribe",
+  function_id: "proj::inventory-list",
+  config: { topic: "inventory.item-added" },
+});
+```
 
 ## Common Patterns
 

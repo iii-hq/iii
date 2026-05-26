@@ -51,10 +51,48 @@ The engine loads YAML config at startup, expands environment variables, initiali
 | `iii.lock`                       | Reproducible managed-worker lockfile   |
 | `iii worker sync --frozen`       | Verify lockfile without mutation       |
 
-## Reference Implementation
+## Code Example
 
-See [../references/iii-config.yaml](../references/iii-config.yaml) for the full working example — a complete
-engine configuration with all workers, adapters, queue configs, and environment variable patterns.
+```yaml
+workers:
+  - name: iii-http
+    config:
+      host: 127.0.0.1
+      port: ${III_HTTP_PORT:3111}
+
+  - name: iii-queue
+    config:
+      queue_configs:
+        payments:
+          max_retries: 5
+          concurrency: 2
+          type: fifo
+          message_group_field: orderId
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: ./data/queue
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state
+
+  - name: iii-worker-manager
+    config:
+      listeners:
+        - host: 127.0.0.1
+          port: 49134
+          private: true
+        - host: 0.0.0.0
+          port: 49135
+          rbac:
+            auth_function_id: auth::browser-session
+```
 
 ## Common Patterns
 
@@ -71,7 +109,7 @@ Code using this pattern commonly includes, when relevant:
 - Ports: 3111 (API), 3112 (streams), 49134 (engine WS), 9464 (Prometheus)
 - RBAC listener: configure `iii-worker-manager` with listener `host`, `port`, `middleware_function_id`, and `rbac`
 - HTTP security policy: configure exposed functions, auth function, registration hooks, and forbidden functions on public worker-manager listeners
-- Observability: configure OTLP exporter, service name, sampling, metrics, and logs on `iii-observability`
+- Observability: configure OTLP exporter, service name, sampling, metrics, and logs on the observability worker
 
 ### Worker Config Format
 
@@ -144,7 +182,7 @@ workers:
 - Local workers point at local binary or development paths when supported by the worker config.
 - `iii.lock` records resolved binary artifacts or OCI image digests for reproducible installs.
 - Commit `iii.lock` with config. Use `iii worker verify` in CI and `iii worker sync` after cloning.
-- See `iii-worker-lifecycle` and `iii-worker-lockfile` for command-level guidance.
+- Use `iii worker` CLI commands for managed-worker lifecycle, lockfile, and verification workflows.
 
 ### RBAC and Security
 
@@ -152,7 +190,7 @@ workers:
 - `auth_function_id` returns allowed and forbidden functions, trigger type permissions, registration permission, registration prefix, and context.
 - `forbidden_functions` override exposure filters.
 - Discovery is filtered: denied functions should look forbidden, not available.
-- See `iii-worker-rbac` for policy examples and agent behavior.
+- Keep RBAC policy examples close to the worker-manager configuration they protect.
 
 ## Adapting This Pattern
 
@@ -164,21 +202,17 @@ Use the adaptations below when they apply to the task.
 - Enable only the workers you need — unused workers can be omitted from the config
 - Use `iii worker add` to add registry-managed workers, then commit both config and `iii.lock`
 - Set `max_retries` and `backoff_ms` based on your failure tolerance and SLA requirements
-- Configure `iii-observability` with your collector endpoint and sampling ratio
+- Configure the observability worker with your collector endpoint and sampling ratio
 - Use `host: 127.0.0.1` instead of `host: localhost` to avoid IPv4/IPv6 mismatches on macOS
 - Keep private worker ports bound to localhost unless a listener has explicit RBAC/security policy
 
 ## Pattern Boundaries
 
-- For HTTP handler logic (request/response, path params), prefer `iii-http-endpoints`.
-- For queue processing patterns (enqueue, FIFO, concurrency), prefer `iii-queue-processing`.
-- For cron scheduling details (expressions, timezones), prefer `iii-cron-scheduling`.
-- For OpenTelemetry SDK integration (spans, metrics, traces), prefer `iii-observability`.
-- For real-time stream patterns, prefer `iii-realtime-streams`.
-- For worker CLI lifecycle commands, prefer `iii-worker-lifecycle`.
-- For choosing/installing published workers, prefer `iii-worker-catalog`.
-- For reproducible worker installs, prefer `iii-worker-lockfile`.
-- For RBAC and public worker listeners, prefer `iii-worker-rbac`.
+- For function registration and trigger binding, prefer `iii-functions-and-triggers`.
+- For invocation modes, retries, and durable enqueue decisions, prefer `iii-trigger-actions`.
+- For built-in trigger config and payload shapes, prefer `iii-trigger-schemas`.
+- For SDK instrumentation APIs, prefer the relevant SDK skill.
+- For worker-backed HTTP, queue, cron, pubsub, state, stream, observability, lifecycle, lockfile, and RBAC behavior, use the matching worker docs under `engine/src/workers/**/skills`.
 - Stay with `iii-engine-config` when the primary problem is configuring or deploying the engine itself.
 
 ## When to Use

@@ -36,13 +36,83 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 | `TriggerConfig: { id, function_id, config, metadata? }` | Configuration passed to the trigger handler |
 | `iii.trigger({ function_id, payload: event })`| Fire the registered function when the event occurs |
 
-## Reference Implementation
+## Code Examples
 
-See [../references/custom-triggers.js](../references/custom-triggers.js) for the full working example — a custom trigger type that listens for external events and routes them to registered functions.
+TypeScript:
 
-Also available in **Python**: [../references/custom-triggers.py](../references/custom-triggers.py)
+```typescript
+import { registerWorker } from "iii-sdk";
+import { EventEmitter } from "node:events";
 
-Also available in **Rust**: [../references/custom-triggers.rs](../references/custom-triggers.rs)
+const iii = registerWorker("ws://localhost:49134", { workerName: "webhook-source" });
+const source = new EventEmitter();
+const bindings = new Map();
+
+iii.registerTriggerType({ id: "external-webhook", description: "External webhook events" }, {
+  registerTrigger(config) {
+    const listener = (event) => iii.trigger({ function_id: config.function_id, payload: event });
+    bindings.set(config.id, listener);
+    source.on(config.config.event, listener);
+  },
+  unregisterTrigger(config) {
+    const listener = bindings.get(config.id);
+    if (listener) source.off(config.config.event, listener);
+    bindings.delete(config.id);
+  },
+});
+```
+
+Python:
+
+```python
+from iii import TriggerHandler, register_worker
+
+iii = register_worker("ws://localhost:49134")
+
+class ExternalWebhook(TriggerHandler):
+    def __init__(self):
+        self.bindings = {}
+
+    def register_trigger(self, config):
+        self.bindings[config.id] = config.function_id
+
+    def unregister_trigger(self, config):
+        self.bindings.pop(config.id, None)
+
+    def emit(self, name, payload):
+        for function_id in self.bindings.values():
+            iii.trigger({"function_id": function_id, "payload": {"event": name, "data": payload}})
+
+handler = ExternalWebhook()
+iii.register_trigger_type({"id": "external-webhook", "description": "External webhook events"}, handler)
+```
+
+Rust:
+
+```rust
+use iii_sdk::{register_worker, InitOptions, RegisterTriggerType, TriggerConfig, TriggerHandler};
+use async_trait::async_trait;
+
+struct ExternalWebhook;
+
+#[async_trait]
+impl TriggerHandler for ExternalWebhook {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+        Ok(())
+    }
+}
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+iii.register_trigger_type(RegisterTriggerType::new(
+    "external-webhook",
+    "External webhook events",
+    ExternalWebhook,
+))?;
+```
 
 ## Common Patterns
 
@@ -82,9 +152,8 @@ Use the adaptations below when they apply to the task.
 
 ## Pattern Boundaries
 
-- If the task uses built-in HTTP routes, prefer `iii-http-endpoints`.
-- If the task uses built-in cron schedules, prefer `iii-cron-scheduling`.
-- If the task uses built-in queue triggers, prefer `iii-queue-processing`.
+- If the task uses built-in trigger config or handler payloads, prefer `iii-trigger-schemas`.
+- If the task uses built-in worker-backed HTTP, cron, queue, pubsub, state, or stream behavior, use the matching worker docs under `engine/src/workers/**/skills`.
 - Stay with `iii-custom-triggers` when iii has no built-in trigger type for the event source.
 
 ## When to Use

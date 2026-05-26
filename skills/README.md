@@ -1,8 +1,8 @@
 # iii Skills
 
 [Agent Skills](https://agentskills.io) for building with the
-[iii engine](https://github.com/iii-hq/iii) — functions, triggers, workers, state, streams, and
-more.
+[iii engine](https://github.com/iii-hq/iii) — functions, triggers, SDKs, engine configuration, and
+iii architecture patterns.
 
 Works with Claude Code, Cursor, Gemini CLI, OpenCode, Amp, Goose, Roo Code, GitHub Copilot, VS Code,
 OpenAI Codex, and [30+ other agents](https://agentskills.io).
@@ -16,35 +16,8 @@ npx skills add iii-hq/iii/skills
 ### Install a single skill
 
 ```bash
-npx skills add iii-hq/iii/skills --skill iii-http-endpoints
+npx skills add iii-hq/iii/skills --skill iii-functions-and-triggers
 ```
-
-### Git clone
-
-```bash
-# Claude Code
-git clone https://github.com/iii-hq/iii.git /tmp/iii && cp -r /tmp/iii/skills/iii-* ~/.claude/skills/
-
-# Cursor
-git clone https://github.com/iii-hq/iii.git /tmp/iii && cp -r /tmp/iii/skills/iii-* ~/.cursor/skills/
-
-# Gemini CLI
-git clone https://github.com/iii-hq/iii.git /tmp/iii && cp -r /tmp/iii/skills/iii-* ~/.gemini/skills/
-```
-
-### Multi-agent sync
-
-If you use multiple agents, SkillKit keeps skills in sync across all of them:
-
-```bash
-npx skills add iii-hq/iii/skills
-npx skillkit sync --agent claude-code
-npx skillkit sync --agent cursor
-npx skillkit sync --agent gemini-cli
-```
-
-Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, Amp, Goose, Roo
-Code, GitHub Copilot, and more.
 
 ## Skills
 
@@ -53,36 +26,29 @@ Code, GitHub Copilot, and more.
 | Skill                                        | What it does                                           |
 | -------------------------------------------- | ------------------------------------------------------ |
 | [iii-getting-started](./iii-getting-started) | Install iii, create a project, write your first worker |
-| [iii-examples](./iii-examples)               | Copyable examples for functions, triggers, enqueue, reactions, channels, and worker discovery |
 
 ### HOWTO Skills
 
-Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or
-capability. Use `iii-examples` for compact copyable starting points, then load the deeper skill for
-the exact API surface. Reference implementations are available in TypeScript, Python, and Rust.
+Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches an iii-level
+primitive or engine concept. Worker-backed capabilities such as HTTP, cron, queue, pubsub, state,
+streams, and observability live with the engine workers under `engine/src/workers/**/skills`.
+Code examples live directly inside each skill.
 
 | Skill                                                      | What it does                                                             |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------ |
 | [iii-functions-and-triggers](./iii-functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
-| [iii-http-endpoints](./iii-http-endpoints)                 | Expose functions as REST API endpoints                                   |
-| [iii-http-middleware](./iii-http-middleware)               | Engine-level middleware for HTTP triggers                                |
-| [iii-cron-scheduling](./iii-cron-scheduling)               | Schedule recurring tasks with cron expressions                           |
-| [iii-queue-processing](./iii-queue-processing)             | Async job processing with retries, concurrency, and ordering             |
-| [iii-state-management](./iii-state-management)             | Distributed key-value state across functions                             |
-| [iii-state-reactions](./iii-state-reactions)               | Auto-trigger functions on state changes                                  |
-| [iii-realtime-streams](./iii-realtime-streams)             | Push live updates to WebSocket clients                                   |
 | [iii-custom-triggers](./iii-custom-triggers)               | Build custom trigger types for external events                           |
 | [iii-trigger-actions](./iii-trigger-actions)               | Synchronous, fire-and-forget, and enqueue invocation modes               |
 | [iii-trigger-conditions](./iii-trigger-conditions)         | Gate trigger execution with condition functions                          |
-| [iii-dead-letter-queues](./iii-dead-letter-queues)         | Inspect and redrive failed queue jobs                                    |
+| [iii-trigger-schemas](./iii-trigger-schemas)               | Built-in trigger config and handler payload schemas                      |
 | [iii-engine-config](./iii-engine-config)                   | Configure the iii engine via iii-config.yaml                             |
-| [iii-observability](./iii-observability)                   | OpenTelemetry tracing, metrics, and logging                              |
+| [iii-error-handling](./iii-error-handling)                 | Handle engine and SDK errors across languages                            |
 | [iii-channels](./iii-channels)                             | Binary streaming between workers                                         |
 
 ### Architecture Pattern Skills
 
-Compose multiple iii primitives into common backend architectures. Each includes a full working
-reference implementation.
+Compose multiple iii primitives into common backend architectures. Each includes direct code
+examples in the skill.
 
 | Skill                                                      | What it does                                               |
 | ---------------------------------------------------------- | ---------------------------------------------------------- |
@@ -103,35 +69,21 @@ reference implementation.
 | [iii-python-sdk](./iii-python-sdk)   | Python SDK reference             |
 | [iii-rust-sdk](./iii-rust-sdk)       | Rust SDK reference               |
 
-### Shared References
-
-| File                                                       | What it contains                              |
-| ---------------------------------------------------------- | --------------------------------------------- |
-| [references/iii-config.yaml](./references/iii-config.yaml) | Full annotated engine configuration reference |
-
 ## Format
 
 Each skill follows the [Agent Skills specification](https://agentskills.io/specification):
 
 ```text
 skills/
-├── iii-examples/
-│   └── SKILL.md                # Copyable iii examples
-├── iii-http-endpoints/
+├── iii-functions-and-triggers/
 │   └── SKILL.md                # YAML frontmatter (name + description) + markdown instructions
 ├── iii-channels/
 │   └── SKILL.md
-├── references/
-│   ├── http-endpoints.js       # TypeScript reference implementation
-│   ├── http-endpoints.py       # Python reference implementation
-│   ├── http-endpoints.rs       # Rust reference implementation
-│   ├── iii-config.yaml         # Shared engine config reference
-│   └── ...
 └── README.md
 ```
 
 Skills are activated automatically when the agent detects a matching task based on the description
-field. Code references live in the `references/` directory, named after their skill.
+field. Code examples are embedded directly in the matching `SKILL.md`.
 
 ## Contributing
 

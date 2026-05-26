@@ -46,14 +46,53 @@ A function creates a channel via `createChannel()`, receiving a writer and reade
 - Rust: `iii.create_channel(None).await`, `ChannelReader::new(engine_ws_base, &reader_ref)`, `ChannelWriter::new(engine_ws_base, &writer_ref)`, `next_binary()`, `read_all()`, `extract_channel_refs(&value)`.
 - Browser: `createChannel()`, `writer.sendBinary(uint8Array)`, `writer.sendMessage(text)`, `reader.onBinary(callback)`, `reader.onMessage(callback)`, `reader.readAll()`.
 
-## Reference Implementation
+## Code Examples
 
-- **TypeScript**: [../references/channels.js](../references/channels.js)
-- **Python**: [../references/channels.py](../references/channels.py)
-- **Rust**: [../references/channels.rs](../references/channels.rs)
+TypeScript:
 
-Each reference shows the same patterns (channel creation, binary streaming, text messages, cross-function handoff) in its respective language.
-For a shorter copyable channel handoff example, see [iii-examples: Channel Handoff](../iii-examples/SKILL.md#channel-handoff).
+```typescript
+const channel = await iii.createChannel();
+
+await iii.trigger({
+  function_id: "files::consume",
+  payload: { reader: channel.readerRef, name: "report.pdf" },
+});
+
+channel.writer.stream.write(fileBuffer);
+channel.writer.sendMessage(JSON.stringify({ done: true }));
+channel.writer.close();
+```
+
+Python:
+
+```python
+channel = iii.create_channel()
+
+iii.trigger({
+    "function_id": "files::consume",
+    "payload": {"reader": channel.reader_ref, "name": "report.pdf"},
+})
+
+channel.writer.write(file_bytes)
+channel.writer.send_message('{"done": true}')
+channel.writer.close()
+```
+
+Rust:
+
+```rust
+let channel = iii.create_channel(None).await?;
+
+iii.trigger(TriggerRequest::new(
+    "files::consume",
+    json!({ "reader": channel.reader_ref, "name": "report.pdf" }),
+)).await?;
+
+let mut writer = ChannelWriter::new(iii.engine_ws_base(), &channel.writer_ref)?;
+writer.write(bytes).await?;
+writer.send_message(r#"{"done":true}"#).await?;
+writer.close().await?;
+```
 
 ## Common Patterns
 
@@ -80,10 +119,9 @@ Use the adaptations below when they apply to the task.
 
 ## Pattern Boundaries
 
-- For key-value state persistence, prefer `iii-state-management`.
-- For stream CRUD (named streams with groups/keys), prefer `iii-realtime-streams`.
+- For key-value state persistence, use the state worker docs under `engine/src/workers/**/skills`.
+- For stream CRUD (named streams with groups/keys), use the stream worker docs under `engine/src/workers/**/skills`.
 - For pub/sub messaging, prefer triggers with `subscribe` type.
-- For compact copyable examples across primitives, prefer `iii-examples`.
 - Stay with `iii-channels` when the primary problem is binary data streaming between workers.
 - Do not use this skill for removed service APIs or adapter-extension APIs.
 

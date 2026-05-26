@@ -59,13 +59,67 @@ The `*_key` fields name environment variables. Never store raw secrets in skill-
 - Do not pass raw secrets in auth fields; pass env var names.
 - Keep function IDs stable and domain-prefixed (for example `legacy::orders`).
 
-## Reference
+## Code Examples
 
-See [../references/http-invoked-functions.js](../references/http-invoked-functions.js).
+TypeScript:
 
-Also available in **Python**: [../references/http-invoked-functions.py](../references/http-invoked-functions.py)
+```typescript
+import { registerWorker } from "iii-sdk";
 
-Also available in **Rust**: [../references/http-invoked-functions.rs](../references/http-invoked-functions.rs)
+const iii = registerWorker("ws://localhost:49134", { workerName: "legacy-adapter" });
+const baseUrl = "https://legacy.example.com";
+
+for (const endpoint of [
+  { id: "legacy::create-order", path: "/orders", method: "POST" },
+  { id: "legacy::refund-order", path: "/refunds", method: "POST" },
+]) {
+  iii.registerFunction(endpoint.id, {
+    url: `${baseUrl}${endpoint.path}`,
+    method: endpoint.method,
+    timeout_ms: 5000,
+    auth: { type: "bearer", token_key: "LEGACY_API_TOKEN" },
+  }, {
+    metadata: { external: true, owner: "legacy" },
+  });
+}
+```
+
+Python:
+
+```python
+from iii import HttpInvocationConfig, register_worker
+
+iii = register_worker("ws://localhost:49134")
+
+iii.register_function(
+    "legacy::create-order",
+    HttpInvocationConfig(
+        url="https://legacy.example.com/orders",
+        method="POST",
+        timeout_ms=5000,
+        auth={"type": "bearer", "token_key": "LEGACY_API_TOKEN"},
+    ),
+    metadata={"external": True, "owner": "legacy"},
+)
+```
+
+Rust:
+
+```rust
+use iii_sdk::{HttpAuthConfig, HttpInvocationConfig, RegisterFunctionMessage};
+
+iii.register_function_with(
+    RegisterFunctionMessage::new("legacy::create-order")
+        .metadata(json!({ "external": true, "owner": "legacy" })),
+    HttpInvocationConfig {
+        url: "https://legacy.example.com/orders".into(),
+        method: "POST".into(),
+        timeout_ms: Some(5000),
+        headers: None,
+        auth: Some(HttpAuthConfig::Bearer { token_key: "LEGACY_API_TOKEN".into() }),
+    },
+)?;
+```
 
 ## When to Use
 
