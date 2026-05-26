@@ -46,10 +46,37 @@ WebSocket clients ← stream 'todos-live'
 | `trigger({ ..., action: TriggerAction.Void() })`        | Fire-and-forget stream push to clients   |
 | `registerTrigger({ type: 'http' })`                     | REST endpoints                           |
 
-## Reference Implementation
+## Code Example
 
-See [../references/reactive-backend.js](../references/reactive-backend.js) for the full working example — a real-time todo app with
-CRUD endpoints, automatic change broadcasting via streams, and reactive aggregate metrics.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "reactive-todos" });
+
+iii.registerFunction("todos::create", async (input) => {
+  const todo = { id: crypto.randomUUID(), text: input.text, done: false };
+  await iii.trigger({
+    function_id: "state::set",
+    payload: { scope: "todos", key: todo.id, value: todo },
+  });
+  return todo;
+});
+
+iii.registerFunction("todos::on-change", async (event) => {
+  await iii.trigger({
+    function_id: "stream::send",
+    payload: { stream_name: "todos-live", group_id: "default", data: event.new_value },
+    action: TriggerAction.Void(),
+  });
+  return { pushed: true };
+});
+
+iii.registerTrigger({
+  type: "state",
+  function_id: "todos::on-change",
+  config: { scope: "todos" },
+});
+```
 
 ## Common Patterns
 

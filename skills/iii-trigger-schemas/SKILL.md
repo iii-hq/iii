@@ -130,7 +130,7 @@ Registration config:
 
 Stream join/leave configs use `stream_name` plus optional `condition_function_id`.
 
-Handler payload contains stream event details such as stream name, group, item, event type, and data. Use `iii-realtime-streams` for worker-backed stream functions, and `iii-channels` for channel refs/binary transport.
+Handler payload contains stream event details such as stream name, group, item, event type, and data. Use the stream worker docs for worker-backed stream functions, and `iii-channels` for channel refs/binary transport.
 
 ## Log Trigger
 
@@ -147,9 +147,9 @@ Handler payload contains OpenTelemetry-style log data: timestamp, severity, body
 ## Pattern Boundaries
 
 - For registering and invoking functions, prefer `iii-functions-and-triggers`.
-- For HTTP endpoint behavior, prefer `iii-http-endpoints`.
 - For trigger action modes, prefer `iii-trigger-actions`.
 - For custom trigger type authoring lifecycle, prefer `iii-custom-triggers`.
+- For worker-backed HTTP, cron, queue, pubsub, state, stream, or log behavior, use the matching worker docs under `engine/src/workers/**/skills`.
 
 ## When to Use
 

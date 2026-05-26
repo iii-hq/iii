@@ -38,13 +38,76 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 | `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation         |
 | `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async invocation via queue |
 
-## Reference Implementation
+## Code Examples
 
-- **TypeScript**: [../references/functions-and-triggers.js](../references/functions-and-triggers.js)
-- **Python**: [../references/functions-and-triggers.py](../references/functions-and-triggers.py)
-- **Rust**: [../references/functions-and-triggers.rs](../references/functions-and-triggers.rs)
+TypeScript:
 
-Each reference shows the same patterns (function registration, trigger binding, cross-function invocation) in its respective language.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "orders-worker" });
+
+iii.registerFunction("orders::validate", async (order) => {
+  if (!order.id) throw new Error("missing order id");
+  return { ...order, valid: true };
+});
+
+iii.registerFunction("orders::process", async (order) => {
+  const validated = await iii.trigger({ function_id: "orders::validate", payload: order });
+  await iii.trigger({
+    function_id: "orders::notify",
+    payload: validated,
+    action: TriggerAction.Void(),
+  });
+  return { status: "processed", orderId: validated.id };
+});
+
+iii.registerTrigger({
+  type: "http",
+  function_id: "orders::process",
+  config: { api_path: "/orders", http_method: "POST" },
+});
+```
+
+Python:
+
+```python
+from iii import register_worker
+
+iii = register_worker("ws://localhost:49134")
+
+def validate(order):
+    if not order.get("id"):
+        raise ValueError("missing order id")
+    return {**order, "valid": True}
+
+iii.register_function("orders::validate", validate)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "orders::validate",
+    "config": {"api_path": "/orders/validate", "http_method": "POST"},
+})
+```
+
+Rust:
+
+```rust
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerInput};
+use serde_json::json;
+
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+iii.register_function(RegisterFunction::new("orders::validate", |input: serde_json::Value| {
+    Ok(json!({ "valid": true, "order": input }))
+}))?;
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "orders::validate".into(),
+    config: json!({ "api_path": "/orders/validate", "http_method": "POST" }),
+    metadata: None,
+})?;
+```
 
 ## Common Patterns
 
@@ -84,12 +147,10 @@ Use the adaptations below when they apply to the task.
 
 ## Pattern Boundaries
 
-- For HTTP endpoint specifics (request/response format, path params), prefer `iii-http-endpoints`.
-- For queue processing details (retries, concurrency, FIFO), prefer `iii-queue-processing`.
-- For cron scheduling details (expressions, timezones), prefer `iii-cron-scheduling`.
 - For invocation modes (sync vs void vs enqueue), prefer `iii-trigger-actions`.
 - For HTTP-invoked external functions, prefer `iii-http-invoked-functions`.
 - For built-in trigger config and payload shapes, prefer `iii-trigger-schemas`.
+- For worker-backed HTTP, queue, cron, pubsub, state, and stream behavior, use the matching worker docs under `engine/src/workers/**/skills`.
 - Stay with `iii-functions-and-triggers` when the primary problem is registering functions, binding triggers, or cross-language invocation.
 
 ## When to Use

@@ -42,10 +42,33 @@ HTTP request
 | trigger `state::set`, `state::get` | Persist data between effects             |
 | `registerTrigger({ type: 'http' })`                   | Entry point                              |
 
-## Reference Implementation
+## Code Example
 
-See [../references/effect-system.js](../references/effect-system.js) for the full working example — a user signup pipeline
-where input is parsed, enriched with external data, persisted to state, and a welcome notification is fired.
+```typescript
+import { registerWorker, TriggerAction } from "iii-sdk";
+
+const iii = registerWorker("ws://localhost:49134", { workerName: "effect-system" });
+
+iii.registerFunction("fx::parse-user", async (input) => {
+  if (!input.email) throw new Error("email is required");
+  return { ...input, email: input.email.toLowerCase() };
+});
+
+iii.registerFunction("fx::persist-user", async (user) => {
+  await iii.trigger({
+    function_id: "state::set",
+    payload: { scope: "users", key: user.email, value: user },
+  });
+  return user;
+});
+
+iii.registerFunction("fx::signup", async (input) => {
+  const parsed = await iii.trigger({ function_id: "fx::parse-user", payload: input });
+  const saved = await iii.trigger({ function_id: "fx::persist-user", payload: parsed });
+  await iii.trigger({ function_id: "fx::notify", payload: saved, action: TriggerAction.Void() });
+  return saved;
+});
+```
 
 ## Common Patterns
 
