@@ -2771,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.13.0-next.1"
+version = "0.16.0-next.1"
 dependencies = [
  "async-trait",
  "ctor",
