@@ -34,7 +34,7 @@ pub struct HttpFunctionConfig {
     pub response_format: Option<Value>,
     #[serde(default)]
     pub metadata: Option<Value>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing, skip_deserializing)]
     pub trusted_internal: bool,
     #[serde(default)]
     pub registered_at: Option<DateTime<Utc>>,
@@ -44,10 +44,6 @@ pub struct HttpFunctionConfig {
 
 fn default_method() -> HttpMethod {
     HttpMethod::Post
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[cfg(test)]
@@ -109,5 +105,18 @@ mod tests {
         let back: HttpFunctionConfig = serde_json::from_value(serialized).unwrap();
         assert_eq!(back.function_path, "/fn");
         assert_eq!(back.url, "http://localhost:3000");
+    }
+
+    #[test]
+    fn trusted_internal_is_not_deserialized_from_public_config() {
+        let json = json!({
+            "function_path": "/fn",
+            "url": "http://localhost:3000",
+            "trusted_internal": true
+        });
+        let config: HttpFunctionConfig = serde_json::from_value(json).unwrap();
+        assert!(!config.trusted_internal);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert!(serialized.get("trusted_internal").is_none());
     }
 }

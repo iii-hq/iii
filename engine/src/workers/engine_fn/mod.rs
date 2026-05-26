@@ -721,7 +721,40 @@ impl EngineFunctionsWorker {
         let envelope: WorkerDetailEnvelope;
         let function_ids: Vec<String>;
 
-        if let Some(generated_worker) = self
+        if let Some(runtime) = self
+            .engine
+            .list_runtime_workers()
+            .into_iter()
+            .find(|w| w.name == name)
+        {
+            envelope = self.worker_detail_envelope_from_runtime(&runtime);
+            function_ids = runtime.function_ids;
+        } else if let Some(worker) = self
+            .engine
+            .worker_registry
+            .list_workers()
+            .into_iter()
+            .find(|w| w.name.as_deref() == Some(name))
+        {
+            let function_count_async = worker
+                .get_function_ids()
+                .await
+                .into_iter()
+                .filter(|function_id| !self.engine.generated_workers.contains_function(function_id))
+                .collect::<Vec<_>>();
+            let function_count = function_count_async.len();
+            let active_invocations = worker.invocation_count().await;
+            let ip_address = worker.session.as_ref().map(|s| s.ip_address.clone());
+            let latest_metrics = get_worker_metrics_from_storage(&worker.id.to_string());
+            envelope = self.worker_detail_envelope_from_connection(
+                &worker,
+                function_count,
+                active_invocations,
+                ip_address,
+                latest_metrics,
+            );
+            function_ids = function_count_async;
+        } else if let Some(generated_worker) = self
             .engine
             .generated_workers
             .list()
@@ -752,34 +785,6 @@ impl EngineFunctionsWorker {
                 latest_metrics: None,
             };
             function_ids = generated_function_ids;
-        } else if let Some(runtime) = self
-            .engine
-            .list_runtime_workers()
-            .into_iter()
-            .find(|w| w.name == name)
-        {
-            envelope = self.worker_detail_envelope_from_runtime(&runtime);
-            function_ids = runtime.function_ids;
-        } else if let Some(worker) = self
-            .engine
-            .worker_registry
-            .list_workers()
-            .into_iter()
-            .find(|w| w.name.as_deref() == Some(name))
-        {
-            let function_count_async = worker.get_function_ids().await;
-            let function_count = function_count_async.len();
-            let active_invocations = worker.invocation_count().await;
-            let ip_address = worker.session.as_ref().map(|s| s.ip_address.clone());
-            let latest_metrics = get_worker_metrics_from_storage(&worker.id.to_string());
-            envelope = self.worker_detail_envelope_from_connection(
-                &worker,
-                function_count,
-                active_invocations,
-                ip_address,
-                latest_metrics,
-            );
-            function_ids = function_count_async;
         } else {
             return None;
         }
@@ -1712,6 +1717,89 @@ mod tests {
             }
             _ => panic!("expected generated worker functions"),
         }
+    }
+
+    #[tokio::test]
+    async fn workers_info_prefers_runtime_worker_when_generated_group_name_collides() {
+        let (engine, module) = setup_engine_and_module();
+        let owner = uuid::Uuid::new_v4();
+
+        register_simple_function(&engine, "state::get", None);
+        register_simple_function(&engine, "generated_state::get", None);
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state-runtime".to_string(),
+            name: "iii-state".to_string(),
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+        engine
+            .generated_workers
+            .claim_function("iii-state", owner, true, "generated_state::get");
+
+        let detail = module
+            .build_worker_detail("iii-state")
+            .await
+            .expect("runtime worker should be resolved");
+
+        assert_eq!(detail.worker.id, "iii-state-runtime");
+        assert_eq!(
+            detail
+                .functions
+                .iter()
+                .map(|function| function.function_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["state::get".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn workers_info_hides_generated_functions_from_backing_socket_worker() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let owner = worker.id;
+        let worker_id = worker.id.to_string();
+
+        worker.include_function_id("backing::local").await;
+        worker
+            .include_external_function_id("generated_api::search")
+            .await;
+        engine.worker_registry.register_worker(worker);
+        engine.worker_registry.update_worker_metadata(
+            &uuid::Uuid::parse_str(&worker_id).unwrap(),
+            "node".to_string(),
+            Some("1.0.0".to_string()),
+            Some("spec-bridge".to_string()),
+            Some("linux".to_string()),
+            None,
+            Some(4242),
+            None,
+        );
+        register_simple_function(&engine, "backing::local", None);
+        register_simple_function(&engine, "generated_api::search", None);
+        engine.generated_workers.claim_function(
+            "generated-api",
+            owner,
+            true,
+            "generated_api::search",
+        );
+
+        let detail = module
+            .build_worker_detail("spec-bridge")
+            .await
+            .expect("backing worker should be resolved");
+
+        assert_eq!(detail.worker.function_count, 1);
+        assert_eq!(
+            detail
+                .functions
+                .iter()
+                .map(|function| function.function_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["backing::local".to_string()]
+        );
     }
 
     // ── register_worker_metadata tests ──────────────────────────────────
