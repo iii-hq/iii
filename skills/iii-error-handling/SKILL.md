@@ -94,9 +94,8 @@ Browser trigger calls reject with JavaScript errors. Preserve the engine-provide
 
 ## Pattern Boundaries
 
-- For RBAC policy design, prefer `iii-worker-rbac`.
 - For invocation modes and retries, prefer `iii-trigger-actions`.
-- For logs/traces around failures, prefer `iii-observability`.
+- For RBAC policy design and logs/traces around worker failures, use the matching worker docs under `engine/src/workers/**/skills`.
 
 ## When to Use
 

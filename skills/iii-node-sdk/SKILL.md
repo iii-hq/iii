@@ -91,8 +91,6 @@ For browser environments, use `iii-browser-sdk`. It has browser-specific securit
 ## Pattern Boundaries
 
 - For usage patterns and working examples, see `iii-functions-and-triggers`
-- For HTTP endpoint patterns, see `iii-http-endpoints`
-- For HTTP middleware patterns, see `iii-http-middleware`
 - For browser-side usage, see `iii-browser-sdk`
 - For channels, see `iii-channels`
 - For errors, see `iii-error-handling`

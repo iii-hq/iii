@@ -91,7 +91,7 @@ Code using this pattern commonly includes, when relevant:
 
 - For server-side Node.js workers, prefer `iii-node-sdk`.
 - For channel-based binary transfer, see `iii-channels`.
-- For RBAC-protected browser access, see `iii-worker-rbac`.
+- Configure RBAC-protected browser access on the worker-manager listener in engine config.
 - For Python or Rust workers, see `iii-python-sdk` or `iii-rust-sdk`.
 - Stay with `iii-browser-sdk` when the client is a web browser.
 

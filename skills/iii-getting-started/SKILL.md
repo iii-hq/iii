@@ -153,9 +153,9 @@ Get all iii skills for your AI coding agent:
 npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent how to use every iii primitive — HTTP endpoints, cron scheduling, queues,
-state management, streams, channels, and more. Available for Claude Code, Cursor, Codex, Gemini CLI,
-and 30+ other agents.
+Skills teach your agent the top-level iii model: functions, triggers, workers, SDKs, engine
+configuration, channels, and architecture patterns. Worker-backed capabilities live with the engine
+worker docs.
 
 ## Adapting This Pattern
 
@@ -172,11 +172,11 @@ and 30+ other agents.
 
 After getting your first worker running:
 
-1. **Add state** — Use `iii-state-management` skill to persist data
-2. **Add a queue** — Use `iii-queue-processing` skill for async job processing
-3. **Add a cron job** — Use `iii-cron-scheduling` skill for scheduled tasks
-4. **Build an API** — Use `iii-http-endpoints` skill for REST endpoints with CRUD
-5. **Add observability** — Use `iii-observability` skill for tracing and metrics
+1. **Register more functions and triggers** — See `iii-functions-and-triggers`
+2. **Choose invocation modes** — See `iii-trigger-actions`
+3. **Validate trigger payloads** — See `iii-trigger-schemas`
+4. **Configure the engine** — See `iii-engine-config`
+5. **Move binary data between workers** — See `iii-channels`
 6. **Explore architecture patterns** — See `iii-agentic-backend`, `iii-reactive-backend`,
    `iii-workflow-orchestration`
 
@@ -191,11 +191,11 @@ After getting your first worker running:
 
 ## Pattern Boundaries
 
-- For HTTP endpoint patterns (CRUD, parameterized routes), prefer `iii-http-endpoints`
-- For cron/scheduling patterns, prefer `iii-cron-scheduling`
-- For queue/async job patterns, prefer `iii-queue-processing`
-- For state persistence patterns, prefer `iii-state-management`
+- For function and trigger registration patterns, prefer `iii-functions-and-triggers`
+- For trigger payload schemas, prefer `iii-trigger-schemas`
+- For invocation mode choices, prefer `iii-trigger-actions`
 - For engine configuration, prefer `iii-engine-config`
+- For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker docs under `engine/src/workers/**/skills`
 - Stay with `iii-getting-started` for installation, initial setup, and first-worker guidance
 
 ## When to Use

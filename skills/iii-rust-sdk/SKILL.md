@@ -53,7 +53,8 @@ iii-observability = "0.13"
 ## Pattern Boundaries
 
 - For usage patterns and working examples, see `iii-functions-and-triggers`
-- For HTTP middleware patterns, see `iii-http-middleware`
+- For channels, see `iii-channels`
+- For errors, see `iii-error-handling`
 - For Node.js SDK, see `iii-node-sdk`
 - For Python SDK, see `iii-python-sdk`
 - For browser-side usage, see `iii-browser-sdk`
