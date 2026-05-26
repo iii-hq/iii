@@ -231,6 +231,17 @@ Each sandbox is cached at `~/.iii/managed/<worker-name>/`. The caching lifecycle
 ls -l /dev/kvm
 ```
 
+> **Windows/WSL2 and shared cloud VM limitation**
+>
+> On Linux, sandbox workers require KVM through `/dev/kvm`. This is often not
+> available inside WSL2, shared cloud VMs, AWS free-tier instances, or other
+> environments where nested virtualization is disabled or not exposed to the
+> guest operating system.
+>
+> If `/dev/kvm` does not exist, sandbox workers cannot start in that environment.
+> Use native Linux with KVM enabled, a machine or VM that exposes `/dev/kvm`, or
+> another supported host environment.
+
 ## Result
 
 Your worker runs inside an isolated microVM connected to the engine. The sandbox has its own filesystem, network stack, and process tree. The worker is registered in `config.yaml` and managed through the standard `iii worker` lifecycle commands — `start`, `stop`, `list`, and `remove`. To rebuild the sandbox after changing dependencies, re-add the worker with `iii worker add ./my-project --force`.
