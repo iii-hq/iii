@@ -9,6 +9,7 @@ import textwrap
 import pytest
 
 from bump_manifests import bump_cargo_package_version
+from bump_manifests import bump_cargo_workspace_dep_version
 
 
 class TestBumpCargoPackageVersion:
@@ -35,3 +36,23 @@ class TestBumpCargoPackageVersion:
         src = '[package]\nname = "foo"\n'
         with pytest.raises(ValueError, match="no top-level version"):
             bump_cargo_package_version(src, "0.16.0-next.2")
+
+
+class TestBumpCargoWorkspaceDepVersion:
+    def test_replaces_version_pin(self):
+        src = (
+            "[workspace.dependencies]\n"
+            'iii-observability = { path = "sdk/packages/rust/observability", version = "0.13.0-next.1" }\n'
+            'tokio = { version = "1", features = ["macros"] }\n'
+        )
+        out = bump_cargo_workspace_dep_version(src, "iii-observability", "0.16.0-next.2")
+        assert (
+            'iii-observability = { path = "sdk/packages/rust/observability", version = "0.16.0-next.2" }'
+            in out
+        )
+        assert 'tokio = { version = "1", features = ["macros"] }' in out
+
+    def test_raises_when_dep_missing(self):
+        src = '[workspace.dependencies]\ntokio = { version = "1" }\n'
+        with pytest.raises(ValueError, match="iii-observability"):
+            bump_cargo_workspace_dep_version(src, "iii-observability", "0.16.0-next.2")

@@ -20,3 +20,20 @@ def bump_cargo_package_version(text: str, new_version: str) -> str:
         raise ValueError("no top-level version line in Cargo manifest")
     start, end = m.span()
     return f'{text[:start]}version = "{new_version}"{text[end:]}'
+
+
+def bump_cargo_workspace_dep_version(text: str, dep_name: str, new_version: str) -> str:
+    """Replace the ``version = "..."`` value inside a ``dep_name = { ... }`` line.
+
+    Matches a single workspace-dependency entry whose key is exactly
+    ``dep_name`` and rewrites the embedded ``version`` field. Other fields
+    on the line (``path``, ``features``, ...) are preserved.
+    """
+    line_re = re.compile(
+        rf'^(?P<lead>{re.escape(dep_name)}\s*=\s*\{{[^}}\n]*?version\s*=\s*")[^"]*(?P<tail>"[^}}\n]*\}})',
+        re.MULTILINE,
+    )
+    m = line_re.search(text)
+    if m is None:
+        raise ValueError(f"no workspace dependency entry for {dep_name!r}")
+    return f'{text[:m.start()]}{m.group("lead")}{new_version}{m.group("tail")}{text[m.end():]}'
