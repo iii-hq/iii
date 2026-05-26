@@ -10,6 +10,7 @@ import pytest
 
 from bump_manifests import bump_cargo_package_version
 from bump_manifests import bump_cargo_workspace_dep_version
+from bump_manifests import bump_json_top_level_version
 
 
 class TestBumpCargoPackageVersion:
@@ -56,3 +57,24 @@ class TestBumpCargoWorkspaceDepVersion:
         src = '[workspace.dependencies]\ntokio = { version = "1" }\n'
         with pytest.raises(ValueError, match="iii-observability"):
             bump_cargo_workspace_dep_version(src, "iii-observability", "0.16.0-next.2")
+
+
+class TestBumpJsonTopLevelVersion:
+    def test_replaces_first_version(self):
+        src = (
+            '{\n'
+            '  "name": "iii-sdk",\n'
+            '  "version": "0.13.0-next.1",\n'
+            '  "dependencies": {\n'
+            '    "@iii-dev/observability": "workspace:*"\n'
+            '  }\n'
+            '}\n'
+        )
+        out = bump_json_top_level_version(src, "0.16.0-next.2")
+        assert '"version": "0.16.0-next.2"' in out
+        assert '"@iii-dev/observability": "workspace:*"' in out
+
+    def test_raises_when_no_top_level_version(self):
+        src = '{ "name": "x" }\n'
+        with pytest.raises(ValueError, match="no top-level version"):
+            bump_json_top_level_version(src, "1.0.0")

@@ -37,3 +37,21 @@ def bump_cargo_workspace_dep_version(text: str, dep_name: str, new_version: str)
     if m is None:
         raise ValueError(f"no workspace dependency entry for {dep_name!r}")
     return f'{text[:m.start()]}{m.group("lead")}{new_version}{m.group("tail")}{text[m.end():]}'
+
+
+_JSON_TOP_VERSION_RE = re.compile(r'^(\s*)"version"(\s*):(\s*)"[^"]*"', re.MULTILINE)
+
+
+def bump_json_top_level_version(text: str, new_version: str) -> str:
+    """Replace the first top-level ``"version": "..."`` line in a JSON file.
+
+    Operates textually to preserve formatting. The npm/iii workflow uses
+    ``jq`` today; we replace it with this so the workflow has a single
+    invocation point and the behaviour is unit-tested.
+    """
+    m = _JSON_TOP_VERSION_RE.search(text)
+    if m is None:
+        raise ValueError("no top-level version key in JSON manifest")
+    indent, sp1, sp2 = m.group(1), m.group(2), m.group(3)
+    replacement = f'{indent}"version"{sp1}:{sp2}"{new_version}"'
+    return f'{text[:m.start()]}{replacement}{text[m.end():]}'
