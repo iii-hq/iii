@@ -112,32 +112,10 @@ jobs:
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           PY_VERSION: ${{ steps.versions.outputs.python_version }}
         run: |
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" engine/Cargo.toml
-          echo "Updated engine/Cargo.toml to $NEW_VERSION"
-
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" sdk/packages/rust/iii/Cargo.toml
-          echo "Updated sdk/packages/rust/iii/Cargo.toml to $NEW_VERSION"
-
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" sdk/packages/rust/observability/Cargo.toml
-          echo "Updated sdk/packages/rust/observability/Cargo.toml to $NEW_VERSION"
-
-          jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/iii/package.json > tmp.json && mv tmp.json sdk/packages/node/iii/package.json
-          echo "Updated sdk/packages/node/iii/package.json to $NEW_VERSION"
-
-          jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/iii-browser/package.json > tmp.json && mv tmp.json sdk/packages/node/iii-browser/package.json
-          echo "Updated sdk/packages/node/iii-browser/package.json to $NEW_VERSION"
-
-          jq --arg v "$NEW_VERSION" '.version = $v' sdk/packages/node/observability/package.json > tmp.json && mv tmp.json sdk/packages/node/observability/package.json
-          echo "Updated sdk/packages/node/observability/package.json to $NEW_VERSION"
-
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${PY_VERSION}\"/}" sdk/packages/python/iii/pyproject.toml
-          echo "Updated sdk/packages/python/iii/pyproject.toml to $PY_VERSION"
-
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" console/packages/console-rust/Cargo.toml
-          echo "Updated console/packages/console-rust/Cargo.toml to $NEW_VERSION"
-
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" Cargo.toml
-          echo "Updated Cargo.toml workspace version to $NEW_VERSION"
+          python3 .github/scripts/bump_manifests.py \
+            --root . \
+            --version "${NEW_VERSION}" \
+            --python-version "${PY_VERSION}"
 
       - name: Sync Cargo.lock
         if: inputs.target == 'iii' && inputs.dry_run != true
