@@ -70,13 +70,15 @@ jobs:
           fi
 
           if [[ "$TARGET" == "iii" ]]; then
-            for f in engine/Cargo.toml \
+            for f in Cargo.toml \
+                     engine/Cargo.toml \
                      sdk/packages/rust/iii/Cargo.toml \
                      sdk/packages/rust/observability/Cargo.toml \
                      sdk/packages/node/iii/package.json \
                      sdk/packages/node/iii-browser/package.json \
                      sdk/packages/node/observability/package.json \
                      sdk/packages/python/iii/pyproject.toml \
+                     sdk/packages/python/observability/pyproject.toml \
                      console/packages/console-rust/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
                      crates/motia-tools/Cargo.toml; do
