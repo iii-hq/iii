@@ -325,7 +325,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-${{ matrix.target }}
-          cache-bin: false
 
       - name: Install system dependencies (x86_64 Linux)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -370,7 +369,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-test-${{ matrix.os }}
-          cache-bin: false
 
       - uses: taiki-e/install-action@cargo-nextest
 
@@ -406,7 +404,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-test-vm-linux
-          cache-bin: false
 
       - uses: taiki-e/install-action@cargo-nextest
 
@@ -454,7 +451,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-test-vm-macos
-          cache-bin: false
 
       - uses: taiki-e/install-action@cargo-nextest
 
@@ -480,7 +476,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-test-oci-linux
-          cache-bin: false
 
       - uses: taiki-e/install-action@cargo-nextest
 
@@ -511,7 +506,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-test-oci-macos
-          cache-bin: false
 
       - uses: taiki-e/install-action@cargo-nextest
 
