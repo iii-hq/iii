@@ -114,3 +114,23 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
     # Python observability: top-level version only
     py_obs = root / "sdk/packages/python/observability/pyproject.toml"
     py_obs.write_text(bump_cargo_package_version(py_obs.read_text(), new_py_version))
+
+
+import argparse
+import sys
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--python-version", required=True)
+    args = parser.parse_args(argv)
+
+    rewrite_all(root=args.root, new_version=args.version, new_py_version=args.python_version)
+    print(f"Bumped manifests to {args.version} (python: {args.python_version})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

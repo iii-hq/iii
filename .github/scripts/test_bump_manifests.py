@@ -4,6 +4,8 @@ Run with: python -m pytest .github/scripts/test_bump_manifests.py -v
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -143,3 +145,36 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     assert '"iii-observability==0.16.0.dev2"' in py_iii
     assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/observability/pyproject.toml").read_text()
     assert 'version = "0.16.0-next.2"' in (root / "console/packages/console-rust/Cargo.toml").read_text()
+
+
+def test_cli_invokes_rewrite_all(tmp_path: Path):
+    root = tmp_path
+    _write(root / "Cargo.toml", (
+        '[workspace.package]\n'
+        'version = "0.15.0-next.1"\n\n'
+        '[workspace.dependencies]\n'
+        'iii-observability = { path = "sdk/packages/rust/observability", version = "0.13.0-next.1" }\n'
+    ))
+    _write(root / "engine" / "Cargo.toml", 'version = "0.15.0-next.1"\n')
+    _write(root / "sdk/packages/rust/iii/Cargo.toml", 'version = "0.15.0-next.1"\n')
+    _write(root / "sdk/packages/rust/observability/Cargo.toml", 'version = "0.13.0-next.1"\n')
+    _write(root / "sdk/packages/node/iii/package.json", '{\n  "version": "0.15.0-next.1"\n}\n')
+    _write(root / "sdk/packages/node/iii-browser/package.json", '{\n  "version": "0.15.0-next.1"\n}\n')
+    _write(root / "sdk/packages/node/observability/package.json", '{\n  "version": "0.13.0-next.1"\n}\n')
+    _write(root / "sdk/packages/python/iii/pyproject.toml", (
+        'version = "0.15.0.dev1"\n'
+        'dependencies = [\n    "iii-observability==0.13.0.dev1",\n]\n'
+    ))
+    _write(root / "sdk/packages/python/observability/pyproject.toml", 'version = "0.13.0.dev1"\n')
+    _write(root / "console/packages/console-rust/Cargo.toml", 'version = "0.15.0-next.1"\n')
+
+    script = Path(__file__).parent / "bump_manifests.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(root),
+         "--version", "0.16.0-next.2", "--python-version", "0.16.0.dev2"],
+        check=True, capture_output=True, text=True,
+    )
+    assert "0.16.0-next.2" in result.stdout
+
+    assert 'version = "0.16.0-next.2"' in (root / "Cargo.toml").read_text()
+    assert 'iii-observability==0.16.0.dev2' in (root / "sdk/packages/python/iii/pyproject.toml").read_text()
