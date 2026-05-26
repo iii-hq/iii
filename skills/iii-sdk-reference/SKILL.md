@@ -15,10 +15,10 @@ Use this skill for language-specific SDK details. Use `iii-core-primitives` for 
 
 ```bash
 # TypeScript / Node.js
-pnpm add iii-sdk
+npm install iii-sdk
 
 # Browser apps
-pnpm add iii-browser-sdk
+npm install iii-browser-sdk
 
 # Python
 pip install iii-sdk
