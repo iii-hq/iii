@@ -250,3 +250,47 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
         .expect("functions array");
     assert!(!functions.is_empty(), "iii-state should expose functions");
 }
+
+/// In-process workers register `TriggerType` with `worker_id: None`, so the
+/// `worker_registry` Uuid lookup used for WebSocket workers cannot attribute
+/// them. `engine::workers::info` must still roll trigger types up into the
+/// owning runtime worker via the static `BUILTIN_TRIGGER_TYPES` map —
+/// otherwise the publish workflow ships an empty `triggers: []` array to the
+/// registry for iii-http, iii-cron, iii-state, etc.
+#[tokio::test]
+async fn workers_info_attributes_trigger_types_to_in_process_worker() {
+    let builder = boot_bare_engine().await;
+    let engine = builder.engine();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let result = engine
+        .call("engine::workers::info", json!({ "name": "iii-http" }))
+        .await
+        .expect("engine::workers::info should succeed")
+        .expect("response should not be None");
+
+    let trigger_types = result
+        .get("trigger_types")
+        .and_then(|v| v.as_array())
+        .expect("trigger_types array");
+
+    let ids: Vec<&str> = trigger_types
+        .iter()
+        .filter_map(|tt| tt.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&"http"),
+        "iii-http workers::info should include the `http` trigger type, got {:?}",
+        ids
+    );
+
+    for tt in trigger_types {
+        assert_eq!(
+            tt.get("worker_name").and_then(|v| v.as_str()),
+            Some("iii-http"),
+            "trigger_type {:?} should be attributed to iii-http",
+            tt.get("id")
+        );
+    }
+}

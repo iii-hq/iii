@@ -17,7 +17,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest, SessionHandler},
     function::FunctionResult,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
-    trigger::{Trigger, TriggerRegistrator, TriggerType},
+    trigger::{Trigger, TriggerRegistrator, TriggerType, builtin_trigger_type_owner},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionTelemetryMeta},
     workers::traits::Worker,
     workers::worker::rbac_session::Session,
@@ -409,8 +409,11 @@ impl EngineFunctionsWorker {
         Self::first_segment(function_id)
     }
 
-    /// Resolves the worker name that owns a trigger type. Falls back to the
-    /// first `::` segment of the trigger-type id.
+    /// Resolves the worker name that owns a trigger type. Tries, in order:
+    /// the `worker_id` Uuid on the `TriggerType` (populated only by
+    /// WebSocket-connected workers), the static `BUILTIN_TRIGGER_TYPES` map
+    /// (used for in-process workers, which always register with
+    /// `worker_id: None`), and finally the first `::` segment of the id.
     fn worker_name_for_trigger_type(&self, tt_id: &str) -> String {
         if let Some(tt) = self.engine.trigger_registry.trigger_types.get(tt_id)
             && let Some(worker_id) = tt.worker_id
@@ -418,6 +421,9 @@ impl EngineFunctionsWorker {
             && let Some(name) = worker.name
         {
             return name;
+        }
+        if let Some(name) = builtin_trigger_type_owner(tt_id) {
+            return name.to_string();
         }
         Self::first_segment(tt_id)
     }
@@ -717,6 +723,7 @@ impl EngineFunctionsWorker {
         }
 
         let worker_id = envelope.id.clone();
+        let worker_name = envelope.name.clone();
         let index = self.function_owner_index().await;
         let mut functions: Vec<FunctionSummary> = function_ids
             .into_iter()
@@ -737,13 +744,25 @@ impl EngineFunctionsWorker {
             .trigger_types
             .iter()
             .filter(|entry| {
-                entry
-                    .value()
-                    .worker_id
-                    .and_then(|wid| self.engine.worker_registry.get_worker(&wid))
-                    .map(|w| w.id.to_string())
+                let tt = entry.value();
+                // WebSocket workers attribute via `worker_id` Uuid.
+                if let Some(wid) = tt.worker_id {
+                    return self
+                        .engine
+                        .worker_registry
+                        .get_worker(&wid)
+                        .map(|w| w.id.to_string())
+                        .as_deref()
+                        == Some(&worker_id);
+                }
+                // In-process workers register trigger types with
+                // `worker_id: None`, so fall back to the static
+                // BUILTIN_TRIGGER_TYPES map keyed by trigger-type id.
+                worker_name
                     .as_deref()
-                    == Some(&worker_id)
+                    .zip(builtin_trigger_type_owner(&tt.id))
+                    .map(|(name, owner)| name == owner)
+                    .unwrap_or(false)
             })
             .map(|entry| {
                 let tt = entry.value();
