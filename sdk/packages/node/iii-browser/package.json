@@ -38,6 +38,11 @@
       "types": "./dist/state.d.ts",
       "import": "./dist/state.mjs",
       "require": "./dist/state.cjs"
+    },
+    "./helpers": {
+      "types": "./dist/helpers.d.ts",
+      "import": "./dist/helpers.mjs",
+      "require": "./dist/helpers.cjs"
     }
   },
   "devDependencies": {

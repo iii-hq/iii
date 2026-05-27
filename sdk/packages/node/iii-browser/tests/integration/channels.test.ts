@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChannelReader } from '../../src/channels'
+import { createChannel } from '../../src/helpers'
 import { iii, sleep } from './utils'
 
 describe('Data Channels', () => {
@@ -21,7 +22,7 @@ describe('Data Channels', () => {
     )
 
     const sender = iii.registerFunction('browser.test.channel.sender', async (input: { items: string[] }) => {
-      const channel = await iii.createChannel()
+      const channel = await createChannel(iii)
 
       const resultPromise = iii.trigger({
         function_id: 'browser.test.channel.receiver',
@@ -66,7 +67,7 @@ describe('Data Channels', () => {
     const sender = iii.registerFunction(
       'browser.test.channel.binary.sender',
       async (input: { text: string }) => {
-        const channel = await iii.createChannel()
+        const channel = await createChannel(iii)
 
         const resultPromise = iii.trigger({
           function_id: 'browser.test.channel.binary.processor',
@@ -119,7 +120,7 @@ describe('Data Channels', () => {
     const sender = iii.registerFunction(
       'browser.test.channel.json.sender',
       async (input: { records: Record[] }) => {
-        const channel = await iii.createChannel()
+        const channel = await createChannel(iii)
 
         const resultPromise = iii.trigger({
           function_id: 'browser.test.channel.json.processor',
@@ -160,7 +161,7 @@ describe('Data Channels', () => {
 
   it('should send progress messages through a channel writer', async () => {
     const coordinator = iii.registerFunction('browser.test.channel.progress', async () => {
-      const channel = await iii.createChannel()
+      const channel = await createChannel(iii)
 
       const messages: unknown[] = []
       channel.reader.onMessage((msg) => {

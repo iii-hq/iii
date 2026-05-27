@@ -7,7 +7,6 @@ import type {
   StreamChannelRef,
   TriggerRequest,
 } from './iii-types'
-import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
 
 /**
@@ -138,95 +137,6 @@ export interface ISdk {
   trigger<TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput>
 
   /**
-   * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
-   * @param triggerType - The trigger type to register
-   * @param handler - The handler for the trigger type
-   * @returns A trigger type object that can be used to unregister the trigger type
-   *
-   * @example
-   * ```typescript
-   * type CronConfig = { expression: string }
-   *
-   * iii.registerTriggerType<CronConfig>(
-   *   { id: 'cron', description: 'Fires on a cron schedule' },
-   *   {
-   *     async registerTrigger({ id, function_id, config }) {
-   *       startCronJob(id, config.expression, () =>
-   *         iii.trigger({ function_id, payload: {} }),
-   *       )
-   *     },
-   *     async unregisterTrigger({ id }) {
-   *       stopCronJob(id)
-   *     },
-   *   },
-   * )
-   * ```
-   */
-  registerTriggerType<TConfig>(
-    triggerType: RegisterTriggerTypeInput,
-    handler: TriggerHandler<TConfig>,
-  ): TriggerTypeRef<TConfig>
-
-  /**
-   * Unregisters a trigger type.
-   * @param triggerType - The trigger type to unregister
-   *
-   * @example
-   * ```typescript
-   * iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
-   * ```
-   */
-  unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
-
-  /**
-   * Creates a streaming channel pair for worker-to-worker data transfer.
-   * Returns a Channel with a local writer/reader and serializable refs that
-   * can be passed as fields in the invocation data to other functions.
-   *
-   * @param bufferSize - Optional buffer size for the channel (default: 64)
-   * @returns A Channel with writer, reader, and their serializable refs
-   *
-   * @example
-   * ```typescript
-   * const channel = await iii.createChannel()
-   *
-   * // Pass the writer ref to another function
-   * await iii.trigger({
-   *   function_id: 'stream-producer',
-   *   payload: { outputChannel: channel.writerRef },
-   * })
-   *
-   * // Read data locally
-   * channel.reader.onMessage((msg) => {
-   *   console.log('Received:', msg)
-   * })
-   * ```
-   */
-  createChannel(bufferSize?: number): Promise<Channel>
-
-  /**
-   * Creates a new stream implementation.
-   *
-   * This overrides the default stream implementation.
-   *
-   * @param streamName - The name of the stream
-   * @param stream - The stream implementation
-   *
-   * @example
-   * ```typescript
-   * iii.createStream('sessions', {
-   *   async get({ group_id, item_id }) { return null },
-   *   async set({ group_id, item_id, data }) { return { new_value: data } },
-   *   async delete({ group_id, item_id }) { return {} },
-   *   async list({ group_id }) { return [] },
-   *   async listGroups() { return [] },
-   *   async update() { return null },
-   * })
-   * ```
-   */
-  createStream<TData>(streamName: string, stream: IStream<TData>): void
-
-  /**
    * Gracefully shutdown the iii, cleaning up all resources.
    *
    * @example
@@ -275,7 +185,8 @@ export type FunctionRef = {
 }
 
 /**
- * Typed handle returned by {@link ISdk.registerTriggerType}.
+ * Typed handle returned by the `registerTriggerType` helper from
+ * `iii-browser-sdk/helpers`.
  *
  * Provides convenience methods to register triggers and functions scoped
  * to this trigger type, so callers don't need to repeat the `type` field.
@@ -284,9 +195,12 @@ export type FunctionRef = {
  *
  * @example
  * ```typescript
+ * import { registerTriggerType } from 'iii-browser-sdk/helpers'
+ *
  * type CronConfig = { expression: string }
  *
- * const cron = iii.registerTriggerType<CronConfig>(
+ * const cron = registerTriggerType<CronConfig>(
+ *   iii,
  *   { id: 'cron', description: 'Fires on a cron schedule' },
  *   cronHandler,
  * )
@@ -330,7 +244,7 @@ export type TriggerTypeRef<TConfig = unknown> = {
 
 /**
  * A streaming channel pair for worker-to-worker data transfer. Created via
- * {@link ISdk.createChannel}.
+ * the `createChannel` helper from `iii-browser-sdk/helpers`.
  */
 export type Channel = {
   /** Writer end of the channel. */

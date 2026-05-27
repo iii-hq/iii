@@ -94,26 +94,13 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `registerTriggerType` helper in the
+   * `iii-browser-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Registers a custom trigger type with the engine. A trigger type defines
    * how external events (HTTP, cron, queue, etc.) map to function invocations.
-   *
-   * @param triggerType - Trigger type registration input.
-   * @param triggerType.id - Unique trigger type identifier.
-   * @param triggerType.description - Human-readable description.
-   * @param handler - Handler with `registerTrigger` / `unregisterTrigger` callbacks.
-   *
-   * @example
-   * ```typescript
-   * iii.registerTriggerType(
-   *   { id: 'my-trigger', description: 'Custom trigger' },
-   *   {
-   *     async registerTrigger({ id, function_id, config }) { },
-   *     async unregisterTrigger({ id, function_id, config }) { },
-   *   },
-   * )
-   * ```
    */
-  registerTriggerType = <TConfig>(
+  __helpers_register_trigger_type = <TConfig>(
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
   ): TriggerTypeRef<TConfig> => {
@@ -142,19 +129,21 @@ class Sdk implements ISdk {
         return ref
       },
       unregister: () => {
-        this.unregisterTriggerType(triggerType)
+        this.__helpers_unregister_trigger_type(triggerType.id)
       },
     }
   }
 
   /**
-   * Unregisters a previously registered trigger type.
+   * @internal Implementation backing the `unregisterTriggerType` helper in
+   * the `iii-browser-sdk/helpers` submodule. Not part of the public `ISdk` surface.
    *
-   * @param triggerType - The trigger type to unregister (must match the `id` used during registration).
+   * Sends an unregister message identifying the trigger type by `id` only,
+   * matching the engine wire format.
    */
-  unregisterTriggerType = (triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>): void => {
-    this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
-    this.triggerTypes.delete(triggerType.id)
+  __helpers_unregister_trigger_type = (id: string): void => {
+    this.sendMessage(MessageType.UnregisterTriggerType, { id }, true)
+    this.triggerTypes.delete(id)
   }
 
   /**
@@ -262,21 +251,14 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `createChannel` helper in the
+   * `iii-browser-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Creates a streaming channel pair for worker-to-worker data transfer.
    * Returns a {@link Channel} with a local writer/reader and serializable refs
    * that can be passed as fields in invocation data to other functions.
-   *
-   * @param bufferSize - Optional buffer size for the channel (default: 64).
-   * @returns A {@link Channel} with `writer`, `reader`, and their serializable refs.
-   *
-   * @example
-   * ```typescript
-   * const channel = await iii.createChannel()
-   * channel.writer.sendMessage('hello')
-   * channel.writer.close()
-   * ```
    */
-  createChannel = async (bufferSize?: number): Promise<import('./types').Channel> => {
+  __helpers_create_channel = async (bufferSize?: number): Promise<import('./types').Channel> => {
     const result = await this.trigger<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>(
       { function_id: 'engine::channels::create', payload: { buffer_size: bufferSize } },
     )
@@ -374,25 +356,13 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `createStream` helper in the
+   * `iii-browser-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Registers a custom stream implementation, overriding the engine default
    * for the given stream name.
-   *
-   * @param streamName - Name of the stream.
-   * @param stream - Object implementing the {@link IStream} interface.
-   *
-   * @example
-   * ```typescript
-   * iii.createStream('my-stream', {
-   *   async get(input) { return null },
-   *   async set(input) { return null },
-   *   async delete(input) { return { old_value: undefined } },
-   *   async list(input) { return [] },
-   *   async listGroups(input) { return [] },
-   *   async update(input) { return null },
-   * })
-   * ```
    */
-  createStream = <TData>(streamName: string, stream: IStream<TData>): void => {
+  __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
     this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))
     this.registerFunction(`stream::set(${streamName})`, stream.set.bind(stream))
     this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))
