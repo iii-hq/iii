@@ -37,7 +37,19 @@ type: "reference"
 
   ## `sandbox::fs::read` returns inline bodies for small text
 
-  Text files under 1 MiB come back as a UTF-8 string in the response payload instead of forcing a stream subscription. Larger payloads and binary files still flow through the existing `StreamChannelRef`. Typical "read this config / log / source file" calls are now a single round-trip.
+  **Breaking.** The `content` field on the `sandbox::fs::read` response is now an untagged enum: a bare JSON string for files under 1 MiB that decode as valid UTF-8, or the existing `StreamChannelRef` object for larger or binary files. Typical "read this config / log / source file" calls become a single round-trip, but callers that previously assumed `content` was always a stream-ref object must branch on the JSON type:
+
+  ```typescript
+  // before
+  const { content } = await trigger({ function_id: 'sandbox::fs::read', payload: { sandbox_id, path } })
+  const body = await readChannel(content) // content was always a StreamChannelRef
+
+  // after
+  const { content } = await trigger({ function_id: 'sandbox::fs::read', payload: { sandbox_id, path } })
+  const body = typeof content === 'string'
+    ? content                  // small UTF-8 text: inline body
+    : await readChannel(content) // large or binary: stream as before
+  ```
 
   ## Structured `sandbox::*` errors with resubmittable `fix` payloads
 
@@ -55,14 +67,15 @@ type: "reference"
   }
   ```
 
-  - `docs_url` anchors directly at the in-repo `S`-code subsection.
+  - `docs_url` anchors directly at the in-repo `S`-code subsection. **Breaking:** the base URL flipped from `https://iii.dev/docs/errors/sandbox/Sxxx` to `https://github.com/MotiaDev/motia/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#Sxxx` while the canonical `iii.dev` error pages are still pending. Bookmarks and scrapers built on the old URL need to follow the new anchors.
   - `fix` is a non-null JSON payload the agent can merge into the original request and resubmit verbatim when recovery is unambiguous (parent-missing writes, `sandbox::run` sub-step failures, etc.).
   - `fix_note` describes how to use the fix or — when `fix` is `null` — explains why no auto-recovery exists.
   - `sandbox::run` sub-step failures surface the inner `S`-code transparently and name the failing step in `fix.context`, plus `fix.sandbox_id` when `keep_sandbox: true`.
+  - FS error `message` strings now carry a kind prefix (e.g. `"file not found: {path}"` instead of bare `{path}`). The authoritative `code` / `type` fields are unchanged; only callers that grep the message text are affected.
 
   ## `sandbox::exec` default timeout raised to 5 minutes
 
-  **Behavior change.** The default `timeout_ms` for `sandbox::exec` moves from 30 s to 300 s. Sized for cold `npm install` / `pip install` / `cargo build`. Previously the 30 s default fired as an opaque engine-gate denial before the daemon could return a structured `timed_out: true` response. Callers that need a tighter bound should set `timeout_ms` explicitly.
+  **Breaking.** The default `timeout_ms` for `sandbox::exec` moves from 30 s to 300 s. Sized for cold `npm install` / `pip install` / `cargo build`. Previously the 30 s default fired as an opaque engine-gate denial before the daemon could return a structured `timed_out: true` response. Callers that relied on the 30 s fast-fail to bound runaway commands should now set `timeout_ms` explicitly.
 
   ## Handler-boundary tracing on every `sandbox::*` handler
 
