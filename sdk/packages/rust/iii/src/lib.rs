@@ -1,6 +1,7 @@
 pub mod builtin_triggers;
 pub mod channels;
 pub mod error;
+pub mod helpers;
 pub mod iii;
 pub mod protocol;
 pub mod stream;
