@@ -12,8 +12,8 @@ integration story, and its own failure modes. Four services means six possible i
 Twenty means 190.
 
 What we mean by edges is that every new integration brings with it cross-system interactions. For
-example the addition of an agentic harness includes not just a single integration point with your
-current system but the numerous downstream consumers of it.
+example, adding an agentic harness creates one integration point with your current system and a
+separate integration point with every downstream consumer of it.
 
 Every new capability quadratically compounds the coordination cost of everything already in your
 stack.
@@ -76,6 +76,15 @@ what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler 
 
 The best way to understand iii is to try it. Install the engine and follow the Quickstart to create
 your first iii-powered project.
+
+<Frame>
+  <video
+    controls
+    playsInline
+    preload="metadata"
+    src="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4"
+  />
+</Frame>
 
 <CardGroup cols={2}>
   <Card title="Install" href="/install" icon="download">
