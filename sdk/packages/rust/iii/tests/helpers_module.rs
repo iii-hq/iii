@@ -41,3 +41,12 @@ impl iii_sdk::TriggerHandler for DummyHandler {
         Ok(())
     }
 }
+
+#[test]
+fn channel_items_no_longer_at_top_level() {
+    // Importing the four relocated items from the crate root must fail at
+    // compile time. The `compile_fail` doctests in `src/lib.rs` prove it —
+    // doctests in `tests/` are not picked up by `cargo test --doc`, so the
+    // enforcement lives there. This test exists as a discoverable marker
+    // alongside the helpers-module test suite.
+}
