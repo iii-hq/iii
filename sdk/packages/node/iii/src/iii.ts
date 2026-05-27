@@ -216,6 +216,17 @@ class Sdk implements ISdk {
     this.triggerTypes.delete(triggerType.id)
   }
 
+  /** @internal Shim used by the `helpers` submodule. Renamed in Task 7. */
+  __helpers_register_trigger_type = this.registerTriggerType
+  /**
+   * @internal Shim used by the `helpers` submodule. The new free-function API
+   * takes only `id`, but the existing instance method takes the full message
+   * object — build a minimal one and delegate. Renamed/collapsed in Task 7.
+   */
+  __helpers_unregister_trigger_type = (id: string): void => {
+    this.unregisterTriggerType({ id, description: '' })
+  }
+
   /**
    * Binds a trigger configuration to a registered function. When the trigger
    * fires, the engine invokes the target function.
@@ -417,6 +428,9 @@ class Sdk implements ISdk {
     }
   }
 
+  /** @internal Shim used by the `helpers` submodule. Renamed in Task 7. */
+  __helpers_create_channel = this.createChannel
+
   /**
    * Invokes a remote function. The routing behavior and return type depend
    * on the `action` field of the request.
@@ -573,6 +587,9 @@ class Sdk implements ISdk {
     this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
     this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
   }
+
+  /** @internal Shim used by the `helpers` submodule. Renamed in Task 7. */
+  __helpers_create_stream = this.createStream
 
   /**
    * Gracefully shutdown the iii, cleaning up all resources.
