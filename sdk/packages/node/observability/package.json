@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/observability",
-  "version": "0.13.0-next.1",
+  "version": "0.16.0-next.2",
   "private": false,
   "publishConfig": { "access": "public" },
   "type": "module",

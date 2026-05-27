@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{III, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{III, RegisterFunction, RegisterTriggerInput, TriggerRequest};
 
 const SCOPE: &str = "test-scope-rs";
 
@@ -378,9 +378,9 @@ async fn reactive_state() {
     let reactive_data: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let reactive_data_clone = reactive_data.clone();
 
-    let fn_ref = iii.register_function((
-        RegisterFunctionMessage::with_id("test::state::rs::updated".to_string()),
-        move |event: Value| {
+    let fn_ref = iii.register_function(
+        "test::state::rs::updated",
+        RegisterFunction::new_async(move |event: Value| {
             let reactive_data = reactive_data_clone.clone();
             async move {
                 if event.get("type").and_then(|v| v.as_str()) == Some("state")
@@ -390,8 +390,8 @@ async fn reactive_state() {
                 }
                 Ok(json!({}))
             }
-        },
-    ));
+        }),
+    );
 
     let key_clone = key.clone();
     let trigger = iii

@@ -15,7 +15,7 @@ use iii_sdk::{
     AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
     OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
     OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
-    RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
+    RegisterFunction, TriggerRequest, register_worker,
 };
 use serde::Deserialize;
 
@@ -96,9 +96,9 @@ fn ensure_functions_registered() {
         let mut refs = Vec::new();
         let auth_calls = auth_calls().clone();
 
-        refs.push(iii.register_function(RegisterFunction::new_async(
+        refs.push(iii.register_function(
             "test::rbac-worker::auth",
-            move |auth_input: AuthInput| {
+            RegisterFunction::new_async(move |auth_input: AuthInput| {
                 let auth_calls = auth_calls.clone();
 
                 async move {
@@ -145,12 +145,12 @@ fn ensure_functions_registered() {
                         _ => Err(iii_sdk::IIIError::Handler("invalid token".to_string())),
                     }
                 }
-            },
-        )));
+            }),
+        ));
 
-        refs.push(iii.register_function(RegisterFunction::new_async(
+        refs.push(iii.register_function(
             "test::rbac-worker::middleware",
-            |input: MiddlewareFunctionInput| {
+            RegisterFunction::new_async(|input: MiddlewareFunctionInput| {
                 let iii = common::shared_iii().clone();
                 async move {
                     let mut enriched = input.payload.as_object().cloned().unwrap_or_default();
@@ -174,12 +174,12 @@ fn ensure_functions_registered() {
                     })
                     .await
                 }
-            },
-        )));
+            }),
+        ));
 
-        refs.push(iii.register_function(RegisterFunction::new_async(
+        refs.push(iii.register_function(
             "test::rbac-worker::on-function-reg",
-            |input: OnFunctionRegistrationInput| async move {
+            RegisterFunction::new_async(|input: OnFunctionRegistrationInput| async move {
                 if input.function_id.starts_with("denied::") {
                     return Err(iii_sdk::IIIError::Handler(
                         "denied function registration".into(),
@@ -189,13 +189,13 @@ fn ensure_functions_registered() {
                     function_id: Some(input.function_id),
                     ..Default::default()
                 })
-            },
-        )));
+            }),
+        ));
 
         let tt_reg_calls = tt_reg_calls().clone();
-        refs.push(iii.register_function(RegisterFunction::new_async(
+        refs.push(iii.register_function(
             "test::rbac-worker::on-trigger-type-reg",
-            move |input: OnTriggerTypeRegistrationInput| {
+            RegisterFunction::new_async(move |input: OnTriggerTypeRegistrationInput| {
                 let tt_reg_calls = tt_reg_calls.clone();
                 async move {
                     let denied = input.trigger_type_id.starts_with("denied-tt::");
@@ -207,13 +207,13 @@ fn ensure_functions_registered() {
                     }
                     Ok::<_, iii_sdk::IIIError>(OnTriggerTypeRegistrationResult::default())
                 }
-            },
-        )));
+            }),
+        ));
 
         let trig_reg_calls = trig_reg_calls().clone();
-        refs.push(iii.register_function(RegisterFunction::new_async(
+        refs.push(iii.register_function(
             "test::rbac-worker::on-trigger-reg",
-            move |input: OnTriggerRegistrationInput| {
+            RegisterFunction::new_async(move |input: OnTriggerRegistrationInput| {
                 let trig_reg_calls = trig_reg_calls.clone();
                 async move {
                     let denied = input.function_id.starts_with("denied-trig::");
@@ -225,8 +225,8 @@ fn ensure_functions_registered() {
                     }
                     Ok::<_, iii_sdk::IIIError>(OnTriggerRegistrationResult::default())
                 }
-            },
-        )));
+            }),
+        ));
 
         {
             struct NoopHandler;
@@ -252,26 +252,36 @@ fn ensure_functions_registered() {
             ));
         }
 
-        refs.push(iii.register_function((
-            RegisterFunctionMessage::with_id("test::ew::public::echo".to_string()),
-            |input: Value| async move { Ok(json!({ "echoed": input })) },
-        )));
+        refs.push(iii.register_function(
+            "test::ew::public::echo",
+            RegisterFunction::new_async(
+                |input: Value| async move { Ok(json!({ "echoed": input })) },
+            ),
+        ));
 
-        refs.push(iii.register_function((
-            RegisterFunctionMessage::with_id("test::ew::valid-token-echo".to_string()),
-            |input: Value| async move { Ok(json!({ "echoed": input, "valid_token": true })) },
-        )));
+        refs.push(iii.register_function(
+            "test::ew::valid-token-echo",
+            RegisterFunction::new_async(|input: Value| async move {
+                Ok(json!({ "echoed": input, "valid_token": true }))
+            }),
+        ));
 
-        let mut meta_msg = RegisterFunctionMessage::with_id("test::ew::meta-public".to_string());
-        meta_msg.metadata = Some(json!({ "ew_public": true }));
-        refs.push(iii.register_function((meta_msg, |input: Value| async move {
-            Ok(json!({ "meta_echoed": input }))
-        })));
+        refs.push(
+            iii.register_function(
+                "test::ew::meta-public",
+                RegisterFunction::new_async(|input: Value| async move {
+                    Ok(json!({ "meta_echoed": input }))
+                })
+                .metadata(json!({ "ew_public": true })),
+            ),
+        );
 
-        refs.push(iii.register_function((
-            RegisterFunctionMessage::with_id("test::ew::private".to_string()),
-            |_input: Value| async move { Ok(json!({ "private": true })) },
-        )));
+        refs.push(iii.register_function(
+            "test::ew::private",
+            RegisterFunction::new_async(
+                |_input: Value| async move { Ok(json!({ "private": true })) },
+            ),
+        ));
     });
 }
 
@@ -417,10 +427,12 @@ async fn should_deny_function_registration_via_hook() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    iii_client.register_function((
-        RegisterFunctionMessage::with_id("denied::blocked-fn".to_string()),
-        |_input: Value| async move { Ok(json!({ "should": "not reach" })) },
-    ));
+    iii_client.register_function(
+        "denied::blocked-fn",
+        RegisterFunction::new_async(
+            |_input: Value| async move { Ok(json!({ "should": "not reach" })) },
+        ),
+    );
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -569,10 +581,10 @@ async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
         IIIConnectionState::Connected
     );
 
-    iii_client.register_function((
-        RegisterFunctionMessage::with_id("prefixed-echo".to_string()),
-        |input: Value| async move { Ok(json!({ "echoed": input })) },
-    ));
+    iii_client.register_function(
+        "prefixed-echo",
+        RegisterFunction::new_async(|input: Value| async move { Ok(json!({ "echoed": input })) }),
+    );
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -779,9 +791,9 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
     // end of the test would unregister the function entirely, breaking every
     // subsequent serial test that expects `test::ew::valid-token-echo` to exist.
     let inner_client = iii_client.clone();
-    let _handle = iii_client.register_function(RegisterFunction::new_async(
+    let _handle = iii_client.register_function(
         "test::ew::carveout-logger-handler",
-        move |input: Value| {
+        RegisterFunction::new_async(move |input: Value| {
             let client = inner_client.clone();
             async move {
                 client
@@ -804,8 +816,8 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
                     })?;
                 Ok::<_, iii_sdk::IIIError>(json!({ "logged": true }))
             }
-        },
-    ));
+        }),
+    );
 
     wait_until_function_registered("test::ew::carveout-logger-handler", Duration::from_secs(10))
         .await;

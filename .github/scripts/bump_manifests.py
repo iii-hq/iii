@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Rewrite every release-bumped manifest in lockstep.
+
+Pure functions live at module top so they can be unit-tested. The CLI at
+the bottom drives the rewrites the create-tag workflow used to perform
+inline with sed/jq.
+"""
+from __future__ import annotations
+
+import re
+
+
+_CARGO_PACKAGE_VERSION_RE = re.compile(r'^version = "[^"]*"', re.MULTILINE)
+
+
+def bump_cargo_package_version(text: str, new_version: str) -> str:
+    """Replace the first top-level ``version = "..."`` line in a Cargo manifest."""
+    m = _CARGO_PACKAGE_VERSION_RE.search(text)
+    if m is None:
+        raise ValueError("no top-level version line in Cargo manifest")
+    start, end = m.span()
+    return f'{text[:start]}version = "{new_version}"{text[end:]}'
+
+
+def bump_cargo_workspace_dep_version(text: str, dep_name: str, new_version: str) -> str:
+    """Replace the ``version = "..."`` value inside a ``dep_name = { ... }`` line.
+
+    Matches a single workspace-dependency entry whose key is exactly
+    ``dep_name`` and rewrites the embedded ``version`` field. Other fields
+    on the line (``path``, ``features``, ...) are preserved.
+    """
+    line_re = re.compile(
+        rf'^(?P<lead>{re.escape(dep_name)}\s*=\s*\{{[^}}\n]*?version\s*=\s*")[^"]*(?P<tail>"[^}}\n]*\}})',
+        re.MULTILINE,
+    )
+    m = line_re.search(text)
+    if m is None:
+        raise ValueError(f"no workspace dependency entry for {dep_name!r}")
+    return f'{text[:m.start()]}{m.group("lead")}{new_version}{m.group("tail")}{text[m.end():]}'
+
+
+_JSON_TOP_VERSION_RE = re.compile(r'^(\s*)"version"(\s*):(\s*)"[^"]*"', re.MULTILINE)
+
+
+def bump_json_top_level_version(text: str, new_version: str) -> str:
+    """Replace the first top-level ``"version": "..."`` line in a JSON file.
+
+    Operates textually to preserve formatting. The npm/iii workflow uses
+    ``jq`` today; we replace it with this so the workflow has a single
+    invocation point and the behaviour is unit-tested.
+    """
+    m = _JSON_TOP_VERSION_RE.search(text)
+    if m is None:
+        raise ValueError("no top-level version key in JSON manifest")
+    indent, sp1, sp2 = m.group(1), m.group(2), m.group(3)
+    replacement = f'{indent}"version"{sp1}:{sp2}"{new_version}"'
+    return f'{text[:m.start()]}{replacement}{text[m.end():]}'
+
+
+def bump_pep440_dep_pin(text: str, dep_name: str, new_pep440: str) -> str:
+    """Replace ``"<dep_name>==<old>"`` with ``"<dep_name>==<new_pep440>"``.
+
+    Used for the ``iii-observability`` pin inside the python iii
+    ``pyproject.toml`` ``dependencies = [...]`` array.
+    """
+    line_re = re.compile(rf'"{re.escape(dep_name)}==[^"]*"')
+    m = line_re.search(text)
+    if m is None:
+        raise ValueError(f"no pinned dependency entry for {dep_name!r}")
+    return f'{text[:m.start()]}"{dep_name}=={new_pep440}"{text[m.end():]}'
+
+
+from pathlib import Path
+
+
+_CARGO_PACKAGE_FILES = (
+    "engine/Cargo.toml",
+    "sdk/packages/rust/iii/Cargo.toml",
+    "sdk/packages/rust/observability/Cargo.toml",
+    "console/packages/console-rust/Cargo.toml",
+)
+_JSON_PACKAGE_FILES = (
+    "sdk/packages/node/iii/package.json",
+    "sdk/packages/node/iii-browser/package.json",
+    "sdk/packages/node/observability/package.json",
+)
+
+
+def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
+    """Rewrite every release manifest under ``root`` in lockstep."""
+    # Cargo package versions
+    for rel in _CARGO_PACKAGE_FILES:
+        path = root / rel
+        path.write_text(bump_cargo_package_version(path.read_text(), new_version))
+
+    # Workspace root: bump both the workspace.package version and the
+    # iii-observability workspace-dep version pin.
+    workspace_path = root / "Cargo.toml"
+    body = bump_cargo_package_version(workspace_path.read_text(), new_version)
+    body = bump_cargo_workspace_dep_version(body, "iii-observability", new_version)
+    workspace_path.write_text(body)
+
+    # JSON package versions
+    for rel in _JSON_PACKAGE_FILES:
+        path = root / rel
+        path.write_text(bump_json_top_level_version(path.read_text(), new_version))
+
+    # Python iii: top-level version + iii-observability pin
+    py_iii = root / "sdk/packages/python/iii/pyproject.toml"
+    body = bump_cargo_package_version(py_iii.read_text(), new_py_version)
+    body = bump_pep440_dep_pin(body, "iii-observability", new_py_version)
+    py_iii.write_text(body)
+
+    # Python observability: top-level version only
+    py_obs = root / "sdk/packages/python/observability/pyproject.toml"
+    py_obs.write_text(bump_cargo_package_version(py_obs.read_text(), new_py_version))
+
+
+import argparse
+import sys
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--python-version", required=True)
+    args = parser.parse_args(argv)
+
+    rewrite_all(root=args.root, new_version=args.version, new_py_version=args.python_version)
+    print(f"Bumped manifests to {args.version} (python: {args.python_version})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
