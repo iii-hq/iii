@@ -117,6 +117,34 @@ where
 /// Register a custom trigger type with the engine.
 ///
 /// Free-function form of `III`'s former `register_trigger_type` method.
+/// Returns a [`TriggerTypeRef`] handle that can register triggers and
+/// functions with compile-time validated types.
+///
+/// # Examples
+/// ```rust,no_run
+/// # use iii_sdk::{III, RegisterTriggerType, helpers};
+/// # struct MyHandler;
+/// # #[async_trait::async_trait]
+/// # impl iii_sdk::TriggerHandler for MyHandler {
+/// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+/// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+/// # }
+/// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
+/// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
+/// # let iii = III::new("ws://localhost:49134");
+/// let my_trigger = helpers::register_trigger_type(
+///     &iii,
+///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
+///         .trigger_request_format::<MyConfig>()
+///         .call_request_format::<MyRequest>(),
+/// );
+///
+/// // Compile-time safe: config must be MyConfig, function input must be MyRequest
+/// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
+///     Ok(serde_json::json!({ "data": req.data }))
+/// });
+/// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
+/// ```
 pub fn register_trigger_type<H, C, R>(
     iii: &III,
     registration: RegisterTriggerType<H, C, R>,

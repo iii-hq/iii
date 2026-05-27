@@ -246,7 +246,7 @@ fn ensure_functions_registered() {
                 }
             }
             iii_sdk::helpers::register_trigger_type(
-                &iii,
+                iii,
                 iii_sdk::RegisterTriggerType::new(
                     "test-rbac-trigger",
                     "Trigger type for RBAC tests",
