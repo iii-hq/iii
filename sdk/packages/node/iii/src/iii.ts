@@ -151,26 +151,13 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `registerTriggerType` helper in the
+   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Registers a custom trigger type with the engine. A trigger type defines
    * how external events (HTTP, cron, queue, etc.) map to function invocations.
-   *
-   * @param triggerType - Trigger type registration input.
-   * @param triggerType.id - Unique trigger type identifier.
-   * @param triggerType.description - Human-readable description.
-   * @param handler - Handler with `registerTrigger` / `unregisterTrigger` callbacks.
-   *
-   * @example
-   * ```typescript
-   * iii.registerTriggerType(
-   *   { id: 'my-trigger', description: 'Custom trigger' },
-   *   {
-   *     async registerTrigger({ id, function_id, config }) { },
-   *     async unregisterTrigger({ id, function_id, config }) { },
-   *   },
-   * )
-   * ```
    */
-  registerTriggerType = <TConfig>(
+  __helpers_register_trigger_type = <TConfig>(
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
   ): TriggerTypeRef<TConfig> => {
@@ -201,30 +188,21 @@ class Sdk implements ISdk {
         return ref
       },
       unregister: () => {
-        this.unregisterTriggerType(triggerType)
+        this.__helpers_unregister_trigger_type(triggerType.id)
       },
     }
   }
 
   /**
-   * Unregisters a previously registered trigger type.
+   * @internal Implementation backing the `unregisterTriggerType` helper in
+   * the `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
    *
-   * @param triggerType - The trigger type to unregister (must match the `id` used during registration).
-   */
-  unregisterTriggerType = (triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>): void => {
-    this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
-    this.triggerTypes.delete(triggerType.id)
-  }
-
-  /** @internal Shim used by the `helpers` submodule. Renamed in Task 7. */
-  __helpers_register_trigger_type = this.registerTriggerType
-  /**
-   * @internal Shim used by the `helpers` submodule. The new free-function API
-   * takes only `id`, but the existing instance method takes the full message
-   * object — build a minimal one and delegate. Renamed/collapsed in Task 7.
+   * Sends an unregister message identifying the trigger type by `id` only,
+   * matching the engine wire format.
    */
   __helpers_unregister_trigger_type = (id: string): void => {
-    this.unregisterTriggerType({ id, description: '' })
+    this.sendMessage(MessageType.UnregisterTriggerType, { id }, true)
+    this.triggerTypes.delete(id)
   }
 
   /**
@@ -401,21 +379,14 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `createChannel` helper in the
+   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Creates a streaming channel pair for worker-to-worker data transfer.
    * Returns a {@link Channel} with a local writer/reader and serializable refs
    * that can be passed as fields in invocation data to other functions.
-   *
-   * @param bufferSize - Optional buffer size for the channel (default: 64).
-   * @returns A {@link Channel} with `writer`, `reader`, and their serializable refs.
-   *
-   * @example
-   * ```typescript
-   * const channel = await iii.createChannel()
-   * channel.writer.stream.write(Buffer.from('hello'))
-   * channel.writer.close()
-   * ```
    */
-  createChannel = async (bufferSize?: number): Promise<import('./types').Channel> => {
+  __helpers_create_channel = async (bufferSize?: number): Promise<import('./types').Channel> => {
     const result = await this.trigger<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>(
       { function_id: 'engine::channels::create', payload: { buffer_size: bufferSize } },
     )
@@ -427,9 +398,6 @@ class Sdk implements ISdk {
       readerRef: result.reader,
     }
   }
-
-  /** @internal Shim used by the `helpers` submodule. Renamed in Task 7. */
-  __helpers_create_channel = this.createChannel
 
   /**
    * Invokes a remote function. The routing behavior and return type depend
@@ -558,38 +526,22 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `createStream` helper in the
+   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Registers a custom stream implementation, overriding the engine default
-   * for the given stream name.
-   *
-   * Registers 5 of the 6 `IStream` methods (`get`, `set`, `delete`, `list`,
-   * `listGroups`). The `update` method is not registered -- atomic updates are
-   * handled by the engine's built-in stream update logic.
-   *
-   * @param streamName - Name of the stream.
-   * @param stream - Object implementing the {@link IStream} interface.
-   *
-   * @example
-   * ```typescript
-   * iii.createStream('my-stream', {
-   *   async get(input) { return null },
-   *   async set(input) { return null },
-   *   async delete(input) { return { old_value: undefined } },
-   *   async list(input) { return [] },
-   *   async listGroups(input) { return [] },
-   *   async update(input) { return null },
-   * })
-   * ```
+   * for the given stream name. Registers 5 of the 6 `IStream` methods
+   * (`get`, `set`, `delete`, `list`, `listGroups`). The `update` method is
+   * not registered -- atomic updates are handled by the engine's built-in
+   * stream update logic.
    */
-  createStream = <TData>(streamName: string, stream: IStream<TData>): void => {
+  __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
     this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))
     this.registerFunction(`stream::set(${streamName})`, stream.set.bind(stream))
     this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))
     this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
     this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
   }
-
-  /** @internal Shim used by the `helpers` submodule. Renamed in Task 7. */
-  __helpers_create_stream = this.createStream
 
   /**
    * Gracefully shutdown the iii, cleaning up all resources.
