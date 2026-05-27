@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iii-observability"
-version = "0.13.0.dev1"
+version = "0.16.0.dev3"
 description = "OpenTelemetry and logging primitives shared across iii SDKs."
 authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }

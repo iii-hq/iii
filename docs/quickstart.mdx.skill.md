@@ -5,6 +5,15 @@
 
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
+<Frame>
+  <video
+    controls
+    playsInline
+    preload="metadata"
+    src="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4"
+  />
+</Frame>
+
 <Info title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
   [Install](/install) guide first.
