@@ -42,21 +42,3 @@ impl iii_sdk::TriggerHandler for DummyHandler {
     }
 }
 
-#[test]
-fn channel_items_no_longer_at_top_level() {
-    // Importing the four relocated items from the crate root must fail at
-    // compile time. The `compile_fail` doctests in `src/lib.rs` prove it —
-    // doctests in `tests/` are not picked up by `cargo test --doc`, so the
-    // enforcement lives there. This test exists as a discoverable marker
-    // alongside the helpers-module test suite.
-}
-
-#[test]
-fn relocated_methods_not_on_instance() {
-    // The three relocated methods (`create_channel`, `register_trigger_type`,
-    // `unregister_trigger_type`) are no longer callable on `III` directly —
-    // callers must go through `iii_sdk::helpers::*`. The enforcement lives
-    // in `compile_fail` doctests in `src/lib.rs` (doctests in `tests/` are
-    // not picked up by `cargo test --doc`). This sentinel marks where to
-    // find that enforcement.
-}

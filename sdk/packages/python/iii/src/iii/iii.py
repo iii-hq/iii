@@ -742,7 +742,9 @@ class III:
         """The worker ID assigned by the engine, or None if not yet registered."""
         return self._worker_id
 
-    # Public API
+    # Internal: backing methods for the `iii.helpers` submodule.
+    # These are renamed with a leading underscore so they don't appear on the
+    # public `IIIClient` Protocol; callers use `iii.helpers.<name>(iii, ...)`.
     def _helpers_register_trigger_type(
         self,
         trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
