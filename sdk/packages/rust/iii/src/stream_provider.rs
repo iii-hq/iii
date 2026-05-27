@@ -16,12 +16,6 @@ pub trait IStream: Send + Sync + 'static {
     async fn set(&self, input: StreamSetInput) -> Result<Option<SetResult>, IIIError>;
     async fn delete(&self, input: StreamDeleteInput) -> Result<DeleteResult, IIIError>;
     async fn list(&self, input: StreamListInput) -> Result<Vec<Value>, IIIError>;
-    async fn list_groups(
-        &self,
-        input: StreamListGroupsInput,
-    ) -> Result<Vec<String>, IIIError>;
-    async fn update(
-        &self,
-        input: StreamUpdateInput,
-    ) -> Result<Option<UpdateResult>, IIIError>;
+    async fn list_groups(&self, input: StreamListGroupsInput) -> Result<Vec<String>, IIIError>;
+    async fn update(&self, input: StreamUpdateInput) -> Result<Option<UpdateResult>, IIIError>;
 }

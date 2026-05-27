@@ -494,11 +494,7 @@ async fn should_deny_trigger_type_registration_via_hook() {
         }
         iii_sdk::helpers::register_trigger_type(
             &iii_client,
-            iii_sdk::RegisterTriggerType::new(
-                "denied-tt::test",
-                "Should be denied",
-                DeniedHandler,
-            ),
+            iii_sdk::RegisterTriggerType::new("denied-tt::test", "Should be denied", DeniedHandler),
         );
     }
 

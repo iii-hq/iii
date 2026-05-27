@@ -4,9 +4,7 @@
 //! first argument so the public API surface of `III` stays focused on the
 //! core lifecycle and registration methods.
 
-pub use crate::channels::{
-    ChannelDirection, ChannelItem, extract_channel_refs, is_channel_ref,
-};
+pub use crate::channels::{ChannelDirection, ChannelItem, extract_channel_refs, is_channel_ref};
 
 use std::sync::Arc;
 
@@ -24,10 +22,7 @@ use crate::types::{
 /// Create a streaming channel pair for worker-to-worker data transfer.
 ///
 /// Free-function form of `III`'s former `create_channel` instance method.
-pub async fn create_channel(
-    iii: &III,
-    buffer_size: Option<usize>,
-) -> Result<Channel, IIIError> {
+pub async fn create_channel(iii: &III, buffer_size: Option<usize>) -> Result<Channel, IIIError> {
     crate::iii::internal_create_channel(iii, buffer_size).await
 }
 
@@ -49,8 +44,8 @@ where
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
-                let typed: StreamGetInput = serde_json::from_value(input)
-                    .map_err(|e| IIIError::Serde(e.to_string()))?;
+                let typed: StreamGetInput =
+                    serde_json::from_value(input).map_err(|e| IIIError::Serde(e.to_string()))?;
                 let out = s.get(typed).await?;
                 Ok(serde_json::to_value(out).unwrap_or_default())
             }
@@ -63,8 +58,8 @@ where
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
-                let typed: StreamSetInput = serde_json::from_value(input)
-                    .map_err(|e| IIIError::Serde(e.to_string()))?;
+                let typed: StreamSetInput =
+                    serde_json::from_value(input).map_err(|e| IIIError::Serde(e.to_string()))?;
                 let out = s.set(typed).await?;
                 Ok(serde_json::to_value(out).unwrap_or_default())
             }
@@ -77,8 +72,8 @@ where
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
-                let typed: StreamDeleteInput = serde_json::from_value(input)
-                    .map_err(|e| IIIError::Serde(e.to_string()))?;
+                let typed: StreamDeleteInput =
+                    serde_json::from_value(input).map_err(|e| IIIError::Serde(e.to_string()))?;
                 let out = s.delete(typed).await?;
                 Ok(serde_json::to_value(out).unwrap_or_default())
             }
@@ -91,8 +86,8 @@ where
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
-                let typed: StreamListInput = serde_json::from_value(input)
-                    .map_err(|e| IIIError::Serde(e.to_string()))?;
+                let typed: StreamListInput =
+                    serde_json::from_value(input).map_err(|e| IIIError::Serde(e.to_string()))?;
                 let out = s.list(typed).await?;
                 Ok(serde_json::to_value(out).unwrap_or_default())
             }
@@ -105,8 +100,8 @@ where
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
-                let typed: StreamListGroupsInput = serde_json::from_value(input)
-                    .map_err(|e| IIIError::Serde(e.to_string()))?;
+                let typed: StreamListGroupsInput =
+                    serde_json::from_value(input).map_err(|e| IIIError::Serde(e.to_string()))?;
                 let out = s.list_groups(typed).await?;
                 Ok(serde_json::to_value(out).unwrap_or_default())
             }

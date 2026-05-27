@@ -28,17 +28,10 @@ struct DummyHandler;
 
 #[async_trait::async_trait]
 impl iii_sdk::TriggerHandler for DummyHandler {
-    async fn register_trigger(
-        &self,
-        _: iii_sdk::TriggerConfig,
-    ) -> Result<(), iii_sdk::IIIError> {
+    async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> {
         Ok(())
     }
-    async fn unregister_trigger(
-        &self,
-        _: iii_sdk::TriggerConfig,
-    ) -> Result<(), iii_sdk::IIIError> {
+    async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> {
         Ok(())
     }
 }
-

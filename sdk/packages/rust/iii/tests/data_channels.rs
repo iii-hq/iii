@@ -161,7 +161,8 @@ async fn bidirectional_streaming() {
                 let reader_ref = refs
                     .iter()
                     .find(|(k, r)| {
-                        k == "reader" && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
+                        k == "reader"
+                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
                     })
                     .map(|(_, r)| r.clone())
                     .expect("missing reader");
@@ -169,7 +170,8 @@ async fn bidirectional_streaming() {
                 let writer_ref = refs
                     .iter()
                     .find(|(k, r)| {
-                        k == "writer" && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write)
+                        k == "writer"
+                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write)
                     })
                     .map(|(_, r)| r.clone())
                     .expect("missing writer");
