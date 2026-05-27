@@ -132,6 +132,7 @@ clap-help = "1"
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"
+jsonschema = { version = "0.30", default-features = false }
 inventory = "0.3"
 rand = "0.8"
 rkyv = "0.8.12"

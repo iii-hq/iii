@@ -23,6 +23,7 @@ pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("stream:join", "iii-stream"),
     ("stream:leave", "iii-stream"),
     ("log", "iii-observability"),
+    ("configuration", "configuration"),
 ];
 
 /// Maps a trigger-type id to the in-process worker that owns it. In-process
@@ -111,6 +112,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
             "stream" => Self::schema_for::<StreamTriggerConfig>(),
             "log" => Self::schema_for::<LogTriggerConfig>(),
+            "configuration" => Self::schema_for::<ConfigurationTriggerConfig>(),
             _ => None,
         }
     }
@@ -125,6 +127,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveCallRequest>(),
             "stream" => Self::schema_for::<StreamCallRequest>(),
             "log" => Self::schema_for::<LogCallRequest>(),
+            "configuration" => Self::schema_for::<ConfigurationCallRequest>(),
             _ => None,
         }
     }

@@ -44,7 +44,7 @@ impl EngineConfig {
         }
     }
 
-    pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
+    pub fn expand_env_vars(yaml_content: &str) -> String {
         static RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
         let re = &*RE;
