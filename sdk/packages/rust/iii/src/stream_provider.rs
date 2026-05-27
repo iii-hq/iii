@@ -9,7 +9,7 @@ use crate::types::{
 
 /// Custom stream-provider trait. Implementors override the engine's built-in
 /// stream storage for a specific stream name when registered through
-/// [`crate::helpers::create_stream`].
+/// `create_stream` in the `helpers` submodule.
 #[async_trait]
 pub trait IStream: Send + Sync + 'static {
     async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, IIIError>;
