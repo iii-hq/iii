@@ -140,11 +140,10 @@ async fn mixed_registration_types_each_sent_once() {
     let iii = register_worker(mock.url(), InitOptions::default());
 
     iii.register_function("dedup::mixed::fn", RegisterFunction::new(greet));
-    let trigger_type = iii.register_trigger_type(RegisterTriggerType::new(
-        "dedup::mixed::tt",
-        "noop",
-        NoopHandler,
-    ));
+    let trigger_type = iii_sdk::helpers::register_trigger_type(
+        &iii,
+        RegisterTriggerType::new("dedup::mixed::tt", "noop", NoopHandler),
+    );
     drop(trigger_type);
     let trigger = iii
         .register_trigger(RegisterTriggerInput {

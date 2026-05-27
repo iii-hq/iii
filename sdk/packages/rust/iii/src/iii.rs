@@ -104,9 +104,9 @@ pub struct TriggerTypeInfo {
 /// - `R` tracks the call request type (set via `.call_request_format::<T>()`)
 ///
 /// Both default to `Value` (untyped) and change when the respective builder
-/// method is called. This allows [`III::register_trigger_type`] to return a
-/// [`TriggerTypeRef<C, R>`] with compile-time safety for both config and
-/// function input types.
+/// method is called. This allows [`helpers::register_trigger_type`](crate::helpers::register_trigger_type)
+/// to return a [`TriggerTypeRef<C, R>`] with compile-time safety for both
+/// config and function input types.
 pub struct RegisterTriggerType<H, C = Value, R = Value> {
     id: String,
     description: String,
@@ -161,7 +161,8 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
     }
 }
 
-/// Typed handle returned by [`III::register_trigger_type`].
+/// Typed handle returned by
+/// [`helpers::register_trigger_type`](crate::helpers::register_trigger_type).
 ///
 /// Type parameters:
 /// - `C` — trigger registration type for [`register_trigger`](Self::register_trigger)
@@ -886,76 +887,6 @@ impl III {
         self.register_function_inner(message, handler)
     }
 
-    /// Register a custom trigger type with the engine.
-    ///
-    /// Returns a [`TriggerTypeRef`] handle that can register triggers and
-    /// functions with compile-time validated types.
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// # use iii_sdk::{III, RegisterTriggerType};
-    /// # struct MyHandler;
-    /// # #[async_trait::async_trait]
-    /// # impl iii_sdk::TriggerHandler for MyHandler {
-    /// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
-    /// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
-    /// # }
-    /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
-    /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
-    /// # let iii = III::new("ws://localhost:49134");
-    /// let my_trigger = iii.register_trigger_type(
-    ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
-    ///         .trigger_request_format::<MyConfig>()
-    ///         .call_request_format::<MyRequest>(),
-    /// );
-    ///
-    /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
-    ///     Ok(serde_json::json!({ "data": req.data }))
-    /// });
-    /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
-    /// ```
-    pub fn register_trigger_type<H, C, R>(
-        &self,
-        registration: RegisterTriggerType<H, C, R>,
-    ) -> TriggerTypeRef<C, R>
-    where
-        H: TriggerHandler + 'static,
-    {
-        let message = RegisterTriggerTypeMessage {
-            id: registration.id,
-            description: registration.description,
-            trigger_request_format: registration.trigger_request_format,
-            call_request_format: registration.call_request_format,
-        };
-
-        let trigger_type_id = message.id.clone();
-
-        self.inner.trigger_types.lock_or_recover().insert(
-            message.id.clone(),
-            RemoteTriggerTypeData {
-                message: message.clone(),
-                handler: Arc::new(registration.handler),
-            },
-        );
-
-        let _ = self.send_message(message.to_message());
-
-        TriggerTypeRef {
-            iii: self.clone(),
-            trigger_type_id,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Unregister a previously registered trigger type.
-    pub fn unregister_trigger_type(&self, id: impl Into<String>) {
-        let id = id.into();
-        self.inner.trigger_types.lock_or_recover().remove(&id);
-        let msg = UnregisterTriggerTypeMessage { id };
-        let _ = self.send_message(msg.to_message());
-    }
-
     /// Bind a trigger configuration to a registered function.
     ///
     /// # Arguments
@@ -1106,44 +1037,6 @@ impl III {
             return;
         }
         *current = state;
-    }
-
-    /// Create a streaming channel pair for worker-to-worker data transfer.
-    ///
-    /// Returns a `Channel` with writer, reader, and their serializable refs
-    /// that can be passed as fields in invocation data to other functions.
-    pub async fn create_channel(&self, buffer_size: Option<usize>) -> Result<Channel, IIIError> {
-        let result = self
-            .trigger(TriggerRequest {
-                function_id: "engine::channels::create".to_string(),
-                payload: serde_json::json!({ "buffer_size": buffer_size }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await?;
-
-        let writer_ref: StreamChannelRef = serde_json::from_value(
-            result
-                .get("writer")
-                .cloned()
-                .ok_or_else(|| IIIError::Serde("missing 'writer' in channel response".into()))?,
-        )
-        .map_err(|e| IIIError::Serde(e.to_string()))?;
-
-        let reader_ref: StreamChannelRef = serde_json::from_value(
-            result
-                .get("reader")
-                .cloned()
-                .ok_or_else(|| IIIError::Serde("missing 'reader' in channel response".into()))?,
-        )
-        .map_err(|e| IIIError::Serde(e.to_string()))?;
-
-        Ok(Channel {
-            writer: ChannelWriter::new(&self.inner.address, &writer_ref),
-            reader: ChannelReader::new(&self.inner.address, &reader_ref),
-            writer_ref,
-            reader_ref,
-        })
     }
 
     /// Register this worker's metadata with the engine (called automatically on connect)
@@ -1808,6 +1701,88 @@ impl III {
             let _ = iii.send_message(message);
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internal implementations for items relocated to the `helpers` submodule.
+// Exposed at `pub(crate)` so the thin wrappers in `crate::helpers` can call
+// them; user code must continue to go through `crate::helpers::*`.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn internal_register_trigger_type<H, C, R>(
+    iii: &III,
+    registration: RegisterTriggerType<H, C, R>,
+) -> TriggerTypeRef<C, R>
+where
+    H: TriggerHandler + 'static,
+{
+    let message = RegisterTriggerTypeMessage {
+        id: registration.id,
+        description: registration.description,
+        trigger_request_format: registration.trigger_request_format,
+        call_request_format: registration.call_request_format,
+    };
+
+    let trigger_type_id = message.id.clone();
+
+    iii.inner.trigger_types.lock_or_recover().insert(
+        message.id.clone(),
+        RemoteTriggerTypeData {
+            message: message.clone(),
+            handler: Arc::new(registration.handler),
+        },
+    );
+
+    let _ = iii.send_message(message.to_message());
+
+    TriggerTypeRef {
+        iii: iii.clone(),
+        trigger_type_id,
+        _phantom: std::marker::PhantomData,
+    }
+}
+
+pub(crate) fn internal_unregister_trigger_type(iii: &III, id: String) {
+    iii.inner.trigger_types.lock_or_recover().remove(&id);
+    let msg = UnregisterTriggerTypeMessage { id };
+    let _ = iii.send_message(msg.to_message());
+}
+
+pub(crate) async fn internal_create_channel(
+    iii: &III,
+    buffer_size: Option<usize>,
+) -> Result<Channel, IIIError> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::channels::create".to_string(),
+            payload: serde_json::json!({ "buffer_size": buffer_size }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+
+    let writer_ref: StreamChannelRef = serde_json::from_value(
+        result
+            .get("writer")
+            .cloned()
+            .ok_or_else(|| IIIError::Serde("missing 'writer' in channel response".into()))?,
+    )
+    .map_err(|e| IIIError::Serde(e.to_string()))?;
+
+    let reader_ref: StreamChannelRef = serde_json::from_value(
+        result
+            .get("reader")
+            .cloned()
+            .ok_or_else(|| IIIError::Serde("missing 'reader' in channel response".into()))?,
+    )
+    .map_err(|e| IIIError::Serde(e.to_string()))?;
+
+    Ok(Channel {
+        writer: ChannelWriter::new(&iii.inner.address, &writer_ref),
+        reader: ChannelReader::new(&iii.inner.address, &reader_ref),
+        writer_ref,
+        reader_ref,
+    })
 }
 
 #[cfg(test)]

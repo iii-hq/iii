@@ -136,3 +136,23 @@ fn _ensure_extract_channel_refs_not_top_level() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_is_channel_ref_not_top_level() {}
+
+// ---------------------------------------------------------------------------
+// Compile-fail doctests: these enforce that the three instance methods
+// relocated to `helpers` (`create_channel`, `register_trigger_type`,
+// `unregister_trigger_type`) are no longer callable on `III`.
+// ---------------------------------------------------------------------------
+
+/// ```compile_fail
+/// let iii = iii_sdk::III::new("ws://x");
+/// iii.create_channel(None);
+/// ```
+#[allow(dead_code)]
+fn _ensure_create_channel_not_on_instance() {}
+
+/// ```compile_fail
+/// let iii = iii_sdk::III::new("ws://x");
+/// iii.unregister_trigger_type("id");
+/// ```
+#[allow(dead_code)]
+fn _ensure_unregister_not_on_instance() {}

@@ -245,11 +245,14 @@ fn ensure_functions_registered() {
                     Ok(())
                 }
             }
-            iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-                "test-rbac-trigger",
-                "Trigger type for RBAC tests",
-                NoopHandler,
-            ));
+            iii_sdk::helpers::register_trigger_type(
+                &iii,
+                iii_sdk::RegisterTriggerType::new(
+                    "test-rbac-trigger",
+                    "Trigger type for RBAC tests",
+                    NoopHandler,
+                ),
+            );
         }
 
         refs.push(iii.register_function(
@@ -489,11 +492,14 @@ async fn should_deny_trigger_type_registration_via_hook() {
                 Ok(())
             }
         }
-        iii_client.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-            "denied-tt::test",
-            "Should be denied",
-            DeniedHandler,
-        ));
+        iii_sdk::helpers::register_trigger_type(
+            &iii_client,
+            iii_sdk::RegisterTriggerType::new(
+                "denied-tt::test",
+                "Should be denied",
+                DeniedHandler,
+            ),
+        );
     }
 
     tokio::time::sleep(Duration::from_millis(1000)).await;

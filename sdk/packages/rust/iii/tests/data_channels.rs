@@ -67,8 +67,7 @@ async fn stream_data_from_sender_to_processor() {
             let iii = iii_for_sender.clone();
             async move {
                 let records = input["records"].clone();
-                let channel = iii
-                    .create_channel(None)
+                let channel = iii_sdk::helpers::create_channel(&iii, None)
                     .await
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
 
@@ -244,12 +243,10 @@ async fn bidirectional_streaming() {
                 let text = input["text"].as_str().unwrap_or_default().to_string();
                 let chunk_size = input["chunkSize"].as_u64().unwrap_or(10) as usize;
 
-                let input_channel = iii
-                    .create_channel(None)
+                let input_channel = iii_sdk::helpers::create_channel(&iii, None)
                     .await
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
-                let output_channel = iii
-                    .create_channel(None)
+                let output_channel = iii_sdk::helpers::create_channel(&iii, None)
                     .await
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
 

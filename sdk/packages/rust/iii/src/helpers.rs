@@ -23,12 +23,12 @@ use crate::types::{
 
 /// Create a streaming channel pair for worker-to-worker data transfer.
 ///
-/// Free-function form of the previous `III::create_channel` instance method.
+/// Free-function form of `III`'s former `create_channel` instance method.
 pub async fn create_channel(
     iii: &III,
     buffer_size: Option<usize>,
 ) -> Result<Channel, IIIError> {
-    iii.create_channel(buffer_size).await
+    crate::iii::internal_create_channel(iii, buffer_size).await
 }
 
 /// Register a custom stream provider for a stream name.
@@ -116,7 +116,7 @@ where
 
 /// Register a custom trigger type with the engine.
 ///
-/// Free-function form of the previous `III::register_trigger_type` method.
+/// Free-function form of `III`'s former `register_trigger_type` method.
 pub fn register_trigger_type<H, C, R>(
     iii: &III,
     registration: RegisterTriggerType<H, C, R>,
@@ -124,10 +124,10 @@ pub fn register_trigger_type<H, C, R>(
 where
     H: TriggerHandler + 'static,
 {
-    iii.register_trigger_type(registration)
+    crate::iii::internal_register_trigger_type(iii, registration)
 }
 
 /// Unregister a previously registered trigger type by id.
 pub fn unregister_trigger_type(iii: &III, id: impl Into<String>) {
-    iii.unregister_trigger_type(id);
+    crate::iii::internal_unregister_trigger_type(iii, id.into());
 }
