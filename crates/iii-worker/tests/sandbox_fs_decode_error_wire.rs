@@ -57,5 +57,8 @@ fn ls_request_wrong_field_type_is_rejected() {
     let err = serde_json::from_value::<LsRequest>(payload).unwrap_err();
     // The exact wording is serde-version-specific; we just assert the
     // error mentions the offending field or type.
-    assert!(err.to_string().len() > 0, "decode error must produce a message");
+    assert!(
+        err.to_string().len() > 0,
+        "decode error must produce a message"
+    );
 }

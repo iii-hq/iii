@@ -230,7 +230,6 @@ mod tests {
         assert!(resolve_image("does-not-exist", &empty()).is_none());
     }
 
-
     fn make_cfg(
         custom: std::collections::HashMap<String, String>,
     ) -> crate::sandbox_daemon::config::SandboxConfig {

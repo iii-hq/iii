@@ -251,9 +251,7 @@ pub(crate) fn resolve_cmd_shape(
         })?;
         let mut it = parts.into_iter();
         let head = it.next().ok_or_else(|| {
-            SandboxError::InvalidRequest(format!(
-                "cmd is empty after shlex split: {cmd:?}"
-            ))
+            SandboxError::InvalidRequest(format!("cmd is empty after shlex split: {cmd:?}"))
         })?;
         return Ok((head, it.collect()));
     }
@@ -517,7 +515,6 @@ mod tests {
         let err = EnvShape::Map(map).into_kv_vec().unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
     }
-
 
     #[tokio::test]
     async fn empty_cmd_returns_s001() {

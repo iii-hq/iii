@@ -136,10 +136,7 @@ fn interpreter_for(lang: &str) -> (&str, &[&'static str], &'static str) {
 }
 
 fn interpolate_args(template: &[&'static str], file: &str) -> Vec<String> {
-    template
-        .iter()
-        .map(|t| t.replace("{file}", file))
-        .collect()
+    template.iter().map(|t| t.replace("{file}", file)).collect()
 }
 
 /// Auto-stop the sandbox unless the caller asked to keep it. Best-effort:
@@ -147,11 +144,7 @@ fn interpolate_args(template: &[&'static str], file: &str) -> Vec<String> {
 /// error returned to the caller (cleanup failures are observable in
 /// logs, not in the response payload, because the original error is the
 /// more useful signal to the agent).
-async fn best_effort_stop<S: VmStopper>(
-    sandbox_id: &str,
-    registry: &SandboxRegistry,
-    stopper: &S,
-) {
+async fn best_effort_stop<S: VmStopper>(sandbox_id: &str, registry: &SandboxRegistry, stopper: &S) {
     let req = StopRequest {
         sandbox_id: sandbox_id.to_string(),
         wait: false,

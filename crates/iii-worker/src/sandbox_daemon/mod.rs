@@ -315,8 +315,7 @@ fn register_sandbox_list(
                 // handle_list is infallible; manufacture an Ok-typed Result so
                 // log_handler_result emits the success branch consistently with
                 // the fallible handlers. The Err arm is unreachable.
-                let result: Result<_, crate::sandbox_daemon::errors::SandboxError> =
-                    Ok(response);
+                let result: Result<_, crate::sandbox_daemon::errors::SandboxError> = Ok(response);
                 log_handler_result(
                     "sandbox::list",
                     None,
@@ -329,7 +328,6 @@ fn register_sandbox_list(
         .description("List active sandboxes"),
     );
 }
-
 
 fn register_sandbox_catalog_list(
     iii: &iii_sdk::III,
@@ -361,7 +359,6 @@ fn register_sandbox_catalog_list(
         ),
     );
 }
-
 
 /// Per-handler-boundary tracing emission. Called by every
 /// `register_sandbox_*` closure right after the inner handler returns.
@@ -415,7 +412,6 @@ pub(crate) fn log_handler_result<T>(
         }
     }
 }
-
 
 #[cfg(test)]
 mod handler_logging_tests {

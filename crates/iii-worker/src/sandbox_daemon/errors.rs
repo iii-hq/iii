@@ -301,16 +301,15 @@ impl SandboxError {
             Self::InvalidRequest(_) => (None, Some("see message: examples are inline")),
             Self::ImageNotInCatalog { .. } => (
                 None,
-                Some("set `image` to a value listed in the message or add a custom_images entry in iii.config.yaml"),
+                Some(
+                    "set `image` to a value listed in the message or add a custom_images entry in iii.config.yaml",
+                ),
             ),
             Self::RootfsMissing { .. } => (
                 None,
                 Some("operator action required: run `iii worker add <image-ref>` on the host"),
             ),
-            Self::AutoInstallFailed { .. } => (
-                None,
-                Some("transient: retry after a short delay"),
-            ),
+            Self::AutoInstallFailed { .. } => (None, Some("transient: retry after a short delay")),
             Self::ExecTimedOut { .. } => (
                 None,
                 Some("raise `timeout_ms` on the exec call or split the work into smaller steps"),
@@ -323,17 +322,18 @@ impl SandboxError {
                 None,
                 Some("the sandbox is gone; call sandbox::create first"),
             ),
-            Self::BootFailed(_) | Self::ResourceLimit(_) => (
-                None,
-                Some("platform-level failure; not auto-recoverable"),
-            ),
+            Self::BootFailed(_) | Self::ResourceLimit(_) => {
+                (None, Some("platform-level failure; not auto-recoverable"))
+            }
             // Parent directory missing on a write/mkdir: the fix is a
             // single boolean. Emit a structured `fix` payload the agent
             // can merge into the original request and resubmit verbatim,
             // plus a fix_note so the same recipe is readable in logs.
             Self::FsParentNotFound { .. } => (
                 Some(json!({ "parents": true })),
-                Some("merge `fix` into the original request and resubmit: `parents: true` auto-creates missing intermediate directories"),
+                Some(
+                    "merge `fix` into the original request and resubmit: `parents: true` auto-creates missing intermediate directories",
+                ),
             ),
             // Other FS variants. The fix is usually obvious from the path;
             // the structured envelope plus prose message together suffice.
@@ -476,7 +476,6 @@ mod tests {
         assert_eq!(payload["retryable"], false);
     }
 
-
     #[test]
     fn fs_parent_not_found_emits_structured_fix_with_parents_true() {
         // The highest-leverage S211 case: an agent wrote to /workspace/x.js
@@ -525,7 +524,6 @@ mod tests {
         assert!(payload["fix_note"].is_null());
     }
 
-
     #[test]
     fn run_step_failed_emits_structured_fix_context() {
         // RunStepFailed wraps a sub-step error from sandbox::run with
@@ -548,7 +546,10 @@ mod tests {
 
         let fix = &payload["fix"];
         assert!(fix.is_object(), "fix must be a structured object, not null");
-        assert_eq!(fix["context"], "during sandbox::run step `fs::write (code)`");
+        assert_eq!(
+            fix["context"],
+            "during sandbox::run step `fs::write (code)`"
+        );
         assert_eq!(fix["sandbox_id"], "11111111-2222-3333-4444-555555555555");
         assert_eq!(fix["inner_code"], "S215");
 
