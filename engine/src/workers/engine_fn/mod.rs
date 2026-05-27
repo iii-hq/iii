@@ -194,6 +194,12 @@ pub struct RegisteredTriggerSummary {
     pub trigger_type: String,
     pub function_id: String,
     pub worker_name: String,
+    /// Full trigger config (e.g. `{ "api_path": "...", "http_method": "GET" }`
+    /// for HTTP triggers, `{ "topic": "..." }` for events, etc.). Console
+    /// list views need this structured payload to render method/path/topic.
+    /// `config_summary` is a truncated display string and is kept for
+    /// backward compatibility — do not parse it.
+    pub config: Value,
     pub config_summary: String,
 }
 
@@ -496,6 +502,7 @@ impl EngineFunctionsWorker {
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
                     worker_name: Self::worker_name_for_function_id(&index, &t.function_id),
+                    config: t.config.clone(),
                     config_summary: Self::config_summary(&t.config),
                 }
             })
@@ -772,6 +779,7 @@ impl EngineFunctionsWorker {
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
                     worker_name: Self::worker_name_for_function_id(&index, &t.function_id),
+                    config: t.config.clone(),
                     config_summary: Self::config_summary(&t.config),
                 }
             })
@@ -1762,6 +1770,7 @@ mod tests {
             trigger_type: "cron".to_string(),
             function_id: "fn::handler".to_string(),
             worker_name: "fn".to_string(),
+            config: serde_json::json!({ "x": 1 }),
             config_summary: "{\"x\":1}".to_string(),
         };
         let json = serde_json::to_value(&summary).expect("serialize");
@@ -1769,6 +1778,7 @@ mod tests {
         assert_eq!(json["trigger_type"], "cron");
         assert_eq!(json["function_id"], "fn::handler");
         assert_eq!(json["worker_name"], "fn");
+        assert_eq!(json["config"], serde_json::json!({ "x": 1 }));
         assert_eq!(json["config_summary"], "{\"x\":1}");
     }
 

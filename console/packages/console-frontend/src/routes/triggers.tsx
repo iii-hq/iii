@@ -251,7 +251,7 @@ function TriggersPage() {
       const matchesTrigger =
         t.id.toLowerCase().includes(query) || t.trigger_type.toLowerCase().includes(query)
       const matchesFunction = t.function_id.toLowerCase().includes(query)
-      const config = t.config as Record<string, unknown>
+      const config = (t.config ?? {}) as Record<string, unknown>
       const matchesConfig =
         (config.api_path && String(config.api_path).toLowerCase().includes(query)) ||
         (config.topic && String(config.topic).toLowerCase().includes(query)) ||
@@ -392,7 +392,7 @@ function TriggersPage() {
   }
 
   const getTriggerSummary = (trigger: TriggerInfo): string => {
-    const config = trigger.config as Record<string, unknown>
+    const config = (trigger.config ?? {}) as Record<string, unknown>
     switch (trigger.trigger_type) {
       case 'http': {
         const method = (config.http_method as string) || 'GET'
@@ -418,7 +418,7 @@ function TriggersPage() {
       dispatchInvoke({ type: 'CLEAR_RESULT' })
 
       if (trigger.trigger_type === 'http') {
-        const config = trigger.config as { api_path?: string; http_method?: string }
+        const config = (trigger.config ?? {}) as { api_path?: string; http_method?: string }
         const method = config.http_method || 'GET'
         const path = config.api_path || ''
         const matches = path.match(/:([a-zA-Z_]+)/g)
@@ -441,7 +441,7 @@ function TriggersPage() {
   }
 
   const invokeHttp = async (trigger: TriggerInfo) => {
-    const config = trigger.config as { api_path?: string; http_method?: string }
+    const config = (trigger.config ?? {}) as { api_path?: string; http_method?: string }
     let path = (config.api_path || '').replace(/^\//, '')
     const method = httpMethod || config.http_method || 'GET'
 
@@ -553,7 +553,7 @@ function TriggersPage() {
   }
 
   const invokeEvent = async (trigger: TriggerInfo) => {
-    const config = trigger.config as { topic?: string }
+    const config = (trigger.config ?? {}) as { topic?: string }
     const topic = config.topic || ''
     dispatchInvoke({ type: 'START_INVOKE' })
     try {
@@ -891,7 +891,7 @@ function TriggersPage() {
               {/* HTTP Trigger Detail */}
               {selectedTrigger.trigger_type === 'http' &&
                 (() => {
-                  const config = selectedTrigger.config as {
+                  const config = (selectedTrigger.config ?? {}) as {
                     api_path?: string
                     http_method?: string
                   }
@@ -1096,7 +1096,7 @@ function TriggersPage() {
               {/* Cron Trigger Detail */}
               {selectedTrigger.trigger_type === 'cron' &&
                 (() => {
-                  const config = selectedTrigger.config as {
+                  const config = (selectedTrigger.config ?? {}) as {
                     expression?: string
                     description?: string
                   }
@@ -1194,7 +1194,7 @@ function TriggersPage() {
               {/* Event Trigger Detail */}
               {selectedTrigger.trigger_type === 'event' &&
                 (() => {
-                  const config = selectedTrigger.config as { topic?: string; description?: string }
+                  const config = (selectedTrigger.config ?? {}) as { topic?: string; description?: string }
                   const topic = config.topic || 'Unknown'
 
                   return (
