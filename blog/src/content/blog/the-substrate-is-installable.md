@@ -6,6 +6,8 @@ author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'substrate', 'registry']
 ---
 
+![The substrate is installable — every category collapses into iii worker add](../../assets/blog/the-substrate-is-installable/banner.png)
+
 A really good piece from Yohei this week, named something a lot of us building agent infrastructure feel, but have not articulated well. Every long-running agent ends up needing the same surrounding layer: task state, event logs, replay, approvals, memory, retries, branching, provenance, and capability tracking. Everyone is independently rebuilding it. He calls what's missing a "persistent, reactive, inspectable, evolving state substrate."
 
 That description is exact. What I want to argue, from a year of building [iii](https://iii.dev/), is that the substrate is not the missing thing. The framing has been. Treating the substrate as a problem each agent team has to solve is what makes everyone rebuild it. Treat it as a system everyone shares and installs into, and the problem dissolves.
