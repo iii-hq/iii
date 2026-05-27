@@ -1194,7 +1194,10 @@ function TriggersPage() {
               {/* Event Trigger Detail */}
               {selectedTrigger.trigger_type === 'event' &&
                 (() => {
-                  const config = (selectedTrigger.config ?? {}) as { topic?: string; description?: string }
+                  const config = (selectedTrigger.config ?? {}) as {
+                    topic?: string
+                    description?: string
+                  }
                   const topic = config.topic || 'Unknown'
 
                   return (
