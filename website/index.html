@@ -6722,7 +6722,7 @@ iii.register_function(
       // Mailmodo returns 409 for already-subscribed; treat as success.
       if (!res.ok && res.status !== 409) throw new Error('mailmodo submission failed');
       if (typeof window.iiiNotifyCommonRoomEmail === 'function') window.iiiNotifyCommonRoomEmail(email);
-      if (typeof window.iiiNotifyPostHogEmailSubmit === 'function') window.iiiNotifyPostHogEmailSubmit(formLocation);
+      if (typeof window.iiiNotifyPostHogEmailSubmit === 'function') window.iiiNotifyPostHogEmailSubmit(email, formLocation);
     } catch (_) {
       // Swallow — we still mark the form submitted so users aren't blocked.
     }
