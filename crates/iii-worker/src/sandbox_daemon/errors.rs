@@ -16,7 +16,7 @@ use thiserror::Error;
 /// asserts every `SandboxErrorCode::as_str()` value matches an anchor
 /// here, failing CI if a new S-code lands without a README entry.
 const DOCS_BASE: &str =
-    "https://github.com/MotiaDev/motia/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#";
+    "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxErrorCode {

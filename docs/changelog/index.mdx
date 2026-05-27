@@ -62,7 +62,7 @@ type: "reference"
   }
   ```
 
-  - `docs_url` anchors directly at the in-repo `S`-code subsection. **Breaking:** the base URL flipped from `https://iii.dev/docs/errors/sandbox/Sxxx` to `https://github.com/MotiaDev/motia/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#Sxxx` while the canonical `iii.dev` error pages are still pending. Bookmarks and scrapers built on the old URL need to follow the new anchors.
+  - `docs_url` anchors directly at the in-repo `S`-code subsection. **Breaking:** the base URL flipped from `https://iii.dev/docs/errors/sandbox/Sxxx` to `https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#Sxxx` while the canonical `iii.dev` error pages are still pending. Bookmarks and scrapers built on the old URL need to follow the new anchors.
   - `fix` is a non-null JSON payload the agent can merge into the original request and resubmit verbatim when recovery is unambiguous (parent-missing writes, `sandbox::run` sub-step failures, etc.).
   - `fix_note` describes how to use the fix or — when `fix` is `null` — explains why no auto-recovery exists.
   - `sandbox::run` sub-step failures surface the inner `S`-code transparently and name the failing step in `fix.context`, plus `fix.sandbox_id` when `keep_sandbox: true`.

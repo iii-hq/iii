@@ -41,11 +41,13 @@ fn every_s_code_has_a_readme_anchor() {
     let mut missing = Vec::new();
     for code in all_codes() {
         let code_str = code.as_str();
-        // Accept either an HTML id anchor (preferred, case-stable) or a
-        // markdown heading whose auto-anchor matches (lowercase form).
+        // Require the explicit case-stable HTML anchor. `docs_url` uses
+        // the case-sensitive `#Sxxx` fragment (see `DOCS_BASE` in
+        // `errors.rs`), so a lowercase-renamed heading would yield a
+        // broken docs_url even though the page still loads. Allowing a
+        // lowercase fallback here would mask exactly that regression.
         let html_anchor = format!("<a id=\"{}\"></a>", code_str);
-        let lowercase_heading = format!("#### {}", code_str.to_lowercase());
-        if !readme.contains(&html_anchor) && !readme.contains(&lowercase_heading) {
+        if !readme.contains(&html_anchor) {
             missing.push(code_str);
         }
     }

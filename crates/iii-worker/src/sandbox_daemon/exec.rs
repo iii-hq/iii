@@ -35,9 +35,10 @@ impl Default for EnvShape {
 
 impl EnvShape {
     /// Normalise to the canonical `Vec<String>` shape the runner consumes.
-    /// Validates env-var names match `[A-Z_][A-Z0-9_]*` (POSIX shell
-    /// portable names) for the Map form; returns `InvalidRequest` listing
-    /// the bad keys.
+    /// Validates env-var names match `[A-Za-z_][A-Za-z0-9_]*` (POSIX shell
+    /// portable names, plus the lowercase extension that `is_valid_env_name`
+    /// allows for npm/pip/hg-style variables) for the Map form; returns
+    /// `InvalidRequest` listing the bad keys.
     pub fn into_kv_vec(self) -> Result<Vec<String>, SandboxError> {
         match self {
             EnvShape::Vec(v) => Ok(v),
@@ -51,7 +52,7 @@ impl EnvShape {
                 if !bad.is_empty() {
                     return Err(SandboxError::InvalidRequest(format!(
                         "env contains invalid variable name(s): {:?}. \
-                         Names must match `[A-Z_][A-Z0-9_]*`.",
+                         Names must match `[A-Za-z_][A-Za-z0-9_]*`.",
                         bad
                     )));
                 }

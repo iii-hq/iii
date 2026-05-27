@@ -484,10 +484,6 @@ The microVM couldn't boot. Almost always missing virtualization on the host
 #### S400 — resource limit exceeded
 Capacity bound (`max_concurrent_sandboxes`, per-image caps) reached.
 
-For richer diagnostics per code see
-`docs/api-reference/sandbox.mdx#s-codes` (when that page exists; see TODO in
-`crates/iii-worker/src/sandbox_daemon/errors.rs` for the docs-site migration).
-
 
 ## See also
 

@@ -124,9 +124,14 @@ fn interpreter_for(lang: &str) -> (&str, &[&'static str], &'static str) {
     match lang {
         "node" | "js" | "javascript" => ("node", &["{file}"], "js"),
         "python" | "py" => ("python3", &["{file}"], "py"),
-        // Shell mode: /bin/sh -lc takes the SCRIPT FILE PATH so we don't
-        // have to inline the code (which would re-introduce escaping
-        // headaches). The script file's shebang line isn't required.
+        // Shell mode: invoke `/bin/sh` with the script file path as its
+        // single positional argument. We avoid `-c <inline-code>` so we
+        // don't reintroduce shell-escaping headaches. The script file's
+        // shebang line isn't required. `bash` falls back to `/bin/sh`
+        // because the bundled sandbox images aren't guaranteed to ship
+        // bash; agents that require bash-specific behavior should set
+        // `lang: "/bin/bash"` (treated as an unknown-lang interpreter
+        // path by the catch-all arm below).
         "shell" | "sh" | "bash" => ("/bin/sh", &["{file}"], "sh"),
         // Unknown lang: treat lang as the binary path and assume it
         // takes a single file-path argument. Extension defaults to .txt

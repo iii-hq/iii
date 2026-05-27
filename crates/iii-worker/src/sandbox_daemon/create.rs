@@ -169,12 +169,14 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     let shell_sock = layout.base().join("shell.sock");
     let workdir = layout.merged.clone();
 
-    on_event(SandboxCreateEvent::BootingVm);
-
-    // Normalise env from EnvShape to Vec<String> before booting. Accepts
-    // both the historical Vec<"K=V"> shape and the agent-natural { K: V }
-    // map; `into_kv_vec` rejects invalid var names with S001.
+    // Normalise env from EnvShape to Vec<String> BEFORE emitting
+    // `BootingVm`. `into_kv_vec` rejects invalid var names with S001;
+    // emitting the event first would tell subscribers boot has begun
+    // for a sandbox that never actually starts. Accepts both the
+    // historical Vec<"K=V"> shape and the agent-natural { K: V } map.
     let env_vec = req.env.clone().into_kv_vec()?;
+
+    on_event(SandboxCreateEvent::BootingVm);
     let boot = launcher
         .boot(&BootParams {
             rootfs: rootfs.clone(),
