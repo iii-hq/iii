@@ -59,7 +59,8 @@ impl TriggerHandler for WebhookHandler {
 
 pub fn setup(iii: &III) {
     // Register trigger type — returns a typed handle
-    let webhook = iii.register_trigger_type(
+    let webhook = iii_sdk::helpers::register_trigger_type(
+        iii,
         RegisterTriggerType::new("webhook", "Incoming webhook trigger", WebhookHandler)
             .trigger_request_format::<WebhookTriggerConfig>()
             .call_request_format::<WebhookCallRequest>(),

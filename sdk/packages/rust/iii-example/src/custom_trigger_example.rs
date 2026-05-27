@@ -94,7 +94,8 @@ impl TriggerHandler for NoopHandler {
 
 pub fn setup(iii: &III) {
     // ── Example 1: Schedule trigger (fully typed) ───────────────────
-    let schedule = iii.register_trigger_type(
+    let schedule = iii_sdk::helpers::register_trigger_type(
+        iii,
         RegisterTriggerType::new(
             "schedule",
             "One-time or daily scheduled trigger",
@@ -122,7 +123,8 @@ pub fn setup(iii: &III) {
         .expect("failed to register schedule trigger");
 
     // ── Example 2: File watch trigger (typed with enum) ─────────────
-    let file_watch = iii.register_trigger_type(
+    let file_watch = iii_sdk::helpers::register_trigger_type(
+        iii,
         RegisterTriggerType::new(
             "file-watch",
             "Watch filesystem for changes",
@@ -150,11 +152,14 @@ pub fn setup(iii: &III) {
 
     // ── Example 3: Untyped trigger (Value fallback) ─────────────────
     // When no formats are set, TriggerTypeRef<Value, Value> accepts json!() and Value functions
-    let custom = iii.register_trigger_type(RegisterTriggerType::new(
-        "custom-event",
-        "Generic custom event trigger",
-        NoopHandler,
-    ));
+    let custom = iii_sdk::helpers::register_trigger_type(
+        iii,
+        RegisterTriggerType::new(
+            "custom-event",
+            "Generic custom event trigger",
+            NoopHandler,
+        ),
+    );
 
     custom.register_function("example::on_custom_event", |input: serde_json::Value| {
         Ok::<_, IIIError>(json!({ "received": input }))
