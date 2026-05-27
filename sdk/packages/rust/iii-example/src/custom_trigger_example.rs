@@ -154,11 +154,7 @@ pub fn setup(iii: &III) {
     // When no formats are set, TriggerTypeRef<Value, Value> accepts json!() and Value functions
     let custom = iii_sdk::helpers::register_trigger_type(
         iii,
-        RegisterTriggerType::new(
-            "custom-event",
-            "Generic custom event trigger",
-            NoopHandler,
-        ),
+        RegisterTriggerType::new("custom-event", "Generic custom event trigger", NoopHandler),
     );
 
     custom.register_function("example::on_custom_event", |input: serde_json::Value| {
