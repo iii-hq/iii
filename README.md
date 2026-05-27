@@ -9,6 +9,8 @@
 [![PyPI](https://img.shields.io/pypi/v/iii-sdk?label=pypi)](https://pypi.org/project/iii-sdk/)
 [![Crates.io](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcrates.io%2Fapi%2Fv1%2Fcrates%2Fiii-sdk&query=%24.crate.max_stable_version&label=crates.io&prefix=v&color=orange)](https://crates.io/crates/iii-sdk)
 
+<video src="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4" controls playsinline preload="metadata" width="100%"></video>
+
 ## What is iii?
 
 iii is the easiest way to compose, extend, and observe every service in your stack in real time.
