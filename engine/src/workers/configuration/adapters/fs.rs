@@ -140,6 +140,10 @@ impl FsAdapter {
 #[async_trait]
 impl ConfigurationAdapter for FsAdapter {
     async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
+        // Hold the write lock across the disk write so a `write_entry`
+        // failure leaves the in-memory cache untouched. Without this, a
+        // failed I/O would leave readers observing a value that disappears
+        // on restart.
         let mut cache = self.cache.write().await;
         let prior = cache.get(&entry.id).cloned();
         let kind = if prior.is_some() {
@@ -147,10 +151,8 @@ impl ConfigurationAdapter for FsAdapter {
         } else {
             RegisterKind::Created
         };
-        cache.insert(entry.id.clone(), entry.clone());
-        drop(cache);
-
         self.write_entry(&entry).await?;
+        cache.insert(entry.id.clone(), entry.clone());
         Ok(RegisterOutcome {
             kind,
             entry,
@@ -159,6 +161,9 @@ impl ConfigurationAdapter for FsAdapter {
     }
 
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
+        // Same ordering as `register` — disk first, cache second, both under
+        // the same write lock. Read traffic blocks on this lock while the
+        // I/O is in flight, which is acceptable for a configuration store.
         let mut cache = self.cache.write().await;
         let mut entry = cache
             .get(id)
@@ -166,10 +171,8 @@ impl ConfigurationAdapter for FsAdapter {
             .ok_or_else(|| anyhow::anyhow!("configuration '{}' not registered", id))?;
         let old_value = Some(entry.value.clone());
         entry.value = value;
-        cache.insert(id.to_string(), entry.clone());
-        drop(cache);
-
         self.write_entry(&entry).await?;
+        cache.insert(id.to_string(), entry.clone());
         Ok(SetOutcome { entry, old_value })
     }
 

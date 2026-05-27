@@ -233,10 +233,26 @@ impl TriggerRegistrator for ConfigurationWorker {
 impl ConfigurationWorker {
     /// Spawn a TTL countdown for `cfg_id`. Stores the JoinHandle on the
     /// per-id slot so a subsequent registration (or `destroy()`) can abort it.
+    ///
+    /// Re-checks the slot's trigger count under the write lock before
+    /// installing the handle: `unregister_trigger` releases its lock between
+    /// "slot is empty" and this call, so a concurrent `register_trigger` may
+    /// have repopulated the slot in that window. Bail out in that case so the
+    /// TTL countdown isn't scheduled against a slot that is no longer empty.
     async fn schedule_ttl_expiry(&self, cfg_id: String) {
         let ttl = Duration::from_secs(self.ttl_seconds);
         let worker = self.clone();
         let cfg_id_for_task = cfg_id.clone();
+
+        let mut per_id = self.triggers.per_id.write().await;
+        let slot = per_id.entry(cfg_id).or_insert_with(TriggerSlot::new);
+        if !slot.triggers.is_empty() {
+            tracing::debug!(
+                configuration_id = %cfg_id_for_task,
+                "Skipping TTL countdown — a concurrent registration repopulated the slot"
+            );
+            return;
+        }
 
         let handle = tokio::spawn(async move {
             tokio::time::sleep(ttl).await;
@@ -254,8 +270,6 @@ impl ConfigurationWorker {
             }
         });
 
-        let mut per_id = self.triggers.per_id.write().await;
-        let slot = per_id.entry(cfg_id).or_insert_with(TriggerSlot::new);
         // Replace any leftover handle (race between rapid unregister-register
         // cycles) — the previous handle was already aborted by register.
         if let Some(prev) = slot.expiry.replace(handle) {

@@ -59,7 +59,7 @@ iii.registerTrigger({
   function_id: 'stream::on-config-change',
   config: {
     configuration_id: 'iii-stream',          // optional. Omit to receive every id.
-    event_types: ['configuration:updated'],  // optional. Subset of registered/updated/deleted.
+    event_types: ['configuration:updated'],  // optional. Subset of configuration:registered|configuration:updated|configuration:deleted.
     // condition_function_id is also supported — see get function info.
   },
 })

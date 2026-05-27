@@ -34,6 +34,11 @@ use crate::workers::configuration::structs::{
 
 const DEFAULT_BRIDGE_URL: &str = "ws://localhost:49134";
 const RELAY_FUNCTION_ID: &str = "configuration::__bridge_relay";
+/// Bounded timeout for every remote `configuration::*` call so an
+/// unresponsive remote engine can't hang the local worker indefinitely.
+/// 30 s is generous for a control-plane call and matches the order of magnitude
+/// of other engine-to-engine timeouts.
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 pub struct BridgeAdapter {
     bridge: Arc<III>,
@@ -66,7 +71,7 @@ impl BridgeAdapter {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,
-                timeout_ms: None,
+                timeout_ms: Some(DEFAULT_TIMEOUT_MS),
             })
             .await
             .map_err(|e| anyhow::anyhow!("remote {} failed: {}", function_id, e))
@@ -123,6 +128,11 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 
     async fn get(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
+        // We treat any remote error as "absent" here because the SDK's
+        // `IIIError` is already string-wrapped by `call` above, so we can't
+        // cleanly distinguish a NOT_FOUND from a network/timeout failure
+        // without a wider refactor. Log the underlying error so transient
+        // remote failures aren't completely silent.
         let value_resp = match self
             .call(
                 "configuration::get",
@@ -134,7 +144,14 @@ impl ConfigurationAdapter for BridgeAdapter {
             .await
         {
             Ok(v) => v,
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::warn!(
+                    configuration_id = %id,
+                    error = %err,
+                    "Bridge configuration::get failed; treating as absent"
+                );
+                return Ok(None);
+            }
         };
         let value = value_resp.get("value").cloned().unwrap_or(Value::Null);
 
@@ -143,7 +160,14 @@ impl ConfigurationAdapter for BridgeAdapter {
             .await
         {
             Ok(v) => v,
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::warn!(
+                    configuration_id = %id,
+                    error = %err,
+                    "Bridge configuration::schema failed; treating as absent"
+                );
+                return Ok(None);
+            }
         };
         Ok(Some(ConfigurationEntry {
             id: id.to_string(),

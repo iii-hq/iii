@@ -209,7 +209,7 @@ pub struct ConfigurationTriggerConfig {
     /// Configuration id to watch (exact match filter). When omitted, every id matches.
     pub configuration_id: Option<String>,
     /// Event types to filter on (e.g. ["configuration:updated"]). When omitted, every event matches.
-    pub event_types: Option<Vec<String>>,
+    pub event_types: Option<Vec<ConfigurationEventType>>,
     /// Optional function id to evaluate before invoking the handler
     pub condition_function_id: Option<String>,
 }
