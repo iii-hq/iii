@@ -28,7 +28,7 @@ That is the move that turns **"the missing substrate" into "an installable packa
 
 Here is what's in the registry today:
 
-```
+```bash
 iii worker add iii-state          # distributed KV state with reactive change triggers
 iii worker add iii-queue          # async jobs with retries, dead-letter
 iii worker add iii-pubsub         # topic-based pub/sub
@@ -44,7 +44,7 @@ That's nine commands. That is also, as far as I can tell, every box in the "peop
 
 It keeps going. The agent layer itself, on the registry today:
 
-```
+```bash
 iii worker add turn-orchestrator  # durable run::start state machine for each agent turn
 iii worker add provider-router    # router::stream_assistant across providers
 iii worker add provider-anthropic # Anthropic Messages API
