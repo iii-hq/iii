@@ -13,12 +13,10 @@ from .iii_types import (
     HttpInvocationConfig,
     RegisterFunctionMessage,
     RegisterTriggerInput,
-    RegisterTriggerTypeInput,
     RegisterTriggerTypeMessage,
     StreamChannelRef,
     TriggerRequest,
 )
-from .stream import IStream
 from .triggers import Trigger, TriggerHandler
 
 if TYPE_CHECKING:
@@ -77,7 +75,13 @@ class RemoteServiceFunctionData(BaseModel):
 
 
 class IIIClient(Protocol):
-    """Protocol for III client implementations."""
+    """Protocol for III client implementations.
+
+    Helper free functions live in :mod:`iii.helpers`. See
+    :func:`iii.helpers.create_channel`, :func:`iii.helpers.create_stream`,
+    :func:`iii.helpers.register_trigger_type`, and
+    :func:`iii.helpers.unregister_trigger_type`.
+    """
 
     def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
 
@@ -88,18 +92,6 @@ class IIIClient(Protocol):
     ) -> Any: ...
 
     def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
-
-    def register_trigger_type(
-        self,
-        trigger_type: RegisterTriggerTypeInput | dict[str, Any],
-        handler: TriggerHandler[Any],
-    ) -> Any: ...
-
-    def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
-
-    def create_channel(self, buffer_size: int | None = None) -> Channel: ...
-
-    def create_stream(self, stream_name: str, stream: IStream[Any]) -> None: ...
 
     def shutdown(self) -> None: ...
 
@@ -191,3 +183,37 @@ def is_channel_ref(value: Any) -> bool:
         and isinstance(value.get("access_key"), str)
         and value.get("direction") in {"read", "write"}
     )
+
+
+def extract_channel_refs(data: Any) -> list[tuple[str, StreamChannelRef]]:
+    """Extract all channel references from a nested value, returning ``(path, ref)`` tuples.
+
+    Recursively walks ``dict`` and ``list`` structures. Dotted paths are
+    used for object fields, bracketed indices for list elements (e.g.
+    ``items[0].writer``). Mirrors the Rust SDK's ``extract_channel_refs``.
+    """
+    refs: list[tuple[str, StreamChannelRef]] = []
+    _extract_refs_recursive(data, "", refs)
+    return refs
+
+
+def _extract_refs_recursive(
+    data: Any, prefix: str, refs: list[tuple[str, StreamChannelRef]]
+) -> None:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            path = key if not prefix else f"{prefix}.{key}"
+            if is_channel_ref(value):
+                try:
+                    refs.append((path, StreamChannelRef(**value)))
+                except Exception:
+                    pass
+            elif isinstance(value, dict):
+                _extract_refs_recursive(value, path, refs)
+            elif isinstance(value, list):
+                for idx, item in enumerate(value):
+                    _extract_refs_recursive(item, f"{path}[{idx}]", refs)
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            path = f"[{idx}]" if not prefix else f"{prefix}[{idx}]"
+            _extract_refs_recursive(item, path, refs)

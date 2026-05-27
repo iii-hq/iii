@@ -22,6 +22,7 @@ from iii import (
     TriggerHandler,
     register_worker,
 )
+from iii.helpers import register_trigger_type
 
 ENGINE_WS_URL = os.environ.get("III_URL", "ws://localhost:49199")
 EW_URL = os.environ.get("III_RBAC_WORKER_URL", "ws://localhost:49135")
@@ -127,7 +128,8 @@ def iii_server():
         async def unregister_trigger(self, config: TriggerConfig) -> None:
             pass
 
-    client.register_trigger_type(
+    register_trigger_type(
+        client,
         {"id": "test-rbac-trigger", "description": "Trigger type for RBAC tests"},
         NoopTriggerHandler(),
     )
@@ -220,7 +222,8 @@ class TestRbacWorkers:
                 async def unregister_trigger(self, config: TriggerConfig) -> None:
                     pass
 
-            iii_client.register_trigger_type(
+            register_trigger_type(
+                iii_client,
                 {"id": "denied-tt::test", "description": "Should be denied"},
                 DeniedHandler(),
             )

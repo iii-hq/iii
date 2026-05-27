@@ -9,6 +9,7 @@ import pytest
 
 import iii.iii as iii_module
 from iii import InitOptions, RegisterTriggerTypeInput
+from iii.helpers import create_channel, register_trigger_type, unregister_trigger_type
 from iii.iii import III
 from iii.triggers import TriggerConfig, TriggerHandler
 
@@ -166,12 +167,12 @@ def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: p
     time.sleep(0.05)
     trigger_type = RegisterTriggerTypeInput(id="trigger.test", description="Trigger description")
 
-    client.register_trigger_type(trigger_type, DummyTriggerHandler())
+    register_trigger_type(client, trigger_type, DummyTriggerHandler())
 
     assert "trigger.test" in client._trigger_types
     assert client._trigger_types["trigger.test"].message.description == "Trigger description"
 
-    client.unregister_trigger_type(trigger_type)
+    unregister_trigger_type(client, trigger_type.id)
 
     assert "trigger.test" not in client._trigger_types
 
@@ -179,7 +180,7 @@ def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: p
 
 
 def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """trigger and create_channel should be sync."""
+    """trigger and the helpers.create_channel free function should be sync."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
@@ -187,7 +188,7 @@ def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     import inspect
 
     assert not inspect.iscoroutinefunction(client.trigger)
-    assert not inspect.iscoroutinefunction(client.create_channel)
+    assert not inspect.iscoroutinefunction(create_channel)
 
     client.shutdown()
 

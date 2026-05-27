@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from iii.helpers import create_stream
 from iii.iii import III
 from iii.stream import (
     IStream,
@@ -353,7 +354,7 @@ async def test_stream_custom_operations(iii_client: III):
         async def update(self, input: StreamUpdateInput) -> StreamUpdateResult | None:
             raise NotImplementedError
 
-    iii_client.create_stream(stream_name, InMemoryStream())
+    create_stream(iii_client, stream_name, InMemoryStream())
     await asyncio.sleep(1.0)
 
     test_data = {"name": "Test", "value": 100}

@@ -743,38 +743,16 @@ class III:
         return self._worker_id
 
     # Public API
-    def register_trigger_type(
+    def _helpers_register_trigger_type(
         self,
         trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
         handler: TriggerHandler[Any],
     ) -> "TriggerTypeRef[Any, Any]":
-        """Register a custom trigger type with the engine.
+        """Internal shim backing :func:`iii.helpers.register_trigger_type`.
 
-        Returns a :class:`TriggerTypeRef` handle with ``register_trigger``
-        and ``register_function`` methods.
-
-        Args:
-            trigger_type: A ``RegisterTriggerTypeInput`` or dict with
-                ``id``, ``description``, and optional ``trigger_request_format``
-                / ``call_request_format`` (Pydantic class or dict).
-            handler: A ``TriggerHandler`` instance.
-
-        Returns:
-            A ``TriggerTypeRef`` with typed ``register_trigger`` and
-            ``register_function`` methods.
-
-        Examples:
-            >>> webhook = iii.register_trigger_type(
-            ...     RegisterTriggerTypeInput(
-            ...         id="webhook",
-            ...         description="Webhook trigger",
-            ...         trigger_request_format=WebhookConfig,
-            ...         call_request_format=WebhookCallRequest,
-            ...     ),
-            ...     WebhookHandler(),
-            ... )
-            >>> webhook.register_function("handler", handle_webhook)
-            >>> webhook.register_trigger("handler", WebhookConfig(url="/hook"))
+        Public callers must use the free function from ``iii.helpers``; this
+        method is named with a leading underscore to indicate it is not part
+        of the public API surface.
         """
         if isinstance(trigger_type, dict):
             trigger_type = RegisterTriggerTypeInput(**trigger_type)
@@ -808,24 +786,15 @@ class III:
             request_cls=request_cls,
         )
 
-    def unregister_trigger_type(
-        self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]"
-    ) -> None:
-        """Unregister a previously registered trigger type.
+    def _helpers_unregister_trigger_type(self, id: str) -> None:
+        """Internal shim backing :func:`iii.helpers.unregister_trigger_type`.
 
-        Args:
-            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``.
-
-        Examples:
-            >>> iii.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
-            >>> iii.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
+        Public callers must use the free function from ``iii.helpers``. Takes
+        the trigger type id directly (the public free function exposes the
+        same shape).
         """
-        if isinstance(trigger_type, dict):
-            type_id = trigger_type["id"]
-        else:
-            type_id = trigger_type.id
-        self._trigger_types.pop(type_id, None)
-        self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id))
+        self._trigger_types.pop(id, None)
+        self._send_if_connected(UnregisterTriggerTypeMessage(id=id))
 
     def register_trigger(
         self, trigger: RegisterTriggerInput | dict[str, Any]
@@ -1142,49 +1111,17 @@ class III:
                 invocation_id=invocation_id,
             )
 
-    def create_channel(self, buffer_size: int | None = None) -> Channel:
-        """Create a streaming channel pair for worker-to-worker data transfer.
+    def _helpers_create_channel(self, buffer_size: int | None = None) -> Channel:
+        """Internal shim backing :func:`iii.helpers.create_channel`.
 
-        The returned ``Channel`` contains a local ``writer`` / ``reader``
-        and their serializable refs (``writer_ref``, ``reader_ref``) that
-        can be passed as fields in invocation data to other functions.
-
-        Args:
-            buffer_size: Buffer capacity for the channel. Defaults to ``64``.
-
-        Returns:
-            A ``Channel`` object with ``writer``, ``reader``,
-            ``writer_ref``, and ``reader_ref`` attributes.  Pass
-            ``writer_ref`` or ``reader_ref`` in trigger payloads to
-            share channels across functions -- the receiving function
-            can reconstruct a ``ChannelWriter`` or ``ChannelReader``
-            from the ref.
-
-        Examples:
-            >>> ch = iii.create_channel()
-            >>> fn = iii.register_function("producer", producer_handler)
-            >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
+        Public callers must use the free function from ``iii.helpers``.
         """
-        return self._run_on_loop(self.create_channel_async(buffer_size))
+        return self._run_on_loop(self._helpers_create_channel_async(buffer_size))
 
-    async def create_channel_async(self, buffer_size: int | None = None) -> Channel:
-        """Create a streaming channel pair for worker-to-worker data transfer.
+    async def _helpers_create_channel_async(self, buffer_size: int | None = None) -> Channel:
+        """Internal shim backing :func:`iii.helpers.create_channel_async`.
 
-        The returned ``Channel`` contains a local ``writer`` / ``reader``
-        and their serializable refs (``writer_ref``, ``reader_ref``) that
-        can be passed as fields in invocation data to other functions.
-
-        Args:
-            buffer_size: Buffer capacity for the channel. Defaults to ``64``.
-
-        Returns:
-            A ``Channel`` with ``writer``, ``reader``, ``writer_ref``, and
-            ``reader_ref`` attributes.
-
-        Examples:
-            >>> ch = await iii.create_channel_async()
-            >>> fn = iii.register_function("producer", producer_handler)
-            >>> await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
+        Public callers must use the free function from ``iii.helpers``.
         """
         result = await self.trigger_async(
             {
@@ -1248,27 +1185,14 @@ class III:
         )
         asyncio.run_coroutine_threadsafe(self._send(msg), self._loop)
 
-    def create_stream(self, stream_name: str, stream: IStream[Any]) -> None:
-        """Register a custom stream implementation, overriding the engine default.
+    def _helpers_create_stream(self, stream_name: str, stream: IStream[Any]) -> None:
+        """Internal shim backing :func:`iii.helpers.create_stream`.
 
+        Public callers must use the free function from ``iii.helpers``.
         Registers 5 of the 6 ``IStream`` methods (``get``, ``set``, ``delete``,
-        ``list``, ``list_groups``).  The ``update`` method is **not** registered
-        -- atomic updates are handled by the engine's built-in stream update logic.
-
-        Args:
-            stream_name: Unique name for the stream.
-            stream: An object implementing the ``IStream`` interface.
-
-        Examples:
-            >>> from iii.stream import IStream
-            >>> class MyStream(IStream):
-            ...     async def get(self, input): ...
-            ...     async def set(self, input): ...
-            ...     async def delete(self, input): ...
-            ...     async def list(self, input): ...
-            ...     async def list_groups(self, input): ...
-            ...     async def update(self, input): ...
-            >>> iii.create_stream("my-stream", MyStream())
+        ``list``, ``list_groups``). The ``update`` method is **not** registered
+        -- atomic updates are handled by the engine's built-in stream update
+        logic.
         """
 
         async def get_handler(data: Any) -> Any:

@@ -14,6 +14,7 @@ from iii import (
     TriggerConfig,
     TriggerHandler,
 )
+from iii.helpers import register_trigger_type
 from pydantic import BaseModel, Field
 
 # ── Webhook trigger type ─────────────────────────────────────────────────
@@ -77,7 +78,8 @@ class ScheduleHandler(TriggerHandler):
 def setup(iii: IIIClient) -> None:
     # ── 1. Webhook: typed handle with register_function + register_trigger ──
 
-    webhook = iii.register_trigger_type(
+    webhook = register_trigger_type(
+        iii,
         RegisterTriggerTypeInput(
             id="webhook",
             description="Incoming webhook trigger",
@@ -105,7 +107,8 @@ def setup(iii: IIIClient) -> None:
 
     # ── 2. Schedule: same pattern ────────────────────────────────────
 
-    schedule = iii.register_trigger_type(
+    schedule = register_trigger_type(
+        iii,
         {
             "id": "schedule",
             "description": "One-time or daily scheduled trigger",
