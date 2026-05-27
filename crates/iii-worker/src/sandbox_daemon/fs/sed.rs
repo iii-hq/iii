@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunctionMessage};
+use iii_sdk::IIIError;
 use iii_shell_proto::{FsOp, FsResult, FsSedFileResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -148,16 +148,10 @@ pub(super) fn register(
             }
         }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
     };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::fs::sed".to_string(),
-            description: Some("Search-and-replace in files inside a sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+    let _ = iii.register_function(
+        "sandbox::fs::sed",
+        iii_sdk::RegisterFunction::new_async(handler)
+            .description("Search-and-replace in files inside a sandbox".to_string()),
     );
 }
 

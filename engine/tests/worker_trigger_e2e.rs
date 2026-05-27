@@ -177,11 +177,12 @@ fn register_subscriber(iii: &III, function_id: &str, filter: Value) -> Subscribe
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     let tx_for_handler = tx.clone();
     iii.register_function(
-        RegisterFunction::new_async(function_id, move |req: Value| {
+        function_id,
+        RegisterFunction::new_async(move |req: Value| {
             let tx = tx_for_handler.clone();
             async move {
                 let _ = tx.send(req);
-                Ok::<_, String>(json!({}))
+                Ok::<_, iii_sdk::IIIError>(json!({}))
             }
         })
         .description("e2e test subscriber"),
@@ -197,26 +198,41 @@ fn register_subscriber(iii: &III, function_id: &str, filter: Value) -> Subscribe
 }
 
 /// Drain `rx` until a `stage == "done"` event arrives (success path) or the
-/// deadline expires. Always returns whatever was collected so the caller can
-/// distinguish between "wrong stage chain" and "nothing arrived".
+/// deadline expires. After `done`, keep draining briefly: handler tasks on
+/// the subscriber side spawn independently, so producer-ordered events
+/// (downloading/downloaded) can land after `done` on the wire-receiving end.
+/// Always returns whatever was collected so the caller can distinguish
+/// between "wrong stage chain" and "nothing arrived".
 async fn collect_until_done(rx: &mut mpsc::UnboundedReceiver<Value>) -> Vec<Value> {
     let mut out = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut saw_done = false;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return out;
         }
-        match tokio::time::timeout(remaining, rx.recv()).await {
+        // Once `done` lands, switch to a short tail-drain window so any
+        // out-of-order earlier-stage events still arrive before we return.
+        let wait = if saw_done {
+            Duration::from_millis(500).min(remaining)
+        } else {
+            remaining
+        };
+        match tokio::time::timeout(wait, rx.recv()).await {
             Ok(Some(event)) => {
-                let is_done = event.get("stage").and_then(|v| v.as_str()) == Some("done");
-                out.push(event);
-                if is_done {
-                    return out;
+                if event.get("stage").and_then(|v| v.as_str()) == Some("done") {
+                    saw_done = true;
                 }
+                out.push(event);
             }
             Ok(None) => return out,
-            Err(_) => return out,
+            Err(_) => {
+                if saw_done {
+                    return out;
+                }
+                return out;
+            }
         }
     }
 }

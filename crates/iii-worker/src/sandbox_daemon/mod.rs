@@ -94,27 +94,25 @@ fn register_sandbox_create(
     launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
 ) {
     let _ = iii.register_function(
-        RegisterFunction::new_async(
-            "sandbox::create",
-            move |req: crate::sandbox_daemon::create::CreateRequest| {
-                let registry = registry.clone();
-                let cfg = cfg.clone();
-                let launcher = launcher.clone();
-                async move {
-                    crate::sandbox_daemon::create::handle_create(
-                        req,
-                        &cfg,
-                        &registry,
-                        &*launcher,
-                        |e| {
-                            tracing::info!(event = ?e, "sandbox create event");
-                        },
-                    )
-                    .await
-                    .map_err(SandboxErrorWire)
-                }
-            },
-        )
+        "sandbox::create",
+        RegisterFunction::new_async(move |req: crate::sandbox_daemon::create::CreateRequest| {
+            let registry = registry.clone();
+            let cfg = cfg.clone();
+            let launcher = launcher.clone();
+            async move {
+                crate::sandbox_daemon::create::handle_create(
+                    req,
+                    &cfg,
+                    &registry,
+                    &*launcher,
+                    |e| {
+                        tracing::info!(event = ?e, "sandbox create event");
+                    },
+                )
+                .await
+                .map_err(|e| SandboxErrorWire(e).into())
+            }
+        })
         .description("Create an ephemeral sandbox VM from a preset image"),
     );
 }
@@ -125,18 +123,16 @@ fn register_sandbox_exec(
     runner: Arc<crate::sandbox_daemon::adapters::ShellProtoRunner>,
 ) {
     let _ = iii.register_function(
-        RegisterFunction::new_async(
-            "sandbox::exec",
-            move |req: crate::sandbox_daemon::exec::ExecRequest| {
-                let registry = registry.clone();
-                let runner = runner.clone();
-                async move {
-                    crate::sandbox_daemon::exec::handle_exec(req, &registry, &*runner)
-                        .await
-                        .map_err(SandboxErrorWire)
-                }
-            },
-        )
+        "sandbox::exec",
+        RegisterFunction::new_async(move |req: crate::sandbox_daemon::exec::ExecRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            async move {
+                crate::sandbox_daemon::exec::handle_exec(req, &registry, &*runner)
+                    .await
+                    .map_err(|e| SandboxErrorWire(e).into())
+            }
+        })
         .description("Execute a command inside a live sandbox"),
     );
 }
@@ -147,18 +143,16 @@ fn register_sandbox_stop(
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,
 ) {
     let _ = iii.register_function(
-        RegisterFunction::new_async(
-            "sandbox::stop",
-            move |req: crate::sandbox_daemon::stop::StopRequest| {
-                let registry = registry.clone();
-                let stopper = stopper.clone();
-                async move {
-                    crate::sandbox_daemon::stop::handle_stop(req, &registry, &*stopper)
-                        .await
-                        .map_err(SandboxErrorWire)
-                }
-            },
-        )
+        "sandbox::stop",
+        RegisterFunction::new_async(move |req: crate::sandbox_daemon::stop::StopRequest| {
+            let registry = registry.clone();
+            let stopper = stopper.clone();
+            async move {
+                crate::sandbox_daemon::stop::handle_stop(req, &registry, &*stopper)
+                    .await
+                    .map_err(|e| SandboxErrorWire(e).into())
+            }
+        })
         .description("Stop and remove a running sandbox"),
     );
 }
@@ -176,20 +170,18 @@ fn register_sandbox_list(
     // `json!({})`) is unaffected; an empty object still deserializes to
     // the unit `ListRequest`.
     let _ = iii.register_function(
-        RegisterFunction::new_async(
-            "sandbox::list",
-            move |req: crate::sandbox_daemon::list::ListRequest| {
-                let registry = registry.clone();
-                async move {
-                    // handle_list is infallible — Result wrapping is just
-                    // so the closure satisfies IntoAsyncHandler's
-                    // `Result<R, E>` shape. The Err arm is unreachable.
-                    Ok::<_, SandboxErrorWire>(
-                        crate::sandbox_daemon::list::handle_list(req, &registry).await,
-                    )
-                }
-            },
-        )
+        "sandbox::list",
+        RegisterFunction::new_async(move |req: crate::sandbox_daemon::list::ListRequest| {
+            let registry = registry.clone();
+            async move {
+                // handle_list is infallible — Result wrapping is just
+                // so the closure satisfies IntoAsyncHandler's
+                // `Result<R, E>` shape. The Err arm is unreachable.
+                Ok::<_, iii_sdk::IIIError>(
+                    crate::sandbox_daemon::list::handle_list(req, &registry).await,
+                )
+            }
+        })
         .description("List active sandboxes"),
     );
 }

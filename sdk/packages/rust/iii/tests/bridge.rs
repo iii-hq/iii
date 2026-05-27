@@ -10,16 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
-use serde::Deserialize;
-
-/// Minimal deserialization target for `engine::functions::list` rows used
-/// only by these integration tests. The SDK no longer carries a hand-written
-/// type for this — the engine surface will be auto-generated later.
-#[derive(Debug, Deserialize)]
-struct FnRow {
-    function_id: String,
-}
+use iii_sdk::{FunctionInfo, RegisterFunction, TriggerAction, TriggerRequest};
 
 #[tokio::test]
 async fn connect_successfully() {
@@ -34,7 +25,7 @@ async fn connect_successfully() {
         })
         .await
         .expect("function discovery request should succeed");
-    let functions: Vec<FnRow> = serde_json::from_value(
+    let functions: Vec<FunctionInfo> = serde_json::from_value(
         result
             .get("functions")
             .cloned()
@@ -52,16 +43,16 @@ async fn register_and_invoke_function() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
 
-    let fn_ref = iii.register_function((
-        RegisterFunctionMessage::with_id("test::bridge::rs::echo".to_string()),
-        move |input: Value| {
+    let fn_ref = iii.register_function(
+        "test::bridge::rs::echo",
+        RegisterFunction::new_async(move |input: Value| {
             let received = received_clone.clone();
             async move {
                 received.lock().await.push(input.clone());
                 Ok(json!({ "echoed": input }))
             }
-        },
-    ));
+        }),
+    );
 
     common::settle().await;
 
@@ -90,9 +81,9 @@ async fn invoke_function_fire_and_forget() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let fn_ref = iii.register_function((
-        RegisterFunctionMessage::with_id("test::bridge::rs::receiver".to_string()),
-        move |input: Value| {
+    let fn_ref = iii.register_function(
+        "test::bridge::rs::receiver",
+        RegisterFunction::new_async(move |input: Value| {
             let received = received_clone.clone();
             let tx = tx.clone();
             async move {
@@ -102,8 +93,8 @@ async fn invoke_function_fire_and_forget() {
                 }
                 Ok(json!({}))
             }
-        },
-    ));
+        }),
+    );
 
     common::settle().await;
 
@@ -133,14 +124,14 @@ async fn invoke_function_fire_and_forget() {
 async fn list_registered_functions() {
     let iii = common::shared_iii();
 
-    let fn1 = iii.register_function((
-        RegisterFunctionMessage::with_id("test::bridge::rs::list::func1".to_string()),
-        |_: Value| async move { Ok(json!({})) },
-    ));
-    let fn2 = iii.register_function((
-        RegisterFunctionMessage::with_id("test::bridge::rs::list::func2".to_string()),
-        |_: Value| async move { Ok(json!({})) },
-    ));
+    let fn1 = iii.register_function(
+        "test::bridge::rs::list::func1",
+        RegisterFunction::new_async(|_: Value| async move { Ok(json!({})) }),
+    );
+    let fn2 = iii.register_function(
+        "test::bridge::rs::list::func2",
+        RegisterFunction::new_async(|_: Value| async move { Ok(json!({})) }),
+    );
 
     common::settle().await;
 
@@ -153,7 +144,7 @@ async fn list_registered_functions() {
         })
         .await
         .expect("function discovery request should succeed");
-    let functions: Vec<FnRow> = serde_json::from_value(
+    let functions: Vec<FunctionInfo> = serde_json::from_value(
         result
             .get("functions")
             .cloned()
