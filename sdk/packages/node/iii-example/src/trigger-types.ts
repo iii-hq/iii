@@ -9,6 +9,7 @@
 
 import { EngineFunctions } from 'iii-sdk'
 import type { TriggerConfig, TriggerHandler, TriggerTypeRef } from 'iii-sdk'
+import { registerTriggerType } from 'iii-sdk/helpers'
 import { iii } from './iii'
 
 /**
@@ -75,7 +76,8 @@ const scheduleHandler: TriggerHandler<ScheduleTriggerConfig> = {
 
 // 1. Webhook: typed handle with registerFunction + registerTrigger
 
-const webhook: TriggerTypeRef<WebhookTriggerConfig> = iii.registerTriggerType(
+const webhook: TriggerTypeRef<WebhookTriggerConfig> = registerTriggerType(
+  iii,
   { id: 'webhook', description: 'Incoming webhook trigger' },
   webhookHandler,
 )
@@ -98,7 +100,8 @@ webhook.registerTrigger('example::webhook_handler', {
 
 // 2. Schedule: same pattern
 
-const schedule: TriggerTypeRef<ScheduleTriggerConfig> = iii.registerTriggerType(
+const schedule: TriggerTypeRef<ScheduleTriggerConfig> = registerTriggerType(
+  iii,
   { id: 'schedule', description: 'One-time or daily scheduled trigger' },
   scheduleHandler,
 )

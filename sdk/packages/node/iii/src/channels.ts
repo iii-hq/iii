@@ -40,7 +40,8 @@ export const ChannelItem = {
  *
  * @example
  * ```typescript
- * const channel = await iii.createChannel()
+ * import { createChannel } from 'iii-sdk/helpers'
+ * const channel = await createChannel(iii)
  *
  * // Stream binary data
  * channel.writer.stream.write(Buffer.from('hello'))
@@ -181,7 +182,8 @@ export class ChannelWriter {
  *
  * @example
  * ```typescript
- * const channel = await iii.createChannel()
+ * import { createChannel } from 'iii-sdk/helpers'
+ * const channel = await createChannel(iii)
  *
  * // Stream binary data
  * channel.reader.stream.on('data', (chunk) => console.log(chunk))

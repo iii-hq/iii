@@ -11,6 +11,7 @@ import type {
   OnTriggerTypeRegistrationResult,
 } from '../src/index'
 import { IIIInvocationError, registerWorker } from '../src/index'
+import { registerTriggerType } from '../src/helpers'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'
 
@@ -104,7 +105,8 @@ beforeAll(async () => {
     },
   )
 
-  iii.registerTriggerType(
+  registerTriggerType(
+    iii,
     { id: 'test-rbac-trigger', description: 'Trigger type for RBAC tests' },
     {
       async registerTrigger() {},
@@ -214,7 +216,8 @@ describe('RBAC Workers', () => {
     })
 
     try {
-      iiiClient.registerTriggerType(
+      registerTriggerType(
+        iiiClient,
         { id: 'denied-tt::test', description: 'Should be denied' },
         {
           async registerTrigger() {},

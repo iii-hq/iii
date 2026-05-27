@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChannelReader } from '../src'
+import { createChannel, registerTriggerType } from '../src/helpers'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'
 
@@ -105,7 +106,8 @@ describe('List Triggers (trigger TYPES)', () => {
 
 describe('TriggerTypeRef', () => {
   it('should return a TriggerTypeRef from registerTriggerType', async () => {
-    const ref = iii.registerTriggerType(
+    const ref = registerTriggerType(
+      iii,
       { id: 'test.trigger-type-ref', description: 'Test trigger type ref' },
       {
         async registerTrigger() {},
@@ -123,7 +125,8 @@ describe('TriggerTypeRef', () => {
   })
 
   it('should register a trigger via TriggerTypeRef', async () => {
-    const ref = iii.registerTriggerType(
+    const ref = registerTriggerType(
+      iii,
       { id: 'test.tt-ref-trigger', description: 'Test ref trigger' },
       {
         async registerTrigger() {},
@@ -145,7 +148,8 @@ describe('TriggerTypeRef', () => {
   })
 
   it('should register a function with trigger via TriggerTypeRef', async () => {
-    const ref = iii.registerTriggerType(
+    const ref = registerTriggerType(
+      iii,
       { id: 'test.tt-ref-fn', description: 'Test ref function' },
       {
         async registerTrigger() {},
@@ -176,7 +180,8 @@ describe('TriggerTypeRef', () => {
   })
 
   it('should unregister the trigger type via TriggerTypeRef', () => {
-    const ref = iii.registerTriggerType(
+    const ref = registerTriggerType(
+      iii,
       { id: 'test.tt-ref-unreg', description: 'Test ref unregister' },
       {
         async registerTrigger() {},
@@ -200,7 +205,7 @@ describe('Channel readAll', () => {
     )
 
     const sender = iii.registerFunction('test.readall.sender', async (input: { text: string }) => {
-      const channel = await iii.createChannel()
+      const channel = await createChannel(iii)
 
       const writePromise = new Promise<void>((resolve, reject) => {
         const payload = Buffer.from(input.text)
@@ -247,7 +252,7 @@ describe('Channel readAll', () => {
     )
 
     const sender = iii.registerFunction('test.readall.chunked.sender', async (input: { numbers: number[] }) => {
-      const channel = await iii.createChannel()
+      const channel = await createChannel(iii)
 
       const writePromise = new Promise<void>((resolve, reject) => {
         const buf = Buffer.from(JSON.stringify(input.numbers))
