@@ -230,14 +230,17 @@ Returns: `{ bytes_written, path }`.
 
 #### `sandbox::fs::read`
 
-Stream a file out of the sandbox. Returns a `StreamChannelRef` the caller reads from.
+Read a file out of the sandbox. Always returns a `content: StreamChannelRef` the caller can subscribe to for the full file bytes. For UTF-8 text files under 1 MiB, the response also includes an inline `body: string` so callers can short-circuit the channel subscription and use the body directly.
 
 | Field | Type | Description |
 |---|---|---|
 | `sandbox_id` | string | Sandbox to operate in. |
 | `path` | string | Path to read. |
 
-Returns: `{ content: StreamChannelRef, size, mode, mtime }`.
+Returns: `{ content: StreamChannelRef, body?: string, size, mode, mtime }`.
+
+- `content` is always populated. The same bytes are delivered through it whether or not `body` is also set, so peers that statically type `content` as `StreamChannelRef` keep working unchanged.
+- `body` is present (`Some`) for files that fit in the 1 MiB inline cap **and** decode cleanly as UTF-8. Absent (`None`) for large or binary files — read those through `content` instead.
 
 #### `sandbox::fs::rm`
 

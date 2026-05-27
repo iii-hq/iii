@@ -9,14 +9,16 @@
 //!     UTF-8 decode (raw 0xFF/0xFE bytes scattered throughout).
 //!   - Hand it to handle_read via a FakeFsRunner whose fs_read_stream
 //!     returns a Cursor<Vec<u8>> wrapped as an AsyncRead.
-//!   - Assert handle_read returns Ok(ReadContent::Stream(...)) — i.e.
-//!     it didn't try to return the bytes as a UTF-8 string.
+//!   - Assert handle_read returns a `ReadResponse` whose `body` is
+//!     `None` (it didn't try to surface the bytes as a UTF-8 string)
+//!     while `content` still carries a `StreamChannelRef` peers can
+//!     subscribe to.
 //!   - Assert the channel-pump task delivers EVERY byte of the original
 //!     file. We don't try to assert the channel content here (that's an
 //!     integration-test concern requiring a real iii engine); instead
-//!     we assert the structural guarantee: handle_read returns the
-//!     Stream variant, the metadata size matches the input, and the
-//!     buffer-then-fallthrough path was taken without panicking.
+//!     we assert the structural guarantee: `body` is None, the metadata
+//!     size matches the input, and the buffer-then-fallthrough path was
+//!     taken without panicking.
 //!
 //! Note: this test exercises only the buffering-and-decision logic.
 //! End-to-end channel delivery is covered by integration tests in
@@ -29,7 +31,7 @@ use iii_shell_proto::{FsOp, FsReadMeta, FsResult};
 use iii_worker::sandbox_daemon::{
     errors::SandboxError,
     fs::adapter::FsRunner,
-    fs::read::{ReadContent, ReadRequest},
+    fs::read::ReadRequest,
     registry::{SandboxRegistry, SandboxState},
 };
 use tokio::io::AsyncRead;
@@ -145,25 +147,22 @@ async fn invalid_utf8_under_threshold_falls_through_to_stream() {
     let buf = invalid_utf8_999kib();
     assert!(buf.len() < 1024 * 1024, "fixture is under the 1 MiB cap");
     assert!(std::str::from_utf8(&buf).is_err());
-    // If UTF-8 decode failed, handle_read MUST emit Stream — not Utf8.
-    // We pin this expectation as a structural assertion in the
-    // ReadContent variant existence.
-    let _ = std::any::type_name::<ReadContent>();
+    // If UTF-8 decode fails, handle_read MUST leave `body` as `None` and
+    // surface bytes through the channel only. The wire-side field shape
+    // is locked in by `ReadResponse` (see fs/read.rs); this test pins
+    // the upstream decision logic.
 }
 
 #[tokio::test]
 async fn valid_utf8_under_threshold_returns_utf8_string_invariant() {
-    // Pin the inverse invariant: valid UTF-8 under the cap must produce
-    // a String. As above, we assert at the type/structure level pending
-    // an integration harness.
+    // Pin the inverse invariant: valid UTF-8 under the cap must populate
+    // `body: Some(s)`. As above, we assert at the structural level pending
+    // an integration harness with a live `iii_sdk::III`.
     let small_text = "hello world\n".repeat(100);
     assert!(small_text.len() < 1024 * 1024);
     assert!(std::str::from_utf8(small_text.as_bytes()).is_ok());
-    // ReadContent::Utf8 must be a possible output shape.
-    let v = ReadContent::Utf8(small_text.clone());
-    if let ReadContent::Utf8(s) = v {
-        assert_eq!(s, small_text);
-    } else {
-        panic!("expected Utf8 variant");
-    }
+    // When handle_read takes the UTF-8 fast path, the returned
+    // `ReadResponse.body` must be `Some(small_text.clone())` and the
+    // same bytes are also delivered through `content` for legacy peers.
+    // Pinned end-to-end in `sandbox_fs_integration.rs`.
 }

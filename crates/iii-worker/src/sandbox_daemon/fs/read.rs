@@ -28,10 +28,10 @@ use crate::sandbox_daemon::{
 
 /// Files reported by the supervisor as smaller than this threshold are
 /// fully buffered in-process and inspected for valid UTF-8. If decode
-/// succeeds, the response carries `ReadContent::Utf8(String)`. If decode
-/// fails (binary) or the file is reported as larger than this cap, the
-/// response carries `ReadContent::Stream(StreamChannelRef)` instead and
-/// the bytes flow through an engine channel.
+/// succeeds, the response carries `body: Some(String)` alongside the
+/// always-present `content: StreamChannelRef`. If decode fails (binary)
+/// or the file is reported as larger than this cap, `body` stays `None`
+/// and consumers read the bytes through `content` instead.
 ///
 /// The cap also bounds memory pressure: peak buffer per concurrent
 /// `sandbox::fs::read` call is at most `INLINE_BUFFER_CAP` bytes. With
@@ -55,25 +55,28 @@ fn read_request_example() -> serde_json::Value {
     })
 }
 
-/// File body returned by `sandbox::fs::read`. Untagged: serializes as a
-/// JSON string for small UTF-8 files (the agent-natural shape) or as a
-/// `StreamChannelRef` object for large or binary files.
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(untagged)]
-pub enum ReadContent {
-    /// Inline UTF-8 content. File was small enough to fit in
-    /// [`INLINE_BUFFER_CAP`] and decoded cleanly as UTF-8.
-    Utf8(String),
-    /// Streaming channel ref. File was either larger than the inline
-    /// cap or contained invalid UTF-8 bytes. The caller reads from this
-    /// channel to receive the full file contents.
-    Stream(StreamChannelRef),
-}
+// `ReadContent` (an untagged Utf8/Stream enum) was previously introduced
+// here as the response shape, but it broke peers (notably the `workers/shell`
+// crate) that statically typed `content` as `StreamChannelRef`. We now keep
+// `ReadResponse.content` as `StreamChannelRef` for wire compatibility and
+// expose the inline-UTF-8 fast path through an additive `body: Option<String>`
+// field instead. See `ReadResponse` below.
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ReadResponse {
-    /// File body. UTF-8 string for small text files, channel ref otherwise.
-    pub content: ReadContent,
+    /// Channel ref for the file body. Always set; callers can subscribe
+    /// to receive the full file contents as bytes. Preserved for wire
+    /// compatibility with peers that statically type this field as
+    /// `StreamChannelRef`.
+    pub content: StreamChannelRef,
+    /// Inline UTF-8 body. Populated for text files under
+    /// [`INLINE_BUFFER_CAP`] (1 MiB) that decode cleanly as UTF-8.
+    /// `None` for large or binary files; subscribe to `content` instead.
+    /// When `Some`, the same bytes are also delivered through `content`
+    /// so legacy callers keep working — new callers can use `body`
+    /// directly and skip the channel subscription.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub body: Option<String>,
     pub size: u64,
     pub mode: String,
     pub mtime: i64,
@@ -107,13 +110,15 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
 
     // Fast path: file is small per supervisor metadata. Buffer up to
     // INLINE_BUFFER_CAP bytes and try UTF-8 decode. Three outcomes:
-    //   - decode succeeds                  -> ReadContent::Utf8(String)
-    //   - decode fails (invalid UTF-8)     -> Stream, prepending the buffered
-    //                                         bytes via Chain<Cursor, reader>
+    //   - decode succeeds                  -> inline `body: Some(String)`,
+    //                                         channel still serves the same
+    //                                         bytes for legacy subscribers.
+    //   - decode fails (invalid UTF-8)     -> stream the buffered bytes via
+    //                                         Cursor; `body: None`.
     //   - buffer fills before EOF (file
-    //     larger than meta said)           -> Stream, same chain trick
-    //
-    // The chain ensures no bytes are dropped at the buffer boundary.
+    //     larger than meta said)           -> stream Cursor chained with the
+    //                                         remaining reader so no bytes are
+    //                                         dropped; `body: None`.
     if (meta.size as usize) < INLINE_BUFFER_CAP {
         let mut buf: Vec<u8> = Vec::with_capacity((meta.size as usize).min(INLINE_BUFFER_CAP));
         // take(N+1) so we can detect when the file is actually larger than
@@ -129,12 +134,17 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
             // We have the entire file. Try UTF-8.
             match String::from_utf8(buf) {
                 Ok(s) => {
-                    return Ok(ReadResponse {
-                        content: ReadContent::Utf8(s),
-                        size: meta.size,
-                        mode: meta.mode,
-                        mtime: meta.mtime,
-                    });
+                    // Inline-UTF-8 fast path. Emit the same bytes through the
+                    // channel so peers that always subscribe to `content`
+                    // (e.g. workers/shell `ReadResponse` mirror) keep working
+                    // unchanged. New callers see `body: Some(_)` and skip the
+                    // subscription. Cost: up to INLINE_BUFFER_CAP bytes
+                    // buffered in-channel until the writer closes or the
+                    // subscriber drains them.
+                    let bytes_for_channel = s.as_bytes().to_vec();
+                    let cursor = std::io::Cursor::new(bytes_for_channel);
+                    let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(cursor);
+                    return stream_via_channel(iii, chained, meta, Some(s), path).await;
                 }
                 Err(err) => {
                     // Invalid UTF-8. Stream the buffered bytes back through a
@@ -143,7 +153,7 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
                     let buf = err.into_bytes();
                     let cursor = std::io::Cursor::new(buf);
                     let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(cursor);
-                    return stream_via_channel(iii, chained, meta, path).await;
+                    return stream_via_channel(iii, chained, meta, None, path).await;
                 }
             }
         } else {
@@ -153,21 +163,25 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
             let cursor = std::io::Cursor::new(buf);
             let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> =
                 Box::new(cursor.chain(reader));
-            return stream_via_channel(iii, chained, meta, path).await;
+            return stream_via_channel(iii, chained, meta, None, path).await;
         }
     }
 
     // Large file: stream directly without buffering.
-    stream_via_channel(iii, reader, meta, path).await
+    stream_via_channel(iii, reader, meta, None, path).await
 }
 
 /// Spawn the channel-pump task and return a `ReadResponse` carrying a
-/// `StreamChannelRef`. Shared by every code path that produces streaming
-/// output (large file, invalid-UTF-8 small file, oversized file).
+/// `StreamChannelRef`. Shared by every code path that produces a response:
+/// large file, invalid-UTF-8 small file, oversized file, and the
+/// inline-UTF-8 fast path (which passes `body: Some(s)` and a Cursor over
+/// the buffered bytes so the channel still serves the same payload to
+/// legacy subscribers).
 async fn stream_via_channel(
     iii: &iii_sdk::III,
     mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
     meta: iii_shell_proto::FsReadMeta,
+    body: Option<String>,
     _path: String,
 ) -> Result<ReadResponse, SandboxError> {
     let channel = iii
@@ -219,7 +233,8 @@ async fn stream_via_channel(
     });
 
     Ok(ReadResponse {
-        content: ReadContent::Stream(reader_ref),
+        content: reader_ref,
+        body,
         size: meta.size,
         mode: meta.mode,
         mtime: meta.mtime,
@@ -256,8 +271,10 @@ pub(super) fn register(
             }
         })
         .description(
-            "Read a file from a sandbox. Returns content as a UTF-8 string for small text files \
-             (under 1 MiB) or a StreamChannelRef for large/binary files. Example: { sandbox_id: \"...\", path: \"/home/app/index.js\" }",
+            "Read a file from a sandbox. Always returns `content`: a StreamChannelRef \
+             callers can subscribe to for the full file bytes. For UTF-8 text files \
+             under 1 MiB, the response also carries an inline `body` string so callers \
+             can short-circuit the subscription. Example: { sandbox_id: \"...\", path: \"/home/app/index.js\" }",
         ),
     );
 }

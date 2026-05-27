@@ -37,19 +37,14 @@ type: "reference"
 
   ## `sandbox::fs::read` returns inline bodies for small text
 
-  **Breaking.** The `content` field on the `sandbox::fs::read` response is now an untagged enum: a bare JSON string for files under 1 MiB that decode as valid UTF-8, or the existing `StreamChannelRef` object for larger or binary files. Typical "read this config / log / source file" calls become a single round-trip, but callers that previously assumed `content` was always a stream-ref object must branch on the JSON type:
+  Additive: a new optional `body` field on the `sandbox::fs::read` response carries the file contents as a UTF-8 string for text files under 1 MiB that decode cleanly. The existing `content: StreamChannelRef` field is still always populated and still delivers the same bytes, so peers that statically type `content` as a stream ref keep working unchanged. New callers can short-circuit the channel subscription whenever `body` is present:
 
   ```typescript
-  // before
-  const { content } = await trigger({ function_id: 'sandbox::fs::read', payload: { sandbox_id, path } })
-  const body = await readChannel(content) // content was always a StreamChannelRef
-
-  // after
-  const { content } = await trigger({ function_id: 'sandbox::fs::read', payload: { sandbox_id, path } })
-  const body = typeof content === 'string'
-    ? content                  // small UTF-8 text: inline body
-    : await readChannel(content) // large or binary: stream as before
+  const { content, body } = await trigger({ function_id: 'sandbox::fs::read', payload: { sandbox_id, path } })
+  const text = body ?? await readChannel(content) // prefer inline body, fall back to stream
   ```
+
+  Cost: small text is buffered into the channel as well as the inline body so legacy subscribers still receive it. Bounded at 1 MiB per call.
 
   ## Structured `sandbox::*` errors with resubmittable `fix` payloads
 
