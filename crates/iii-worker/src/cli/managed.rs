@@ -126,20 +126,34 @@ pub async fn handle_binary_add(
         }
     };
 
-    if !brief {
-        eprintln!("  Downloading {}...", worker_name.bold());
-    }
-    let install_path =
-        match binary_download::download_and_install_binary(worker_name, binary_info).await {
-            Ok(path) => path,
+    // Wrap the silent download phase in a steady-tick spinner so the
+    // terminal doesn't look hung on slow connections. binary_download
+    // streams bytes without surfacing its own progress, so this is the
+    // only feedback the user sees until the request completes.
+    let install_path = {
+        let spinner = (!brief).then(|| {
+            super::spinner::Spinner::start(format!("Downloading binary {worker_name}..."))
+        });
+        let result = binary_download::download_and_install_binary(worker_name, binary_info).await;
+        match result {
+            Ok(path) => {
+                if let Some(s) = spinner {
+                    s.finish_ok(format!("Downloaded binary {worker_name}"));
+                }
+                path
+            }
             Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
+                if let Some(s) = spinner {
+                    s.finish_err(format!("Download failed: {e}"));
+                } else {
+                    eprintln!("{} {}", "error:".red(), e);
+                }
                 return 1;
             }
-        };
+        }
+    };
 
     if !brief {
-        eprintln!("  {} Downloaded successfully", "✓".green());
         eprintln!("  {}: {}", "Name".bold(), worker_name);
         eprintln!("  {}: {}", "Version".bold(), response.version);
         eprintln!("  {}: {}", "Platform".bold(), target);
@@ -217,31 +231,55 @@ pub async fn handle_bundle_add(
     let staging_dir = guard.staging_dir().to_path_buf();
 
     // 2. Stream-download + sha256 verify into staging/.archive.tar.gz.
-    if !brief {
-        eprintln!("  Downloading archive...");
-    }
-    let archive_path = match super::bundle_download::download_archive(
-        &response.archive_url,
-        &response.sha256,
-        &staging_dir,
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
+    //    download_archive does seconds of work with no internal progress
+    //    surface, so wrap it in a spinner — without it the terminal
+    //    looks frozen on slow links.
+    let archive_path = {
+        let spinner = (!brief).then(|| {
+            super::spinner::Spinner::start(format!("Downloading bundle {worker_name}..."))
+        });
+        let result = super::bundle_download::download_archive(
+            &response.archive_url,
+            &response.sha256,
+            &staging_dir,
+        )
+        .await;
+        match result {
+            Ok(p) => {
+                if let Some(s) = spinner {
+                    s.finish_ok(format!("Downloaded bundle {worker_name}"));
+                }
+                p
+            }
+            Err(e) => {
+                if let Some(s) = spinner {
+                    s.finish_err(format!("Download failed: {e}"));
+                } else {
+                    eprintln!("{} {}", "error:".red(), e);
+                }
+                return 1;
+            }
         }
     };
 
     // 3. Extract with bundle-tight limits + entry_type filter.
-    if !brief {
-        eprintln!("  Extracting...");
-    }
-    if let Err(e) = super::bundle_download::extract_bundle_safely(&archive_path, &staging_dir).await
     {
-        eprintln!("{} {}", "error:".red(), e);
-        return 1;
+        let spinner = (!brief).then(|| super::spinner::Spinner::start("Extracting bundle..."));
+        match super::bundle_download::extract_bundle_safely(&archive_path, &staging_dir).await {
+            Ok(()) => {
+                if let Some(s) = spinner {
+                    s.finish_ok("Extracted bundle");
+                }
+            }
+            Err(e) => {
+                if let Some(s) = spinner {
+                    s.finish_err(format!("Extract failed: {e}"));
+                } else {
+                    eprintln!("{} {}", "error:".red(), e);
+                }
+                return 1;
+            }
+        }
     }
     // Archive blob is no longer needed; drop it so the staging->final
     // rename doesn't carry it into the install dir. We MUST fail-hard
@@ -340,7 +378,7 @@ pub async fn handle_bundle_add(
 
     if !brief {
         eprintln!(
-            "\n  {} Worker {} added as bundle (v{}) at {}",
+            "  {} Worker {} added as bundle (v{}) at {}",
             "✓".green(),
             worker_name.bold(),
             response.version,
@@ -1872,14 +1910,32 @@ async fn finish_add(worker_name: &str, rc: i32, wait: bool, brief: bool) -> i32 
 async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i32 {
     let adapter = super::worker_manager::create_adapter("libkrun");
 
-    if !brief {
-        eprintln!("  Pulling {}...", image_ref.bold());
-    }
-    let pull_info = match adapter.pull(image_ref).await {
-        Ok(info) => info,
-        Err(e) => {
-            eprintln!("{} Pull failed: {}", "error:".red(), e);
-            return 1;
+    // Wrap the OCI pull in a steady-tick spinner. The adapter prints
+    // a per-layer progress bar of its own only when the registry
+    // returns enough metadata; on the slow-cache path or first-pull
+    // it can sit for tens of seconds without a glyph moving.
+    let pull_info = {
+        let spinner =
+            (!brief).then(|| super::spinner::Spinner::start(format!("Pulling {image_ref}...")));
+        let result = adapter.pull(image_ref).await;
+        match result {
+            Ok(info) => {
+                if let Some(s) = spinner {
+                    // Suppress the spinner's footer when the adapter is
+                    // about to print its own multi-line success block
+                    // below — otherwise we get two "pulled" lines.
+                    s.finish_silent();
+                }
+                info
+            }
+            Err(e) => {
+                if let Some(s) = spinner {
+                    s.finish_err(format!("Pull failed: {e}"));
+                } else {
+                    eprintln!("{} Pull failed: {}", "error:".red(), e);
+                }
+                return 1;
+            }
         }
     };
 
@@ -3310,17 +3366,23 @@ async fn start_binary_worker(
         return 1;
     }
 
-    let stdout_file = match std::fs::File::create(logs_dir.join("stdout.log")) {
+    // APPEND, not truncate — the parent `iii-worker start` and engine
+    // already wrote progress lines to these files; truncating wipes
+    // everything the wait UI tails for visibility. Same rationale as
+    // the libkrun path.
+    let mut open_opts = std::fs::OpenOptions::new();
+    open_opts.create(true).append(true);
+    let stdout_file = match open_opts.open(logs_dir.join("stdout.log")) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("{} Failed to create stdout log: {}", "error:".red(), e);
+            eprintln!("{} Failed to open stdout log: {}", "error:".red(), e);
             return 1;
         }
     };
-    let stderr_file = match std::fs::File::create(logs_dir.join("stderr.log")) {
+    let stderr_file = match open_opts.open(logs_dir.join("stderr.log")) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("{} Failed to create stderr log: {}", "error:".red(), e);
+            eprintln!("{} Failed to open stderr log: {}", "error:".red(), e);
             return 1;
         }
     };

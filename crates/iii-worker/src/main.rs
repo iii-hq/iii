@@ -80,7 +80,13 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 let ctx = ProjectCtx::open_unlocked(cwd);
-                let sink = StderrSink::new(brief);
+                // The inner `handle_managed_add` already prints rich
+                // colored progress (Resolving → spinner → ✓ added).
+                // Running the sink in non-brief mode here just duplicates
+                // each Stage as a "• downloading <name>" line, which the
+                // user sees as extra noise that scrolls real progress
+                // off-screen. Keep the sink quiet on the CLI path.
+                let sink = StderrSink::new(true);
                 let result =
                     core_add::run(opts, &ctx, &sink, &CliHostShim, core_add::CallerMode::Cli).await;
 
@@ -163,7 +169,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 let ctx = ProjectCtx::open_unlocked(cwd);
-                let sink = StderrSink::new(false);
+                // Reinstall is `add --force`; keep the same brief-mode
+                // policy so we don't duplicate Stage events on top of
+                // the inner handler's progress output.
+                let sink = StderrSink::new(true);
                 if let Err(e) =
                     core_add::run(opts, &ctx, &sink, &CliHostShim, core_add::CallerMode::Cli).await
                 {
@@ -283,32 +292,20 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Stop { worker_name, yes } => {
+        Commands::Stop {
+            worker_name,
+            yes: _,
+        } => {
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{ProjectCtx, StopOptions, stop as core_stop};
-            use std::io::IsTerminal;
 
-            // Consent: -y / --yes always proceeds. Without -y, prompt
-            // when stderr is a tty; refuse non-interactively so scripts
-            // don't silently stop workers without confirmation.
-            if !yes {
-                if std::io::stderr().is_terminal() {
-                    use std::io::{BufRead, Write};
-                    eprint!("Stop worker '{}'? [y/N] ", worker_name);
-                    let _ = std::io::stderr().flush();
-                    let mut buf = String::new();
-                    let _ = std::io::stdin().lock().read_line(&mut buf);
-                    let trimmed = buf.trim().to_lowercase();
-                    if trimmed != "y" && trimmed != "yes" {
-                        eprintln!("Aborted.");
-                        std::process::exit(1);
-                    }
-                } else {
-                    eprintln!("error: stop is destructive; pass -y/--yes for non-interactive use");
-                    std::process::exit(1);
-                }
-            }
+            // `stop` is routine and reversible: `iii worker start <name>`
+            // brings the worker back from the same config entry, no data
+            // loss. Prompting "Stop worker '$name'? [y/N]" on every call
+            // was friction that hid the actual progress output, so the
+            // CLI now stops on intent. `-y/--yes` is still parsed for
+            // backward-compat with scripts that pass it.
             let opts = StopOptions {
                 name: worker_name,
                 yes: true,
