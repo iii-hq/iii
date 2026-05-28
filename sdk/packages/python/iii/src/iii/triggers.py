@@ -52,7 +52,7 @@ class Trigger:
 
 
 class TriggerTypeRef(Generic[C, R]):
-    """Typed handle returned by :func:`iii.helpers.register_trigger_type`.
+    """Typed handle returned by :meth:`iii.III.register_trigger_type`.
 
     Type parameters:
 
@@ -61,10 +61,7 @@ class TriggerTypeRef(Generic[C, R]):
 
     Example::
 
-        from iii.helpers import register_trigger_type
-
-        webhook = register_trigger_type(
-            iii,
+        webhook = iii.register_trigger_type(
             RegisterTriggerTypeInput(
                 id="webhook",
                 description="Incoming webhook trigger",

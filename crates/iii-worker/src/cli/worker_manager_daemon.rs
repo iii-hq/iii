@@ -63,8 +63,7 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
     // shares the same subscription map. The handler stores subscriber
     // configs; the sink reads them when an op emits a `WorkerOpEvent`.
     let subs: Subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    iii_sdk::helpers::register_trigger_type(
-        &iii,
+    iii.register_trigger_type(
         RegisterTriggerType::new(
             "worker",
             "Worker lifecycle events emitted by every worker::* op. \

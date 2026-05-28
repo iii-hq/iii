@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChannelReader } from '../src'
-import { createChannel, registerTriggerType } from '../src/helpers'
+import { createChannel } from '../src/helpers'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'
 
@@ -106,8 +106,7 @@ describe('List Triggers (trigger TYPES)', () => {
 
 describe('TriggerTypeRef', () => {
   it('should return a TriggerTypeRef from registerTriggerType', async () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'test.trigger-type-ref', description: 'Test trigger type ref' },
       {
         async registerTrigger() {},
@@ -125,8 +124,7 @@ describe('TriggerTypeRef', () => {
   })
 
   it('should register a trigger via TriggerTypeRef', async () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'test.tt-ref-trigger', description: 'Test ref trigger' },
       {
         async registerTrigger() {},
@@ -148,8 +146,7 @@ describe('TriggerTypeRef', () => {
   })
 
   it('should register a function with trigger via TriggerTypeRef', async () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'test.tt-ref-fn', description: 'Test ref function' },
       {
         async registerTrigger() {},
@@ -180,8 +177,7 @@ describe('TriggerTypeRef', () => {
   })
 
   it('should unregister the trigger type via TriggerTypeRef', () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'test.tt-ref-unreg', description: 'Test ref unregister' },
       {
         async registerTrigger() {},

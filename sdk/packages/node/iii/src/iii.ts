@@ -151,13 +151,26 @@ class Sdk implements ISdk {
   }
 
   /**
-   * @internal Implementation backing the `registerTriggerType` helper in the
-   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
-   *
    * Registers a custom trigger type with the engine. A trigger type defines
    * how external events (HTTP, cron, queue, etc.) map to function invocations.
+   *
+   * @param triggerType - Trigger type registration input.
+   * @param triggerType.id - Unique trigger type identifier.
+   * @param triggerType.description - Human-readable description.
+   * @param handler - Handler with `registerTrigger` / `unregisterTrigger` callbacks.
+   *
+   * @example
+   * ```typescript
+   * iii.registerTriggerType(
+   *   { id: 'my-trigger', description: 'Custom trigger' },
+   *   {
+   *     async registerTrigger({ id, function_id, config }) { },
+   *     async unregisterTrigger({ id, function_id, config }) { },
+   *   },
+   * )
+   * ```
    */
-  __helpers_register_trigger_type = <TConfig>(
+  registerTriggerType = <TConfig>(
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
   ): TriggerTypeRef<TConfig> => {
@@ -188,21 +201,19 @@ class Sdk implements ISdk {
         return ref
       },
       unregister: () => {
-        this.__helpers_unregister_trigger_type(triggerType.id)
+        this.unregisterTriggerType(triggerType)
       },
     }
   }
 
   /**
-   * @internal Implementation backing the `unregisterTriggerType` helper in
-   * the `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   * Unregisters a previously registered trigger type.
    *
-   * Sends an unregister message identifying the trigger type by `id` only,
-   * matching the engine wire format.
+   * @param triggerType - The trigger type to unregister (must match the `id` used during registration).
    */
-  __helpers_unregister_trigger_type = (id: string): void => {
-    this.sendMessage(MessageType.UnregisterTriggerType, { id }, true)
-    this.triggerTypes.delete(id)
+  unregisterTriggerType = (triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>): void => {
+    this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
+    this.triggerTypes.delete(triggerType.id)
   }
 
   /**

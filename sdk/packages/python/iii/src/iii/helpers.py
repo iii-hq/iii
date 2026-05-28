@@ -10,15 +10,11 @@ Mirrors the Rust ``iii_sdk::helpers`` module and the Node
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from .channels import ChannelDirection, ChannelItem
 from .stream import IStream
-from .triggers import TriggerHandler, TriggerTypeRef
 from .types import Channel, IIIClient, extract_channel_refs, is_channel_ref
-
-if TYPE_CHECKING:
-    from .iii_types import RegisterTriggerTypeInput
 
 __all__ = [
     "ChannelDirection",
@@ -28,8 +24,6 @@ __all__ = [
     "create_stream",
     "extract_channel_refs",
     "is_channel_ref",
-    "register_trigger_type",
-    "unregister_trigger_type",
 ]
 
 
@@ -51,14 +45,6 @@ class _IIIWithHelperShims(IIIClient, Protocol):
     def _helpers_create_stream(
         self, stream_name: str, stream: IStream[Any]
     ) -> None: ...
-
-    def _helpers_register_trigger_type(
-        self,
-        trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
-        handler: TriggerHandler[Any],
-    ) -> TriggerTypeRef[Any, Any]: ...
-
-    def _helpers_unregister_trigger_type(self, id: str) -> None: ...
 
 
 def create_channel(iii: IIIClient, buffer_size: int | None = None) -> Channel:
@@ -88,26 +74,3 @@ def create_stream(iii: IIIClient, stream_name: str, stream: IStream[Any]) -> Non
     """
     shim: _IIIWithHelperShims = iii  # type: ignore[assignment]
     shim._helpers_create_stream(stream_name, stream)
-
-
-def register_trigger_type(
-    iii: IIIClient,
-    trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
-    handler: TriggerHandler[Any],
-) -> TriggerTypeRef[Any, Any]:
-    """Register a custom trigger type with the engine.
-
-    Free-function form of the former ``III.register_trigger_type`` method.
-    """
-    shim: _IIIWithHelperShims = iii  # type: ignore[assignment]
-    return shim._helpers_register_trigger_type(trigger_type, handler)
-
-
-def unregister_trigger_type(iii: IIIClient, id: str) -> None:
-    """Unregister a previously registered trigger type by id.
-
-    Free-function form of the former ``III.unregister_trigger_type``
-    method. Takes the trigger type id directly instead of an input object.
-    """
-    shim: _IIIWithHelperShims = iii  # type: ignore[assignment]
-    shim._helpers_unregister_trigger_type(id)

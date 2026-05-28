@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { registerTriggerType } from '../../src/helpers'
 import { iii, sleep } from './utils'
 
 type TriggerTypeRow = {
@@ -28,8 +27,7 @@ describe('Trigger Types', () => {
   })
 
   it('should return a TriggerTypeRef from registerTriggerType', async () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'browser.test.trigger-type', description: 'Browser test trigger type' },
       {
         async registerTrigger() {},
@@ -47,8 +45,7 @@ describe('Trigger Types', () => {
   })
 
   it('should register a trigger via TriggerTypeRef', async () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'browser.test.tt-trigger', description: 'TT trigger test' },
       {
         async registerTrigger() {},
@@ -70,8 +67,7 @@ describe('Trigger Types', () => {
   })
 
   it('should register a function with trigger via TriggerTypeRef', async () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'browser.test.tt-fn', description: 'TT function test' },
       {
         async registerTrigger() {},
@@ -99,8 +95,7 @@ describe('Trigger Types', () => {
   })
 
   it('should unregister a trigger type via TriggerTypeRef', () => {
-    const ref = registerTriggerType(
-      iii,
+    const ref = iii.registerTriggerType(
       { id: 'browser.test.tt-unreg', description: 'TT unregister test' },
       {
         async registerTrigger() {},

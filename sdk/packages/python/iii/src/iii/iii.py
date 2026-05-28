@@ -742,19 +742,39 @@ class III:
         """The worker ID assigned by the engine, or None if not yet registered."""
         return self._worker_id
 
-    # Internal: backing methods for the `iii.helpers` submodule.
-    # These are renamed with a leading underscore so they don't appear on the
-    # public `IIIClient` Protocol; callers use `iii.helpers.<name>(iii, ...)`.
-    def _helpers_register_trigger_type(
+    # Public API
+    def register_trigger_type(
         self,
         trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
         handler: TriggerHandler[Any],
     ) -> "TriggerTypeRef[Any, Any]":
-        """Internal shim backing :func:`iii.helpers.register_trigger_type`.
+        """Register a custom trigger type with the engine.
 
-        Public callers must use the free function from ``iii.helpers``; this
-        method is named with a leading underscore to indicate it is not part
-        of the public API surface.
+        Returns a :class:`TriggerTypeRef` handle with ``register_trigger``
+        and ``register_function`` methods.
+
+        Args:
+            trigger_type: A ``RegisterTriggerTypeInput`` or dict with
+                ``id``, ``description``, and optional ``trigger_request_format``
+                / ``call_request_format`` (Pydantic class or dict).
+            handler: A ``TriggerHandler`` instance.
+
+        Returns:
+            A ``TriggerTypeRef`` with typed ``register_trigger`` and
+            ``register_function`` methods.
+
+        Examples:
+            >>> webhook = iii.register_trigger_type(
+            ...     RegisterTriggerTypeInput(
+            ...         id="webhook",
+            ...         description="Webhook trigger",
+            ...         trigger_request_format=WebhookConfig,
+            ...         call_request_format=WebhookCallRequest,
+            ...     ),
+            ...     WebhookHandler(),
+            ... )
+            >>> webhook.register_function("handler", handle_webhook)
+            >>> webhook.register_trigger("handler", WebhookConfig(url="/hook"))
         """
         if isinstance(trigger_type, dict):
             trigger_type = RegisterTriggerTypeInput(**trigger_type)
@@ -788,15 +808,24 @@ class III:
             request_cls=request_cls,
         )
 
-    def _helpers_unregister_trigger_type(self, id: str) -> None:
-        """Internal shim backing :func:`iii.helpers.unregister_trigger_type`.
+    def unregister_trigger_type(
+        self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]"
+    ) -> None:
+        """Unregister a previously registered trigger type.
 
-        Public callers must use the free function from ``iii.helpers``. Takes
-        the trigger type id directly (the public free function exposes the
-        same shape).
+        Args:
+            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``.
+
+        Examples:
+            >>> iii.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
+            >>> iii.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
         """
-        self._trigger_types.pop(id, None)
-        self._send_if_connected(UnregisterTriggerTypeMessage(id=id))
+        if isinstance(trigger_type, dict):
+            type_id = trigger_type["id"]
+        else:
+            type_id = trigger_type.id
+        self._trigger_types.pop(type_id, None)
+        self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id))
 
     def register_trigger(
         self, trigger: RegisterTriggerInput | dict[str, Any]
@@ -1113,6 +1142,9 @@ class III:
                 invocation_id=invocation_id,
             )
 
+    # Internal: backing methods for items in the `iii.helpers` submodule.
+    # These are renamed with a leading underscore so they don't appear on the
+    # public `IIIClient` Protocol; callers use `iii.helpers.<name>(iii, ...)`.
     def _helpers_create_channel(self, buffer_size: int | None = None) -> Channel:
         """Internal shim backing :func:`iii.helpers.create_channel`.
 

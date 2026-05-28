@@ -56,8 +56,6 @@ def test_helpers_module_exports_expected_names() -> None:
         "create_stream",
         "extract_channel_refs",
         "is_channel_ref",
-        "register_trigger_type",
-        "unregister_trigger_type",
     }
     actual = set(helpers.__all__)
     missing = expected - actual
@@ -73,8 +71,6 @@ def test_helpers_free_functions_take_iii_first() -> None:
         "create_channel",
         "create_channel_async",
         "create_stream",
-        "register_trigger_type",
-        "unregister_trigger_type",
     ):
         sig = inspect.signature(getattr(helpers, name))
         params = list(sig.parameters)
@@ -136,8 +132,6 @@ def test_iii_no_longer_exposes_relocated_methods(monkeypatch: pytest.MonkeyPatch
 
     try:
         for name in (
-            "register_trigger_type",
-            "unregister_trigger_type",
             "create_channel",
             "create_channel_async",
             "create_stream",
@@ -152,8 +146,6 @@ def test_iii_client_protocol_no_longer_declares_relocated_methods() -> None:
     from iii import IIIClient
 
     for name in (
-        "register_trigger_type",
-        "unregister_trigger_type",
         "create_channel",
         "create_stream",
     ):
@@ -174,11 +166,10 @@ def test_init_no_longer_exports_relocated_channel_items() -> None:
         assert name not in iii.__all__, f"{name} still in iii.__all__"
 
 
-def test_helpers_register_and_unregister_trigger_type_round_trip(
+def test_iii_register_and_unregister_trigger_type_round_trip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from iii import RegisterTriggerTypeInput
-    from iii.helpers import register_trigger_type, unregister_trigger_type
     from iii.triggers import TriggerConfig, TriggerHandler
 
     class DummyHandler(TriggerHandler[Any]):
@@ -195,11 +186,11 @@ def test_helpers_register_and_unregister_trigger_type_round_trip(
             id="helpers.test", description="from helpers"
         )
 
-        ref = register_trigger_type(client, trigger_type, DummyHandler())
+        ref = client.register_trigger_type(trigger_type, DummyHandler())
         assert "helpers.test" in client._trigger_types
         assert ref is not None
 
-        unregister_trigger_type(client, "helpers.test")
+        client.unregister_trigger_type(trigger_type)
         assert "helpers.test" not in client._trigger_types
     finally:
         client.shutdown()

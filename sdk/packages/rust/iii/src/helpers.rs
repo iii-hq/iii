@@ -11,9 +11,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::error::IIIError;
-use crate::iii::{III, RegisterFunction, RegisterTriggerType, TriggerTypeRef};
+use crate::iii::{III, RegisterFunction};
 use crate::stream_provider::IStream;
-use crate::triggers::TriggerHandler;
 use crate::types::{
     Channel, StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput,
     StreamSetInput,
@@ -107,50 +106,4 @@ where
             }
         }),
     );
-}
-
-/// Register a custom trigger type with the engine.
-///
-/// Free-function form of `III`'s former `register_trigger_type` method.
-/// Returns a [`TriggerTypeRef`] handle that can register triggers and
-/// functions with compile-time validated types.
-///
-/// # Examples
-/// ```rust,no_run
-/// # use iii_sdk::{III, RegisterTriggerType, helpers};
-/// # struct MyHandler;
-/// # #[async_trait::async_trait]
-/// # impl iii_sdk::TriggerHandler for MyHandler {
-/// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
-/// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
-/// # }
-/// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
-/// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
-/// # let iii = III::new("ws://localhost:49134");
-/// let my_trigger = helpers::register_trigger_type(
-///     &iii,
-///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
-///         .trigger_request_format::<MyConfig>()
-///         .call_request_format::<MyRequest>(),
-/// );
-///
-/// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-/// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
-///     Ok(serde_json::json!({ "data": req.data }))
-/// });
-/// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
-/// ```
-pub fn register_trigger_type<H, C, R>(
-    iii: &III,
-    registration: RegisterTriggerType<H, C, R>,
-) -> TriggerTypeRef<C, R>
-where
-    H: TriggerHandler + 'static,
-{
-    crate::iii::internal_register_trigger_type(iii, registration)
-}
-
-/// Unregister a previously registered trigger type by id.
-pub fn unregister_trigger_type(iii: &III, id: impl Into<String>) {
-    crate::iii::internal_unregister_trigger_type(iii, id.into());
 }

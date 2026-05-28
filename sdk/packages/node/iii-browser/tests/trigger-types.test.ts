@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { registerTriggerType } from '../src/helpers'
 import { registerWorker } from '../src/iii'
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
@@ -25,8 +24,7 @@ describe('Trigger Types', () => {
   })
 
   it('should send registertriggertype message', () => {
-    registerTriggerType(
-      sdk,
+    sdk.registerTriggerType(
       { id: 'webhook', description: 'Incoming webhook trigger' },
       { registerTrigger: empty, unregisterTrigger: empty },
     )
@@ -38,8 +36,7 @@ describe('Trigger Types', () => {
   })
 
   it('should return TriggerTypeRef with convenience methods', () => {
-    const ref = registerTriggerType(
-      sdk,
+    const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
       { registerTrigger: empty, unregisterTrigger: empty },
     )
@@ -51,8 +48,7 @@ describe('Trigger Types', () => {
   })
 
   it('should register trigger with correct type via ref.registerTrigger', () => {
-    const ref = registerTriggerType(
-      sdk,
+    const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
       { registerTrigger: empty, unregisterTrigger: empty },
     )
@@ -67,8 +63,7 @@ describe('Trigger Types', () => {
   })
 
   it('should register function + trigger via ref.registerFunction', () => {
-    const ref = registerTriggerType(
-      sdk,
+    const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
       { registerTrigger: empty, unregisterTrigger: empty },
     )
@@ -90,8 +85,7 @@ describe('Trigger Types', () => {
   })
 
   it('should unregister trigger type via ref.unregister', () => {
-    const ref = registerTriggerType(
-      sdk,
+    const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
       { registerTrigger: empty, unregisterTrigger: empty },
     )
@@ -107,7 +101,7 @@ describe('Trigger Types', () => {
     const registerTrigger = vi.fn().mockResolvedValue(undefined)
     const unregisterTrigger = vi.fn().mockResolvedValue(undefined)
 
-    registerTriggerType(sdk, { id: 'webhook', description: 'Webhook' }, { registerTrigger, unregisterTrigger })
+    sdk.registerTriggerType({ id: 'webhook', description: 'Webhook' }, { registerTrigger, unregisterTrigger })
 
     engine.sendRegisterTrigger('webhook', 'trigger-1', 'handler-fn', { url: '/test' })
 
@@ -127,8 +121,7 @@ describe('Trigger Types', () => {
   })
 
   it('should send error result when handler throws', async () => {
-    registerTriggerType(
-      sdk,
+    sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
       {
         registerTrigger: async () => {

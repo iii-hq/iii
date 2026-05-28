@@ -9,7 +9,7 @@ import pytest
 
 import iii.iii as iii_module
 from iii import InitOptions, RegisterTriggerTypeInput
-from iii.helpers import create_channel, register_trigger_type, unregister_trigger_type
+from iii.helpers import create_channel
 from iii.iii import III
 from iii.triggers import TriggerConfig, TriggerHandler
 
@@ -167,12 +167,12 @@ def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: p
     time.sleep(0.05)
     trigger_type = RegisterTriggerTypeInput(id="trigger.test", description="Trigger description")
 
-    register_trigger_type(client, trigger_type, DummyTriggerHandler())
+    client.register_trigger_type(trigger_type, DummyTriggerHandler())
 
     assert "trigger.test" in client._trigger_types
     assert client._trigger_types["trigger.test"].message.description == "Trigger description"
 
-    unregister_trigger_type(client, trigger_type.id)
+    client.unregister_trigger_type(trigger_type)
 
     assert "trigger.test" not in client._trigger_types
 

@@ -13,6 +13,7 @@ from .iii_types import (
     HttpInvocationConfig,
     RegisterFunctionMessage,
     RegisterTriggerInput,
+    RegisterTriggerTypeInput,
     RegisterTriggerTypeMessage,
     StreamChannelRef,
     TriggerRequest,
@@ -78,9 +79,7 @@ class IIIClient(Protocol):
     """Protocol for III client implementations.
 
     Helper free functions live in :mod:`iii.helpers`. See
-    :func:`iii.helpers.create_channel`, :func:`iii.helpers.create_stream`,
-    :func:`iii.helpers.register_trigger_type`, and
-    :func:`iii.helpers.unregister_trigger_type`.
+    :func:`iii.helpers.create_channel` and :func:`iii.helpers.create_stream`.
     """
 
     def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
@@ -92,6 +91,14 @@ class IIIClient(Protocol):
     ) -> Any: ...
 
     def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
+
+    def register_trigger_type(
+        self,
+        trigger_type: RegisterTriggerTypeInput | dict[str, Any],
+        handler: TriggerHandler[Any],
+    ) -> Any: ...
+
+    def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
 
     def shutdown(self) -> None: ...
 

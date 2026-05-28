@@ -7,8 +7,6 @@ import {
   createStream,
   extractChannelRefs,
   isChannelRef,
-  registerTriggerType,
-  unregisterTriggerType,
 } from '../src/helpers'
 import { registerWorker } from '../src/iii'
 import { MockEngine } from './mock-websocket'
@@ -26,8 +24,6 @@ describe('helpers module', () => {
   it('exposes free functions taking iii as first arg', () => {
     expect(createChannel.length).toBe(2)
     expect(createStream.length).toBe(3)
-    expect(registerTriggerType.length).toBe(3)
-    expect(unregisterTriggerType.length).toBe(2)
   })
 })
 
@@ -48,8 +44,6 @@ describe('Browser ISdk public surface', () => {
     try {
       expect(iii.createChannel).toBeUndefined()
       expect(iii.createStream).toBeUndefined()
-      expect(iii.registerTriggerType).toBeUndefined()
-      expect(iii.unregisterTriggerType).toBeUndefined()
     } finally {
       await (iii as unknown as { shutdown(): Promise<void> }).shutdown()
     }

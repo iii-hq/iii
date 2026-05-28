@@ -20,7 +20,7 @@ pub struct TriggerConfig {
 }
 
 /// Handler trait for custom trigger types. Implement this and pass to
-/// [`helpers::register_trigger_type`](crate::helpers::register_trigger_type).
+/// [`III::register_trigger_type`](crate::III::register_trigger_type).
 #[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.
