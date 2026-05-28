@@ -84,7 +84,8 @@ vi.mock('../../observability/src/telemetry-system/connection', () => ({
   })),
 }))
 
-import { initOtel, shutdownOtel, getTracer } from '@iii-dev/observability'
+import { initOtel, shutdownOtel } from '@iii-dev/observability'
+import { getTracer } from '@iii-dev/observability/internal'
 
 describe('Fetch instrumentation', () => {
   const originalEnv = process.env

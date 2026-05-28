@@ -25,10 +25,16 @@ vi.mock('@iii-dev/observability', async (importOriginal) => {
     configurable: true,
   })
 
+  return { ...mod }
+})
+
+// Return null tracer so iii.ts falls back to the synthetic-span path when
+// OTel is disabled, which is the behaviour this test exercises. iii.ts reads
+// getTracer from the internal entry point, so the override lives here.
+vi.mock('@iii-dev/observability/internal', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@iii-dev/observability/internal')>()
   return {
     ...mod,
-    // Return null tracer so iii.ts falls back to the synthetic-span path when
-    // OTel is disabled, which is the behaviour this test exercises.
     getTracer: () => null,
   }
 })
