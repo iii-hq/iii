@@ -1,5 +1,5 @@
 iii: v1
-name: iii-configuration
+name: configuration
 type: engine
 description: Configuration worker for the iii engine.
 repo: https://github.com/iii-hq/iii

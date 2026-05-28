@@ -577,7 +577,9 @@ jobs:
 
   publish-builtin-workers:
     name: Publish builtin workers
-    needs: [setup, create-iii-release, engine-release]
+    # worker-release must finish before iii-sandbox publish: the install script
+    # pulls iii-worker from the GitHub release being tagged.
+    needs: [setup, create-iii-release, engine-release, worker-release]
     if: needs.setup.outputs.dry_run != 'true'
     strategy:
       fail-fast: false
