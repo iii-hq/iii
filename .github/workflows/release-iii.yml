@@ -601,6 +601,8 @@ jobs:
             worker_dir: engine/src/workers/shell
           - worker: iii-bridge
             worker_dir: engine/src/workers/bridge_client
+          - worker: configuration
+            worker_dir: engine/src/workers/configuration
           - worker: iii-sandbox
             worker_dir: crates/iii-worker/src/sandbox_daemon
     uses: ./.github/workflows/_publish-engine-workers.yml

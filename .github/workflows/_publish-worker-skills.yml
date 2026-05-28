@@ -31,7 +31,7 @@ jobs:
       - name: Install pyyaml
         run: pip install --quiet pyyaml
 
-      - name: Discover engine worker skill bundles
+      - name: Discover worker skill bundles
         id: discover
         run: |
           python3 .github/scripts/discover_engine_worker_skills.py --repo-root .
