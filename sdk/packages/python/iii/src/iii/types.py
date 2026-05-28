@@ -200,6 +200,12 @@ def extract_channel_refs(data: Any) -> list[tuple[str, StreamChannelRef]]:
 def _extract_refs_recursive(
     data: Any, prefix: str, refs: list[tuple[str, StreamChannelRef]]
 ) -> None:
+    if is_channel_ref(data):
+        try:
+            refs.append((prefix, StreamChannelRef(**data)))
+        except Exception:
+            pass
+        return
     if isinstance(data, dict):
         for key, value in data.items():
             path = key if not prefix else f"{prefix}.{key}"

@@ -62,6 +62,10 @@ const extractRefsRecursive = (
   prefix: string,
   refs: Array<[string, StreamChannelRef]>,
 ): void => {
+  if (isChannelRef(data)) {
+    refs.push([prefix, data])
+    return
+  }
   if (Array.isArray(data)) {
     for (let i = 0; i < data.length; i++) {
       const path = prefix === '' ? `[${i}]` : `${prefix}[${i}]`

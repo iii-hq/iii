@@ -43,6 +43,10 @@ class ChannelItem:
     text: str | None = None
     binary: bytes | None = None
 
+    def __post_init__(self) -> None:
+        if (self.text is None) == (self.binary is None):
+            raise ValueError("ChannelItem requires exactly one of `text` or `binary`")
+
     @classmethod
     def text_item(cls, value: str) -> "ChannelItem":
         return cls(text=value, binary=None)
