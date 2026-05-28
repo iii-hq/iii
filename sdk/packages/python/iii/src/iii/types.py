@@ -209,16 +209,7 @@ def _extract_refs_recursive(
     if isinstance(data, dict):
         for key, value in data.items():
             path = key if not prefix else f"{prefix}.{key}"
-            if is_channel_ref(value):
-                try:
-                    refs.append((path, StreamChannelRef(**value)))
-                except Exception:
-                    pass
-            elif isinstance(value, dict):
-                _extract_refs_recursive(value, path, refs)
-            elif isinstance(value, list):
-                for idx, item in enumerate(value):
-                    _extract_refs_recursive(item, f"{path}[{idx}]", refs)
+            _extract_refs_recursive(value, path, refs)
     elif isinstance(data, list):
         for idx, item in enumerate(data):
             path = f"[{idx}]" if not prefix else f"{prefix}[{idx}]"

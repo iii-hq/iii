@@ -122,14 +122,6 @@ const extractRefsRecursive = (
 
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
     const path = prefix === '' ? key : `${prefix}.${key}`
-    if (isChannelRef(value)) {
-      refs.push([path, value])
-    } else if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) {
-        extractRefsRecursive(value[i], `${path}[${i}]`, refs)
-      }
-    } else if (typeof value === 'object' && value !== null) {
-      extractRefsRecursive(value, path, refs)
-    }
+    extractRefsRecursive(value, path, refs)
   }
 }
