@@ -917,16 +917,16 @@ impl III {
     /// ```
     pub fn register_trigger_type<H, C, R>(
         &self,
-        registration: RegisterTriggerType<H, C, R>,
+        trigger_type: RegisterTriggerType<H, C, R>,
     ) -> TriggerTypeRef<C, R>
     where
         H: TriggerHandler + 'static,
     {
         let message = RegisterTriggerTypeMessage {
-            id: registration.id,
-            description: registration.description,
-            trigger_request_format: registration.trigger_request_format,
-            call_request_format: registration.call_request_format,
+            id: trigger_type.id,
+            description: trigger_type.description,
+            trigger_request_format: trigger_type.trigger_request_format,
+            call_request_format: trigger_type.call_request_format,
         };
 
         let trigger_type_id = message.id.clone();
@@ -935,7 +935,7 @@ impl III {
             message.id.clone(),
             RemoteTriggerTypeData {
                 message: message.clone(),
-                handler: Arc::new(registration.handler),
+                handler: Arc::new(trigger_type.handler),
             },
         );
 

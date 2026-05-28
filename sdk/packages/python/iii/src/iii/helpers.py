@@ -10,11 +10,13 @@ Mirrors the Rust ``iii_sdk::helpers`` module and the Node
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from .channels import ChannelDirection, ChannelItem
 from .stream import IStream
 from .types import Channel, IIIClient, extract_channel_refs, is_channel_ref
+
+TData = TypeVar("TData")
 
 __all__ = [
     "ChannelDirection",
@@ -44,7 +46,7 @@ class _IIIWithHelperShims(IIIClient, Protocol):
 
     def _helpers_create_stream(
         self, stream_name: str, stream: IStream[Any]
-    ) -> None: ...
+    ) -> None: ...  # noqa: D401 — internal shim, generic erased at the boundary
 
 
 def create_channel(iii: IIIClient, buffer_size: int | None = None) -> Channel:
@@ -67,10 +69,12 @@ async def create_channel_async(
     return await shim._helpers_create_channel_async(buffer_size)
 
 
-def create_stream(iii: IIIClient, stream_name: str, stream: IStream[Any]) -> None:
+def create_stream(iii: IIIClient, stream_name: str, stream: IStream[TData]) -> None:
     """Register a custom stream implementation.
 
     Free-function form of the former ``III.create_stream`` instance method.
+    The ``IStream`` generic ``TData`` is preserved so type checkers can
+    validate the implementor's get/set/delete/list signatures.
     """
     shim: _IIIWithHelperShims = iii  # type: ignore[assignment]
     shim._helpers_create_stream(stream_name, stream)

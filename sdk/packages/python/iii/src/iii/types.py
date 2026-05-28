@@ -5,7 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Protocol, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Generic,
+    Literal,
+    Protocol,
+    TypedDict,
+    TypeGuard,
+    TypeVar,
+)
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -182,8 +193,25 @@ class HttpRequest:
     request_body: ChannelReader
 
 
-def is_channel_ref(value: Any) -> bool:
-    """Check if a value looks like a StreamChannelRef."""
+class StreamChannelRefDict(TypedDict):
+    """Wire-shape of a :class:`StreamChannelRef` as it appears in raw payloads.
+
+    Used as the narrowed type for :func:`is_channel_ref` so type checkers can
+    validate ``value["channel_id"]`` style access after the guard passes.
+    """
+
+    channel_id: str
+    access_key: str
+    direction: Literal["read", "write"]
+
+
+def is_channel_ref(value: Any) -> TypeGuard[StreamChannelRefDict]:
+    """Check if a value looks like a StreamChannelRef.
+
+    Returns a :class:`typing.TypeGuard` that narrows ``value`` to
+    :class:`StreamChannelRefDict`, mirroring the TypeScript SDK's
+    ``value is StreamChannelRef`` predicate.
+    """
     return (
         isinstance(value, dict)
         and isinstance(value.get("channel_id"), str)

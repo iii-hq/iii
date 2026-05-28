@@ -30,16 +30,16 @@ pub async fn create_channel(iii: &III, buffer_size: Option<usize>) -> Result<Cha
 /// Wires the 5 callable `stream::*` functions (`get`, `set`, `delete`, `list`,
 /// `list_groups`) on the engine through the supplied [`IStream`] implementor.
 /// `update` is **not** registered — atomic updates remain engine-side.
-pub fn create_stream<S>(iii: &III, name: impl Into<String>, stream: S)
+pub fn create_stream<S>(iii: &III, stream_name: impl Into<String>, stream: S)
 where
     S: IStream,
 {
     let stream: Arc<S> = Arc::new(stream);
-    let name = name.into();
+    let stream_name = stream_name.into();
 
     let s = stream.clone();
     iii.register_function(
-        format!("stream::get({name})"),
+        format!("stream::get({stream_name})"),
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
@@ -53,7 +53,7 @@ where
 
     let s = stream.clone();
     iii.register_function(
-        format!("stream::set({name})"),
+        format!("stream::set({stream_name})"),
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
@@ -67,7 +67,7 @@ where
 
     let s = stream.clone();
     iii.register_function(
-        format!("stream::delete({name})"),
+        format!("stream::delete({stream_name})"),
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
@@ -81,7 +81,7 @@ where
 
     let s = stream.clone();
     iii.register_function(
-        format!("stream::list({name})"),
+        format!("stream::list({stream_name})"),
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
@@ -95,7 +95,7 @@ where
 
     let s = stream.clone();
     iii.register_function(
-        format!("stream::list_groups({name})"),
+        format!("stream::list_groups({stream_name})"),
         RegisterFunction::new_async(move |input: Value| {
             let s = s.clone();
             async move {
