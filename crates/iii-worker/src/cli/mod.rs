@@ -28,6 +28,7 @@ pub mod sandbox_daemon;
 pub mod shell_client;
 pub mod shell_relay;
 pub mod source_watcher;
+pub mod spinner;
 pub mod status;
 pub mod stderr_sink;
 pub mod supervisor_ctl;

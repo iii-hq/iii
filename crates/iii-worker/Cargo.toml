@@ -64,6 +64,10 @@ fslock = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
+# Needed to construct `oci_client::client::ImageLayer` / `Config` when we
+# replace the monolithic `client.pull` with a streaming per-layer pull
+# for byte-level progress.
+bytes = "1"
 indicatif = "0.17"
 notify = "8.2.0"
 # `iii worker exec` stdout/stderr/stdin frames encode binary payloads

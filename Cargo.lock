@@ -2947,6 +2947,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64",
+ "bytes",
  "clap",
  "cliclack",
  "colored",

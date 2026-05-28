@@ -471,12 +471,34 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     };
     let client = Client::new(config);
 
-    eprintln!("  Pulling image layers...");
-    let media_types: Vec<&str> = vec![
-        oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
-        oci_client::manifest::IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE,
-        oci_client::manifest::IMAGE_LAYER_MEDIA_TYPE,
-    ];
+    // Pre-fetch the manifest so we can tell the user UP FRONT what they're
+    // about to wait for (layer count + total compressed bytes). The
+    // `client.pull(...)` call below is one blocking network operation
+    // with no per-byte progress hook, so without this summary the only
+    // signal the wait UI has is the 3s heartbeat (elapsed time only).
+    // Knowing "1247 MiB across 5 layers" lets the user gauge how long
+    // the pull will realistically take. Best-effort: if the registry
+    // returns an Image Index (multi-platform manifest) we skip the
+    // summary rather than do the full platform resolution dance — the
+    // pull below handles that path natively.
+    let manifest_summary: String = match client
+        .pull_manifest(&reference, &RegistryAuth::Anonymous)
+        .await
+    {
+        Ok((oci_client::manifest::OciManifest::Image(m), _)) => {
+            let bytes: i64 = m.layers.iter().map(|l| l.size).sum();
+            format!(
+                " ({} layer{}, {:.1} MiB)",
+                m.layers.len(),
+                if m.layers.len() == 1 { "" } else { "s" },
+                bytes as f64 / (1024.0 * 1024.0),
+            )
+        }
+        _ => String::new(),
+    };
+
+    eprintln!("  Pulling {}{}...", image, manifest_summary);
+    let _ = manifest_summary; // consumed inside pull_with_progress now
 
     const MAX_PULL_ATTEMPTS: u32 = 3;
     let mut image_data = None;
@@ -494,10 +516,16 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
             tokio::time::sleep(delay).await;
         }
 
-        match client
-            .pull(&reference, &RegistryAuth::Anonymous, media_types.clone())
-            .await
-        {
+        // Streaming pull: fetch manifest, then pull each layer via
+        // `pull_blob_stream`, counting bytes into an Arc<AtomicU64>.
+        // A background task reads the counter every 2s and emits a
+        // real progress line:
+        //   "Pulling <image>: 412.6/1247.3 MiB (33%, 41.2 MiB/s, 10s)"
+        // The wait UI's `tail:` row picks up the latest one and shows
+        // genuine download progress instead of just elapsed time.
+        let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
+
+        match pull_result {
             Ok(data) => {
                 image_data = Some(data);
                 break;
@@ -593,10 +621,27 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     };
 
     let mut total_size: u64 = 0;
+    use std::io::IsTerminal;
+    let mirror_layer_lines = !std::io::stderr().is_terminal();
     let extract_result: Result<()> = (|| {
         for (i, layer) in image_data.layers.iter().enumerate() {
             extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
             pb.inc(1);
+            // On TTY, indicatif's progress bar handles the live row.
+            // On non-TTY (engine-captured log file), the bar produces
+            // nothing — so we mirror each completed layer as a plain
+            // eprintln to keep the `tail:` row in `iii worker add
+            // --wait` refreshing with concrete progress. The TTY
+            // branch SKIPS this print so it doesn't scroll the bar's
+            // row off as the bar is also being redrawn.
+            if mirror_layer_lines {
+                eprintln!(
+                    "  Extracted layer {}/{} ({:.1} MiB total)",
+                    i + 1,
+                    layer_count,
+                    total_size as f64 / (1024.0 * 1024.0),
+                );
+            }
         }
         pb.finish();
 
@@ -741,9 +786,373 @@ pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Streaming pull with byte-level progress
+//
+// `oci_client::Client::pull` is one blocking call with no per-byte hook,
+// which forced our wait UI to fall back on an elapsed-time-only heart-
+// beat. Re-implement the pull at the layer level: fetch the manifest
+// (resolving multi-platform), pull the config blob, then stream each
+// layer via `pull_blob_stream`, counting bytes into a shared
+// `AtomicU64`. A background task reads the counter every 2s and emits
+// a real progress line that the wait UI's `tail:` row surfaces.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn pull_with_progress(
+    client: &oci_client::Client,
+    reference: &oci_client::Reference,
+    image: &str,
+    host_arch: &str,
+) -> Result<oci_client::client::ImageData> {
+    use futures::StreamExt;
+    use oci_client::client::{Config, ImageData, ImageLayer};
+    use sha2::Digest;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // 1. Manifest (resolving multi-platform if the registry returned an
+    //    ImageIndex). Tracks the resolved manifest digest so we can
+    //    return it to the caller alongside the data.
+    let (image_manifest, manifest_digest) =
+        pull_image_manifest_resolved(client, reference, host_arch).await?;
+
+    let total_bytes: u64 = image_manifest
+        .layers
+        .iter()
+        .map(|l| l.size.max(0) as u64)
+        .sum();
+    let downloaded = Arc::new(AtomicU64::new(0));
+
+    // 2. Heartbeat task using the byte counter. 2-second cadence
+    //    rather than 3 so the percentage feels live without burning
+    //    the file with chatter.
+    let downloaded_for_heartbeat = Arc::clone(&downloaded);
+    let total_for_heartbeat = total_bytes;
+    let image_for_heartbeat = image.to_string();
+    let attempt_started = std::time::Instant::now();
+    // Skip the per-second heartbeat eprintlns when stderr is a TTY: the
+    // caller (`handle_oci_pull_and_add`) wraps this whole call in a
+    // `Spinner` whose 100ms tick redraws the same row. Heartbeat
+    // eprintlns from here would scroll the spinner row off and produce
+    // visual chaos. The non-TTY path (engine-spawned subprocess →
+    // `~/.iii/logs/<name>/stderr.log`) NEEDS these lines because the
+    // wait UI tails that file for the `tail:` row, and there's no
+    // spinner there.
+    use std::io::IsTerminal;
+    let emit_heartbeat = !std::io::stderr().is_terminal();
+    // Scope guard: aborts the heartbeat task on Drop. Without this, every
+    // `?` operator between here and the explicit `drop(heartbeat)` at the
+    // end of this function (config-blob fetch, every layer's
+    // `pull_blob_stream`, every chunk read) would early-return and leak
+    // the task — it would keep `eprintln!`-ing progress lines for the
+    // rest of the process lifetime, racing against the retry loop's
+    // next attempt's fresh heartbeat. With this guard the abort fires
+    // unconditionally on any return path.
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let heartbeat = AbortOnDrop(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        // Default `Burst` would replay missed ticks back-to-back if
+        // the runtime worker thread was held off (e.g., a blocking
+        // syscall elsewhere). The wait UI would suddenly see N
+        // identical "Pulling X.X/Y.Y MiB" lines in milliseconds, which
+        // looks like a glitch rather than honest progress.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // first tick is instant; consume it
+        loop {
+            interval.tick().await;
+            let dl = downloaded_for_heartbeat.load(Ordering::Relaxed);
+            let elapsed = attempt_started.elapsed().as_secs().max(1);
+            let mb = dl as f64 / (1024.0 * 1024.0);
+            if total_for_heartbeat > 0 {
+                let total_mb = total_for_heartbeat as f64 / (1024.0 * 1024.0);
+                let pct = (dl as u128 * 100 / total_for_heartbeat.max(1) as u128).min(100) as u64;
+                let rate = mb / elapsed as f64;
+                if emit_heartbeat {
+                    eprintln!(
+                        "  Pulling {}: {:.1}/{:.1} MiB ({}%, {:.1} MiB/s, {}s)",
+                        image_for_heartbeat, mb, total_mb, pct, rate, elapsed
+                    );
+                }
+            } else if emit_heartbeat {
+                // Registry didn't report layer sizes — show what we've
+                // got so the user at least sees activity.
+                eprintln!(
+                    "  Pulling {}: {:.1} MiB ({}s)",
+                    image_for_heartbeat, mb, elapsed
+                );
+            }
+        }
+    }));
+
+    // 3. Pull the config blob. Small (typically <10 KiB), doesn't
+    //    contribute to the layer-progress denominator. Verify the
+    //    descriptor's SHA256 digest while streaming so a corrupted CDN
+    //    response or MITM doesn't slip through — the upstream
+    //    `client.pull(...)` we replaced did this internally; the
+    //    streaming path needs to do it explicitly.
+    let mut config_bytes: Vec<u8> = Vec::with_capacity(image_manifest.config.size.max(0) as usize);
+    let mut config_hasher = sha2::Sha256::new();
+    let mut config_stream = client
+        .pull_blob_stream(reference, &image_manifest.config)
+        .await
+        .context("failed to pull image config blob")?;
+    while let Some(chunk) = config_stream.next().await {
+        let chunk = chunk.context("config blob stream chunk failed")?;
+        config_hasher.update(&chunk);
+        config_bytes.extend_from_slice(&chunk);
+    }
+    verify_sha256_digest(&image_manifest.config.digest, config_hasher, "image config")?;
+    let config = Config {
+        data: bytes::Bytes::from(config_bytes),
+        media_type: image_manifest.config.media_type.clone(),
+        annotations: None,
+    };
+
+    // 4. Pull each layer with byte-progress counter updates. Sequential
+    //    rather than concurrent: registries throttle per-connection, so
+    //    parallel pulls rarely speed things up and they make the
+    //    progress display incoherent ("layer 1 at 80%, layer 3 at 40%").
+    //    Each layer's bytes are hashed as they stream and verified
+    //    against the manifest descriptor's digest before the layer is
+    //    accepted into `layers` — content integrity match before the
+    //    extract step touches the rootfs.
+    let mut layers: Vec<ImageLayer> = Vec::with_capacity(image_manifest.layers.len());
+    for (idx, layer_desc) in image_manifest.layers.iter().enumerate() {
+        let mut layer_bytes: Vec<u8> = Vec::with_capacity(layer_desc.size.max(0) as usize);
+        let mut layer_hasher = sha2::Sha256::new();
+        let mut stream = client
+            .pull_blob_stream(reference, layer_desc)
+            .await
+            .with_context(|| format!("failed to pull layer {} blob", idx + 1))?;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("layer {} stream chunk failed", idx + 1))?;
+            layer_hasher.update(&chunk);
+            downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            layer_bytes.extend_from_slice(&chunk);
+        }
+        verify_sha256_digest(
+            &layer_desc.digest,
+            layer_hasher,
+            &format!("layer {}", idx + 1),
+        )?;
+        layers.push(ImageLayer {
+            data: bytes::Bytes::from(layer_bytes),
+            media_type: layer_desc.media_type.clone(),
+            annotations: None,
+        });
+    }
+
+    drop(heartbeat); // explicit: AbortOnDrop fires here
+
+    // Final 100% line so the user sees the pull cleanly conclude
+    // before the extract eprintlns start. Gated on non-TTY for the same
+    // reason as the heartbeat: on TTY the outer Spinner provides the
+    // signal; here this line would just collide with it.
+    let final_mb = downloaded.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
+    let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
+    let final_elapsed = attempt_started.elapsed().as_secs().max(1);
+    if emit_heartbeat {
+        eprintln!(
+            "  Pulling {}: {:.1}/{:.1} MiB (100%, {:.1}s total)",
+            image, final_mb, total_mb, final_elapsed as f64
+        );
+    }
+
+    Ok(ImageData {
+        layers,
+        digest: manifest_digest,
+        config,
+        manifest: Some(image_manifest),
+    })
+}
+
+/// Compare the SHA256 digest a streaming hasher produced against the OCI
+/// descriptor's expected digest string ("sha256:<hex>"). Returns Err on
+/// mismatch, unsupported algorithm, or malformed digest string — caller
+/// propagates so the corrupted blob never reaches the extract step or
+/// the rootfs.
+///
+/// This is the only content-integrity check on the streaming pull path.
+/// The original `oci_client::Client::pull(...)` did this internally; we
+/// have to do it explicitly now that we walk blobs ourselves for
+/// byte-level progress reporting.
+fn verify_sha256_digest(expected: &str, hasher: sha2::Sha256, label: &str) -> Result<()> {
+    use sha2::Digest;
+    // Match the algorithm prefix case-insensitively. The OCI spec
+    // mandates lowercase `sha256:` but defensively accepting `Sha256:`
+    // / `SHA256:` keeps a registry-side typo from surfacing as the
+    // wrong error ("unsupported algorithm" when the algorithm is fine
+    // and only the case is wrong).
+    let Some(expected_hex) = expected
+        .split_once(':')
+        .filter(|(alg, _)| alg.eq_ignore_ascii_case("sha256"))
+        .map(|(_, hex)| hex)
+    else {
+        // OCI distribution spec allows other algorithms, but in practice
+        // every registry we target uses SHA256. Fail loudly on anything
+        // else so a future spec drift doesn't silently degrade to
+        // "verified" when nothing was checked.
+        anyhow::bail!(
+            "{} digest uses unsupported algorithm: {} (expected sha256:...)",
+            label,
+            expected
+        );
+    };
+    let computed = hasher.finalize();
+    let computed_hex = computed
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    if !computed_hex.eq_ignore_ascii_case(expected_hex) {
+        anyhow::bail!(
+            "{} digest mismatch: expected sha256:{}, got sha256:{}",
+            label,
+            expected_hex,
+            computed_hex
+        );
+    }
+    Ok(())
+}
+
+/// Fetch the image manifest, resolving multi-platform `ImageIndex` to
+/// the appropriate `linux/<host_arch>` `Image` manifest. Returns the
+/// resolved Image manifest and its digest.
+async fn pull_image_manifest_resolved(
+    client: &oci_client::Client,
+    reference: &oci_client::Reference,
+    host_arch: &str,
+) -> Result<(oci_client::manifest::OciImageManifest, Option<String>)> {
+    use oci_client::secrets::RegistryAuth;
+
+    let target_arch = match host_arch {
+        "arm64" => oci_spec::image::Arch::ARM64,
+        _ => oci_spec::image::Arch::Amd64,
+    };
+
+    let (manifest, digest) = client
+        .pull_manifest(reference, &RegistryAuth::Anonymous)
+        .await
+        .context("failed to pull image manifest")?;
+
+    match manifest {
+        oci_client::manifest::OciManifest::Image(m) => Ok((m, Some(digest))),
+        oci_client::manifest::OciManifest::ImageIndex(idx) => {
+            let chosen = idx.manifests.iter().find(|m| {
+                m.platform.as_ref().is_some_and(|p| {
+                    p.os == oci_spec::image::Os::Linux && p.architecture == target_arch
+                })
+            });
+            let chosen_digest = chosen
+                .ok_or_else(|| {
+                    let available: Vec<String> = idx
+                        .manifests
+                        .iter()
+                        .filter_map(|m| {
+                            m.platform
+                                .as_ref()
+                                .map(|p| format!("{}/{}", p.os, p.architecture))
+                        })
+                        .collect();
+                    anyhow::anyhow!(
+                        "no linux/{} manifest in image index. Available platforms: {}",
+                        host_arch,
+                        available.join(", ")
+                    )
+                })?
+                .digest
+                .clone();
+            let resolved_ref = reference.clone_with_digest(chosen_digest.clone());
+            let (m, d) = client
+                .pull_manifest(&resolved_ref, &RegistryAuth::Anonymous)
+                .await
+                .context("failed to pull resolved platform manifest")?;
+            match m {
+                oci_client::manifest::OciManifest::Image(im) => Ok((im, Some(d))),
+                oci_client::manifest::OciManifest::ImageIndex(_) => {
+                    Err(anyhow::anyhow!("nested ImageIndex not supported"))
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the streaming pull's `verify_sha256_digest` must
+    /// accept a hasher whose finalize matches the descriptor's hex
+    /// suffix (case-insensitively).
+    #[test]
+    fn verify_sha256_digest_accepts_matching_hash() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"hello world");
+        // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+        let expected = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        verify_sha256_digest(expected, h, "test blob").expect("digest must match");
+    }
+
+    /// Regression: a one-byte difference in streamed content must fail
+    /// loudly. Without this check, a MITM-corrupted CDN response would
+    /// silently land in the rootfs.
+    #[test]
+    fn verify_sha256_digest_rejects_mismatched_hash() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"goodbye world");
+        let expected = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        let err = verify_sha256_digest(expected, h, "tampered blob")
+            .expect_err("mismatched digest must fail");
+        assert!(err.to_string().contains("tampered blob"));
+        assert!(err.to_string().contains("digest mismatch"));
+    }
+
+    /// Future spec drift safeguard: an unsupported digest algorithm
+    /// (e.g. "sha512:...") must error instead of silently passing.
+    #[test]
+    fn verify_sha256_digest_rejects_non_sha256_algorithm() {
+        use sha2::Digest;
+        let h = sha2::Sha256::new();
+        let err = verify_sha256_digest("sha512:deadbeef", h, "future blob")
+            .expect_err("non-sha256 algorithm must fail");
+        assert!(err.to_string().contains("unsupported algorithm"));
+    }
+
+    /// `verify_sha256_digest` accepts uppercase hex in the descriptor
+    /// (registries vary). Same content, same digest, just letter case.
+    #[test]
+    fn verify_sha256_digest_is_case_insensitive() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"hello world");
+        let expected = "sha256:B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9";
+        verify_sha256_digest(expected, h, "uppercase").expect("uppercase hex must match");
+    }
+
+    /// Regression: an out-of-spec `Sha256:` / `SHA256:` prefix from a
+    /// buggy registry must still be recognized as the supported
+    /// algorithm — without this, the operator chases an "unsupported
+    /// algorithm" error when the algorithm is fine and only the case
+    /// is off.
+    #[test]
+    fn verify_sha256_digest_accepts_uppercase_algorithm_prefix() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"hello world");
+        let expected = "Sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        verify_sha256_digest(expected, h, "Sha256-prefix").expect("uppercase prefix must match");
+
+        let mut h2 = sha2::Sha256::new();
+        h2.update(b"hello world");
+        let expected2 = "SHA256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        verify_sha256_digest(expected2, h2, "SHA256-prefix").expect("ALL-CAPS prefix must match");
+    }
 
     #[test]
     fn test_rootfs_search_paths_includes_home() {
