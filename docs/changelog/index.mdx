@@ -75,6 +75,67 @@ type: "reference"
   ```
 
   The new packages publish in lock-step with the rest of the monorepo on the same `iii/v*` release tag, so versions stay aligned with `iii-sdk`.
+
+  ## Helpers submodule across all SDKs
+
+  **Breaking.** Eight items moved off the `III` / `ISdk` instance into a dedicated `helpers` submodule across the Rust, Node, Python, and Browser SDKs. The free functions take the iii client as their first argument. Imports now go through a subpath.
+
+  Relocated:
+
+  | Symbol | Rust | Node | Browser | Python |
+  |---|---|---|---|---|
+  | `register_trigger_type` | `iii_sdk::helpers::register_trigger_type` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `unregister_trigger_type` | `iii_sdk::helpers::unregister_trigger_type` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `create_channel` | `iii_sdk::helpers::create_channel` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `create_stream` | `iii_sdk::helpers::create_stream` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `extract_channel_refs` | `iii_sdk::helpers::extract_channel_refs` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `is_channel_ref` | `iii_sdk::helpers::is_channel_ref` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `ChannelDirection` | `iii_sdk::helpers::ChannelDirection` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+  | `ChannelItem` | `iii_sdk::helpers::ChannelItem` | `iii-sdk/helpers` | `iii-browser-sdk/helpers` | `iii.helpers` |
+
+  ### Other breaking changes
+
+  - `unregister_trigger_type` (Node and Python) now takes the trigger-type id (string) instead of the full message object.
+  - Top-level re-exports of `ChannelDirection`, `ChannelItem`, `extract_channel_refs`, `is_channel_ref` are dropped from the crate root / package root.
+
+  ### New
+
+  - Rust SDK gains `create_stream` and the `IStream` trait for parity with the other SDKs.
+  - Node and Browser SDKs gain `ChannelDirection`, `ChannelItem`, and `extractChannelRefs` value/type exports for parity.
+  - Python SDK gains `ChannelDirection`, `ChannelItem`, and `extract_channel_refs`.
+
+  ### Migration
+
+  ```typescript
+  // Before (Node)
+  const channel = await iii.createChannel()
+  iii.registerTriggerType({ id: 'cron', description: '...' }, cronHandler)
+
+  // After
+  import { createChannel, registerTriggerType } from 'iii-sdk/helpers'
+  const channel = await createChannel(iii)
+  registerTriggerType(iii, { id: 'cron', description: '...' }, cronHandler)
+  ```
+
+  ```python
+  # Before
+  channel = iii_client.create_channel()
+  iii_client.register_trigger_type(...)
+
+  # After
+  from iii.helpers import create_channel, register_trigger_type
+  channel = create_channel(iii_client)
+  register_trigger_type(iii_client, ...)
+  ```
+
+  ```rust
+  // Before
+  let channel = iii.create_channel(None).await?;
+
+  // After
+  use iii_sdk::helpers::create_channel;
+  let channel = create_channel(&iii, None).await?;
+  ```
 </Update>
 
 <Update label="0.13.0" description="May 2026">
