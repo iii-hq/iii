@@ -47,7 +47,7 @@ The engine loads YAML config at startup, expands environment variables, initiali
 | `iii-telemetry`                  | Anonymous product analytics            |
 | `iii-worker-manager`             | Worker connection lifecycle and RBAC listeners |
 | `iii-worker-ops`                 | Worker lifecycle operations             |
-| `iii-engine-functions`           | Built-in engine functions              |
+| `iii` (`iii-engine-functions` runtime) | Core engine introspection (`engine::*`) and platform authoring reference |
 | `iii.lock`                       | Reproducible managed-worker lockfile   |
 | `iii worker sync --frozen`       | Verify lockfile without mutation       |
 

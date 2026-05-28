@@ -583,6 +583,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - worker: iii-worker-manager
+            worker_dir: engine/src/workers/worker
           - worker: iii-http
             worker_dir: engine/src/workers/rest_api
           - worker: iii-stream
@@ -605,6 +607,8 @@ jobs:
             worker_dir: engine/src/workers/configuration
           - worker: iii-sandbox
             worker_dir: crates/iii-worker/src/sandbox_daemon
+          - worker: iii-engine-functions
+            worker_dir: engine/src/workers/engine_fn
     uses: ./.github/workflows/_publish-engine-workers.yml
     with:
       worker: ${{ matrix.worker }}
