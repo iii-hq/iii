@@ -236,7 +236,7 @@
         ]
       },
       {
-        "version": "0.14.x",
+        "version": "0.16.x",
         "tag": "Next",
         "tabs": [
           {
@@ -306,9 +306,9 @@
                 "pages": ["changelog/index"]
               },
               {
-                "group": "0.14.0",
+                "group": "0.16.0",
                 "pages": [
-                  "changelog/0-14-0/align-rust-register-function-with-signature"
+                  "changelog/0-16-0/align-rust-register-function-with-signature"
                 ]
               },
               {

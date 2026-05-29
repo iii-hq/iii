@@ -5,7 +5,7 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.14.0" description="May 2026">
+<Update label="0.16.0" description="May 2026">
   ## Single `register_function` entry point in the Rust SDK
 
   **Breaking.** The Rust SDK's function registration is collapsed into a single entry point that mirrors Node and Python:
@@ -26,7 +26,7 @@ type: "reference"
 
   Handler error type is fixed to `IIIError`. `IIIError` now implements `From<String>` / `From<&str>` so existing `Result<R, String>` handlers can migrate by updating the return type and relying on `?`-propagation.
 
-  See [the migration entry](/changelog/0-14-0/align-rust-register-function-with-signature) for the full before/after diff, builder methods, and step-by-step migration.
+  See [the migration entry](/changelog/0-16-0/align-rust-register-function-with-signature) for the full before/after diff, builder methods, and step-by-step migration.
 
   ## `Logger` and OpenTelemetry primitives moved to `iii-observability`
 
