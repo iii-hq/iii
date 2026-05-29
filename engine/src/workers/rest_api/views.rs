@@ -32,6 +32,15 @@ fn generate_error_id() -> String {
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
 }
 
+/// Map an HTTP response status code to an OTel span status string.
+///
+/// Only responses with status >= 400 are treated as errors; 1xx/2xx/3xx
+/// (anything below 400) are not. A 3xx redirect is a normal outcome, not a
+/// failure, so it must not surface as an error in observability traces.
+fn otel_status_for(status_code: u16) -> &'static str {
+    if status_code < 400 { "OK" } else { "ERROR" }
+}
+
 use super::{HttpWorker, api_core::RouterMatch, types::TriggerMetadata};
 use crate::engine::{Engine, EngineTrait};
 
@@ -567,8 +576,7 @@ pub async fn dynamic_handler(
                                     let status_code = http_response.status_code;
 
                                     tracing::Span::current().record("http.response.status_code", status_code);
-                                    let otel = if (200..300).contains(&status_code) { "OK" } else { "ERROR" };
-                                    tracing::Span::current().record("otel.status_code", otel);
+                                    tracing::Span::current().record("otel.status_code", otel_status_for(status_code));
 
                                     channel_mgr.remove_channel(&res_ch_id);
                                     channel_mgr.remove_channel(&req_ch_id);
@@ -640,8 +648,7 @@ pub async fn dynamic_handler(
 
                 // Build streaming response from accumulated control messages + binary body
                 tracing::Span::current().record("http.response.status_code", status_code);
-                let otel = if (200..300).contains(&status_code) { "OK" } else { "ERROR" };
-                tracing::Span::current().record("otel.status_code", otel);
+                tracing::Span::current().record("otel.status_code", otel_status_for(status_code));
 
                 channel_mgr.remove_channel(&res_ch_id);
                 channel_mgr.remove_channel(&req_ch_id);
@@ -701,8 +708,7 @@ pub async fn dynamic_handler(
                     let http_response = HttpResponse::from_function_return(result);
                     let sc = http_response.status_code;
                     tracing::Span::current().record("http.response.status_code", sc);
-                    let otel = if (200..300).contains(&sc) { "OK" } else { "ERROR" };
-                    tracing::Span::current().record("otel.status_code", otel);
+                    tracing::Span::current().record("otel.status_code", otel_status_for(sc));
                     http_response.into_axum_response()
                 }
                 Ok(Err(err)) => {
@@ -763,6 +769,27 @@ pub async fn dynamic_handler(
 mod tests {
     use super::*;
     use axum::http::{HeaderName, HeaderValue, header::HeaderMap};
+
+    // ── otel_status_for ────────────────────────────────────────────────
+
+    #[test]
+    fn test_otel_status_for_below_400_is_ok() {
+        // Anything < 400 must not be an error: 1xx, 2xx, and 3xx all map to OK.
+        for code in [100u16, 101, 200, 201, 204, 301, 302, 304, 307, 308, 399] {
+            assert_eq!(otel_status_for(code), "OK", "status {code} should be OK");
+        }
+    }
+
+    #[test]
+    fn test_otel_status_for_400_and_above_is_error() {
+        for code in [400u16, 404, 422, 499, 500, 502, 503] {
+            assert_eq!(
+                otel_status_for(code),
+                "ERROR",
+                "status {code} should be ERROR"
+            );
+        }
+    }
 
     // ── generate_error_id ──────────────────────────────────────────────
 

@@ -20,6 +20,16 @@ use crate::{
     protocol::ErrorBody,
 };
 
+/// Treat any HTTP response below 400 as a successful invocation.
+///
+/// Matches the observability rule: 1xx/2xx/3xx are not errors; only responses
+/// with status >= 400 (4xx client errors, 5xx server errors) are failures.
+/// `reqwest::StatusCode::is_success` would reject 3xx, so we compare on the
+/// numeric code instead.
+fn is_non_error_status(status: reqwest::StatusCode) -> bool {
+    status.as_u16() < 400
+}
+
 /// Format a reqwest error including the full cause chain for actionable messages.
 fn format_reqwest_error(err: &reqwest::Error) -> String {
     use std::error::Error;
@@ -224,7 +234,7 @@ impl HttpInvoker {
             stacktrace: None,
         })?;
 
-        if response.status().is_success() {
+        if is_non_error_status(response.status()) {
             return Ok(());
         }
 
@@ -281,6 +291,9 @@ impl HttpInvoker {
         })?;
 
         if status.is_success() {
+            // 2xx: a function result is expected to be JSON (or empty). A
+            // malformed body here is a genuine contract violation, so it stays
+            // an error.
             if bytes.is_empty() {
                 return Ok(None);
             }
@@ -290,6 +303,13 @@ impl HttpInvoker {
                 stacktrace: None,
             })?;
             return Ok(Some(result));
+        }
+
+        if is_non_error_status(status) {
+            // 1xx/3xx: not an error and not a function result (e.g. a redirect
+            // carrying an HTML body). Treat it as a result-less success rather
+            // than failing on a non-JSON body. Surface a JSON body if present.
+            return Ok(serde_json::from_slice::<Value>(&bytes).ok());
         }
 
         Err(Self::parse_error_response(status, &bytes))
@@ -327,6 +347,24 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn is_non_error_status_treats_below_400_as_success() {
+        // Anything < 400 (1xx, 2xx, 3xx) is a successful invocation, not an error.
+        for code in [100u16, 200, 201, 204, 301, 302, 304, 307, 308, 399] {
+            assert!(
+                is_non_error_status(reqwest::StatusCode::from_u16(code).unwrap()),
+                "status {code} should be treated as success"
+            );
+        }
+        // >= 400 stays an error.
+        for code in [400u16, 404, 422, 500, 502, 503] {
+            assert!(
+                !is_non_error_status(reqwest::StatusCode::from_u16(code).unwrap()),
+                "status {code} should be treated as error"
+            );
+        }
+    }
 
     #[derive(Clone, Default)]
     struct RequestCapture {
@@ -404,6 +442,12 @@ mod tests {
         (StatusCode::BAD_REQUEST, "bad request")
     }
 
+    async fn redirect_html_handler() -> (StatusCode, &'static str) {
+        // 3xx (< 400) with a non-JSON body — must be treated as a result-less
+        // success, not an `invalid_response` error.
+        (StatusCode::FOUND, "<html>redirecting</html>")
+    }
+
     async fn webhook_handler(
         State(capture): State<RequestCapture>,
         method: AxumMethod,
@@ -425,6 +469,7 @@ mod tests {
             .route("/invalid", any(invalid_handler))
             .route("/error-json", any(error_json_handler))
             .route("/error-plain", any(error_plain_handler))
+            .route("/redirect-html", any(redirect_html_handler))
             .route("/webhook", any(webhook_handler))
             .with_state(capture);
 
@@ -754,6 +799,34 @@ mod tests {
             .expect_err("error response should fail");
         assert_eq!(error.code, "upstream_failure");
         assert_eq!(error.message, "gateway failed");
+    }
+
+    #[tokio::test]
+    async fn invoke_http_treats_redirect_with_non_json_body_as_non_error() {
+        // Regression: a 3xx (< 400) response carrying a non-JSON body (e.g. an
+        // HTML redirect page) must be a result-less success, not an
+        // `invalid_response` error that would surface as an error trace.
+        let capture = RequestCapture::default();
+        let base_url = spawn_server(capture).await;
+        let invoker = permissive_invoker();
+        let url = format!("{base_url}/redirect-html");
+        let timeout: Option<u64> = None;
+        let headers = HashMap::new();
+        let auth = None;
+        let endpoint = HttpEndpointParams {
+            url: &url,
+            method: &HttpMethod::Get,
+            timeout_ms: &timeout,
+            headers: &headers,
+            auth: &auth,
+        };
+
+        let result = invoker
+            .invoke_http("svc.redirect", &endpoint, Uuid::nil(), json!({}), None, None)
+            .await
+            .expect("3xx with non-JSON body should be a result-less success, not an error");
+
+        assert_eq!(result, None);
     }
 
     #[tokio::test]
