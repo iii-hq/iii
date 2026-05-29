@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "build:binary": "vite build --mode binary",
     "preview": "vite preview",
+    "test": "vitest run",
     "lint": "biome check src",
     "lint:fix": "biome check src --write",
     "format": "biome format src --write"
@@ -53,6 +54,7 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^2.1.9"
   }
 }

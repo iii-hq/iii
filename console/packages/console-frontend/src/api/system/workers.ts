@@ -48,9 +48,17 @@ export async function fetchWorkers(): Promise<{
   const res = await fetch(`${getDevtoolsApi()}/workers`)
   if (!res.ok) throw new Error('Failed to fetch workers')
   const data = await unwrapResponse<{ workers: WorkerInfo[]; timestamp: number }>(res)
+  // In-process/built-in workers (configuration, iii-telemetry, etc.) are reported
+  // with `function_count` but no `functions` array. Normalize so the non-optional
+  // `functions: string[]` contract holds for every consumer (e.g. the worker
+  // detail page reads `worker.functions.length`).
+  const workers = (data.workers || []).map((worker) => ({
+    ...worker,
+    functions: worker.functions ?? [],
+  }))
   return {
-    workers: data.workers || [],
-    count: (data.workers || []).length,
+    workers,
+    count: workers.length,
     timestamp: data.timestamp,
   }
 }
