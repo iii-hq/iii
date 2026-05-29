@@ -61,183 +61,8 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.11.x",
-        "tag": "Latest",
-        "default": true,
-        "tabs": [
-          {
-            "tab": "Documentation",
-            "groups": [
-              {
-                "group": "Getting Started",
-                "pages": ["0-11-0/index", "0-11-0/install", "0-11-0/quickstart"]
-              },
-              {
-                "group": "Primitives & Concepts",
-                "pages": [
-                  "0-11-0/primitives-and-concepts/functions-triggers-workers",
-                  "0-11-0/primitives-and-concepts/discovery"
-                ]
-              },
-              {
-                "group": "How-to Guides",
-                "pages": [
-                  "0-11-0/how-to/use-functions-and-triggers",
-                  {
-                    "group": "Functions",
-                    "pages": [
-                      "0-11-0/how-to/define-request-response-formats",
-                      "0-11-0/how-to/create-ephemeral-worker",
-                      "0-11-0/how-to/schedule-cron-task"
-                    ]
-                  },
-                  {
-                    "group": "Triggers",
-                    "pages": [
-                      "0-11-0/how-to/trigger-actions",
-                      "0-11-0/how-to/trigger-functions-from-cli",
-                      "0-11-0/how-to/use-trigger-conditions",
-                      "0-11-0/how-to/create-custom-trigger-type"
-                    ]
-                  },
-                  {
-                    "group": "Workers",
-                    "pages": [
-                      "0-11-0/how-to/worker-rbac",
-                      "0-11-0/how-to/managing-container-workers",
-                      "0-11-0/how-to/reproduce-worker-installs",
-                      "0-11-0/how-to/developing-sandbox-workers"
-                    ]
-                  },
-                  {
-                    "group": "Console & Observability",
-                    "pages": ["0-11-0/how-to/use-console", "0-11-0/how-to/observability-and-logs"]
-                  },
-                  "0-11-0/how-to/use-iii-in-the-browser",
-                  "0-11-0/how-to/configure-engine",
-                  {
-                    "group": "HTTP",
-                    "pages": [
-                      "0-11-0/how-to/expose-http-endpoint",
-                      "0-11-0/how-to/use-http-middleware"
-                    ]
-                  },
-                  {
-                    "group": "Queues",
-                    "pages": [
-                      "0-11-0/how-to/use-named-queues",
-                      "0-11-0/how-to/use-topic-queues",
-                      "0-11-0/how-to/dead-letter-queues"
-                    ]
-                  },
-                  {
-                    "group": "State & Data",
-                    "pages": [
-                      "0-11-0/how-to/manage-state",
-                      "0-11-0/how-to/react-to-state-changes",
-                      "0-11-0/how-to/use-channels",
-                      "0-11-0/how-to/stream-realtime-data"
-                    ]
-                  }
-                ]
-              },
-              {
-                "group": "Architecture",
-                "pages": [
-                  "0-11-0/architecture/index",
-                  "0-11-0/architecture/engine",
-                  "0-11-0/architecture/external-workers",
-                  "0-11-0/architecture/workers",
-                  "0-11-0/architecture/trigger-types",
-                  "0-11-0/architecture/channels",
-                  "0-11-0/architecture/queues"
-                ]
-              },
-              {
-                "group": "Workers",
-                "pages": [
-                  "0-11-0/workers/index",
-                  "0-11-0/workers/iii-http",
-                  "0-11-0/workers/iii-queue",
-                  "0-11-0/workers/iii-cron",
-                  "0-11-0/workers/iii-observability",
-                  "0-11-0/workers/iii-stream",
-                  "0-11-0/workers/iii-state",
-                  "0-11-0/workers/iii-pubsub",
-                  "0-11-0/workers/iii-exec",
-                  "0-11-0/workers/iii-bridge",
-                  "0-11-0/workers/iii-worker-manager",
-                  "0-11-0/workers/managed-worker-lockfile"
-                ]
-              },
-              {
-                "group": "Console",
-                "pages": ["0-11-0/console/index"]
-              },
-              {
-                "group": "Advanced",
-                "pages": [
-                  "0-11-0/advanced/adapters",
-                  "0-11-0/advanced/architecture",
-                  "0-11-0/advanced/custom-modules",
-                  "0-11-0/advanced/deployment",
-                  "0-11-0/advanced/protocol",
-                  "0-11-0/advanced/telemetry"
-                ]
-              },
-              {
-                "group": "Examples",
-                "pages": [
-                  "0-11-0/examples/hello-world",
-                  "0-11-0/examples/todo-app",
-                  "0-11-0/examples/multi-trigger",
-                  "0-11-0/examples/conditions",
-                  "0-11-0/examples/state-management",
-                  "0-11-0/examples/cron",
-                  "0-11-0/examples/observability"
-                ]
-              }
-            ]
-          },
-          {
-            "tab": "API Reference",
-            "groups": [
-              {
-                "group": "SDKs",
-                "pages": [
-                  "0-11-0/api-reference/sdk-node",
-                  "0-11-0/api-reference/sdk-browser",
-                  "0-11-0/api-reference/sdk-python",
-                  "0-11-0/api-reference/sdk-rust",
-                  "0-11-0/api-reference/sandbox",
-                  "0-11-0/api-reference/disable-telemetry"
-                ]
-              }
-            ]
-          },
-          {
-            "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": ["0-11-0/changelog"]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "0-11-0/changelog/0-11-0/everything-is-a-worker",
-                  "0-11-0/changelog/0-11-0/migrating-from-motia-js",
-                  "0-11-0/changelog/0-11-0/migrating-from-motia-py",
-                  "0-11-0/changelog/0-11-0/migrated-examples"
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      {
         "version": "0.16.x",
-        "tag": "Next",
+        "tag": "Latest",
         "tabs": [
           {
             "tab": "Docs",
@@ -307,9 +132,7 @@
               },
               {
                 "group": "0.16.0",
-                "pages": [
-                  "changelog/0-16-0/align-rust-register-function-with-signature"
-                ]
+                "pages": ["changelog/0-16-0/align-rust-register-function-with-signature"]
               },
               {
                 "group": "0.11.0",
@@ -495,6 +318,179 @@
         ]
       },
 
+      {
+        "version": "0.11.x",
+        "tabs": [
+          {
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": ["0-11-0/index", "0-11-0/install", "0-11-0/quickstart"]
+              },
+              {
+                "group": "Primitives & Concepts",
+                "pages": [
+                  "0-11-0/primitives-and-concepts/functions-triggers-workers",
+                  "0-11-0/primitives-and-concepts/discovery"
+                ]
+              },
+              {
+                "group": "How-to Guides",
+                "pages": [
+                  "0-11-0/how-to/use-functions-and-triggers",
+                  {
+                    "group": "Functions",
+                    "pages": [
+                      "0-11-0/how-to/define-request-response-formats",
+                      "0-11-0/how-to/create-ephemeral-worker",
+                      "0-11-0/how-to/schedule-cron-task"
+                    ]
+                  },
+                  {
+                    "group": "Triggers",
+                    "pages": [
+                      "0-11-0/how-to/trigger-actions",
+                      "0-11-0/how-to/trigger-functions-from-cli",
+                      "0-11-0/how-to/use-trigger-conditions",
+                      "0-11-0/how-to/create-custom-trigger-type"
+                    ]
+                  },
+                  {
+                    "group": "Workers",
+                    "pages": [
+                      "0-11-0/how-to/worker-rbac",
+                      "0-11-0/how-to/managing-container-workers",
+                      "0-11-0/how-to/reproduce-worker-installs",
+                      "0-11-0/how-to/developing-sandbox-workers"
+                    ]
+                  },
+                  {
+                    "group": "Console & Observability",
+                    "pages": ["0-11-0/how-to/use-console", "0-11-0/how-to/observability-and-logs"]
+                  },
+                  "0-11-0/how-to/use-iii-in-the-browser",
+                  "0-11-0/how-to/configure-engine",
+                  {
+                    "group": "HTTP",
+                    "pages": [
+                      "0-11-0/how-to/expose-http-endpoint",
+                      "0-11-0/how-to/use-http-middleware"
+                    ]
+                  },
+                  {
+                    "group": "Queues",
+                    "pages": [
+                      "0-11-0/how-to/use-named-queues",
+                      "0-11-0/how-to/use-topic-queues",
+                      "0-11-0/how-to/dead-letter-queues"
+                    ]
+                  },
+                  {
+                    "group": "State & Data",
+                    "pages": [
+                      "0-11-0/how-to/manage-state",
+                      "0-11-0/how-to/react-to-state-changes",
+                      "0-11-0/how-to/use-channels",
+                      "0-11-0/how-to/stream-realtime-data"
+                    ]
+                  }
+                ]
+              },
+              {
+                "group": "Architecture",
+                "pages": [
+                  "0-11-0/architecture/index",
+                  "0-11-0/architecture/engine",
+                  "0-11-0/architecture/external-workers",
+                  "0-11-0/architecture/workers",
+                  "0-11-0/architecture/trigger-types",
+                  "0-11-0/architecture/channels",
+                  "0-11-0/architecture/queues"
+                ]
+              },
+              {
+                "group": "Workers",
+                "pages": [
+                  "0-11-0/workers/index",
+                  "0-11-0/workers/iii-http",
+                  "0-11-0/workers/iii-queue",
+                  "0-11-0/workers/iii-cron",
+                  "0-11-0/workers/iii-observability",
+                  "0-11-0/workers/iii-stream",
+                  "0-11-0/workers/iii-state",
+                  "0-11-0/workers/iii-pubsub",
+                  "0-11-0/workers/iii-exec",
+                  "0-11-0/workers/iii-bridge",
+                  "0-11-0/workers/iii-worker-manager",
+                  "0-11-0/workers/managed-worker-lockfile"
+                ]
+              },
+              {
+                "group": "Console",
+                "pages": ["0-11-0/console/index"]
+              },
+              {
+                "group": "Advanced",
+                "pages": [
+                  "0-11-0/advanced/adapters",
+                  "0-11-0/advanced/architecture",
+                  "0-11-0/advanced/custom-modules",
+                  "0-11-0/advanced/deployment",
+                  "0-11-0/advanced/protocol",
+                  "0-11-0/advanced/telemetry"
+                ]
+              },
+              {
+                "group": "Examples",
+                "pages": [
+                  "0-11-0/examples/hello-world",
+                  "0-11-0/examples/todo-app",
+                  "0-11-0/examples/multi-trigger",
+                  "0-11-0/examples/conditions",
+                  "0-11-0/examples/state-management",
+                  "0-11-0/examples/cron",
+                  "0-11-0/examples/observability"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "API Reference",
+            "groups": [
+              {
+                "group": "SDKs",
+                "pages": [
+                  "0-11-0/api-reference/sdk-node",
+                  "0-11-0/api-reference/sdk-browser",
+                  "0-11-0/api-reference/sdk-python",
+                  "0-11-0/api-reference/sdk-rust",
+                  "0-11-0/api-reference/sandbox",
+                  "0-11-0/api-reference/disable-telemetry"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "pages": ["0-11-0/changelog"]
+              },
+              {
+                "group": "0.11.0",
+                "pages": [
+                  "0-11-0/changelog/0-11-0/everything-is-a-worker",
+                  "0-11-0/changelog/0-11-0/migrating-from-motia-js",
+                  "0-11-0/changelog/0-11-0/migrating-from-motia-py",
+                  "0-11-0/changelog/0-11-0/migrated-examples"
+                ]
+              }
+            ]
+          }
+        ]
+      },
       {
         "version": "0.10.x",
         "tabs": [
