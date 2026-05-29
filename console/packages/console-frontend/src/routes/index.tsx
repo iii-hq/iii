@@ -8,21 +8,14 @@ import {
   Database,
   Globe,
   MessageSquare,
-  TrendingUp,
   Users,
   Wifi,
   Zap,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect } from 'react'
 import { createMetricsSubscription } from '@/api'
 import { useConfig } from '@/api/config-provider'
-import {
-  functionsQuery,
-  metricsHistoryQuery,
-  statusQuery,
-  streamsQuery,
-  triggersQuery,
-} from '@/api/queries'
+import { functionsQuery, statusQuery, streamsQuery, triggersQuery } from '@/api/queries'
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -37,149 +30,31 @@ export const Route = createFileRoute('/')({
       queryClient.prefetchQuery(functionsQuery()),
       queryClient.prefetchQuery(triggersQuery()),
       queryClient.prefetchQuery(streamsQuery),
-      queryClient.prefetchQuery(metricsHistoryQuery(100)),
     ])
     throw redirect({ to: '/workers' })
   },
 })
 
-interface MiniChartProps {
-  data: number[]
-  color: string
-  height?: number
-}
-
-function MiniChart({ data, color, height = 40 }: MiniChartProps) {
-  if (data.length < 2) {
-    return (
-      <svg
-        viewBox={`0 0 100 ${height}`}
-        className="w-full h-8"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <defs>
-          <linearGradient id="skeleton-pulse" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor={color} stopOpacity="0.08">
-              <animate
-                attributeName="stop-opacity"
-                values="0.08;0.2;0.08"
-                dur="2s"
-                repeatCount="indefinite"
-              />
-            </stop>
-            <stop offset="50%" stopColor={color} stopOpacity="0.15">
-              <animate
-                attributeName="stop-opacity"
-                values="0.15;0.3;0.15"
-                dur="2s"
-                repeatCount="indefinite"
-              />
-            </stop>
-            <stop offset="100%" stopColor={color} stopOpacity="0.08">
-              <animate
-                attributeName="stop-opacity"
-                values="0.08;0.2;0.08"
-                dur="2s"
-                repeatCount="indefinite"
-              />
-            </stop>
-          </linearGradient>
-        </defs>
-        <polyline
-          points="0,28 12,22 25,26 37,18 50,20 62,14 75,18 87,12 100,16"
-          fill="none"
-          stroke={color}
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeOpacity="0.2"
-          vectorEffect="non-scaling-stroke"
-        />
-        <polygon
-          points="0,32 0,28 12,22 25,26 37,18 50,20 62,14 75,18 87,12 100,16 100,32"
-          fill="url(#skeleton-pulse)"
-        />
-      </svg>
-    )
-  }
-
-  const max = Math.max(...data)
-  const min = Math.min(...data)
-  const range = max - min || 1
-
-  const points = data
-    .map((value, i) => {
-      const x = (i / (data.length - 1)) * 100
-      const y = ((max - value) / range) * height
-      return `${x},${y}`
-    })
-    .join(' ')
-
-  const areaPoints = `0,${height} ${points} 100,${height}`
-
-  return (
-    <svg
-      viewBox={`0 0 100 ${height}`}
-      className="w-full h-full"
-      preserveAspectRatio="none"
-      aria-hidden="true"
-    >
-      <defs>
-        <linearGradient id={`gradient-${color}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polygon points={areaPoints} fill={`url(#gradient-${color})`} />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  )
-}
-
 interface MetricsChartProps {
   title: string
   value: number | string
-  data: number[]
   color: string
   icon: React.ElementType
-  trend?: number
   href?: string
 }
 
-function MetricsChart({ title, value, data, color, icon: Icon, trend, href }: MetricsChartProps) {
+function MetricsChart({ title, value, color, icon: Icon, href }: MetricsChartProps) {
   const content = (
     <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-4 transition-all duration-200 group-hover:border-muted/40 group-hover:-translate-y-0.5 cursor-pointer">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-md" style={{ backgroundColor: `${color}20` }}>
-            <Icon className="w-4 h-4" style={{ color }} />
-          </div>
-          <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
-            {title}
-          </span>
+      <div className="flex items-center gap-2 mb-2">
+        <div className="p-1.5 rounded-md" style={{ backgroundColor: `${color}20` }}>
+          <Icon className="w-4 h-4" style={{ color }} />
         </div>
-        {trend !== undefined && trend !== 0 && (
-          <div
-            className={`flex items-center gap-1 text-xs font-medium ${trend > 0 ? 'text-success' : 'text-error'}`}
-          >
-            <TrendingUp className={`w-3 h-3 ${trend < 0 ? 'rotate-180' : ''}`} />
-            {Math.abs(trend)}%
-          </div>
-        )}
+        <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
+          {title}
+        </span>
       </div>
-      <div className="font-mono text-2xl font-bold mb-2">{value}</div>
-      <div className="h-8 opacity-60 group-hover:opacity-100 transition-opacity">
-        <MiniChart data={data} color={color} height={32} />
-      </div>
+      <div className="font-mono text-2xl font-bold">{value}</div>
     </div>
   )
 
@@ -196,13 +71,11 @@ function MetricsChart({ title, value, data, color, icon: Icon, trend, href }: Me
 
 function DashboardPage() {
   const queryClient = useQueryClient()
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 
   const { data: statusData, isLoading: statusLoading } = useQuery(statusQuery)
   const { data: functionsData, isLoading: functionsLoading } = useQuery(functionsQuery())
   const { data: triggersData, isLoading: triggersLoading } = useQuery(triggersQuery())
   const { data: streamsData } = useQuery(streamsQuery)
-  const { data: metricsHistoryData } = useQuery(metricsHistoryQuery(100))
 
   const config = useConfig()
   const loading = statusLoading || functionsLoading || triggersLoading
@@ -217,49 +90,13 @@ function DashboardPage() {
     }
   }, [queryClient])
 
-  // Track last update when metrics change
-  useEffect(() => {
-    if (metricsHistoryData?.history?.length) {
-      setLastUpdate(new Date())
-    }
-  }, [metricsHistoryData])
-
   const status = statusData ?? null
   const triggers = triggersData?.triggers ?? []
   const functions = functionsData?.functions ?? []
   const streams = streamsData?.streams ?? []
-  const metricsHistory = metricsHistoryData?.history ?? []
 
   const userTriggers = triggers.filter((t) => !t.internal)
   const userFunctions = functions.filter((f) => !f.internal)
-
-  const functionsChartData = useMemo(
-    () => metricsHistory.map((m) => m.functions_count),
-    [metricsHistory],
-  )
-
-  const triggersChartData = useMemo(
-    () => metricsHistory.map((m) => m.triggers_count),
-    [metricsHistory],
-  )
-
-  const workersData = useMemo(() => metricsHistory.map((m) => m.workers_count), [metricsHistory])
-
-  const streamsChartData = useMemo(
-    () => metricsHistory.map(() => streams.filter((s) => !s.internal).length),
-    [metricsHistory, streams],
-  )
-
-  const calculateTrend = useCallback((data: number[]): number => {
-    if (data.length < 2) return 0
-    const recent = data.slice(-5)
-    const older = data.slice(0, 5)
-    if (older.length === 0 || recent.length === 0) return 0
-    const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length
-    const olderAvg = older.reduce((a, b) => a + b, 0) / older.length
-    if (olderAvg === 0) return 0
-    return Math.round(((recentAvg - olderAvg) / olderAvg) * 100)
-  }, [])
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1800px] mx-auto">
@@ -274,36 +111,28 @@ function DashboardPage() {
         <MetricsChart
           title="Functions"
           value={loading ? '—' : userFunctions.length}
-          data={functionsChartData}
           color="var(--success)"
           icon={Activity}
-          trend={calculateTrend(functionsChartData)}
           href="/functions"
         />
         <MetricsChart
           title="Triggers"
           value={loading ? '—' : userTriggers.length}
-          data={triggersChartData}
           color="var(--accent)"
           icon={Zap}
-          trend={calculateTrend(triggersChartData)}
           href="/triggers"
         />
         <MetricsChart
           title="Workers"
           value={loading ? '—' : (status?.workers ?? 0)}
-          data={workersData}
           color="#06B6D4"
           icon={Users}
-          trend={calculateTrend(workersData)}
         />
         <MetricsChart
           title="Streams"
           value={loading ? '—' : streams.filter((s) => !s.internal).length}
-          data={streamsChartData}
           color="var(--info)"
           icon={Wifi}
-          trend={calculateTrend(streamsChartData)}
           href="/streams"
         />
       </div>
@@ -647,13 +476,6 @@ function DashboardPage() {
                 <div className="font-mono text-[13px] font-medium">:{config.wsPort}</div>
               </div>
             </div>
-
-            {lastUpdate && (
-              <div className="flex items-center justify-center gap-1.5 text-xs text-muted">
-                <span className="w-1.5 h-1.5 rounded-full bg-yellow animate-pulse" />
-                Last update {lastUpdate.toLocaleTimeString()}
-              </div>
-            )}
           </CardContent>
         </Card>
       </div>

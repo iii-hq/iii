@@ -64,12 +64,7 @@ export type {
   SdkMetric,
   WorkerPoolMetrics,
 } from './observability/metrics'
-export {
-  fetchDetailedMetrics,
-  fetchMetrics,
-  fetchMetricsHistory,
-  fetchRollups,
-} from './observability/metrics'
+export { fetchDetailedMetrics, fetchMetrics, fetchRollups } from './observability/metrics'
 // Observability - Traces
 export type {
   SpanEvent,
