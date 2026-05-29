@@ -149,6 +149,94 @@
       },
 
       {
+        "version": "0.17.x",
+        "tag": "Next",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": ["next/index", "next/install", "next/quickstart"]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "next/using-iii/workers",
+                  "next/using-iii/workers-registry",
+                  "next/using-iii/triggers",
+                  "next/using-iii/functions",
+                  "next/using-iii/engine",
+                  "next/using-iii/console",
+                  "next/using-iii/cli",
+                  "next/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "next/understanding-iii/index",
+                  "next/understanding-iii/engine",
+                  "next/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "next/creating-workers/index",
+                  "next/creating-workers/workers",
+                  "next/creating-workers/triggers",
+                  "next/creating-workers/functions",
+                  "next/creating-workers/channels"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": ["next/sdk-reference/engine-sdk"]
+              },
+              {
+                "group": "Language SDKs",
+                "pages": [
+                  "next/sdk-reference/node-sdk",
+                  "next/sdk-reference/python-sdk",
+                  "next/sdk-reference/rust-sdk",
+                  "next/sdk-reference/browser-sdk"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "pages": ["next/changelog/index"]
+              },
+              {
+                "group": "0.16.0",
+                "pages": ["next/changelog/0-16-0/align-rust-register-function-with-signature"]
+              },
+              {
+                "group": "0.11.0",
+                "pages": [
+                  "next/changelog/0-11-0/everything-is-a-worker",
+                  "next/changelog/0-11-0/migrating-from-motia-js",
+                  "next/changelog/0-11-0/migrating-from-motia-py",
+                  "next/changelog/0-11-0/migrated-examples"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+
+      {
         "version": "0.13.x",
         "tabs": [
           {

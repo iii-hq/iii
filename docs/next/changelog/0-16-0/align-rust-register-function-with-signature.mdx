@@ -1,0 +1,117 @@
+---
+title: 'Single register_function entry point in the Rust SDK'
+description: 'register_function takes (id, RegisterFunction) with three constructors (new, new_async, http). register_function_with, the tuple form, untyped, IntoFunctionRegistration, IntoFunctionHandler, RegisterFunctionOptions, iii_fn, iii_async_fn, IIIFn, IIIAsyncFn are removed. Handler error type is fixed to IIIError.'
+---
+
+## What changed
+
+The Rust SDK's function registration is collapsed into a single entry point that mirrors Node and Python:
+
+| SDK | Signature |
+| --- | --- |
+| Node | `registerFunction(functionId, handler, options?)` |
+| Python | `register_function(function_id, handler_or_invocation, *, description, metadata, request_format, response_format)` |
+| Rust | `register_function(id, RegisterFunction)` |
+
+`RegisterFunction` carries the handler plus all optional metadata. There are **three** constructors:
+
+```rust
+// Sync — schemas auto-extracted from the function's argument and return types.
+// Accepts both typed handlers and `Fn(Value) -> Result<Value, IIIError>`.
+iii.register_function("greet", RegisterFunction::new(greet));
+
+// Async — same as `new` but for async fns. Same dual support.
+iii.register_function(
+    "http::fetch",
+    RegisterFunction::new_async(fetch).description("Fetches a URL"),
+);
+iii.register_function(
+    "echo",
+    RegisterFunction::new_async(|input: Value| async move { Ok(input) }),
+);
+
+// HTTP-invoked function (Lambda, Cloudflare Workers, etc.) — no local handler.
+iii.register_function(
+    "ext::lambda",
+    RegisterFunction::http(http_config).description("Proxies to a Lambda"),
+);
+```
+
+`Value` implements `JsonSchema` (via `schemars`), so untyped handlers go through `new` / `new_async` and emit a permissive `AnyValue` schema. No separate `untyped` constructor is needed.
+
+Builder methods (chainable, all consume `self`):
+
+| Method | Effect |
+| --- | --- |
+| `.description(s)` | Set the human-readable description. |
+| `.metadata(value)` | Attach arbitrary metadata. |
+| `.request_format(schema)` | Override the auto-extracted request schema. |
+| `.response_format(schema)` | Override the auto-extracted response schema. |
+
+`RegisterFunction::http` does no schema introspection, so the format setters are the only way to attach a schema for HTTP-invoked functions.
+
+## Handler error type fixed to `IIIError`
+
+Previously, sync/async handler bounds were `F: Fn(T) -> Result<R, E> where E: Display` — the error type was generic. To enable clean type inference for `Fn(Value) -> ...` closures (where `Ok(...)` alone left `E` unbound), the bound is now `F: Fn(T) -> Result<R, IIIError>`.
+
+To smooth migration, `IIIError` now implements `From<String>` and `From<&str>`. Existing handlers returning `Result<R, String>` need to:
+
+1. Update the return type to `Result<R, IIIError>`.
+2. Either return `IIIError::Handler(s)` directly, or use `?`-propagation: `Err::<_, IIIError>("oops".into())` works, as does `Err("oops".to_string())?` once the function returns `Result<_, IIIError>`.
+
+```rust
+// Before
+fn greet(input: GreetInput) -> Result<String, String> {
+    Ok(format!("Hello, {}!", input.name))
+}
+
+// After
+fn greet(input: GreetInput) -> Result<String, IIIError> {
+    Ok(format!("Hello, {}!", input.name))
+}
+```
+
+## Removed
+
+| Removed | Replacement |
+| --- | --- |
+| `III::register_function_with(id, handler, options)` | `III::register_function(id, RegisterFunction::new(handler).description(...))` for sync, or `RegisterFunction::new_async(handler)` for async |
+| `register_function((RegisterFunctionMessage, handler))` tuple form | `register_function(id, RegisterFunction::new(handler))` for sync, or `RegisterFunction::new_async(handler)` for async |
+| `RegisterFunction::untyped(f)` | `RegisterFunction::new_async(f)` (now accepts `Value` closures directly) |
+| `RegisterFunctionOptions` | Builder methods on `RegisterFunction` |
+| `IntoFunctionRegistration` trait | Single concrete `RegisterFunction` argument |
+| `IntoFunctionHandler` trait + impls | Each registration kind has its own `RegisterFunction::*` constructor |
+| `iii_fn`, `iii_async_fn`, `IIIFn`, `IIIAsyncFn` | `RegisterFunction::new` / `RegisterFunction::new_async` |
+| Handler bound `E: Display` | Bound is `Result<_, IIIError>`; use `From<String>` / `From<&str>` to lift |
+
+`RegisterFunctionMessage::with_id` / `with_description` remain on the wire-protocol type but are not used in the public registration API.
+
+## Why
+
+Two BREAKING reshapes shipped together:
+
+1. The previous changelog entry already moved `register_function_with` to `(id, handler, options)` to match Node and Python. While doing the consumer migration, the redundancy between `register_function`, `register_function_with`, and the tuple form became evident: three call shapes, one trait machinery, two helper structs (`IIIFn` / `IIIAsyncFn`), and two traits (`IntoFunctionHandler`, `IntoFunctionRegistration`) — all serving roughly the same purpose with different ergonomics.
+
+2. With a single entry point, a single registration type, and three constructors (`new`, `new_async`, `http`), the surface area becomes one method and one builder. Schemars' `JsonSchema for Value` impl lets `new` / `new_async` cover both typed and `Value` handlers without a separate `untyped` escape hatch.
+
+The cost: every existing call site changes shape and `Result<R, String>` handlers migrate to `Result<R, IIIError>`. The benefit: documentation, IDE completion, and cross-SDK familiarity all converge on a single pattern.
+
+## Migration
+
+Replace each registration call with the matching `RegisterFunction::*` constructor.
+
+| Before | After |
+| --- | --- |
+| `register_function(RegisterFunction::new("id", f))` | `register_function("id", RegisterFunction::new(f))` |
+| `register_function(RegisterFunction::new_async("id", f).description("d"))` | `register_function("id", RegisterFunction::new_async(f).description("d"))` |
+| `register_function((RegisterFunctionMessage::with_id("id".into()), sync_handler))` | `register_function("id", RegisterFunction::new(sync_handler))` |
+| `register_function((RegisterFunctionMessage::with_id("id".into()), async_handler))` | `register_function("id", RegisterFunction::new_async(async_handler))` |
+| `register_function_with(RegisterFunctionMessage::with_id("id".into()), http_config)` | `register_function("id", RegisterFunction::http(http_config))` |
+| `register_function_with("id", http_config, RegisterFunctionOptions::default())` | `register_function("id", RegisterFunction::http(http_config))` |
+| `register_function_with("id", sync_handler, RegisterFunctionOptions { description: Some("d".into()), ..Default::default() })` | `register_function("id", RegisterFunction::new(sync_handler).description("d"))` |
+| `register_function_with("id", async_handler, RegisterFunctionOptions { description: Some("d".into()), ..Default::default() })` | `register_function("id", RegisterFunction::new_async(async_handler).description("d"))` |
+| `RegisterFunction::untyped(handler)` | `RegisterFunction::new_async(handler)` |
+| `iii_fn(f)` / `iii_async_fn(f)` | `RegisterFunction::new(f)` / `RegisterFunction::new_async(f)` |
+| `fn handler(...) -> Result<R, String>` | `fn handler(...) -> Result<R, IIIError>` |
+
+`RegisterFunction` is exported from the crate root: `use iii_sdk::RegisterFunction;`. `RegisterFunctionOptions` is no longer exported — drop the import.

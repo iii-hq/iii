@@ -1,0 +1,453 @@
+---
+title: "Triggers"
+description:
+  "Author new trigger types so other workers' functions can run on the events your worker emits."
+owner: "devrel"
+type: "how-to"
+---
+
+## What "writing a trigger" means
+
+A worker uses triggers two ways. Most of the time, you bind the worker's functions by registering a
+trigger on an existing trigger type such as: [`http`](https://workers.iii.dev/workers/iii-http),
+[`cron`](https://workers.iii.dev/workers/iii-cron),
+[queue messages](https://workers.iii.dev/workers/iii-queue),
+[`state` changes](https://workers.iii.dev/workers/iii-state), and any other event source in the
+system. Less often, you register a new trigger type from your worker so other workers can bind their
+functions to events your worker emits.
+
+This page primarily covers the latter: making your own triggers, if you want to use existing
+triggers in new workers then refer to [Using iii / Triggers](/using-iii/triggers).
+
+<Note>
+  For the caller-side mechanics (direct invocation with `worker.trigger` or `iii trigger`, the
+  `TriggerAction` variants, gating with conditions, multiple bindings per function), see [Using iii
+  / Triggers](/using-iii/triggers).
+</Note>
+
+{/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
+
+## Bind a function to an existing trigger type
+
+Most workers consume trigger types that other workers already publish: `http` from
+[iii-http](https://workers.iii.dev/workers/iii-http) to expose a function as an endpoint, `cron`
+from [iii-cron](https://workers.iii.dev/workers/iii-cron) to run a function on a schedule, queue
+triggers from [iii-queue](https://workers.iii.dev/workers/iii-queue) to fire a function on each
+message, `state` from [iii-state](https://workers.iii.dev/workers/iii-state) to react to data
+changes. Bind one of your worker's functions to a trigger type with
+`worker.registerTrigger({ type, function_id, config })`. The worker that publishes the trigger type
+must be connected when you register; otherwise the registration fails.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::RegisterTriggerInput;
+    use serde_json::json;
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".into(),
+        function_id: "math::add".into(),
+        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
+
+The `config` shape is defined per trigger type and documented in each publishing worker's
+[Worker Docs](https://workers.iii.dev).
+
+<Note>
+  Other binding mechanics are covered in [Using iii /
+  Triggers](/using-iii/triggers#register-a-trigger): the unregister handle, binding multiple
+  triggers to the same function, gating with `condition_function_id`, and the `TriggerAction`
+  variants (`Void`, `Enqueue`, etc.).
+</Note>
+
+## Attach metadata to a trigger
+
+Each trigger binding accepts an optional `metadata` JSON object set by the consumer at registration
+time. The engine stores it as-is and surfaces it in two places:
+
+1. The publishing worker's `TriggerHandler.registerTrigger(config)` callback sees it as
+   `config.metadata`, so the publisher can act on consumer-supplied tags (priority hints, audit
+   labels, routing keys for the publisher's own bookkeeping).
+2. [`engine::triggers::list`](/using-iii/functions#engine-functions-engine) returns it on each
+   `TriggerInfo`, so the console and any other worker doing discovery can read it.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+      metadata: { team: "platform", env: "staging" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+        "metadata": {"team": "platform", "env": "staging"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::RegisterTriggerInput;
+    use serde_json::json;
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".into(),
+        function_id: "math::add".into(),
+        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
+        metadata: Some(json!({ "team": "platform", "env": "staging" })),
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
+
+<Note>
+  Trigger _types_ have no metadata field of their own. Metadata is attached per binding, not per
+  type.
+
+Don't confuse trigger _metadata_ with trigger type [_schemas_](#attach-schemas-to-the-trigger-type)
+(`trigger_request_format` and `call_request_format`):
+
+- **Metadata** is set by the **consumer** on each binding (ie. the `worker.registerTrigger()` call).
+  It's a free-form tag bag the engine stores as-is, used for the publisher's bookkeeping and for
+  discovery. For example, a consumer binding to `http` might attach
+  `metadata: { team: "platform", env: "staging", on_call: "alice" }` so the publishing worker can
+  log the team, and [`engine::triggers::list`](/using-iii/functions#engine-functions-engine)
+  surfaces this information on request.
+- **Schemas** are set by the **publisher** when declaring the trigger type. They document the JSON
+  shapes the consumer interacts with. For example, the `http` type published by
+  [iii-http](https://workers.iii.dev/workers/iii-http) declares:
+  - `config` (what the consumer passes at bind time): `{ api_path, http_method }`.
+  - invocation payload (what their bound function receives on each request):
+    `{ method, headers, query_params, body }`.
+
+</Note>
+
+## Declaring a Trigger Type
+
+So far this documentation has focused on being the _consumer_: your worker's functions get bound to
+trigger types other workers publish. This section flips the roles. Your worker is now the
+_publisher_, and you want functions that other workers register to fire on events your worker
+observes (an HTTP request, a webhook hit, a file change, a database update).
+
+### Components of a Trigger Type
+
+A trigger type is two things bundled together:
+
+1. A string `id` that consumers reference when they bind to a trigger (ex. `type: "mini-http"`).
+2. A per-binding routing table that **your worker** maintains in-process. The engine's registry
+   records the binding canonically (this is what
+   [`engine::triggers::list`](/using-iii/functions#engine-functions-engine) returns), but the engine
+   doesn't dispatch on it. The engine forwards every bind/unbind from any consumer worker on the
+   network to the publisher worker as a callback, and this worker decides what to do with each one.
+
+You declare the trigger type once at startup with
+`worker.registerTriggerType({ id, description }, handler)`.
+
+{/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
+
+The `TriggerHandler` interface **you implement** exposes two callbacks. The engine invokes them on
+your publisher worker whenever a consumer binds or unbinds:
+
+- `registerTrigger(config)`: Runs when any consumer worker binds a function to your trigger type.
+  The `config` carries the trigger instance's `id`, the consumer's `function_id`, and the
+  consumer-supplied `config` matching the shape your type accepts. Stash it.
+- `unregisterTrigger(config)`: Runs on unbind. Drop it from your table.
+
+The trigger type can be torn down at any point during runtime with
+`worker.unregisterTriggerType(...)` (or `worker.unregister_trigger_type(...)` in Python and Rust).
+See the [Unregister a Trigger Type](#unregister-a-trigger-type) section below for per-language
+signatures.
+
+### Example: A mini `iii-http` from scratch
+
+{/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
+
+The example below sketches a tiny version of [iii-http](https://workers.iii.dev/workers/iii-http),
+the worker that publishes the real `http` trigger type. The publisher worker:
+
+1. Declares an HTTP-shaped trigger type called `mini-http`
+1. Maintains a `bindings` map of `{ trigger id → function_id, method+path }` as consumers
+   bind/unbind
+1. Is then ready to look up the right binding when an HTTP request is received. Firing the bound
+   function is covered in [Dispatch events to bound functions](#dispatch-events-to-bound-functions)
+   below.
+
+<Accordion title="Example: declare a `mini-http` trigger type">
+  <Tabs>
+    <Tab title="Node / TypeScript">
+      ```typescript
+      import { registerWorker } from "iii-sdk";
+      import type { TriggerConfig, TriggerHandler } from "iii-sdk";
+
+      const url = process.env.III_URL;
+      if (!url) throw new Error("III_URL must be set");
+      const worker = registerWorker(url);
+
+      type MiniHttpConfig = {
+        api_path: string; // leading slash, e.g. "/orders"
+        http_method?: "GET" | "POST" | "PUT" | "DELETE";
+      };
+
+      const bindings = new Map<string, TriggerConfig<MiniHttpConfig>>();
+
+      const httpHandler: TriggerHandler<MiniHttpConfig> = {
+        async registerTrigger(config) {
+          bindings.set(config.id, config);
+        },
+        async unregisterTrigger(config) {
+          bindings.delete(config.id);
+        },
+      };
+
+      worker.registerTriggerType(
+        { id: "mini-http", description: "Routes HTTP requests to bound functions" },
+        httpHandler,
+      );
+      ```
+    </Tab>
+    <Tab title="Python">
+      ```python
+      import os
+      from iii import (
+          InitOptions,
+          RegisterTriggerTypeInput,
+          TriggerConfig,
+          TriggerHandler,
+          register_worker,
+      )
+
+      worker = register_worker(
+          os.environ.get("III_URL"),
+          InitOptions(worker_name="mini-http-worker"),
+      )
+
+      bindings: dict[str, TriggerConfig] = {}
+
+      class HttpHandler(TriggerHandler):
+          async def register_trigger(self, config: TriggerConfig) -> None:
+              bindings[config.id] = config
+
+          async def unregister_trigger(self, config: TriggerConfig) -> None:
+              bindings.pop(config.id, None)
+
+      worker.register_trigger_type(
+          RegisterTriggerTypeInput(
+              id="mini-http",
+              description="Routes HTTP requests to bound functions",
+          ),
+          HttpHandler(),
+      )
+      ```
+    </Tab>
+    <Tab title="Rust">
+      ```rust
+      use std::collections::HashMap;
+      use std::sync::{Arc, Mutex};
+      use iii_sdk::{
+          InitOptions, RegisterTriggerType, TriggerConfig, TriggerHandler, register_worker,
+      };
+
+      let url = std::env::var("III_URL").expect("III_URL must be set");
+      let worker = register_worker(&url, InitOptions::default());
+
+      #[derive(Default)]
+      struct HttpHandler {
+          bindings: Arc<Mutex<HashMap<String, TriggerConfig>>>,
+      }
+
+      #[async_trait::async_trait]
+      impl TriggerHandler for HttpHandler {
+          async fn register_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+              self.bindings.lock().unwrap().insert(config.id.clone(), config);
+              Ok(())
+          }
+
+          async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+              self.bindings.lock().unwrap().remove(&config.id);
+              Ok(())
+          }
+      }
+
+      worker.register_trigger_type(
+          RegisterTriggerType::new(
+              "mini-http",
+              "Routes HTTP requests to bound functions",
+              HttpHandler::default(),
+          ),
+      );
+      ```
+    </Tab>
+
+  </Tabs>
+</Accordion>
+
+### Attach schemas to the trigger type
+
+A trigger type can carry two optional JSON Schemas that describe its payloads:
+
+- **`trigger_request_format`**: The schema for the per-binding `config` consumers pass to
+  `worker.registerTrigger(...)` when they bind a function to your trigger type.
+- **`call_request_format`**: The schema for the payload your worker delivers to bound functions when
+  the trigger fires.
+
+Both feed the iii console, the agent-readable skills, and the
+[`engine::trigger-types::list`](/using-iii/functions#engine-functions-engine) output so consumers
+know what to send and what they'll receive.
+
+<Note>
+  Runtime validation is not yet supported. Attached schemas are informational only; the engine does
+  not reject `config` values or call payloads that don't match them. Treat the schemas as contract
+  documentation for consumers, agents, and the console; same caveat as [function request / response
+  schemas](/creating-workers/functions#attach-request-and-response-schemas).
+</Note>
+
+Each SDK accepts these in its own idiomatic way:
+
+| SDK                                                                                                             | What you pass                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Node](/sdk-reference/node-sdk#registertriggertype) / [Browser](/sdk-reference/browser-sdk#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
+| [Python](/sdk-reference/python-sdk#register_trigger_type)                                                       | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
+| [Rust](/sdk-reference/rust-sdk#register_trigger_type)                                                           | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+
+{/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
+
+### Unregister a Trigger Type
+
+Tear down a trigger type at runtime when the work it routes is no longer needed. When the worker
+disconnects, all trigger types it advertised are removed automatically and the engine stops routing
+events that depended on them, so this step is only necessary if you want to drop a type while the
+worker stays connected.
+
+Call it any time after `registerTriggerType` while the worker stays connected (e.g. the underlying
+resource went into maintenance mode, a feature flag turned the surface off, or you want to rotate
+the type to a new schema without restarting). Continuing the `mini-http` example, here the worker
+drops `mini-http` because its HTTP listener was disabled by config:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // e.g. config reload disabled the HTTP listener; stop accepting new bindings
+    // while the worker keeps serving other trigger types.
+    worker.unregisterTriggerType({
+      id: "mini-http",
+      description: "Routes HTTP requests to bound functions",
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # e.g. config reload disabled the HTTP listener; stop accepting new bindings
+    # while the worker keeps serving other trigger types.
+    worker.unregister_trigger_type(
+        {"id": "mini-http", "description": "Routes HTTP requests to bound functions"}
+    )
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // e.g. config reload disabled the HTTP listener; stop accepting new bindings
+    // while the worker keeps serving other trigger types.
+    worker.unregister_trigger_type("mini-http");
+    ```
+  </Tab>
+</Tabs>
+
+{/* TODO: Update once this inconsistency is fixed */}
+
+<Note>
+  Node's `registerTriggerType` also returns a `TriggerTypeRef` with an `.unregister()` shortcut that
+  delegates to `worker.unregisterTriggerType(...)`. Python's `TriggerTypeRef` only exposes
+  `register_trigger` and `register_function`; tear down the trigger type itself via
+  `worker.unregister_trigger_type(...)`. Rust takes only the `id` string; Node and Python take the
+  full input object but only the `id` field is used to identify the type being torn down.
+</Note>
+
+## Dispatch events to bound functions
+
+There is no special "fire" API. When the underlying event source delivers something (an incoming
+HTTP request, a cron tick, a webhook hit), your publisher worker looks up the relevant entry in the
+`bindings` table it built inside its `registerTrigger` callback and invokes each matching function
+via `worker.trigger(...)`.
+
+Continuing the `mini-http` example from above:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // Inside the worker's HTTP listener, after matching method+path to an
+    // entry in the `bindings` map from the declare-trigger-type example:
+    const binding = bindings.get(matchedTriggerId);
+    await worker.trigger({
+      function_id: binding.function_id,
+      payload: { method, headers, body },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Inside the worker's HTTP listener, after matching method+path to an
+    # entry in the `bindings` dict from the declare-trigger-type example:
+    binding = bindings[matched_trigger_id]
+    worker.trigger({
+        "function_id": binding.function_id,
+        "payload": {"method": method, "headers": headers, "body": body},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::TriggerRequest;
+    use serde_json::json;
+
+    // Inside the worker's HTTP listener, after matching method+path to an
+    // entry in the handler's `bindings` map from the declare-trigger-type example:
+    let binding = handler.bindings.lock().unwrap().get(&matched_trigger_id).cloned();
+    if let Some(binding) = binding {
+        worker
+            .trigger(TriggerRequest {
+                function_id: binding.function_id.clone(),
+                payload: json!({ "method": method, "headers": headers, "body": body }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await?;
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+On each dispatched event, the engine evaluates the consumer's `config` and optional
+`condition_function_id`, then routes matching invocations to the bound function and returns the
+result to the caller.
