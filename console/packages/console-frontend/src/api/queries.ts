@@ -9,12 +9,7 @@ import {
 } from './events/functions'
 import { fetchFlowConfig, fetchFlows } from './flows/flows'
 import { fetchLogs, fetchOtelLogs } from './observability/logs'
-import {
-  fetchDetailedMetrics,
-  fetchMetrics,
-  fetchMetricsHistory,
-  fetchRollups,
-} from './observability/metrics'
+import { fetchDetailedMetrics, fetchMetrics, fetchRollups } from './observability/metrics'
 import { fetchTraces, fetchTraceTree } from './observability/traces'
 import { fetchDlqMessages, fetchDlqTopics, fetchQueueDetail, fetchQueues } from './queues'
 import { fetchStateGroups, fetchStateItems } from './state/state'
@@ -67,13 +62,6 @@ export const metricsQuery = queryOptions({
   queryKey: ['metrics'],
   queryFn: fetchMetrics,
 })
-
-// Metrics history
-export const metricsHistoryQuery = (limit?: number) =>
-  queryOptions({
-    queryKey: ['metrics-history', limit],
-    queryFn: () => fetchMetricsHistory(limit),
-  })
 
 // Events info
 export const eventsInfoQuery = queryOptions({

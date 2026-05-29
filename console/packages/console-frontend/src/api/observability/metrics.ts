@@ -83,17 +83,6 @@ export async function fetchMetrics(): Promise<MetricsSnapshot> {
   return unwrapResponse(res)
 }
 
-export async function fetchMetricsHistory(
-  limit?: number,
-): Promise<{ history: MetricsSnapshot[]; count: number }> {
-  const url = limit
-    ? `${getDevtoolsApi()}/metrics/history?limit=${limit}`
-    : `${getDevtoolsApi()}/metrics/history`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error('Failed to fetch metrics history')
-  return unwrapResponse(res)
-}
-
 export async function fetchDetailedMetrics(options?: {
   start_time?: number
   end_time?: number
