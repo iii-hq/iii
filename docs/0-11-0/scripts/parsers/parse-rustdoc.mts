@@ -57,7 +57,6 @@ const EXPORTED_TYPES = new Set([
   'WorkerMetadata',
   'Trigger',
   'RegisterFunctionMessage',
-  'RegisterFunctionOptions',
   'RegisterServiceMessage',
   'RegisterTriggerMessage',
   'RegisterTriggerTypeMessage',
