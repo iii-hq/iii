@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Build the POST /w/<slug>/skills payload from a worker directory.
 
-Walks ``<worker>/skill.md`` and ``<worker>/skills/**/*.md`` and produces the JSON
-body expected by the workers-registry endpoint.  Skill paths map to keys as:
+Walks the worker's top-of-tree skill doc plus ``<worker>/skills/**/*.md`` and
+produces the JSON body expected by the workers-registry endpoint.  Skill paths
+map to payload keys as:
 
-    <worker>/skill.md             -> "index.md"
-    <worker>/skills/index.md      -> "index.md"   (override; warn if both exist)
+    <worker>/skills/SKILL.md      -> "index.md"   (preferred top-of-tree)
+    <worker>/skills/index.md      -> "index.md"   (legacy)
+    <worker>/skill.md             -> "index.md"   (legacy)
     <worker>/skills/<rel>.md      -> "skills/<rel>.md"
+
+When more than one top-of-tree candidate is present the highest-precedence one
+wins (``skills/SKILL.md`` > ``skills/index.md`` > ``skill.md``) and a GitHub
+Actions warning is emitted.
 
 If no non-empty markdown is found the script writes ``skip=true`` to
 ``$GITHUB_OUTPUT`` (so the calling workflow can gate the POST step off) and
@@ -28,35 +34,40 @@ KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._/\-]*\.md$", re.IGNORECASE)
 def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
     """Return a ``{payload-key: markdown-body}`` map for one worker directory.
 
-    The top-of-tree resolution order is ``skills/index.md`` then ``skill.md``;
-    if both exist, a GitHub Actions warning is emitted and the nested one wins
-    (this matches ``iii-directory``'s on-disk convention).  Empty bodies are
+    The top-of-tree resolution order is ``skills/SKILL.md`` then
+    ``skills/index.md`` then ``skill.md``; whichever wins is published under the
+    ``index.md`` payload key.  If more than one is present a GitHub Actions
+    warning is emitted and the highest-precedence file wins.  Empty bodies are
     skipped silently so blank placeholder files don't end up in the registry.
     """
     skills: dict[str, str] = {}
 
     leaves_dir = worker_root / "skills"
+    skill_md = leaves_dir / "SKILL.md"
     skills_index = leaves_dir / "index.md"
     intro = worker_root / "skill.md"
 
-    if skills_index.is_file():
-        body = skills_index.read_text(encoding="utf-8")
+    # Preferred new convention is skills/SKILL.md; the skills/index.md and
+    # skill.md forms are legacy. Whichever wins maps to the "index.md" key.
+    top_candidates = [c for c in (skill_md, skills_index, intro) if c.is_file()]
+    if top_candidates:
+        top = top_candidates[0]
+        body = top.read_text(encoding="utf-8")
         if body.strip():
             skills["index.md"] = body
-        if intro.is_file():
-            print(
-                f"::warning::{worker_root.name}: both skill.md and "
-                "skills/index.md present; using skills/index.md as the "
-                "top-of-tree."
+        if len(top_candidates) > 1:
+            present = ", ".join(
+                c.relative_to(worker_root).as_posix() for c in top_candidates
             )
-    elif intro.is_file():
-        body = intro.read_text(encoding="utf-8")
-        if body.strip():
-            skills["index.md"] = body
+            print(
+                f"::warning::{worker_root.name}: multiple top-of-tree skill "
+                f"files present ({present}); using "
+                f"{top.relative_to(worker_root).as_posix()} as the top-of-tree."
+            )
 
     if leaves_dir.is_dir():
         for path in sorted(leaves_dir.rglob("*.md")):
-            if path == skills_index:
+            if path in (skill_md, skills_index):
                 continue
             rel = path.relative_to(worker_root).as_posix()
             if not KEY_RE.match(rel):

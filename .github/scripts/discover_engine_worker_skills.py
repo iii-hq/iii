@@ -2,9 +2,10 @@
 """Discover workers with publishable skill bundles.
 
 Scans the repo for ``iii.worker.yaml`` manifests that sit next to a non-empty
-``skills/`` tree (or ``skill.md``) and emits a GitHub Actions matrix JSON with
-``worker_dir`` (path relative to repo root) and ``slug`` (registry name from the
-manifest). Workers whose skills tree has no non-empty markdown are omitted.
+``skills/`` tree (``skills/SKILL.md`` or the legacy ``skills/index.md`` /
+``skill.md``) and emits a GitHub Actions matrix JSON with ``worker_dir`` (path
+relative to repo root) and ``slug`` (registry name from the manifest). Workers
+whose skills tree has no non-empty markdown are omitted.
 """
 from __future__ import annotations
 
