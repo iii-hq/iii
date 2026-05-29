@@ -1,0 +1,5 @@
+iii: v1
+name: iii-worker-manager
+type: engine
+description: WebSocket listener that SDK workers connect to. Supports RBAC, middleware, registration hooks, and channels.
+repo: https://github.com/iii-hq/iii

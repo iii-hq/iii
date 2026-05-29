@@ -145,6 +145,16 @@ workers:
       adapter:
         name: kv
 
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: ./data/configuration
+      # 0 disables TTL cleanup. Set >0 (in seconds) to delete a configuration
+      # entry whose last subscriber trigger has been unregistered for that long.
+      ttl_seconds: 0
+
   # - name: iii-bridge
   #   config:
   #     url: ${REMOTE_III_URL:ws://192.168.1.200:49134}

@@ -113,13 +113,16 @@ pub enum Commands {
         config: Option<PathBuf>,
     },
 
-    /// Stop a managed worker container
+    /// Stop a managed worker container. Stop is treated as a routine,
+    /// reversible action — running `iii worker start <name>` brings it
+    /// back from the same config entry, so the CLI no longer prompts
+    /// for confirmation.
     Stop {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
         worker_name: String,
-        /// Skip the confirmation prompt. Required when stdin is non-interactive
-        /// (scripts, CI, agents); without `-y` the call needs a tty.
+        /// Backward-compat no-op. Stop never prompts; the flag is kept
+        /// so scripts that already pass `-y` keep working.
         #[arg(short = 'y', long = "yes")]
         yes: bool,
     },

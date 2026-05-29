@@ -27,13 +27,13 @@ import {
   type WorkerRegisteredMessage,
 } from './iii-types'
 import { registerWorkerGauges, stopWorkerGauges } from '@iii-dev/observability'
+import { getMeter, getTracer } from '@iii-dev/observability/internal'
+import { SpanKind } from '@opentelemetry/api'
 import type { IStream } from './stream'
 import { detectProjectName } from './utils'
 import {
   extractContext,
   getLogger,
-  getMeter,
-  getTracer,
   initOtel,
   injectBaggage,
   injectTraceparent,
@@ -43,7 +43,6 @@ import {
   resolveMaxBytesFromEnv,
   SeverityNumber,
   shutdownOtel,
-  SpanKind,
   withSpan,
 } from '@iii-dev/observability'
 import type { TriggerHandler } from './triggers'

@@ -14,6 +14,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "create_request_example")]
 pub struct CreateRequest {
     /// Catalog name of the image to boot. Bundled presets are
     /// `"python"` and `"node"`; pass either string verbatim. The only
@@ -40,9 +41,21 @@ pub struct CreateRequest {
     /// default applies when omitted.
     #[serde(default)]
     pub idle_timeout_secs: Option<u64>,
-    /// `"K=V"` entries injected into the VM's environment.
+    /// Environment entries injected into the VM. Accepts either a
+    /// `Vec<"K=V">` (original wire shape) or a `{ K: V }` map.
+    /// `handle_create` normalises to the `Vec<String>` shape the boot
+    /// path expects before invoking the launcher.
     #[serde(default)]
-    pub env: Vec<String>,
+    pub env: crate::sandbox_daemon::exec::EnvShape,
+}
+
+fn create_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "image": "node",
+        "memory_mb": 512,
+        "env": { "NODE_ENV": "production" },
+        "idle_timeout_secs": 600
+    })
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -156,8 +169,14 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     let shell_sock = layout.base().join("shell.sock");
     let workdir = layout.merged.clone();
 
-    on_event(SandboxCreateEvent::BootingVm);
+    // Normalise env from EnvShape to Vec<String> BEFORE emitting
+    // `BootingVm`. `into_kv_vec` rejects invalid var names with S001;
+    // emitting the event first would tell subscribers boot has begun
+    // for a sandbox that never actually starts. Accepts both the
+    // historical Vec<"K=V"> shape and the agent-natural { K: V } map.
+    let env_vec = req.env.clone().into_kv_vec()?;
 
+    on_event(SandboxCreateEvent::BootingVm);
     let boot = launcher
         .boot(&BootParams {
             rootfs: rootfs.clone(),
@@ -165,7 +184,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
             shell_sock: shell_sock.clone(),
             cpus,
             memory_mb,
-            env: req.env.clone(),
+            env: env_vec,
             network: req.network.unwrap_or(false),
         })
         .await?;
@@ -241,7 +260,7 @@ mod tests {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: crate::sandbox_daemon::exec::EnvShape::default(),
         };
         let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
             .await
@@ -265,7 +284,7 @@ mod tests {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: crate::sandbox_daemon::exec::EnvShape::default(),
         };
         let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
             .await
@@ -292,7 +311,7 @@ mod tests {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: crate::sandbox_daemon::exec::EnvShape::default(),
         };
         let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
             .await

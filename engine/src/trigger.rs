@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
+pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("http", "iii-http"),
     ("cron", "iii-cron"),
     ("subscribe", "iii-pubsub"),
@@ -23,9 +23,17 @@ const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("stream:join", "iii-stream"),
     ("stream:leave", "iii-stream"),
     ("log", "iii-observability"),
+    ("configuration", "configuration"),
 ];
 
-fn worker_name_for_trigger_type(trigger_type_id: &str) -> Option<&'static str> {
+/// Maps a trigger-type id to the in-process worker that owns it. In-process
+/// workers register their `TriggerType` with `worker_id: None`, so the
+/// `worker_registry` Uuid lookup used for WebSocket workers cannot attribute
+/// them. The static table is the source of truth for both error reporting
+/// (`RegisterTriggerError::UnknownBuiltin`) and discovery (`engine_fn`
+/// rolls trigger types up into the owning runtime worker's `workers::info`
+/// envelope).
+pub fn builtin_trigger_type_owner(trigger_type_id: &str) -> Option<&'static str> {
     BUILTIN_TRIGGER_TYPES
         .iter()
         .find(|(id, _)| *id == trigger_type_id)
@@ -104,6 +112,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
             "stream" => Self::schema_for::<StreamTriggerConfig>(),
             "log" => Self::schema_for::<LogTriggerConfig>(),
+            "configuration" => Self::schema_for::<ConfigurationTriggerConfig>(),
             _ => None,
         }
     }
@@ -118,6 +127,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveCallRequest>(),
             "stream" => Self::schema_for::<StreamCallRequest>(),
             "log" => Self::schema_for::<LogCallRequest>(),
+            "configuration" => Self::schema_for::<ConfigurationCallRequest>(),
             _ => None,
         }
     }
@@ -251,7 +261,7 @@ impl TriggerRegistry {
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), RegisterTriggerError> {
         let trigger_type_id = trigger.trigger_type.clone();
         let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
-            if let Some(worker_name) = worker_name_for_trigger_type(&trigger_type_id) {
+            if let Some(worker_name) = builtin_trigger_type_owner(&trigger_type_id) {
                 tracing::error!(
                     "Trigger type {} requires the {} worker, which is not active in your project.\n\n  To fix this, run:\n\n    {}\n",
                     trigger_type_id.purple().bold(),

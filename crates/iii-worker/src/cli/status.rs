@@ -18,6 +18,24 @@ use std::time::{Duration, Instant, SystemTime};
 use super::config_file::{ResolvedWorkerType, resolve_worker_type, worker_exists};
 use super::managed::{is_engine_running_on, is_worker_running};
 
+/// Live-progress overlay for `render_with_progress` / `headline_with_progress`.
+/// Bumped from `watch_until_ready` so each redraw visibly changes even when
+/// the underlying worker state is static — a static block looks identical to
+/// "frozen" to the user, which is the bug the spinner is fighting.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchProgress {
+    /// Monotonically increasing tick counter (used to pick a spinner glyph).
+    pub tick: usize,
+    /// Wall-clock time since the wait started.
+    pub elapsed: Duration,
+}
+
+const SPINNER_GLYPHS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn spinner_glyph(tick: usize) -> &'static str {
+    SPINNER_GLYPHS[tick % SPINNER_GLYPHS.len()]
+}
+
 /// Terminal phase for waiters — once we reach `Ready` or `Failed` we stop
 /// polling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +325,186 @@ impl WorkerStatus {
         )
     }
 
+    /// Same as [`Self::headline`] but appends a live spinner glyph and an
+    /// elapsed-seconds counter. The plain `headline` is used for one-shot
+    /// snapshots; this variant is what live `--watch` and `--wait` print so
+    /// every redraw is visibly different even when the underlying state is
+    /// unchanged (which is what the user sees as "frozen").
+    pub fn headline_with_progress(&self, p: WatchProgress) -> String {
+        let base = self.headline();
+        if matches!(
+            self.phase,
+            Phase::Ready | Phase::Failed | Phase::NotInConfig
+        ) {
+            return base;
+        }
+        let glyph = spinner_glyph(p.tick);
+        // Use `as_secs()` (u64 truncation) rather than
+        // `as_secs_f64()` with `{:.0}` (banker's rounding). Rust's
+        // `{:.0}` round-half-to-even turns 0.5→0, 1.5→2, 2.5→2,
+        // 3.5→4, so any per-iteration latency drift that lands sample
+        // times near n.5 boundaries makes the displayed counter skip
+        // odd numbers and appear to jump by 2. Truncation advances
+        // monotonically by exactly 1 each whole second and matches the
+        // mental model "Xs means at least X seconds elapsed".
+        //
+        // Yellow on the elapsed + spinner suffix for the same reason
+        // the tail row is yellow during non-terminal phases: this is
+        // the ticking "still working" pulse, and at default dim grey
+        // it visually disappeared into the headline. Yellow keeps the
+        // suffix scannable at a glance.
+        format!(
+            "{} {}",
+            base,
+            format!("({}s {})", p.elapsed.as_secs(), glyph).yellow()
+        )
+    }
+
+    /// Render a detailed multi-line snapshot with a live progress overlay.
+    /// The first non-blank line gets a spinner + elapsed counter, and during
+    /// non-terminal phases past a few seconds we surface the last line of
+    /// the worker's stderr log so the user can see what the engine
+    /// subprocess is actually doing without leaving the wait UI.
+    pub fn render_with_progress(&self, p: WatchProgress) -> Vec<String> {
+        let mut out = self.render();
+        // Splice the spinner-decorated headline in place of the plain one
+        // produced by `render()`. `render()` lays out:
+        //   [0] ""
+        //   [1] "  <headline>"
+        //   [2] ""
+        // so the headline lives at index 1, preserved by the leading two
+        // spaces from `format!("  {}", self.headline())`.
+        if out.len() > 1 {
+            out[1] = format!("  {}", self.headline_with_progress(p));
+        }
+        // After ~3s in a non-terminal phase, peek the last meaningful line
+        // of stderr.log and append it. The block grows by 0 or 1 line; the
+        // caller in `watch_until_ready` tracks prev_line_count so the ANSI
+        // rewind stays correct across renders of varying length.
+        if !matches!(
+            self.phase,
+            Phase::Ready | Phase::NotInConfig | Phase::Failed
+        ) && p.elapsed >= Duration::from_secs(3)
+            && let Some(line) = self.last_stderr_line()
+        {
+            // Insert above the trailing blank line so the layout stays:
+            //   ... logs:
+            //   ⤷ <tail>
+            //   <blank>
+            let insert_at = out.len().saturating_sub(1);
+            let truncated = truncate_to(&line, 120);
+            // Yellow on the tail content while the worker is still
+            // preparing. The status block is otherwise mostly muted
+            // (dimmed labels + green/red glyphs for done/error states),
+            // so the live progress messages — OCI pull byte counters,
+            // per-layer extract lines, rootfs/boot transitions — were
+            // visually indistinguishable from the static log-path hint
+            // above. Yellow makes "thing in flight" pop without
+            // per-message coloring at every emit site. Label stays
+            // dimmed for a clean left gutter.
+            out.insert(
+                insert_at,
+                format!("{:>12}  {}", "tail:".dimmed(), truncated.yellow()),
+            );
+        }
+        // Past 30s in Queued WITHOUT recent log activity, the engine
+        // probably failed to spawn the worker subprocess (or the
+        // subprocess crashed early). Surface a "stuck?" hint so the
+        // user doesn't sit and wait for the 120s timeout in silence.
+        //
+        // If the log file IS being actively written (e.g., OCI pull
+        // heartbeats every 3s during a multi-minute base-image
+        // download), suppress the hint — the worker is plainly making
+        // progress and a "may have failed" warning would directly
+        // contradict the `tail:` row right above it.
+        if matches!(self.phase, Phase::Queued)
+            && p.elapsed >= Duration::from_secs(30)
+            && !self.log_recently_updated(Duration::from_secs(10))
+        {
+            let insert_at = out.len().saturating_sub(1);
+            out.insert(
+                insert_at,
+                format!(
+                    "{:>12}  {}",
+                    "hint:".yellow(),
+                    "still queued, no log activity — check `iii worker logs {name} -f` (engine may have failed to spawn it)"
+                        .replace("{name}", &self.name)
+                        .dimmed()
+                ),
+            );
+        }
+        out
+    }
+
+    /// Returns `true` when `~/.iii/logs/<name>/stderr.log` was last
+    /// modified within `window` of now. Used to gate the "may have
+    /// failed" hint: when progress lines are flowing (OCI heartbeat,
+    /// VM boot, etc.) the file's mtime ticks every few seconds, which
+    /// is honest evidence the worker isn't stuck — so a "stuck?" hint
+    /// would mislead the user.
+    fn log_recently_updated(&self, window: Duration) -> bool {
+        let Some(dir) = self.logs_dir.as_ref() else {
+            return false;
+        };
+        let path = dir.join("stderr.log");
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return false;
+        };
+        let Ok(modified) = meta.modified() else {
+            return false;
+        };
+        let Ok(elapsed) = modified.elapsed() else {
+            // Modified in the future (clock skew). Treat as recent —
+            // safer than spuriously showing the failure hint.
+            return true;
+        };
+        elapsed <= window
+    }
+
+    /// Read the last non-empty line of the worker's stderr.log. Cheap:
+    /// reads at most 4 KiB from the tail. Returns `None` when there's no
+    /// log file yet or it's empty.
+    fn last_stderr_line(&self) -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = self.logs_dir.as_ref()?;
+        let path = dir.join("stderr.log");
+        let mut f = std::fs::File::open(&path).ok()?;
+        let len = f.metadata().ok()?.len();
+        let read_from = len.saturating_sub(4096);
+        f.seek(SeekFrom::Start(read_from)).ok()?;
+        let mut buf = Vec::with_capacity(4096);
+        // HARD-CAP the read at 4 KiB via `Read::take`. A bare
+        // `read_to_end` reads until `read()` returns 0, and on a file
+        // that's being appended to by a concurrent writer (the engine's
+        // `iii-worker start` heartbeat, OCI pull progress, layer
+        // extraction) EOF keeps moving forward as new bytes arrive. Per
+        // the second-pass adversarial review (jump-2s investigation),
+        // during a multi-MiB/s OCI pull this turned the intended 4-KiB
+        // tail read into a multi-second firehose drain, pushing
+        // `watch_until_ready` per-iteration latency to ~2s and making
+        // the headline elapsed counter visibly jump by 2 every redraw.
+        // `take` bounds the read at the seek point + 4 KiB regardless
+        // of how fast the writer is growing the file.
+        f.take(4096).read_to_end(&mut buf).ok()?;
+        // Only return lines that are TERMINATED by a newline. Without
+        // this, a mid-flush write from a concurrent producer (the
+        // engine's `iii-worker start` heartbeat, the extract loop, an
+        // OCI pull tick) returns the partial line, sometimes with a
+        // U+FFFD from a split UTF-8 codepoint. At 200ms redraw cadence
+        // the user sees `tail: Pulling docker.io/library/alpi` then
+        // the full line on the next render. Skipping unterminated
+        // tails costs at most one redraw of "no signal" while a write
+        // is mid-flight, which is fine.
+        let s = String::from_utf8_lossy(&buf);
+        let last_newline = s.rfind('\n')?;
+        let body = &s[..last_newline];
+        body.lines()
+            .rev()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .map(|line| line.to_string())
+    }
+
     /// Render a detailed multi-line snapshot. Returns the number of lines
     /// written so `--watch` knows how much to rewind.
     pub fn render(&self) -> Vec<String> {
@@ -536,19 +734,48 @@ pub async fn watch_until_ready(
     port: u16,
 ) -> WorkerStatus {
     let started = Instant::now();
-    let mut first = true;
+    let mut tick: usize = 0;
+    // `prev_line_count` is the number of lines printed on the previous
+    // iteration. Use it (not the *current* line count) for the ANSI rewind
+    // so renders of varying length (the optional stderr-tail line, the
+    // "still queued" hint past 30s) clear correctly. The previous code used
+    // `lines.len()`, which only worked because `render()`'s output is
+    // shape-stable at 9 lines.
+    let mut prev_line_count: usize = 0;
+    // Tick at 200ms instead of the old 500ms. The spinner needs to move
+    // visibly often enough that the user can't mistake the wait UI for a
+    // hang — 5 fps is the floor for that. Probe cost is cheap (a few
+    // stat() calls + a TCP probe of the engine port), so faster polling
+    // also tightens reaction time on phase transitions.
+    let poll_interval = Duration::from_millis(200);
     loop {
         let status = WorkerStatus::probe_on(worker_name, port);
-        let lines = status.render();
+        let progress = WatchProgress {
+            tick,
+            elapsed: started.elapsed(),
+        };
+        let lines = status.render_with_progress(progress);
 
-        if !first {
+        // Clamp each rendered line to the current terminal width so the
+        // terminal doesn't soft-wrap them onto a second visual row. The
+        // ANSI rewind below moves the cursor up by LOGICAL line count
+        // (one per `\n`), so if a long line (long file path in
+        // `config:`, long image ref in `tail:`, etc.) wraps to two
+        // visual rows the rewind walks too few rows and leaves cruft
+        // above the redraw. Truncating to width-1 keeps one logical
+        // line == one visual row.
+        let width = terminal_width().saturating_sub(1).max(40);
+        let lines: Vec<String> = lines
+            .iter()
+            .map(|line| truncate_visible(line, width))
+            .collect();
+
+        if prev_line_count > 0 {
             // `\x1b[{n}F` = move cursor up n lines to start of line,
-            // `\x1b[J` = clear from cursor to end of screen. This keeps the
-            // snapshot pinned in place even as line counts shrink.
-            let n = lines.len();
-            eprint!("\x1b[{}F\x1b[J", n);
+            // `\x1b[J` = clear from cursor to end of screen.
+            eprint!("\x1b[{}F\x1b[J", prev_line_count);
         }
-        first = false;
+        prev_line_count = lines.len();
 
         for line in &lines {
             eprintln!("{}", line);
@@ -563,8 +790,93 @@ pub async fn watch_until_ready(
             return status;
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tick = tick.wrapping_add(1);
+        tokio::time::sleep(poll_interval).await;
     }
+}
+
+/// Truncate a single line to `max` characters, suffixing `…` if cut.
+/// Counts bytes for safety against multi-byte content; this is a UI
+/// helper, not a parser.
+fn truncate_to(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max.saturating_sub(1);
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+/// Stderr terminal width via TIOCGWINSZ. Falls back to 80 when fd 2
+/// is not a tty, or the ioctl fails. Used by `watch_until_ready` to
+/// clamp every rendered line to one visual row — otherwise long
+/// `config:`/`tail:` lines wrap and confuse the ANSI rewind math.
+fn terminal_width() -> usize {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = std::io::stderr().as_raw_fd();
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as _, &mut ws) };
+        if result == 0 && ws.ws_col > 0 {
+            return ws.ws_col as usize;
+        }
+    }
+    80
+}
+
+/// Truncate `s` to at most `max` VISIBLE columns, preserving ANSI
+/// escape sequences (which take zero visible columns). Appends `…`
+/// when the string was cut. Used to keep wait-UI lines from
+/// soft-wrapping on narrow terminals.
+fn truncate_visible(s: &str, max: usize) -> String {
+    let mut visible: usize = 0;
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut truncated = false;
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ANSI CSI sequence: `ESC [ ... <final>` where final is in
+            // the range @-~. Copy through without counting visible
+            // width. Bail on the next non-`[` if the sequence shape is
+            // unfamiliar — colored output we generate is always CSI.
+            out.push(c);
+            if let Some(&next) = chars.peek()
+                && next == '['
+            {
+                out.push(chars.next().unwrap());
+                for nc in chars.by_ref() {
+                    out.push(nc);
+                    if ('@'..='~').contains(&nc) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if visible >= max {
+            truncated = true;
+            break;
+        }
+        out.push(c);
+        visible += 1;
+    }
+    if truncated {
+        // Reserve a column for the ellipsis — pop one visible char
+        // back off so the final width still fits inside `max`.
+        while out.chars().last().is_some_and(|c| c == '\x1b') {
+            out.pop();
+        }
+        if let Some(last) = out.chars().last()
+            && last != '\x1b'
+        {
+            out.pop();
+        }
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -609,6 +921,161 @@ mod tests {
 
         not_in.phase = Phase::Failed;
         assert!(not_in.is_terminal_for_wait());
+    }
+
+    /// Regression: `truncate_visible` must count VISIBLE columns and
+    /// pass through ANSI escapes untouched. Long lines in `tail:` /
+    /// `config:` were getting cut mid-escape (or not truncated at all
+    /// because byte-count and visible-count disagreed), which both
+    /// broke colors and let the terminal soft-wrap the line — and the
+    /// ANSI rewind in `watch_until_ready` then walked too few rows.
+    #[test]
+    fn truncate_visible_preserves_ansi_and_counts_chars() {
+        // Plain text: simple truncation.
+        assert_eq!(truncate_visible("abcdefgh", 4), "abc…");
+        assert_eq!(truncate_visible("abc", 10), "abc");
+
+        // ANSI color codes don't count toward the visible budget.
+        let colored = "\x1b[32mhello\x1b[0m world";
+        // 11 visible columns; truncate to 8 should keep all 5 colored
+        // chars + space + 1 of "world" + ellipsis = "\x1b[32mhello\x1b[0m w…"
+        let out = truncate_visible(colored, 8);
+        // Must still contain the green-start escape so colors render.
+        assert!(out.starts_with("\x1b[32m"), "out: {:?}", out);
+        // Must end with the ellipsis sentinel.
+        assert!(out.ends_with('…'), "out: {:?}", out);
+
+        // 8 visible char budget on a 12-visible-char line → cut.
+        assert!(out.chars().filter(|c| *c == '…').count() == 1);
+    }
+
+    /// Regression: `last_stderr_line` must NOT drain a file that's
+    /// being concurrently appended to. The prior `read_to_end` after
+    /// `seek(len - 4096)` was effectively unbounded because EOF moves
+    /// forward as the writer appends — during a heavy OCI pull
+    /// (subprocess writing at MB/s) each call took ~2s, pushing the
+    /// `watch_until_ready` per-iteration latency to ~2s and making
+    /// the headline elapsed counter visibly skip seconds. The fix
+    /// wraps the file in `Read::take(4096)` so the read is hard-
+    /// capped regardless of file growth.
+    ///
+    /// This test simulates the scenario with a 5 MiB existing log
+    /// and asserts the call returns in well under one redraw budget.
+    #[test]
+    fn last_stderr_line_is_bounded_on_large_log() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let logs_dir = tmp.path().to_path_buf();
+        let log_path = logs_dir.join("stderr.log");
+
+        // Write ~5 MiB. Most of it is large fill lines; the trailing
+        // line is the "real" tail the function should return.
+        let mut f = std::fs::File::create(&log_path).expect("create");
+        let big_line = format!("{}\n", "X".repeat(4096));
+        for _ in 0..1200 {
+            f.write_all(big_line.as_bytes()).expect("fill");
+        }
+        f.write_all(b"  Pulling docker.io/iiidev/python: 99% done\n")
+            .expect("tail");
+        drop(f);
+
+        let status = WorkerStatus {
+            name: "demo".into(),
+            phase: Phase::Queued,
+            engine_running: true,
+            worker_type: Some("local"),
+            worker_path: Some("/path".into()),
+            managed_dir_exists: false,
+            prepared: false,
+            pid: None,
+            alive: false,
+            logs_dir: Some(logs_dir),
+            logs_last_modified: Some(SystemTime::now()),
+        };
+
+        let started = Instant::now();
+        let line = status.last_stderr_line().expect("tail line");
+        let elapsed = started.elapsed();
+
+        assert!(
+            line.contains("99% done"),
+            "tail line must surface the last real entry: {:?}",
+            line
+        );
+        // 50ms is generous — the bounded read should take sub-
+        // millisecond on any modern filesystem. Anything close to
+        // 1s would mean the read drained the whole file again.
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "last_stderr_line took {:?} on a 5 MiB file — must be \
+             bounded by the 4 KiB cap, not the file size",
+            elapsed
+        );
+    }
+
+    /// Regression: the headline elapsed counter must advance by
+    /// exactly 1 each whole second, regardless of when the sample
+    /// is taken. Using `{:.0}` on `as_secs_f64()` previously applied
+    /// round-half-to-even, producing 0→2→2→4→4 displays at exact
+    /// half-second boundaries. `as_secs()` truncates monotonically.
+    #[test]
+    fn headline_elapsed_counter_truncates_and_advances_by_one() {
+        let status = WorkerStatus {
+            name: "demo".into(),
+            phase: Phase::Queued,
+            engine_running: true,
+            worker_type: Some("local"),
+            worker_path: None,
+            managed_dir_exists: false,
+            prepared: false,
+            pid: None,
+            alive: false,
+            logs_dir: None,
+            logs_last_modified: None,
+        };
+        let mk = |secs: u64, nanos: u32| WatchProgress {
+            tick: 0,
+            elapsed: Duration::new(secs, nanos),
+        };
+        // Strip ANSI for easy substring assertions.
+        let strip = |s: String| {
+            let mut out = String::new();
+            let mut chars = s.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+
+        // Sub-second elapsed displays as 0s.
+        assert!(strip(status.headline_with_progress(mk(0, 500_000_000))).contains("(0s"));
+        // Just under 1s still 0s.
+        assert!(strip(status.headline_with_progress(mk(0, 999_999_999))).contains("(0s"));
+        // 1.0s exactly displays as 1s — not 0s, not 2s.
+        assert!(strip(status.headline_with_progress(mk(1, 0))).contains("(1s"));
+        // Banker's-rounding death zones: 0.5, 1.5, 2.5, 3.5, 4.5.
+        // Old code displayed 0,2,2,4,4 — the new code MUST display
+        // 0,1,2,3,4 with strict truncation.
+        for s in 0..=4 {
+            let half = mk(s, 500_000_000);
+            let out = strip(status.headline_with_progress(half));
+            assert!(
+                out.contains(&format!("({}s", s)),
+                "elapsed {}.5s must display ({}s, got: {:?}",
+                s,
+                s,
+                out
+            );
+        }
     }
 
     #[test]

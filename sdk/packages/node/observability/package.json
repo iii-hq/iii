@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/observability",
-  "version": "0.16.0-next.2",
+  "version": "0.16.1",
   "private": false,
   "publishConfig": { "access": "public" },
   "type": "module",
@@ -17,6 +17,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.mjs",
+      "require": "./dist/internal.cjs"
     }
   },
   "scripts": {

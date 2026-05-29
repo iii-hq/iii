@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Discover engine workers with publishable skill bundles.
+"""Discover workers with publishable skill bundles.
 
-Scans ``engine/src/workers/*/skills/`` and emits a GitHub Actions matrix JSON
-with ``worker_dir`` (path relative to repo root) and ``slug`` (registry name
-from ``iii.worker.yaml``). Workers whose skills tree has no non-empty markdown
-are omitted.
+Scans the repo for ``iii.worker.yaml`` manifests that sit next to a non-empty
+``skills/`` tree (or ``skill.md``) and emits a GitHub Actions matrix JSON with
+``worker_dir`` (path relative to repo root) and ``slug`` (registry name from the
+manifest). Workers whose skills tree has no non-empty markdown are omitted.
 """
 from __future__ import annotations
 
@@ -16,6 +16,17 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from build_skills_payload import collect_skills  # noqa: E402
+
+_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "target",
+        ".turbo",
+        "dist",
+        "build",
+    }
+)
 
 
 def _read_slug(manifest_path: pathlib.Path) -> str:
@@ -31,23 +42,26 @@ def _read_slug(manifest_path: pathlib.Path) -> str:
     return name.strip()
 
 
-def discover(repo_root: pathlib.Path) -> list[dict[str, str]]:
-    workers_root = repo_root / "engine" / "src" / "workers"
-    if not workers_root.is_dir():
-        return []
+def _iter_worker_manifests(repo_root: pathlib.Path):
+    for path in sorted(repo_root.rglob("iii.worker.yaml")):
+        if any(part in _SKIP_DIR_NAMES for part in path.relative_to(repo_root).parts):
+            continue
+        yield path
 
+
+def discover(repo_root: pathlib.Path) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
-    for skills_dir in sorted(workers_root.glob("*/skills")):
-        if not skills_dir.is_dir():
+    seen_dirs: set[str] = set()
+
+    for manifest in _iter_worker_manifests(repo_root):
+        worker_dir = manifest.parent
+        worker_key = worker_dir.relative_to(repo_root).as_posix()
+        if worker_key in seen_dirs:
             continue
 
-        worker_dir = skills_dir.parent
-        manifest = worker_dir / "iii.worker.yaml"
-        if not manifest.is_file():
-            print(
-                f"::warning::{worker_dir.relative_to(repo_root)}: "
-                "skills/ present but iii.worker.yaml missing; skipping"
-            )
+        skills_dir = worker_dir / "skills"
+        intro = worker_dir / "skill.md"
+        if not skills_dir.is_dir() and not intro.is_file():
             continue
 
         try:
@@ -59,19 +73,20 @@ def discover(repo_root: pathlib.Path) -> list[dict[str, str]]:
 
         if not skills:
             print(
-                f"::notice::{worker_dir.relative_to(repo_root)}: "
+                f"::notice::{worker_key}: "
                 "no non-empty skill markdown; skipping"
             )
             continue
 
+        seen_dirs.add(worker_key)
         entries.append(
             {
-                "worker_dir": worker_dir.relative_to(repo_root).as_posix(),
+                "worker_dir": worker_key,
                 "slug": slug,
             }
         )
 
-    return entries
+    return sorted(entries, key=lambda entry: entry["worker_dir"])
 
 
 def main() -> int:

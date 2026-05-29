@@ -69,6 +69,19 @@ impl WorkerLanguage {
             WorkerLanguage::Rust => "./src/main.rs",
         }
     }
+
+    /// Default package manager for the language. Substituted into the
+    /// scaffolded `iii.worker.yaml` via the `{{worker_package_manager}}`
+    /// placeholder. The engine only consumes this for ts/js (npm vs
+    /// yarn/pnpm/bun); for py/rust it's informational so the manifest
+    /// stays self-describing.
+    pub fn package_manager(&self) -> &'static str {
+        match self {
+            WorkerLanguage::Ts | WorkerLanguage::Js => "npm",
+            WorkerLanguage::Py => "pip",
+            WorkerLanguage::Rust => "cargo",
+        }
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -395,8 +408,9 @@ fn restore_snapshots(
     Ok(())
 }
 
-/// Substitute `{{worker_name}}`, `{{worker_language}}`, `{{worker_entry}}`
-/// into `iii.worker.yaml`. No-op if the file is absent (test fixture
+/// Substitute `{{worker_name}}`, `{{worker_language}}`,
+/// `{{worker_package_manager}}`, `{{worker_entry}}` into
+/// `iii.worker.yaml`. No-op if the file is absent (test fixture
 /// short-circuit) or the placeholders are gone (idempotent re-run).
 fn substitute_yaml_placeholders(
     root: &Path,
@@ -414,6 +428,7 @@ fn substitute_yaml_placeholders(
     let replaced = contents
         .replace("{{worker_name}}", worker_name)
         .replace("{{worker_language}}", lang.manifest_key())
+        .replace("{{worker_package_manager}}", lang.package_manager())
         .replace("{{worker_entry}}", lang.default_entry());
     std::fs::write(&path, replaced)
 }

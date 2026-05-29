@@ -1,6 +1,6 @@
 [package]
 name = "iii-observability"
-version = "0.16.0-next.2"
+version = "0.16.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"

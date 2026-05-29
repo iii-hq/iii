@@ -577,12 +577,16 @@ jobs:
 
   publish-builtin-workers:
     name: Publish builtin workers
-    needs: [setup, create-iii-release, engine-release]
+    # worker-release must finish before iii-sandbox publish: the install script
+    # pulls iii-worker from the GitHub release being tagged.
+    needs: [setup, create-iii-release, engine-release, worker-release]
     if: needs.setup.outputs.dry_run != 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
+          - worker: iii-worker-manager
+            worker_dir: engine/src/workers/worker
           - worker: iii-http
             worker_dir: engine/src/workers/rest_api
           - worker: iii-stream
@@ -601,8 +605,12 @@ jobs:
             worker_dir: engine/src/workers/shell
           - worker: iii-bridge
             worker_dir: engine/src/workers/bridge_client
+          - worker: configuration
+            worker_dir: engine/src/workers/configuration
           - worker: iii-sandbox
             worker_dir: crates/iii-worker/src/sandbox_daemon
+          - worker: iii-engine-functions
+            worker_dir: engine/src/workers/engine_fn
     uses: ./.github/workflows/_publish-engine-workers.yml
     with:
       worker: ${{ matrix.worker }}

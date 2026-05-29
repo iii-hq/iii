@@ -151,6 +151,7 @@ fn clone_exec_req(req: &ExecRequest) -> ExecRequest {
         sandbox_id: req.sandbox_id.clone(),
         cmd: req.cmd.clone(),
         args: req.args.clone(),
+        argv: req.argv.clone(),
         stdin: req.stdin.clone(),
         env: req.env.clone(),
         timeout_ms: req.timeout_ms,

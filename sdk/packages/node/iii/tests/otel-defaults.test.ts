@@ -82,13 +82,8 @@ vi.mock('../../observability/src/telemetry-system/connection', () => ({
   })),
 }))
 
-import {
-  initOtel,
-  shutdownOtel,
-  getTracer,
-  getMeter,
-  getLogger,
-} from '@iii-dev/observability'
+import { initOtel, shutdownOtel, getLogger } from '@iii-dev/observability'
+import { getTracer, getMeter } from '@iii-dev/observability/internal'
 
 describe('OTel default-enabled behavior', () => {
   const originalEnv = process.env

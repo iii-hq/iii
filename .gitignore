@@ -78,3 +78,7 @@ graphify-out
 docs/plans/
 # Local-only personal notes (per-contributor, not tracked)
 TODOS.md
+
+# Per-contributor coding-agent state (not tracked)
+.serena/
+CLAUDE.md

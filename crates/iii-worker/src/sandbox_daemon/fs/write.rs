@@ -15,15 +15,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use iii_sdk::IIIError;
+use iii_sdk::RegisterFunction;
 use iii_sdk::channels::{ChannelReader, StreamChannelRef};
 use iii_shell_proto::FsResult;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+    errors::{SandboxError, SandboxErrorWire},
+    fs::adapter::FsRunner,
+    registry::SandboxRegistry,
 };
 
 // ---------------------------------------------------------------------------
@@ -137,7 +138,7 @@ impl tokio::io::AsyncRead for ChannelReaderAdapter {
 /// separate `content_b64` field on [`WriteRequest`] (not a variant
 /// here, so a caller can't accidentally pass base64 expecting it to be
 /// decoded — they have to opt in by name).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum WriteContent {
     /// Inline UTF-8 string. Written to the file verbatim.
@@ -146,17 +147,23 @@ pub enum WriteContent {
     Stream(StreamChannelRef),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[schemars(example = "write_request_example")]
 pub struct WriteRequest {
+    /// UUID returned by `sandbox::create`.
     pub sandbox_id: String,
+    /// Absolute destination path inside the sandbox guest.
     pub path: String,
+    /// Octal permissions for the new file (default `"0644"`).
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Create missing parent directories before writing.
     #[serde(default)]
     pub parents: bool,
-    /// File body — pass a UTF-8 string for source/text, or a
-    /// `StreamChannelRef` object for streaming. Mutually exclusive
-    /// with `content_b64`; exactly one of the two must be set.
+    /// File body. Pass a UTF-8 string for source/text (the agent-natural
+    /// form), or a `StreamChannelRef` object for streaming large/binary
+    /// uploads. Mutually exclusive with `content_b64`; exactly one of the
+    /// two must be set.
     #[serde(default)]
     pub content: Option<WriteContent>,
     /// Base64-encoded inline body for small binary payloads.
@@ -165,11 +172,21 @@ pub struct WriteRequest {
     pub content_b64: Option<String>,
 }
 
+fn write_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "sandbox_id": "00000000-0000-0000-0000-000000000000",
+        "path": "/home/app/index.js",
+        "content": "console.log('hello world')\n",
+        "mode": "0644",
+        "parents": true
+    })
+}
+
 fn default_mode() -> String {
     "0644".to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct WriteResponse {
     pub bytes_written: u64,
     pub path: String,
@@ -291,26 +308,30 @@ pub(super) fn register(
     runner: Arc<dyn FsRunner>,
 ) {
     let engine_address = iii.address().to_string();
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        let engine_address = engine_address.clone();
-        Box::pin(async move {
-            let req: WriteRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match handle_write(req, &registry, &*runner, &engine_address).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
-            }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
     let _ = iii.register_function(
         "sandbox::fs::write",
-        iii_sdk::RegisterFunction::new_async(handler)
-            .description("Stream-upload a file into a sandbox".to_string()),
+        RegisterFunction::new_async(move |req: WriteRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            let engine_address = engine_address.clone();
+            async move {
+                let sid = req.sandbox_id.clone();
+                let start = std::time::Instant::now();
+                let result = handle_write(req, &registry, &*runner, &engine_address).await;
+                crate::sandbox_daemon::log_handler_result(
+                    "sandbox::fs::write",
+                    Some(&sid),
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
+            }
+        })
+        .description(
+            "Write a file into a sandbox. `content` accepts a UTF-8 string (recommended for \
+             source/text), a StreamChannelRef object (for large uploads), or use `content_b64` \
+             for small binary. Example: { sandbox_id: \"...\", path: \"/home/app/index.js\", content: \"console.log('hi')\\n\" }",
+        ),
     );
 }
 

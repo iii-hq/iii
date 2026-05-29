@@ -202,6 +202,51 @@ pub struct StreamCallRequest {
     pub event: Value,
 }
 
+// ── Configuration ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationTriggerConfig {
+    /// Configuration id to watch (exact match filter). When omitted, every id matches.
+    pub configuration_id: Option<String>,
+    /// Event types to filter on (e.g. ["configuration:updated"]). When omitted, every event matches.
+    pub event_types: Option<Vec<ConfigurationEventType>>,
+    /// Optional function id to evaluate before invoking the handler
+    pub condition_function_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum ConfigurationEventType {
+    #[serde(rename = "configuration:registered")]
+    Registered,
+    #[serde(rename = "configuration:updated")]
+    Updated,
+    #[serde(rename = "configuration:deleted")]
+    Deleted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationCallRequest {
+    /// Always "configuration"
+    #[serde(rename = "type")]
+    pub message_type: String,
+    /// Type of configuration change
+    pub event_type: ConfigurationEventType,
+    /// Configuration id (e.g. `iii-stream`)
+    pub id: String,
+    /// Human-readable name
+    pub name: String,
+    /// Description
+    pub description: String,
+    /// JSON Schema describing the value shape
+    pub schema: Value,
+    /// Previous value (null on registered/deleted-without-prior-state events)
+    pub old_value: Option<Value>,
+    /// New value with `${VAR:default}` placeholders expanded; null on deletion
+    pub new_value: Option<Value>,
+    /// Optional caller-supplied metadata stored alongside the entry
+    pub metadata: Option<Value>,
+}
+
 // ── Log (observability) ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

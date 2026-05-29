@@ -7,6 +7,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export default defineConfig({
   resolve: {
     alias: {
+      '@iii-dev/observability/internal': path.resolve(
+        __dirname,
+        '../observability/src/internal.ts',
+      ),
       '@iii-dev/observability': path.resolve(__dirname, '../observability/src/index.ts'),
     },
   },

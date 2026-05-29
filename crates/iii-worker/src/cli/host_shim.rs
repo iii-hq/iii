@@ -51,6 +51,29 @@ fn source_label_name(s: &crate::core::WorkerSource) -> String {
 
 static STDERR_CAPTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Returns `true` when fd 2 is a regular file. Used to distinguish the
+/// engine-spawned subprocess case (stderr → on-disk log file) from the
+/// daemon trigger case (stderr → pipe). On the file path we want stderr
+/// to flow through live so the wait UI's `tail:` row sees progress in
+/// real time; on the pipe path we still want to capture for clean
+/// trigger-response error reporting.
+fn stderr_is_regular_file() -> bool {
+    use std::os::unix::io::FromRawFd;
+    // dup fd 2 so the temporary `File` wrapper's Drop only closes the
+    // dup, not the real stderr.
+    let dup = unsafe { libc::dup(2) };
+    if dup < 0 {
+        return false;
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(dup) };
+    let is_regular = file
+        .metadata()
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false);
+    drop(file); // closes `dup`
+    is_regular
+}
+
 async fn run_capturing_stderr<F, Fut>(f: F) -> (i32, String)
 where
     F: FnOnce() -> Fut,
@@ -62,6 +85,23 @@ where
     // CLI path — stderr is live for the user (interactive prompts, colored
     // progress). Skip capture entirely; let stderr flow through.
     if std::io::stderr().is_terminal() {
+        return (f().await, String::new());
+    }
+
+    // Engine-spawned subprocess: when the engine reload spawns
+    // `iii-worker start <name>` via `ExternalWorkerProcess::spawn`, it
+    // redirects the subprocess's stderr to a REGULAR FILE
+    // (`~/.iii/logs/<name>/stderr.log`) that the wait UI tails. The
+    // original `is_terminal()` check assumed non-tty == daemon-pipe and
+    // captured-then-mirrored stderr; that buffered every progress line
+    // from `prepare_rootfs` / OCI pull / "Preparing sandbox..." into a
+    // tempfile until the handler completed, dumping it all at once at
+    // the end and leaving the wait UI's `tail:` row stuck on the first
+    // line ("• starting <name>") for minutes. Detect "stderr is a
+    // regular file" and let it flow through live too. The SDK trigger
+    // path (daemon → engine pipe → stderr=FIFO) still captures, so
+    // clean error responses to trigger callers are preserved.
+    if stderr_is_regular_file() {
         return (f().await, String::new());
     }
 
@@ -727,6 +767,106 @@ fn dir_size(path: &std::path::Path) -> u64 {
 mod tests {
     use super::*;
     use crate::core::error::WorkerOpErrorKind;
+
+    /// Shared across every test that swaps fd 2 — fd 2 is process-
+    /// global, so a per-test local `static` Mutex (one per function)
+    /// is THREE separate locks, not one, which lets cargo test's
+    /// default parallel execution race the three swappers. CI on
+    /// Linux reliably trips the race (each test reads the OTHER
+    /// test's swap and asserts on it); macOS happens to win the race
+    /// most of the time. One module-level lock fixes it for both.
+    static FD_SWAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Regression: when fd 2 has been redirected to a regular file
+    /// (the engine-spawned subprocess case), `stderr_is_regular_file`
+    /// must return true so `run_capturing_stderr` passes stderr
+    /// through live instead of buffering it. The whole wait UI
+    /// `tail:` row depends on this.
+    #[test]
+    fn stderr_is_regular_file_detects_redirected_log() {
+        use std::os::unix::io::AsRawFd;
+        // Serialize fd 2 swaps; concurrent tests would see each
+        // other's redirects.
+        let _guard = FD_SWAP_LOCK.lock().unwrap();
+
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let tmp_fd = tmp.as_file().as_raw_fd();
+
+        // SAFETY: fd 2 is process-global; the mutex above serializes;
+        // we restore on every path.
+        let orig = unsafe { libc::dup(2) };
+        assert!(orig >= 0, "dup(2) failed");
+        assert!(unsafe { libc::dup2(tmp_fd, 2) } >= 0, "dup2 failed");
+
+        let result = stderr_is_regular_file();
+
+        // Restore before asserting so a panic doesn't leave fd 2
+        // pointing at the temp file for the next test.
+        assert!(unsafe { libc::dup2(orig, 2) } >= 0, "restore dup2 failed");
+        unsafe { libc::close(orig) };
+
+        assert!(
+            result,
+            "stderr_is_regular_file must return true when fd 2 points at a regular file"
+        );
+    }
+
+    /// Regression: when fd 2 is a character device (/dev/null), the
+    /// helper must return false so the daemon-pipe capture path stays
+    /// in effect.
+    #[test]
+    fn stderr_is_regular_file_rejects_chardev() {
+        use std::os::unix::io::AsRawFd;
+        let _guard = FD_SWAP_LOCK.lock().unwrap();
+
+        let devnull = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .expect("open /dev/null");
+        let dn_fd = devnull.as_raw_fd();
+
+        let orig = unsafe { libc::dup(2) };
+        unsafe { libc::dup2(dn_fd, 2) };
+
+        let result = stderr_is_regular_file();
+
+        unsafe { libc::dup2(orig, 2) };
+        unsafe { libc::close(orig) };
+
+        assert!(
+            !result,
+            "stderr_is_regular_file must return false for /dev/null"
+        );
+    }
+
+    /// Regression: when fd 2 is a pipe (the daemon-trigger case the
+    /// capture path was designed for), the helper must return false.
+    /// If this ever flips, trigger callers stop seeing clean error
+    /// messages in their responses.
+    #[test]
+    fn stderr_is_regular_file_rejects_pipe() {
+        let _guard = FD_SWAP_LOCK.lock().unwrap();
+
+        let mut pipe_fds: [libc::c_int; 2] = [0; 2];
+        let rc = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe() failed");
+        let (read_end, write_end) = (pipe_fds[0], pipe_fds[1]);
+
+        let orig = unsafe { libc::dup(2) };
+        unsafe { libc::dup2(write_end, 2) };
+
+        let result = stderr_is_regular_file();
+
+        unsafe { libc::dup2(orig, 2) };
+        unsafe { libc::close(orig) };
+        unsafe { libc::close(read_end) };
+        unsafe { libc::close(write_end) };
+
+        assert!(
+            !result,
+            "stderr_is_regular_file must return false for pipes (daemon-trigger path)"
+        );
+    }
 
     #[test]
     fn classify_handler_error_maps_not_found_to_w110() {

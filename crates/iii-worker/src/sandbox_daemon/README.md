@@ -8,6 +8,86 @@ Spawn ephemeral microVMs from worker code or the terminal. The daemon registers 
 
 **Don't use it for:** long-lived services (use a regular worker), durable stateful tasks (overlay is wiped on stop).
 
+
+## Agent Quickstart
+
+If you are an AI agent calling `sandbox::*`, start here. Two paths:
+
+### One-call workflow (recommended): `sandbox::run`
+
+Boots a VM, drops your code in `/tmp/run.{ext}`, runs the interpreter, captures
+stdout/stderr, and stops the VM. One call, one response.
+
+```json
+{
+  "trigger": "sandbox::run",
+  "payload": {
+    "image": "node",
+    "code": "console.log('hello from sandbox')",
+    "lang": "node"
+  }
+}
+```
+
+`lang` accepts `"node"`, `"python"`, `"shell"`, or a custom interpreter binary path.
+Pass `keep_sandbox: true` if you want to keep the VM alive to inspect afterwards.
+
+### Surgical workflow: `sandbox::create` -> `sandbox::fs::write` -> `sandbox::exec` -> `sandbox::stop`
+
+Use this when you need fine-grained control over multiple operations on one sandbox.
+
+```json
+// 1. boot
+{ "trigger": "sandbox::create", "payload": { "image": "node" } }
+// 2. write a file (content accepts a UTF-8 string directly)
+{ "trigger": "sandbox::fs::write", "payload": {
+    "sandbox_id": "<uuid>", "path": "/home/app/main.js",
+    "content": "console.log('hi')\n"
+} }
+// 3. run it (3 valid cmd shapes — pick whichever you like)
+{ "trigger": "sandbox::exec", "payload": {
+    "sandbox_id": "<uuid>", "cmd": "node", "args": ["/home/app/main.js"]
+} }
+// 4. tear down
+{ "trigger": "sandbox::stop", "payload": { "sandbox_id": "<uuid>" } }
+```
+
+### Three accepted `cmd` shapes for `sandbox::exec`
+
+```json
+{ "cmd": "node /home/app/main.js" }                 // shell-line, shlex-split
+{ "cmd": "node", "args": ["/home/app/main.js"] }   // classic POSIX argv
+{ "argv": ["node", "/home/app/main.js"] }          // single argv array
+```
+
+Shlex is **not** bash — `cmd: "echo $HOME && pwd"` won't expand variables or chain
+commands. Use `sandbox::run` with `lang: "shell"` for bash semantics.
+
+### Two accepted `env` shapes for `sandbox::create`, `sandbox::exec`, `sandbox::run`
+
+```json
+{ "env": ["FOO=bar", "PATH=/usr/bin"] }   // wire shape (legacy)
+{ "env": { "FOO": "bar", "PATH": "/usr/bin" } }   // agent-natural shape
+```
+
+### Error responses carry a self-healing payload
+
+Every error returns JSON encoded inside `error.message` (see SandboxErrorWire docs).
+Parse it once:
+
+```js
+const detail = JSON.parse(err.message);
+// detail.code, detail.type, detail.message, detail.docs_url, detail.retryable
+// detail.fix       — ready-to-send next-call payload, null if not auto-fixable
+// detail.fix_note  — one-liner explaining why fix is null
+```
+
+If `detail.fix` is non-null, your next call is `await fn(detail.fix)`. The error IS
+the recovery path.
+
+### Error codes (anchors below)
+
+
 ## Host requirements
 
 Sandboxes run as libkrun microVMs and need hardware virtualization on the host:
@@ -81,7 +161,7 @@ Run a command inside a live sandbox. Recommended `timeoutMs`: `35_000` (daemon's
 | `args` | string[] | `[]` | argv tail. |
 | `stdin` | string (base64) | none | Bytes piped to the process's stdin. |
 | `env` | string[] | `[]` | `K=V` entries merged on top of the boot env. |
-| `timeout_ms` | number | `30_000` | Per-exec deadline enforced inside the daemon. |
+| `timeout_ms` | number | `300_000` | Per-exec deadline enforced inside the daemon. Sized for cold `npm install` / `pip install` / `cargo build`; pass a smaller value for probes and version checks. |
 | `workdir` | string | guest home | Working directory. |
 
 Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success }`.
@@ -150,14 +230,17 @@ Returns: `{ bytes_written, path }`.
 
 #### `sandbox::fs::read`
 
-Stream a file out of the sandbox. Returns a `StreamChannelRef` the caller reads from.
+Read a file out of the sandbox. Always returns a `content: StreamChannelRef` the caller can subscribe to for the full file bytes. For UTF-8 text files under 1 MiB, the response also includes an inline `body: string` so callers can short-circuit the channel subscription and use the body directly.
 
 | Field | Type | Description |
 |---|---|---|
 | `sandbox_id` | string | Sandbox to operate in. |
 | `path` | string | Path to read. |
 
-Returns: `{ content: StreamChannelRef, size, mode, mtime }`.
+Returns: `{ content: StreamChannelRef, body?: string, size, mode, mtime }`.
+
+- `content` is always populated. The same bytes are delivered through it whether or not `body` is also set, so peers that statically type `content` as `StreamChannelRef` keep working unchanged.
+- `body` is present (`Some`) for files that fit in the 1 MiB inline cap **and** decode cleanly as UTF-8. Absent (`None`) for large or binary files — read those through `content` instead.
 
 #### `sandbox::fs::rm`
 
@@ -300,17 +383,107 @@ Anything outside this set (e.g. `fs::grep`, `fs::sed`, `fs::chmod`) is reachable
 
 ## Errors
 
-The daemon returns typed `SandboxError`s with S-codes. Categories:
+The daemon returns typed `SandboxError`s with S-codes embedded in the wire
+payload (`{type, code, message, docs_url, fix, fix_note, retryable}`).
 
-- **`S001`–`S004`** — request shape errors (bad UUID, missing required field, invalid sandbox state).
-- **`S100`** — image not in `image_allowlist`. Add it to the allowlist or use `custom_images`.
-- **`S101`** — image not installed and `auto_install: false`. Pre-pull with `iii worker add iiidev/<image>`.
-- **`S102`** — image registry/pull failure.
-- **`S200`–`S219`** — filesystem op errors (path not found, EISDIR, ENOTDIR, EPERM, …). The exact code identifies which operation failed.
-- **`S300`** — VM boot failed. Almost always missing virtualization (no `/dev/kvm`, Intel Mac, Windows host). Stderr tail attached.
-- **`S400`** — capacity exceeded (`max_concurrent_sandboxes` or `per_image_caps`).
+`error.docs_url` resolves to one of the anchors below. The anchor IDs are
+case-sensitive HTML anchors so a regression test
+(`sandbox_docs_anchor_stability`) can verify each `SandboxErrorCode` has a
+documented home.
 
-For the full diagnostic flow per code (and how to surface stderr tails), see `docs/api-reference/sandbox.mdx#s-codes`.
+### Request validation
+
+<a id="S001"></a>
+#### S001 — invalid request
+Bad UUID, missing required field, ambiguous `cmd`/`args`/`argv` combo, invalid
+env var name. Check `error.message` for the specific cause.
+
+<a id="S002"></a>
+#### S002 — sandbox not found
+The `sandbox_id` is well-formed but no sandbox with that id exists. Call
+`sandbox::create` first.
+
+<a id="S003"></a>
+#### S003 — concurrent exec
+Another exec is already in flight on this sandbox. Await it before submitting
+another.
+
+<a id="S004"></a>
+#### S004 — sandbox already stopped
+The sandbox was reaped or explicitly stopped. Create a new one.
+
+### Image catalog
+
+<a id="S100"></a>
+#### S100 — image not in catalog
+The `image` value isn't a built-in preset (`python`, `node`) and isn't a key in
+`sandbox.custom_images` of `iii.config.yaml`. Either pick a known preset or add
+a custom_images entry.
+
+<a id="S101"></a>
+#### S101 — rootfs missing
+The image is in the catalog but the rootfs isn't on disk. Operator action:
+run `iii worker add <image-ref>` on the host.
+
+<a id="S102"></a>
+#### S102 — auto-install failed (transient)
+Pull or extract of the image bundle failed. Often transient — retry.
+
+### Exec runtime
+
+<a id="S200"></a>
+#### S200 — exec timed out
+The `timeout_ms` window elapsed before the binary exited. Raise the timeout or
+break the work into smaller steps.
+
+### Filesystem
+
+<a id="S210"></a>
+#### S210 — fs invalid request
+Mutually exclusive fields, missing required field, unsupported operation
+combination. Check `error.message`.
+
+<a id="S211"></a>
+#### S211 — file not found
+
+<a id="S212"></a>
+#### S212 — wrong file type (expected file, found directory, or vice versa)
+
+<a id="S213"></a>
+#### S213 — already exists
+
+<a id="S214"></a>
+#### S214 — directory not empty
+
+<a id="S215"></a>
+#### S215 — permission denied
+
+<a id="S216"></a>
+#### S216 — fs i/o error
+
+<a id="S217"></a>
+#### S217 — invalid regex pattern
+
+<a id="S218"></a>
+#### S218 — fs channel aborted (transient)
+The streaming channel closed before the operation completed. Retry.
+
+<a id="S219"></a>
+#### S219 — fs operation unsupported
+The sandbox supervisor inside the VM is too old to implement this fs op.
+Upgrade iii-worker.
+
+### Platform
+
+<a id="S300"></a>
+#### S300 — VM boot failed
+The microVM couldn't boot. Almost always missing virtualization on the host
+(no `/dev/kvm`, Intel Mac, Windows). Check the stderr tail in `error.message`.
+
+<a id="S400"></a>
+#### S400 — resource limit exceeded
+Capacity bound (`max_concurrent_sandboxes`, per-image caps) reached.
+
 
 ## See also
 

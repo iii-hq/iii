@@ -1,0 +1,11 @@
+iii: v1
+name: configuration
+type: engine
+description: Configuration worker for the iii engine.
+repo: https://github.com/iii-hq/iii
+config:
+  adapter:
+    name: fs
+    config:
+      directory: ./data/configuration
+  ttl_seconds: 0

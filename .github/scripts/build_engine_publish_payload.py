@@ -175,8 +175,15 @@ def build_payload(
     readme_path = repo_root / worker_dir / "README.md"
     readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
 
+    manifest_name = meta.get("name")
+    worker_name = (
+        manifest_name.strip()
+        if isinstance(manifest_name, str) and manifest_name.strip()
+        else worker
+    )
+
     return {
-        "worker_name": worker,
+        "worker_name": worker_name,
         "version": engine_version,
         "tag": registry_tag or "latest",
         "type": "engine",

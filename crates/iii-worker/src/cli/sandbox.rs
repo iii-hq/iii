@@ -18,7 +18,7 @@ const CREATE_TRIGGER_TIMEOUT_MS: u64 = 300_000;
 /// Matches the daemon's default exec timeout. If the daemon changes, update here.
 /// (See `sandbox_daemon::adapters::DEFAULT_EXEC_TIMEOUT_MS` — private there, so
 /// we maintain a mirrored constant on the CLI side.)
-const DAEMON_DEFAULT_EXEC_TIMEOUT_MS: u64 = 30_000;
+const DAEMON_DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
 /// Safety margin so the daemon's deadline fires before the trigger does.
 const EXEC_TRIGGER_MARGIN_MS: u64 = 5_000;
 
