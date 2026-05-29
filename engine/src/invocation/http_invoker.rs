@@ -822,7 +822,14 @@ mod tests {
         };
 
         let result = invoker
-            .invoke_http("svc.redirect", &endpoint, Uuid::nil(), json!({}), None, None)
+            .invoke_http(
+                "svc.redirect",
+                &endpoint,
+                Uuid::nil(),
+                json!({}),
+                None,
+                None,
+            )
             .await
             .expect("3xx with non-JSON body should be a result-less success, not an error");
 
