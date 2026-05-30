@@ -3694,7 +3694,10 @@ mod tests {
             logs[0].attributes.get("colored"),
             Some(&serde_json::Value::String("red".to_string()))
         );
-        assert_eq!(logs[0].attributes.get("count"), Some(&serde_json::json!(42)));
+        assert_eq!(
+            logs[0].attributes.get("count"),
+            Some(&serde_json::json!(42))
+        );
     }
 
     #[test]
