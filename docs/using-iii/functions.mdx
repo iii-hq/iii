@@ -147,7 +147,7 @@ response schemas are in the
 | `engine::workers::list`       | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                               |
 | `engine::triggers::list`      | List every registered trigger binding.                                                                                     |
 | `engine::trigger-types::list` | List every advertised trigger type along with its config and call-request schemas.                                         |
-| `engine::channels::create`    | Allocate a streaming channel reader / writer pair. The SDK wraps this as `worker.createChannel()`; rarely called directly. |
+| `engine::channels::create`    | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper (`iii-sdk/helpers`); rarely called directly. |
 | `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID). The SDK calls this automatically on connect.            |
 
 The engine also publishes two subscription triggers in the same family. Bind a function to one of
