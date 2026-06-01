@@ -59,4 +59,4 @@ serial_test = "3"
 strip = true
 lto = true
 codegen-units = 1
-opt-level = "z"
+opt-level = "s"
