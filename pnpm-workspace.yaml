@@ -2,6 +2,8 @@ packages:
   - sdk/packages/node/iii
   - sdk/packages/node/iii-example
   - sdk/packages/node/iii-browser
+  - sdk/packages/node/observability
   - console/packages/*
   - docs
   - website
+  - blog

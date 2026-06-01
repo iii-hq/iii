@@ -26,6 +26,7 @@ iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
 # TODO: switch to crates.io pin before shipping; path dep for co-development
 iii-sdk = { path = "../../sdk/packages/rust/iii" }
+iii-observability = { workspace = true }
 iii-shell-client = { path = "../iii-shell-client" }
 iii-shell-proto = { path = "../iii-shell-proto" }
 iii-supervisor = { path = "../iii-supervisor" }
@@ -35,7 +36,11 @@ oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
+cliclack = "0.3"
+console = "0.16"
+ctrlc = "3.4"
 serde = { version = "1", features = ["derive"] }
+scaffolder-core = { workspace = true }
 serde_json = "1"
 serde_yaml = "0.9"
 semver = { workspace = true }
@@ -49,9 +54,20 @@ sha2 = "0.10"
 hex = "0.4"
 flate2 = "1"
 tar = "0.4"
+# Used by the bundle archive cache to update mtime on cache hit so LRU
+# eviction reflects real recency, not initial-write time.
+filetime = "0.2"
+# Cross-process advisory file lock for serializing concurrent
+# `iii worker add <bundle-name>` calls during the extract+rename step.
+# Sync API: callers use tokio::task::spawn_blocking to acquire.
+fslock = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
+# Needed to construct `oci_client::client::ImageLayer` / `Config` when we
+# replace the monolithic `client.pull` with a streaming per-layer pull
+# for byte-level progress.
+bytes = "1"
 indicatif = "0.17"
 notify = "8.2.0"
 # `iii worker exec` stdout/stderr/stdin frames encode binary payloads
@@ -71,6 +87,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 once_cell = "1"
 # Used by sandbox_daemon for derive-based error types.
 thiserror = "2"
+
+schemars = "0.8"
+# Used by sandbox::exec to shlex-split `cmd` when an agent passes a shell-style
+# line (e.g. `cmd: "node script.js"`). Lets the existing argv-based runner stay
+# argv-pure while accepting the agent-natural input shape.
+shlex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

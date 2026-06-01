@@ -10,7 +10,6 @@ export type {
   AuthInput,
   AuthResult,
   EnqueueResult,
-  FunctionInfo,
   HttpAuthConfig,
   HttpInvocationConfig,
   MessageType,
@@ -26,13 +25,10 @@ export type {
   RegisterTriggerTypeMessage,
   StreamChannelRef,
   TriggerAction as TriggerActionType,
-  TriggerInfo,
   TriggerRequest,
-  TriggerTypeInfo,
-  WorkerInfo,
 } from './iii-types'
 
-export { Logger } from './logger'
+export { Logger } from '@iii-dev/observability'
 
 export type { TriggerConfig, TriggerHandler } from './triggers'
 
@@ -47,7 +43,6 @@ export type {
   ISdk,
   RegisterFunctionInput,
   RegisterFunctionOptions,
-  RegisterServiceInput,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,

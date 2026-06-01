@@ -4,8 +4,8 @@ import urllib.request
 
 import pytest
 
-from iii.telemetry import get_tracer, init_otel, is_initialized, shutdown_otel, shutdown_otel_async
-from iii.telemetry_types import OtelConfig
+from iii_observability.telemetry import _get_tracer, _is_initialized, init_otel, shutdown_otel, shutdown_otel_async
+from iii_observability import OtelConfig
 
 # URLLibInstrumentor patches OpenerDirector.open, not urlopen directly
 ORIGINAL_OPENER_OPEN = urllib.request.OpenerDirector.open
@@ -35,20 +35,20 @@ def cleanup():
 
 
 def test_not_initialized_by_default():
-    assert not is_initialized()
-    assert get_tracer() is None
+    assert not _is_initialized()
+    assert _get_tracer() is None
 
 
 def test_init_disabled_when_enabled_is_false():
     init_otel(OtelConfig(enabled=False))
-    assert not is_initialized()
-    assert get_tracer() is None
+    assert not _is_initialized()
+    assert _get_tracer() is None
 
 
 def test_init_enabled():
     init_otel(OtelConfig(enabled=True))
-    assert is_initialized()
-    assert get_tracer() is not None
+    assert _is_initialized()
+    assert _get_tracer() is not None
 
 
 def test_init_patches_urlopen_by_default():
@@ -71,15 +71,15 @@ def test_shutdown_restores_urlopen():
 def test_shutdown_clears_state():
     init_otel(OtelConfig(enabled=True))
     shutdown_otel()
-    assert not is_initialized()
-    assert get_tracer() is None
+    assert not _is_initialized()
+    assert _get_tracer() is None
 
 
 def test_init_is_idempotent():
     init_otel(OtelConfig(enabled=True))
-    tracer1 = get_tracer()
+    tracer1 = _get_tracer()
     init_otel(OtelConfig(enabled=True))  # second call must be no-op
-    assert get_tracer() is tracer1
+    assert _get_tracer() is tracer1
 
 
 def test_shutdown_without_init_is_safe():
@@ -87,13 +87,13 @@ def test_shutdown_without_init_is_safe():
 
 
 def test_telemetry_apis_importable_from_submodules():
-    from iii.telemetry import get_tracer, init_otel, is_initialized, shutdown_otel
-    from iii.telemetry_types import OtelConfig
+    from iii_observability.telemetry import _get_tracer, _is_initialized, init_otel, shutdown_otel
+    from iii_observability import OtelConfig
 
     assert callable(init_otel)
     assert callable(shutdown_otel)
-    assert callable(get_tracer)
-    assert callable(is_initialized)
+    assert callable(_get_tracer)
+    assert callable(_is_initialized)
     assert OtelConfig is not None
 
 
@@ -103,7 +103,7 @@ def test_init_configures_engine_span_exporter():
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    from iii.telemetry_exporters import EngineSpanExporter
+    from iii_observability.telemetry_exporters import EngineSpanExporter
 
     init_otel(OtelConfig(enabled=True))
     provider = trace.get_tracer_provider()
@@ -139,7 +139,7 @@ def test_shutdown_closes_connection():
     import asyncio
     from unittest.mock import AsyncMock, patch
 
-    from iii.telemetry_exporters import SharedEngineConnection
+    from iii_observability.telemetry_exporters import SharedEngineConnection
 
     with (
         patch.object(SharedEngineConnection, "start"),

@@ -1,0 +1,11 @@
+{
+	"name": "docs",
+	"private": true,
+	"scripts": {
+		"dev": "mint dev",
+		"build": "mint build"
+	},
+	"devDependencies": {
+		"prettier": "3.8.3"
+	}
+}

@@ -1,0 +1,23 @@
+name: Bare
+description: Minimal iii project scaffold — just config.yaml and .gitignore.
+version: "0.1.0"
+min_iii_version: "0.11.0"
+
+# No language requirements: this template is the bare scaffold used by
+# `iii project init`. Languages are added later via `iii worker add` or by
+# scaffolding from a worker-bearing template like `quickstart`.
+treat_required_as_included: true
+requires: []
+optional: []
+
+# All scaffolded content comes from the root template.yaml's `shared_files`
+# (default-iii-config.yaml -> config.yaml, default-gitignore -> .gitignore).
+# `data/` is iii-state managed by the engine at runtime, not part of the
+# scaffold; it's already in default-gitignore so users don't accidentally
+# commit it.
+files: []
+
+next_steps:
+  - "Add a worker: iii worker add <package>"
+  - "Start the engine: iii"
+  - "Docs: https://iii.dev/docs/quickstart"

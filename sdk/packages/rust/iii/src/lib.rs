@@ -2,11 +2,9 @@ pub mod builtin_triggers;
 pub mod channels;
 pub mod error;
 pub mod iii;
-pub mod logger;
 pub mod protocol;
 pub mod stream;
 pub mod structs;
-pub mod telemetry;
 pub mod triggers;
 pub mod types;
 
@@ -20,15 +18,13 @@ pub use channels::{
 };
 pub use error::IIIError;
 pub use iii::{
-    FunctionInfo, FunctionRef, III, IIIAsyncFn, IIIConnectionState, IIIFn, IntoFunctionHandler,
-    IntoFunctionRegistration, RegisterFunction, RegisterTriggerType, TriggerInfo, TriggerTypeInfo,
-    TriggerTypeRef, WorkerInfo, WorkerMetadata, iii_async_fn, iii_fn,
+    FunctionInfo, FunctionRef, III, IIIConnectionState, RegisterFunction, RegisterTriggerType,
+    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata,
 };
-pub use logger::Logger;
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
-    Message, RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerInput,
-    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+    Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
+    RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream::UpdateBuilder;
 pub use structs::{
@@ -61,7 +57,7 @@ pub struct InitOptions {
     /// Custom HTTP headers sent during the WebSocket handshake.
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
-    pub otel: Option<crate::telemetry::types::OtelConfig>,
+    pub otel: Option<iii_observability::OtelConfig>,
 }
 
 /// Create and return a connected SDK instance. The WebSocket connection is
@@ -110,22 +106,3 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
 
     iii
 }
-
-// OpenTelemetry re-exports
-pub use telemetry::{
-    context::{
-        current_span_id, current_trace_id, extract_baggage, extract_context, extract_traceparent,
-        get_all_baggage, get_baggage_entry, inject_baggage, inject_traceparent,
-        remove_baggage_entry, set_baggage_entry,
-    },
-    flush_otel, get_meter, get_tracer,
-    http_instrumentation::execute_traced_request,
-    init_otel, is_initialized, shutdown_otel,
-    types::OtelConfig,
-    types::ReconnectionConfig,
-    with_span,
-};
-
-// Re-export commonly used OpenTelemetry types for convenience
-pub use opentelemetry::trace::SpanKind;
-pub use opentelemetry::trace::Status as SpanStatus;

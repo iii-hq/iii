@@ -1,0 +1,29 @@
+---
+import { getCollection } from 'astro:content'
+import BaseLayout from '../layouts/BaseLayout.astro'
+import FormattedDate from '../components/FormattedDate.astro'
+
+const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
+  (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+)
+---
+
+<BaseLayout title="iii blog" description="Notes from the team building iii — three primitives, zero integration cost.">
+  <h1>Blog</h1>
+  <p class="meta">Notes from the team building iii.</p>
+
+  <ul class="posts">
+    {
+      posts.map((post) => (
+        <li>
+          <a class="post-link" href={`/blog/${post.id}/`}>
+            {post.data.title}
+          </a>
+          <p>
+            <FormattedDate date={post.data.pubDate} /> · {post.data.description}
+          </p>
+        </li>
+      ))
+    }
+  </ul>
+</BaseLayout>

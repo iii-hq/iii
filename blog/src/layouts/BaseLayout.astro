@@ -1,0 +1,63 @@
+---
+import '../styles/global.css'
+import AnalyticsHead from '../components/AnalyticsHead.astro'
+import CookieBanner from '../components/CookieBanner.astro'
+import Footer from '../components/Footer.astro'
+import Logo from '../components/Logo.astro'
+import ThemeInit from '../components/ThemeInit.astro'
+import ThemeToggle from '../components/ThemeToggle.astro'
+
+interface Props {
+  title: string
+  description: string
+}
+
+const { title, description } = Astro.props
+const canonical = new URL(Astro.url.pathname, Astro.site).toString()
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#f5f3ee" />
+    <ThemeInit />
+    <AnalyticsHead />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="alternate" type="application/rss+xml" title="iii blog" href="/blog/rss.xml" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content="https://iii.dev/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+  </head>
+  <body>
+    <CookieBanner />
+    <div class="sheet">
+      <nav class="nav" aria-label="Primary">
+        <div class="nav-left">
+          <a class="logo-link" href="/" aria-label="iii home">
+            <Logo />
+          </a>
+        </div>
+        <div class="nav-right">
+          <a href="/blog/">all posts</a>
+          <a href="/docs">docs</a>
+          <a href="/blog/rss.xml" aria-label="RSS feed">rss</a>
+          <ThemeToggle />
+        </div>
+      </nav>
+      <main>
+        <slot />
+      </main>
+      <Footer />
+    </div>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! Integration tests for local worker lifecycle helpers (LOCAL-01 through LOCAL-12).
@@ -141,7 +141,7 @@ fn build_libkrun_local_script_not_prepared() {
         env: HashMap::new(),
         base_image: None,
     };
-    let script = build_libkrun_local_script(&project, false);
+    let script = build_libkrun_local_script(&project, false, /*is_bundle=*/ false);
     assert!(
         script.contains("apt-get update"),
         "should include setup_cmd"
@@ -166,7 +166,7 @@ fn build_libkrun_local_script_prepared() {
         env: HashMap::new(),
         base_image: None,
     };
-    let script = build_libkrun_local_script(&project, true);
+    let script = build_libkrun_local_script(&project, true, /*is_bundle=*/ false);
     assert!(
         !script.contains("apt-get update"),
         "should omit setup_cmd when prepared"

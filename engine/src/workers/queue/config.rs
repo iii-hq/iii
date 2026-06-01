@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::collections::HashMap;
@@ -9,6 +9,13 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::workers::traits::AdapterEntry;
+
+/// Name of the always-present built-in queue. The engine provisions this queue
+/// with standard defaults during config load, so `TriggerAction::Enqueue {
+/// queue: "default" }` works with no `queue_configs` entry — a zero-config
+/// durable queue out of the box. An explicit `default` entry in user config
+/// takes precedence and is never overwritten.
+pub const DEFAULT_QUEUE_NAME: &str = "default";
 
 #[allow(dead_code)] // this is used as default value
 fn default_redis_url() -> String {
@@ -81,6 +88,17 @@ pub struct QueueModuleConfig {
 }
 
 impl QueueModuleConfig {
+    /// Ensure the built-in [`DEFAULT_QUEUE_NAME`] queue exists. Called once
+    /// after config load (see `QueueWorker::build`) so callers get a durable
+    /// queue without declaring it in `config.yaml`. A user-supplied `default`
+    /// entry is preserved — `or_default` only inserts when the key is absent —
+    /// so operators can still tune its retries/concurrency/type if they want.
+    pub fn ensure_default_queue(&mut self) {
+        self.queue_configs
+            .entry(DEFAULT_QUEUE_NAME.to_string())
+            .or_default();
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         for (name, queue_config) in &self.queue_configs {
             if queue_config.r#type != "standard" && queue_config.r#type != "fifo" {
@@ -110,6 +128,61 @@ mod tests {
         let config = QueueModuleConfig::default();
         assert!(config.adapter.is_none());
         assert!(config.queue_configs.is_empty());
+    }
+
+    #[test]
+    fn ensure_default_queue_provisions_standard_queue_when_absent() {
+        let mut config = QueueModuleConfig::default();
+        config.ensure_default_queue();
+
+        let default = config
+            .queue_configs
+            .get(DEFAULT_QUEUE_NAME)
+            .expect("default queue should be provisioned");
+        // Standard defaults — a plain, concurrent, retrying queue.
+        assert_eq!(default.r#type, "standard");
+        assert_eq!(default.concurrency, default_concurrency());
+        assert_eq!(default.max_retries, default_max_retries());
+        assert!(default.message_group_field.is_none());
+        // The provisioned default must satisfy validation.
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn ensure_default_queue_preserves_explicit_user_config() {
+        let mut queue_configs = HashMap::new();
+        queue_configs.insert(
+            DEFAULT_QUEUE_NAME.to_string(),
+            FunctionQueueConfig {
+                r#type: "fifo".to_string(),
+                message_group_field: Some("session_id".to_string()),
+                max_retries: 9,
+                concurrency: 1,
+                ..Default::default()
+            },
+        );
+        let mut config = QueueModuleConfig {
+            adapter: None,
+            queue_configs,
+        };
+
+        config.ensure_default_queue();
+
+        // An operator who declares `default` keeps their tuned settings.
+        let default = config.queue_configs.get(DEFAULT_QUEUE_NAME).unwrap();
+        assert_eq!(default.r#type, "fifo");
+        assert_eq!(default.max_retries, 9);
+        assert_eq!(default.concurrency, 1);
+        assert_eq!(default.message_group_field.as_deref(), Some("session_id"));
+        assert_eq!(config.queue_configs.len(), 1);
+    }
+
+    #[test]
+    fn ensure_default_queue_is_idempotent() {
+        let mut config = QueueModuleConfig::default();
+        config.ensure_default_queue();
+        config.ensure_default_queue();
+        assert_eq!(config.queue_configs.len(), 1);
     }
 
     #[test]

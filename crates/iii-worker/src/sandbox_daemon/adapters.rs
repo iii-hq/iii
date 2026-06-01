@@ -16,7 +16,19 @@ use crate::sandbox_daemon::stop::VmStopper;
 /// added up to ~499ms of pure lag after the socket actually bound.
 const BOOT_SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const BOOT_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_EXEC_TIMEOUT_MS: u64 = 30_000;
+/// Default per-exec deadline when the caller omits `timeout_ms`.
+///
+/// Sized for the common agent workload: `npm install`, `pip install`,
+/// `cargo build`, `apt-get install` — first-run cold-cache cases that
+/// regularly exceed a minute. The previous 30s default surfaced as the
+/// opaque engine-gate `gate_unavailable` denial (no S200, no
+/// `timed_out: true`) because the engine's invocation deadline tracks
+/// this value, so a daemon-side default that's too tight is the same
+/// as a missing structured timeout response.
+///
+/// Calls that should fail fast (probes, version checks, "is this
+/// service up") should still pass an explicit `timeout_ms`.
+const DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
 /// Grace between SIGTERM and SIGKILL. Kept short because the sandbox VM
 /// is ephemeral — nothing needs to flush to persistent storage. Values
 /// larger than a few hundred ms directly translate into user-visible
@@ -427,7 +439,11 @@ impl ShellRunner for ShellProtoRunner {
     async fn run(&self, sock: PathBuf, req: &ExecRequest) -> Result<ExecResponse, SandboxError> {
         let cmd = req.cmd.clone();
         let args = req.args.clone();
-        let env = req.env.clone();
+        // `handle_exec` always normalises req.env to `EnvShape::Vec(_)` before
+        // dispatching, so `into_kv_vec()` here can never hit the Map-validation
+        // path. If a future caller bypasses handle_exec, the error surfaces
+        // up the stack via the `?`.
+        let env = req.env.clone().into_kv_vec()?;
         let cwd = req.workdir.clone();
         let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_EXEC_TIMEOUT_MS);
 
@@ -505,14 +521,14 @@ impl ShellRunner for ShellProtoRunner {
                         // the substring rationale. All other dispatcher
                         // errors fall through to the original
                         // BootFailed mapping.
-                        if let iii_shell_client::VmClientError::DispatcherError(msg) = &e {
-                            if let Some(resp) = classify_dispatcher_spawn_error(
+                        if let iii_shell_client::VmClientError::DispatcherError(msg) = &e
+                            && let Some(resp) = classify_dispatcher_spawn_error(
                                 msg,
                                 &cmd_for_err,
                                 started.elapsed().as_millis() as u64,
-                            ) {
-                                return Ok(resp);
-                            }
+                            )
+                        {
+                            return Ok(resp);
                         }
                         return Err(SandboxError::BootFailed(format!("shell run: {e}")));
                     }

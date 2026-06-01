@@ -8,27 +8,28 @@ description: >-
 
 # Engine Config
 
-Comparable to: Infrastructure as code, Docker Compose configs
+Comparable to: infrastructure as code, worker manifests, runtime policy config
 
 ## Key Concepts
 
 Use the concepts below when they fit the task. Not every deployment needs all workers or adapters.
 
-- **iii-config.yaml** defines the engine workers, adapters, and queue configs
+- **config.yaml** / **iii-config.yaml** defines engine workers, modules, adapters, ports, observability, RBAC, and worker manager listeners
 - **Environment variables** use `${VAR:default}` syntax (default is optional)
 - **Workers** are the building blocks — each enables a capability (API, state, queue, cron, etc.)
-- **External workers** are binary modules managed via `iii.toml` and the `iii worker` CLI commands
-- **Adapters** swap storage backends per worker: in_memory, file_based, Redis, RabbitMQ
+- **Managed workers** are registry, binary, OCI image, or local workers controlled by the worker manager and `iii worker` CLI
+- **Adapters** swap storage and messaging backends: file/KV, Redis, RabbitMQ, local/in-memory where supported
 - **Queue configs** control retry count, concurrency, ordering, and backoff per named queue
-- The engine listens on port **49134** (WebSocket) for SDK/worker connections
+- The engine's private worker WebSocket commonly listens on port **49134**
+- The console commonly runs on **3113**, HTTP on **3111**, stream WebSocket on **3112**, and Prometheus on **9464** when enabled
 
 ## Architecture
 
-The iii-config.yaml file is loaded by the iii engine binary at startup. Workers are initialized in order, adapters connect to their backends, and the engine begins accepting worker connections over WebSocket on port 49134. External workers defined in the config are spawned as child processes automatically.
+The engine loads YAML config at startup, expands environment variables, initializes modules and built-in daemons, opens configured ports, starts the worker manager, then installs or starts managed workers. SDK workers connect over WebSocket; registry-managed binary and OCI workers can be reproduced from `iii.lock`.
 
-## iii Primitives Used
+## Runtime Workers and Config Surface
 
-| Primitive                        | Purpose                                |
+| Worker / Config                  | Purpose                                |
 | -------------------------------- | -------------------------------------- |
 | `iii-http`                       | HTTP API server (port 3111)            |
 | `iii-stream`                     | WebSocket streams (port 3112)          |
@@ -36,29 +37,68 @@ The iii-config.yaml file is loaded by the iii engine binary at startup. Workers 
 | `iii-queue`                      | Background job processing with retries |
 | `iii-pubsub`                     | In-process event fanout                |
 | `iii-cron`                       | Time-based scheduling                  |
+| `iii-sandbox`                    | MicroVM command/filesystem isolation   |
+| `shell`                          | Controlled host/sandbox command and file tools |
+| `iii-directory`                  | Engine/registry/skills discovery       |
 | `iii-observability`              | OpenTelemetry traces, metrics, logs    |
 | `iii-http-functions`             | Outbound HTTP call security            |
 | `iii-exec`                       | Spawn external processes               |
 | `iii-bridge`                     | Distributed cross-engine invocation    |
 | `iii-telemetry`                  | Anonymous product analytics            |
-| `iii-worker-manager`             | Worker connection lifecycle            |
-| `iii-engine-functions`           | Built-in engine functions              |
-| `iii.toml`                       | Worker manifest (name → version)       |
-| `iii worker add NAME[@VERSION]`  | Install a worker from the registry     |
-| `iii worker remove NAME`         | Uninstall a worker                     |
-| `iii worker list`                | List installed workers                 |
-| `iii worker info NAME`           | Show registry info for a worker        |
+| `iii-worker-manager`             | Worker connection lifecycle and RBAC listeners |
+| `iii-worker-ops`                 | Worker lifecycle operations             |
+| `iii` (`iii-engine-functions` runtime) | Core engine introspection (`engine::*`) and platform authoring reference |
+| `iii.lock`                       | Reproducible managed-worker lockfile   |
+| `iii worker sync --frozen`       | Verify lockfile without mutation       |
 
-## Reference Implementation
+## Code Example
 
-See [../references/iii-config.yaml](../references/iii-config.yaml) for the full working example — a complete
-engine configuration with all workers, adapters, queue configs, and environment variable patterns.
+```yaml
+workers:
+  - name: iii-http
+    config:
+      host: 127.0.0.1
+      port: ${III_HTTP_PORT:3111}
+
+  - name: iii-queue
+    config:
+      queue_configs:
+        payments:
+          max_retries: 5
+          concurrency: 2
+          type: fifo
+          message_group_field: orderId
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: ./data/queue
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state
+
+  - name: iii-worker-manager
+    config:
+      listeners:
+        - host: 127.0.0.1
+          port: 49134
+          private: true
+        - host: 0.0.0.0
+          port: 49135
+          rbac:
+            auth_function_id: auth::browser-session
+```
 
 ## Common Patterns
 
 Code using this pattern commonly includes, when relevant:
 
-- `iii --config ./iii-config.yaml` — start the engine with a config file
+- `iii --config ./config.yaml` — start the engine with a config file
 - `docker pull iiidev/iii:latest` — pull the Docker image
 - Dev storage: `store_method: file_based` with `file_path: ./data/...`
 - Prod storage: Redis adapters with `redis_url: ${REDIS_URL}`
@@ -67,10 +107,13 @@ Code using this pattern commonly includes, when relevant:
 - Env var with fallback: `port: ${III_PORT:49134}`
 - Health check: `curl http://127.0.0.1:3111/health`
 - Ports: 3111 (API), 3112 (streams), 49134 (engine WS), 9464 (Prometheus)
+- RBAC listener: configure `iii-worker-manager` with listener `host`, `port`, `middleware_function_id`, and `rbac`
+- HTTP security policy: configure exposed functions, auth function, registration hooks, and forbidden functions on public worker-manager listeners
+- Observability: configure OTLP exporter, service name, sampling, metrics, and logs on the observability worker
 
-### Worker Config Format (v0.11+)
+### Worker Config Format
 
-Workers in `iii-config.yaml` use `name:` and optional `config:`:
+Workers use `name:` and optional `config:`:
 
 ```yaml
 workers:
@@ -123,35 +166,32 @@ workers:
       sampling_ratio: 1.0
       metrics_enabled: true
       logs_enabled: true
-```
 
-### External Worker System
-
-External workers are installed via the CLI and configured in `iii-config.yaml`:
-
-- `iii worker add pdfkit@1.0.0` — install a worker binary from the registry
-- `iii worker add` (no name) — install all workers listed in `iii.toml`
-- `iii worker remove pdfkit` — remove binary, manifest entry, and config block
-- `iii worker list` — show installed workers and versions from `iii.toml`
-
-Workers appear in `iii.toml` as a version manifest:
-```toml
-[workers]
-pdfkit = "1.0.0"
-image-processor = "2.3.1"
-```
-
-Worker config blocks in `iii-config.yaml` use marker comments for automatic management:
-```yaml
-workers:
-  # === iii:pdfkit BEGIN ===
-  - name: pdfkit
+  - name: iii-sandbox
     config:
-      output_dir: ./output
-  # === iii:pdfkit END ===
+      auto_install: true
+      image_allowlist:
+        - python
+        - node
 ```
 
-At startup, the engine resolves each worker name, finds the binary in `iii_workers/`, and spawns it as a child process.
+### Managed Workers and Lockfiles
+
+- Browse registry workers at `https://workers.iii.dev/`.
+- Registry workers are installed with `iii worker add NAME[@VERSION]`.
+- Direct OCI workers use image references such as `ghcr.io/org/worker:tag`.
+- Local workers point at local binary or development paths when supported by the worker config.
+- `iii.lock` records resolved binary artifacts or OCI image digests for reproducible installs.
+- Commit `iii.lock` with config. Use `iii worker verify` in CI and `iii worker sync` after cloning.
+- Use `iii worker` CLI commands for managed-worker lifecycle, lockfile, and verification workflows.
+
+### RBAC and Security
+
+- Public worker access should go through an RBAC-enabled `iii-worker-manager` listener.
+- `auth_function_id` returns allowed and forbidden functions, trigger type permissions, registration permission, registration prefix, and context.
+- `forbidden_functions` override exposure filters.
+- Discovery is filtered: denied functions should look forbidden, not available.
+- Keep RBAC policy examples close to the worker-manager configuration they protect.
 
 ## Adapting This Pattern
 
@@ -161,18 +201,20 @@ Use the adaptations below when they apply to the task.
 - Define queue configs per workload: high-concurrency for parallel jobs, FIFO for ordered processing
 - Use environment variables with defaults for all deployment-sensitive values (URLs, ports, credentials)
 - Enable only the workers you need — unused workers can be omitted from the config
-- Use `iii worker add` to install external workers and auto-generate their config blocks
+- Use `iii worker add` to add registry-managed workers, then commit both config and `iii.lock`
 - Set `max_retries` and `backoff_ms` based on your failure tolerance and SLA requirements
-- Configure `iii-observability` with your collector endpoint and sampling ratio
+- Configure the observability worker with your collector endpoint and sampling ratio
 - Use `host: 127.0.0.1` instead of `host: localhost` to avoid IPv4/IPv6 mismatches on macOS
+- Keep private worker ports bound to localhost unless a listener has explicit RBAC/security policy
 
 ## Pattern Boundaries
 
-- For HTTP handler logic (request/response, path params), prefer `iii-http-endpoints`.
-- For queue processing patterns (enqueue, FIFO, concurrency), prefer `iii-queue-processing`.
-- For cron scheduling details (expressions, timezones), prefer `iii-cron-scheduling`.
-- For OpenTelemetry SDK integration (spans, metrics, traces), prefer `iii-observability`.
-- For real-time stream patterns, prefer `iii-realtime-streams`.
+- For function registration, trigger binding, invocation modes, built-in trigger shapes, custom
+  triggers, channels, and HTTP-invoked functions, prefer `iii-core-primitives`.
+- For SDK instrumentation APIs and language-specific package usage, prefer `iii-sdk-reference`.
+- For complete backend designs that combine queues, state, streams, and pub/sub, prefer
+  `iii-architecture-patterns`.
+- For worker-backed HTTP, queue, cron, pubsub, state, stream, observability, lifecycle, lockfile, and RBAC behavior, use the matching worker docs under `engine/src/workers/**/skills`.
 - Stay with `iii-engine-config` when the primary problem is configuring or deploying the engine itself.
 
 ## When to Use

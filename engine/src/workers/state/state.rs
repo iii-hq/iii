@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{
@@ -110,18 +110,58 @@ impl ConfigurableWorker for StateWorker {
     }
 }
 
+/// True when a state trigger's scope/key constraints match the event. Scope
+/// and key are local fields (no RPC); `condition_function_id` is evaluated
+/// separately, only after a scope/key match, inside the trigger span.
+fn state_trigger_matches(
+    config: &super::trigger::StateTriggerConfig,
+    event_scope: &str,
+    event_key: &str,
+) -> bool {
+    if let Some(scope) = &config.scope {
+        if scope != event_scope {
+            return false;
+        }
+    }
+    if let Some(key) = &config.key {
+        if key != event_key {
+            return false;
+        }
+    }
+    true
+}
+
 impl StateWorker {
-    /// Invoke triggers for a given event type with condition checks
+    /// Invoke triggers for a given event type with condition checks.
+    ///
+    /// Triggers are pre-filtered by scope/key BEFORE the `state_triggers` span
+    /// is created, so a write whose scope/key matches no registered trigger
+    /// emits NO span and spawns NO task. The engine fires one trigger
+    /// evaluation per state write, so gating here avoids the span (and its
+    /// CPU/memory/export cost) for the common no-match case. Matching triggers
+    /// still have their `condition_function_id` evaluated inside the span.
     async fn invoke_triggers(&self, event_data: StateEventData) {
-        // Collect triggers into Vec to release the lock before spawning
+        let event_scope = event_data.scope.clone();
+        let event_key = event_data.key.clone();
+
+        // Collect only the triggers whose scope/key match, releasing the lock
+        // before spawning.
         let triggers: Vec<StateTrigger> = {
             let triggers_guard = self.triggers.list.read().await;
-            triggers_guard.values().cloned().collect()
+            triggers_guard
+                .values()
+                .filter(|t| state_trigger_matches(&t.config, &event_scope, &event_key))
+                .cloned()
+                .collect()
         };
+
+        // No matching trigger → skip the eval span and the spawn entirely.
+        if triggers.is_empty() {
+            return;
+        }
+
         let engine = self.engine.clone();
         let event_type = event_data.event_type.clone();
-        let event_key = event_data.key.clone();
-        let event_scope = event_data.scope.clone();
 
         let current_span = tracing::Span::current();
 
@@ -132,40 +172,7 @@ impl StateWorker {
                     let mut has_error = false;
 
                     for trigger in triggers {
-                        let trigger = trigger.clone();
-
-                        if let Some(scope) = &trigger.config.scope {
-                            tracing::info!(
-                                scope = %scope,
-                                event_scope = %event_scope,
-                                "Checking trigger scope"
-                            );
-                            if scope != &event_scope {
-                                tracing::info!(
-                                    scope = %scope,
-                                    event_scope = %event_scope,
-                                    "Trigger scope does not match event scope, skipping trigger"
-                                );
-                                continue;
-                            }
-                        }
-
-                        if let Some(key) = &trigger.config.key {
-                            tracing::info!(
-                                key = %key,
-                                event_key = %event_key,
-                                "Checking trigger key"
-                            );
-                            if key != &event_key {
-                                tracing::info!(
-                                    key = %key,
-                                    event_key = %event_key,
-                                    "Trigger key does not match event key, skipping trigger"
-                                );
-                                continue;
-                            }
-                        }
-
+                        // Scope/key already matched in the pre-filter above.
                         if let Some(ref condition_id) = trigger.config.condition_function_id {
                             tracing::debug!(
                                 condition_function_id = %condition_id,
@@ -416,6 +423,56 @@ mod tests {
         state::adapters::kv_store::BuiltinKvStoreAdapter,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn state_trigger_matches_respects_scope_and_key() {
+        use super::super::trigger::StateTriggerConfig;
+        let cfg = |scope: Option<&str>, key: Option<&str>| StateTriggerConfig {
+            scope: scope.map(String::from),
+            key: key.map(String::from),
+            condition_function_id: None,
+        };
+        // No scope/key constraints → matches any write.
+        assert!(state_trigger_matches(&cfg(None, None), "orders", "o1"));
+        // Scope constraint only.
+        assert!(state_trigger_matches(
+            &cfg(Some("orders"), None),
+            "orders",
+            "o1"
+        ));
+        assert!(!state_trigger_matches(
+            &cfg(Some("orders"), None),
+            "users",
+            "o1"
+        ));
+        // Key constraint only.
+        assert!(state_trigger_matches(
+            &cfg(None, Some("special")),
+            "s",
+            "special"
+        ));
+        assert!(!state_trigger_matches(
+            &cfg(None, Some("special")),
+            "s",
+            "other"
+        ));
+        // Both constraints.
+        assert!(state_trigger_matches(
+            &cfg(Some("orders"), Some("o1")),
+            "orders",
+            "o1"
+        ));
+        assert!(!state_trigger_matches(
+            &cfg(Some("orders"), Some("o1")),
+            "orders",
+            "o2"
+        ));
+        assert!(!state_trigger_matches(
+            &cfg(Some("orders"), Some("o1")),
+            "users",
+            "o1"
+        ));
+    }
 
     struct FakeStateAdapter {
         set_error: Option<&'static str>,

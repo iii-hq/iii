@@ -1,7 +1,7 @@
 import type { ChannelReader, ChannelWriter } from './channels'
+import type { IIIConnectionState } from './iii-constants'
 import type {
   RegisterFunctionMessage,
-  RegisterServiceMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
   StreamChannelRef,
@@ -58,7 +58,6 @@ export type RemoteTriggerTypeData = {
 }
 
 export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id'>
-export type RegisterServiceInput = Omit<RegisterServiceMessage, 'message_type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
@@ -82,12 +81,6 @@ export interface ISdk {
    * ```
    */
   registerTrigger(trigger: RegisterTriggerInput): Trigger
-
-  /**
-   * Registers a new service.
-   * @param message - The service to register
-   */
-  registerService(message: RegisterServiceInput): void
 
   /**
    * Registers a new function with a local handler or an HTTP invocation config.
@@ -242,6 +235,23 @@ export interface ISdk {
    * ```
    */
   shutdown(): Promise<void>
+
+  /**
+   * Subscribe to connection-state transitions. The handler is fired immediately
+   * with the current state, then on every transition. Multiple listeners are
+   * supported. Returns an unsubscribe function.
+   *
+   * @example
+   * ```typescript
+   * const unsub = iii.addConnectionStateListener((state) => {
+   *   console.log('connection state:', state)
+   * })
+   *
+   * // Later, stop receiving updates
+   * unsub()
+   * ```
+   */
+  addConnectionStateListener(handler: (state: IIIConnectionState) => void): () => void
 }
 
 /**

@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{net::SocketAddr, sync::Arc};
@@ -26,8 +26,8 @@ use crate::{
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
-        SpanExt, ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,
-        inject_baggage_from_context, inject_traceparent_from_context,
+        ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
+        inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
@@ -413,10 +413,10 @@ impl Engine {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
-            ?invocation_id,
+            invocation_id = %crate::logging::display_option(&invocation_id),
             function_id = function_id,
-            traceparent = ?traceparent,
-            baggage = ?baggage,
+            traceparent = %crate::logging::display_option(&traceparent),
+            baggage = %crate::logging::display_option(&baggage),
             "Remembering invocation for worker"
         );
 
@@ -468,16 +468,23 @@ impl Engine {
         baggage: &Option<String>,
         invocation_id: Option<Uuid>,
     ) {
-        let span = tracing::info_span!(
-            "handle_invocation",
-            otel.name = %format!("handle_invocation {}", function_id),
-            worker_id = %worker.id,
-            function_id = %function_id,
-            invocation_id = ?invocation_id,
-            otel.kind = "server",
-            otel.status_code = tracing::field::Empty,
-        )
-        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+        let span = {
+            // Parent context must be on `Context::current()` BEFORE span
+            // creation so `SpanProcessor::on_start` sees the baggage;
+            // `set_parent` after creation runs too late.
+            let parent_cx =
+                crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
+            let _guard = parent_cx.attach();
+            tracing::info_span!(
+                "handle_invocation",
+                otel.name = %format!("handle_invocation {}", function_id),
+                worker_id = %worker.id,
+                function_id = %function_id,
+                invocation_id = %crate::logging::display_option(&invocation_id),
+                otel.kind = "server",
+                otel.status_code = tracing::field::Empty,
+            )
+        };
 
         let engine = self.clone();
         let worker = worker.clone();
@@ -496,6 +503,13 @@ impl Engine {
         };
         let incoming_traceparent = traceparent.clone();
         let incoming_baggage = baggage.clone();
+        // Derive headers from the span we just opened so the downstream
+        // `call <fn>` becomes a child of `handle_invocation`, not a
+        // sibling of the original caller.
+        let downstream_traceparent =
+            inject_traceparent_from_context(&span.context()).or_else(|| traceparent.clone());
+        let downstream_baggage =
+            inject_baggage_from_context(&span.context()).or_else(|| baggage.clone());
 
         tokio::spawn(
             async move {
@@ -505,8 +519,8 @@ impl Engine {
                         invocation_id,
                         &function_id,
                         data,
-                        incoming_traceparent.clone(),
-                        incoming_baggage.clone(),
+                        downstream_traceparent.clone(),
+                        downstream_baggage.clone(),
                     )
                     .await;
 
@@ -592,6 +606,69 @@ impl Engine {
                 error,
             } => {
                 tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
+
+                let Some(trigger_entry) = self.trigger_registry.triggers.get(id) else {
+                    tracing::debug!(
+                        trigger_id = %id,
+                        "TriggerRegistrationResult for unknown trigger; ignoring"
+                    );
+                    return Ok(());
+                };
+                let stored_trigger_type = trigger_entry.trigger_type.clone();
+                let stored_function_id = trigger_entry.function_id.clone();
+                let originator_id = trigger_entry.worker_id;
+                drop(trigger_entry);
+
+                // Only the registrator worker that owns this trigger_type may
+                // report its result. Otherwise any connected worker could spoof
+                // a failure for somebody else's trigger and tear it out of the
+                // registry.
+                let registrator_worker_id = self
+                    .trigger_registry
+                    .trigger_types
+                    .get(&stored_trigger_type)
+                    .and_then(|tt| tt.worker_id);
+                if registrator_worker_id != Some(worker.id) {
+                    tracing::warn!(
+                        trigger_id = %id,
+                        trigger_type = %stored_trigger_type,
+                        sender = %worker.id,
+                        registrator = ?registrator_worker_id,
+                        "TriggerRegistrationResult from non-registrator worker; ignoring"
+                    );
+                    return Ok(());
+                }
+
+                if error.is_none() {
+                    return Ok(());
+                }
+
+                self.trigger_registry.triggers.remove(id);
+
+                let Some(originator_id) = originator_id else {
+                    tracing::debug!(
+                        trigger_id = %id,
+                        "TriggerRegistrationResult for trigger without originator; ignoring"
+                    );
+                    return Ok(());
+                };
+
+                let Some(originator) = self.worker_registry.get_worker(&originator_id) else {
+                    tracing::debug!(
+                        trigger_id = %id,
+                        originator = %originator_id,
+                        "TriggerRegistrationResult originator no longer connected; dropping"
+                    );
+                    return Ok(());
+                };
+
+                let forward = Message::TriggerRegistrationResult {
+                    id: id.clone(),
+                    trigger_type: stored_trigger_type,
+                    function_id: stored_function_id,
+                    error: error.clone(),
+                };
+                let _ = self.send_msg(&originator, forward).await;
                 Ok(())
             }
             Message::RegisterTriggerType {
@@ -756,18 +833,46 @@ impl Engine {
                     reg_function_id = format!("{prefix}::{reg_function_id}");
                 }
 
-                let _ = self
+                match self
                     .trigger_registry
                     .register_trigger(Trigger {
-                        id: reg_trigger_id,
-                        trigger_type: reg_trigger_type,
-                        function_id: reg_function_id,
+                        id: reg_trigger_id.clone(),
+                        trigger_type: reg_trigger_type.clone(),
+                        function_id: reg_function_id.clone(),
                         config: reg_config,
                         worker_id: Some(worker.id),
                         metadata: metadata.clone(),
                     })
-                    .await;
-                crate::workers::telemetry::collector::track_trigger_registered();
+                    .await
+                {
+                    Ok(()) => {
+                        crate::workers::telemetry::collector::track_trigger_registered();
+                    }
+                    Err(err) => {
+                        let error_body = match &err {
+                            crate::trigger::RegisterTriggerError::UnknownBuiltin { .. }
+                            | crate::trigger::RegisterTriggerError::Unknown { .. } => {
+                                crate::protocol::ErrorBody::new(
+                                    "trigger_type_not_found",
+                                    err.to_string(),
+                                )
+                            }
+                            crate::trigger::RegisterTriggerError::Other(_) => {
+                                crate::protocol::ErrorBody::new(
+                                    "trigger_registration_failed",
+                                    err.to_string(),
+                                )
+                            }
+                        };
+                        let result_msg = Message::TriggerRegistrationResult {
+                            id: reg_trigger_id,
+                            trigger_type: reg_trigger_type,
+                            function_id: reg_function_id,
+                            error: Some(error_body),
+                        };
+                        let _ = self.send_msg(worker, result_msg).await;
+                    }
+                }
 
                 Ok(())
             }
@@ -796,10 +901,10 @@ impl Engine {
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
-                    invocation_id = ?invocation_id,
+                    invocation_id = %crate::logging::display_option(invocation_id),
                     function_id = %function_id,
-                    traceparent = ?traceparent,
-                    baggage = ?baggage,
+                    traceparent = %crate::logging::display_option(traceparent),
+                    baggage = %crate::logging::display_option(baggage),
                     action = ?action,
                     payload = ?data,
                     "InvokeFunction"
@@ -898,13 +1003,22 @@ impl Engine {
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
 
-                        let span = tracing::info_span!(
-                            "enqueue_action",
-                            otel.name = %format!("enqueue {} → {}", function_id, queue),
-                            function_id = %function_id,
-                            queue = %queue,
-                        )
-                        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                        let span = {
+                            // Parent context must be on `Context::current()`
+                            // BEFORE span creation; `set_parent` after is too
+                            // late for `SpanProcessor::on_start`.
+                            let parent_cx = crate::telemetry::extract_context(
+                                traceparent.as_deref(),
+                                baggage.as_deref(),
+                            );
+                            let _guard = parent_cx.attach();
+                            tracing::info_span!(
+                                "enqueue_action",
+                                otel.name = %format!("enqueue {} → {}", function_id, queue),
+                                function_id = %function_id,
+                                queue = %queue,
+                            )
+                        };
 
                         tokio::spawn(
                             async move {
@@ -1538,10 +1652,10 @@ impl Engine {
                 // owner's fresh state. Keep ownership through teardown and
                 // CAS-release at the end so a racing claim reliably aborts
                 // us at the next ownership check.
-                if !self
+                if self
                     .external_function_owners
                     .get(function_id)
-                    .is_some_and(|r| *r == worker.id)
+                    .is_none_or(|r| *r != worker.id)
                 {
                     tracing::debug!(
                         worker_id = %worker.id,
@@ -3197,55 +3311,287 @@ mod tests {
         );
     }
 
+    fn insert_trigger_type_for(engine: &Engine, type_id: &str, registrator: &WorkerConnection) {
+        engine.trigger_registry.trigger_types.insert(
+            type_id.to_string(),
+            crate::trigger::TriggerType::new(
+                type_id,
+                "test trigger type",
+                Box::new(registrator.clone()),
+                Some(registrator.id),
+            ),
+        );
+    }
+
     #[tokio::test]
-    async fn test_router_msg_trigger_registration_result_is_noop() {
+    async fn test_trigger_registration_result_forwards_error_to_originator() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (user_tx, mut user_rx) = mpsc::channel::<Outbound>(8);
+        let user = WorkerConnection::new(user_tx);
+        engine.worker_registry.register_worker(user.clone());
+
+        let (registrator_tx, _registrator_rx) = mpsc::channel::<Outbound>(8);
+        let registrator = WorkerConnection::new(registrator_tx);
+
+        insert_trigger_type_for(&engine, "http", &registrator);
+
+        engine.trigger_registry.triggers.insert(
+            "trig-1".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-1".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-1".to_string(),
+                config: serde_json::json!({}),
+                worker_id: Some(user.id),
+                metadata: None,
+            },
+        );
+
+        let msg = Message::TriggerRegistrationResult {
+            id: "trig-1".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn-1".to_string(),
+            error: Some(crate::protocol::ErrorBody::new(
+                "invalid_config",
+                "api_path is required",
+            )),
+        };
+
+        engine
+            .router_msg(&registrator, &msg)
+            .await
+            .expect("router_msg should succeed");
+
+        let outbound = user_rx
+            .try_recv()
+            .expect("originator should receive forwarded TriggerRegistrationResult");
+        let Outbound::Protocol(Message::TriggerRegistrationResult {
+            id,
+            trigger_type,
+            function_id,
+            error,
+        }) = outbound
+        else {
+            panic!("expected TriggerRegistrationResult, got {:?}", outbound);
+        };
+        assert_eq!(id, "trig-1");
+        assert_eq!(trigger_type, "http");
+        assert_eq!(function_id, "fn-1");
+        let err = error.expect("error should be populated");
+        assert_eq!(err.code, "invalid_config");
+        assert_eq!(err.message, "api_path is required");
+
+        assert!(
+            engine.trigger_registry.triggers.get("trig-1").is_none(),
+            "failed trigger should be removed from registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_registration_result_success_does_not_forward_or_remove() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (user_tx, mut user_rx) = mpsc::channel::<Outbound>(8);
+        let user = WorkerConnection::new(user_tx);
+        engine.worker_registry.register_worker(user.clone());
+
+        let (registrator_tx, _registrator_rx) = mpsc::channel::<Outbound>(8);
+        let registrator = WorkerConnection::new(registrator_tx);
+
+        insert_trigger_type_for(&engine, "http", &registrator);
+
+        engine.trigger_registry.triggers.insert(
+            "trig-2".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-2".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-2".to_string(),
+                config: serde_json::json!({}),
+                worker_id: Some(user.id),
+                metadata: None,
+            },
+        );
+
+        let msg = Message::TriggerRegistrationResult {
+            id: "trig-2".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn-2".to_string(),
+            error: None,
+        };
+
+        engine
+            .router_msg(&registrator, &msg)
+            .await
+            .expect("router_msg should succeed");
+
+        assert!(
+            user_rx.try_recv().is_err(),
+            "success result should not be forwarded"
+        );
+
+        assert!(
+            engine.trigger_registry.triggers.get("trig-2").is_some(),
+            "successful trigger should remain in registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_registration_result_unknown_trigger_id_is_noop() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (registrator_tx, _registrator_rx) = mpsc::channel::<Outbound>(8);
+        let registrator = WorkerConnection::new(registrator_tx);
+
+        let msg = Message::TriggerRegistrationResult {
+            id: "ghost".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn-x".to_string(),
+            error: Some(crate::protocol::ErrorBody::new("x", "y")),
+        };
+
+        engine
+            .router_msg(&registrator, &msg)
+            .await
+            .expect("router_msg should succeed even when the trigger is unknown");
+    }
+
+    #[tokio::test]
+    async fn test_trigger_registration_result_from_non_registrator_is_ignored() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (user_tx, mut user_rx) = mpsc::channel::<Outbound>(8);
+        let user = WorkerConnection::new(user_tx);
+        engine.worker_registry.register_worker(user.clone());
+
+        // Registered registrator for "http".
+        let (registrator_tx, _registrator_rx) = mpsc::channel::<Outbound>(8);
+        let registrator = WorkerConnection::new(registrator_tx);
+        insert_trigger_type_for(&engine, "http", &registrator);
+
+        engine.trigger_registry.triggers.insert(
+            "trig-3".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-3".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-3".to_string(),
+                config: serde_json::json!({}),
+                worker_id: Some(user.id),
+                metadata: None,
+            },
+        );
+
+        // Some OTHER worker tries to report a failure for trig-3.
+        let (spoofer_tx, _spoofer_rx) = mpsc::channel::<Outbound>(8);
+        let spoofer = WorkerConnection::new(spoofer_tx);
+
+        let msg = Message::TriggerRegistrationResult {
+            id: "trig-3".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn-3".to_string(),
+            error: Some(crate::protocol::ErrorBody::new("spoofed", "boom")),
+        };
+
+        engine
+            .router_msg(&spoofer, &msg)
+            .await
+            .expect("router_msg should succeed");
+
+        assert!(
+            user_rx.try_recv().is_err(),
+            "non-registrator result must not be forwarded"
+        );
+        assert!(
+            engine.trigger_registry.triggers.get("trig-3").is_some(),
+            "non-registrator result must not remove the trigger"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_unknown_builtin_sends_install_hint() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
 
-        let msg = Message::TriggerRegistrationResult {
-            id: "trigger-1".to_string(),
-            trigger_type: "my-type".to_string(),
-            function_id: "my-func".to_string(),
-            error: None,
+        let msg = Message::RegisterTrigger {
+            id: "trig-1".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn-1".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
         };
 
         engine
             .router_msg(&worker, &msg)
             .await
-            .expect("TriggerRegistrationResult should succeed");
+            .expect("RegisterTrigger should succeed at protocol level");
 
-        // Should not produce any response
+        let outbound = rx
+            .try_recv()
+            .expect("engine should emit TriggerRegistrationResult on failure");
+        let Outbound::Protocol(Message::TriggerRegistrationResult {
+            id,
+            trigger_type,
+            function_id,
+            error,
+        }) = outbound
+        else {
+            panic!("expected TriggerRegistrationResult, got {:?}", outbound);
+        };
+        assert_eq!(id, "trig-1");
+        assert_eq!(trigger_type, "http");
+        assert_eq!(function_id, "fn-1");
+        let err = error.expect("error should be populated");
+        assert_eq!(err.code, "trigger_type_not_found");
+        assert!(err.message.contains("iii-http"), "msg: {}", err.message);
         assert!(
-            rx.try_recv().is_err(),
-            "TriggerRegistrationResult should not produce any outbound message"
+            err.message.contains("iii worker add"),
+            "msg: {}",
+            err.message
         );
     }
 
     #[tokio::test]
-    async fn test_router_msg_trigger_registration_result_with_error() {
+    async fn test_register_trigger_unknown_type_recommends_workers_directory() {
         ensure_default_meter();
         let engine = Engine::new();
-        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
 
-        let msg = Message::TriggerRegistrationResult {
-            id: "trigger-1".to_string(),
-            trigger_type: "my-type".to_string(),
-            function_id: "my-func".to_string(),
-            error: Some(crate::protocol::ErrorBody {
-                code: "registration_failed".to_string(),
-                message: "registration failed".to_string(),
-                stacktrace: None,
-            }),
+        let msg = Message::RegisterTrigger {
+            id: "trig-2".to_string(),
+            trigger_type: "totally-made-up".to_string(),
+            function_id: "fn-2".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
         };
 
-        // Should still succeed (just logs the error)
         engine
             .router_msg(&worker, &msg)
             .await
-            .expect("TriggerRegistrationResult with error should succeed");
+            .expect("RegisterTrigger should succeed at protocol level");
+
+        let outbound = rx.try_recv().expect("engine should emit a result");
+        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
+            panic!("expected TriggerRegistrationResult");
+        };
+        let err = error.expect("error should be populated");
+        assert_eq!(err.code, "trigger_type_not_found");
+        assert!(
+            err.message.contains("totally-made-up"),
+            "msg should name the missing type: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("https://workers.iii.dev/"),
+            "msg should recommend the workers directory: {}",
+            err.message
+        );
     }
 
     // =========================================================================

@@ -1,15 +1,15 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use iii_sdk::{
-    III, IIIError, InitOptions, RegisterFunctionMessage, RegisterTriggerInput, Trigger,
-    TriggerAction, TriggerRequest, register_worker,
+    III, IIIError, InitOptions, RegisterTriggerInput, Trigger, TriggerAction, TriggerRequest,
+    register_worker,
 };
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -179,16 +179,9 @@ impl QueueAdapter for BridgeAdapter {
         let function_id_owned = function_id.to_string();
         let condition_function_id_owned = condition_function_id.clone();
         let topic_owned = topic.to_string();
-        self.bridge.register_function((
-            RegisterFunctionMessage {
-                id: handler_path.clone(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-                invocation: None,
-            },
-            move |data: Value| {
+        self.bridge.register_function(
+            handler_path.clone(),
+            iii_sdk::RegisterFunction::new_async(move |data: Value| {
                 let engine = Arc::clone(&engine);
                 let function_id = function_id_owned.clone();
                 let condition_function_id = condition_function_id_owned.clone();
@@ -262,8 +255,8 @@ impl QueueAdapter for BridgeAdapter {
                     .instrument(span)
                     .await
                 }
-            },
-        ));
+            }),
+        );
 
         let trigger = match self.bridge.register_trigger(RegisterTriggerInput {
             trigger_type: "durable:subscriber".to_string(),

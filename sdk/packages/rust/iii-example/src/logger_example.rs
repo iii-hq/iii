@@ -1,9 +1,11 @@
-use iii_sdk::{III, IIIError, Logger, RegisterFunction};
+use iii_observability::Logger;
+use iii_sdk::{III, IIIError, RegisterFunction};
 use serde_json::{Value, json};
 
 pub fn setup(iii: &III) {
     iii.register_function(
-        RegisterFunction::new_async("example::logger_demo", |input: Value| async move {
+        "example::logger_demo",
+        RegisterFunction::new_async(|input: Value| async move {
             let logger = Logger::new();
 
             logger.info("Processing request", Some(json!({ "input": input })));

@@ -20,23 +20,6 @@ workers:
           store_method: file_based
           file_path: ./data/state_store.db
 
-  - name: iii-http
-    config:
-      port: 3111
-      host: 127.0.0.1
-      default_timeout: 30000
-      concurrency_request_limit: 1024
-      cors:
-        allowed_origins:
-          # To allow all origins, use '*':
-           - '*'
-        allowed_methods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
-
   - name: iii-observability
     config:
       # === Core Configuration (Required) ===
@@ -162,6 +145,16 @@ workers:
       adapter:
         name: kv
 
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: ./data/configuration
+      # 0 disables TTL cleanup. Set >0 (in seconds) to delete a configuration
+      # entry whose last subscriber trigger has been unregistered for that long.
+      ttl_seconds: 0
+
   # - name: iii-bridge
   #   config:
   #     url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
@@ -204,3 +197,18 @@ workers:
   #     # Requests exceeding a cap return S400.
   #     # per_image_caps:
   #     #   python: { max_cpus: 4, max_memory_mb: 2048 }
+  - name: iii-http
+    config:
+      port: 3111
+      host: 127.0.0.1
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+        - '*'
+        allowed_methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS

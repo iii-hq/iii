@@ -11,31 +11,72 @@
 //!    `channel.writer`. On read error the task sends a JSON error message
 //!    on the channel before closing.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
+use iii_sdk::RegisterFunction;
 use iii_sdk::channels::StreamChannelRef;
-use iii_sdk::{IIIError, RegisterFunctionMessage};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+    errors::{SandboxError, SandboxErrorWire},
+    fs::adapter::FsRunner,
+    registry::SandboxRegistry,
 };
 
-#[derive(Debug, Deserialize)]
+/// Files reported by the supervisor as smaller than this threshold are
+/// fully buffered in-process and inspected for valid UTF-8. If decode
+/// succeeds, the response carries `body: Some(String)` alongside the
+/// always-present `content: StreamChannelRef`. If decode fails (binary)
+/// or the file is reported as larger than this cap, `body` stays `None`
+/// and consumers read the bytes through `content` instead.
+///
+/// The cap also bounds memory pressure: peak buffer per concurrent
+/// `sandbox::fs::read` call is at most `INLINE_BUFFER_CAP` bytes. With
+/// `sandbox.max_concurrent` (see `iii.config.yaml`) concurrent calls, peak
+/// is `max_concurrent * INLINE_BUFFER_CAP`.
+const INLINE_BUFFER_CAP: usize = 1024 * 1024; // 1 MiB
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "read_request_example")]
 pub struct ReadRequest {
+    /// UUID returned by `sandbox::create`.
     pub sandbox_id: String,
+    /// Absolute path to read inside the sandbox guest.
     pub path: String,
 }
 
-#[derive(Debug, Serialize)]
+fn read_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "sandbox_id": "00000000-0000-0000-0000-000000000000",
+        "path": "/home/app/index.js"
+    })
+}
+
+// `ReadContent` (an untagged Utf8/Stream enum) was previously introduced
+// here as the response shape, but it broke peers (notably the `workers/shell`
+// crate) that statically typed `content` as `StreamChannelRef`. We now keep
+// `ReadResponse.content` as `StreamChannelRef` for wire compatibility and
+// expose the inline-UTF-8 fast path through an additive `body: Option<String>`
+// field instead. See `ReadResponse` below.
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ReadResponse {
-    /// The caller reads file content from this channel ref.
+    /// Channel ref for the file body. Always set; callers can subscribe
+    /// to receive the full file contents as bytes. Preserved for wire
+    /// compatibility with peers that statically type this field as
+    /// `StreamChannelRef`.
     pub content: StreamChannelRef,
+    /// Inline UTF-8 body. Populated for text files under
+    /// [`INLINE_BUFFER_CAP`] (1 MiB) that decode cleanly as UTF-8.
+    /// `None` for large or binary files; subscribe to `content` instead.
+    /// When `Some`, the same bytes are also delivered through `content`
+    /// so legacy callers keep working — new callers can use `body`
+    /// directly and skip the channel subscription.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub body: Option<String>,
     pub size: u64,
     pub mode: String,
     pub mtime: i64,
@@ -67,6 +108,82 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
         .fs_read_stream(state.shell_sock, path.clone())
         .await?;
 
+    // Fast path: file is small per supervisor metadata. Buffer up to
+    // INLINE_BUFFER_CAP bytes and try UTF-8 decode. Three outcomes:
+    //   - decode succeeds                  -> inline `body: Some(String)`,
+    //                                         channel still serves the same
+    //                                         bytes for legacy subscribers.
+    //   - decode fails (invalid UTF-8)     -> stream the buffered bytes via
+    //                                         Cursor; `body: None`.
+    //   - buffer fills before EOF (file
+    //     larger than meta said)           -> stream Cursor chained with the
+    //                                         remaining reader so no bytes are
+    //                                         dropped; `body: None`.
+    if (meta.size as usize) < INLINE_BUFFER_CAP {
+        let mut buf: Vec<u8> = Vec::with_capacity((meta.size as usize).min(INLINE_BUFFER_CAP));
+        // take(N+1) so we can detect when the file is actually larger than
+        // meta claimed (we'd read past meta.size and hit the cap).
+        let read_cap = INLINE_BUFFER_CAP as u64;
+        let bytes_read = (&mut reader)
+            .take(read_cap)
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| SandboxError::FsIo(format!("read buffer: {e}")))?;
+
+        if bytes_read < INLINE_BUFFER_CAP {
+            // We have the entire file. Try UTF-8.
+            match String::from_utf8(buf) {
+                Ok(s) => {
+                    // Inline-UTF-8 fast path. Emit the same bytes through the
+                    // channel so peers that always subscribe to `content`
+                    // (e.g. workers/shell `ReadResponse` mirror) keep working
+                    // unchanged. New callers see `body: Some(_)` and skip the
+                    // subscription. Cost: up to INLINE_BUFFER_CAP bytes
+                    // buffered in-channel until the writer closes or the
+                    // subscriber drains them.
+                    let bytes_for_channel = s.as_bytes().to_vec();
+                    let cursor = std::io::Cursor::new(bytes_for_channel);
+                    let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(cursor);
+                    return stream_via_channel(iii, chained, meta, Some(s), path).await;
+                }
+                Err(err) => {
+                    // Invalid UTF-8. Stream the buffered bytes back through a
+                    // channel. The reader is already drained (we hit EOF), so
+                    // we only need to emit `buf`.
+                    let buf = err.into_bytes();
+                    let cursor = std::io::Cursor::new(buf);
+                    let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(cursor);
+                    return stream_via_channel(iii, chained, meta, None, path).await;
+                }
+            }
+        } else {
+            // File is larger than meta claimed (or exactly INLINE_BUFFER_CAP).
+            // We have the first INLINE_BUFFER_CAP bytes in `buf` and `reader`
+            // still holds the remainder. Chain them so no bytes are lost.
+            let cursor = std::io::Cursor::new(buf);
+            let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> =
+                Box::new(cursor.chain(reader));
+            return stream_via_channel(iii, chained, meta, None, path).await;
+        }
+    }
+
+    // Large file: stream directly without buffering.
+    stream_via_channel(iii, reader, meta, None, path).await
+}
+
+/// Spawn the channel-pump task and return a `ReadResponse` carrying a
+/// `StreamChannelRef`. Shared by every code path that produces a response:
+/// large file, invalid-UTF-8 small file, oversized file, and the
+/// inline-UTF-8 fast path (which passes `body: Some(s)` and a Cursor over
+/// the buffered bytes so the channel still serves the same payload to
+/// legacy subscribers).
+async fn stream_via_channel(
+    iii: &iii_sdk::III,
+    mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    meta: iii_shell_proto::FsReadMeta,
+    body: Option<String>,
+    _path: String,
+) -> Result<ReadResponse, SandboxError> {
     let channel = iii
         .create_channel(Some(64))
         .await
@@ -75,7 +192,7 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
     let reader_ref = channel.reader_ref.clone();
     let writer = channel.writer;
 
-    // Pump bytes from the supervisor into the channel on a background task.
+    // Pump bytes from the source AsyncRead into the channel on a background task.
     tokio::spawn(async move {
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -117,6 +234,7 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
 
     Ok(ReadResponse {
         content: reader_ref,
+        body,
         size: meta.size,
         mode: meta.mode,
         mtime: meta.mtime,
@@ -133,32 +251,31 @@ pub(super) fn register(
     runner: Arc<dyn FsRunner>,
 ) {
     let iii_clone = iii.clone();
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        let iii = iii_clone.clone();
-        Box::pin(async move {
-            let req: ReadRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match handle_read(req, &registry, &*runner, &iii).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
+    let _ = iii.register_function(
+        "sandbox::fs::read",
+        RegisterFunction::new_async(move |req: ReadRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            let iii = iii_clone.clone();
+            async move {
+                let sid = req.sandbox_id.clone();
+                let start = std::time::Instant::now();
+                let result = handle_read(req, &registry, &*runner, &iii).await;
+                crate::sandbox_daemon::log_handler_result(
+                    "sandbox::fs::read",
+                    Some(&sid),
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
             }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::fs::read".to_string(),
-            description: Some("Stream-download a file from a sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+        })
+        .description(
+            "Read a file from a sandbox. Always returns `content`: a StreamChannelRef \
+             callers can subscribe to for the full file bytes. For UTF-8 text files \
+             under 1 MiB, the response also carries an inline `body` string so callers \
+             can short-circuit the subscription. Example: { sandbox_id: \"...\", path: \"/home/app/index.js\" }",
+        ),
     );
 }
 

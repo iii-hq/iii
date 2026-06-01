@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! End-to-end tests for the `INFRASTRUCTURE_FUNCTIONS` carve-out in RBAC.
@@ -189,6 +189,42 @@ async fn discovery_function_denied_under_restricted_expose() {
         result.is_none(),
         "no result should be returned for a FORBIDDEN invocation"
     );
+}
+
+/// The new `::info` and `registered-triggers::*` discovery IDs added in the
+/// engine_fn rework must be gated identically to the existing list IDs.
+#[tokio::test]
+async fn new_discovery_functions_denied_under_restricted_expose() {
+    ensure_default_meter();
+
+    let new_discovery_ids = [
+        "engine::functions::info",
+        "engine::workers::info",
+        "engine::triggers::info",
+        "engine::registered-triggers::list",
+        "engine::registered-triggers::info",
+    ];
+
+    for id in new_discovery_ids {
+        let engine = Arc::new(Engine::new());
+        register_echo_handler(&engine, id);
+
+        let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+        let session = session_with(engine.clone(), restrictive_rbac(), vec![], None);
+        let worker = WorkerConnection::with_session(tx, session);
+
+        let (function_id, _result, error) = expect_result(&engine, &worker, &mut rx, id).await;
+
+        assert_eq!(function_id, id);
+        let err =
+            error.unwrap_or_else(|| panic!("expected FORBIDDEN for {id} under restricted expose"));
+        assert_eq!(err.code, "FORBIDDEN", "discovery id {id} must be gated");
+        assert!(
+            err.message.contains(id),
+            "FORBIDDEN message for {id} must name the offending function_id; got: {}",
+            err.message
+        );
+    }
 }
 
 #[tokio::test]

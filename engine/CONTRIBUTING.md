@@ -1,6 +1,7 @@
 # Contributing to III Engine
 
-Thank you for your interest in contributing to iii Engine! This document provides guidelines and information to help you contribute effectively.
+Thank you for your interest in contributing to iii Engine! This document provides guidelines and
+information to help you contribute effectively.
 
 ## Table of Contents
 
@@ -18,7 +19,8 @@ Thank you for your interest in contributing to iii Engine! This document provide
 
 ## Code of Conduct
 
-We are committed to providing a welcoming and inclusive experience for everyone. Please be respectful and constructive in all interactions.
+We are committed to providing a welcoming and inclusive experience for everyone. Please be
+respectful and constructive in all interactions.
 
 ## Getting Started
 
@@ -169,6 +171,7 @@ cargo test -- --nocapture
 - Name tests descriptively: `test_function_behavior_when_condition`
 
 Example:
+
 ```rust
 #[cfg(test)]
 mod tests {
@@ -216,7 +219,8 @@ All PRs must pass:
 
 ## License Headers
 
-The III Engine core is licensed under **Elastic License 2.0 (ELv2)**. All Rust source files in `src/` and `function-macros/src/` must include the license header.
+The III Engine core is licensed under **Elastic License 2.0 (ELv2)**. All Rust source files in
+`src/` and `function-macros/src/` must include the license header.
 
 ### Check for Missing Headers
 
@@ -244,7 +248,7 @@ docker run -it --rm -v $(pwd):/github/workspace ghcr.io/korandoru/hawkeye format
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 ```
 
@@ -269,13 +273,15 @@ iii/
 
 ## SDK Contributions
 
-SDKs are published in separate repositories (npm, Cargo). See the project documentation for SDK locations and contribution guidelines.
+SDKs are published in separate repositories (npm, Cargo). See the project documentation for SDK
+locations and contribution guidelines.
 
 ## Reporting Issues
 
 ### Bug Reports
 
 Include:
+
 - **III Engine version** - `iii --version`
 - **Operating system** - e.g., Ubuntu 22.04, macOS 14, Windows 11
 - **Steps to reproduce** - Minimal example to trigger the bug
@@ -286,6 +292,7 @@ Include:
 ### Feature Requests
 
 Include:
+
 - **Problem statement** - What problem does this solve?
 - **Proposed solution** - How should it work?
 - **Alternatives considered** - Other approaches you've thought of
@@ -294,6 +301,6 @@ Include:
 ## Questions?
 
 - Open a [GitHub Discussion](https://github.com/iii-hq/iii/discussions)
-- Reach out at support@motia.dev
+- Reach out at team@iii.dev
 
 Thank you for contributing to iii Engine!

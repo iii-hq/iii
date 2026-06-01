@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.11.5"
+version = "0.17.0"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -91,6 +91,10 @@ rabbitmq = ["lapin"]
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
+iii-observability = { workspace = true }
+scaffolder-core = { workspace = true }
+console = { workspace = true }
+ctrlc = { workspace = true }
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
@@ -124,9 +128,11 @@ colored = "3.0.0"
 cron = "0.15"
 once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
+clap-help = "1"
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"
+jsonschema = { version = "0.30", default-features = false }
 inventory = "0.3"
 rand = "0.8"
 rkyv = "0.8.12"
@@ -166,3 +172,7 @@ wiremock = "0.6"
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }
 libc = "0.2"
+# Pulled in by engine/tests/worker_trigger_e2e.rs to spawn the
+# `iii-worker-ops` daemon in-process so the test can assert on the
+# `worker` custom trigger type without subprocess overhead.
+iii-worker = { path = "../crates/iii-worker" }

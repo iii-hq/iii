@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use clap::{Args, Parser, Subcommand};
@@ -36,7 +36,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Add one or more workers from the registry or by OCI image reference
+    /// Install an EXISTING worker from the registry or by OCI image reference.
+    /// To create a NEW worker from scratch, use `iii worker init`.
     Add {
         #[command(flatten)]
         args: AddArgs,
@@ -112,11 +113,18 @@ pub enum Commands {
         config: Option<PathBuf>,
     },
 
-    /// Stop a managed worker container
+    /// Stop a managed worker container. Stop is treated as a routine,
+    /// reversible action — running `iii worker start <name>` brings it
+    /// back from the same config entry, so the CLI no longer prompts
+    /// for confirmation.
     Stop {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
         worker_name: String,
+        /// Backward-compat no-op. Stop never prompts; the flag is kept
+        /// so scripts that already pass `-y` keep working.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Restart a managed worker: stop if running, then start. Idempotent --
@@ -191,6 +199,10 @@ pub enum Commands {
         port: u16,
     },
 
+    /// Scaffold a NEW standalone worker repo from scratch.
+    /// To install an EXISTING worker, use `iii worker add`.
+    Init(super::init::InitArgs),
+
     /// Run a command inside a running worker's VM. Pipes stdin/stdout/
     /// stderr through and returns the child's exit code. Pass `-t` for
     /// an interactive PTY.
@@ -206,6 +218,11 @@ pub enum Commands {
     /// engine when `iii-sandbox` appears in config.yaml.
     #[command(name = "sandbox-daemon", hide = true)]
     SandboxDaemon(SandboxDaemonArgs),
+
+    /// Run the host-side worker-manager daemon. Connects to the engine,
+    /// registers `worker::*` SDK triggers, and serves them until SIGINT.
+    #[command(name = "worker-manager-daemon", hide = true)]
+    WorkerManagerDaemon(WorkerManagerDaemonArgs),
 
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
@@ -273,6 +290,20 @@ pub struct WatchSourceArgs {
     /// Absolute project directory to watch recursively
     #[arg(long, value_name = "PATH")]
     pub project: String,
+}
+
+/// Arguments for the `worker-manager-daemon` subcommand. Started by
+/// the iii engine as a child process when iii-worker-manager is listed
+/// in the project's worker config; rarely invoked directly.
+#[derive(Args, Debug)]
+pub struct WorkerManagerDaemonArgs {
+    /// Engine WebSocket URL to connect back to.
+    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    pub engine: String,
+
+    /// Project root the daemon mutates. Defaults to CWD at start.
+    #[arg(long)]
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 /// Arguments for the `sandbox-daemon` subcommand. Started by the iii
@@ -479,4 +510,44 @@ pub enum SandboxCmd {
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
     },
+}
+
+#[cfg(test)]
+mod init_parse_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn init_parses_with_directory_flag() {
+        let cli = Cli::try_parse_from(["iii worker", "init", "--directory", "/tmp/w"])
+            .expect("init should parse");
+        match cli.command {
+            Commands::Init(args) => {
+                assert_eq!(args.directory.as_deref(), Some("/tmp/w"));
+                assert!(args.name.is_none());
+                assert!(!args.allow_non_empty);
+            }
+            _ => panic!("expected Init variant"),
+        }
+    }
+
+    #[test]
+    fn init_parses_positional_name() {
+        let cli = Cli::try_parse_from(["iii worker", "init", "mywkr"])
+            .expect("init positional should parse");
+        match cli.command {
+            Commands::Init(args) => assert_eq!(args.name.as_deref(), Some("mywkr")),
+            _ => panic!("expected Init variant"),
+        }
+    }
+
+    #[test]
+    fn init_accepts_template_dir() {
+        let cli = Cli::try_parse_from(["iii worker", "init", "--template-dir", "/tmp/fix"])
+            .expect("init --template-dir should parse");
+        match cli.command {
+            Commands::Init(args) => assert_eq!(args.template_dir.as_deref(), Some("/tmp/fix")),
+            _ => panic!("expected Init variant"),
+        }
+    }
 }

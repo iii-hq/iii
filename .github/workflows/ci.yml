@@ -7,6 +7,8 @@ on:
       - 'docs/**'
       - 'skills/**'
       - 'website/**'
+      - 'blog/**'
+      - 'engine/src/workers/**/*.md'
       - '**/*.md'
       - '**/*.mdx'
       - '.cursor/**'
@@ -16,6 +18,8 @@ on:
       - 'docs/**'
       - 'skills/**'
       - 'website/**'
+      - 'blog/**'
+      - 'engine/src/workers/**/*.md'
       - '**/*.md'
       - '**/*.mdx'
       - '.cursor/**'
@@ -540,6 +544,9 @@ jobs:
 
       #- name: Lint
       #  run: npx @biomejs/biome check sdk/packages/node
+
+      - name: Build observability (prerequisite for type check)
+        run: pnpm --filter @iii-dev/observability build
 
       - name: Type check
         run: pnpm --filter iii-sdk exec tsc --noEmit

@@ -5,6 +5,7 @@ Allow: /
 Disallow: /preview
 Disallow: /docs/_next/
 Disallow: /docs/_mintlify/
+Disallow: /docs/0-10-0/
 Disallow: /*?ref=
 Disallow: /*?dpl=
 
@@ -58,3 +59,4 @@ User-agent: CCBot
 Disallow: /
 
 Sitemap: https://iii.dev/sitemap.xml
+Sitemap: https://iii.dev/docs/sitemap.xml

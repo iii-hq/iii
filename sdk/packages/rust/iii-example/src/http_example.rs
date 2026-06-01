@@ -1,14 +1,15 @@
+use iii_observability::{Logger, execute_traced_request};
 use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
-use iii_sdk::{ApiRequest, ApiResponse, III, IIIError, IIITrigger, Logger, execute_traced_request};
+use iii_sdk::{ApiRequest, ApiResponse, III, IIIError, IIITrigger, RegisterFunction};
 use serde_json::json;
 
 pub fn setup(iii: &III) {
     let client = reqwest::Client::new();
 
     let get_client = client.clone();
-    iii.register_function((
-        iii_sdk::RegisterFunctionMessage::with_id("api::get::http::rust::fetch".to_string()),
-        move |_input| {
+    iii.register_function(
+        "api::get::http::rust::fetch",
+        RegisterFunction::new_async(move |_input: serde_json::Value| {
             let client = get_client.clone();
             let logger = Logger::new();
 
@@ -43,8 +44,8 @@ pub fn setup(iii: &III) {
 
                 Ok(serde_json::to_value(api_response)?)
             }
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(
         IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method(HttpMethod::Get))
@@ -53,9 +54,9 @@ pub fn setup(iii: &III) {
     .expect("failed to register GET http-fetch trigger");
 
     let post_client = client.clone();
-    iii.register_function((
-        iii_sdk::RegisterFunctionMessage::with_id("api::post::http::rust::fetch".to_string()),
-        move |input| {
+    iii.register_function(
+        "api::post::http::rust::fetch",
+        RegisterFunction::new_async(move |input: serde_json::Value| {
             let client = post_client.clone();
             async move {
                 let logger = Logger::new();
@@ -97,8 +98,8 @@ pub fn setup(iii: &III) {
 
                 Ok(serde_json::to_value(api_response)?)
             }
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(
         IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method(HttpMethod::Post))

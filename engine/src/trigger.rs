@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{pin::Pin, sync::Arc};
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
+pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("http", "iii-http"),
     ("cron", "iii-cron"),
     ("subscribe", "iii-pubsub"),
@@ -23,13 +23,38 @@ const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("stream:join", "iii-stream"),
     ("stream:leave", "iii-stream"),
     ("log", "iii-observability"),
+    ("configuration", "configuration"),
 ];
 
-fn worker_name_for_trigger_type(trigger_type_id: &str) -> Option<&'static str> {
+/// Maps a trigger-type id to the in-process worker that owns it. In-process
+/// workers register their `TriggerType` with `worker_id: None`, so the
+/// `worker_registry` Uuid lookup used for WebSocket workers cannot attribute
+/// them. The static table is the source of truth for both error reporting
+/// (`RegisterTriggerError::UnknownBuiltin`) and discovery (`engine_fn`
+/// rolls trigger types up into the owning runtime worker's `workers::info`
+/// envelope).
+pub fn builtin_trigger_type_owner(trigger_type_id: &str) -> Option<&'static str> {
     BUILTIN_TRIGGER_TYPES
         .iter()
         .find(|(id, _)| *id == trigger_type_id)
         .map(|(_, worker)| *worker)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterTriggerError {
+    #[error(
+        "Trigger type \"{trigger_type}\" not found — worker {worker} is missing. Run: iii worker add {worker}"
+    )]
+    UnknownBuiltin {
+        trigger_type: String,
+        worker: &'static str,
+    },
+    #[error(
+        "Trigger type \"{trigger_type}\" not found. Search for a worker that provides this trigger type at https://workers.iii.dev/"
+    )]
+    Unknown { trigger_type: String },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 pub struct TriggerType {
@@ -87,6 +112,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
             "stream" => Self::schema_for::<StreamTriggerConfig>(),
             "log" => Self::schema_for::<LogTriggerConfig>(),
+            "configuration" => Self::schema_for::<ConfigurationTriggerConfig>(),
             _ => None,
         }
     }
@@ -101,6 +127,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveCallRequest>(),
             "stream" => Self::schema_for::<StreamCallRequest>(),
             "log" => Self::schema_for::<LogCallRequest>(),
+            "configuration" => Self::schema_for::<ConfigurationCallRequest>(),
             _ => None,
         }
     }
@@ -231,38 +258,39 @@ impl TriggerRegistry {
         Ok(())
     }
 
-    pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
+    pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), RegisterTriggerError> {
         let trigger_type_id = trigger.trigger_type.clone();
         let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
-            if let Some(worker_name) = worker_name_for_trigger_type(&trigger_type_id) {
+            if let Some(worker_name) = builtin_trigger_type_owner(&trigger_type_id) {
                 tracing::error!(
                     "Trigger type {} requires the {} worker, which is not active in your project.\n\n  To fix this, run:\n\n    {}\n",
                     trigger_type_id.purple().bold(),
                     worker_name.cyan().bold(),
                     format!("iii worker add {}", worker_name).green().bold()
                 );
-                return Err(anyhow::anyhow!(
-                    "Trigger type \"{}\" not found — worker {} is missing. Run: iii worker add {}",
-                    trigger_type_id,
-                    worker_name,
-                    worker_name
-                ));
+                return Err(RegisterTriggerError::UnknownBuiltin {
+                    trigger_type: trigger_type_id,
+                    worker: worker_name,
+                });
             }
 
-            tracing::error!("Trigger type {} not found", trigger_type_id.purple());
-            return Err(anyhow::anyhow!("Trigger type not found"));
+            tracing::error!(
+                "Trigger type {} not found. Search for a worker that provides this trigger type at {}",
+                trigger_type_id.purple().bold(),
+                "https://workers.iii.dev/".cyan().bold()
+            );
+            return Err(RegisterTriggerError::Unknown {
+                trigger_type: trigger_type_id,
+            });
         };
 
-        match trigger_type
+        if let Err(err) = trigger_type
             .registrator
             .register_trigger(trigger.clone())
             .await
         {
-            Ok(_) => {}
-            Err(err) => {
-                tracing::error!(error = %err, "Error registering trigger");
-                return Err(err);
-            }
+            tracing::error!(error = %err, "Error registering trigger");
+            return Err(RegisterTriggerError::Other(err));
         }
 
         drop(trigger_type);
@@ -475,7 +503,15 @@ mod tests {
         let trigger = make_trigger("t1", "nonexistent");
         let result = registry.register_trigger(trigger).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Trigger type not found");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("\"nonexistent\" not found"),
+            "Expected unknown-type message, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("https://workers.iii.dev/"),
+            "Expected workers directory recommendation, got: {err_msg}"
+        );
         assert!(registry.triggers.is_empty());
     }
 

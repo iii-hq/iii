@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::collections::HashMap;
@@ -77,34 +77,47 @@ pub enum StreamOutbound {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSetInput {
+    /// Name of the stream that owns the item.
     pub stream_name: String,
+    /// Group within the stream that owns the item.
     pub group_id: String,
+    /// Identifier of the item within the group.
     pub item_id: String,
+    /// JSON value to store at the given location.
     pub data: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamGetInput {
+    /// Name of the stream to read from.
     pub stream_name: String,
+    /// Group within the stream to read from.
     pub group_id: String,
+    /// Identifier of the item to fetch.
     pub item_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamDeleteInput {
+    /// Name of the stream that owns the item.
     pub stream_name: String,
+    /// Group within the stream that owns the item.
     pub group_id: String,
+    /// Identifier of the item to delete.
     pub item_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamListInput {
+    /// Name of the stream whose items should be listed.
     pub stream_name: String,
+    /// Group within the stream whose items should be listed.
     pub group_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamListGroupsInput {
+    /// Name of the stream whose groups should be listed.
     pub stream_name: String,
 }
 
@@ -138,9 +151,13 @@ pub struct StreamJoinResult {
 /// Input for atomic stream update operations
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamUpdateInput {
+    /// Name of the stream that owns the item.
     pub stream_name: String,
+    /// Group within the stream that owns the item.
     pub group_id: String,
+    /// Identifier of the item to update.
     pub item_id: String,
+    /// Ordered list of update operations applied atomically to the existing value.
     pub ops: Vec<UpdateOp>,
 }
 
@@ -150,11 +167,16 @@ pub struct StreamListAllInput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSendInput {
+    /// Name of the stream to broadcast to.
     pub stream_name: String,
+    /// Group within the stream to broadcast to.
     pub group_id: String,
+    /// Optional subscriber ID to target a single subscriber instead of the whole group.
     pub id: Option<String>,
+    /// Event type label sent alongside the payload.
     #[serde(rename = "type")]
     pub event_type: String,
+    /// JSON payload delivered to subscribers.
     pub data: Value,
 }
 

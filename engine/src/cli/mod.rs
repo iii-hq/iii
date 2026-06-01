@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 pub mod advisory;
@@ -10,6 +10,7 @@ pub mod error;
 pub mod exec;
 pub mod github;
 pub mod platform;
+pub mod project;
 pub mod registry;
 pub mod state;
 pub mod telemetry;
@@ -206,6 +207,10 @@ pub async fn handle_update(target: Option<&str>) -> i32 {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{} {}", "error:".red(), e);
+                    eprintln!(
+                        "  {} run `iii update --list-targets` to see valid targets.",
+                        "hint:".dimmed()
+                    );
                     return 1;
                 }
             };

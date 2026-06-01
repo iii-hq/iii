@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{RegisterFunction, RegisterTriggerInput};
 
 #[tokio::test]
 async fn middleware_continue_to_handler() {
@@ -19,26 +19,26 @@ async fn middleware_continue_to_handler() {
     let mw_called = Arc::new(Mutex::new(false));
     let mw_called_clone = mw_called.clone();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::continue::rs".to_string()),
-        move |_input: Value| {
+    iii.register_function(
+        "test::mw::continue::rs",
+        RegisterFunction::new_async(move |_input: Value| {
             let flag = mw_called_clone.clone();
             async move {
                 *flag.lock().await = true;
                 Ok(json!({"action": "continue"}))
             }
-        },
-    ));
+        }),
+    );
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::continue::handler::rs".to_string()),
-        |_input: Value| async move {
+    iii.register_function(
+        "test::mw::continue::handler::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
                 "body": {"message": "handler reached"},
             }))
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
@@ -73,9 +73,9 @@ async fn middleware_short_circuit() {
     let handler_called = Arc::new(Mutex::new(false));
     let handler_called_clone = handler_called.clone();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::block::rs".to_string()),
-        |_input: Value| async move {
+    iii.register_function(
+        "test::mw::block::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
             Ok(json!({
                 "action": "respond",
                 "response": {
@@ -83,12 +83,12 @@ async fn middleware_short_circuit() {
                     "body": {"error": "Forbidden by middleware"},
                 },
             }))
-        },
-    ));
+        }),
+    );
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::block::handler::rs".to_string()),
-        move |_input: Value| {
+    iii.register_function(
+        "test::mw::block::handler::rs",
+        RegisterFunction::new_async(move |_input: Value| {
             let flag = handler_called_clone.clone();
             async move {
                 *flag.lock().await = true;
@@ -97,8 +97,8 @@ async fn middleware_short_circuit() {
                     "body": {"message": "should not reach"},
                 }))
             }
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
@@ -135,31 +135,31 @@ async fn multiple_middleware_ordering() {
     let order2 = call_order.clone();
     let order3 = call_order.clone();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::order::first::rs".to_string()),
-        move |_input: Value| {
+    iii.register_function(
+        "test::mw::order::first::rs",
+        RegisterFunction::new_async(move |_input: Value| {
             let order = order1.clone();
             async move {
                 order.lock().await.push("mw1".to_string());
                 Ok(json!({"action": "continue"}))
             }
-        },
-    ));
+        }),
+    );
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::order::second::rs".to_string()),
-        move |_input: Value| {
+    iii.register_function(
+        "test::mw::order::second::rs",
+        RegisterFunction::new_async(move |_input: Value| {
             let order = order2.clone();
             async move {
                 order.lock().await.push("mw2".to_string());
                 Ok(json!({"action": "continue"}))
             }
-        },
-    ));
+        }),
+    );
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::order::handler::rs".to_string()),
-        move |_input: Value| {
+    iii.register_function(
+        "test::mw::order::handler::rs",
+        RegisterFunction::new_async(move |_input: Value| {
             let order = order3.clone();
             async move {
                 order.lock().await.push("handler".to_string());
@@ -168,8 +168,8 @@ async fn multiple_middleware_ordering() {
                     "body": {"message": "ok"},
                 }))
             }
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
@@ -204,15 +204,15 @@ async fn multiple_middleware_ordering() {
 async fn no_middleware_regression() {
     let iii = common::shared_iii();
 
-    iii.register_function((
-        RegisterFunctionMessage::with_id("test::mw::none::rs".to_string()),
-        |_input: Value| async move {
+    iii.register_function(
+        "test::mw::none::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
                 "body": {"message": "no middleware"},
             }))
-        },
-    ));
+        }),
+    );
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),

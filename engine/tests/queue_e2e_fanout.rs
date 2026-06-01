@@ -71,6 +71,11 @@ async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) ->
         .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     for fid in function_ids {
         engine
@@ -135,6 +140,11 @@ async fn fanout_replicas_compete_within_function() {
         .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     for _ in 0..2 {
         engine
@@ -178,6 +188,11 @@ async fn fanout_mixed_functions_and_replicas() {
         .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     engine
         .trigger_registry
@@ -264,6 +279,11 @@ async fn fanout_unsubscribe_stops_delivery() {
         .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     let trigger_a_id = format!("trig-{}", uuid::Uuid::new_v4());
     let trigger_b_id = format!("trig-{}", uuid::Uuid::new_v4());
@@ -380,6 +400,11 @@ async fn fanout_with_condition_function() {
         .expect("QueueWorker::create should succeed");
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
 
     engine
         .trigger_registry

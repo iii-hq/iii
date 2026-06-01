@@ -21,7 +21,7 @@
     "fmt:check": "biome check . && cargo fmt --all -- --check",
     "type-check": "turbo run type-check",
     "generate:api-docs": "bash scripts/generate-api-docs.sh",
-    "dev:docs": "cd docs && npx mint dev",
+    "dev:docs": "pnpm --filter docs dev",
     "dev:website": "turbo run dev --filter=iii-website",
     "dev:console": "turbo run dev --filter=console-frontend"
   },

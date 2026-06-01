@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from iii.telemetry_exporters import EngineLogExporter, EngineSpanExporter, SharedEngineConnection
+from iii_observability.telemetry_exporters import EngineLogExporter, EngineSpanExporter, SharedEngineConnection
 
 
 def _make_mock_connection():
@@ -184,7 +184,7 @@ def test_serialize_metrics_emits_empty_string_for_missing_scope_version():
     the Python OTel SDK. The serializer must emit "" (not JSON null) so the Rust
     engine's String deserializer doesn't reject the payload.
     """
-    from iii.telemetry_exporters import _serialize_metrics
+    from iii_observability.telemetry_exporters import _serialize_metrics
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
     from opentelemetry.sdk.resources import Resource

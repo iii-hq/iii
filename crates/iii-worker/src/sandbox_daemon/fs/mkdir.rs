@@ -1,35 +1,49 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunctionMessage};
+use iii_sdk::RegisterFunction;
 use iii_shell_proto::{FsOp, FsResult};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+    errors::{SandboxError, SandboxErrorWire},
+    fs::adapter::FsRunner,
+    registry::SandboxRegistry,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "mkdir_request_example")]
 pub struct MkdirRequest {
+    /// UUID returned by `sandbox::create`.
     pub sandbox_id: String,
+    /// Absolute path of the directory to create inside the sandbox guest.
     pub path: String,
+    /// Octal permissions for the new directory (e.g. `"0755"`).
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Create intermediate parent directories like `mkdir -p`.
     #[serde(default)]
     pub parents: bool,
+}
+
+fn mkdir_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "sandbox_id": "00000000-0000-0000-0000-000000000000",
+        "path": "/home/app/cache",
+        "mode": "0755",
+        "parents": true
+    })
 }
 
 fn default_mode() -> String {
     "0755".to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct MkdirResponse {
     pub created: bool,
 }
@@ -75,31 +89,28 @@ pub(super) fn register(
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        Box::pin(async move {
-            let req: MkdirRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match handle_mkdir(req, &registry, &*runner).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
+    let _ = iii.register_function(
+        "sandbox::fs::mkdir",
+        RegisterFunction::new_async(move |req: MkdirRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            async move {
+                let sid = req.sandbox_id.clone();
+                let start = std::time::Instant::now();
+                let result = handle_mkdir(req, &registry, &*runner).await;
+                crate::sandbox_daemon::log_handler_result(
+                    "sandbox::fs::mkdir",
+                    Some(&sid),
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
             }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::fs::mkdir".to_string(),
-            description: Some("Create a directory inside a sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+        })
+        .description(
+            "Create a directory inside a sandbox. Pass `parents:true` to make missing parents \
+             like `mkdir -p`. Example: { sandbox_id: \"...\", path: \"/home/app/cache\", mode: \"0755\", parents: true }",
+        ),
     );
 }
 

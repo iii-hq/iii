@@ -18,7 +18,10 @@ export interface TriggerInfo {
   id: string
   trigger_type: string
   function_id: string
-  config: Record<string, unknown>
+  // `config` may be absent on older / leaner engine summaries — always
+  // narrow with `?? {}` before reading nested fields. See triggers.tsx
+  // and flows.ts for the pattern.
+  config?: Record<string, unknown>
   internal?: boolean
 }
 

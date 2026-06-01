@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{RegisterFunction, RegisterTriggerInput};
 
 async fn get_health_status(http_url: &str) -> u16 {
     common::http_client()
@@ -23,9 +23,9 @@ async fn get_health_status(http_url: &str) -> u16 {
 async fn register_healthcheck_function_and_trigger() {
     let iii = common::shared_iii();
 
-    let fn_ref = iii.register_function((
-        RegisterFunctionMessage::with_id("test::healthcheck::rs".to_string()),
-        |_input: Value| async move {
+    let fn_ref = iii.register_function(
+        "test::healthcheck::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
                 "body": {
@@ -34,8 +34,8 @@ async fn register_healthcheck_function_and_trigger() {
                     "service": "iii-sdk-test",
                 },
             }))
-        },
-    ));
+        }),
+    );
 
     let status_before = get_health_status(&common::engine_http_url()).await;
     assert_eq!(

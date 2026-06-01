@@ -1,33 +1,33 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import type { StreamChannelRef } from './iii-types'
 import type { ApiResponse, HttpRequest, HttpResponse, InternalHttpRequest } from './types'
 
 /**
- * Safely stringify a value, handling circular references, BigInt, and other edge cases.
- * Returns "[unserializable]" if serialization fails for any reason.
+ * Returns a project identifier for telemetry, derived from the current working
+ * directory. Reads `package.json` `name` if present at `cwd`; otherwise falls
+ * back to the basename of `cwd`. Returns `undefined` only when both signals
+ * are unavailable (e.g. cwd is the filesystem root).
+ *
+ * No directory walking — only inspects `cwd` itself, so the SDK never reads
+ * files outside the user's explicit working directory.
  */
-export function safeStringify(value: unknown): string {
-  const seen = new WeakSet<object>()
-
+export function detectProjectName(cwd: string = process.cwd()): string | undefined {
   try {
-    return JSON.stringify(value, (_key, val) => {
-      // Handle BigInt
-      if (typeof val === 'bigint') {
-        return val.toString()
+    const manifest = path.join(cwd, 'package.json')
+    if (fs.existsSync(manifest)) {
+      const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { name?: unknown }
+      if (typeof parsed.name === 'string') {
+        const trimmed = parsed.name.trim()
+        if (trimmed) return trimmed
       }
-
-      // Handle circular references
-      if (val !== null && typeof val === 'object') {
-        if (seen.has(val)) {
-          return '[Circular]'
-        }
-        seen.add(val)
-      }
-
-      return val
-    })
+    }
   } catch {
-    return '[unserializable]'
+    // fall through to directory-name fallback
   }
+
+  const base = path.basename(cwd).trim()
+  return base || undefined
 }
 
 /**

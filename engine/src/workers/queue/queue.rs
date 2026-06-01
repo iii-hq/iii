@@ -1,13 +1,13 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{
     collections::HashMap,
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex as StdMutex, RwLock},
 };
 
 use async_trait::async_trait;
@@ -19,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::panic::AssertUnwindSafe;
+use tokio::task::AbortHandle;
 
 use super::{QueueAdapter, SubscriberQueueConfig, TopicInfo, config::QueueModuleConfig};
 use tracing::Instrument;
@@ -38,16 +39,20 @@ pub struct QueueWorker {
     adapter: Arc<dyn QueueAdapter>,
     engine: Arc<Engine>,
     _config: QueueModuleConfig,
+    consumer_aborts: Arc<StdMutex<Vec<AbortHandle>>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct QueueInput {
+    /// Topic to publish to. Subscribers registered for this topic receive the message.
     topic: String,
+    /// JSON payload delivered to each subscriber.
     data: Value,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RedriveInput {
+    /// Queue name whose dead-letter messages should be moved back to the main queue.
     queue: String,
 }
 
@@ -59,7 +64,9 @@ pub struct RedriveResult {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RedriveSingleInput {
+    /// Queue name owning the dead-letter message.
     queue: String,
+    /// Identifier of the dead-letter message to redrive.
     message_id: String,
 }
 
@@ -630,6 +637,27 @@ impl Worker for QueueWorker {
         self._config.validate()?;
         self.engine.set_queue_module(Arc::new(self.clone())).await;
 
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue core module",
+            Box::new(self.clone()),
+            None,
+        );
+
+        let _ = self.engine.register_trigger_type(trigger_type).await;
+
+        Ok(())
+    }
+
+    async fn start_background_tasks(
+        &self,
+        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
+    ) -> anyhow::Result<()> {
+        // Consumer loops are not wired to `shutdown_rx`: `destroy()` aborts the
+        // spawned task via the stored AbortHandle, which is sufficient to stop
+        // it cleanly during reload. Adding a `select!` on shutdown made
+        // `receiver.recv()` race-prone under heavy parallel test load.
         for (name, config) in &self._config.queue_configs {
             self.adapter.setup_function_queue(name, config).await?;
 
@@ -647,7 +675,7 @@ impl Worker for QueueWorker {
 
             let semaphore = Arc::new(tokio::sync::Semaphore::new(prefetch as usize));
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 while let Some(msg) = receiver.recv().await {
                     let adapter = adapter.clone();
                     let engine = engine.clone();
@@ -749,6 +777,11 @@ impl Worker for QueueWorker {
                 tracing::warn!(queue = %queue_name, "Consumer loop ended");
             });
 
+            self.consumer_aborts
+                .lock()
+                .expect("consumer_aborts mutex poisoned")
+                .push(handle.abort_handle());
+
             tracing::info!(
                 queue = %name,
                 r#type = %config.r#type,
@@ -757,15 +790,20 @@ impl Worker for QueueWorker {
             );
         }
 
-        let trigger_type = TriggerType::new(
-            "durable:subscriber",
-            "Queue core module",
-            Box::new(self.clone()),
-            None,
-        );
+        Ok(())
+    }
 
-        let _ = self.engine.register_trigger_type(trigger_type).await;
-
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::info!("Destroying QueueModule");
+        let aborts: Vec<AbortHandle> = self
+            .consumer_aborts
+            .lock()
+            .expect("consumer_aborts mutex poisoned")
+            .drain(..)
+            .collect();
+        for abort in aborts {
+            abort.abort();
+        }
         Ok(())
     }
 }
@@ -783,11 +821,17 @@ impl ConfigurableWorker for QueueWorker {
         &REGISTRY
     }
 
-    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+    fn build(engine: Arc<Engine>, mut config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        // Provision the built-in `default` queue so enqueues to it work with no
+        // user config. Done here (the single construction site) so both the
+        // consumer spawn in `start_background_tasks` and the lookup in
+        // `enqueue_to_function_queue` see it.
+        config.ensure_default_queue();
         Self {
             engine,
             _config: config,
             adapter,
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -1145,6 +1189,7 @@ mod tests {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: super::super::config::QueueModuleConfig::default(),
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         };
         (engine, module, adapter)
     }
@@ -1487,6 +1532,54 @@ mod tests {
         assert_eq!(Worker::name(&module), "QueueModule");
     }
 
+    #[test]
+    fn build_provisions_builtin_default_queue() {
+        use super::super::config::{DEFAULT_QUEUE_NAME, QueueModuleConfig};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let adapter: Arc<dyn QueueAdapter> = Arc::new(MockQueueAdapter::new());
+        // Empty config — the operator declared no queues.
+        let module = QueueWorker::build(engine, QueueModuleConfig::default(), adapter);
+        assert!(
+            module
+                ._config
+                .queue_configs
+                .contains_key(DEFAULT_QUEUE_NAME),
+            "build() must provision the built-in default queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_to_default_queue_succeeds_without_config() {
+        use super::super::config::{DEFAULT_QUEUE_NAME, QueueModuleConfig};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let adapter = Arc::new(MockQueueAdapter::new());
+        // A worker built from empty config — exactly what a user gets when they
+        // never touch `queue_configs` in config.yaml.
+        let module = QueueWorker::build(engine, QueueModuleConfig::default(), adapter.clone());
+
+        let result = module
+            .enqueue_to_function_queue(
+                DEFAULT_QUEUE_NAME,
+                "fn-1",
+                json!({"key": "value"}),
+                "test-msg-id",
+                None,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "enqueue to the built-in default queue should succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(adapter.enqueue_to_queue_count.load(Ordering::SeqCst), 1);
+    }
+
     // =========================================================================
     // enqueue_to_function_queue tests
     // =========================================================================
@@ -1524,6 +1617,7 @@ mod tests {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: config,
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         };
 
         (engine, module, adapter)
@@ -1679,6 +1773,7 @@ mod tests {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: config,
+            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
         };
 
         (engine, module, adapter)
@@ -1728,6 +1823,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait for the consumer loop to pick up and process the message
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1785,6 +1885,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait for the consumer to process the message (and potentially retries)
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1847,6 +1952,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait for consumer to process all 3 messages
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -1918,6 +2028,11 @@ mod tests {
             .initialize()
             .await
             .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
 
         // Wait enough for all tasks to be picked up and processed concurrently
         // With concurrency=3 and 200ms sleep each, concurrent execution should

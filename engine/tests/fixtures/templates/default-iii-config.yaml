@@ -1,0 +1,20 @@
+# iii engine configuration
+# Docs: https://iii.dev/docs/how-to/configure-engine
+workers:
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii
+      exporter: memory
+      memory_max_spans: 10000
+      metrics_enabled: true
+      metrics_exporter: memory
+      logs_enabled: true
+      logs_exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin

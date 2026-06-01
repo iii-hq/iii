@@ -14,6 +14,7 @@ from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
 import websockets
+from iii_observability import OtelConfig
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
@@ -34,8 +35,6 @@ from .iii_types import (
     RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
-    RegisterServiceInput,
-    RegisterServiceMessage,
     RegisterTriggerInput,
     RegisterTriggerMessage,
     RegisterTriggerTypeInput,
@@ -56,7 +55,6 @@ from .stream import (
     StreamListInput,
     StreamSetInput,
 )
-from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
 
@@ -75,6 +73,42 @@ def _resolve_format(fmt: Any) -> Any | None:
 
         return python_type_to_format(fmt)
     return fmt
+
+
+def _detect_project_name(cwd: str | None = None) -> str | None:
+    """Return a project identifier for telemetry, derived from the current working directory.
+
+    Reads ``[project] name`` from ``pyproject.toml`` if present at ``cwd``;
+    otherwise falls back to the basename of ``cwd``. Returns ``None`` only
+    when both signals are unavailable (e.g. cwd is the filesystem root, or
+    the Python runtime has no TOML parser and no readable cwd basename).
+
+    No directory walking — only inspects ``cwd`` itself, so the SDK never
+    reads files outside the user's explicit working directory.
+    """
+    try:
+        cwd = cwd or os.getcwd()
+        manifest = os.path.join(cwd, "pyproject.toml")
+        if os.path.isfile(manifest):
+            import importlib
+
+            try:
+                tomllib = importlib.import_module("tomllib")  # Python 3.11+
+            except ImportError:
+                tomllib = None
+            if tomllib is not None:
+                with open(manifest, "rb") as fh:
+                    data = tomllib.load(fh)
+                name = data.get("project", {}).get("name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+    except Exception:
+        pass
+
+    if not cwd:
+        return None
+    base = os.path.basename(cwd).strip()
+    return base or None
 
 
 class _TraceContextError(Exception):
@@ -116,7 +150,6 @@ class III:
         self._options = options or InitOptions()
         self._ws: ClientConnection | None = None
         self._functions: dict[str, RemoteFunctionData] = {}
-        self._services: dict[str, RegisterServiceMessage] = {}
         self._pending: dict[str, _PendingInvocation] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
@@ -191,7 +224,7 @@ class III:
         from an async context.
         """
         self._running = True
-        from .telemetry import attach_event_loop, init_otel
+        from iii_observability.telemetry import attach_event_loop, init_otel
 
         loop = asyncio.get_running_loop()
         otel_cfg: OtelConfig | None = None
@@ -247,7 +280,7 @@ class III:
 
         self._set_connection_state("disconnected")
 
-        from .telemetry import shutdown_otel_async
+        from iii_observability.telemetry import shutdown_otel_async
 
         await shutdown_otel_async()
 
@@ -308,8 +341,6 @@ class III:
         # Re-register all (snapshot to avoid mutation from caller thread)
         for trigger_type_data in list(self._trigger_types.values()):
             await self._send(trigger_type_data.message)
-        for svc in list(self._services.values()):
-            await self._send(svc)
         for function_data in list(self._functions.values()):
             await self._send(function_data.message)
         for trigger in list(self._triggers.values()):
@@ -407,6 +438,8 @@ class III:
             )
         elif msg_type == MessageType.REGISTER_TRIGGER.value:
             asyncio.create_task(self._handle_trigger_registration(data))
+        elif msg_type == MessageType.TRIGGER_REGISTRATION_RESULT.value:
+            self._handle_trigger_registration_result(data)
         elif msg_type == MessageType.WORKER_REGISTERED.value:
             worker_id = data.get("worker_id", "")
             self._worker_id = worker_id
@@ -464,17 +497,58 @@ class III:
             propagate.extract(carrier) if carrier else otel_context.get_current()
         )
         tracer = trace.get_tracer("iii-python-sdk")
+        import os
+
+        from iii_observability import redact_and_truncate, resolve_max_bytes_from_env
+
+        trace_payloads = os.environ.get("III_DISABLE_TRACE_PAYLOADS", "").lower() not in (
+            "1",
+            "true",
+        )
+        payload_max_bytes = resolve_max_bytes_from_env()
+
         with tracer.start_as_current_span(
             f"call {handler.__name__}",
             context=parent_ctx,
             kind=trace.SpanKind.SERVER,
         ) as span:
+            if trace_payloads and span.is_recording():
+                input_json, input_truncated = redact_and_truncate(data, payload_max_bytes)
+                span.add_event(
+                    "iii.invocation.input",
+                    attributes={
+                        "iii.payload.json": input_json,
+                        "iii.payload.truncated": input_truncated,
+                    },
+                )
             try:
                 result = await handler(data)
+                if trace_payloads and span.is_recording():
+                    out_json, out_truncated = redact_and_truncate(result, payload_max_bytes)
+                    span.add_event(
+                        "iii.invocation.output",
+                        attributes={
+                            "iii.payload.json": out_json,
+                            "iii.payload.truncated": out_truncated,
+                            "iii.payload.ok": True,
+                        },
+                    )
                 span.set_status(trace.StatusCode.OK)
                 response_traceparent = self._inject_traceparent()
                 return result, response_traceparent
             except Exception as e:
+                if trace_payloads and span.is_recording():
+                    err_json, err_truncated = redact_and_truncate(
+                        {"error": str(e)}, payload_max_bytes
+                    )
+                    span.add_event(
+                        "iii.invocation.output",
+                        attributes={
+                            "iii.payload.json": err_json,
+                            "iii.payload.truncated": err_truncated,
+                            "iii.payload.ok": False,
+                        },
+                    )
                 span.record_exception(e)
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 response_traceparent = self._inject_traceparent()
@@ -628,6 +702,21 @@ class III:
                     "error": {"code": "trigger_registration_failed", "message": str(e)},
                 }
             )
+
+    def _handle_trigger_registration_result(self, data: dict[str, Any]) -> None:
+        error = data.get("error")
+        if not error:
+            return
+
+        trigger_id = data.get("id", "")
+        trigger_type = data.get("trigger_type", "")
+        message = error.get("message", "")
+        log.error(
+            "[iii] Trigger registration failed for %r (%s): %s",
+            trigger_id,
+            trigger_type,
+            message,
+        )
 
     # Connection state management
 
@@ -937,40 +1026,6 @@ class III:
 
         return FunctionRef(id=func_id, unregister=unregister)
 
-    def register_service(self, service: RegisterServiceInput | dict[str, Any]) -> None:
-        """Register a logical service grouping with the engine.
-
-        Services provide an organisational hierarchy for functions.  A
-        service can optionally reference a ``parent_service_id`` to form
-        a tree visible in the engine dashboard.
-
-        Note:
-            Services are organizational groupings visible in the engine
-            dashboard.  They do not affect function invocation behavior.
-
-        Args:
-            service: A ``RegisterServiceInput`` or dict with ``id`` and
-                optional ``name``, ``description``, ``parent_service_id``.
-
-        Examples:
-            >>> iii.register_service({"id": "payments", "description": "Payment processing"})
-            >>> iii.register_service({
-            ...     "id": "payments::refunds",
-            ...     "description": "Refund sub-service",
-            ...     "parent_service_id": "payments",
-            ... })
-        """
-        if isinstance(service, dict):
-            service = RegisterServiceInput(**service)
-        msg = RegisterServiceMessage(
-            id=service.id,
-            name=service.name or service.id,
-            description=service.description,
-            parent_service_id=service.parent_service_id,
-        )
-        self._services[service.id] = msg
-        self._send_if_connected(msg)
-
     def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
 
@@ -1163,7 +1218,10 @@ class III:
 
         telemetry: dict[str, Any] = {
             "language": language,
-            "project_name": telemetry_opts.project_name if telemetry_opts else None,
+            "project_name": (
+                (telemetry_opts.project_name if telemetry_opts else None)
+                or _detect_project_name()
+            ),
             "framework": (telemetry_opts.framework if telemetry_opts else None) or "iii-py",
             "amplitude_api_key": (
                 telemetry_opts.amplitude_api_key if telemetry_opts else None

@@ -1,14 +1,18 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 pub mod app;
 pub mod binary_download;
 pub mod builtin_defaults;
+pub mod bundle_download;
 pub mod config_file;
+pub mod download;
 pub mod firmware;
+pub mod host_shim;
+pub mod init;
 pub mod lifecycle;
 pub mod local_worker;
 pub mod lockfile;
@@ -24,11 +28,15 @@ pub mod sandbox_daemon;
 pub mod shell_client;
 pub mod shell_relay;
 pub mod source_watcher;
+pub mod spinner;
 pub mod status;
+pub mod stderr_sink;
 pub mod supervisor_ctl;
 pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod vm_boot;
 pub mod worker_manager;
+pub mod worker_manager_daemon;
 pub mod worker_manifest_deps;
+pub mod worker_trigger;

@@ -1,13 +1,85 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use serde::Serialize;
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
+const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const MAX_RETRIES: u32 = 3;
+
+/// Canonical Amplitude API key used by the engine, the CLI, and (via its own
+/// copy) scaffolder-core. Kept here so anyone sending telemetry from the
+/// engine binary references one source of truth.
+pub const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
+pub const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
+
+/// Strip `/Users/<name>/`, `/home/<name>/`, and Windows `\Users\<name>\` /
+/// `\home\<name>\` prefixes from error strings, and cap the length so we
+/// never ship unbounded backtraces. Applied at the send layer
+/// ([`AmplitudeClient::send_event`]) so every Amplitude event is scrubbed,
+/// regardless of which subsystem produced it.
+pub fn sanitize_error(error: &str) -> String {
+    const MAX_LEN: usize = 256;
+    let mut out = String::with_capacity(error.len().min(MAX_LEN));
+    let mut chars = error.chars().peekable();
+    let mut buf = String::new();
+    while let Some(c) = chars.next() {
+        buf.push(c);
+        if buf.ends_with("/Users/")
+            || buf.ends_with("/home/")
+            || buf.ends_with("\\Users\\")
+            || buf.ends_with("\\home\\")
+        {
+            out.push_str(&buf);
+            buf.clear();
+            // Skip the username segment up to the next path separator
+            // (forward or back slash) or whitespace.
+            while let Some(&peek) = chars.peek() {
+                if peek == '/' || peek == '\\' || peek.is_whitespace() {
+                    break;
+                }
+                chars.next();
+            }
+            out.push_str("<redacted>");
+        }
+    }
+    out.push_str(&buf);
+    if out.chars().count() > MAX_LEN {
+        let truncated: String = out.chars().take(MAX_LEN).collect();
+        format!("{truncated}…")
+    } else {
+        out
+    }
+}
+
+/// Recursively walk a JSON value and apply [`sanitize_error`] to any string
+/// stored under a key named `"error"`. This way the redaction applies to
+/// any Amplitude event whose `event_properties` carry an `error` field,
+/// without each call site having to remember to sanitize.
+fn sanitize_event_properties(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k == "error" {
+                    if let serde_json::Value::String(s) = v {
+                        *s = sanitize_error(s);
+                    }
+                } else {
+                    sanitize_event_properties(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                sanitize_event_properties(v);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// An event to be sent to Amplitude.
 #[derive(Debug, Clone, Serialize)]
@@ -39,10 +111,117 @@ struct AmplitudePayload {
     events: Vec<AmplitudeEvent>,
 }
 
+#[derive(Serialize)]
+struct PostHogPayload {
+    api_key: String,
+    historical_migration: bool,
+    batch: Vec<PostHogEvent>,
+}
+
+#[derive(Serialize)]
+struct PostHogEvent {
+    event: String,
+    properties: serde_json::Value,
+    timestamp: String,
+    uuid: Option<String>,
+}
+
 /// Client for sending events to Amplitude.
 pub struct AmplitudeClient {
     api_key: String,
     client: reqwest::Client,
+}
+
+/// Client for sending anonymous product analytics to PostHog.
+pub struct PostHogClient {
+    api_key: String,
+    host: String,
+    client: reqwest::Client,
+}
+
+pub fn posthog_user_mode(event_type: &str) -> &'static str {
+    match event_type {
+        "heartbeat" | "engine_stopped" => "using",
+        _ => "building",
+    }
+}
+
+fn posthog_batch_url(host: &str) -> String {
+    format!("{}/batch/", host.trim_end_matches('/'))
+}
+
+fn posthog_timestamp_millis(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339()
+}
+
+fn should_skip_posthog_user_property(
+    key: &str,
+    properties: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    match key {
+        // app_version is the canonical PostHog field; iii_version is the Amplitude user prop alias.
+        "iii_version" => properties.contains_key("app_version"),
+        _ => false,
+    }
+}
+
+fn should_skip_posthog_event_property(
+    key: &str,
+    properties: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    match key {
+        "version" => {
+            properties.contains_key("app_version") || properties.contains_key("iii_version")
+        }
+        "function_names" => true, // deprecated alias of `functions`
+        _ => false,
+    }
+}
+
+fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
+    sanitize_event_properties(&mut event.event_properties);
+    if let Some(props) = event.user_properties.as_mut() {
+        sanitize_event_properties(props);
+    }
+
+    let mut properties = serde_json::Map::new();
+    properties.insert("distinct_id".into(), serde_json::json!(event.device_id));
+    properties.insert("$process_person_profile".into(), serde_json::json!(false));
+    properties.insert(
+        "user_mode".into(),
+        serde_json::json!(posthog_user_mode(&event.event_type)),
+    );
+    properties.insert("platform".into(), serde_json::json!(event.platform));
+    properties.insert("os_name".into(), serde_json::json!(event.os_name));
+    properties.insert("app_version".into(), serde_json::json!(event.app_version));
+    if let Some(language) = event.language {
+        properties.insert("language".into(), serde_json::json!(language));
+    }
+    if let Some(serde_json::Value::Object(user_props)) = event.user_properties {
+        for (key, value) in user_props {
+            if should_skip_posthog_user_property(&key, &properties) {
+                continue;
+            }
+            properties.insert(key, value);
+        }
+    }
+    if let serde_json::Value::Object(event_props) = event.event_properties {
+        for (key, value) in event_props {
+            if should_skip_posthog_event_property(&key, &properties) {
+                continue;
+            }
+            properties.insert(key, value);
+        }
+    }
+
+    PostHogEvent {
+        event: event.event_type,
+        properties: serde_json::Value::Object(properties),
+        timestamp: posthog_timestamp_millis(event.time),
+        uuid: event.insert_id,
+    }
 }
 
 impl AmplitudeClient {
@@ -60,7 +239,11 @@ impl AmplitudeClient {
     }
 
     /// Send a single event to Amplitude.
-    pub async fn send_event(&self, event: AmplitudeEvent) -> anyhow::Result<()> {
+    pub async fn send_event(&self, mut event: AmplitudeEvent) -> anyhow::Result<()> {
+        sanitize_event_properties(&mut event.event_properties);
+        if let Some(props) = event.user_properties.as_mut() {
+            sanitize_event_properties(props);
+        }
         self.send_batch(vec![event]).await
     }
 
@@ -106,6 +289,70 @@ impl AmplitudeClient {
         }
 
         tracing::debug!("Amplitude: all retry attempts exhausted, dropping events");
+        Ok(())
+    }
+}
+
+impl PostHogClient {
+    /// Create a new PostHog client with the given project API key and host.
+    pub fn new(api_key: String, host: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to build PostHog HTTP client with custom config, using defaults");
+                reqwest::Client::default()
+            });
+
+        Self {
+            api_key,
+            host: if host.trim().is_empty() {
+                POSTHOG_DEFAULT_HOST.to_string()
+            } else {
+                host
+            },
+            client,
+        }
+    }
+
+    /// Send a single anonymous event to PostHog.
+    pub async fn send_event(&self, event: AmplitudeEvent) -> anyhow::Result<()> {
+        self.send_batch(vec![event]).await
+    }
+
+    /// Send a batch of anonymous events to PostHog.
+    /// If the API key is empty, this silently skips sending (for dev/testing).
+    /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
+    /// and must never block or fail the caller.
+    pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
+        if self.api_key.is_empty() || events.is_empty() {
+            return Ok(());
+        }
+
+        let payload = PostHogPayload {
+            api_key: self.api_key.clone(),
+            historical_migration: false,
+            batch: events.into_iter().map(build_posthog_event).collect(),
+        };
+
+        let url = posthog_batch_url(&self.host);
+        let mut delay = std::time::Duration::from_secs(1);
+
+        for attempt in 1..=MAX_RETRIES {
+            match self.client.post(&url).json(&payload).send().await {
+                Ok(response) if response.status().is_success() => {
+                    return Ok(());
+                }
+                Ok(_) | Err(_) => {}
+            }
+
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+        }
+
+        tracing::debug!("PostHog: all retry attempts exhausted, dropping events");
         Ok(())
     }
 }
@@ -262,6 +509,82 @@ mod tests {
         assert!(json["events"].as_array().unwrap().is_empty());
     }
 
+    #[test]
+    fn test_posthog_user_mode_classifies_runtime_as_using() {
+        assert_eq!(posthog_user_mode("heartbeat"), "using");
+        assert_eq!(posthog_user_mode("engine_stopped"), "using");
+    }
+
+    #[test]
+    fn test_posthog_user_mode_classifies_cli_and_scaffolding_as_building() {
+        assert_eq!(posthog_user_mode("install_started"), "building");
+        assert_eq!(posthog_user_mode("cli_update_started"), "building");
+        assert_eq!(posthog_user_mode("project_created"), "building");
+        assert_eq!(posthog_user_mode("template_success"), "building");
+    }
+
+    #[test]
+    fn test_posthog_payload_is_anonymous_batch_shape() {
+        let payload = PostHogPayload {
+            api_key: "phc_test".to_string(),
+            historical_migration: false,
+            batch: vec![build_posthog_event(sample_event())],
+        };
+
+        let json = serde_json::to_value(&payload).unwrap();
+        let event = &json["batch"][0];
+
+        assert_eq!(json["api_key"], "phc_test");
+        assert_eq!(json["historical_migration"], false);
+        assert_eq!(event["event"], "test_event");
+        assert_eq!(event["uuid"], "ins-1");
+        assert_eq!(event["properties"]["distinct_id"], "device-1");
+        assert_eq!(event["properties"]["$process_person_profile"], false);
+        assert_eq!(event["properties"]["user_mode"], "building");
+        assert_eq!(event["properties"]["key"], "value");
+        assert_eq!(event["properties"]["plan"], "free");
+    }
+
+    #[test]
+    fn test_posthog_payload_dedupes_version_and_function_fields() {
+        let event = AmplitudeEvent {
+            device_id: "device-1".to_string(),
+            user_id: None,
+            event_type: "heartbeat".to_string(),
+            event_properties: serde_json::json!({
+                "version": "0.13.0-next.1",
+                "function_names": ["orders::charge", "agent::memory"],
+                "functions": ["orders::charge", "agent::memory"],
+                "project_name": "agentmemory",
+            }),
+            user_properties: Some(serde_json::json!({
+                "iii_version": "0.13.0-next.1",
+                "project_name": "agentmemory",
+            })),
+            platform: "iii-engine".to_string(),
+            os_name: "linux".to_string(),
+            app_version: "0.13.0-next.1".to_string(),
+            time: 1700000000000,
+            insert_id: Some("ins-2".to_string()),
+            country: None,
+            language: None,
+            ip: None,
+        };
+
+        let props = build_posthog_event(event).properties;
+        let props = props.as_object().expect("properties object");
+
+        assert_eq!(props.get("app_version").unwrap(), "0.13.0-next.1");
+        assert!(!props.contains_key("iii_version"));
+        assert!(!props.contains_key("version"));
+        assert!(!props.contains_key("function_names"));
+        assert_eq!(
+            props.get("functions").unwrap(),
+            &serde_json::json!(["orders::charge", "agent::memory"])
+        );
+        assert_eq!(props.get("project_name").unwrap(), "agentmemory");
+    }
+
     // =========================================================================
     // AmplitudeClient::send_batch with empty key (no-op)
     // =========================================================================
@@ -287,6 +610,26 @@ mod tests {
         assert!(
             result.is_ok(),
             "send_event with empty API key should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_posthog_send_batch_empty_api_key_is_noop() {
+        let client = PostHogClient::new(String::new(), POSTHOG_DEFAULT_HOST.to_string());
+        let result = client.send_batch(vec![sample_event()]).await;
+        assert!(
+            result.is_ok(),
+            "empty PostHog API key should silently succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_posthog_send_batch_empty_events_is_noop() {
+        let client = PostHogClient::new("phc_test".to_string(), POSTHOG_DEFAULT_HOST.to_string());
+        let result = client.send_batch(vec![]).await;
+        assert!(
+            result.is_ok(),
+            "empty PostHog events vec should silently succeed"
         );
     }
 
@@ -320,5 +663,58 @@ mod tests {
     #[test]
     fn test_max_retries_is_three() {
         assert_eq!(MAX_RETRIES, 3);
+    }
+
+    #[test]
+    fn sanitize_error_redacts_unix_users_path() {
+        let s = sanitize_error("failed to open /Users/alice/secret.txt: not found");
+        assert!(!s.contains("alice"), "username should be redacted: {s}");
+        assert!(s.contains("/Users/<redacted>/"));
+    }
+
+    #[test]
+    fn sanitize_error_redacts_unix_home_path() {
+        let s = sanitize_error("permission denied for /home/bob/.ssh/id_rsa");
+        assert!(!s.contains("bob"), "username should be redacted: {s}");
+        assert!(s.contains("/home/<redacted>/"));
+    }
+
+    #[test]
+    fn sanitize_error_redacts_windows_users_path() {
+        let s = sanitize_error("open C:\\Users\\carol\\secret.txt failed");
+        assert!(!s.contains("carol"), "username should be redacted: {s}");
+        assert!(s.contains("\\Users\\<redacted>\\"));
+    }
+
+    #[test]
+    fn sanitize_error_truncates_long_strings() {
+        let long = "x".repeat(1024);
+        let s = sanitize_error(&long);
+        let len = s.chars().count();
+        assert!(len <= 257, "truncated length should be <= 257, got {len}");
+        assert!(
+            s.ends_with("…"),
+            "truncated output should end with ellipsis"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_passes_through_safe_strings() {
+        let s = sanitize_error("HTTP 500: Internal Server Error");
+        assert_eq!(s, "HTTP 500: Internal Server Error");
+    }
+
+    #[test]
+    fn sanitize_event_properties_walks_nested_error_fields() {
+        let mut value = serde_json::json!({
+            "stage": "create_dir",
+            "error": "/Users/dave/oops",
+            "nested": {"error": "/home/eve/oops"},
+            "list": [{"error": "/Users/frank/x"}],
+        });
+        sanitize_event_properties(&mut value);
+        assert!(!value.to_string().contains("dave"));
+        assert!(!value.to_string().contains("eve"));
+        assert!(!value.to_string().contains("frank"));
     }
 }

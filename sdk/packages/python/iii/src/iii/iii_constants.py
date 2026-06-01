@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from .telemetry_types import OtelConfig
+from iii_observability import OtelConfig, ReconnectionConfig
 
 IIIConnectionState = Literal["disconnected", "connecting", "connected", "reconnecting", "failed"]
 
@@ -11,25 +11,6 @@ ConnectionStateCallback = Callable[["IIIConnectionState"], None]
 
 DEFAULT_INVOCATION_TIMEOUT_MS = 30000
 MAX_QUEUE_SIZE = 1000
-
-
-@dataclass
-class ReconnectionConfig:
-    """Configuration for WebSocket reconnection behavior.
-
-    Attributes:
-        initial_delay_ms: Starting delay in milliseconds. Default ``1000``.
-        max_delay_ms: Maximum delay cap in milliseconds. Default ``30000``.
-        backoff_multiplier: Exponential backoff multiplier. Default ``2.0``.
-        jitter_factor: Random jitter factor (0--1). Default ``0.3``.
-        max_retries: Maximum retry attempts. ``-1`` for infinite. Default ``-1``.
-    """
-
-    initial_delay_ms: int = 1000
-    max_delay_ms: int = 30000
-    backoff_multiplier: float = 2.0
-    jitter_factor: float = 0.3
-    max_retries: int = -1
 
 
 DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()

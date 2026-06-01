@@ -1,0 +1,20 @@
+name: Publish worker skills
+
+on:
+  workflow_dispatch:
+    inputs:
+      registry_tag:
+        description: 'Registry version tag to attach skills to'
+        required: true
+        type: choice
+        options:
+          - latest
+          - next
+        default: latest
+
+jobs:
+  publish:
+    uses: ./.github/workflows/_publish-worker-skills.yml
+    with:
+      registry_tag: ${{ inputs.registry_tag }}
+    secrets: inherit

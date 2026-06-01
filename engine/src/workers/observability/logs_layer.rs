@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::collections::HashMap;
@@ -524,6 +524,28 @@ mod tests {
         });
         assert_eq!(logs.len(), 1);
         assert!(logs[0].attributes.contains_key("module_path"));
+    }
+
+    #[test]
+    fn layer_strips_ansi_from_body() {
+        let (_, logs) = with_layer(|| {
+            // Simulate a colorized message like `"[REGISTERED]".green()` produces.
+            tracing::info!("\u{1b}[32m[REGISTERED]\u{1b}[0m Function \u{1b}[35mabc\u{1b}[0m");
+        });
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].body, "[REGISTERED] Function abc");
+    }
+
+    #[test]
+    fn layer_strips_ansi_from_string_attribute() {
+        let (_, logs) = with_layer(|| {
+            tracing::info!(colored = "\u{1b}[31mred\u{1b}[0m", "with colored attr");
+        });
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].attributes.get("colored"),
+            Some(&serde_json::Value::String("red".to_string()))
+        );
     }
 
     #[test]

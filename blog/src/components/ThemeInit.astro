@@ -1,0 +1,29 @@
+---
+// Mirrors website/index.html lines 151-167: read 'iii_theme' from
+// localStorage (or fall back to prefers-color-scheme) and apply matching
+// dark-mode token overrides on the documentElement before the page paints.
+// Same key + same logic = a user's theme choice carries between iii.dev
+// and /blog without a flash of the wrong palette.
+---
+
+<script is:inline>
+  (function () {
+    var THEME_KEY = 'iii_theme';
+    var stored = null;
+    try {
+      stored = localStorage.getItem(THEME_KEY);
+    } catch (e) {}
+    var prefersDark =
+      stored === 'dark' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var accent = prefersDark ? '#3ea8ff' : '#ff5a1f';
+    if (prefersDark) {
+      document.documentElement.dataset.theme = 'dark';
+      document.documentElement.style.cssText =
+        '--bg:#111110;--panel:#1a1916;--paper:#111110;--paper-2:#222220;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:' +
+        accent;
+    }
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = prefersDark ? '#111110' : '#f5f3ee';
+    window.__iiiThemeInit = { dark: prefersDark, accent: accent };
+  })();
+</script>

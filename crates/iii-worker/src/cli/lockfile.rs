@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! Read and write `iii.lock` for reproducible managed worker installs.
@@ -57,6 +57,7 @@ pub enum LockedWorkerType {
     Binary,
     Image,
     Engine,
+    Bundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +74,10 @@ pub enum LockedSource {
     },
     Image {
         image: String,
+    },
+    Bundle {
+        archive_url: String,
+        sha256: String,
     },
 }
 
@@ -96,6 +101,10 @@ impl<'de> Deserialize<'de> for LockedSource {
             },
             Image {
                 image: String,
+            },
+            Bundle {
+                archive_url: String,
+                sha256: String,
             },
         }
 
@@ -122,6 +131,13 @@ impl<'de> Deserialize<'de> for LockedSource {
                 Ok(LockedSource::Binary { artifacts })
             }
             RawLockedSource::Image { image } => Ok(LockedSource::Image { image }),
+            RawLockedSource::Bundle {
+                archive_url,
+                sha256,
+            } => Ok(LockedSource::Bundle {
+                archive_url,
+                sha256,
+            }),
         }
     }
 }
@@ -349,6 +365,24 @@ impl WorkerLockfile {
                     if !image.contains("@sha256:") {
                         return Err(format!(
                             "{LOCKFILE_NAME} worker {name} image must be pinned by digest"
+                        ));
+                    }
+                }
+                (
+                    LockedWorkerType::Bundle,
+                    Some(LockedSource::Bundle {
+                        archive_url,
+                        sha256,
+                    }),
+                ) => {
+                    if archive_url.trim().is_empty() {
+                        return Err(format!(
+                            "{LOCKFILE_NAME} worker {name} bundle has an empty archive_url"
+                        ));
+                    }
+                    if !is_sha256_hex(sha256) {
+                        return Err(format!(
+                            "{LOCKFILE_NAME} worker {name} bundle has invalid sha256"
                         ));
                     }
                 }

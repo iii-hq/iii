@@ -1056,7 +1056,7 @@ Regardless of which adapter you choose, retry semantics, concurrency enforcement
 </Info>
 
 <Info title="RabbitMQ queue naming">
-  When using the RabbitMQ adapter, iii creates exchanges and queues using a predictable naming convention. For a queue named `payment`, the main queue is `iii.__fn_queue::payment`, the retry queue is `iii.__fn_queue::payment::retry.queue`, and the DLQ is `iii.__fn_queue::payment::dlq.queue`. See [Dead Letter Queues](./dead-letter-queues#dlq-naming-convention) for the full resource map. For the design rationale behind this topology, see [Queue Architecture](../architecture/queues).
+  When using the RabbitMQ adapter, iii creates exchanges and queues using a predictable naming convention. For a queue named `payment`, the main queue is `iii.__fn_queue::payment`, the retry queue is `iii.__fn_queue::payment::retry.queue`, and the DLQ is `iii.__fn_queue::payment::dlq.queue`. See [Dead Letter Queues](./dead-letter-queues#dlq-naming-convention) for the full resource map. For the design rationale behind this topology, see [Queue Architecture](../modules/module-queue#queue-flow).
 </Info>
 
 ## Queue Config Reference
@@ -1084,7 +1084,7 @@ For the full module configuration including adapter settings, see the [Queue mod
   <Card title="Queue Module Reference" href="../modules/module-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
-  <Card title="Queue Architecture" href="../architecture/queues" icon="sitemap">
+  <Card title="Queue Architecture" href="../modules/module-queue#queue-flow" icon="sitemap">
     Design rationale behind retry, dead-lettering, and multi-resource topology
   </Card>
 </CardGroup>

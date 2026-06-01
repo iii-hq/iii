@@ -1,8 +1,8 @@
 import uuid
 from typing import Any, Awaitable, Callable
 
-from iii import ApiRequest, ApiResponse, IIIClient, Logger
-from iii.iii_types import FunctionInfo
+from iii import ApiRequest, ApiResponse, IIIClient
+from iii_observability import Logger
 
 
 def use_api(
@@ -35,12 +35,15 @@ def use_api(
     )
 
 
-def use_functions_available(iii: IIIClient, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
+def use_functions_available(
+    iii: IIIClient, callback: Callable[[list[dict[str, Any]]], None]
+) -> Callable[[], None]:
     handler_fn_id = f"iii_example.functions_available_listener.{uuid.uuid4()}"
 
     async def handler(data: dict[str, Any]) -> None:
-        functions = [FunctionInfo(**f) for f in data.get("functions", [])]
-        callback(functions)
+        # The SDK no longer ships a `FunctionInfo`/`FunctionSummary` class —
+        # forward the raw dict rows produced by `engine::functions::list`.
+        callback(data.get("functions", []))
 
     fn_ref = iii.register_function(handler_fn_id, handler)
     trigger_guard = iii.register_trigger(

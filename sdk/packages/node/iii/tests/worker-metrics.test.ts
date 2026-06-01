@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WorkerMetricsCollector } from '../src/worker-metrics'
+import { WorkerMetricsCollector } from '@iii-dev/observability'
 
 type MutableCollectorInternals = {
   lastCpuUsage: NodeJS.CpuUsage

@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::path::Path;
@@ -12,7 +12,7 @@ use super::error::ExecError;
 ///
 /// On Unix: Uses the POSIX process-replacement syscall to hand off the
 /// current process entirely. This ensures the child binary fully owns the
-/// terminal (critical for interactive tools like iii-tools with cliclack).
+/// terminal (critical for interactive tools that use cliclack).
 ///
 /// On Windows: Spawns the binary as a child process with inherited stdio and
 /// returns its exit code.

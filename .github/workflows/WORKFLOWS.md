@@ -120,6 +120,9 @@ setup (parse tag metadata, Slack notification)
   │     ├─► sdk-py ──────────────► _py.yml
   │     └─► sdk-rust ────────────► _rust-cargo.yml
   │
+  ├─► publish-builtin-workers ► _publish-engine-workers.yml
+  └─► publish-worker-skills ► _publish-worker-skills.yml
+  │
   └─► notify-complete (aggregated Slack status)
 ```
 
@@ -231,6 +234,27 @@ Generates and publishes a Homebrew formula to the `iii-hq/homebrew-tap` reposito
 
 Only runs for stable (non-prerelease) versions.
 
+### `_publish-engine-workers.yml` — Publish Builtin Engine Worker
+
+Collects a worker's live interface from a running III engine and POSTs to `POST /publish`. Called by `release-iii.yml` for each builtin engine worker.
+
+### `_publish-worker-skills.yml` — Publish Worker Skills
+
+Discovers worker directories with an `iii.worker.yaml` manifest and a non-empty `skills/` tree (repo-wide, including e.g. `crates/iii-worker/src/sandbox_daemon`), builds payloads via `build_skills_payload.py`, and POSTs to `POST /w/{slug}/skills`. Called by `release-iii.yml` (after builtin worker publish) and by the manual `publish-worker-skills.yml` workflow.
+
+| Input | Purpose |
+|-------|---------|
+| `registry_tag` | Version tag on the registry (`latest`, `next`) |
+| `api_url` | Workers registry base URL |
+
+---
+
+### `publish-worker-skills.yml` — Manual Skills Publish
+
+**Triggers:** `workflow_dispatch` only
+
+Publishes skill markdown for all workers with an `iii.worker.yaml` manifest and a non-empty `skills/` tree. Choose `registry_tag` (`latest` or `next`) at dispatch time.
+
 ---
 
 ## Secrets
@@ -244,6 +268,7 @@ Only runs for stable (non-prerelease) versions.
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD` | DockerHub publishing |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Slack release notifications |
 | `SLACK_WEBHOOK_URL` | Slack Docker notifications |
+| `WORKERS_REGISTRY_API_KEY` | Workers registry publish (`_publish-engine-workers`, `_publish-worker-skills`) |
 
 ---
 

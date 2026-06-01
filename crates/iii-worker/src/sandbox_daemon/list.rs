@@ -4,12 +4,13 @@
 //! wire-compat break.
 
 use crate::sandbox_daemon::registry::SandboxRegistry;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListRequest {}
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SandboxSummary {
     pub sandbox_id: String,
     pub name: Option<String>,
@@ -19,7 +20,7 @@ pub struct SandboxSummary {
     pub stopped: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ListResponse {
     pub sandboxes: Vec<SandboxSummary>,
 }

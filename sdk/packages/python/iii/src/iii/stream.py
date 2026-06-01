@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Generic, List, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 TData = TypeVar("TData")
 
@@ -117,11 +117,13 @@ class StreamUpdateResult(BaseModel, Generic[TData]):
 
     old_value: TData | None = None
     new_value: TData
-    # Per-op errors. Currently emitted only by the ``merge`` op for
-    # validation rejections. Field is omitted from the JSON wire when
-    # empty. ``default_factory`` is used (not ``= []``) to keep
-    # Pydantic's parameterized-Generic + default handling well-behaved
-    # across Python versions.
+    # Per-op errors. Emitted by ``merge`` and ``append`` for validation
+    # rejections (path/value bounds, proto-pollution segments) and by
+    # ``append`` for the ``append.type_mismatch`` and
+    # ``append.target_not_object`` surfaces. Field is omitted from the
+    # JSON wire when empty. ``default_factory`` is used (not ``= []``)
+    # to keep Pydantic's parameterized-Generic + default handling
+    # well-behaved across Python versions.
     errors: list[UpdateOpError] = Field(default_factory=list)
 
 
@@ -156,11 +158,56 @@ class UpdateDecrement(BaseModel):
 
 
 class UpdateAppend(BaseModel):
-    """Append operation for stream update."""
+    """Append an element to an array, concatenate a string, or push at a nested path.
+
+    The target is the root (when ``path`` is omitted, an empty string,
+    or an empty list), a single first-level key (when ``path`` is a
+    non-empty string), or an arbitrary nested location (when ``path``
+    is a list of literal segments).
+
+    Path forms accepted (mirrors :class:`UpdateMerge` after #1547):
+      - ``None`` / ``""`` / ``[]``: append at the root.
+      - ``"foo"``: append at the first-level key ``foo``. A dotted
+        string like ``"a.b"`` is the literal key ``"a.b"``, *not*
+        traversed as ``a -> b``.
+      - ``["a", "b", "c"]``: nested path; each element is a literal
+        segment.
+
+    Engine semantics:
+      - Missing/non-object intermediates along a nested path are
+        auto-created/replaced with ``{}``.
+      - At the leaf:
+          - missing/null + nested path -> ``[value]`` (always an array)
+          - missing/null + single-string path -> string-as-string for
+            the string-concat tier, otherwise ``[value]``
+          - existing array -> push
+          - existing string + string value -> concatenate
+          - existing object/scalar at the leaf -> ``append.type_mismatch``
+
+    Validation: invalid paths (depth > 32 segments, segment > 256
+    bytes, or any ``__proto__`` / ``constructor`` / ``prototype``
+    segment) are rejected with a structured error in the ``errors``
+    field of the ``state::update`` / ``stream::update`` response. The
+    append does not apply when an error is returned for that op.
+    """
 
     type: str = "append"
-    path: str
+    # Optional. Accepts a single string (legacy / first-level key) or
+    # a list of literal segments (nested append). ``None`` / ``""`` /
+    # ``[]`` all route to root append.
+    path: str | list[str] | None = None
     value: Any
+
+    @model_serializer(mode="wrap")
+    def _omit_none_path(self, handler):  # type: ignore[no-untyped-def]
+        # Drop ``path: None`` from the wire so cross-SDK consumers see
+        # the field absent rather than ``null``. Mirrors the Rust
+        # ``#[serde(skip_serializing_if = "Option::is_none")]`` on
+        # ``UpdateOp::Append.path``.
+        data = handler(self)
+        if data.get("path") is None:
+            data.pop("path", None)
+        return data
 
 
 class UpdateRemove(BaseModel):
@@ -204,6 +251,16 @@ class UpdateMerge(BaseModel):
     # input -> str, array input -> list[str].
     path: str | list[str] | None = None
     value: Any
+
+    @model_serializer(mode="wrap")
+    def _omit_none_path(self, handler):  # type: ignore[no-untyped-def]
+        # Mirrors the same skip-when-none rule applied to
+        # ``UpdateOp::Merge.path`` in the Rust SDK so cross-SDK wire
+        # payloads are byte-identical for root merges.
+        data = handler(self)
+        if data.get("path") is None:
+            data.pop("path", None)
+        return data
 
 
 UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge

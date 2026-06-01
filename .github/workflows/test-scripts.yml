@@ -1,0 +1,43 @@
+name: Test .github/scripts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/test-scripts.yml'
+      - '.github/workflows/release-iii.yml'
+      - '**/iii.worker.yaml'
+      - 'engine/src/workers/**/skills/**'
+      - 'engine/src/workers/**/skill.md'
+      - 'crates/**/skills/**'
+      - 'crates/**/skill.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/test-scripts.yml'
+      - '.github/workflows/release-iii.yml'
+      - '**/iii.worker.yaml'
+      - 'engine/src/workers/**/skills/**'
+      - 'engine/src/workers/**/skill.md'
+      - 'crates/**/skills/**'
+      - 'crates/**/skill.md'
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install pytest pyyaml
+      - name: Validate release worker matrix
+        run: python3 .github/scripts/validate_release_worker_matrix.py --repo-root .
+      - name: Run script tests
+        working-directory: .github/scripts
+        run: python -m pytest -v

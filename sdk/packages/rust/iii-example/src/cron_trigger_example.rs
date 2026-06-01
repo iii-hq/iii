@@ -1,13 +1,13 @@
 use iii_sdk::builtin_triggers::*;
-use iii_sdk::{III, IIITrigger, RegisterFunction};
+use iii_sdk::{III, IIIError, IIITrigger, RegisterFunction};
 use serde_json::json;
 
 /// Examples using built-in trigger types with the typed `IIITrigger` enum.
 pub fn setup(iii: &III) {
     // ── Cron trigger ────────────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::scheduled_cleanup", scheduled_cleanup)
-            .description("Runs periodic cleanup every minute"),
+        "example::scheduled_cleanup",
+        RegisterFunction::new(scheduled_cleanup).description("Runs periodic cleanup every minute"),
     );
 
     iii.register_trigger(
@@ -18,7 +18,8 @@ pub fn setup(iii: &III) {
 
     // ── State trigger ───────────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::on_user_updated", on_user_updated)
+        "example::on_user_updated",
+        RegisterFunction::new(on_user_updated)
             .description("Reacts when a user record is updated in state"),
     );
 
@@ -30,8 +31,8 @@ pub fn setup(iii: &III) {
 
     // ── HTTP trigger (GET) ──────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::health_check", health_check)
-            .description("Simple health check endpoint"),
+        "example::health_check",
+        RegisterFunction::new(health_check).description("Simple health check endpoint"),
     );
 
     iii.register_trigger(
@@ -42,8 +43,8 @@ pub fn setup(iii: &III) {
 
     // ── Subscribe trigger ───────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::on_order_created", on_order_created)
-            .description("Processes new order events"),
+        "example::on_order_created",
+        RegisterFunction::new(on_order_created).description("Processes new order events"),
     );
 
     iii.register_trigger(
@@ -54,8 +55,8 @@ pub fn setup(iii: &III) {
 
     // ── Queue trigger ───────────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::process_email", process_email)
-            .description("Processes emails from the queue"),
+        "example::process_email",
+        RegisterFunction::new(process_email).description("Processes emails from the queue"),
     );
 
     iii.register_trigger(
@@ -65,8 +66,8 @@ pub fn setup(iii: &III) {
 
     // ── Log trigger ─────────────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::on_error_log", on_error_log)
-            .description("Alerts on error logs"),
+        "example::on_error_log",
+        RegisterFunction::new(on_error_log).description("Alerts on error logs"),
     );
 
     iii.register_trigger(
@@ -77,8 +78,8 @@ pub fn setup(iii: &III) {
 
     // ── Stream trigger ──────────────────────────────────────────────
     iii.register_function(
-        RegisterFunction::new("example::on_chat_message", on_chat_message)
-            .description("Handles chat stream events"),
+        "example::on_chat_message",
+        RegisterFunction::new(on_chat_message).description("Handles chat stream events"),
     );
 
     iii.register_trigger(
@@ -96,7 +97,7 @@ struct CronEvent {
     job_id: String,
 }
 
-fn scheduled_cleanup(input: CronEvent) -> Result<serde_json::Value, String> {
+fn scheduled_cleanup(input: CronEvent) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "cleaned": true, "trigger": input.trigger, "job_id": input.job_id }))
 }
 
@@ -105,22 +106,23 @@ struct StateEvent {
     event_type: String,
     scope: String,
     key: String,
+    #[allow(dead_code)]
     new_value: serde_json::Value,
 }
 
-fn on_user_updated(input: StateEvent) -> Result<serde_json::Value, String> {
+fn on_user_updated(input: StateEvent) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "event": input.event_type, "scope": input.scope, "key": input.key }))
 }
 
-fn health_check(_input: serde_json::Value) -> Result<serde_json::Value, String> {
+fn health_check(_input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "status": "ok" }))
 }
 
-fn on_order_created(input: serde_json::Value) -> Result<serde_json::Value, String> {
+fn on_order_created(input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "processed": true, "order": input }))
 }
 
-fn process_email(input: serde_json::Value) -> Result<serde_json::Value, String> {
+fn process_email(input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "sent": true, "email": input }))
 }
 
@@ -130,10 +132,10 @@ struct LogEvent {
     body: String,
 }
 
-fn on_error_log(input: LogEvent) -> Result<serde_json::Value, String> {
+fn on_error_log(input: LogEvent) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "alerted": true, "severity": input.severity_text, "message": input.body }))
 }
 
-fn on_chat_message(input: serde_json::Value) -> Result<serde_json::Value, String> {
+fn on_chat_message(input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
     Ok(json!({ "received": true, "event": input }))
 }

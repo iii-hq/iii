@@ -1,34 +1,49 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunctionMessage};
+use iii_sdk::RegisterFunction;
 use iii_shell_proto::{FsOp, FsResult};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+    errors::{SandboxError, SandboxErrorWire},
+    fs::adapter::FsRunner,
+    registry::SandboxRegistry,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "chmod_request_example")]
 pub struct ChmodRequest {
+    /// UUID returned by `sandbox::create`.
     pub sandbox_id: String,
+    /// Absolute path to modify inside the sandbox guest.
     pub path: String,
+    /// Octal permissions (e.g. `"0644"`, `"0755"`).
     pub mode: String,
+    /// Optional UID to chown to. Pair with `gid` for a full chown.
     #[serde(default)]
     pub uid: Option<u32>,
+    /// Optional GID to chown to. Pair with `uid` for a full chown.
     #[serde(default)]
     pub gid: Option<u32>,
+    /// Apply recursively to all entries under `path`.
     #[serde(default)]
     pub recursive: bool,
 }
 
-#[derive(Debug, Serialize)]
+fn chmod_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "sandbox_id": "00000000-0000-0000-0000-000000000000",
+        "path": "/home/app/script.sh",
+        "mode": "0755"
+    })
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ChmodResponse {
     pub updated: u64,
 }
@@ -76,31 +91,28 @@ pub(super) fn register(
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        Box::pin(async move {
-            let req: ChmodRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match handle_chmod(req, &registry, &*runner).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
+    let _ = iii.register_function(
+        "sandbox::fs::chmod",
+        RegisterFunction::new_async(move |req: ChmodRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            async move {
+                let sid = req.sandbox_id.clone();
+                let start = std::time::Instant::now();
+                let result = handle_chmod(req, &registry, &*runner).await;
+                crate::sandbox_daemon::log_handler_result(
+                    "sandbox::fs::chmod",
+                    Some(&sid),
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
             }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::fs::chmod".to_string(),
-            description: Some("Change file permissions inside a sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+        })
+        .description(
+            "Change file permissions (and optionally owner) inside a sandbox. \
+             Example: { sandbox_id: \"...\", path: \"/home/app/script.sh\", mode: \"0755\" }",
+        ),
     );
 }
 

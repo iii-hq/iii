@@ -11,8 +11,8 @@ def test_register_worker_returns_iii_instance(monkeypatch) -> None:
     async def fake_do_connect(self: III) -> None:
         return None
 
-    monkeypatch.setattr("iii.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(III, "_do_connect", fake_do_connect)
 
     client = register_worker("ws://fake")
@@ -28,7 +28,7 @@ def test_register_worker_is_sync() -> None:
 
 
 def test_connect_consumes_otel_from_init_options(monkeypatch) -> None:
-    import iii.telemetry as telemetry
+    import iii_observability.telemetry as telemetry
 
     captured = {"config": None}
 

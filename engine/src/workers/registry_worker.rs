@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! Spawns non-built-in workers via `iii-worker start`.
@@ -11,7 +11,10 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde_json::Value;
@@ -171,6 +174,23 @@ pub struct ExternalWorkerProcess {
     /// this instant to cover the gap between `iii-worker start` exiting and
     /// the detached VM writing its pidfile.
     pub spawned_at: std::time::Instant,
+    /// One-way latch: set to `true` the first time `is_alive` observes a
+    /// responsive pidfile. Once latched, a subsequent missing pidfile means
+    /// the worker is definitively dead, NOT "still booting". Without this
+    /// latch, the `SPAWN_GRACE` fallback turned `iii worker add --force`
+    /// (which deletes the pidfile out from under us) into a no-op whenever
+    /// it ran inside the grace window: `is_alive` returned true, the
+    /// reload's `promote_dead_unchanged` kept the entry as unchanged, and
+    /// no restart fired. With the latch, dead-after-alive is honest.
+    pub was_ever_alive: Arc<AtomicBool>,
+    /// `JoinHandle` for the post-spawn polling task that latches
+    /// `was_ever_alive` when the worker's pidfile first becomes
+    /// responsive. The poller has no time deadline — it runs until
+    /// either it observes the worker alive (and exits naturally) or
+    /// `Drop` aborts it. `None` only in unit-test fixtures that build
+    /// the struct outside a tokio runtime; the production `spawn`
+    /// path always sets `Some`.
+    pub poller_handle: Option<tokio::task::JoinHandle<()>>,
     /// Tracked so `stop` (and `Drop`, on panic) can unlink the temp config
     /// written by `spawn`. `std::sync::Mutex` rather than `tokio::sync::Mutex`
     /// because the lock is held for nanoseconds and `Drop` is not async.
@@ -186,6 +206,35 @@ pub struct ExternalWorkerProcess {
 /// seconds. 30s is conservative enough to avoid false-negative "dead" reads
 /// during boot without masking a genuine crash for long.
 const SPAWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Returns `true` when one of `worker_name`'s candidate pidfiles points at
+/// a process responding to signal 0. Used by both `ExternalWorkerProcess::
+/// is_alive` (called from reload-time death detection) and the post-spawn
+/// background poller that latches `was_ever_alive` so external kills get
+/// honored even when no reload happens during the worker's lifetime.
+fn probe_pidfile_alive(worker_name: &str) -> bool {
+    let Some(home) = iii_home() else {
+        return false;
+    };
+    for pidfile in pid_file_candidates(&home, worker_name) {
+        if let Some(pid) = read_pid_hardened(&pidfile) {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::kill;
+                use nix::unistd::Pid;
+                if kill(Pid::from_raw(pid as i32), None).is_ok() {
+                    return true;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = pid;
+                return true;
+            }
+        }
+    }
+    false
+}
 
 impl ExternalWorkerProcess {
     /// Spawns `iii-worker start <name> --port <port>` as a detached child.
@@ -210,10 +259,39 @@ impl ExternalWorkerProcess {
         std::fs::create_dir_all(&logs_dir)
             .map_err(|e| format!("Failed to create logs dir: {}", e))?;
 
-        let stdout_file = std::fs::File::create(logs_dir.join("stdout.log"))
-            .map_err(|e| format!("Failed to create stdout log: {}", e))?;
-        let stderr_file = std::fs::File::create(logs_dir.join("stderr.log"))
-            .map_err(|e| format!("Failed to create stderr log: {}", e))?;
+        // Truncate-and-open in a single call to clear stale lines from
+        // a prior spawn AND get an APPEND-mode fd for the subprocess.
+        // The subprocess's `iii-worker start` will itself spawn an
+        // `__vm-boot` child that re-opens this same log in append mode
+        // (see `worker_manager/libkrun.rs::run_dev`). With both FDs in
+        // append mode the kernel guarantees writes go atomically to
+        // EOF, so iii-worker progress lines and VM serial-console
+        // output interleave correctly instead of overwriting each
+        // other at stale tracked offsets.
+        //
+        // Sequence: (1) truncate via `File::create`, (2) reopen in
+        // append mode. We CANNOT combine `truncate(true).append(true)`
+        // in one OpenOptions call — Rust's stdlib rejects that flag
+        // combination with InvalidInput ("creating or truncating a
+        // file requires write or append access"), so the engine fails
+        // to start any external worker. The small disk-full /
+        // unlinked-between window between the two calls is acceptable;
+        // recovering history on partial failure is a P3 nicety
+        // compared to "engine boots at all".
+        let stdout_path = logs_dir.join("stdout.log");
+        let stderr_path = logs_dir.join("stderr.log");
+        let _ = std::fs::File::create(&stdout_path)
+            .map_err(|e| format!("Failed to truncate stdout log: {}", e))?;
+        let _ = std::fs::File::create(&stderr_path)
+            .map_err(|e| format!("Failed to truncate stderr log: {}", e))?;
+        let stdout_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stdout_path)
+            .map_err(|e| format!("Failed to reopen stdout log for append: {}", e))?;
+        let stderr_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stderr_path)
+            .map_err(|e| format!("Failed to reopen stderr log for append: {}", e))?;
 
         let config_path = match config {
             Some(cfg) => Some(secure_temp::write_engine_config_temp(name, cfg)?),
@@ -236,10 +314,63 @@ impl ExternalWorkerProcess {
             "Worker starting via iii-worker (logs: `iii worker logs {}`)", name
         );
 
+        let was_ever_alive = Arc::new(AtomicBool::new(false));
+
+        // Proactively poll for the worker's pidfile so the `was_ever_alive`
+        // latch gets set even when no config reload fires during the
+        // worker's lifetime. Without this, the latch only flips on the
+        // first reload-driven `is_alive` call — which means `iii worker
+        // add --force` run inside the spawn-grace window of a still-young
+        // worker still hits the grace fallback and looks alive, so
+        // `promote_dead_unchanged` keeps the entry unchanged and no
+        // restart fires.
+        //
+        // The poll runs until either: (a) it observes the pidfile alive
+        // and latches `was_ever_alive`, then exits naturally; or (b)
+        // `ExternalWorkerProcess::Drop` aborts it. Crucially, there's
+        // NO time-bounded deadline — a cold-cache OCI pull can run
+        // tens of minutes, and a deadline that expires before the
+        // worker boots would leave `was_ever_alive=false` permanently.
+        // From there, the moment the grace window passes, `is_alive`
+        // reports dead, and the next config reload restarts the still-
+        // healthy slow-booting worker mid-pull. Cheap to keep ticking
+        // (one stat() syscall per 500ms); Drop cancels cleanly.
+        //
+        // KNOWN RACE (follow-up):
+        // The 500ms interval still leaves a sub-second window. If a
+        // worker boots in <1s AND the user runs `iii worker add
+        // --force` within that window, the poller's next wakeup sees
+        // no pidfile and doesn't latch. The next engine reload then
+        // sees was_ever_alive=false within the grace window and skips
+        // the restart, hitting the exact bug the latch was supposed
+        // to fix. Realistic for scripts/agent loops that re-issue add
+        // immediately on observed Ready. Two fixes worth considering
+        // in a follow-up PR: (a) latch on pidfile EXISTENCE without
+        // the kill(pid, 0) responsiveness check — pidfile creation is
+        // honest evidence the worker was at least born; (b) tighter
+        // poll interval (50ms). (a) closes the window; (b) shrinks
+        // it.
+        let poller_handle = {
+            let was_ever_alive = Arc::clone(&was_ever_alive);
+            let name = name.to_string();
+            tokio::spawn(async move {
+                let interval = std::time::Duration::from_millis(500);
+                loop {
+                    if probe_pidfile_alive(&name) {
+                        was_ever_alive.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    tokio::time::sleep(interval).await;
+                }
+            })
+        };
+
         Ok(Self {
             name: name.to_string(),
             child: Arc::new(Mutex::new(Some(child))),
             spawned_at: std::time::Instant::now(),
+            was_ever_alive,
+            poller_handle: Some(poller_handle),
             config_file: std::sync::Mutex::new(config_path),
         })
     }
@@ -266,33 +397,31 @@ impl ExternalWorkerProcess {
         // A permanent "unable to observe" state for a real worker will still
         // surface later as a dead probe once grace elapses, rather than a
         // false-positive restart storm triggered by nonsensical paths.
-        let Some(home) = iii_home() else {
+        if iii_home().is_none() {
             return self.spawned_at.elapsed() < SPAWN_GRACE;
-        };
-
-        for pidfile in pid_file_candidates(&home, &self.name) {
-            // `read_pid_hardened` uses O_NOFOLLOW + euid-ownership check
-            // to reject attacker-planted symlinks or foreign-owned files;
-            // see its docstring for the attacker model.
-            if let Some(pid) = read_pid_hardened(&pidfile) {
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::kill;
-                    use nix::unistd::Pid;
-                    if kill(Pid::from_raw(pid as i32), None).is_ok() {
-                        return true;
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = pid;
-                    return true;
-                }
-            }
         }
 
-        // No live pidfile at either candidate. Grant a grace window from spawn
-        // so we don't misread a still-booting worker as dead.
+        if probe_pidfile_alive(&self.name) {
+            // Latch: we've seen this worker alive at least once. From
+            // here on, missing-pidfile means dead.
+            self.was_ever_alive.store(true, Ordering::SeqCst);
+            return true;
+        }
+
+        // No live pidfile at either candidate.
+        //
+        // If we've ever observed this worker alive, a missing pidfile now is
+        // definitive death — the most common cause is `iii worker add --force`
+        // killing the worker process and unlinking the pidfile while the
+        // engine's `running` Vec still tracks it. Without this latch the
+        // SPAWN_GRACE fallback below masks that as "still booting" and the
+        // reload's `promote_dead_unchanged` skips the restart.
+        if self.was_ever_alive.load(Ordering::SeqCst) {
+            return false;
+        }
+
+        // Never seen alive yet — grant the grace window from spawn so we
+        // don't misread a still-booting worker as dead.
         self.spawned_at.elapsed() < SPAWN_GRACE
     }
 
@@ -303,7 +432,7 @@ impl ExternalWorkerProcess {
         // actual worker process.
         if let Some(binary) = resolve_iii_worker_binary() {
             let result = tokio::process::Command::new(&binary)
-                .args(["stop", &self.name])
+                .args(["stop", "-y", &self.name])
                 .output()
                 .await;
             match result {
@@ -328,15 +457,15 @@ impl ExternalWorkerProcess {
 
         let _ = self.child.lock().await.take();
 
-        if let Some(path) = self.config_file.lock().expect("poisoned").take() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!(
-                    worker = %self.name,
-                    config_path = %path.display(),
-                    error = %e,
-                    "failed to remove temp config"
-                );
-            }
+        if let Some(path) = self.config_file.lock().expect("poisoned").take()
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            tracing::warn!(
+                worker = %self.name,
+                config_path = %path.display(),
+                error = %e,
+                "failed to remove temp config"
+            );
         }
     }
 }
@@ -346,10 +475,21 @@ impl ExternalWorkerProcess {
 /// path so the happy path is a no-op here.
 impl Drop for ExternalWorkerProcess {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.config_file.lock() {
-            if let Some(path) = guard.take() {
-                let _ = std::fs::remove_file(&path);
-            }
+        // Abort the post-spawn polling task so it doesn't keep ticking
+        // after the process struct is destroyed. The poller has no
+        // deadline of its own (so it doesn't false-fail on slow cold
+        // boots), so Drop is the only thing that stops it. The
+        // `Arc<AtomicBool>` it captures stays alive until the task is
+        // dropped by the executor, but the task itself stops doing
+        // work immediately.
+        if let Some(handle) = self.poller_handle.take() {
+            handle.abort();
+        }
+
+        if let Ok(mut guard) = self.config_file.lock()
+            && let Some(path) = guard.take()
+        {
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
@@ -504,6 +644,8 @@ mod tests {
             name: name.to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at,
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
             config_file: std::sync::Mutex::new(None),
         }
     }
@@ -583,6 +725,8 @@ mod tests {
             name: "booting-worker".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
             config_file: std::sync::Mutex::new(None),
         };
         assert!(
@@ -591,12 +735,167 @@ mod tests {
         );
     }
 
+    /// Regression: `iii worker add --force` kills the worker process and
+    /// unlinks the pidfile. Before the `was_ever_alive` latch, the engine's
+    /// next reload would see the worker as "alive (in grace window)" and
+    /// `promote_dead_unchanged` would keep it as unchanged — so no restart
+    /// fired and the worker stayed in `Phase::Queued` until the CLI's
+    /// `--wait` timed out at 120s. The latch makes a missing pidfile after
+    /// a prior alive observation report `dead`, regardless of grace.
+    #[test]
+    fn is_alive_reports_dead_after_external_kill_within_grace_window() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::new(tmp.path());
+
+        // Set up a live pidfile under `~/.iii/managed/<name>/vm.pid` so the
+        // first probe latches was_ever_alive. Use our own PID — guaranteed
+        // responsive to signal 0 on unix.
+        let managed = tmp.path().join(".iii/managed").join("forced");
+        std::fs::create_dir_all(&managed).unwrap();
+        let pidfile = managed.join("vm.pid");
+        std::fs::write(&pidfile, std::process::id().to_string()).unwrap();
+
+        let process = ExternalWorkerProcess {
+            name: "forced".to_string(),
+            child: Arc::new(Mutex::new(None)),
+            // spawned_at recent: well inside SPAWN_GRACE. The grace would
+            // otherwise mask the kill as "still booting".
+            spawned_at: std::time::Instant::now(),
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
+            config_file: std::sync::Mutex::new(None),
+        };
+
+        // First probe sees the live pidfile → latches.
+        assert!(process.is_alive(), "live pidfile must report alive");
+        assert!(
+            process.was_ever_alive.load(Ordering::SeqCst),
+            "first alive observation must latch was_ever_alive"
+        );
+
+        // Simulate `iii worker add --force` killing + unlinking the pidfile
+        // (still inside SPAWN_GRACE).
+        std::fs::remove_file(&pidfile).unwrap();
+
+        assert!(
+            !process.is_alive(),
+            "pidfile removed after a prior alive observation must report dead, \
+             even within the spawn-grace window — otherwise --force is a no-op"
+        );
+    }
+
+    /// Regression: probe_pidfile_alive backs both `is_alive` and the
+    /// post-spawn polling task. Verify it picks up a real PID through
+    /// the OCI/VM pidfile path. This is the primitive that lets the
+    /// poller latch `was_ever_alive` without needing a reload to fire.
+    #[test]
+    fn probe_pidfile_alive_finds_live_pid() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::new(tmp.path());
+
+        let name = "polled";
+        let managed = tmp.path().join(".iii/managed").join(name);
+        std::fs::create_dir_all(&managed).unwrap();
+        std::fs::write(managed.join("vm.pid"), std::process::id().to_string()).unwrap();
+
+        assert!(
+            probe_pidfile_alive(name),
+            "live pidfile must be detected by probe_pidfile_alive — \
+             this is what the spawn-time poller relies on"
+        );
+    }
+
+    #[test]
+    fn probe_pidfile_alive_returns_false_when_no_pidfile() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::new(tmp.path());
+
+        assert!(
+            !probe_pidfile_alive("never-existed"),
+            "absent pidfile must not be detected as alive"
+        );
+    }
+
+    /// Regression: the truncate-then-append open sequence in `spawn`
+    /// must succeed. A prior version combined `truncate(true)` with
+    /// `append(true)` in one `OpenOptions` call — Rust's stdlib
+    /// rejects that flag combination at `open()` with
+    /// `InvalidInput`, which propagated out of the engine as
+    /// "Failed to open stdout log: creating or truncating a file
+    /// requires write or append access" and made the engine fail
+    /// to boot any external worker. Test runs the exact two-call
+    /// dance against a tempdir so this can't silently regress
+    /// again.
+    #[test]
+    fn spawn_log_open_sequence_is_legal() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stdout_path = tmp.path().join("stdout.log");
+        let stderr_path = tmp.path().join("stderr.log");
+
+        // 1) Truncate via File::create. This is the legal way to wipe
+        //    prior content; OpenOptions cannot do truncate+append in
+        //    one shot.
+        let _ = std::fs::File::create(&stdout_path).expect("truncate stdout");
+        let _ = std::fs::File::create(&stderr_path).expect("truncate stderr");
+
+        // 2) Reopen append-only. This is what we hand to the
+        //    subprocess's cmd.stdout / cmd.stderr.
+        let stdout_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stdout_path)
+            .expect("reopen stdout for append");
+        let stderr_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stderr_path)
+            .expect("reopen stderr for append");
+
+        // Sanity: both fds are writable and pointed at the right
+        // paths.
+        use std::io::Write;
+        let mut s = stdout_file;
+        let mut e = stderr_file;
+        s.write_all(b"stdout-line\n").expect("write stdout");
+        e.write_all(b"stderr-line\n").expect("write stderr");
+
+        let stdout_contents = std::fs::read_to_string(&stdout_path).unwrap();
+        let stderr_contents = std::fs::read_to_string(&stderr_path).unwrap();
+        assert_eq!(stdout_contents, "stdout-line\n");
+        assert_eq!(stderr_contents, "stderr-line\n");
+    }
+
+    /// Counter-regression: prove the buggy combination IS illegal so
+    /// future contributors don't "fix" the two-call dance back into
+    /// the broken one-call form. If this test ever passes, Rust's
+    /// stdlib has loosened the rule and the production code can be
+    /// simplified.
+    #[test]
+    fn truncate_plus_append_open_options_combination_is_illegal() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("combo.log");
+        let result = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .append(true)
+            .open(&path);
+        let err = result.expect_err(
+            "truncate(true) + append(true) must remain illegal — if this passes, \
+             the spawn() log-open sequence can be simplified to a single OpenOptions call",
+        );
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
     #[test]
     fn external_worker_wrapper_name_format() {
         let process = ExternalWorkerProcess {
             name: "test-worker".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
             config_file: std::sync::Mutex::new(None),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
@@ -618,6 +917,8 @@ mod tests {
             name: "init-test".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
             config_file: std::sync::Mutex::new(None),
         };
         let wrapper = ExternalWorkerWrapper::new(process);
@@ -636,6 +937,8 @@ mod tests {
                 name: "test-drop-cleanup".to_string(),
                 child: Arc::new(Mutex::new(None)),
                 spawned_at: std::time::Instant::now(),
+                was_ever_alive: Arc::new(AtomicBool::new(false)),
+                poller_handle: None,
                 config_file: std::sync::Mutex::new(Some(temp_path.clone())),
             };
             // process drops here without stop() being called
@@ -654,6 +957,8 @@ mod tests {
             name: name.to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
             config_file: std::sync::Mutex::new(Some(temp_path.clone())),
         };
 
@@ -669,6 +974,8 @@ mod tests {
             name: "destroy-test".to_string(),
             child: Arc::new(Mutex::new(None)),
             spawned_at: std::time::Instant::now(),
+            was_ever_alive: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
             config_file: std::sync::Mutex::new(None),
         };
         let wrapper = ExternalWorkerWrapper::new(process);

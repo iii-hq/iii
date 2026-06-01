@@ -1,15 +1,17 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! Helpers to read/append/remove worker entries from `config.yaml` while
 //! preserving existing formatting and comments.
 
+use regex::Regex;
 use std::path::Path;
+use std::sync::LazyLock;
 
-const CONFIG_FILE: &str = "config.yaml";
+pub(crate) const CONFIG_FILE: &str = "config.yaml";
 
 /// Resolve the engine's effective `iii-worker-manager` port from config.yaml.
 ///
@@ -71,6 +73,10 @@ pub enum ResolvedWorkerType {
     Local { worker_path: String },
     /// Binary worker — executable at ~/.iii/workers/{name}
     Binary { binary_path: std::path::PathBuf },
+    /// Bundle worker — extracted archive at ~/.iii/workers-bundle/{name}/
+    /// containing iii.worker.yaml. Dispatched through the local-worker
+    /// rails (libkrun boot) but with watcher disabled (immutable install).
+    Bundle { worker_path: std::path::PathBuf },
     /// Config-only / builtin worker — no image, path, or binary
     Config,
 }
@@ -633,22 +639,56 @@ fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorker
 }
 
 /// Resolve the canonical worker type for a named worker.
-/// Reads config.yaml once and checks the filesystem for binary workers.
-/// Priority: local (worker_path) > OCI (image) > binary (~/.iii/workers/{name}) > config.
+/// Reads config.yaml once and checks the filesystem for binary/bundle workers.
+/// Priority: local (worker_path) > OCI (image) > bundle (~/.iii/workers-bundle/{name}/)
+/// > binary (~/.iii/workers/{name}) > config.
+///
+/// Bundle takes precedence over binary because the bundle install root is a
+/// distinct, newer install type (introduced for registry-published JS/Python
+/// workers). The two roots should never collide for the same name in
+/// practice; the `iii worker add` path returns W111 AlreadyExists if they do.
 pub fn resolve_worker_type(name: &str) -> ResolvedWorkerType {
     let path = std::path::Path::new(CONFIG_FILE);
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return check_binary_fallback(name),
+        Err(_) => return check_install_fallback(name),
     };
 
     match resolve_worker_type_from_content(&content, name) {
-        ResolvedWorkerType::Config => check_binary_fallback(name),
+        ResolvedWorkerType::Config => check_install_fallback(name),
         other => other,
     }
 }
 
-fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
+/// Returns the directory where bundle workers are installed:
+/// `~/.iii/workers-bundle/`. Kept separate from `~/.iii/workers/` (used by
+/// binary workers) so the install-type resolver can disambiguate without
+/// content inspection.
+pub fn bundle_workers_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".iii")
+        .join("workers-bundle")
+}
+
+/// Returns the install directory of a named bundle worker:
+/// `~/.iii/workers-bundle/{name}/`.
+pub fn bundle_worker_path(name: &str) -> std::path::PathBuf {
+    bundle_workers_dir().join(name)
+}
+
+/// Filesystem fallback precedence: bundle → binary → config-only.
+///
+/// A bundle install is detected by the presence of `iii.worker.yaml` inside
+/// the bundle directory (not just dir existence) so a stray empty directory
+/// or escaped staging dir doesn't trigger a false-positive Bundle resolve.
+fn check_install_fallback(name: &str) -> ResolvedWorkerType {
+    let bundle_dir = bundle_worker_path(name);
+    if bundle_dir.is_dir() && bundle_dir.join("iii.worker.yaml").is_file() {
+        return ResolvedWorkerType::Bundle {
+            worker_path: bundle_dir,
+        };
+    }
     let binary_path = dirs::home_dir()
         .unwrap_or_default()
         .join(".iii/workers")
@@ -660,10 +700,104 @@ fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
     }
 }
 
+/// Backwards-compatible alias kept so external callers and tests that grew
+/// up alongside the binary-only resolver continue to compile. Internally
+/// delegates to `check_install_fallback`, which extends the precedence to
+/// cover bundle workers.
+#[allow(dead_code)]
+fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
+    check_install_fallback(name)
+}
+
+/// Expand `${VAR}` and `${VAR:default}` references against the host
+/// environment. Mirrors `engine::workers::config::EngineConfig::expand_env_vars`
+/// (see `engine/src/workers/config.rs`) so the same syntax that works
+/// in the engine's `config.yaml` reader also works when iii-worker
+/// reads the per-worker `config:` block to build the worker's env
+/// injection set.
+///
+/// Why not a shared crate: the regex + env-lookup helper is 30 lines
+/// of pure logic with one dependency (`regex`) we already have. A
+/// dedicated `iii-config-utils` crate would add a workspace member for
+/// one function. If a third reader appears, consolidate then.
+///
+/// On a missing variable with no default: returns `Err` with the list
+/// of unset vars and leaves the literal `${VAR}` in place at the match
+/// site so partial output is still valid YAML. The single caller
+/// (`get_worker_config_as_env`) surfaces the error via stderr and
+/// returns an empty hashmap — better than silently injecting a literal
+/// `${VAR}` into the guest env, which would surface much later as an
+/// opaque "API key is invalid" inside the worker.
+///
+/// Does NOT support the engine-specific `__III_ENGINE_VERSION__`
+/// placeholder. iii-worker is not the version source of truth.
+fn expand_env_vars(yaml_content: &str) -> Result<String, String> {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
+
+    let mut missing: Vec<String> = Vec::new();
+    let expanded = RE.replace_all(yaml_content, |caps: &regex::Captures| {
+        let var_name = &caps[1];
+        let default_value = caps.get(2).map(|m| m.as_str());
+
+        match std::env::var(var_name) {
+            Ok(value) => value,
+            Err(_) => match default_value {
+                Some(default) => default.to_string(),
+                None => {
+                    missing.push(var_name.to_string());
+                    // Keep literal so downstream YAML parse still succeeds;
+                    // caller decides whether to surface or drop.
+                    caps[0].to_string()
+                }
+            },
+        }
+    });
+
+    if !missing.is_empty() {
+        return Err(format!(
+            "env var(s) not set and no default provided: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(expanded.to_string())
+}
+
 /// Returns the `config:` block for a named worker as a flat `HashMap<String, String>`.
 ///
 /// Suitable for injecting as environment variables into OCI workers.
 /// Nested keys are flattened with `_` separator and uppercased.
+///
+/// `${VAR}` and `${VAR:default}` references in values are expanded
+/// against the host environment at read time. This mirrors the engine's
+/// `EngineConfig::config_file` behavior (see
+/// `engine/src/workers/config.rs::expand_env_vars`) so the same syntax
+/// works in both readers of `config.yaml`.
+///
+/// Expansion happens at start time, not when `iii worker add` copies
+/// `iii.worker.yaml`'s `config:` into `config.yaml`. That keeps the
+/// literal `${VAR}` on disk (so secrets don't get baked into a file
+/// users sometimes check into git) and lets the host env be the source
+/// of truth on every worker start.
+///
+/// On missing variables with no default, surfaces the error via stderr
+/// AND `tracing::error!` (so subprocess-captured logs see it too — the
+/// CLI is often spawned by `iii engine` which redirects stderr to the
+/// managed-dir log), then drops the **entire** worker config: block
+/// (not just the offending key) by returning an empty hashmap. The
+/// worker then boots with no config-derived env vars — its own startup
+/// code will surface a more specific error when it tries to read the
+/// missing variable, which is more actionable than a literal `${VAR}`
+/// reaching the guest. If granular per-key resilience is needed later,
+/// move expansion into `flatten_value_to_env` so only the bad leaf is
+/// dropped.
+///
+/// Scoping vs engine: engine's `EngineConfig::config_file` expands
+/// across the WHOLE `config.yaml` and panics on missing vars. This
+/// function expands only the extracted worker's `config:` block and
+/// fails soft. In practice the engine boots first; if it would panic
+/// on a top-level `${X}`, iii-worker is never invoked — so the
+/// scoping divergence is invisible.
 pub fn get_worker_config_as_env(name: &str) -> std::collections::HashMap<String, String> {
     let path = Path::new(CONFIG_FILE);
     let content = match std::fs::read_to_string(path) {
@@ -674,6 +808,21 @@ pub fn get_worker_config_as_env(name: &str) -> std::collections::HashMap<String,
     let config_str = match extract_worker_config(&content, name) {
         Some(c) => c,
         None => return std::collections::HashMap::new(),
+    };
+
+    let config_str = match expand_env_vars(&config_str) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = format!(
+                "failed to expand env vars in config.yaml `workers[name={name}].config:`: {e}"
+            );
+            // Belt-and-suspenders: tracing for subprocess log capture,
+            // eprintln for interactive CLI invocations where tracing
+            // may not be initialized yet.
+            tracing::error!("{}", msg);
+            eprintln!("error: {msg}");
+            return std::collections::HashMap::new();
+        }
     };
 
     let value: serde_json::Value = match serde_yaml::from_str(&config_str) {
@@ -1366,5 +1515,230 @@ workers:
             manager_port_from("not: valid: yaml: :"),
             super::super::app::DEFAULT_PORT
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // expand_env_vars — must match `engine::workers::config::expand_env_vars`
+    // semantics so `${VAR}` / `${VAR:default}` behaves the same whether
+    // the engine reads config.yaml at boot OR iii-worker's CLI reads it
+    // to build worker env. Tests below mirror engine's set; if engine
+    // semantics change, update both sides.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Serialize env-var manipulating tests. `std::env::set_var` mutates
+    /// global process state and is unsafe to run in parallel with other
+    /// tests that read the same vars.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Scoped env-var setter that restores the prior value on drop so a
+    /// failing test can't leak state into siblings.
+    struct EnvGuard {
+        key: String,
+        prior: Option<String>,
+    }
+    impl EnvGuard {
+        fn set(key: &str, value: &str) -> Self {
+            let prior = std::env::var(key).ok();
+            // SAFETY: tests holding ENV_LOCK serialize all env mutation.
+            unsafe { std::env::set_var(key, value) };
+            Self {
+                key: key.to_string(),
+                prior,
+            }
+        }
+        fn unset(key: &str) -> Self {
+            let prior = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self {
+                key: key.to_string(),
+                prior,
+            }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => unsafe { std::env::set_var(&self.key, v) },
+                None => unsafe { std::env::remove_var(&self.key) },
+            }
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_substitutes_known_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_EXPAND_FOO", "bar");
+        let out = expand_env_vars("k: ${TEST_EXPAND_FOO}\n").unwrap();
+        assert_eq!(out, "k: bar\n");
+    }
+
+    #[test]
+    fn expand_env_vars_uses_default_when_missing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("TEST_EXPAND_UNSET");
+        let out = expand_env_vars("k: ${TEST_EXPAND_UNSET:fallback}\n").unwrap();
+        assert_eq!(out, "k: fallback\n");
+    }
+
+    #[test]
+    fn expand_env_vars_default_ignored_when_var_present() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_EXPAND_HAS", "real");
+        let out = expand_env_vars("k: ${TEST_EXPAND_HAS:fallback}\n").unwrap();
+        assert_eq!(out, "k: real\n");
+    }
+
+    #[test]
+    fn expand_env_vars_passes_through_when_no_refs() {
+        let yaml = "auto_install: true\nport: 3000\n";
+        assert_eq!(expand_env_vars(yaml).unwrap(), yaml);
+    }
+
+    #[test]
+    fn expand_env_vars_errors_on_missing_var_with_no_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("TEST_EXPAND_REQUIRED");
+        let err = expand_env_vars("k: ${TEST_EXPAND_REQUIRED}\n").unwrap_err();
+        assert!(err.contains("TEST_EXPAND_REQUIRED"), "got: {err}");
+        assert!(err.contains("not set"), "got: {err}");
+    }
+
+    #[test]
+    fn expand_env_vars_lists_all_missing_vars() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::unset("TEST_EXPAND_MISSING_A");
+        let _g2 = EnvGuard::unset("TEST_EXPAND_MISSING_B");
+        let err = expand_env_vars("a: ${TEST_EXPAND_MISSING_A}\nb: ${TEST_EXPAND_MISSING_B}\n")
+            .unwrap_err();
+        assert!(err.contains("TEST_EXPAND_MISSING_A"), "got: {err}");
+        assert!(err.contains("TEST_EXPAND_MISSING_B"), "got: {err}");
+    }
+
+    #[test]
+    fn expand_env_vars_handles_multiple_same_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_EXPAND_REPEAT", "x");
+        let out = expand_env_vars("a: ${TEST_EXPAND_REPEAT}\nb: ${TEST_EXPAND_REPEAT}\n").unwrap();
+        assert_eq!(out, "a: x\nb: x\n");
+    }
+
+    #[test]
+    fn expand_env_vars_empty_default_allowed() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("TEST_EXPAND_EMPTY_DEF");
+        let out = expand_env_vars("k: ${TEST_EXPAND_EMPTY_DEF:}\n").unwrap();
+        assert_eq!(out, "k: \n");
+    }
+
+    // Parity tests: mirror engine/src/workers/config.rs to confirm the
+    // contract is byte-for-byte the same.
+
+    #[test]
+    fn expand_env_vars_default_with_special_chars() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("TEST_EXPAND_SPECIAL");
+        let out = expand_env_vars("k: ${TEST_EXPAND_SPECIAL:hello world}\n").unwrap();
+        assert_eq!(out, "k: hello world\n");
+    }
+
+    #[test]
+    fn expand_env_vars_adjacent_variables() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::set("TEST_EXPAND_SCHEME", "https");
+        let _g2 = EnvGuard::set("TEST_EXPAND_HOST", "example.com");
+        let _g3 = EnvGuard::set("TEST_EXPAND_PORT", "443");
+        let out = expand_env_vars(
+            "url: ${TEST_EXPAND_SCHEME}://${TEST_EXPAND_HOST}:${TEST_EXPAND_PORT}\n",
+        )
+        .unwrap();
+        assert_eq!(out, "url: https://example.com:443\n");
+    }
+
+    #[test]
+    fn expand_env_vars_var_with_underscore_and_numbers() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_EXPAND_MY_VAR_123", "ok");
+        let out = expand_env_vars("k: ${TEST_EXPAND_MY_VAR_123}\n").unwrap();
+        assert_eq!(out, "k: ok\n");
+    }
+
+    #[test]
+    fn expand_env_vars_surrounding_text_preserved() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_EXPAND_MIDDLE", "VAL");
+        let out = expand_env_vars("k: prefix-${TEST_EXPAND_MIDDLE}-suffix\n").unwrap();
+        assert_eq!(out, "k: prefix-VAL-suffix\n");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // get_worker_config_as_env — verify expansion is wired up end-to-end.
+    // These tests cd into a tempdir because CONFIG_FILE is the relative
+    // path "config.yaml".
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Process-wide guard for tests that touch `config.yaml` in cwd.
+    /// `set_current_dir` is global, so these can't overlap with other
+    /// tests in this crate that read/write `config.yaml`.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_temp_config<R>(yaml: &str, f: impl FnOnce() -> R) -> R {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("config.yaml"), yaml).expect("write config.yaml");
+        let prior = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(dir.path()).expect("set_current_dir");
+        let result = f();
+        std::env::set_current_dir(&prior).expect("restore cwd");
+        result
+    }
+
+    #[test]
+    fn get_worker_config_as_env_expands_known_var() {
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_WORKER_KEY", "sk-real-value");
+        let yaml =
+            "workers:\n  - name: my-worker\n    config:\n      api_key: ${TEST_WORKER_KEY}\n";
+        let env = with_temp_config(yaml, || get_worker_config_as_env("my-worker"));
+        assert_eq!(
+            env.get("API_KEY").map(String::as_str),
+            Some("sk-real-value")
+        );
+    }
+
+    #[test]
+    fn get_worker_config_as_env_uses_default_when_var_missing() {
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("TEST_WORKER_UNSET");
+        let yaml =
+            "workers:\n  - name: w\n    config:\n      host: ${TEST_WORKER_UNSET:localhost}\n";
+        let env = with_temp_config(yaml, || get_worker_config_as_env("w"));
+        assert_eq!(env.get("HOST").map(String::as_str), Some("localhost"));
+    }
+
+    #[test]
+    fn get_worker_config_as_env_returns_empty_on_missing_required_var() {
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("TEST_WORKER_REQUIRED");
+        let yaml = "workers:\n  - name: w\n    config:\n      api_key: ${TEST_WORKER_REQUIRED}\n";
+        let env = with_temp_config(yaml, || get_worker_config_as_env("w"));
+        // Fail-soft: empty hashmap rather than panic. The worker boots
+        // without API_KEY and its own startup will surface a clear error.
+        assert!(env.is_empty(), "expected empty, got: {env:?}");
+    }
+
+    #[test]
+    fn get_worker_config_as_env_expands_inside_nested_block() {
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("TEST_WORKER_DB_HOST", "db.prod.internal");
+        let yaml = "workers:\n  - name: w\n    config:\n      database:\n        host: ${TEST_WORKER_DB_HOST}\n        port: 5432\n";
+        let env = with_temp_config(yaml, || get_worker_config_as_env("w"));
+        assert_eq!(
+            env.get("DATABASE_HOST").map(String::as_str),
+            Some("db.prod.internal")
+        );
+        assert_eq!(env.get("DATABASE_PORT").map(String::as_str), Some("5432"));
     }
 }

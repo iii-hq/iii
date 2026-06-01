@@ -35,16 +35,16 @@ use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::IIIError,
     protocol::{
-        ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterServiceMessage,
-        RegisterTriggerInput, RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
-        TriggerRequest, UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterTriggerInput,
+        RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
 };
 
-use crate::telemetry;
-use crate::telemetry::types::OtelConfig;
+use iii_observability as telemetry;
+use iii_observability::OtelConfig;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
@@ -205,26 +205,24 @@ where
 {
     /// Register a sync function whose input type must match
     /// the call request format `R`.
-    pub fn register_function<O, E, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
+    pub fn register_function<O, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
-        E: std::fmt::Display + Send + 'static,
-        F: Fn(R) -> Result<O, E> + Send + Sync + 'static,
+        F: Fn(R) -> Result<O, IIIError> + Send + Sync + 'static,
     {
-        self.iii.register_function(RegisterFunction::new(id, f))
+        self.iii.register_function(id, RegisterFunction::new(f))
     }
 
     /// Register an async function whose input type must match
     /// the call request format `R`.
-    pub fn register_function_async<O, E, F, Fut>(&self, id: impl Into<String>, f: F) -> FunctionRef
+    pub fn register_function_async<O, F, Fut>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
-        E: std::fmt::Display + Send + 'static,
         F: Fn(R) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<O, E>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<O, IIIError>> + Send + 'static,
     {
         self.iii
-            .register_function(RegisterFunction::new_async(id, f))
+            .register_function(id, RegisterFunction::new_async(f))
     }
 }
 
@@ -275,6 +273,8 @@ impl Default for WorkerMetadata {
             .filter(|s| !s.is_empty())
             .map(|s| s.split('.').next().unwrap_or(&s).to_string());
 
+        let project_name = detect_project_name(None);
+
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
@@ -283,6 +283,7 @@ impl Default for WorkerMetadata {
             pid: Some(pid),
             telemetry: Some(WorkerTelemetryMeta {
                 language,
+                project_name,
                 ..Default::default()
             }),
             isolation: std::env::var("III_ISOLATION")
@@ -290,6 +291,59 @@ impl Default for WorkerMetadata {
                 .filter(|s| !s.is_empty()),
         }
     }
+}
+
+/// Returns a project identifier for telemetry, derived from the current
+/// working directory. Reads `[package] name` from `Cargo.toml` if present at
+/// `cwd`; otherwise falls back to the basename of `cwd`. Returns `None`
+/// only when both signals are unavailable.
+///
+/// No directory walking — only inspects `cwd` itself, so the SDK never
+/// reads files outside the user's explicit working directory.
+pub(crate) fn detect_project_name(cwd: Option<std::path::PathBuf>) -> Option<String> {
+    let cwd = cwd.or_else(|| std::env::current_dir().ok())?;
+
+    let manifest = cwd.join("Cargo.toml");
+    if let Ok(content) = std::fs::read_to_string(&manifest) {
+        if let Some(name) = parse_cargo_package_name(&content) {
+            return Some(name);
+        }
+    }
+
+    cwd.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Minimal parser for the `name` key inside the `[package]` table of a
+/// `Cargo.toml` file. Avoids adding a TOML dependency for a single field.
+fn parse_cargo_package_name(content: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(stripped) = trimmed.strip_prefix('[') {
+            in_package = stripped.trim_end_matches(']').trim() == "package";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("name") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim().strip_prefix('"')?;
+        let end = rest.find('"')?;
+        let name = rest[..end].trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -308,7 +362,7 @@ type WsTx = futures_util::stream::SplitSink<
 
 /// Inject trace context headers for outbound messages.
 fn inject_trace_headers() -> (Option<String>, Option<String>) {
-    use crate::telemetry::context;
+    use iii_observability as context;
     (context::inject_traceparent(), context::inject_baggage())
 }
 
@@ -334,65 +388,6 @@ impl FunctionRef {
     }
 }
 
-pub trait IntoFunctionHandler {
-    fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler>;
-}
-
-/// Trait for types that can be passed to [`III::register_function`].
-///
-/// Implemented for:
-/// - [`RegisterFunction`] — the builder API (recommended)
-/// - `(RegisterFunctionMessage, H)` — the legacy tuple API
-pub trait IntoFunctionRegistration {
-    fn into_registration(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>);
-}
-
-impl IntoFunctionRegistration for RegisterFunction {
-    fn into_registration(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>) {
-        (self.message, Some(self.handler))
-    }
-}
-
-impl<H: IntoFunctionHandler> IntoFunctionRegistration for (RegisterFunctionMessage, H) {
-    fn into_registration(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>) {
-        let (mut message, handler) = self;
-        let handler = handler.into_parts(&mut message);
-        (message, handler)
-    }
-}
-
-impl IntoFunctionHandler for HttpInvocationConfig {
-    fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
-        message.invocation = Some(self);
-        None
-    }
-}
-
-impl<F, Fut> IntoFunctionHandler for F
-where
-    F: Fn(Value) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<Value, IIIError>> + Send + 'static,
-{
-    fn into_parts(self, _message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
-        Some(Arc::new(move |input: Value| Box::pin(self(input))))
-    }
-}
-
-// =============================================================================
-// iii_fn — sync function wrapper
-// =============================================================================
-
-/// Wrapper for registering sync functions as III handlers via [`iii_fn`].
-///
-/// Created by [`iii_fn`]. Stores a pre-erased handler so that a single
-/// [`IntoFunctionHandler`] impl covers all supported arities.
-pub struct IIIFn<F = ()> {
-    handler: RemoteFunctionHandler,
-    request_format: Option<Value>,
-    response_format: Option<Value>,
-    _marker: std::marker::PhantomData<F>,
-}
-
 fn json_schema_for<T: schemars::JsonSchema>() -> Option<Value> {
     serde_json::to_value(
         schemars::r#gen::SchemaSettings::draft07()
@@ -415,21 +410,26 @@ pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-// 1-arg sync — deserializes the entire JSON input as T
-impl<F, T, R, E> IntoSyncHandler<(T, R, E)> for F
+// 1-arg sync — deserializes the entire JSON input as T.
+//
+// Error type is fixed to [`IIIError`] (instead of generic `E: Display`) so
+// closures using bare `Ok(...)` infer cleanly without explicit error
+// annotations — required for ergonomic registration of `Fn(Value) -> ...`
+// handlers. Other error types convert via `From<E> for IIIError` (impls
+// for `String` / `&str` / `serde_json::Error` ship with the SDK).
+impl<F, T, R> IntoSyncHandler<(T, R)> for F
 where
-    F: Fn(T) -> Result<R, E> + Send + Sync + 'static,
+    F: Fn(T) -> Result<R, IIIError> + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
-    E: std::fmt::Display + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
         Arc::new(move |input: Value| {
             let output = serde_json::from_value::<T>(input)
-                .map_err(|e| IIIError::Handler(e.to_string()))
-                .and_then(|arg| (self)(arg).map_err(|e| IIIError::Handler(e.to_string())))
+                .map_err(|e| IIIError::Serde(e.to_string()))
+                .and_then(&self)
                 .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| IIIError::Handler(e.to_string()))
+                    serde_json::to_value(&val).map_err(|e| IIIError::Serde(e.to_string()))
                 });
             Box::pin(async move { output })
         })
@@ -444,54 +444,9 @@ where
     }
 }
 
-/// Wraps a **sync** function into an III-compatible handler.
-///
-/// The function must take a single argument implementing
-/// [`serde::de::DeserializeOwned`] and return `Result<R, E>`
-/// where `R: Serialize` and `E: Display`.
-///
-/// The entire JSON input is deserialized as the argument type.
-/// Use a `#[derive(Deserialize)]` struct for named JSON keys.
-///
-/// For async functions, use [`iii_async_fn`] instead.
-pub fn iii_fn<F, M>(f: F) -> IIIFn<F>
-where
-    F: IntoSyncHandler<M>,
-{
-    IIIFn {
-        request_format: F::request_format(),
-        response_format: F::response_format(),
-        handler: f.into_handler(),
-        _marker: std::marker::PhantomData,
-    }
-}
-
-impl<F> IntoFunctionHandler for IIIFn<F> {
-    fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
-        if message.request_format.is_none() {
-            message.request_format = self.request_format;
-        }
-        if message.response_format.is_none() {
-            message.response_format = self.response_format;
-        }
-        Some(self.handler)
-    }
-}
-
 // =============================================================================
-// iii_async_fn — async function wrapper
+// IntoAsyncHandler — async function schema-extraction trait
 // =============================================================================
-
-/// Wrapper for registering async functions as III handlers via [`iii_async_fn`].
-///
-/// Created by [`iii_async_fn`]. Stores a pre-erased handler so that a single
-/// [`IntoFunctionHandler`] impl covers all supported arities.
-pub struct IIIAsyncFn<F = ()> {
-    handler: RemoteFunctionHandler,
-    request_format: Option<Value>,
-    response_format: Option<Value>,
-    _marker: std::marker::PhantomData<F>,
-}
 
 /// Helper trait used internally to convert an async function into a
 /// [`RemoteFunctionHandler`].
@@ -506,14 +461,17 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-// 1-arg async — deserializes the entire JSON input as T
-impl<F, T, Fut, R, E> IntoAsyncHandler<(T, Fut, R, E)> for F
+// 1-arg async — deserializes the entire JSON input as T.
+//
+// Error type is fixed to [`IIIError`] (see [`IntoSyncHandler`] for the
+// rationale). Use `From<E> for IIIError` to lift custom error types,
+// or `?` propagation in the closure body.
+impl<F, T, Fut, R> IntoAsyncHandler<(T, Fut, R)> for F
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-    Fut: std::future::Future<Output = Result<R, E>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
-    E: std::fmt::Display + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
         Arc::new(
@@ -524,15 +482,13 @@ where
                     Ok(arg) => {
                         let fut = (self)(arg);
                         Box::pin(async move {
-                            fut.await
-                                .map_err(|e| IIIError::Handler(e.to_string()))
-                                .and_then(|val| {
-                                    serde_json::to_value(&val)
-                                        .map_err(|e| IIIError::Handler(e.to_string()))
-                                })
+                            fut.await.and_then(|val| {
+                                serde_json::to_value(&val)
+                                    .map_err(|e| IIIError::Serde(e.to_string()))
+                            })
                         })
                     }
-                    Err(e) => Box::pin(async move { Err(IIIError::Handler(e.to_string())) }),
+                    Err(e) => Box::pin(async move { Err(IIIError::Serde(e.to_string())) }),
                 }
             },
         )
@@ -547,82 +503,88 @@ where
     }
 }
 
-/// Wraps an **async** function into an III-compatible handler.
-///
-/// The function must take a single argument implementing
-/// [`serde::de::DeserializeOwned`] and return
-/// `impl Future<Output = Result<R, E>>` where `R: Serialize` and `E: Display`.
-pub fn iii_async_fn<F, M>(f: F) -> IIIAsyncFn<F>
-where
-    F: IntoAsyncHandler<M>,
-{
-    IIIAsyncFn {
-        request_format: F::request_format(),
-        response_format: F::response_format(),
-        handler: f.into_handler(),
-        _marker: std::marker::PhantomData,
+// =============================================================================
+// RegisterFunction — single registration builder
+// =============================================================================
+
+fn empty_message() -> RegisterFunctionMessage {
+    RegisterFunctionMessage {
+        id: String::new(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
     }
 }
 
-impl<F> IntoFunctionHandler for IIIAsyncFn<F> {
-    fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
-        if message.request_format.is_none() {
-            message.request_format = self.request_format;
-        }
-        if message.response_format.is_none() {
-            message.response_format = self.response_format;
-        }
-        Some(self.handler)
-    }
-}
-
-// =============================================================================
-// RegisterFunction — one-step registration builder
-// =============================================================================
-
-/// One-step function registration combining ID, handler, and auto-generated schemas.
+/// Function registration builder.
 ///
-/// Use [`RegisterFunction::new`] for sync functions or [`RegisterFunction::new_async`]
-/// for async functions, then register with [`III::register`].
+/// The function ID is supplied separately at registration time via
+/// [`III::register_function`] — `RegisterFunction` only carries the handler
+/// and optional metadata.
+///
+/// Constructors:
+/// - [`RegisterFunction::new`] — sync function. Accepts both typed handlers
+///   (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, IIIError>`
+///   closures (permissive `AnyValue` schema, since `Value: JsonSchema`).
+/// - [`RegisterFunction::new_async`] — async equivalent of `new`.
+/// - [`RegisterFunction::http`] — function invoked over HTTP (Lambda,
+///   Cloudflare Workers, etc.).
+///
+/// Builder methods (all consume `self`):
+/// - [`description`](Self::description)
+/// - [`metadata`](Self::metadata)
+/// - [`request_format`](Self::request_format) — overrides any auto-extracted schema.
+/// - [`response_format`](Self::response_format) — overrides any auto-extracted schema.
 pub struct RegisterFunction {
     message: RegisterFunctionMessage,
-    handler: RemoteFunctionHandler,
+    handler: Option<RemoteFunctionHandler>,
 }
 
 impl RegisterFunction {
-    /// Create a registration for a **sync** function.
-    pub fn new<F, M>(id: impl Into<String>, f: F) -> Self
+    /// Create a registration for a **sync** typed function.
+    ///
+    /// Auto-extracts `request_format` / `response_format` from the function's
+    /// argument and return types via `schemars`.
+    pub fn new<F, M>(f: F) -> Self
     where
         F: IntoSyncHandler<M>,
     {
+        let mut message = empty_message();
+        message.request_format = F::request_format();
+        message.response_format = F::response_format();
         Self {
-            message: RegisterFunctionMessage {
-                id: id.into(),
-                description: None,
-                request_format: F::request_format(),
-                response_format: F::response_format(),
-                metadata: None,
-                invocation: None,
-            },
-            handler: f.into_handler(),
+            message,
+            handler: Some(f.into_handler()),
         }
     }
 
-    /// Create a registration for an **async** function.
-    pub fn new_async<F, M>(id: impl Into<String>, f: F) -> Self
+    /// Create a registration for an **async** typed function.
+    ///
+    /// Auto-extracts `request_format` / `response_format` from the function's
+    /// argument and return types via `schemars`.
+    pub fn new_async<F, M>(f: F) -> Self
     where
         F: IntoAsyncHandler<M>,
     {
+        let mut message = empty_message();
+        message.request_format = F::request_format();
+        message.response_format = F::response_format();
         Self {
-            message: RegisterFunctionMessage {
-                id: id.into(),
-                description: None,
-                request_format: F::request_format(),
-                response_format: F::response_format(),
-                metadata: None,
-                invocation: None,
-            },
-            handler: f.into_handler(),
+            message,
+            handler: Some(f.into_handler()),
+        }
+    }
+
+    /// Create a registration for an **HTTP-invoked** function (Lambda,
+    /// Cloudflare Workers, etc.). No local handler runs.
+    pub fn http(config: HttpInvocationConfig) -> Self {
+        let mut message = empty_message();
+        message.invocation = Some(config);
+        Self {
+            message,
+            handler: None,
         }
     }
 
@@ -638,14 +600,20 @@ impl RegisterFunction {
         self
     }
 
-    /// Get the auto-generated request format.
-    pub fn request_format(&self) -> Option<&Value> {
-        self.message.request_format.as_ref()
+    /// Set the request format schema. Overrides any auto-extracted schema.
+    pub fn request_format(mut self, schema: Value) -> Self {
+        self.message.request_format = Some(schema);
+        self
     }
 
-    /// Get the auto-generated response format.
-    pub fn response_format(&self) -> Option<&Value> {
-        self.message.response_format.as_ref()
+    /// Set the response format schema. Overrides any auto-extracted schema.
+    pub fn response_format(mut self, schema: Value) -> Self {
+        self.message.response_format = Some(schema);
+        self
+    }
+
+    pub(crate) fn into_parts(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>) {
+        (self.message, self.handler)
     }
 }
 
@@ -659,7 +627,6 @@ struct IIIInner {
     functions: Mutex<HashMap<String, RemoteFunctionData>>,
     trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
-    services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
     connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -694,7 +661,6 @@ impl III {
             functions: Mutex::new(HashMap::new()),
             trigger_types: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
-            services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
             connection_thread: Mutex::new(None),
@@ -850,67 +816,74 @@ impl III {
 
     /// Register a function with the engine.
     ///
-    /// Pass a closure/async fn for local execution, or an [`HttpInvocationConfig`]
-    /// for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+    /// Argument order matches the Node and Python SDKs:
+    /// `(id, registration)`.
     ///
     /// # Arguments
-    /// * `message` - Function registration message with id and optional metadata.
-    /// * `handler` - Async handler or HTTP invocation config.
+    /// * `id` — Function identifier.
+    /// * `registration` — Built via [`RegisterFunction::new`],
+    ///   [`RegisterFunction::new_async`], or [`RegisterFunction::http`].
+    ///   Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`,
+    ///   `.response_format(...)` as needed.
     ///
     /// # Panics
     /// Panics if `id` is empty or already registered.
     ///
     /// # Examples
     /// ```rust,no_run
-    /// use iii_sdk::{register_worker, InitOptions, RegisterFunction};
-    /// use serde::Deserialize;
+    /// use iii_sdk::{register_worker, InitOptions, IIIError, RegisterFunction};
+    /// use serde::{Deserialize, Serialize};
     /// use schemars::JsonSchema;
     ///
     /// #[derive(Deserialize, JsonSchema)]
     /// struct Input { name: String }
-    /// fn greet(input: Input) -> Result<String, String> {
-    ///     Ok(format!("Hello, {}!", input.name))
+    /// #[derive(Serialize, JsonSchema)]
+    /// struct Output { message: String }
+    ///
+    /// async fn greet(input: Input) -> Result<Output, IIIError> {
+    ///     Ok(Output { message: format!("Hello, {}!", input.name) })
     /// }
     ///
     /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function(RegisterFunction::new("greet", greet));
-    /// ```
-    ///
-    /// Also accepts a two-argument form via [`register_function_with`](III::register_function_with):
-    /// ```rust,no_run
-    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
-    /// # use serde_json::{json, Value};
-    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function_with(
-    ///     RegisterFunctionMessage::with_id("echo".to_string()),
-    ///     |input: Value| async move { Ok(json!({"echo": input})) },
+    /// iii.register_function(
+    ///     "greetings::greet",
+    ///     RegisterFunction::new_async(greet).description("Greets a user"),
     /// );
     /// ```
-    pub fn register_function<R: IntoFunctionRegistration>(&self, registration: R) -> FunctionRef {
-        let (message, handler) = registration.into_registration();
-        self.register_function_inner(message, handler)
-    }
-
-    /// Register a function with a message and handler directly.
-    pub fn register_function_with<H: IntoFunctionHandler>(
-        &self,
-        mut message: RegisterFunctionMessage,
-        handler: H,
-    ) -> FunctionRef {
-        let handler = handler.into_parts(&mut message);
-        self.register_function_inner(message, handler)
-    }
-
-    /// Register a service with the engine.
     ///
-    /// # Arguments
-    /// * `message` - Service registration message with id, name, and optional metadata.
-    pub fn register_service(&self, message: RegisterServiceMessage) {
-        self.inner
-            .services
-            .lock_or_recover()
-            .insert(message.id.clone(), message.clone());
-        let _ = self.send_message(message.to_message());
+    /// Untyped handler taking `serde_json::Value`:
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    /// # use serde_json::{json, Value};
+    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    /// iii.register_function(
+    ///     "debug::echo",
+    ///     RegisterFunction::new_async(|input: Value| async move { Ok(json!({"echo": input})) }),
+    /// );
+    /// ```
+    ///
+    /// HTTP-invoked function:
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction, HttpInvocationConfig, HttpMethod};
+    /// # use std::collections::HashMap;
+    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    /// let config = HttpInvocationConfig {
+    ///     url: "https://example.com/invoke".into(),
+    ///     method: HttpMethod::Post,
+    ///     timeout_ms: Some(30_000),
+    ///     headers: HashMap::new(),
+    ///     auth: None,
+    /// };
+    /// iii.register_function("ext::lambda", RegisterFunction::http(config));
+    /// ```
+    pub fn register_function(
+        &self,
+        id: impl Into<String>,
+        registration: RegisterFunction,
+    ) -> FunctionRef {
+        let (mut message, handler) = registration.into_parts();
+        message.id = id.into();
+        self.register_function_inner(message, handler)
     }
 
     /// Register a custom trigger type with the engine.
@@ -937,7 +910,7 @@ impl III {
     /// );
     ///
     /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, String> {
+    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
     ///     Ok(serde_json::json!({ "data": req.data }))
     /// });
     /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
@@ -1253,10 +1226,42 @@ impl III {
 
                     queue.extend(self.collect_registrations());
                     Self::dedupe_registrations(&mut queue);
+
+                    // Snapshot the registration keys we're about to send so
+                    // we can drop duplicate copies still pending in `rx`.
+                    // These are leftover from `register_*` calls made by user
+                    // threads before the WS handshake completed: each call
+                    // both inserts into the in-memory map (replayed via
+                    // `collect_registrations`) AND queues into `outbound`.
+                    let snapshot_ids: HashSet<String> =
+                        queue.iter().filter_map(Self::registration_key).collect();
+
                     if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
                         tracing::warn!(error = %err, "failed to flush queue");
                         sleep(Duration::from_secs(2)).await;
                         continue;
+                    }
+
+                    // Drain pre-connect leftovers from `rx`, dropping
+                    // register duplicates and preserving everything else
+                    // (invocations, results, channel ops, and any
+                    // registrations added after the snapshot was taken).
+                    let shutdown =
+                        Self::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+                    if shutdown {
+                        self.inner.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+
+                    if !queue.is_empty() {
+                        if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to flush post-drain queue"
+                            );
+                            sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
                     }
 
                     // Auto-register worker metadata on connect (like Node SDK)
@@ -1322,10 +1327,6 @@ impl III {
             messages.push(trigger_type.message.to_message());
         }
 
-        for service in self.inner.services.lock_or_recover().values() {
-            messages.push(service.to_message());
-        }
-
         for function in self.inner.functions.lock_or_recover().values() {
             messages.push(function.message.to_message());
         }
@@ -1337,26 +1338,64 @@ impl III {
         messages
     }
 
+    /// Returns a stable identity key for a registration message, or `None`
+    /// for non-registration messages (invocations, ping/pong, etc.).
+    ///
+    /// Used both to deduplicate within `queue` and to detect leftover
+    /// pre-connect register messages in `rx` whose state has already been
+    /// re-sent via `collect_registrations()`.
+    fn registration_key(message: &Message) -> Option<String> {
+        match message {
+            Message::RegisterTriggerType { id, .. } => Some(format!("trigger_type:{id}")),
+            Message::RegisterTrigger { id, .. } => Some(format!("trigger:{id}")),
+            Message::RegisterFunction { id, .. } => Some(format!("function:{id}")),
+            _ => None,
+        }
+    }
+
+    /// Drain everything currently pending in the outbound `rx` channel,
+    /// dropping register messages whose keys are already covered by
+    /// `snapshot_ids` (already sent via `collect_registrations()`),
+    /// and pushing every other message onto `queue` for re-flushing.
+    ///
+    /// Returns `true` if a `Shutdown` signal was observed during the
+    /// drain — the caller should then stop the connection loop.
+    fn drain_pre_connect_duplicates(
+        rx: &mut mpsc::UnboundedReceiver<Outbound>,
+        queue: &mut Vec<Message>,
+        snapshot_ids: &HashSet<String>,
+    ) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(Outbound::Message(msg)) => {
+                    let is_dup = Self::registration_key(&msg)
+                        .map(|k| snapshot_ids.contains(&k))
+                        .unwrap_or(false);
+                    if is_dup {
+                        continue;
+                    }
+                    queue.push(msg);
+                }
+                Ok(Outbound::Shutdown) => return true,
+                Err(_) => return false,
+            }
+        }
+    }
+
     fn dedupe_registrations(queue: &mut Vec<Message>) {
         let mut seen = HashSet::new();
         let mut deduped_rev = Vec::with_capacity(queue.len());
 
         for message in queue.iter().rev() {
-            let key = match message {
-                Message::RegisterTriggerType { id, .. } => format!("trigger_type:{id}"),
-                Message::RegisterTrigger { id, .. } => format!("trigger:{id}"),
-                Message::RegisterFunction { id, .. } => {
-                    format!("function:{id}")
+            match Self::registration_key(message) {
+                Some(key) => {
+                    if seen.insert(key) {
+                        deduped_rev.push(message.clone());
+                    }
                 }
-                Message::RegisterService { id, .. } => format!("service:{id}"),
-                _ => {
+                None => {
                     deduped_rev.push(message.clone());
-                    continue;
                 }
-            };
-
-            if seen.insert(key) {
-                deduped_rev.push(message.clone());
             }
         }
 
@@ -1437,6 +1476,21 @@ impl III {
             }
             Message::WorkerRegistered { worker_id } => {
                 tracing::debug!(worker_id = %worker_id, "Worker registered");
+            }
+            Message::TriggerRegistrationResult {
+                id,
+                trigger_type,
+                function_id: _,
+                error: Some(err),
+            } => {
+                tracing::error!(
+                    trigger_id = %id,
+                    trigger_type = %trigger_type,
+                    code = %err.code,
+                    "[iii] Trigger registration failed for {:?}: {}",
+                    id,
+                    err.message
+                );
             }
             _ => {}
         }
@@ -1528,11 +1582,11 @@ impl III {
             // We use FutureExt::with_context() instead of cx.attach() because
             // ContextGuard is !Send and can't be held across .await in tokio::spawn.
             let otel_cx = {
-                use crate::telemetry::context::extract_context;
-                use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
+                use iii_observability::extract_context;
+                use iii_observability::opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
 
                 let parent_cx = extract_context(traceparent.as_deref(), baggage.as_deref());
-                let tracer = opentelemetry::global::tracer("iii-rust-sdk");
+                let tracer = iii_observability::opentelemetry::global::tracer("iii-rust-sdk");
                 let span = tracer
                     .span_builder(format!("call {}", function_id))
                     .with_kind(SpanKind::Server)
@@ -1540,16 +1594,67 @@ impl III {
                 parent_cx.with_span(span)
             };
 
+            let trace_payloads = !std::env::var("III_DISABLE_TRACE_PAYLOADS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            let payload_max_bytes = iii_observability::resolve_max_bytes_from_env();
+
+            if trace_payloads {
+                use iii_observability::opentelemetry::KeyValue;
+                use iii_observability::opentelemetry::trace::TraceContextExt;
+                use iii_observability::redact_and_truncate;
+                let span = otel_cx.span();
+                if span.span_context().is_valid() {
+                    let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
+                    span.add_event(
+                        "iii.invocation.input",
+                        vec![
+                            KeyValue::new("iii.payload.json", input_json),
+                            KeyValue::new("iii.payload.truncated", truncated),
+                        ],
+                    );
+                }
+            }
+
             let result = {
-                use opentelemetry::trace::FutureExt as OtelFutureExt;
+                use iii_observability::opentelemetry::trace::FutureExt as OtelFutureExt;
                 handler(data).with_context(otel_cx.clone()).await
             };
+
+            if trace_payloads {
+                use iii_observability::opentelemetry::KeyValue;
+                use iii_observability::opentelemetry::trace::TraceContextExt;
+                use iii_observability::redact_and_truncate;
+                let span = otel_cx.span();
+                if span.span_context().is_valid() {
+                    let (output_json, truncated, ok) = match &result {
+                        Ok(value) => {
+                            let (j, t) = redact_and_truncate(value, payload_max_bytes);
+                            (j, t, true)
+                        }
+                        Err(err) => {
+                            let payload = serde_json::json!({ "error": err.to_string() });
+                            let (j, t) = redact_and_truncate(&payload, payload_max_bytes);
+                            (j, t, false)
+                        }
+                    };
+                    span.add_event(
+                        "iii.invocation.output",
+                        vec![
+                            KeyValue::new("iii.payload.json", output_json),
+                            KeyValue::new("iii.payload.truncated", truncated),
+                            KeyValue::new("iii.payload.ok", ok),
+                        ],
+                    );
+                }
+            }
 
             // Record span status based on result
             let mut error_stacktrace: Option<String> = None;
             {
-                use opentelemetry::KeyValue;
-                use opentelemetry::trace::{Status, TraceContextExt};
+                use iii_observability::opentelemetry::KeyValue;
+                use iii_observability::opentelemetry::trace::{Status, TraceContextExt};
                 let span = otel_cx.span();
                 match &result {
                     Ok(_) => span.set_status(Status::Ok),
@@ -1748,17 +1853,7 @@ mod tests {
             auth: None,
         };
 
-        let func_ref = iii.register_function_with(
-            RegisterFunctionMessage {
-                id: "external::my_lambda".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-                invocation: None,
-            },
-            config,
-        );
+        let func_ref = iii.register_function("external::my_lambda", RegisterFunction::http(config));
 
         assert_eq!(func_ref.id, "external::my_lambda");
         assert_eq!(iii.inner.functions.lock().unwrap().len(), 1);
@@ -1780,17 +1875,107 @@ mod tests {
             auth: None,
         };
 
-        iii.register_function_with(
-            RegisterFunctionMessage {
-                id: "".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-                invocation: None,
-            },
-            config,
+        iii.register_function("", RegisterFunction::http(config));
+    }
+
+    #[tokio::test]
+    async fn register_function_takes_id_then_builder() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let func_ref = iii.register_function(
+            "test::reshaped::ordering",
+            RegisterFunction::new_async(|input: Value| async move { Ok(input) })
+                .description("reshaped"),
         );
+        assert_eq!(func_ref.id, "test::reshaped::ordering");
+
+        let funcs = iii.inner.functions.lock().unwrap();
+        let stored = funcs.get("test::reshaped::ordering").expect("stored");
+        assert_eq!(stored.message.id, "test::reshaped::ordering");
+        assert_eq!(stored.message.description.as_deref(), Some("reshaped"));
+        assert!(stored.handler.is_some());
+    }
+
+    #[tokio::test]
+    async fn register_function_http_variant_has_no_handler() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let config = HttpInvocationConfig {
+            url: "https://example.com/invoke".to_string(),
+            method: HttpMethod::Post,
+            timeout_ms: Some(30_000),
+            headers: HashMap::new(),
+            auth: None,
+        };
+
+        let func_ref = iii.register_function("external::reshaped", RegisterFunction::http(config));
+
+        assert_eq!(func_ref.id, "external::reshaped");
+        let funcs = iii.inner.functions.lock().unwrap();
+        let stored = funcs.get("external::reshaped").expect("stored");
+        assert!(
+            stored.handler.is_none(),
+            "handler should be None for HTTP invocation"
+        );
+        assert!(
+            stored.message.invocation.is_some(),
+            "invocation should be set"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_function_new_async_extracts_schemas() {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        struct In {
+            name: String,
+        }
+        #[derive(serde::Serialize, schemars::JsonSchema)]
+        struct Out {
+            message: String,
+        }
+        async fn greet(input: In) -> Result<Out, IIIError> {
+            Ok(Out {
+                message: format!("Hello, {}!", input.name),
+            })
+        }
+
+        let reg = RegisterFunction::new_async(greet);
+        assert!(reg.message.request_format.is_some());
+        assert!(reg.message.response_format.is_some());
+        assert_eq!(reg.message.request_format.as_ref().unwrap()["title"], "In");
+        assert_eq!(
+            reg.message.response_format.as_ref().unwrap()["title"],
+            "Out"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_function_request_format_setter_overrides_auto_extraction() {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        struct In {
+            name: String,
+        }
+        async fn handler(input: In) -> Result<String, IIIError> {
+            Ok(input.name)
+        }
+
+        let custom = json!({"custom": true});
+        let reg = RegisterFunction::new_async(handler).request_format(custom.clone());
+        assert_eq!(reg.message.request_format.as_ref().unwrap(), &custom);
+    }
+
+    #[tokio::test]
+    async fn register_function_untyped_runs_handler() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let _func_ref = iii.register_function(
+            "test::untyped",
+            RegisterFunction::new_async(|input: Value| async move { Ok(json!({ "echo": input })) }),
+        );
+        let handler = {
+            let funcs = iii.inner.functions.lock().unwrap();
+            let stored = funcs.get("test::untyped").expect("stored");
+            stored.handler.as_ref().expect("has handler").clone()
+        };
+        let out = handler(json!({"name": "world"})).await.unwrap();
+        assert_eq!(out, json!({"echo": {"name": "world"}}));
     }
 
     #[tokio::test]
@@ -1835,5 +2020,252 @@ mod tests {
                 None => std::env::remove_var("III_ISOLATION"),
             }
         }
+    }
+
+    #[test]
+    fn parse_cargo_package_name_extracts_name_field() {
+        let toml = "[package]\nname = \"my-crate\"\nversion = \"1.0.0\"\n";
+        assert_eq!(parse_cargo_package_name(toml), Some("my-crate".to_string()));
+    }
+
+    #[test]
+    fn parse_cargo_package_name_ignores_other_tables() {
+        let toml = "[dependencies]\nname = \"not-the-package\"\n[package]\nname = \"the-pkg\"\n";
+        assert_eq!(parse_cargo_package_name(toml), Some("the-pkg".to_string()));
+    }
+
+    #[test]
+    fn parse_cargo_package_name_returns_none_when_missing() {
+        let toml = "[package]\nversion = \"1.0.0\"\n";
+        assert_eq!(parse_cargo_package_name(toml), None);
+    }
+
+    #[test]
+    fn parse_cargo_package_name_returns_none_when_blank() {
+        let toml = "[package]\nname = \"\"\n";
+        assert_eq!(parse_cargo_package_name(toml), None);
+    }
+
+    #[test]
+    fn detect_project_name_reads_cargo_toml_in_cwd() {
+        let tmp = std::env::temp_dir().join(format!("iii-rust-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"detected-crate\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_project_name(Some(tmp.clone())),
+            Some("detected-crate".to_string())
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn detect_project_name_falls_back_to_dir_basename_without_cargo_toml() {
+        let tmp = std::env::temp_dir().join(format!("iii-rust-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let basename = tmp.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(detect_project_name(Some(tmp.clone())), Some(basename));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn detect_project_name_falls_back_to_dir_basename_when_cargo_toml_lacks_name() {
+        let tmp =
+            std::env::temp_dir().join(format!("iii-rust-fallback-noname-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nversion = \"1.0.0\"\n").unwrap();
+
+        let basename = tmp.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(detect_project_name(Some(tmp.clone())), Some(basename));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn make_register_function(id: &str) -> Message {
+        Message::RegisterFunction {
+            id: id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        }
+    }
+
+    fn make_register_trigger(id: &str) -> Message {
+        Message::RegisterTrigger {
+            id: id.to_string(),
+            trigger_type: "demo".to_string(),
+            function_id: "fn".to_string(),
+            config: json!({}),
+            metadata: None,
+        }
+    }
+
+    fn make_register_trigger_type(id: &str) -> Message {
+        Message::RegisterTriggerType {
+            id: id.to_string(),
+            description: "tt".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        }
+    }
+
+    fn make_invoke(function_id: &str) -> Message {
+        Message::InvokeFunction {
+            invocation_id: None,
+            function_id: function_id.to_string(),
+            data: json!({}),
+            traceparent: None,
+            baggage: None,
+            action: None,
+        }
+    }
+
+    #[test]
+    fn registration_key_returns_typed_keys_for_register_messages() {
+        assert_eq!(
+            III::registration_key(&make_register_function("greet")),
+            Some("function:greet".to_string())
+        );
+        assert_eq!(
+            III::registration_key(&make_register_trigger("t1")),
+            Some("trigger:t1".to_string())
+        );
+        assert_eq!(
+            III::registration_key(&make_register_trigger_type("tt1")),
+            Some("trigger_type:tt1".to_string())
+        );
+    }
+
+    #[test]
+    fn registration_key_returns_none_for_non_register_messages() {
+        assert_eq!(III::registration_key(&make_invoke("f")), None);
+        assert_eq!(III::registration_key(&Message::Ping), None);
+        assert_eq!(III::registration_key(&Message::Pong), None);
+        assert_eq!(
+            III::registration_key(&Message::WorkerRegistered {
+                worker_id: "w".to_string()
+            }),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pre_connect_duplicates_drops_only_known_register_ids() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+
+        tx.send(Outbound::Message(make_register_function("dup-fn")))
+            .unwrap();
+        tx.send(Outbound::Message(make_invoke("some::fn"))).unwrap();
+        tx.send(Outbound::Message(make_register_function("new-fn")))
+            .unwrap();
+        tx.send(Outbound::Message(Message::Pong)).unwrap();
+        tx.send(Outbound::Message(make_register_trigger("dup-trig")))
+            .unwrap();
+        tx.send(Outbound::Message(make_register_trigger("new-trig")))
+            .unwrap();
+
+        let snapshot_ids: HashSet<String> = [
+            "function:dup-fn".to_string(),
+            "trigger:dup-trig".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut queue: Vec<Message> = Vec::new();
+        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+
+        assert!(!shutdown);
+        let kept_keys: Vec<Option<String>> = queue.iter().map(III::registration_key).collect();
+        assert_eq!(
+            kept_keys,
+            vec![
+                None,
+                Some("function:new-fn".to_string()),
+                None,
+                Some("trigger:new-trig".to_string()),
+            ],
+            "kept queue mismatch: {queue:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pre_connect_duplicates_signals_shutdown() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+
+        tx.send(Outbound::Message(make_register_function("a")))
+            .unwrap();
+        tx.send(Outbound::Shutdown).unwrap();
+        tx.send(Outbound::Message(make_register_function("b")))
+            .unwrap();
+
+        let snapshot_ids: HashSet<String> = ["function:a".to_string()].into_iter().collect();
+        let mut queue: Vec<Message> = Vec::new();
+        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+
+        assert!(shutdown, "expected shutdown signal to be reported");
+        assert!(
+            queue.is_empty(),
+            "queue must be empty when shutdown short-circuits the drain: {queue:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pre_connect_duplicates_returns_false_on_empty_channel() {
+        let (_tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+        let snapshot_ids: HashSet<String> = HashSet::new();
+        let mut queue: Vec<Message> = Vec::new();
+
+        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+
+        assert!(!shutdown);
+        assert!(queue.is_empty());
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_result_error_is_logged() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let payload = serde_json::json!({
+            "type": "triggerregistrationresult",
+            "id": "trig-1",
+            "trigger_type": "http",
+            "function_id": "fn-1",
+            "error": {
+                "code": "trigger_type_not_found",
+                "message": "Trigger type \"http\" not found — worker iii-http is missing. Run: iii worker add iii-http",
+            },
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        assert!(logs_contain("iii worker add iii-http"));
+        assert!(logs_contain("trig-1"));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_result_success_does_not_log_error() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let payload = serde_json::json!({
+            "type": "triggerregistrationresult",
+            "id": "trig-2",
+            "trigger_type": "http",
+            "function_id": "fn-2",
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        assert!(!logs_contain("Trigger registration failed"));
     }
 }

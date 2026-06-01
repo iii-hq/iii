@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! OCI registry resolution for worker images.
@@ -50,6 +50,21 @@ pub struct EngineWorkerResponse {
     pub version: String,
 }
 
+/// Bundle workers ship a tar.gz archive of a packaged local-worker
+/// directory. The archive root must contain `iii.worker.yaml`. The
+/// engine downloads, verifies sha256, extracts atomically, and runs
+/// the worker through the existing local-worker rails inside libkrun.
+///
+/// See `cli/bundle_download.rs` for the install pipeline and
+/// `docs/creating-workers/workers-registry.mdx` for publish shape.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BundleWorkerResponse {
+    pub name: String,
+    pub version: String,
+    pub archive_url: String,
+    pub sha256: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum WorkerInfoResponse {
@@ -59,6 +74,8 @@ pub enum WorkerInfoResponse {
     Oci(OciWorkerResponse),
     #[serde(rename = "engine")]
     Engine(EngineWorkerResponse),
+    #[serde(rename = "bundle")]
+    Bundle(BundleWorkerResponse),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +98,16 @@ pub struct ResolvedWorker {
     pub binaries: Option<HashMap<String, BinaryInfo>>,
     #[serde(default)]
     pub image: Option<String>,
+    /// Bundle workers ship a tar.gz archive identified by a URL + sha256.
+    /// `None` for non-bundle worker types. The lockfile path
+    /// (`lockfile_from_graph` in `managed.rs`) requires both to be
+    /// present for `worker_type == "bundle"` and rejects bundle nodes
+    /// missing them so the install path can't silently degrade to an
+    /// unverifiable fetch.
+    #[serde(default)]
+    pub archive_url: Option<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
 }
@@ -102,12 +129,25 @@ pub struct ResolvedRoot {
 
 /// Validates that a worker name is safe for use in filesystem paths and YAML content.
 /// Allowed characters: alphanumeric, dash, underscore, dot. Must not be empty or contain `..`.
+///
+/// Worker names also cannot START with `.`: the bundle install root reserves
+/// `.locks` and `.staging` (under `~/.iii/workers-bundle/`) as internal control
+/// directories. A worker name like `.locks` would shadow them on disk and let
+/// `iii worker remove .locks` -> delete_worker_artifacts wipe every per-worker
+/// fslock system-wide. We blanket-reject leading-dot names so the rule is
+/// stable even as new internal directories are added.
 pub fn validate_worker_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Worker name cannot be empty".into());
     }
     if name.contains("..") {
         return Err(format!("Worker name '{}' contains '..' sequence", name));
+    }
+    if name.starts_with('.') {
+        return Err(format!(
+            "Worker name '{}' cannot start with '.' (reserved for internal control directories)",
+            name
+        ));
     }
     if !name
         .chars()
@@ -243,6 +283,89 @@ pub async fn fetch_resolved_worker_graph(
     };
 
     serde_json::from_str(&body).map_err(|e| format!("Failed to parse worker graph: {}", e))
+}
+
+/// Maximum number of `dependencies:` levels a single `iii worker add`
+/// install graph may traverse. A registry-resolved graph deeper than
+/// this is rejected before any install loop runs. The cap is a
+/// defense-in-depth measure: server-side resolution should already
+/// stop fork-bomb-shaped graphs, but a compromised or malformed
+/// resolver response should never let a client install thousands of
+/// workers from a single `iii worker add`.
+pub const MAX_DEPENDENCY_DEPTH: u32 = 5;
+
+/// Maximum total node count in a resolved install graph (root +
+/// transitives). Pairs with `MAX_DEPENDENCY_DEPTH`: a wide-but-shallow
+/// fan-out should also be refused before the install loop walks it.
+pub const MAX_TRANSITIVE_DEPS: u32 = 32;
+
+/// Validate a `ResolvedWorkerGraph` against client-side install bounds.
+///
+/// This runs AFTER the registry returned the graph and BEFORE the
+/// install loop touches the filesystem. Rejecting at this seam means
+/// neither the lockfile nor `~/.iii/workers-bundle/` ever see the
+/// partial state of an oversized install attempt.
+///
+/// Returns `Ok(())` when the graph is within bounds, or
+/// `WorkerOpError::BundleDepGraphExceeded` naming the dimension that
+/// failed. Only used by bundle workers today, but the bounds are
+/// independent of worker kind — every install flow that consumes a
+/// resolved graph is welcome to call this.
+pub fn enforce_dep_graph_bounds(
+    graph: &ResolvedWorkerGraph,
+) -> Result<(), crate::core::error::WorkerOpError> {
+    let node_count = graph.graph.len() as u32;
+    if node_count > MAX_TRANSITIVE_DEPS {
+        return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
+            dimension: "transitive_count".into(),
+            limit: MAX_TRANSITIVE_DEPS,
+            actual: node_count,
+        });
+    }
+
+    // BFS over edges to find the longest path from `root.name`. The
+    // graph is a DAG by construction (registry rejects cycles during
+    // resolve), so we can use simple visited-set + depth tracking.
+    let mut adjacency: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for edge in &graph.edges {
+        adjacency.entry(&edge.from).or_default().push(&edge.to);
+    }
+
+    let mut frontier: Vec<(&str, u32)> = vec![(graph.root.name.as_str(), 0)];
+    let mut max_depth: u32 = 0;
+    // Bound the walk at MAX_TRANSITIVE_DEPS to keep this cheap even on
+    // a maliciously crafted very-wide graph.
+    let mut walked = 0u32;
+    while let Some((node, depth)) = frontier.pop() {
+        walked += 1;
+        if walked > MAX_TRANSITIVE_DEPS.saturating_mul(2) {
+            // Defense against malformed graphs with repeated edges.
+            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
+                dimension: "edge_traversal".into(),
+                limit: MAX_TRANSITIVE_DEPS.saturating_mul(2),
+                actual: walked,
+            });
+        }
+        if depth > max_depth {
+            max_depth = depth;
+        }
+        if depth >= MAX_DEPENDENCY_DEPTH {
+            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
+                dimension: "depth".into(),
+                limit: MAX_DEPENDENCY_DEPTH,
+                actual: depth + 1,
+            });
+        }
+        if let Some(children) = adjacency.get(node) {
+            for child in children {
+                frontier.push((child, depth + 1));
+            }
+        }
+    }
+
+    let _ = max_depth; // retained for future structured logging
+    Ok(())
 }
 
 #[cfg(test)]
@@ -453,6 +576,20 @@ mod tests {
     fn validate_worker_name_rejects_dotdot() {
         assert!(validate_worker_name("..").is_err());
         assert!(validate_worker_name("foo..bar").is_err());
+    }
+
+    #[test]
+    fn validate_worker_name_rejects_leading_dot() {
+        // Reserved control-directory names. `iii worker remove .locks`
+        // would otherwise wipe every per-worker fslock system-wide via
+        // delete_worker_artifacts -> remove_dir_all(~/.iii/workers-bundle/.locks).
+        assert!(validate_worker_name(".locks").is_err());
+        assert!(validate_worker_name(".staging").is_err());
+        assert!(validate_worker_name(".").is_err());
+        assert!(validate_worker_name(".hidden").is_err());
+        // Dots in the middle or trailing are still allowed:
+        assert!(validate_worker_name("worker.v2").is_ok());
+        assert!(validate_worker_name("a.b.c").is_ok());
     }
 
     #[test]

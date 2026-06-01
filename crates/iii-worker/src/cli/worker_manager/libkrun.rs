@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! libkrun VM runtime for `iii worker dev`.
@@ -176,17 +176,29 @@ pub async fn run_dev(
             eprintln!("{} Failed to create logs dir: {}", "error:".red(), e);
             return 1;
         }
-        let stdout_file = match std::fs::File::create(logs_dir.join("stdout.log")) {
+        // APPEND, do not truncate. The parent `iii-worker start` writes
+        // progress to these same log files for the full prepare_rootfs /
+        // OCI pull / layer extract / "Preparing sandbox..." phase before
+        // it reaches this point. `File::create` would truncate that
+        // history, leaving the wait UI's `tail:` row showing whatever
+        // libkrun emits next — which is usually nothing until the VM
+        // serial console wakes up. The user then sees ~0 progress signal
+        // during a multi-minute startup. Open in append mode so the
+        // earlier progress lines stay around and the VM serial console
+        // output is added below them.
+        let mut open_opts = std::fs::OpenOptions::new();
+        open_opts.create(true).append(true);
+        let stdout_file = match open_opts.open(logs_dir.join("stdout.log")) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("{} Failed to create stdout log: {}", "error:".red(), e);
+                eprintln!("{} Failed to open stdout log: {}", "error:".red(), e);
                 return 1;
             }
         };
-        let stderr_file = match std::fs::File::create(logs_dir.join("stderr.log")) {
+        let stderr_file = match open_opts.open(logs_dir.join("stderr.log")) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("{} Failed to create stderr log: {}", "error:".red(), e);
+                eprintln!("{} Failed to open stderr log: {}", "error:".red(), e);
                 return 1;
             }
         };
@@ -391,20 +403,20 @@ impl LibkrunAdapter {
             match std::fs::metadata(&parent) {
                 Ok(meta) => {
                     let mode = meta.permissions().mode() & 0o777;
-                    if mode != 0o700 {
-                        if let Err(e) = std::fs::set_permissions(
+                    if mode != 0o700
+                        && let Err(e) = std::fs::set_permissions(
                             &parent,
                             std::fs::Permissions::from_mode(0o700),
-                        ) {
-                            tracing::warn!(
-                                path = %parent.display(),
-                                current_mode = format!("{mode:o}"),
-                                error = %e,
-                                "could not tighten ~/.iii/managed to 0o700; \
-                                 per-worker dirs still land 0o700 but TOCTOU \
-                                 window remains on socket create",
-                            );
-                        }
+                        )
+                    {
+                        tracing::warn!(
+                            path = %parent.display(),
+                            current_mode = format!("{mode:o}"),
+                            error = %e,
+                            "could not tighten ~/.iii/managed to 0o700; \
+                             per-worker dirs still land 0o700 but TOCTOU \
+                             window remains on socket create",
+                        );
                     }
                 }
                 Err(e) => {
@@ -612,10 +624,18 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("failed to create logs dir: {}", logs_dir.display()))?;
 
-        let stdout_file = std::fs::File::create(Self::stdout_log(&spec.name))
-            .with_context(|| "failed to create stdout.log")?;
-        let stderr_file = std::fs::File::create(Self::stderr_log(&spec.name))
-            .with_context(|| "failed to create stderr.log")?;
+        // APPEND, not truncate — see the rationale in `run_dev` above.
+        // The parent `iii-worker start` (and engine) wrote progress to
+        // these same files; truncating loses everything the wait UI
+        // could surface via `tail:`.
+        let mut open_opts = std::fs::OpenOptions::new();
+        open_opts.create(true).append(true);
+        let stdout_file = open_opts
+            .open(Self::stdout_log(&spec.name))
+            .with_context(|| "failed to open stdout.log")?;
+        let stderr_file = open_opts
+            .open(Self::stderr_log(&spec.name))
+            .with_context(|| "failed to open stderr.log")?;
 
         let (exec_path, mut exec_args) =
             read_oci_entrypoint(&worker_rootfs).unwrap_or_else(|| ("/bin/sh".to_string(), vec![]));

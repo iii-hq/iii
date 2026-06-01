@@ -106,7 +106,7 @@ pub fn setup(iii: &III) {
 
     // register_function on the handle: enforces Fn(ScheduleCallRequest) -> ...
     schedule.register_function("example::send_report", |_input: ScheduleCallRequest| {
-        Ok::<_, String>(json!({ "sent": true }))
+        Ok::<_, IIIError>(json!({ "sent": true }))
     });
 
     // register_trigger on the handle: enforces ScheduleTriggerConfig
@@ -134,7 +134,7 @@ pub fn setup(iii: &III) {
 
     // Compile-time safe: function input must be FileWatchCallRequest
     file_watch.register_function("example::process_csv", |input: FileWatchCallRequest| {
-        Ok::<_, String>(json!({ "processed": true, "path": input.path }))
+        Ok::<_, IIIError>(json!({ "processed": true, "path": input.path }))
     });
 
     // Compile-time safe: config must be FileWatchConfig
@@ -157,7 +157,7 @@ pub fn setup(iii: &III) {
     ));
 
     custom.register_function("example::on_custom_event", |input: serde_json::Value| {
-        Ok::<_, String>(json!({ "received": input }))
+        Ok::<_, IIIError>(json!({ "received": input }))
     });
 
     custom

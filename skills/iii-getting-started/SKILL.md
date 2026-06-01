@@ -1,14 +1,15 @@
 ---
 name: iii-getting-started
 description: >-
-  Install the iii engine, set up your first worker, and get a working backend
-  running. Use when a user wants to start a new iii project, install the SDK,
-  or needs help with initial setup and configuration.
+  Install the iii engine, set up your first worker, and get a working backend running. Use when a
+  user wants to start a new iii project, install the SDK, or needs help with initial setup and
+  configuration.
 ---
 
 # Getting Started with iii
 
-iii replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability pipeline with a single engine and three primitives: **Function**, **Trigger**, **Worker**.
+iii replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability
+pipeline with a single engine and three primitives: **Function**, **Trigger**, **Worker**.
 
 ## Step 1: Install the Engine
 
@@ -28,7 +29,8 @@ iii --version
 iii create
 ```
 
-Follow the interactive prompts to select a template and language. The default quickstart template includes TypeScript, Python, and Rust workers.
+Follow the interactive prompts to select a template and language. The default quickstart template
+includes TypeScript, Python, and Rust workers.
 
 Then change into the project directory you chose at the prompt:
 
@@ -42,7 +44,8 @@ cd <your-project>
 iii --config iii-config.yaml
 ```
 
-The engine starts and listens for worker connections on `ws://localhost:49134`. The REST API is available at `http://localhost:3111`. The console is available at `http://localhost:3113`.
+The engine starts and listens for worker connections on `ws://localhost:49134`. The REST API is
+available at `http://localhost:3111`. The console is available at `http://localhost:3113`.
 
 ## Step 4: Install the SDK
 
@@ -55,9 +58,8 @@ npm install iii-sdk
 # Python
 pip install iii-sdk
 
-# Rust — add to Cargo.toml
-# [dependencies]
-# iii-sdk = "*"
+# Rust
+cargo add iii-sdk
 ```
 
 ## Step 5: Write Your First Worker
@@ -65,26 +67,26 @@ pip install iii-sdk
 ### TypeScript
 
 ```typescript
-import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
+import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
 
 iii.registerFunction(
-  'hello::greet',
+  "hello::greet",
   async (input) => {
-    const logger = new Logger()
-    const name = input?.name ?? 'world'
-    logger.info('Greeting user', { name })
-    return { message: `Hello, ${name}!` }
+    const logger = new Logger();
+    const name = input?.name ?? "world";
+    logger.info("Greeting user", { name });
+    return { message: `Hello, ${name}!` };
   },
-  { description: 'Greet a user by name' },
-)
+  { description: "Greet a user by name" },
+);
 
 iii.registerTrigger({
-  type: 'http',
-  function_id: 'hello::greet',
-  config: { api_path: '/hello', http_method: 'POST' },
-})
+  type: "http",
+  function_id: "hello::greet",
+  config: { api_path: "/hello", http_method: "POST" },
+});
 ```
 
 ### Python
@@ -100,32 +102,32 @@ def greet(data):
     logger.info("Greeting user", {"name": name})
     return {"message": f"Hello, {name}!"}
 
-iii.register_function({"id": "hello::greet", "description": "Greet a user by name"}, greet)
+iii.register_function("hello::greet", greet, description="Greet a user by name")
 iii.register_trigger({"type": "http", "function_id": "hello::greet", "config": {"api_path": "/hello", "http_method": "POST"}})
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, RegisterTriggerInput};
 use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunctionMessage::with_id("hello::greet".into()),
-    |input: serde_json::Value| async move {
+    RegisterFunction::new("hello::greet", |input: serde_json::Value| -> Result<serde_json::Value, String> {
         let logger = Logger::new();
         let name = input["name"].as_str().unwrap_or("world");
-        logger.info("Greeting user", Some(&json!({ "name": name })));
+        logger.info("Greeting user", Some(json!({ "name": name })));
         Ok(json!({ "message": format!("Hello, {}!", name) }))
-    },
+    }).description("Greet a user by name"),
 );
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "hello::greet".into(),
     config: json!({ "api_path": "/hello", "http_method": "POST" }),
+    metadata: None,
 })?;
 ```
 
@@ -140,38 +142,57 @@ curl -X POST http://localhost:3111/hello \
 Expected response:
 
 ```json
-{"message": "Hello, iii!"}
+{ "message": "Hello, iii!" }
 ```
+
+## Add Existing Workers
+
+To add a capability that already exists, browse `https://workers.iii.dev/` and install the worker by
+name:
+
+```bash
+iii worker add iii-state
+iii worker add iii-queue
+iii worker add image-resize@0.1.2
+```
+
+`iii worker add` writes project config, installs the worker artifact, starts it, and records the pin
+in `iii.lock` when the worker comes from the registry. Commit `iii.lock` with your config so other
+machines can replay the same worker set with `iii worker sync`.
 
 ## Install Agent Skills
 
 Get all iii skills for your AI coding agent:
 
 ```bash
-npx skillkit add iii-hq/iii/skills
+npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent how to use every iii primitive — HTTP endpoints, cron scheduling, queues, state management, streams, channels, and more. Available for Claude Code, Cursor, Codex, Gemini CLI, and 30+ other agents.
+Skills teach your agent the top-level iii model: functions, triggers, workers, registry access,
+SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
+live with the worker docs and registry entries.
 
 ## Adapting This Pattern
 
-- Add more functions to the same worker — each gets its own `registerFunction` + `registerTrigger` calls
+- Add more functions to the same worker — each gets its own `registerFunction` + `registerTrigger`
+  calls
 - Use `::` separator for function IDs to namespace them: `orders::create`, `orders::validate`
-- Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field: sec min hour day month weekday year)
+- Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field: sec
+  min hour day month weekday year)
 - Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
 - Use `state::get` / `state::set` to persist data across function calls
+- Use `iii worker add <name>` when the capability already exists in the worker registry
 
 ## Recommended Next Steps
 
 After getting your first worker running:
 
-1. **Add state** — Use `iii-state-management` skill to persist data
-2. **Add a queue** — Use `iii-queue-processing` skill for async job processing
-3. **Add a cron job** — Use `iii-cron-scheduling` skill for scheduled tasks
-4. **Build an API** — Use `iii-http-endpoints` skill for REST endpoints with CRUD
-5. **Add observability** — Use `iii-observability` skill for tracing and metrics
-6. **Explore architecture patterns** — See `iii-agentic-backend`, `iii-reactive-backend`, `iii-workflow-orchestration`
+1. **Register functions, triggers, and workers** — See `iii-core-primitives`
+2. **Choose the right SDK APIs** — See `iii-sdk-reference`
+3. **Configure the engine** — See `iii-engine-config`
+4. **Explore backend patterns** — See `iii-architecture-patterns`
+5. **Handle failures well** — See `iii-error-handling`
 
 ## Key Resources
 
@@ -184,16 +205,18 @@ After getting your first worker running:
 
 ## Pattern Boundaries
 
-- For HTTP endpoint patterns (CRUD, parameterized routes), prefer `iii-http-endpoints`
-- For cron/scheduling patterns, prefer `iii-cron-scheduling`
-- For queue/async job patterns, prefer `iii-queue-processing`
-- For state persistence patterns, prefer `iii-state-management`
+- For function and trigger registration patterns, worker creation, worker registry access, trigger
+  payload schemas, invocation modes, channels, custom triggers, and HTTP-invoked functions, prefer
+  `iii-core-primitives`
+- For language-specific SDK APIs, prefer `iii-sdk-reference`
 - For engine configuration, prefer `iii-engine-config`
+- For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker docs under `engine/src/workers/**/skills`
 - Stay with `iii-getting-started` for installation, initial setup, and first-worker guidance
 
 ## When to Use
 
-- Use this skill when the task is about installing iii, creating a new project, or writing a first worker.
+- Use this skill when the task is about installing iii, creating a new project, or writing a first
+  worker.
 - Triggers when the request asks for setup help, quickstart guidance, or getting started with iii.
 
 ## Boundaries

@@ -1,0 +1,18 @@
+{
+  "printWidth": 100,
+  "proseWrap": "always",
+  "overrides": [
+    {
+      "files": ["*.md"],
+      "options": {
+        "parser": "markdown"
+      }
+    },
+    {
+      "files": ["*.mdx"],
+      "options": {
+        "parser": "mdx"
+      }
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+---
+// GTM <noscript> iframe + cookie consent banner. The DOM, copy, and behavior
+// mirror website/index.html lines 4288-4337 so the same 'iii_cookie_consent'
+// localStorage decision is honored across iii.dev and /blog.
+---
+
+<!-- Google Tag Manager (noscript) -->
+<noscript
+  ><iframe
+    src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8"
+    height="0"
+    width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+
+<div id="cookie-consent-banner" class="cookie-consent-wrap" hidden>
+  <div class="cookie-consent-panel">
+    <p style="margin:0;">
+      This site uses cookies to understand how visitors find us.
+      <span class="cc-strong">You can accept or decline non-essential cookies.</span>
+    </p>
+    <div class="cookie-consent-actions">
+      <button type="button" class="cc-decline" data-consent-reject>Decline</button>
+      <button type="button" class="cc-accept" data-consent-accept>Accept</button>
+    </div>
+  </div>
+</div>
+
+<script is:inline>
+  (function () {
+    var STORAGE_KEY = 'iii_cookie_consent';
+    var banner = document.getElementById('cookie-consent-banner');
+    if (!banner) return;
+    try {
+      var stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === 'accepted' || stored === 'rejected') {
+        banner.remove();
+        return;
+      }
+    } catch (_) {}
+    banner.removeAttribute('hidden');
+    var accept = banner.querySelector('[data-consent-accept]');
+    var reject = banner.querySelector('[data-consent-reject]');
+    if (accept) {
+      accept.addEventListener('click', function () {
+        try {
+          localStorage.setItem(STORAGE_KEY, 'accepted');
+        } catch (_) {}
+        banner.remove();
+        if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
+      });
+    }
+    if (reject) {
+      reject.addEventListener('click', function () {
+        try {
+          localStorage.setItem(STORAGE_KEY, 'rejected');
+        } catch (_) {}
+        banner.remove();
+      });
+    }
+  })();
+</script>
+
+<style is:global>
+  .cookie-consent-wrap {
+    position: fixed;
+    inset: auto 1rem 1rem 1rem;
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .cookie-consent-panel {
+    pointer-events: auto;
+    max-width: 560px;
+    width: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+    font-size: 0.9rem;
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .cookie-consent-panel .cc-strong {
+    font-weight: 600;
+  }
+  .cookie-consent-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+  }
+  .cookie-consent-actions button {
+    font: inherit;
+    padding: 0.4rem 0.9rem;
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+    cursor: pointer;
+    background: transparent;
+    color: var(--ink);
+  }
+  .cookie-consent-actions .cc-accept {
+    background: var(--ink);
+    color: var(--bg);
+    border-color: var(--ink);
+  }
+  .cookie-consent-actions .cc-accept:hover {
+    filter: brightness(1.15);
+  }
+  .cookie-consent-actions .cc-decline:hover {
+    background: var(--paper-2);
+  }
+</style>

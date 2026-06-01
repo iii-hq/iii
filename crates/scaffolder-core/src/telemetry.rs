@@ -9,6 +9,8 @@ use crate::runtime::check::Language;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
+const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
+const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const TELEMETRY_SCHEMA_VERSION: u8 = 2;
 
 #[cfg(test)]
@@ -152,6 +154,20 @@ struct AmplitudePayload<'a> {
     events: Vec<AmplitudeEvent>,
 }
 
+#[derive(Serialize)]
+struct PostHogPayload<'a> {
+    api_key: &'a str,
+    historical_migration: bool,
+    batch: Vec<PostHogEvent>,
+}
+
+#[derive(Serialize)]
+struct PostHogEvent {
+    event: String,
+    properties: serde_json::Value,
+    uuid: String,
+}
+
 fn build_amplitude_client() -> Option<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -164,6 +180,145 @@ async fn post_amplitude(endpoint: &str, payload: &AmplitudePayload<'_>) {
         return;
     };
     let _ = client.post(endpoint).json(payload).send().await;
+}
+
+fn posthog_user_mode(event_type: &str) -> &'static str {
+    match event_type {
+        "heartbeat" | "engine_stopped" => "using",
+        _ => "building",
+    }
+}
+
+fn posthog_batch_url(host: &str) -> String {
+    format!("{}/batch/", host.trim_end_matches('/'))
+}
+
+fn resolve_posthog_host() -> String {
+    std::env::var("POSTHOG_HOST")
+        .ok()
+        .filter(|host| !host.trim().is_empty())
+        .unwrap_or_else(|| POSTHOG_DEFAULT_HOST.to_string())
+}
+
+fn resolve_posthog_api_key() -> Option<String> {
+    std::env::var("POSTHOG_PROJECT_API_KEY")
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+        .or_else(|| {
+            std::env::var("POSTHOG_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+        })
+        .or_else(|| {
+            let key = POSTHOG_PROJECT_API_KEY.to_string();
+            if key.trim().is_empty() {
+                None
+            } else {
+                Some(key)
+            }
+        })
+}
+
+fn redact_path_string(value: &str) -> String {
+    const PLACEHOLDER: &str = "<REDACTED_PATH>";
+
+    if value.starts_with("~/") {
+        return PLACEHOLDER.to_string();
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+        && value.starts_with(&home)
+    {
+        return PLACEHOLDER.to_string();
+    }
+
+    let unix_home_path = value
+        .strip_prefix("/home/")
+        .or_else(|| value.strip_prefix("/Users/"));
+    if let Some(rest) = unix_home_path
+        && rest.split('/').nth(1).is_some()
+    {
+        return PLACEHOLDER.to_string();
+    }
+
+    value.to_string()
+}
+
+fn redact_path_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            *s = redact_path_string(s);
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values_mut() {
+                redact_path_values(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items {
+                redact_path_values(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_posthog_payload<'a>(
+    api_key: &'a str,
+    event: &AmplitudeEvent,
+    event_properties: serde_json::Value,
+    user_properties: Option<serde_json::Value>,
+) -> PostHogPayload<'a> {
+    let mut properties = serde_json::Map::new();
+    properties.insert("distinct_id".into(), serde_json::json!(event.device_id));
+    properties.insert("$process_person_profile".into(), serde_json::json!(false));
+    properties.insert(
+        "user_mode".into(),
+        serde_json::json!(posthog_user_mode(&event.event_type)),
+    );
+    properties.insert("platform".into(), serde_json::json!(event.platform));
+    properties.insert("os_name".into(), serde_json::json!(event.os_name));
+    properties.insert("app_version".into(), serde_json::json!(event.app_version));
+    if let Some(serde_json::Value::Object(user_props)) = user_properties {
+        for (key, value) in user_props {
+            properties.insert(key, value);
+        }
+    }
+    if let serde_json::Value::Object(event_props) = event_properties {
+        for (key, value) in event_props {
+            properties.insert(key, value);
+        }
+    }
+
+    PostHogPayload {
+        api_key,
+        historical_migration: false,
+        batch: vec![PostHogEvent {
+            event: event.event_type.clone(),
+            properties: serde_json::Value::Object(properties),
+            uuid: event.insert_id.clone(),
+        }],
+    }
+}
+
+async fn post_posthog(
+    event: &AmplitudeEvent,
+    event_properties: serde_json::Value,
+    user_properties: Option<serde_json::Value>,
+) {
+    let Some(key) = resolve_posthog_api_key() else {
+        return;
+    };
+    let host = resolve_posthog_host();
+    let Some(client) = build_amplitude_client() else {
+        return;
+    };
+    let payload = build_posthog_payload(&key, event, event_properties, user_properties);
+    let _ = client
+        .post(posthog_batch_url(&host))
+        .json(&payload)
+        .send()
+        .await;
 }
 
 /// Sends a lightweight failure event when telemetry.yaml is missing.
@@ -189,7 +344,17 @@ async fn send_telemetry_failed(endpoint: &str, platform: &str, tools_version: &s
         api_key: API_KEY,
         events: vec![event],
     };
-    post_amplitude(endpoint, &payload).await;
+    let event = &payload.events[0];
+    let mut event_properties = event.event_properties.clone();
+    let mut user_properties = event.user_properties.clone();
+    redact_path_values(&mut event_properties);
+    if let Some(props) = user_properties.as_mut() {
+        redact_path_values(props);
+    }
+    tokio::join!(
+        post_posthog(event, event_properties, user_properties),
+        post_amplitude(endpoint, &payload)
+    );
 }
 
 async fn send_amplitude_to(
@@ -203,12 +368,13 @@ async fn send_amplitude_to(
         send_telemetry_failed(endpoint, platform, tools_version).await;
         return;
     };
+    let user_properties = Some(build_user_properties(tools_version, &device_id));
     let event = AmplitudeEvent {
         device_id: device_id.clone(),
         user_id: None,
         event_type: event_type.to_string(),
         event_properties,
-        user_properties: Some(build_user_properties(tools_version, &device_id)),
+        user_properties,
         platform: platform.to_string(),
         os_name: std::env::consts::OS.to_string(),
         app_version: tools_version.to_string(),
@@ -220,7 +386,15 @@ async fn send_amplitude_to(
         api_key: API_KEY,
         events: vec![event],
     };
-    post_amplitude(endpoint, &payload).await;
+    let event = &payload.events[0];
+    tokio::join!(
+        post_posthog(
+            event,
+            event.event_properties.clone(),
+            event.user_properties.clone(),
+        ),
+        post_amplitude(endpoint, &payload)
+    );
 }
 
 async fn send_amplitude(
@@ -260,22 +434,55 @@ pub fn platform_for_product(product_name: &str) -> &'static str {
     }
 }
 
+/// Persist a project's identity to `.iii/project.ini`.
+///
+/// `device_id` is optional: when provided, it's written as an additional
+/// line so the engine telemetry pipeline can associate the project with the
+/// host machine (e.g. for `III_HOST_USER_ID` Docker injection in
+/// `iii project generate-docker`). Unset means "no device association",
+/// matching the historical behavior used by the scaffolder TUI.
+///
+/// Values must not contain `\n` or `\r` — the function rejects them with
+/// `InvalidInput` so a hostile project name can't smuggle additional INI
+/// keys.
 pub async fn write_project_ini(
     project_dir: &Path,
     project_id: &str,
     project_name: &str,
     template: &str,
+    device_id: Option<&str>,
 ) -> Result<()> {
+    for (k, v) in [
+        ("project_id", project_id),
+        ("project_name", project_name),
+        ("source", template),
+    ] {
+        ensure_no_newline(k, v)?;
+    }
+    if let Some(d) = device_id {
+        ensure_no_newline("device_id", d)?;
+    }
+
     let dir = project_dir.join(".iii");
     fs::create_dir_all(&dir)
         .await
         .context("create .iii directory")?;
-    let body = format!(
+    let mut body = format!(
         "[project]\nproject_id={project_id}\nproject_name={project_name}\nsource={template}\n"
     );
+    if let Some(d) = device_id {
+        body.push_str(&format!("device_id={d}\n"));
+    }
     fs::write(dir.join("project.ini"), body)
         .await
         .context("write project.ini")?;
+    Ok(())
+}
+
+fn ensure_no_newline(key: &str, value: &str) -> Result<()> {
+    if value.contains('\n') || value.contains('\r') {
+        anyhow::bail!("{key} value must not contain newline characters");
+    }
     Ok(())
 }
 
@@ -375,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn write_project_ini_includes_source() {
         let tmp = tempfile::tempdir().unwrap();
-        write_project_ini(tmp.path(), "proj-1", "my-proj", "quickstart")
+        write_project_ini(tmp.path(), "proj-1", "my-proj", "quickstart", None)
             .await
             .unwrap();
         let contents =
@@ -383,17 +590,44 @@ mod tests {
         assert!(contents.contains("project_id=proj-1"));
         assert!(contents.contains("project_name=my-proj"));
         assert!(contents.contains("source=quickstart"));
+        assert!(!contents.contains("device_id="));
     }
 
     #[tokio::test]
     async fn write_project_ini_with_custom_template() {
         let tmp = tempfile::tempdir().unwrap();
-        write_project_ini(tmp.path(), "proj-2", "other", "multi-worker-orchestration")
+        write_project_ini(
+            tmp.path(),
+            "proj-2",
+            "other",
+            "multi-worker-orchestration",
+            None,
+        )
+        .await
+        .unwrap();
+        let contents =
+            std::fs::read_to_string(tmp.path().join(".iii").join("project.ini")).unwrap();
+        assert!(contents.contains("source=multi-worker-orchestration"));
+    }
+
+    #[tokio::test]
+    async fn write_project_ini_with_device_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_ini(tmp.path(), "p", "n", "init", Some("device-abc"))
             .await
             .unwrap();
         let contents =
             std::fs::read_to_string(tmp.path().join(".iii").join("project.ini")).unwrap();
-        assert!(contents.contains("source=multi-worker-orchestration"));
+        assert!(contents.contains("device_id=device-abc"));
+    }
+
+    #[tokio::test]
+    async fn write_project_ini_rejects_newline_in_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = write_project_ini(tmp.path(), "p", "evil\nproject_id=spoofed", "init", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("must not contain newline"));
     }
 
     #[test]
@@ -505,5 +739,92 @@ mod tests {
             "user_id should not be sent"
         );
         assert_eq!(event["event_properties"]["project_id"], "test-id");
+    }
+
+    #[test]
+    fn posthog_payload_marks_project_created_as_active_development() {
+        let event = AmplitudeEvent {
+            device_id: "device-1".to_string(),
+            user_id: None,
+            event_type: "project_created".to_string(),
+            event_properties: serde_json::json!({
+                "project_id": "proj-1",
+                "template": "quickstart",
+            }),
+            user_properties: Some(serde_json::json!({
+                "cli_version": "0.3.0",
+            })),
+            platform: "iii-tools".to_string(),
+            os_name: "linux".to_string(),
+            app_version: "0.3.0".to_string(),
+            time: 1,
+            insert_id: "insert-1".to_string(),
+            ip: Some("$remote".to_string()),
+        };
+        let payload = build_posthog_payload(
+            "phc_test",
+            &event,
+            event.event_properties.clone(),
+            event.user_properties.clone(),
+        );
+        let json = serde_json::to_value(payload).unwrap();
+        let event = &json["batch"][0];
+
+        assert_eq!(json["api_key"], "phc_test");
+        assert_eq!(event["event"], "project_created");
+        assert_eq!(event["uuid"], "insert-1");
+        assert_eq!(event["properties"]["distinct_id"], "device-1");
+        assert_eq!(event["properties"]["$process_person_profile"], false);
+        assert_eq!(event["properties"]["user_mode"], "building");
+        assert_eq!(event["properties"]["project_id"], "proj-1");
+        assert_eq!(event["properties"]["cli_version"], "0.3.0");
+    }
+
+    #[test]
+    #[serial_test::serial(home_env)]
+    fn resolve_posthog_host_ignores_empty_env() {
+        unsafe {
+            std::env::set_var("POSTHOG_HOST", "   ");
+        }
+        assert_eq!(resolve_posthog_host(), POSTHOG_DEFAULT_HOST);
+        unsafe {
+            std::env::remove_var("POSTHOG_HOST");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(home_env)]
+    fn resolve_posthog_api_key_ignores_empty_env_before_fallback() {
+        unsafe {
+            std::env::set_var("POSTHOG_PROJECT_API_KEY", "   ");
+            std::env::set_var("POSTHOG_API_KEY", "fallback-key");
+        }
+        assert_eq!(resolve_posthog_api_key().as_deref(), Some("fallback-key"));
+        unsafe {
+            std::env::remove_var("POSTHOG_PROJECT_API_KEY");
+            std::env::remove_var("POSTHOG_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(home_env)]
+    fn redact_path_values_removes_home_paths() {
+        unsafe {
+            std::env::set_var("HOME", "/Users/alice");
+        }
+        let mut value = serde_json::json!({
+            "path": "/Users/alice/.iii/telemetry.yaml",
+            "nested": { "other": "/home/bob/.iii/telemetry.yaml" },
+            "tilde": "~/.iii/telemetry.yaml",
+            "safe": "/var/tmp/telemetry.yaml",
+        });
+        redact_path_values(&mut value);
+        assert_eq!(value["path"], "<REDACTED_PATH>");
+        assert_eq!(value["nested"]["other"], "<REDACTED_PATH>");
+        assert_eq!(value["tilde"], "<REDACTED_PATH>");
+        assert_eq!(value["safe"], "/var/tmp/telemetry.yaml");
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 }

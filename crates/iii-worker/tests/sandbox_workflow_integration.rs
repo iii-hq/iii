@@ -25,7 +25,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use iii_worker::sandbox_daemon::errors::SandboxError;
-use iii_worker::sandbox_daemon::exec::{ExecRequest, handle_exec};
+use iii_worker::sandbox_daemon::exec::{EnvShape, ExecRequest, handle_exec};
 use iii_worker::sandbox_daemon::list::{ListRequest, handle_list};
 use iii_worker::sandbox_daemon::registry::{SandboxRegistry, SandboxState};
 use iii_worker::sandbox_daemon::stop::{StopRequest, handle_stop};
@@ -54,8 +54,10 @@ fn build_req(id: Uuid, cmd: impl Into<String>) -> ExecRequest {
         sandbox_id: id.to_string(),
         cmd: cmd.into(),
         args: vec![],
+
+        argv: vec![],
         stdin: None,
-        env: vec![],
+        env: EnvShape::default(),
         timeout_ms: None,
         workdir: None,
     }

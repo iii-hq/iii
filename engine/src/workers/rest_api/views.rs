@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Duration};
@@ -30,6 +30,15 @@ fn generate_error_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
+}
+
+/// Map an HTTP response status code to an OTel span status string.
+///
+/// Only responses with status >= 400 are treated as errors; 1xx/2xx/3xx
+/// (anything below 400) are not. A 3xx redirect is a normal outcome, not a
+/// failure, so it must not surface as an error in observability traces.
+fn otel_status_for(status_code: u16) -> &'static str {
+    if status_code < 400 { "OK" } else { "ERROR" }
 }
 
 use super::{HttpWorker, api_core::RouterMatch, types::TriggerMetadata};
@@ -399,6 +408,10 @@ pub async fn dynamic_handler(
                     }
                     axum::body::Bytes::from(buf)
                 };
+                if let Some(req_tx) = req_tx
+                    && !body_bytes.is_empty() {
+                        let _ = req_tx.send(ChannelItem::Binary(body_bytes.clone())).await;
+                    }
                 serde_json::from_slice(&body_bytes).unwrap_or(Value::Null)
             } else if let Some(req_tx) = req_tx {
                 let mut body = body;
@@ -563,8 +576,7 @@ pub async fn dynamic_handler(
                                     let status_code = http_response.status_code;
 
                                     tracing::Span::current().record("http.response.status_code", status_code);
-                                    let otel = if (200..300).contains(&status_code) { "OK" } else { "ERROR" };
-                                    tracing::Span::current().record("otel.status_code", otel);
+                                    tracing::Span::current().record("otel.status_code", otel_status_for(status_code));
 
                                     channel_mgr.remove_channel(&res_ch_id);
                                     channel_mgr.remove_channel(&req_ch_id);
@@ -636,8 +648,7 @@ pub async fn dynamic_handler(
 
                 // Build streaming response from accumulated control messages + binary body
                 tracing::Span::current().record("http.response.status_code", status_code);
-                let otel = if (200..300).contains(&status_code) { "OK" } else { "ERROR" };
-                tracing::Span::current().record("otel.status_code", otel);
+                tracing::Span::current().record("otel.status_code", otel_status_for(status_code));
 
                 channel_mgr.remove_channel(&res_ch_id);
                 channel_mgr.remove_channel(&req_ch_id);
@@ -697,8 +708,7 @@ pub async fn dynamic_handler(
                     let http_response = HttpResponse::from_function_return(result);
                     let sc = http_response.status_code;
                     tracing::Span::current().record("http.response.status_code", sc);
-                    let otel = if (200..300).contains(&sc) { "OK" } else { "ERROR" };
-                    tracing::Span::current().record("otel.status_code", otel);
+                    tracing::Span::current().record("otel.status_code", otel_status_for(sc));
                     http_response.into_axum_response()
                 }
                 Ok(Err(err)) => {
@@ -759,6 +769,27 @@ pub async fn dynamic_handler(
 mod tests {
     use super::*;
     use axum::http::{HeaderName, HeaderValue, header::HeaderMap};
+
+    // ── otel_status_for ────────────────────────────────────────────────
+
+    #[test]
+    fn test_otel_status_for_below_400_is_ok() {
+        // Anything < 400 must not be an error: 1xx, 2xx, and 3xx all map to OK.
+        for code in [100u16, 101, 200, 201, 204, 301, 302, 304, 307, 308, 399] {
+            assert_eq!(otel_status_for(code), "OK", "status {code} should be OK");
+        }
+    }
+
+    #[test]
+    fn test_otel_status_for_400_and_above_is_error() {
+        for code in [400u16, 404, 422, 499, 500, 502, 503] {
+            assert_eq!(
+                otel_status_for(code),
+                "ERROR",
+                "status {code} should be ERROR"
+            );
+        }
+    }
 
     // ── generate_error_id ──────────────────────────────────────────────
 
@@ -1477,6 +1508,33 @@ mod tests {
             .unwrap();
     }
 
+    async fn drain_request_body_channel(
+        engine: &Engine,
+        request: &HttpRequest,
+        timeout_message: &'static str,
+    ) -> Vec<u8> {
+        let mut rx = engine
+            .channel_manager
+            .take_receiver(
+                &request.request_body.channel_id,
+                &request.request_body.access_key,
+            )
+            .await
+            .expect("request body receiver");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut raw = Vec::new();
+            while let Some(item) = rx.recv().await {
+                if let ChannelItem::Binary(bytes) = item {
+                    raw.extend_from_slice(&bytes);
+                }
+            }
+            raw
+        })
+        .await
+        .expect(timeout_message)
+    }
+
     #[tokio::test]
     async fn test_dynamic_handler_route_not_found() {
         let engine = make_test_engine();
@@ -2082,6 +2140,140 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_handler_json_request_body_channel_reads_raw_bytes() {
+        let engine = make_test_engine();
+        let engine_for_handler = engine.clone();
+
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::json_raw_body".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let engine = engine_for_handler.clone();
+                async move {
+                    let request: HttpRequest = serde_json::from_value(input).unwrap();
+                    let raw = drain_request_body_channel(
+                        &engine,
+                        &request,
+                        "request body channel should close",
+                    )
+                    .await;
+
+                    FunctionResult::Success(Some(json!({
+                        "status_code": 200,
+                        "body": {
+                            "parsed_body": request.body,
+                            "raw_body": String::from_utf8(raw).unwrap()
+                        }
+                    })))
+                }
+            }),
+        );
+
+        let api_handler = make_test_api_handler(engine.clone());
+        register_test_route(&api_handler, "/json-raw", "POST", "test::json_raw_body").await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        let query_params: HashMap<String, String> = HashMap::new();
+
+        let response = dynamic_handler(
+            Method::POST,
+            "/json-raw".parse().unwrap(),
+            headers,
+            axum::extract::Extension(engine),
+            axum::extract::Extension(api_handler),
+            axum::extract::Extension("/json-raw".to_string()),
+            Query(query_params),
+            Body::from(r#"{"key":"value"}"#),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["parsed_body"], json!({"key": "value"}));
+        assert_eq!(value["raw_body"], r#"{"key":"value"}"#);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_handler_empty_json_request_body_channel_closes() {
+        let engine = make_test_engine();
+        let engine_for_handler = engine.clone();
+
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::empty_json_raw_body".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let engine = engine_for_handler.clone();
+                async move {
+                    let request: HttpRequest = serde_json::from_value(input).unwrap();
+                    let raw = drain_request_body_channel(
+                        &engine,
+                        &request,
+                        "empty request body channel should close",
+                    )
+                    .await;
+
+                    FunctionResult::Success(Some(json!({
+                        "status_code": 200,
+                        "body": {
+                            "parsed_is_null": request.body.is_null(),
+                            "raw_len": raw.len()
+                        }
+                    })))
+                }
+            }),
+        );
+
+        let api_handler = make_test_api_handler(engine.clone());
+        register_test_route(
+            &api_handler,
+            "/json-raw-empty",
+            "POST",
+            "test::empty_json_raw_body",
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        let query_params: HashMap<String, String> = HashMap::new();
+
+        let response = dynamic_handler(
+            Method::POST,
+            "/json-raw-empty".parse().unwrap(),
+            headers,
+            axum::extract::Extension(engine),
+            axum::extract::Extension(api_handler),
+            axum::extract::Extension("/json-raw-empty".to_string()),
+            Query(query_params),
+            Body::empty(),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["parsed_is_null"], json!(true));
+        assert_eq!(value["raw_len"], json!(0));
     }
 
     #[tokio::test]

@@ -1,0 +1,214 @@
+---
+title: 'Adapters'
+description: 'Pluggable backends for iii workers — swap between in-memory, file-based, Redis, and RabbitMQ without changing your application code.'
+---
+
+Each iii worker that needs persistence or distribution uses an **adapter** — a pluggable backend that implements a fixed interface. Swap adapters in `iii-config.yaml` without touching application code.
+
+## Pattern
+
+```yaml
+workers:
+  - name: iii-queue
+    config:
+      adapter:
+        name: redis
+        config:
+          redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+Every adapter entry has two fields:
+- `name` — the adapter short name
+- `config` — adapter-specific config (omit if not needed)
+
+## Adapter Reference
+
+### Queue
+
+| Adapter | Name | External dependency |
+|---------|------|---------------------|
+| Built-in | `builtin` | None |
+| Redis | `redis` | Redis |
+| RabbitMQ | `rabbitmq` | RabbitMQ |
+
+#### `builtin`
+
+Default. In-process only with retries and DLQ — does not share messages across engine instances.
+
+```yaml
+adapter:
+  name: builtin
+```
+
+#### `redis`
+
+```yaml
+adapter:
+  name: redis
+  config:
+    redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+#### `rabbitmq`
+
+```yaml
+adapter:
+  name: rabbitmq
+  config:
+    amqp_url: ${RABBITMQ_URL:amqp://localhost:5672}
+    max_attempts: 3
+    prefetch_count: 10
+    queue_mode: standard   # standard | fifo
+```
+
+<Info>
+  For retry behavior, dead-letter queues, and full config reference, see the [Queue worker](../workers/iii-queue).
+</Info>
+
+---
+
+### State
+
+| Adapter | Name | External dependency |
+|---------|------|---------------------|
+| KV Store | `kv` | None |
+| Redis | `redis` | Redis |
+| Bridge | `bridge` | Remote iii Engine |
+
+#### `kv`
+
+Default. Supports in-memory or file-based persistence.
+
+```yaml
+adapter:
+  name: kv
+  config:
+    store_method: file_based   # in_memory | file_based
+    file_path: ./data/state
+    save_interval_ms: 5000
+```
+
+#### `redis`
+
+```yaml
+adapter:
+  name: redis
+  config:
+    redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+#### `bridge`
+
+Forwards state operations to a remote iii Engine.
+
+```yaml
+adapter:
+  name: bridge
+```
+
+---
+
+### Stream
+
+| Adapter | Name | External dependency |
+|---------|------|---------------------|
+| KV Store | `kv` | None |
+| Redis | `redis` | Redis |
+
+#### `kv`
+
+Default. In-process only.
+
+```yaml
+adapter:
+  name: kv
+  config:
+    store_method: file_based   # in_memory | file_based
+    file_path: ./data/stream_store
+    save_interval_ms: 5000
+```
+
+#### `redis`
+
+```yaml
+adapter:
+  name: redis
+  config:
+    redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+---
+
+### Cron
+
+| Adapter | Name | External dependency |
+|---------|------|---------------------|
+| KV Cron | `kv` | None |
+| Redis Cron | `redis` | Redis |
+
+#### `kv`
+
+Default. Process-local locks — jobs may run on every instance in multi-instance deployments.
+
+```yaml
+adapter:
+  name: kv
+```
+
+#### `redis`
+
+Distributed locking via Redis — ensures each job runs only once across all instances.
+
+```yaml
+adapter:
+  name: redis
+  config:
+    redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+---
+
+### PubSub
+
+| Adapter | Name | External dependency |
+|---------|------|---------------------|
+| Local | `local` | None |
+| Redis | `redis` | Redis |
+
+#### `local`
+
+Default. In-process broadcast — subscribers must be in the same engine process.
+
+```yaml
+adapter:
+  name: local
+```
+
+#### `redis`
+
+```yaml
+adapter:
+  name: redis
+  config:
+    redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+---
+
+## Choosing an Adapter
+
+| | Single instance | Multi-instance |
+|---|---|---|
+| **Queue** | BuiltinQueueAdapter | RedisAdapter or RabbitMQAdapter |
+| **State** | KvStore (file_based) | RedisAdapter |
+| **Stream** | KvStore | RedisAdapter |
+| **Cron** | KvCronAdapter | RedisCronAdapter |
+| **PubSub** | LocalAdapter | RedisAdapter |
+
+<Info title="Environment variables">
+  Use `${VAR:default}` syntax in `iii-config.yaml` to switch adapters per environment without changing the file:
+
+  ```yaml
+  redis_url: ${REDIS_URL:redis://localhost:6379}
+  ```
+</Info>

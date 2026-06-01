@@ -5,7 +5,7 @@ use iii_worker::sandbox_daemon::config::SandboxConfig;
 use iii_worker::sandbox_daemon::{
     SandboxError,
     create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
-    exec::{ExecRequest, ExecResponse, ShellRunner, handle_exec},
+    exec::{EnvShape, ExecRequest, ExecResponse, ShellRunner, handle_exec},
     registry::SandboxRegistry,
     stop::{StopRequest, VmStopper, handle_stop},
 };
@@ -101,7 +101,7 @@ async fn end_to_end_create_exec_stop() {
         name: None,
         network: None,
         idle_timeout_secs: None,
-        env: vec![],
+        env: EnvShape::default(),
     };
     let create = handle_create(req, &cfg, &h.registry, &*h.launcher, |_| {})
         .await
@@ -113,8 +113,10 @@ async fn end_to_end_create_exec_stop() {
             sandbox_id: sid.clone(),
             cmd: "/bin/echo".into(),
             args: vec!["hi".into()],
+
+            argv: vec![],
             stdin: None,
-            env: vec![],
+            env: EnvShape::default(),
             timeout_ms: None,
             workdir: None,
         },
@@ -154,7 +156,7 @@ async fn concurrent_exec_returns_s003() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &h.registry,
@@ -172,8 +174,10 @@ async fn concurrent_exec_returns_s003() {
             sandbox_id: create.sandbox_id,
             cmd: "/bin/true".into(),
             args: vec![],
+
+            argv: vec![],
             stdin: None,
-            env: vec![],
+            env: EnvShape::default(),
             timeout_ms: None,
             workdir: None,
         },
@@ -198,7 +202,7 @@ async fn image_not_allowlisted_returns_s100() {
         name: None,
         network: None,
         idle_timeout_secs: None,
-        env: vec![],
+        env: EnvShape::default(),
     };
     let err = handle_create(req, &cfg, &h.registry, &*h.launcher, |_| {})
         .await
@@ -226,7 +230,7 @@ async fn rootfs_missing_no_autoinstall_returns_s101() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &h.registry,
@@ -266,7 +270,7 @@ async fn memory_cap_returns_s400() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &h.registry,
@@ -292,7 +296,7 @@ async fn list_returns_every_sandbox() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &h.registry,
@@ -309,7 +313,7 @@ async fn list_returns_every_sandbox() {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: EnvShape::default(),
         },
         &cfg,
         &h.registry,

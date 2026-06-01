@@ -1,6 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { registerWorker, Logger } from '../src/index'
-import { initOtel, shutdownOtel, getTracer, getMeter, getLogger } from '../src/telemetry'
 import { iii } from './utils'
 
 beforeAll(() => {
@@ -23,18 +22,5 @@ describe('Package Exports', () => {
     expect(stateModule).toBeDefined()
     expect(stateModule.StateEventType).toBeDefined()
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
-  })
-
-  it('should export telemetry utilities', () => {
-    expect(initOtel).toBeDefined()
-    expect(typeof initOtel).toBe('function')
-    expect(shutdownOtel).toBeDefined()
-    expect(typeof shutdownOtel).toBe('function')
-    expect(getTracer).toBeDefined()
-    expect(typeof getTracer).toBe('function')
-    expect(getMeter).toBeDefined()
-    expect(typeof getMeter).toBe('function')
-    expect(getLogger).toBeDefined()
-    expect(typeof getLogger).toBe('function')
   })
 })

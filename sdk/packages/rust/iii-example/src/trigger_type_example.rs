@@ -1,7 +1,15 @@
-use iii_sdk::{
-    III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, TriggerRequest,
-    TriggerTypeInfo,
-};
+use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, TriggerRequest};
+use serde::Deserialize;
+
+/// Minimal deserialization target for `engine::triggers::list` rows used
+/// only by this example. The SDK no longer carries a hand-written type for
+/// this — the engine surface will be auto-generated later.
+#[derive(Debug, Deserialize)]
+struct TriggerTypeRow {
+    id: String,
+    worker_name: String,
+    description: String,
+}
 
 // ── Custom trigger type config & call request as typed structs ──────────
 
@@ -73,7 +81,7 @@ pub fn setup(iii: &III) {
         .expect("failed to register webhook trigger");
 }
 
-fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, String> {
+fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, IIIError> {
     Ok(serde_json::json!({
         "processed": true,
         "method": input.method,
@@ -86,9 +94,12 @@ fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, String
 pub async fn print_trigger_type_catalog(iii: &III) {
     println!("\n--- Listing all trigger types ---");
 
+    // `engine::trigger-types::list` was retired in favor of
+    // `engine::triggers::list` (which now returns trigger TYPES). The list
+    // shape is lean — call `engine::triggers::info` per id for schemas.
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "engine::trigger-types::list".to_string(),
+            function_id: "engine::triggers::list".to_string(),
             payload: serde_json::json!({ "include_internal": false }),
             action: None,
             timeout_ms: None,
@@ -97,23 +108,16 @@ pub async fn print_trigger_type_catalog(iii: &III) {
 
     match result {
         Ok(value) => {
-            let trigger_types: Vec<TriggerTypeInfo> = serde_json::from_value(
+            let trigger_types: Vec<TriggerTypeRow> = serde_json::from_value(
                 value
-                    .get("trigger_types")
+                    .get("triggers")
                     .cloned()
                     .unwrap_or(serde_json::Value::Array(vec![])),
             )
             .unwrap_or_default();
             println!("Found {} trigger types:\n", trigger_types.len());
             for tt in &trigger_types {
-                println!("  [{}] {}", tt.id, tt.description);
-                if let Some(config_fmt) = &tt.trigger_request_format {
-                    println!("    trigger_request_format: {}", config_fmt);
-                }
-                if let Some(call_fmt) = &tt.call_request_format {
-                    println!("    call_request_format: {}", call_fmt);
-                }
-                println!();
+                println!("  [{}] ({}) {}", tt.id, tt.worker_name, tt.description);
             }
         }
         Err(e) => {

@@ -1,0 +1,84 @@
+name: Publish worker skills to registry
+
+on:
+  workflow_call:
+    inputs:
+      registry_tag:
+        description: 'Registry version tag (latest, next, ...)'
+        required: false
+        type: string
+        default: latest
+      api_url:
+        description: 'Workers registry base URL'
+        required: false
+        type: string
+        default: 'https://api.workers.iii.dev'
+
+jobs:
+  discover:
+    name: Discover workers with skills
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      has_workers: ${{ steps.discover.outputs.has_workers }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Discover worker skill bundles
+        id: discover
+        run: |
+          python3 .github/scripts/discover_engine_worker_skills.py --repo-root .
+
+  publish:
+    name: POST /w/${{ matrix.slug }}/skills
+    needs: discover
+    if: needs.discover.outputs.has_workers == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build skills payload (${{ matrix.slug }})
+        id: payload
+        env:
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/build_skills_payload.py \
+            --worker-dir "${{ matrix.worker_dir }}" \
+            --version "$REGISTRY_TAG" \
+            --out skills-payload.json
+
+      - name: POST /w/${{ matrix.slug }}/skills
+        if: steps.payload.outputs.skip != 'true'
+        env:
+          API_URL: ${{ inputs.api_url }}
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          SLUG: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          http=$(curl -sS -o response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -X POST "$API_URL/w/$SLUG/skills" \
+            --data-binary @skills-payload.json)
+          echo "HTTP $http"
+          cat response.json
+          if [[ "$http" != "200" ]]; then
+            echo "::error::publish skills failed for $SLUG with HTTP $http"
+            exit 1
+          fi
+          echo "::notice::published skills for $SLUG (version tag in payload)"

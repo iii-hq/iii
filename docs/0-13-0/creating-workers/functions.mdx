@@ -1,0 +1,204 @@
+---
+title: "Functions"
+description: "Author the functions a new worker contributes to an iii system."
+owner: "devrel"
+type: "how-to"
+---
+
+## What "writing a function" means
+
+A worker contributes capability by registering functions. Each function has an `id` of the form
+`service::name`, a handler that receives the payload and returns a result, and optional JSON
+Schemas that describe the request and response shape.
+
+For how callers invoke functions (`worker.trigger` / `iii trigger` / event-bound triggers), see
+[Using iii / Functions](../using-iii/functions) and
+[Using iii / Triggers](../using-iii/triggers). This page is about the authoring surface.
+
+## Register a function
+
+Inside the worker, register the function with the SDK. The `id` is what callers pass as
+`function_id`; the handler signature is the same regardless of how the invocation arrived (direct
+call, HTTP trigger, cron, queue message).
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+
+    worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
+      return { c: payload.a + payload.b };
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="math-worker"),
+    )
+
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    worker.register_function("math::add", add_handler)
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+        Ok(serde_json::json!({ "c": input.a + input.b }))
+    }))?;
+    ```
+  </Tab>
+</Tabs>
+
+## Attach request and response schemas
+
+Attach JSON Schemas to the registration so the request and response shape are documented alongside
+the function. The schemas are stored with the function and surface in the iii console and the
+agent-readable skills.
+
+<Note>
+  Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
+  reject payloads or handler return values that don't match them.
+</Note>
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL);
+
+    worker.registerFunction(
+      "math::add",
+      async (payload) => ({ c: payload.a + payload.b }),
+      {
+        request_schema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+        response_schema: {
+          type: "object",
+          properties: { c: { type: "number" } },
+          required: ["c"],
+        },
+      },
+    );
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="math-worker"),
+    )
+
+    worker.register_function(
+        "math::add",
+        add_handler,
+        request_schema={
+            "type": "object",
+            "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+            "required": ["a", "b"],
+        },
+        response_schema={
+            "type": "object",
+            "properties": {"c": {"type": "number"}},
+            "required": ["c"],
+        },
+    )
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+    use serde_json::json;
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_function(
+        RegisterFunction::new("math::add", |input: AddInput| {
+            Ok(serde_json::json!({ "c": input.a + input.b }))
+        })
+        .request_schema(json!({
+            "type": "object",
+            "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
+            "required": ["a", "b"],
+        }))
+        .response_schema(json!({
+            "type": "object",
+            "properties": { "c": { "type": "number" } },
+            "required": ["c"],
+        })),
+    )?;
+    ```
+  </Tab>
+</Tabs>
+
+The schemas also feed the iii console and the agent-readable skills.
+
+## Return values and errors
+
+A function returns either a value (which the handler is responsible for shaping to match its
+documented response schema) or an error. Errors raised inside the handler are propagated to the
+caller as invocation errors with the worker's stack trace; the engine doesn't swallow them. Use
+this distinction to express expected failures (return a structured error value) versus unexpected
+ones (throw / raise / return `Err`).
+
+## Unregister a function
+
+`registerFunction` returns a handle with an `unregister()` method that removes the function from
+the engine at runtime. When the worker disconnects, all of its functions are removed automatically
+and pending invocations error out.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const add = worker.registerFunction("math::add", async (payload) => {
+      return { c: payload.a + payload.b };
+    });
+
+    add.unregister();
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    add = worker.register_function("math::add", add_handler)
+
+    add.unregister()
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    let add = worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+        Ok(serde_json::json!({ "c": input.a + input.b }))
+    }));
+
+    add.unregister();
+    ```
+  </Tab>
+</Tabs>
+
+## What goes in Worker Docs
+
+The function ids your worker exposes, what each one does, and any worker-specific semantics
+(idempotency, rate limits, side effects) belong in this worker's Worker Docs. Keep iii-level
+concepts (the registration surface, schema metadata, error propagation) here; document the
+per-function specifics there.

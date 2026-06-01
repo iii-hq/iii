@@ -7,29 +7,58 @@ use crate::sandbox_daemon::{
     overlay::OverlayLayout,
     registry::{SandboxRegistry, SandboxState},
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "create_request_example")]
 pub struct CreateRequest {
+    /// Catalog name of the image to boot. Bundled presets are
+    /// `"python"` and `"node"`; pass either string verbatim. The only
+    /// other accepted values are the literal keys of
+    /// `sandbox.custom_images` in `iii.config.yaml` — set by the
+    /// operator. Do NOT pass an OCI ref like
+    /// `"ghcr.io/iii-hq/node:latest"` or `"docker.io/library/node:20"`
+    /// unless that exact string is the catalog key. Unknown values
+    /// return S100 with the allowed set in the error message.
     pub image: String,
+    /// vCPU count; daemon/image default applies when omitted.
     #[serde(default)]
     pub cpus: Option<u32>,
+    /// Memory cap in MiB; daemon/image default applies when omitted.
     #[serde(default)]
     pub memory_mb: Option<u32>,
+    /// Human label surfaced by `sandbox::list`; not an identifier.
     #[serde(default)]
     pub name: Option<String>,
+    /// Whether the VM gets outbound networking; daemon default when omitted.
     #[serde(default)]
     pub network: Option<bool>,
+    /// Auto-stop the VM after this many seconds of inactivity; daemon
+    /// default applies when omitted.
     #[serde(default)]
     pub idle_timeout_secs: Option<u64>,
+    /// Environment entries injected into the VM. Accepts either a
+    /// `Vec<"K=V">` (original wire shape) or a `{ K: V }` map.
+    /// `handle_create` normalises to the `Vec<String>` shape the boot
+    /// path expects before invoking the launcher.
     #[serde(default)]
-    pub env: Vec<String>,
+    pub env: crate::sandbox_daemon::exec::EnvShape,
 }
 
-#[derive(Debug, Serialize)]
+fn create_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "image": "node",
+        "memory_mb": 512,
+        "env": { "NODE_ENV": "production" },
+        "idle_timeout_secs": 600
+    })
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CreateResponse {
     pub sandbox_id: String,
     pub image: String,
@@ -140,8 +169,14 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     let shell_sock = layout.base().join("shell.sock");
     let workdir = layout.merged.clone();
 
-    on_event(SandboxCreateEvent::BootingVm);
+    // Normalise env from EnvShape to Vec<String> BEFORE emitting
+    // `BootingVm`. `into_kv_vec` rejects invalid var names with S001;
+    // emitting the event first would tell subscribers boot has begun
+    // for a sandbox that never actually starts. Accepts both the
+    // historical Vec<"K=V"> shape and the agent-natural { K: V } map.
+    let env_vec = req.env.clone().into_kv_vec()?;
 
+    on_event(SandboxCreateEvent::BootingVm);
     let boot = launcher
         .boot(&BootParams {
             rootfs: rootfs.clone(),
@@ -149,7 +184,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
             shell_sock: shell_sock.clone(),
             cpus,
             memory_mb,
-            env: req.env.clone(),
+            env: env_vec,
             network: req.network.unwrap_or(false),
         })
         .await?;
@@ -225,7 +260,7 @@ mod tests {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: crate::sandbox_daemon::exec::EnvShape::default(),
         };
         let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
             .await
@@ -249,7 +284,7 @@ mod tests {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: crate::sandbox_daemon::exec::EnvShape::default(),
         };
         let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
             .await
@@ -276,7 +311,7 @@ mod tests {
             name: None,
             network: None,
             idle_timeout_secs: None,
-            env: vec![],
+            env: crate::sandbox_daemon::exec::EnvShape::default(),
         };
         let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
             .await

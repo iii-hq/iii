@@ -308,7 +308,7 @@ export async function fetchFlows(): Promise<FlowResponse[]> {
   for (const trigger of triggersData.triggers || []) {
     const funcId = trigger.function_id
     const existing = triggersByFunction.get(funcId) ?? []
-    const config = trigger.config as Record<string, unknown>
+    const config = (trigger.config ?? {}) as Record<string, unknown>
     const normalized: Record<string, unknown> = {
       ...config,
       type: trigger.trigger_type,

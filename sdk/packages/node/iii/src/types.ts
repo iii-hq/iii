@@ -1,15 +1,11 @@
 import type { ChannelReader, ChannelWriter } from './channels'
 import type {
-  FunctionInfo,
   HttpInvocationConfig,
   RegisterFunctionMessage,
-  RegisterServiceMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
   StreamChannelRef,
-  TriggerInfo,
   TriggerRequest,
-  TriggerTypeInfo,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
@@ -29,34 +25,6 @@ import type { TriggerHandler } from './triggers'
  */
 // biome-ignore lint/suspicious/noExplicitAny: generic defaults require any for contravariant compatibility
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (data: TInput) => Promise<TOutput>
-
-/** OTEL Log Event from the engine */
-export type OtelLogEvent = {
-  /** Timestamp in Unix nanoseconds */
-  timestamp_unix_nano: number
-  /** Observed timestamp in Unix nanoseconds */
-  observed_timestamp_unix_nano: number
-  /** OTEL severity number (1-24): TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24 */
-  severity_number: number
-  /** Severity text (e.g., "INFO", "WARN", "ERROR") */
-  severity_text: string
-  /** Log message body */
-  body: string
-  /** Structured attributes */
-  attributes: Record<string, unknown>
-  /** Trace ID for correlation (if available) */
-  trace_id?: string
-  /** Span ID for correlation (if available) */
-  span_id?: string
-  /** Resource attributes from the emitting service */
-  resource: Record<string, string>
-  /** Service name that emitted the log */
-  service_name: string
-  /** Instrumentation scope name (if available) */
-  instrumentation_scope_name?: string
-  /** Instrumentation scope version (if available) */
-  instrumentation_scope_version?: string
-}
 
 // biome-ignore lint/suspicious/noExplicitAny: generic default requires any for contravariant compatibility
 export type Invocation<TOutput = any> = {
@@ -96,7 +64,6 @@ export type RemoteTriggerTypeData = {
 }
 
 export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id'>
-export type RegisterServiceInput = Omit<RegisterServiceMessage, 'message_type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
@@ -120,12 +87,6 @@ export interface ISdk {
    * ```
    */
   registerTrigger(trigger: RegisterTriggerInput): Trigger
-
-  /**
-   * Registers a new service.
-   * @param message - The service to register
-   */
-  registerService(message: RegisterServiceInput): void
 
   /**
    * Registers a new function with a local handler or an HTTP invocation config.

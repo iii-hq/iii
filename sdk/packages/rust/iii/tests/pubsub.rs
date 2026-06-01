@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{RegisterFunction, RegisterTriggerInput, TriggerRequest};
 
 fn unique_topic(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,9 +32,9 @@ async fn subscribe_and_receive_published_messages() {
     let tx = Arc::new(Mutex::new(Some(tx)));
 
     let fn_id = format!("test::pubsub::rs::subscriber::{topic}");
-    let fn_ref = iii.register_function((
-        RegisterFunctionMessage::with_id(fn_id.clone()),
-        move |data: Value| {
+    let fn_ref = iii.register_function(
+        fn_id.clone(),
+        RegisterFunction::new_async(move |data: Value| {
             let received = received_clone.clone();
             let tx = tx.clone();
             async move {
@@ -44,8 +44,8 @@ async fn subscribe_and_receive_published_messages() {
                 }
                 Ok(json!({}))
             }
-        },
-    ));
+        }),
+    );
 
     let trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -98,9 +98,9 @@ async fn topic_isolation() {
     let fn_id_a = format!("test::pubsub::rs::topic_a::{topic_a}");
     let fn_id_b = format!("test::pubsub::rs::topic_b::{topic_b}");
 
-    let fn_a = iii.register_function((
-        RegisterFunctionMessage::with_id(fn_id_a.clone()),
-        move |data: Value| {
+    let fn_a = iii.register_function(
+        fn_id_a.clone(),
+        RegisterFunction::new_async(move |data: Value| {
             let received = received_a_clone.clone();
             let tx = tx_a.clone();
             async move {
@@ -110,19 +110,19 @@ async fn topic_isolation() {
                 }
                 Ok(json!({}))
             }
-        },
-    ));
+        }),
+    );
 
-    let fn_b = iii.register_function((
-        RegisterFunctionMessage::with_id(fn_id_b.clone()),
-        move |data: Value| {
+    let fn_b = iii.register_function(
+        fn_id_b.clone(),
+        RegisterFunction::new_async(move |data: Value| {
             let received = received_b_clone.clone();
             async move {
                 received.lock().await.push(data);
                 Ok(json!({}))
             }
-        },
-    ));
+        }),
+    );
 
     let trigger_a = iii
         .register_trigger(RegisterTriggerInput {

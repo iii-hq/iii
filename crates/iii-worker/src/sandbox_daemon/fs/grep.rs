@@ -1,37 +1,59 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{IIIError, RegisterFunctionMessage};
+use iii_sdk::RegisterFunction;
 use iii_shell_proto::{FsMatch, FsOp, FsResult};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::SandboxError, fs::adapter::FsRunner, registry::SandboxRegistry,
+    errors::{SandboxError, SandboxErrorWire},
+    fs::adapter::FsRunner,
+    registry::SandboxRegistry,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "grep_request_example")]
 pub struct GrepRequest {
+    /// UUID returned by `sandbox::create`.
     pub sandbox_id: String,
+    /// Root path to search inside the sandbox guest. Treated as a directory
+    /// when `recursive: true`, else as a single file.
     pub path: String,
+    /// Regex pattern (Rust regex syntax, anchored fragments allowed).
     pub pattern: String,
+    /// Descend into subdirectories under `path`. Defaults to true.
     #[serde(default = "default_recursive")]
     pub recursive: bool,
+    /// Case-insensitive match.
     #[serde(default)]
     pub ignore_case: bool,
+    /// Gitignore-style include filter applied relative to `path`.
     #[serde(default)]
     pub include_glob: Vec<String>,
+    /// Gitignore-style exclude filter applied relative to `path`.
     #[serde(default)]
     pub exclude_glob: Vec<String>,
+    /// Maximum number of matches before truncation. Default 10_000.
     #[serde(default = "default_max_matches")]
     pub max_matches: u64,
+    /// Maximum bytes per matched line before content is truncated with `…`.
+    /// Default 4096.
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
+}
+
+fn grep_request_example() -> serde_json::Value {
+    serde_json::json!({
+        "sandbox_id": "00000000-0000-0000-0000-000000000000",
+        "path": "/home/app/src",
+        "pattern": "TODO|FIXME",
+        "recursive": true,
+        "include_glob": ["**/*.js", "**/*.ts"]
+    })
 }
 
 fn default_recursive() -> bool {
@@ -44,7 +66,7 @@ fn default_max_line_bytes() -> u64 {
     4096
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct GrepResponse {
     pub matches: Vec<FsMatch>,
     pub truncated: bool,
@@ -96,31 +118,28 @@ pub(super) fn register(
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {
-    let handler = move |payload: Value| {
-        let registry = registry.clone();
-        let runner = runner.clone();
-        Box::pin(async move {
-            let req: GrepRequest = serde_json::from_value(payload)
-                .map_err(|e| IIIError::Handler(format!("bad request: {e}")))?;
-            match handle_grep(req, &registry, &*runner).await {
-                Ok(resp) => serde_json::to_value(resp)
-                    .map_err(|e| IIIError::Handler(format!("serialize: {e}"))),
-                Err(e) => Err(IIIError::Handler(
-                    serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string()),
-                )),
+    let _ = iii.register_function(
+        "sandbox::fs::grep",
+        RegisterFunction::new_async(move |req: GrepRequest| {
+            let registry = registry.clone();
+            let runner = runner.clone();
+            async move {
+                let sid = req.sandbox_id.clone();
+                let start = std::time::Instant::now();
+                let result = handle_grep(req, &registry, &*runner).await;
+                crate::sandbox_daemon::log_handler_result(
+                    "sandbox::fs::grep",
+                    Some(&sid),
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
             }
-        }) as Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-    };
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "sandbox::fs::grep".to_string(),
-            description: Some("Search for a pattern in files inside a sandbox".to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        handler,
+        })
+        .description(
+            "Search for a regex pattern in files inside a sandbox. Walks `path` recursively \
+             by default. Example: { sandbox_id: \"...\", path: \"/home/app/src\", pattern: \"TODO\" }",
+        ),
     );
 }
 

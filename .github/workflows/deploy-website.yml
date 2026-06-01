@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      - 'blog/**'
       - 'infra/terraform/website/**'
       - '.github/workflows/deploy-website.yml'
   workflow_dispatch:
@@ -50,13 +51,20 @@ jobs:
       - name: Generate llms.txt and AGENTS.md
         run: pnpm --filter iii-website build
 
+      - name: Build blog (Astro → blog/dist/)
+        run: pnpm --filter iii-blog build
+
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync static assets (long cache, immutable)
+      # Blog and website share the bucket; the blog lives under the /blog/
+      # prefix and is wiped + repopulated by its own sync below. The website
+      # sync therefore must exclude blog/* so its --delete doesn't wipe blog
+      # output between the two steps.
+      - name: Sync website static assets (long cache, immutable)
         run: |
           aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
@@ -70,9 +78,10 @@ jobs:
             --exclude "pnpm-lock.yaml" \
             --exclude ".gitignore" \
             --exclude "README.md" \
-            --exclude "vercel.json"
+            --exclude "vercel.json" \
+            --exclude "blog/*"
 
-      - name: Sync HTML and AI snapshot (no cache, must revalidate)
+      - name: Sync website HTML and AI snapshot (no cache, must revalidate)
         run: |
           aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
@@ -80,7 +89,28 @@ jobs:
             --exclude "*" \
             --include "*.html" \
             --include "llms.txt" \
-            --include "AGENTS.md"
+            --include "AGENTS.md" \
+            --exclude "blog/*"
+
+      # Blog assets under _astro/ are content-hashed by Astro, so they're
+      # safe to mark immutable. HTML and rss.xml must revalidate so new posts
+      # surface immediately after the CloudFront invalidation.
+      - name: Sync blog static assets (long cache, immutable)
+        run: |
+          aws s3 sync blog/dist/ "s3://${{ vars.S3_BUCKET }}/blog/" \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "*.html" \
+            --exclude "*.xml"
+
+      - name: Sync blog HTML and RSS (no cache, must revalidate)
+        run: |
+          aws s3 sync blog/dist/ "s3://${{ vars.S3_BUCKET }}/blog/" \
+            --delete \
+            --cache-control "public,max-age=0,must-revalidate" \
+            --exclude "*" \
+            --include "*.html" \
+            --include "*.xml"
 
       - name: Create CloudFront invalidation
         id: invalidation

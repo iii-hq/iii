@@ -7,42 +7,10 @@ import {
   evaluateAgreement,
   findStickyComment,
   hasAgreementComment,
-  hasCheckedLicenseAgreement,
   isAgreementComment,
   isTeamPermission,
+  touchesEnginePaths,
 } from './license-agreement-check.mjs';
-
-test('detects a checked Apache license agreement in the PR body', () => {
-  const body = [
-    '## What',
-    'A contribution',
-    '',
-    '- [x] I am licensing the entirety of this PR under Apache 2 and have all necessary rights to the code I am contributing.',
-  ].join('\n');
-
-  assert.equal(hasCheckedLicenseAgreement(body), true);
-});
-
-test('detects an uppercase checked Apache license agreement in the PR body', () => {
-  const body = `- [X] ${ACKNOWLEDGEMENT_PHRASE}`;
-
-  assert.equal(hasCheckedLicenseAgreement(body), true);
-});
-
-test('handles a null PR body', () => {
-  assert.equal(hasCheckedLicenseAgreement(null), false);
-});
-
-test('rejects an unchecked Apache license agreement in the PR body', () => {
-  const body =
-    '- [ ] I am licensing the entirety of this PR under Apache 2 and have all necessary rights to the code I am contributing.';
-
-  assert.equal(hasCheckedLicenseAgreement(body), false);
-});
-
-test('rejects checked tasks that do not mention licensing and Apache', () => {
-  assert.equal(hasCheckedLicenseAgreement('- [x] Tests pass locally'), false);
-});
 
 test('accepts the exact acknowledgement phrase from the PR author', () => {
   const comment = {
@@ -119,49 +87,129 @@ test('classifies read, triage, and none permissions as external contributors', (
   assert.equal(isTeamPermission('none'), false);
 });
 
-test('passes team members without an acknowledgement', () => {
+test('touchesEnginePaths returns true for engine src changes', () => {
+  assert.equal(touchesEnginePaths([{ filename: 'engine/src/foo.rs' }]), true);
+});
+
+test('touchesEnginePaths returns true for top-level engine files', () => {
+  assert.equal(touchesEnginePaths([{ filename: 'engine/Cargo.toml' }]), true);
+});
+
+test('touchesEnginePaths returns false for non-engine changes', () => {
+  assert.equal(
+    touchesEnginePaths([{ filename: 'console/x.ts' }, { filename: 'docs/y.md' }]),
+    false,
+  );
+});
+
+test('touchesEnginePaths returns false for empty list', () => {
+  assert.equal(touchesEnginePaths([]), false);
+});
+
+test('touchesEnginePaths accepts plain string entries', () => {
+  assert.equal(touchesEnginePaths(['engine/src/foo.rs']), true);
+  assert.equal(touchesEnginePaths(['console/foo.ts']), false);
+});
+
+test('touchesEnginePaths does not match unrelated paths that contain "engine"', () => {
+  assert.equal(touchesEnginePaths([{ filename: 'docs/engine-overview.md' }]), false);
+  assert.equal(touchesEnginePaths([{ filename: 'crates/engine-utils/src/lib.rs' }]), false);
+});
+
+test('touchesEnginePaths detects files renamed out of engine/', () => {
+  assert.equal(
+    touchesEnginePaths([
+      { filename: 'other/x.rs', previous_filename: 'engine/x.rs', status: 'renamed' },
+    ]),
+    true,
+  );
+});
+
+test('touchesEnginePaths detects files renamed into engine/', () => {
+  assert.equal(
+    touchesEnginePaths([
+      { filename: 'engine/x.rs', previous_filename: 'other/x.rs', status: 'renamed' },
+    ]),
+    true,
+  );
+});
+
+test('passes any PR that does not touch engine code regardless of permission', () => {
   const result = evaluateAgreement({
-    body: '',
     comments: [],
-    permission: 'write',
-    prAuthor: 'team-member',
+    permission: 'none',
+    prAuthor: 'external-user',
+    changedFiles: [{ filename: 'docs/intro.md' }],
   });
 
   assert.deepEqual(result, {
     acknowledged: true,
-    bodyAcknowledged: false,
+    engineTouched: false,
+    commentAcknowledged: false,
+    teamMember: false,
+  });
+});
+
+test('passes team members touching engine code without an acknowledgement', () => {
+  const result = evaluateAgreement({
+    comments: [],
+    permission: 'write',
+    prAuthor: 'team-member',
+    changedFiles: [{ filename: 'engine/src/lib.rs' }],
+  });
+
+  assert.deepEqual(result, {
+    acknowledged: true,
+    engineTouched: true,
     commentAcknowledged: false,
     teamMember: true,
   });
 });
 
-test('passes external contributors with an acknowledgement comment', () => {
+test('passes external contributors touching engine code with an acknowledgement comment', () => {
   const result = evaluateAgreement({
-    body: '',
     comments: [{ body: ACKNOWLEDGEMENT_PHRASE, user: { login: 'external-user' } }],
     permission: 'read',
     prAuthor: 'external-user',
+    changedFiles: [{ filename: 'engine/src/lib.rs' }],
   });
 
   assert.deepEqual(result, {
     acknowledged: true,
-    bodyAcknowledged: false,
+    engineTouched: true,
     commentAcknowledged: true,
     teamMember: false,
   });
 });
 
-test('fails external contributors without body or comment acknowledgement', () => {
+test('accepts acknowledgement with normalized case and whitespace', () => {
   const result = evaluateAgreement({
-    body: '',
+    comments: [
+      {
+        body: `  ${ACKNOWLEDGEMENT_PHRASE.toUpperCase()}  `,
+        user: { login: 'external-user' },
+      },
+    ],
+    permission: 'read',
+    prAuthor: 'external-user',
+    changedFiles: [{ filename: 'engine/src/lib.rs' }],
+  });
+
+  assert.equal(result.acknowledged, true);
+  assert.equal(result.commentAcknowledged, true);
+});
+
+test('fails external contributors touching engine code without acknowledgement', () => {
+  const result = evaluateAgreement({
     comments: [],
     permission: 'none',
     prAuthor: 'external-user',
+    changedFiles: [{ filename: 'engine/src/lib.rs' }],
   });
 
   assert.deepEqual(result, {
     acknowledged: false,
-    bodyAcknowledged: false,
+    engineTouched: true,
     commentAcknowledged: false,
     teamMember: false,
   });

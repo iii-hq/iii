@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! Binary worker download, checksum verification, and installation.
@@ -168,28 +168,10 @@ pub fn validate_locked_artifact_url(url: &str) -> Result<(), String> {
         ));
     }
 
-    if !is_trusted_registry_host(host) {
-        return Err(format!(
-            "artifact URL `{url}` is not trusted: expected a iii registry artifact host"
-        ));
-    }
-
     Ok(())
 }
 
-fn is_trusted_registry_host(host: &str) -> bool {
-    if matches!(host, "workers.iii.dev" | "api.workers.iii.dev") {
-        return true;
-    }
-    // Suffix match must be anchored on a non-empty label so hosts like
-    // `.workers.iii.dev` or `..workers.iii.dev` (empty leading labels) are
-    // not silently treated as trusted subdomains.
-    let Some(prefix) = host.strip_suffix(".workers.iii.dev") else {
-        return false;
-    };
-    !prefix.is_empty() && prefix.split('.').all(|label| !label.is_empty())
-}
-
+#[cfg(debug_assertions)]
 fn is_loopback_host(host: &str) -> bool {
     host == "localhost"
         || host
@@ -222,7 +204,7 @@ fn is_private_or_loopback_host(host: &str) -> bool {
 
 async fn download_archive_bytes(
     url: &str,
-    validate_final_url: Option<&dyn Fn(&str) -> Result<(), String>>,
+    validate_final_url: Option<&(dyn Fn(&str) -> Result<(), String> + Send + Sync)>,
 ) -> Result<Vec<u8>, String> {
     let resp = match validate_final_url {
         Some(validator) => download_archive_bytes_with_validated_redirects(url, validator).await?,
@@ -267,7 +249,7 @@ async fn download_archive_bytes(
 
 async fn download_archive_bytes_with_validated_redirects(
     url: &str,
-    validator: &dyn Fn(&str) -> Result<(), String>,
+    validator: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
 ) -> Result<reqwest::Response, String> {
     let mut current_url =
         reqwest::Url::parse(url).map_err(|e| format!("invalid artifact URL `{url}`: {e}"))?;
@@ -481,33 +463,37 @@ mod tests {
     }
 
     #[test]
-    fn validate_locked_artifact_url_accepts_registry_host() {
+    fn validate_locked_artifact_url_accepts_https_public_host() {
         validate_locked_artifact_url("https://workers.iii.dev/worker.tar.gz").unwrap();
+        validate_locked_artifact_url(
+            "https://github.com/iii-hq/workers/releases/download/skills/v0.1.4/skills-x86_64-unknown-linux-gnu.tar.gz",
+        )
+        .unwrap();
     }
 
     #[test]
-    fn validate_locked_artifact_url_rejects_untrusted_host() {
-        let err = validate_locked_artifact_url("https://example.com/worker.tar.gz").unwrap_err();
-        assert!(err.contains("not trusted"));
+    fn validate_locked_artifact_url_rejects_non_https() {
+        let err = validate_locked_artifact_url("http://workers.iii.dev/worker.tar.gz").unwrap_err();
+        assert!(err.contains("HTTPS"), "got: {err}");
     }
 
     #[test]
-    fn validate_locked_artifact_url_rejects_leading_dot_subdomain() {
-        // `.workers.iii.dev` literally ends with `.workers.iii.dev`, so a
-        // naive suffix check accepts it. Empty DNS labels are not valid
-        // hostnames and must not be treated as trusted registry hosts.
+    fn validate_locked_artifact_url_rejects_private_or_loopback_hosts() {
+        // Loopback / private IPs must never end up in iii.lock regardless of
+        // scheme; release builds reject them outright.
+        #[cfg(not(debug_assertions))]
+        {
+            let err = validate_locked_artifact_url("https://127.0.0.1/worker.tar.gz").unwrap_err();
+            assert!(err.contains("not trusted"), "got: {err}");
+        }
         for url in [
-            "https://.workers.iii.dev/worker.tar.gz",
-            "https://..workers.iii.dev/worker.tar.gz",
-            "https://.api.workers.iii.dev/worker.tar.gz",
+            "https://10.0.0.1/worker.tar.gz",
+            "https://192.168.1.1/worker.tar.gz",
         ] {
             let err = validate_locked_artifact_url(url)
                 .err()
                 .unwrap_or_else(|| panic!("expected {url} to be rejected"));
-            assert!(
-                err.contains("not trusted"),
-                "expected `not trusted` for {url}, got: {err}",
-            );
+            assert!(err.contains("not trusted"), "got: {err}");
         }
     }
 

@@ -1,39 +1,21 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use serde::Serialize;
+//! CLI telemetry helpers.
+//!
+//! All Amplitude HTTP transport, retry behavior, and PII sanitization live in
+//! `iii::workers::telemetry::amplitude`. This module is the CLI-side glue:
+//! gating (`is_telemetry_disabled`), event-property construction
+//! (`build_user_properties`), and the named event helpers
+//! (`send_cli_update_*`, `send_project_init_*`, `send_install_lifecycle_event`).
 
+use iii::workers::telemetry::amplitude::{
+    API_KEY, AmplitudeClient, AmplitudeEvent, POSTHOG_PROJECT_API_KEY, PostHogClient,
+};
 use iii::workers::telemetry::environment;
-
-const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
-const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
-
-#[derive(Serialize)]
-struct AmplitudeEvent {
-    device_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_id: Option<String>,
-    event_type: String,
-    event_properties: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_properties: Option<serde_json::Value>,
-    platform: String,
-    os_name: String,
-    app_version: String,
-    time: i64,
-    insert_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ip: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AmplitudePayload<'a> {
-    api_key: &'a str,
-    events: Vec<AmplitudeEvent>,
-}
 
 fn is_telemetry_disabled() -> bool {
     if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
@@ -84,23 +66,37 @@ fn build_event(
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         time: chrono::Utc::now().timestamp_millis(),
-        insert_id: uuid::Uuid::new_v4().to_string(),
+        insert_id: Some(uuid::Uuid::new_v4().to_string()),
+        country: None,
+        language: None,
         ip: Some("$remote".to_string()),
     })
 }
 
 async fn send_direct(event: AmplitudeEvent) {
-    let payload = AmplitudePayload {
-        api_key: API_KEY,
-        events: vec![event],
-    };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build();
-
-    if let Ok(client) = client {
-        let _ = client.post(AMPLITUDE_ENDPOINT).json(&payload).send().await;
+    let posthog_event = event.clone();
+    let amplitude_client = AmplitudeClient::new(API_KEY.to_string());
+    if let Some(posthog_client) = build_posthog_client_from_env() {
+        let (amplitude_result, posthog_result) = tokio::join!(
+            amplitude_client.send_event(event),
+            posthog_client.send_event(posthog_event)
+        );
+        let _ = amplitude_result;
+        let _ = posthog_result;
+    } else {
+        let _ = amplitude_client.send_event(event).await;
     }
+}
+
+fn build_posthog_client_from_env() -> Option<PostHogClient> {
+    let key = std::env::var("POSTHOG_PROJECT_API_KEY")
+        .or_else(|_| std::env::var("POSTHOG_API_KEY"))
+        .ok()
+        .or_else(|| Some(POSTHOG_PROJECT_API_KEY.to_string()))
+        .filter(|key| !key.trim().is_empty())?;
+    let host =
+        std::env::var("POSTHOG_HOST").unwrap_or_else(|_| "https://us.i.posthog.com".to_string());
+    Some(PostHogClient::new(key, host))
 }
 
 fn send_fire_and_forget(event: AmplitudeEvent) {
@@ -117,6 +113,28 @@ pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_js
     if let Some(mut event) = build_event(event_type, properties, install_method.as_deref()) {
         event.platform = "install-script".to_string();
         send_direct(event).await;
+    }
+}
+
+fn build_cli_usage_event(command_path: &str) -> Option<AmplitudeEvent> {
+    let normalized = command_path.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    build_event(
+        "cli_command_invoked",
+        serde_json::json!({
+            "command": "iii",
+            "command_path": normalized,
+            "install_method": environment::detect_install_method(),
+        }),
+        None,
+    )
+}
+
+pub async fn send_cli_usage(command_path: &str) {
+    if let Some(event) = build_cli_usage_event(command_path) {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), send_direct(event)).await;
     }
 }
 
@@ -155,6 +173,34 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
         serde_json::json!({
             "target_binary": target_binary,
             "from_version": from_version,
+            "error": error,
+            "install_method": environment::detect_install_method(),
+        }),
+        None,
+    ) {
+        send_fire_and_forget(event);
+    }
+}
+
+pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
+    if let Some(event) = build_event(
+        "project_init_succeeded",
+        serde_json::json!({
+            "with_docker": with_docker,
+            "project_id": project_id,
+            "install_method": environment::detect_install_method(),
+        }),
+        None,
+    ) {
+        send_fire_and_forget(event);
+    }
+}
+
+pub fn send_project_init_failed(stage: &str, error: &str) {
+    if let Some(event) = build_event(
+        "project_init_failed",
+        serde_json::json!({
+            "stage": stage,
             "error": error,
             "install_method": environment::detect_install_method(),
         }),
@@ -243,7 +289,7 @@ mod tests {
         assert_eq!(event.app_version, env!("CARGO_PKG_VERSION"));
         assert!(!event.device_id.is_empty());
         assert_eq!(event.user_id, None);
-        assert!(!event.insert_id.is_empty());
+        assert!(event.insert_id.as_deref().map(str::is_empty) == Some(false));
         assert_eq!(event.event_properties["target_binary"], "iii");
         let user_props = event
             .user_properties
@@ -262,5 +308,48 @@ mod tests {
         let e1 = build_event("evt", serde_json::json!({}), None).expect("event");
         let e2 = build_event("evt", serde_json::json!({}), None).expect("event");
         assert_ne!(e1.insert_id, e2.insert_id);
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_cli_usage_event_uses_sanitized_command_path() {
+        clear_opt_out_vars();
+        let event = build_cli_usage_event("project init").expect("event");
+        assert_eq!(event.event_type, "cli_command_invoked");
+        assert_eq!(event.event_properties["command"], "iii");
+        assert_eq!(event.event_properties["command_path"], "project init");
+        assert!(event.event_properties.get("install_method").is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_cli_usage_event_ignores_empty_command_path() {
+        clear_opt_out_vars();
+        assert!(build_cli_usage_event("   ").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_posthog_client_from_env_defaults_to_public_project_key() {
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+            env::remove_var("POSTHOG_API_KEY");
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert!(build_posthog_client_from_env().is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_posthog_client_from_env_accepts_project_key() {
+        unsafe {
+            env::set_var("POSTHOG_PROJECT_API_KEY", "phc_test");
+            env::set_var("POSTHOG_HOST", "https://eu.i.posthog.com");
+        }
+        assert!(build_posthog_client_from_env().is_some());
+        unsafe {
+            env::remove_var("POSTHOG_PROJECT_API_KEY");
+            env::remove_var("POSTHOG_HOST");
+        }
     }
 }

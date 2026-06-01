@@ -60,7 +60,7 @@
   }
 
   function applyCounts(values) {
-    const discordLink = document.querySelector('a[href="https://discord.gg/motia"]')
+    const discordLink = document.querySelector('a[href="https://discord.gg/iiidev"]')
 
     upsertCount(discordLink, values.discord)
 

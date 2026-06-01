@@ -386,9 +386,13 @@ if [[ -z "$binary_path" ]]; then
     _bare="${_bare#v}"
     check_version "$_bare"
     printf "${MUTED}Installing ${NC}%s ${MUTED}version: ${NC}%s\n" "$BIN_NAME" "$requested_version"
-    _tag="v${_bare}"
+    _tag="iii/v${_bare}"
     api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
-    json=$(github_api "$api_url") || err "release tag not found: $requested_version (tried tag: $_tag)"
+    if ! json=$(github_api "$api_url" 2>/dev/null); then
+      _tag="v${_bare}"
+      api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
+      json=$(github_api "$api_url") || err "release tag not found: $requested_version (tried: iii/v${_bare}, v${_bare})"
+    fi
   elif [[ "$use_next" == "true" ]]; then
     printf "${MUTED}Installing ${NC}%s ${MUTED}latest next version${NC}\n" "$BIN_NAME"
     api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
@@ -399,9 +403,9 @@ if [[ -z "$binary_path" ]]; then
       [[ "$json" == "null" || -z "$json" ]] && err "no next release found"
     else
       _tag=$(printf '%s' "$json_list" \
-        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*-next\.[^"]*"' \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"(iii\/)?v[^"]*-next\.[^"]*"' \
         | head -n 1 \
-        | sed -E 's/.*"(v[^"]+)".*/\1/')
+        | sed -E 's/.*"((iii\/)?v[^"]+)".*/\1/')
       [[ -z "$_tag" ]] && err "no next release found"
       api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
       json=$(github_api "$api_url") || err "failed to fetch release $_tag"
@@ -412,13 +416,13 @@ if [[ -z "$binary_path" ]]; then
     json_list=$(github_api "$api_url") || err "failed to fetch releases from $REPO"
     if command -v jq >/dev/null 2>&1; then
       json=$(printf '%s' "$json_list" \
-        | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("v"))))')
+        | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | test("^(iii/)?v"))))')
       [[ "$json" == "null" || -z "$json" ]] && err "no stable iii release found"
     else
       _tag=$(printf '%s' "$json_list" \
-        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"' \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"(iii\/)?v[^"]+"' \
         | head -n 1 \
-        | sed -E 's/.*"(v[^"]+)".*/\1/')
+        | sed -E 's/.*"((iii\/)?v[^"]+)".*/\1/')
       [[ -z "$_tag" ]] && err "could not determine latest release"
       api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
       json=$(github_api "$api_url") || err "failed to fetch release $_tag"

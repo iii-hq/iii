@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 //! Local-path worker helpers: extracted shared functions from `dev.rs` plus
@@ -170,7 +170,20 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
 /// channel itself when the host sets `III_CONTROL_PORT`. That removes
 /// the separate `/opt/iii/supervisor` binary and its install plumbing
 /// that this function used to emit as `exec /opt/iii/supervisor ...`.
-pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> String {
+///
+/// `is_bundle` controls dep-directory bind-mount behavior:
+///   * local-path workers (false): bind-mount VM-local dirs over
+///     /workspace/{node_modules,.venv,target,dist,...} so dependency
+///     installs run inside the guest without polluting the host repo.
+///   * bundle workers (true): SKIP the bind-mount block entirely. The
+///     bundle is immutable and ships vendored deps (a bundle's
+///     `dist/index.js` IS the worker; masking it with an empty rootfs
+///     dir breaks the boot).
+pub fn build_libkrun_local_script(
+    project: &ProjectInfo,
+    prepared: bool,
+    is_bundle: bool,
+) -> String {
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
@@ -200,8 +213,21 @@ pub fn build_libkrun_local_script(project: &ProjectInfo, prepared: bool) -> Stri
     // so a silent virtiofs failure leaves /workspace existing-but-unmounted.
     // A plain `-d` check would pass and we'd bind-mount deps onto an empty
     // rootfs dir -- writes would leak onto rootfs instead of the host repo.
-    parts.push(
-        r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
+    if is_bundle {
+        parts.push(
+            r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
+  echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
+  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
+  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
+  exit 1
+fi
+cd /workspace
+echo "iii: workspace ready (bundle worker; dep-dir bind-mounts skipped — vendored deps are shipped in the bundle)" >&2"#
+                .to_string(),
+        );
+    } else {
+        parts.push(
+            r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
   echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
   echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
   cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
@@ -220,8 +246,9 @@ for d in node_modules .venv target dist __pycache__ .pytest_cache .next; do
 done
 cd /workspace
 echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
-            .to_string(),
-    );
+                .to_string(),
+        );
+    }
 
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
 
@@ -541,7 +568,7 @@ pub async fn handle_local_add(
         if !engine_running {
             eprintln!(
                 "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
-                 --wait cannot observe it boot — run `iii start` in another terminal first.",
+                 --wait cannot observe it boot — run `iii` in another terminal first.",
                 "\u{26A0}".yellow(),
                 worker_name.bold(),
                 "local".dimmed()
@@ -603,7 +630,7 @@ pub async fn handle_local_add(
     } else {
         eprintln!(
             "\n  {} Added {} ({}) to config.yaml, but the engine isn't running.\n  \
-             Start it:  iii start\n  \
+             Start it:  iii\n  \
              Then:      iii worker status {}",
             "\u{26A0}".yellow(),
             worker_name.bold(),
@@ -636,10 +663,69 @@ fn needs_rootfs_clone(managed_dir: &std::path::Path) -> bool {
     !managed_dir.join("bin").exists()
 }
 
-/// Start a local-path worker VM.
+pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16) -> i32 {
+    start_worker_impl(
+        worker_name,
+        worker_path,
+        port,
+        /*disable_watcher=*/ false,
+        /*is_bundle=*/ false,
+    )
+    .await
+}
+
+/// Start a bundle worker VM. Same libkrun rails as
+/// `start_local_worker`, but two bundle-specific behaviors apply:
+///
+/// 1. The host-side source watcher is NOT spawned (bundle is
+///    immutable; nothing to watch).
+/// 2. Resources from `iii.worker.yaml` are clamped against the
+///    bundle resource caps BEFORE libkrun boot. The install-time
+///    clamp (handle_bundle_add) only emits a warning; without this
+///    second clamp at start-time, a manifest declaring 64 CPUs /
+///    1 TiB RAM would still boot a libkrun guest with those values.
+pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16) -> i32 {
+    // Operator kill switch — same gate as the CLI install path. An
+    // installed bundle worker must not boot while bundle support is
+    // disabled. Checked BEFORE any sandbox/libkrun setup so the engine
+    // logs a clear refusal instead of a deeper-failure error.
+    if super::bundle_download::bundle_workers_disabled() {
+        eprintln!(
+            "{} bundle workers are disabled via {}=1; refusing to start '{}'",
+            "error:".red(),
+            super::bundle_download::ENV_BUNDLE_WORKERS_DISABLED,
+            worker_name,
+        );
+        return 1;
+    }
+    start_worker_impl(
+        worker_name,
+        worker_path,
+        port,
+        /*disable_watcher=*/ true,
+        /*is_bundle=*/ true,
+    )
+    .await
+}
+
+/// Shared body for `start_local_worker` and `start_bundle_worker`.
+///
+/// Three flags differ between callers:
+///   * `disable_watcher` — bundle installs are immutable, so the
+///     host-side source watcher is suppressed.
+///   * `is_bundle` — when true, resources are parsed and clamped via
+///     `bundle_download::parse_bundle_resources` (saturating + capped)
+///     rather than the permissive `parse_manifest_resources`. Local
+///     workers continue to honor whatever the user wrote.
 ///
 /// Re-copies project files, builds env, and runs via libkrun.
-pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16) -> i32 {
+async fn start_worker_impl(
+    worker_name: &str,
+    worker_path: &str,
+    port: u16,
+    disable_watcher: bool,
+    is_bundle: bool,
+) -> i32 {
     // Kill any stale process from a previous engine run
     super::managed::kill_stale_worker(worker_name).await;
 
@@ -653,6 +739,28 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
             "{} Worker path '{}' does not exist or is not a directory",
             "error:".red(),
             worker_path
+        );
+        return 1;
+    }
+
+    // 1a. Bundle workers: re-run the strict manifest validator before
+    // we touch the publisher-controlled YAML via load_project_info. The
+    // install-time validator (handle_bundle_add) already ran, but the
+    // install dir is on the host filesystem — any local-FS-write
+    // attacker (or a future bug that lets a bundle write to its own
+    // install dir) could modify ~/.iii/workers-bundle/{name}/iii.worker.yaml
+    // between install and start to introduce scripts.setup,
+    // scripts.install, or runtime.base_image. The permissive
+    // load_project_info path below would honor those fields. The
+    // strict validator also enforces the 64 KiB manifest cap, which
+    // defuses billion-laughs YAML expansion before serde_yaml sees it.
+    if is_bundle
+        && let Err(e) = super::bundle_download::validate_bundle_manifest(project_path, worker_name)
+    {
+        eprintln!(
+            "{} bundle manifest re-validation failed at start: {}",
+            "error:".red(),
+            e,
         );
         return 1;
     }
@@ -817,7 +925,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
     //    Fast-restart is enabled whenever vm_boot wires the control port,
     //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
-    let script = build_libkrun_local_script(&project, is_prepared);
+    let script = build_libkrun_local_script(&project, is_prepared, is_bundle);
 
     let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
     std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
@@ -859,7 +967,52 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 
     // 9. Run via libkrun
     let manifest_path = project_path.join(WORKER_MANIFEST);
-    let (vcpus, ram) = parse_manifest_resources(&manifest_path);
+    let (vcpus, ram) = if is_bundle {
+        // Strict clamp at start-time so a publisher-controlled manifest
+        // can't boot a libkrun guest with attacker-chosen resources.
+        // Install-time clamp (handle_bundle_add) only emits a WARN
+        // event; the actual VM boot still re-reads the manifest from
+        // the install dir, which is exactly what a malicious bundle
+        // counts on.
+        match super::bundle_download::parse_bundle_resources(
+            project_path,
+            super::bundle_download::ResourceCaps::default(),
+        ) {
+            Ok(r) => {
+                if let Some(req) = r.clamped_cpus {
+                    tracing::warn!(
+                        worker = %worker_name,
+                        bundle.requested_cpus = req,
+                        bundle.cpus = r.cpus,
+                        "bundle resources.cpus clamped at start"
+                    );
+                }
+                if let Some(req) = r.clamped_memory_mb {
+                    tracing::warn!(
+                        worker = %worker_name,
+                        bundle.requested_memory_mb = req,
+                        bundle.memory_mb = r.memory_mb,
+                        "bundle resources.memory clamped at start"
+                    );
+                }
+                (r.cpus, r.memory_mb)
+            }
+            Err(e) => {
+                // Manifest was validated at install time. If reading
+                // it fails now, something tampered with the install
+                // dir or the disk is failing. Fall back to safe
+                // defaults rather than booting with raw values.
+                tracing::error!(
+                    worker = %worker_name,
+                    error = %e,
+                    "bundle resource re-clamp failed; using safe defaults"
+                );
+                (2, 2048)
+            }
+        }
+    } else {
+        parse_manifest_resources(&manifest_path)
+    };
 
     let exec_path = "/bin/sh";
     // The script sets up the overlay at /workspace; no pre-cd needed (and
@@ -895,7 +1048,11 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
     //
     // Only spawn after the VM was successfully started; otherwise a
     // watcher fire would race into kill_stale_worker against nothing.
-    if exit_code == 0
+    //
+    // Bundle workers (disable_watcher=true) skip this entirely: the
+    // install dir is immutable and there is nothing to watch.
+    if !disable_watcher
+        && exit_code == 0
         && let Err(e) =
             spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher).await
     {
@@ -1072,7 +1229,7 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script = build_libkrun_local_script(&project, false);
+        let script = build_libkrun_local_script(&project, false, /*is_bundle=*/ false);
         assert!(script.contains("apt-get install nodejs"));
         assert!(script.contains("npm install"));
         assert!(script.contains("node server.js"));
@@ -1098,7 +1255,7 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script = build_libkrun_local_script(&project, true);
+        let script = build_libkrun_local_script(&project, true, /*is_bundle=*/ false);
         assert!(!script.contains("apt-get install nodejs"));
         assert!(!script.contains("npm install"));
         assert!(script.contains("node server.js"));

@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::collections::HashMap;
@@ -578,9 +578,13 @@ mod tests {
     fn discovery_functions_still_gated() {
         let discovery_ids = [
             "engine::functions::list",
+            "engine::functions::info",
             "engine::workers::list",
+            "engine::workers::info",
             "engine::triggers::list",
-            "engine::trigger-types::list",
+            "engine::triggers::info",
+            "engine::registered-triggers::list",
+            "engine::registered-triggers::info",
             "engine::traces::list",
             "engine::queue::list_topics",
             "engine::health::check",

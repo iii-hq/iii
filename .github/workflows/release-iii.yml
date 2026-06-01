@@ -388,37 +388,12 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
-  # CLI Tools Binary (downloaded on first use of `iii create`)
-  # ──────────────────────────────────────────────────────────────
-
-  cli-tools-release:
-    name: CLI Tools Binary Release
-    needs: [setup, create-iii-release]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_rust-binary.yml
-    with:
-      bin_name: iii-tools
-      manifest_path: crates/iii-tools/Cargo.toml
-      tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
-      skip_create_release: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      targets: '["aarch64-apple-darwin","x86_64-apple-darwin","x86_64-unknown-linux-gnu","x86_64-unknown-linux-musl","aarch64-unknown-linux-gnu"]'
-      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: CLI Tools Binary
-    secrets:
-      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
-      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
-
-  # ──────────────────────────────────────────────────────────────
   # SDK Publish
   # ──────────────────────────────────────────────────────────────
 
   sdk-npm:
     name: SDK Node Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-npm]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_npm.yml
     with:
@@ -435,7 +410,7 @@ jobs:
 
   sdk-npm-browser:
     name: SDK Browser Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-npm]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_npm.yml
     with:
@@ -450,9 +425,26 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  observability-npm:
+    name: Observability Node Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/observability
+      npm_tag: ${{ needs.setup.outputs.npm_tag }}
+      build_filter: "@iii-dev/observability"
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Observability Node (npm)
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   sdk-py:
     name: SDK Python Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-py]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
@@ -465,9 +457,24 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  observability-py:
+    name: Observability Python Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/observability
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Observability Python (pypi)
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   sdk-rust:
     name: SDK Rust Publish
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, observability-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
@@ -475,6 +482,21 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: SDK Rust (cargo)
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  observability-rust:
+    name: Observability Rust Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/observability
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Observability Rust (cargo)
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -555,12 +577,16 @@ jobs:
 
   publish-builtin-workers:
     name: Publish builtin workers
-    needs: [setup, create-iii-release, engine-release]
+    # worker-release must finish before iii-sandbox publish: the install script
+    # pulls iii-worker from the GitHub release being tagged.
+    needs: [setup, create-iii-release, engine-release, worker-release]
     if: needs.setup.outputs.dry_run != 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
+          - worker: iii-worker-manager
+            worker_dir: engine/src/workers/worker
           - worker: iii-http
             worker_dir: engine/src/workers/rest_api
           - worker: iii-stream
@@ -579,12 +605,25 @@ jobs:
             worker_dir: engine/src/workers/shell
           - worker: iii-bridge
             worker_dir: engine/src/workers/bridge_client
+          - worker: configuration
+            worker_dir: engine/src/workers/configuration
           - worker: iii-sandbox
             worker_dir: crates/iii-worker/src/sandbox_daemon
+          - worker: iii-engine-functions
+            worker_dir: engine/src/workers/engine_fn
     uses: ./.github/workflows/_publish-engine-workers.yml
     with:
       worker: ${{ matrix.worker }}
       worker_dir: ${{ matrix.worker_dir }}
+      registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
+    secrets: inherit
+
+  publish-worker-skills:
+    name: Publish worker skills
+    needs: [setup, publish-builtin-workers]
+    if: needs.setup.outputs.dry_run != 'true'
+    uses: ./.github/workflows/_publish-worker-skills.yml
+    with:
       registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
     secrets: inherit
 
@@ -601,15 +640,18 @@ jobs:
       - engine-release
       - worker-release
       - console-release
-      - cli-tools-release
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
       - sdk-rust
+      - observability-npm
+      - observability-py
+      - observability-rust
       - docker-engine
       - homebrew-engine
       - homebrew-console
       - publish-builtin-workers
+      - publish-worker-skills
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -624,15 +666,18 @@ jobs:
           ENGINE_RESULT: ${{ needs.engine-release.result }}
           WORKER_RESULT: ${{ needs.worker-release.result }}
           CONSOLE_RESULT: ${{ needs.console-release.result }}
-          CLI_TOOLS_RESULT: ${{ needs.cli-tools-release.result }}
           SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
           SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
           SDK_PY_RESULT: ${{ needs.sdk-py.result }}
           SDK_RUST_RESULT: ${{ needs.sdk-rust.result }}
+          OBS_NPM_RESULT: ${{ needs.observability-npm.result }}
+          OBS_PY_RESULT: ${{ needs.observability-py.result }}
+          OBS_RUST_RESULT: ${{ needs.observability-rust.result }}
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
           BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
+          WORKER_SKILLS_RESULT: ${{ needs.publish-worker-skills.result }}
         run: |
           icon() {
             case "$1" in
@@ -650,12 +695,15 @@ jobs:
           LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
           LINES="$LINES$(icon "$WORKER_RESULT") Worker Binary\n"
           LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
-          LINES="$LINES$(icon "$CLI_TOOLS_RESULT") CLI Tools Binary\n"
           LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
           LINES="$LINES$(icon "$SDK_RUST_RESULT") SDK Rust\n"
+          LINES="$LINES$(icon "$OBS_NPM_RESULT") Observability Node\n"
+          LINES="$LINES$(icon "$OBS_PY_RESULT") Observability Python\n"
+          LINES="$LINES$(icon "$OBS_RUST_RESULT") Observability Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
+          LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
@@ -663,7 +711,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$CLI_TOOLS_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$BUILTIN_WORKERS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

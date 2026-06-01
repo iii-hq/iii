@@ -1,0 +1,57 @@
+---
+// Mirrors website/index.html lines 7-56. Kept verbatim so the localStorage
+// key 'iii_cookie_consent' and the iiiLoadCommonRoomSignals /
+// iiiNotifyCommonRoomEmail globals stay identical across iii.dev and /blog —
+// consent travels with the user, not the page. See blog/tests/build.test.ts
+// for the contract this mirrors.
+---
+
+<!-- Google Tag Manager -->
+<script is:inline>
+  (function (w, d, s, l, i) {
+    w[l] = w[l] || [];
+    w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+    var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s),
+      dl = l != 'dataLayer' ? '&l=' + l : '';
+    j.async = true;
+    j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+    f.parentNode.insertBefore(j, f);
+  })(window, document, 'script', 'dataLayer', 'GTM-N8DCTFB8');
+</script>
+<!-- End Google Tag Manager -->
+
+<!-- Common Room: loads only after analytics consent (see CookieBanner) -->
+<script is:inline>
+  (function () {
+    var STORAGE_KEY = 'iii_cookie_consent';
+    window.iiiLoadCommonRoomSignals = function () {
+      if (typeof window.signals !== 'undefined') return;
+      var script = document.createElement('script');
+      script.src = 'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+      script.async = true;
+      window.signals = Object.assign(
+        [],
+        { _opts: { apiHost: 'https://api.cr-relay.com' } },
+        ['page', 'identify', 'form'].reduce(function (acc, method) {
+          acc[method] = function () {
+            signals.push([method, arguments]);
+            return signals;
+          };
+          return acc;
+        }, {})
+      );
+      document.head.appendChild(script);
+    };
+    window.iiiNotifyCommonRoomEmail = function (email) {
+      try {
+        if (!email || localStorage.getItem(STORAGE_KEY) !== 'accepted') return;
+        if (typeof window.signals === 'undefined' || !window.signals.form) return;
+        window.signals.form({ email: email });
+      } catch (_) {}
+    };
+    try {
+      if (localStorage.getItem(STORAGE_KEY) === 'accepted') window.iiiLoadCommonRoomSignals();
+    } catch (_) {}
+  })();
+</script>

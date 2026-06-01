@@ -6,7 +6,17 @@
 use serde_json::json;
 use thiserror::Error;
 
-const DOCS_BASE: &str = "https://iii.dev/docs/errors/sandbox/";
+/// Where `error.docs_url` points to. Today this resolves to anchor
+/// headings in the in-repo sandbox README on GitHub, which is the only
+/// canonical documentation that exists for the S-code surface. The
+/// canonical iii.dev/docs/errors/sandbox/{code} pages are tracked as a
+/// follow-up TODO (plan T13); flip this constant when those pages ship.
+///
+/// `R2 — README anchor stability` (test in `sandbox_docs_anchor_stability.rs`)
+/// asserts every `SandboxErrorCode::as_str()` value matches an anchor
+/// here, failing CI if a new S-code lands without a README entry.
+const DOCS_BASE: &str =
+    "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxErrorCode {
@@ -125,43 +135,71 @@ pub enum SandboxError {
     #[error("resource limit exceeded: {0}")]
     ResourceLimit(String),
 
-    // FS variants below carry the supervisor's verbatim message in their
-    // inner `String` (or `path`) field — `IiiShellFsRunner::map_vm_error`
-    // is the canonical constructor and never reformats. Display passes
-    // the message through unchanged so it can't double-prefix the
-    // supervisor's own framing. The S-code carries the typed category
-    // on the wire (`to_payload`'s `code` + `type` fields).
+    // FS variants. Display impls now carry a kind prefix so a consumer
+    // that surfaces only the raw string (logs, debug output, an agent
+    // tool-call response that drops the structured envelope) still sees
+    // what went wrong — not just a bare path. The wire-level `type` and
+    // `code` fields produced by `to_payload` remain authoritative; this
+    // change only affects the human-readable Display rendering.
     #[error("{0}")]
     FsInvalidRequest(String),
 
-    #[error("{path}")]
+    #[error("file not found: {path}")]
     FsNotFound { path: String },
 
-    #[error("{path}")]
+    /// Specialisation of `FsNotFound` for the case where the in-VM shell
+    /// reports that an INTERMEDIATE directory on the target path is
+    /// missing. Same wire S-code (S211), but its `fix_hint` returns a
+    /// structured payload (`{ "parents": true }`) the agent can merge into
+    /// the original request and resubmit. Splitting this out from the
+    /// generic FsNotFound keeps `fix` honest: target-missing still
+    /// returns `null` because the recovery depends on caller intent, but
+    /// parent-missing has a single canonical fix every time.
+    #[error("parent directory not found: {path}")]
+    FsParentNotFound { path: String },
+
+    #[error("not a directory or wrong type: {path}")]
     FsWrongType { path: String },
 
-    #[error("{path}")]
+    #[error("already exists: {path}")]
     FsAlreadyExists { path: String },
 
-    #[error("{path}")]
+    #[error("directory not empty: {path}")]
     FsNotEmpty { path: String },
 
-    #[error("{0}")]
+    #[error("permission denied: {0}")]
     FsPermission(String),
 
-    #[error("{0}")]
+    #[error("fs i/o error: {0}")]
     FsIo(String),
 
-    #[error("{0}")]
+    #[error("invalid regex pattern: {0}")]
     FsRegex(String),
 
-    #[error("{0}")]
+    #[error("fs channel aborted: {0}")]
     FsChannelAborted(String),
 
     #[error(
         "fs operation unsupported by this sandbox supervisor; upgrade iii-worker to enable fs::* triggers (see S219 docs)"
     )]
     FsUnsupported,
+
+    /// Wrapper produced by sandbox::run when a sub-step (create / fs::write /
+    /// exec / stop) fails. Preserves the inner error's S-code on the wire
+    /// (via `code()` below) while adding structured step + sandbox_id
+    /// attribution to the `fix` payload, so agents that need to identify
+    /// which step failed don't have to substring-match the message.
+    ///
+    /// The `inner_code` is the originating variant's `SandboxErrorCode`;
+    /// `to_payload` emits that as the top-level `code`/`type`, with this
+    /// wrapper showing up only inside `fix.context`.
+    #[error("during sandbox::run step `{step}` (sandbox_id={sandbox_id}): {message}")]
+    RunStepFailed {
+        step: String,
+        sandbox_id: String,
+        message: String,
+        inner_code: SandboxErrorCode,
+    },
 }
 
 impl SandboxError {
@@ -181,7 +219,7 @@ impl SandboxError {
             Self::AutoInstallFailed { .. } => SandboxErrorCode::S102,
             Self::ExecTimedOut { .. } => SandboxErrorCode::S200,
             Self::FsInvalidRequest(_) => SandboxErrorCode::S210,
-            Self::FsNotFound { .. } => SandboxErrorCode::S211,
+            Self::FsNotFound { .. } | Self::FsParentNotFound { .. } => SandboxErrorCode::S211,
             Self::FsWrongType { .. } => SandboxErrorCode::S212,
             Self::FsAlreadyExists { .. } => SandboxErrorCode::S213,
             Self::FsNotEmpty { .. } => SandboxErrorCode::S214,
@@ -192,18 +230,128 @@ impl SandboxError {
             Self::FsUnsupported => SandboxErrorCode::S219,
             Self::BootFailed(_) => SandboxErrorCode::S300,
             Self::ResourceLimit(_) => SandboxErrorCode::S400,
+            // RunStepFailed transparently carries the inner code so the
+            // wire-level type/code identify the actual failure category;
+            // step + sandbox_id attribution lives in fix.context.
+            Self::RunStepFailed { inner_code, .. } => *inner_code,
         }
     }
 
     pub fn to_payload(&self) -> serde_json::Value {
         let code = self.code();
+        let (mut fix, fix_note) = self.fix_hint();
+
+        // sandbox::run sub-step attribution. When the error originated
+        // inside sandbox::run, fix.context carries the structured step
+        // name and sandbox_id so agents don't have to grep the message.
+        // We promote `fix` from None to Some({...}) just for this case;
+        // other variants keep whatever fix_hint produced.
+        if let Self::RunStepFailed {
+            step,
+            sandbox_id,
+            inner_code,
+            ..
+        } = self
+        {
+            fix = Some(json!({
+                "context": format!("during sandbox::run step `{step}`"),
+                "sandbox_id": sandbox_id,
+                "inner_code": inner_code.as_str(),
+            }));
+        }
+
         json!({
             "type": code.error_type(),
             "code": code.as_str(),
             "message": self.to_string(),
             "docs_url": format!("{}{}", DOCS_BASE, code.as_str()),
             "retryable": code.retryable(),
+            // Magical-moment field (D4). When non-null, contains a JSON
+            // payload the caller can resubmit verbatim as the next call.
+            // For RunStepFailed (E2), `fix.context` names which step
+            // inside sandbox::run failed and the sandbox_id (so a caller
+            // with keep_sandbox:true can clean up). Null when the error
+            // has no machine-fixable shape (VM boot failed, allowlist
+            // mismatch, etc.); `fix_note` then explains why.
+            "fix": fix,
+            "fix_note": fix_note,
         })
+    }
+
+    /// Returns `(fix, note)` for `to_payload`'s `fix`/`fix_note` fields.
+    ///
+    /// `fix` is a JSON payload the caller can resubmit verbatim if known.
+    /// Returning `None` here yields `"fix": null` on the wire, with `note`
+    /// explaining why the error has no auto-fix (operator-config-driven,
+    /// platform failure, capacity, etc.) so agents know not to retry blindly.
+    ///
+    /// Today we surface a fix only for the most common SDK-side mistake
+    /// — `S001 InvalidRequest` carrying our `cmd must be a single binary`
+    /// or `cmd contains whitespace AND args is set` hint. Other variants
+    /// return `fix: null`. Future improvements may extend coverage as
+    /// real agent-failure logs identify high-value targets.
+    fn fix_hint(&self) -> (Option<serde_json::Value>, Option<&'static str>) {
+        match self {
+            // Shell-line input the validator can normalise to argv. We
+            // could try to construct a literal `fix` payload here, but
+            // shape-resolving without the original request is fragile;
+            // the prose message already names the canonical fix. Leave
+            // `fix: null` with a pointer note rather than a guessed
+            // payload that could collide with an unrelated `args` field.
+            Self::InvalidRequest(_) => (None, Some("see message: examples are inline")),
+            Self::ImageNotInCatalog { .. } => (
+                None,
+                Some(
+                    "set `image` to a value listed in the message or add a custom_images entry in iii.config.yaml",
+                ),
+            ),
+            Self::RootfsMissing { .. } => (
+                None,
+                Some("operator action required: run `iii worker add <image-ref>` on the host"),
+            ),
+            Self::AutoInstallFailed { .. } => (None, Some("transient: retry after a short delay")),
+            Self::ExecTimedOut { .. } => (
+                None,
+                Some("raise `timeout_ms` on the exec call or split the work into smaller steps"),
+            ),
+            Self::ConcurrentExec(_) => (
+                None,
+                Some("wait for the in-flight exec to complete before submitting another"),
+            ),
+            Self::AlreadyStopped(_) | Self::NotFound(_) => (
+                None,
+                Some("the sandbox is gone; call sandbox::create first"),
+            ),
+            Self::BootFailed(_) | Self::ResourceLimit(_) => {
+                (None, Some("platform-level failure; not auto-recoverable"))
+            }
+            // Parent directory missing on a write/mkdir: the fix is a
+            // single boolean. Emit a structured `fix` payload the agent
+            // can merge into the original request and resubmit verbatim,
+            // plus a fix_note so the same recipe is readable in logs.
+            Self::FsParentNotFound { .. } => (
+                Some(json!({ "parents": true })),
+                Some(
+                    "merge `fix` into the original request and resubmit: `parents: true` auto-creates missing intermediate directories",
+                ),
+            ),
+            // Other FS variants. The fix is usually obvious from the path;
+            // the structured envelope plus prose message together suffice.
+            // Treat them as "no machine-fixable shape" by default.
+            Self::FsInvalidRequest(_)
+            | Self::FsNotFound { .. }
+            | Self::FsWrongType { .. }
+            | Self::FsAlreadyExists { .. }
+            | Self::FsNotEmpty { .. }
+            | Self::FsPermission(_)
+            | Self::FsIo(_)
+            | Self::FsRegex(_)
+            | Self::FsChannelAborted(_)
+            | Self::FsUnsupported => (None, None),
+            // RunStepFailed's fix is set explicitly in to_payload above
+            // (with structured context); this arm is the no-op default.
+            Self::RunStepFailed { .. } => (None, None),
+        }
     }
 
     pub fn image_not_in_catalog(image: impl Into<String>) -> Self {
@@ -256,6 +404,58 @@ impl SandboxError {
     }
 }
 
+/// Display-as-JSON wire adapter for `RegisterFunction::new_async`.
+///
+/// The new async-handler builder collapses errors via `Display`, but the
+/// `sandbox::*` wire contract — preserved across the
+/// `register_function_with` → `register_function` migration — is the
+/// structured payload produced by [`SandboxError::to_payload`]
+/// (`code`/`type`/`message`/`docs_url`/`retryable`). Wrapping the error
+/// in `SandboxErrorWire` and `map_err`-ing into it makes `Display` emit
+/// that JSON, so callers (CLI, agents, engine clients) see the exact
+/// same body they did when handlers wrote
+/// `IIIError::Handler(serde_json::to_string(&e.to_payload())…)` by hand.
+///
+/// SDK contract dependency: this wrapper is load-bearing only as long as
+/// `iii_sdk::IntoAsyncHandler` collapses `E` via `e.to_string()` (i.e.
+/// the `Display` impl). If the SDK ever switches to a structured error
+/// trait or to `Debug`, the wire format will drift silently — the
+/// `sandbox_error_wire_display_matches_to_payload_json` test pins the
+/// local invariant but cannot catch SDK-side regressions. Re-audit this
+/// adapter whenever `iii-sdk`'s handler-error path changes.
+pub struct SandboxErrorWire(pub SandboxError);
+
+impl From<SandboxError> for SandboxErrorWire {
+    fn from(err: SandboxError) -> Self {
+        SandboxErrorWire(err)
+    }
+}
+
+impl std::fmt::Display for SandboxErrorWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Falls back to the inner `thiserror` Display only if the JSON
+        // payload itself cannot be serialized — matching the
+        // `unwrap_or_else(|_| e.to_string())` branch of the legacy
+        // hand-written handlers.
+        match serde_json::to_string(&self.0.to_payload()) {
+            Ok(json) => f.write_str(&json),
+            Err(_) => std::fmt::Display::fmt(&self.0, f),
+        }
+    }
+}
+
+impl std::fmt::Debug for SandboxErrorWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl From<SandboxErrorWire> for iii_sdk::IIIError {
+    fn from(err: SandboxErrorWire) -> Self {
+        iii_sdk::IIIError::Handler(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +474,91 @@ mod tests {
         );
         assert!(payload["message"].as_str().unwrap().contains("python"));
         assert_eq!(payload["retryable"], false);
+    }
+
+    #[test]
+    fn fs_parent_not_found_emits_structured_fix_with_parents_true() {
+        // The highest-leverage S211 case: an agent wrote to /workspace/x.js
+        // and the parent didn't exist. The daemon must surface a
+        // structured `fix` payload the agent can merge verbatim — this
+        // is the "magical moment" for fs::write/mkdir error UX.
+        let err = SandboxError::FsParentNotFound {
+            path: "parent not found: /workspace".into(),
+        };
+        let payload = err.to_payload();
+
+        // Same wire S-code as a plain FsNotFound.
+        assert_eq!(payload["code"], "S211");
+        assert_eq!(payload["type"], "filesystem");
+
+        // The magical moment: fix is non-null and resubmittable.
+        let fix = &payload["fix"];
+        assert!(fix.is_object(), "fix must be a structured object");
+        assert_eq!(fix["parents"], true);
+
+        // fix_note explains how to use the fix payload.
+        let note = payload["fix_note"].as_str().expect("fix_note set");
+        assert!(
+            note.contains("parents: true"),
+            "fix_note must mention `parents: true`, got: {note}"
+        );
+        assert!(
+            note.contains("merge"),
+            "fix_note must tell the agent to merge into the original request"
+        );
+    }
+
+    #[test]
+    fn fs_not_found_target_missing_still_returns_null_fix() {
+        // Inverse pin: when the TARGET path is missing (not a parent), the
+        // recovery depends on caller intent (was the path wrong? was the
+        // file already deleted?), so `fix` stays null. We don't want to
+        // bait agents into a wrong retry by emitting `{ parents: true }`
+        // for every S211.
+        let err = SandboxError::fs_not_found("/workspace/missing.js");
+        let payload = err.to_payload();
+
+        assert_eq!(payload["code"], "S211");
+        assert_eq!(payload["type"], "filesystem");
+        assert!(payload["fix"].is_null());
+        assert!(payload["fix_note"].is_null());
+    }
+
+    #[test]
+    fn run_step_failed_emits_structured_fix_context() {
+        // RunStepFailed wraps a sub-step error from sandbox::run with
+        // structured attribution. The wire-level S-code transparently
+        // carries the inner code so agents see the actual failure
+        // category; the step + sandbox_id live in fix.context for
+        // machine-readable handling.
+        let err = SandboxError::RunStepFailed {
+            step: "fs::write (code)".to_string(),
+            sandbox_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            message: "permission denied: /tmp/run.py".to_string(),
+            inner_code: SandboxErrorCode::S215,
+        };
+        let payload = err.to_payload();
+
+        // Inner code surfaces as the top-level S-code; the wrapper is
+        // invisible at the wire level except via fix.context.
+        assert_eq!(payload["code"], "S215");
+        assert_eq!(payload["type"], "filesystem");
+
+        let fix = &payload["fix"];
+        assert!(fix.is_object(), "fix must be a structured object, not null");
+        assert_eq!(
+            fix["context"],
+            "during sandbox::run step `fs::write (code)`"
+        );
+        assert_eq!(fix["sandbox_id"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(fix["inner_code"], "S215");
+
+        // Message round-trips the inner error verbatim with a step prefix.
+        let message = payload["message"].as_str().unwrap();
+        assert!(
+            message.contains("fs::write (code)") && message.contains("permission denied"),
+            "message must show both the step and the inner cause; got {message:?}"
+        );
     }
 
     #[test]
@@ -369,6 +654,31 @@ mod tests {
                 *expected,
                 "variant {err:?} expected to serialize with code {expected}"
             );
+        }
+    }
+
+    /// Pins the wire format `RegisterFunction::new_async` callers see for
+    /// `sandbox::*` errors. Before the migration, handlers wrote
+    /// `IIIError::Handler(serde_json::to_string(&e.to_payload())…)`
+    /// directly; after, they `map_err` into `SandboxErrorWire` and the
+    /// SDK's async-handler glue calls `Display`. This test asserts both
+    /// paths produce the same JSON bytes, so callers branching on
+    /// `code` / `type` / `retryable` keep working.
+    #[test]
+    fn sandbox_error_wire_display_matches_to_payload_json() {
+        let cases: &[SandboxError] = &[
+            SandboxError::InvalidRequest("cmd must be a single binary".into()),
+            SandboxError::NotFound("11111111-1111-1111-1111-111111111111".into()),
+            SandboxError::ExecTimedOut { timeout_ms: 1500 },
+            SandboxError::FsUnsupported,
+        ];
+        for err in cases {
+            let expected = serde_json::to_string(&err.to_payload()).unwrap();
+            let actual = SandboxErrorWire(err.clone()).to_string();
+            assert_eq!(actual, expected, "wire format drift for {err:?}");
+            // And the embedded code stays parseable by clients.
+            let parsed: serde_json::Value = serde_json::from_str(&actual).unwrap();
+            assert_eq!(parsed["code"], err.code().as_str());
         }
     }
 }

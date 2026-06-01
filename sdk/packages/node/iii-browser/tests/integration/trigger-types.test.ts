@@ -1,21 +1,29 @@
 import { describe, expect, it } from 'vitest'
-import type { TriggerTypeInfo } from '../../src/iii-types'
 import { iii, sleep } from './utils'
 
+type TriggerTypeRow = {
+  id: string
+  worker_name: string
+  description: string
+}
+
 describe('Trigger Types', () => {
-  it('should list trigger types', async () => {
-    const { trigger_types: triggerTypes } = await iii.trigger<
+  // `engine::trigger-types::list` was retired; the catalog now lives at
+  // `engine::triggers::list` (which returns trigger TYPES, not instances).
+  it('should list trigger types via engine::triggers::list', async () => {
+    const { triggers } = await iii.trigger<
       { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
+      { triggers: TriggerTypeRow[] }
     >({
-      function_id: 'engine::trigger-types::list',
+      function_id: 'engine::triggers::list',
       payload: { include_internal: false },
     })
-    expect(Array.isArray(triggerTypes)).toBe(true)
+    expect(Array.isArray(triggers)).toBe(true)
 
-    const httpType = triggerTypes.find((tt) => tt.id === 'http')
+    const httpType = triggers.find((tt) => tt.id === 'http')
     expect(httpType).toBeDefined()
     expect(httpType?.description).toBeDefined()
+    expect(typeof httpType?.worker_name).toBe('string')
   })
 
   it('should return a TriggerTypeRef from registerTriggerType', async () => {
@@ -98,19 +106,19 @@ describe('Trigger Types', () => {
     expect(() => ref.unregister()).not.toThrow()
   })
 
-  it('should accept include_internal parameter for engine::trigger-types::list', async () => {
-    const { trigger_types: publicTypes } = await iii.trigger<
+  it('should accept include_internal parameter for engine::triggers::list', async () => {
+    const { triggers: publicTypes } = await iii.trigger<
       { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
+      { triggers: TriggerTypeRow[] }
     >({
-      function_id: 'engine::trigger-types::list',
+      function_id: 'engine::triggers::list',
       payload: { include_internal: false },
     })
-    const { trigger_types: allTypes } = await iii.trigger<
+    const { triggers: allTypes } = await iii.trigger<
       { include_internal: boolean },
-      { trigger_types: TriggerTypeInfo[] }
+      { triggers: TriggerTypeRow[] }
     >({
-      function_id: 'engine::trigger-types::list',
+      function_id: 'engine::triggers::list',
       payload: { include_internal: true },
     })
 

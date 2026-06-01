@@ -2,7 +2,7 @@
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
 //! CLI entrypoint for `iii-worker sandbox-daemon`. Loads config and
-//! delegates to `sandbox_daemon::run`.
+//! delegates to `sandbox_daemon::serve`.
 
 use crate::cli::app::SandboxDaemonArgs;
 use crate::sandbox_daemon;
@@ -30,7 +30,7 @@ pub async fn run(args: SandboxDaemonArgs) -> i32 {
         }
     };
 
-    match sandbox_daemon::run(cfg, &args.engine).await {
+    match sandbox_daemon::serve(cfg, &args.engine).await {
         Ok(()) => 0,
         Err(e) => {
             tracing::error!(error = %e, "sandbox-daemon exited with error");

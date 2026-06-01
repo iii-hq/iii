@@ -61,6 +61,10 @@ impl From<String> for FieldPath {
 /// `Segments` so a JSON string deserializes into `Single` rather than
 /// failing the array match first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+// VARIANT-ORDER-LOAD-BEARING: `Single` MUST precede `Segments` for serde
+// untagged deserialization to route bare strings to `MergePath::Single`.
+// Reordering breaks wire compatibility — string payloads would deserialize
+// as one-element `Segments`. Locked by `merge_path_single_variant_deserializes_string_first`.
 #[serde(untagged)]
 pub enum MergePath {
     Single(String),
@@ -91,6 +95,17 @@ impl From<Vec<&str>> for MergePath {
     }
 }
 
+// Compatibility shim for callers that constructed paths via `FieldPath`
+// before `Append.path` widened to `Option<MergePath>` in PR #1552-fix.
+// `impl From<FieldPath> for Option<MergePath>` would violate Rust orphan
+// rules (both `From` and `Option` are foreign); call sites needing the
+// `Option` wrapping use `.map(Into::into)` or `Some(fp.into())`.
+impl From<FieldPath> for MergePath {
+    fn from(value: FieldPath) -> Self {
+        Self::Single(value.0)
+    }
+}
+
 /// Operations that can be performed atomically on a stream value
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -105,6 +120,7 @@ pub enum UpdateOp {
     /// omitted (root merge), a single first-level key, or an array of
     /// literal segments for nested merge. See [`MergePath`].
     Merge {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<MergePath>,
         value: Value,
     },
@@ -115,8 +131,15 @@ pub enum UpdateOp {
     /// Decrement numeric value
     Decrement { path: FieldPath, by: i64 },
 
-    /// Append an element to an array or concatenate a string
-    Append { path: FieldPath, value: Value },
+    /// Append an element to an array or concatenate a string at the
+    /// optional path. Path may be omitted (root append), a single
+    /// first-level key, or an array of literal segments for nested
+    /// append. See [`MergePath`] for the variant shape.
+    Append {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<MergePath>,
+        value: Value,
+    },
 
     /// Remove a field
     Remove { path: FieldPath },
@@ -147,10 +170,35 @@ impl UpdateOp {
         }
     }
 
-    /// Create an Append operation
-    pub fn append(path: impl Into<FieldPath>, value: impl Into<Value>) -> Self {
+    /// Create an Append operation at a specific path. Accepts a single
+    /// first-level key (`"foo"`) or any type that converts into
+    /// [`MergePath`] (e.g. `Vec<String>` for nested paths).
+    pub fn append(path: impl Into<MergePath>, value: impl Into<Value>) -> Self {
         Self::Append {
-            path: path.into(),
+            path: Some(path.into()),
+            value: value.into(),
+        }
+    }
+
+    /// Create an Append operation at the root level (no path).
+    pub fn append_root(value: impl Into<Value>) -> Self {
+        Self::Append {
+            path: None,
+            value: value.into(),
+        }
+    }
+
+    /// Create an Append operation at a nested path of literal segments.
+    /// Convenience wrapper for `append(vec!["a", "b"], v)`.
+    pub fn append_at_path<I, S>(segments: I, value: impl Into<Value>) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::Append {
+            path: Some(MergePath::Segments(
+                segments.into_iter().map(Into::into).collect(),
+            )),
             value: value.into(),
         }
     }
@@ -388,12 +436,113 @@ mod tests {
 
         let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
         match decoded {
-            UpdateOp::Append { path, value } => {
-                assert_eq!(path.0, "chunks");
+            UpdateOp::Append {
+                path: Some(MergePath::Single(s)),
+                value,
+            } => {
+                assert_eq!(s, "chunks");
                 assert_eq!(value, serde_json::json!({"text": "hello"}));
             }
-            other => panic!("expected append op, got {other:?}"),
+            other => panic!("expected single-string append, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn append_with_segments_path_round_trips_as_array() {
+        let op = UpdateOp::append_at_path(["entityId", "buffer"], serde_json::json!("chunk"));
+        let encoded = serde_json::to_value(&op).unwrap();
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "append",
+                "path": ["entityId", "buffer"],
+                "value": "chunk",
+            })
+        );
+
+        let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
+        match decoded {
+            UpdateOp::Append {
+                path: Some(MergePath::Segments(segs)),
+                value,
+            } => {
+                assert_eq!(segs, vec!["entityId", "buffer"]);
+                assert_eq!(value, serde_json::json!("chunk"));
+            }
+            other => panic!("expected segments append, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_with_root_path_round_trips() {
+        let op = UpdateOp::append_root(serde_json::json!("first"));
+        let encoded = serde_json::to_value(&op).unwrap();
+
+        // `path` is None, so it is omitted entirely from the JSON
+        // wire format (no explicit `null`). Cross-SDK consumers (Node
+        // / Python / browser) decode the `path?` field as absent.
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "append",
+                "value": "first",
+            })
+        );
+
+        let decoded: UpdateOp = serde_json::from_value(encoded).unwrap();
+        match decoded {
+            UpdateOp::Append { path: None, value } => {
+                assert_eq!(value, serde_json::json!("first"));
+            }
+            other => panic!("expected root append, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_path_omitted_deserializes_as_none() {
+        // Wire payloads that pre-date this change may omit `path` entirely
+        // (effectively root append). Guard against that breaking. Also
+        // covers explicit `null` and missing-field deserialization paths.
+        for raw in [
+            r#"{"type":"append","value":"x"}"#,
+            r#"{"type":"append","path":null,"value":"x"}"#,
+        ] {
+            let op: UpdateOp = serde_json::from_str(raw).unwrap_or_else(|e| {
+                panic!("expected to parse {raw:?} as UpdateOp::Append, got {e}")
+            });
+            match op {
+                UpdateOp::Append { path: None, value } => {
+                    assert_eq!(value, serde_json::json!("x"));
+                }
+                other => panic!("expected root append for {raw:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn append_field_path_into_merge_path_compat() {
+        // Legacy callers constructed paths via `FieldPath`; the
+        // `From<FieldPath> for MergePath` shim keeps them compiling.
+        let fp = FieldPath::new("legacy");
+        let mp: MergePath = fp.into();
+        assert_eq!(mp, MergePath::Single("legacy".to_string()));
+    }
+
+    #[test]
+    fn merge_path_single_variant_deserializes_string_first() {
+        // Regression for VARIANT-ORDER-LOAD-BEARING: bare JSON strings
+        // must deserialize to `MergePath::Single`, not a one-element
+        // `Segments`. If the variant order in `MergePath` is ever
+        // reordered (alphabetized, auto-formatted) this test fails.
+        let single: MergePath = serde_json::from_str(r#""foo""#).unwrap();
+        assert_eq!(single, MergePath::Single("foo".to_string()));
+
+        let segments: MergePath = serde_json::from_str(r#"["a","b"]"#).unwrap();
+        assert_eq!(
+            segments,
+            MergePath::Segments(vec!["a".to_string(), "b".to_string()])
+        );
     }
 
     #[test]
@@ -457,12 +606,14 @@ mod tests {
         let op = UpdateOp::merge(serde_json::json!({"x": 1}));
         let encoded = serde_json::to_value(&op).unwrap();
 
-        // path is None, so it serializes as null.
+        // `path` is None, so it is omitted from the JSON wire format
+        // (no explicit `null`). Cross-SDK consumers decode `path?` as
+        // absent. `path: null` payloads still deserialize via the
+        // `#[serde(default)]` attribute.
         assert_eq!(
             encoded,
             serde_json::json!({
                 "type": "merge",
-                "path": null,
                 "value": {"x": 1},
             })
         );

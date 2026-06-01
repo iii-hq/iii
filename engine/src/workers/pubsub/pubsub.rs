@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{
@@ -37,7 +37,9 @@ pub struct PubSubWorker {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 pub struct PubSubInput {
+    /// Topic to publish to. Subscribers registered for this topic receive the event.
     pub topic: String,
+    /// JSON payload delivered to each subscriber.
     pub data: Value,
 }
 

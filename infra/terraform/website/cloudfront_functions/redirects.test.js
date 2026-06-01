@@ -39,22 +39,32 @@ function locationOf(result) {
   return result.headers.location.value
 }
 
-test('/docs → function does not redirect', () => {
+function isNotFound(result) {
+  return result && typeof result === 'object' && result.statusCode === 404
+}
+
+// In production /docs and /docs/* are routed to the docs-nlb origin via a
+// separate CloudFront behavior with no function_association, so this handler
+// never runs for those paths. The unit assertions below describe the
+// function's in-isolation behavior — they no longer rewrite to /index.html
+// because the SPA fallback was replaced with a real 404 (was: soft-404
+// homepage clone, see notFound() in redirects.js).
+test('/docs → function returns 404 in isolation (production routes via docs behavior)', () => {
   const result = handler(buildEvent('/docs', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.ok(isNotFound(result))
 })
 
-test('/docs/quickstart → function does not redirect', () => {
+test('/docs/quickstart → function returns 404 in isolation (production routes via docs behavior)', () => {
   const result = handler(buildEvent('/docs/quickstart', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.ok(isNotFound(result))
 })
 
-test('/docsfoo → NOT redirected (not under /docs/)', () => {
+test('/docsfoo → 404 (not under /docs/, not a known pretty URL)', () => {
   const result = handler(buildEvent('/docsfoo', 'iii.dev'))
-  assert.ok(!isRedirect(result), 'should not be a redirect')
-  assert.equal(result.uri, '/index.html')
+  assert.ok(!isRedirect(result))
+  assert.ok(isNotFound(result))
 })
 
 test('/llms.txt → pass through unchanged (static file)', () => {
@@ -115,16 +125,12 @@ test('www.iii.dev percent-encodes reserved chars in keys and values', () => {
   assert.equal(locationOf(result), 'https://iii.dev/p?weird%20key=a%26b%3Dc%2Bd%23e')
 })
 
-test('SPA fallback preserves querystring on the request object (no rewrite)', () => {
-  // The handler mutates request.uri but returns the same request object, so
-  // CloudFront forwards the original querystring untouched. Pin the no-op so
-  // a future refactor doesn't accidentally clear it.
+test('unknown extensionless path → 404 (was SPA fallback to /index.html)', () => {
   const qs = { utm_source: { value: 'twitter' }, ref: { value: 'launch' } }
   const event = buildEvent('/some/route', 'iii.dev', qs)
   const result = handler(event)
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
-  assert.equal(result.querystring, qs)
+  assert.ok(isNotFound(result))
 })
 
 test('/ (root) → pass through unchanged', () => {
@@ -133,10 +139,10 @@ test('/ (root) → pass through unchanged', () => {
   assert.equal(result.uri, '/')
 })
 
-test('/some/client/route → rewrite uri to /index.html', () => {
+test('/some/client/route → 404 (no client-side routing on the static site)', () => {
   const result = handler(buildEvent('/some/client/route', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.ok(isNotFound(result))
 })
 
 test('/manifesto → rewrite uri to /manifesto.html (flat HTML, Option A)', () => {
@@ -181,10 +187,10 @@ test('/missing.jpg → pass through unchanged (S3 returns 404)', () => {
   assert.equal(result.uri, '/missing.jpg')
 })
 
-test('/ai → SPA fallback to /index.html', () => {
+test('/ai → 404 (no /ai route on the static site; was soft-404 homepage clone)', () => {
   const result = handler(buildEvent('/ai', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.ok(isNotFound(result))
 })
 
 test('/assets/main.abc123.js → pass through unchanged', () => {
@@ -211,10 +217,98 @@ test('/.well-known/foo (no extension) → pass through, NOT SPA rewritten', () =
   assert.equal(result.uri, '/.well-known/foo', '.well-known is an explicit exemption from SPA fallback')
 })
 
-test('missing host header → SPA fallback still applies for extensionless paths', () => {
+// ---------------------------------------------------------------------------
+// /blog/* — Astro blog at iii.dev/blog. Astro emits with trailingSlash: 'always'
+// and build.format: 'directory', so each post is a key like
+// blog/<slug>/index.html in S3. CloudFront's default_root_object only applies
+// to the apex, so /blog/<slug>/ must be rewritten to .../index.html and
+// extensionless paths must 301 to the canonical trailing-slash form.
+// ---------------------------------------------------------------------------
+
+test('/blog → 301 https://iii.dev/blog/ (canonical trailing slash)', () => {
+  const result = handler(buildEvent('/blog', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/')
+})
+
+test('/blog/ → rewrite to /blog/index.html', () => {
+  const result = handler(buildEvent('/blog/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/index.html')
+})
+
+test('/blog/hello-world/ → rewrite to /blog/hello-world/index.html', () => {
+  const result = handler(buildEvent('/blog/hello-world/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/hello-world/index.html')
+})
+
+test('/blog/hello-world (no trailing slash) → 301 to /blog/hello-world/', () => {
+  const result = handler(buildEvent('/blog/hello-world', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/')
+})
+
+test('/blog/foo/bar/ → rewrite to /blog/foo/bar/index.html (nested)', () => {
+  const result = handler(buildEvent('/blog/foo/bar/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/foo/bar/index.html')
+})
+
+test('/blog/rss.xml → pass through unchanged (file with extension)', () => {
+  const result = handler(buildEvent('/blog/rss.xml', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/rss.xml')
+})
+
+test('/blog/_astro/style.abc123.css → pass through unchanged (hashed asset)', () => {
+  const result = handler(buildEvent('/blog/_astro/style.abc123.css', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/_astro/style.abc123.css')
+})
+
+test('/blogfoo → NOT matched as /blog/, falls through to 404', () => {
+  // Boundary check: the /blog/ prefix must require the trailing slash so
+  // unrelated top-level paths like /blogfoo or /blogfest are not hijacked.
+  const result = handler(buildEvent('/blogfoo', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.ok(isNotFound(result))
+})
+
+test('/blog/hello-world/ preserves querystring on rewrite', () => {
+  const qs = { utm_source: { value: 'rss' } }
+  const result = handler(buildEvent('/blog/hello-world/', 'iii.dev', qs))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/blog/hello-world/index.html')
+  assert.equal(result.querystring, qs)
+})
+
+test('/blog/hello-world (no slash) preserves querystring on 301', () => {
+  const result = handler(
+    buildEvent('/blog/hello-world', 'iii.dev', { utm_source: { value: 'rss' } }),
+  )
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/?utm_source=rss')
+})
+
+test('www.iii.dev/blog/hello-world/ → 301 apex (host check runs first)', () => {
+  const result = handler(buildEvent('/blog/hello-world/', 'www.iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/')
+})
+
+test('preview-host /blog/foo → 301 to same preview host (preserves origin)', () => {
+  // Don't lock /blog/* redirects to apex — preview deploys must redirect to
+  // the same hostname so reviewers stay on the preview environment.
+  const result = handler(buildEvent('/blog/foo', 'preview.iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://preview.iii.dev/blog/foo/')
+})
+
+test('missing host header → still 404 for unknown extensionless paths', () => {
   const event = buildEvent('/some/page', undefined)
   delete event.request.headers.host
   const result = handler(event)
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/index.html')
+  assert.ok(isNotFound(result))
 })

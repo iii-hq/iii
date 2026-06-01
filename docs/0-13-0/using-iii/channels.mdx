@@ -1,0 +1,218 @@
+---
+title: "Channels"
+description: "Stream large or binary payloads between iii workers."
+owner: "devrel"
+type: "how-to"
+---
+
+## Goal
+
+Stream a large or binary payload from one function to another without putting the data itself in a
+JSON function payload.
+
+Use a normal function invocation when the payload is small JSON and can be handled as one request.
+Use a channel when the payload is large, binary, or naturally stream-shaped.
+
+Good fits for channels:
+
+- File uploads and downloads.
+- Images, audio, video, PDFs, and datasets.
+- Progress updates during long-running work.
+- Producer and consumer pipelines where the data should move as a stream.
+
+<Info title="Architecture">
+  For the underlying model, see [Channels architecture](../understanding-iii/channels).
+</Info>
+
+## Steps
+
+### 1. Create a channel
+
+A channel has two local stream objects and two serializable refs:
+
+- `writer`: local writable stream.
+- `reader`: local readable stream.
+- `writerRef`: serializable token for the writer end.
+- `readerRef`: serializable token for the reader end.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const channel = await iii.createChannel();
+
+    // channel.writer
+    // channel.reader
+    // channel.writerRef
+    // channel.readerRef
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    channel = iii_client.create_channel()
+
+    # channel.writer
+    # channel.reader
+    # channel.writer_ref
+    # channel.reader_ref
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    let channel = iii.create_channel(None).await?;
+
+    // channel.writer
+    // channel.reader
+    // channel.writer_ref
+    // channel.reader_ref
+    ```
+  </Tab>
+</Tabs>
+
+### 2. Write to the channel
+
+Write the stream payload to the local writer and close it when you are done.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const channel = await iii.createChannel();
+
+    channel.writer.stream.end(Buffer.from("file contents"));
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    channel = await iii_client.create_channel_async()
+
+    await channel.writer.write(b"file contents")
+    await channel.writer.close_async()
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    let channel = iii.create_channel(None).await?;
+
+    channel.writer.write(b"file contents").await?;
+    channel.writer.close().await?;
+    ```
+  </Tab>
+</Tabs>
+
+### 3. Pass the reader ref to another function
+
+Pass the `readerRef` / `reader_ref` as part of a normal function invocation. The receiving function
+uses that ref to read from the channel.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const result = await iii.trigger({
+      function_id: "files::process",
+      payload: {
+        filename: "report.csv",
+        reader: channel.readerRef,
+      },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = await iii_client.trigger_async({
+        "function_id": "files::process",
+        "payload": {
+            "filename": "report.csv",
+            "reader": channel.reader_ref.model_dump(),
+        },
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::TriggerRequest;
+    use serde_json::json;
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "files::process".to_string(),
+            payload: json!({
+                "filename": "report.csv",
+                "reader": channel.reader_ref,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    ```
+  </Tab>
+</Tabs>
+
+### 4. Read from the channel
+
+Node and Python deserialize channel refs into live channel objects before your handler runs. Rust
+receives the ref in JSON and reconstructs the reader with `ChannelReader::new(...)`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { ChannelReader } from "iii-sdk";
+
+    worker.registerFunction("files::process", async (input: { reader: ChannelReader }) => {
+      let bytes = 0;
+
+      for await (const chunk of input.reader.stream) {
+        bytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      }
+
+      return { bytes };
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    async def process_file(input: dict) -> dict:
+        reader = input["reader"]
+        chunks = []
+
+        async for chunk in reader:
+            chunks.append(chunk)
+
+        return {"bytes": sum(len(chunk) for chunk in chunks)}
+
+    worker.register_function("files::process", process_file)
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{ChannelDirection, ChannelReader, IIIError};
+    use serde_json::json;
+
+    let refs = iii_sdk::extract_channel_refs(&input);
+    let reader_ref = refs
+        .iter()
+        .find(|(key, ref_)| key == "reader" && matches!(ref_.direction, ChannelDirection::Read))
+        .map(|(_, ref_)| ref_.clone())
+        .ok_or_else(|| IIIError::Handler("missing reader channel ref".to_string()))?;
+
+    let reader = ChannelReader::new(iii.address(), &reader_ref);
+    let mut bytes = 0;
+
+    while let Some(chunk) = reader.next_binary().await? {
+        bytes += chunk.len();
+    }
+
+    Ok(json!({ "bytes": bytes }))
+    ```
+  </Tab>
+</Tabs>
+
+## Result
+
+The caller passes only a small ref through `trigger()`. The stream payload travels over the channel,
+and the receiving function reads it incrementally.
+
+## Related pages
+
+- [Channels architecture](../understanding-iii/channels)
+- [Node SDK channels](../sdk-reference/node-sdk#channels)
+- [Python SDK channels](../sdk-reference/python-sdk#channels)
+- [Rust SDK channels](../sdk-reference/rust-sdk#channels)

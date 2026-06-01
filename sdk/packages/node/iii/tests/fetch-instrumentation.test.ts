@@ -24,6 +24,7 @@ vi.mock('ws', () => {
 vi.mock('@opentelemetry/sdk-trace-node', () => ({
   NodeTracerProvider: vi.fn().mockImplementation(() => ({
     register: vi.fn(),
+    forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),
 }))
@@ -32,6 +33,7 @@ vi.mock('@opentelemetry/sdk-trace-node', () => ({
 vi.mock('@opentelemetry/sdk-metrics', () => ({
   MeterProvider: vi.fn().mockImplementation(() => ({
     getMeter: vi.fn().mockReturnValue({ createCounter: vi.fn() }),
+    forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),
   PeriodicExportingMetricReader: vi.fn().mockImplementation(() => ({})),
@@ -42,25 +44,38 @@ vi.mock('@opentelemetry/sdk-logs', () => ({
   LoggerProvider: vi.fn().mockImplementation(() => ({
     getLogger: vi.fn().mockReturnValue({ emit: vi.fn() }),
     addLogRecordProcessor: vi.fn(),
+    forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),
   SimpleLogRecordProcessor: vi.fn().mockImplementation(() => ({})),
+  BatchLogRecordProcessor: vi.fn().mockImplementation(() => ({})),
 }))
 
 // Mock span processor
 vi.mock('@opentelemetry/sdk-trace-base', () => ({
-  BatchSpanProcessor: vi.fn().mockImplementation(() => ({})),
+  SimpleSpanProcessor: vi.fn().mockImplementation(() => ({
+    forceFlush: vi.fn().mockResolvedValue(undefined),
+    onStart: vi.fn(),
+    onEnd: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  })),
+  BatchSpanProcessor: vi.fn().mockImplementation(() => ({
+    forceFlush: vi.fn().mockResolvedValue(undefined),
+    onStart: vi.fn(),
+    onEnd: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  })),
 }))
 
-// Mock exporters
-vi.mock('../src/telemetry-system/exporters', () => ({
+// Mock exporters to avoid real exporter instantiation
+vi.mock('../../observability/src/telemetry-system/exporters', () => ({
   EngineSpanExporter: vi.fn().mockImplementation(() => ({})),
   EngineMetricsExporter: vi.fn().mockImplementation(() => ({})),
   EngineLogExporter: vi.fn().mockImplementation(() => ({})),
 }))
 
-// Mock the shared connection
-vi.mock('../src/telemetry-system/connection', () => ({
+// Mock the shared connection to avoid real WebSocket connections
+vi.mock('../../observability/src/telemetry-system/connection', () => ({
   SharedEngineConnection: vi.fn().mockImplementation(() => ({
     send: vi.fn(),
     onConnected: vi.fn(),
@@ -69,7 +84,8 @@ vi.mock('../src/telemetry-system/connection', () => ({
   })),
 }))
 
-import { initOtel, shutdownOtel, getTracer } from '../src/telemetry-system/index'
+import { initOtel, shutdownOtel } from '@iii-dev/observability'
+import { getTracer } from '@iii-dev/observability/internal'
 
 describe('Fetch instrumentation', () => {
   const originalEnv = process.env
@@ -195,7 +211,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -244,7 +260,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -284,7 +300,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -318,7 +334,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -353,7 +369,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -387,7 +403,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -419,7 +435,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -455,7 +471,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -487,7 +503,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -532,7 +548,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -571,7 +587,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -606,7 +622,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '../src/telemetry-system/fetch-instrumentation'
+      '@iii-dev/observability'
     )
     unpatch = unpatchGlobalFetch
 

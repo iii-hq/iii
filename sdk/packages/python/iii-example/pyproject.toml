@@ -10,12 +10,14 @@ authors = [{ name = "III" }]
 requires-python = ">=3.10"
 dependencies = [
     "iii-sdk",
+    "iii-observability",
     "opentelemetry-api",
     "opentelemetry-sdk",
 ]
 
 [tool.uv.sources]
 iii-sdk = { path = "../iii", editable = true }
+iii-observability = { path = "../observability", editable = true }
 
 [project.scripts]
 iii-example = "src.main:main"

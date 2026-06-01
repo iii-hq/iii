@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 pub mod channels;
@@ -9,7 +9,10 @@ pub mod rbac_config;
 pub mod rbac_session;
 pub mod ws_handler;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use axum::{
     Router,
@@ -22,7 +25,7 @@ use colored::Colorize;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, task::AbortHandle};
 
 use crate::{
     engine::Engine,
@@ -34,6 +37,8 @@ pub const DEFAULT_PORT: u16 = 49134;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct CreateChannelInput {
+    /// Maximum number of pending messages buffered between writer and reader.
+    /// Defaults to an engine-chosen value when omitted.
     #[serde(default)]
     pub buffer_size: Option<usize>,
 }
@@ -79,6 +84,7 @@ impl Default for WorkerManagerConfig {
 pub struct WorkerManager {
     engine: Arc<Engine>,
     config: WorkerManagerConfig,
+    server_abort: Arc<StdMutex<Option<AbortHandle>>>,
 }
 
 #[async_trait::async_trait]
@@ -93,12 +99,16 @@ impl Worker for WorkerManager {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(Box::new(WorkerManager { engine, config }))
+        Ok(Box::new(WorkerManager {
+            engine,
+            config,
+            server_abort: Arc::new(StdMutex::new(None)),
+        }))
     }
 
     async fn start_background_tasks(
         &self,
-        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
         shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         let config = Arc::new(self.config.clone());
@@ -108,32 +118,49 @@ impl Worker for WorkerManager {
             shutdown_rx: shutdown_rx.clone(),
         };
 
-        tokio::spawn(async move {
-            // Setup router
-            let app = Router::new()
-                .route("/", get(ws_handler))
-                .route("/otel", get(otel_ws_handler))
-                .route("/ws/channels/{channel_id}", get(channel_ws_upgrade))
-                .with_state(state);
+        let addr = format!("{}:{}", config.host, config.port);
+        let listener = TcpListener::bind(&addr)
+            .await
+            .map_err(|err| crate::workers::traits::bind_address_error(&addr, err))?;
+        tracing::info!("Engine listening on address: {}", addr.purple());
 
-            // Bind and serve
-            let addr = format!("{}:{}", config.host, config.port);
-            let listener = TcpListener::bind(&addr).await.unwrap();
-            tracing::info!("Engine listening on address: {}", addr.purple());
+        let app = Router::new()
+            .route("/", get(ws_handler))
+            .route("/otel", get(otel_ws_handler))
+            .route("/ws/channels/{channel_id}", get(channel_ws_upgrade))
+            .with_state(state);
 
+        let handle = tokio::spawn(async move {
             let shutdown = async move {
-                let _ = shutdown_signal().await;
-                let _ = shutdown_tx.send(true);
+                tokio::select! {
+                    _ = shutdown_signal() => {
+                        let _ = shutdown_tx.send(true);
+                    }
+                    _ = async {
+                        while shutdown_rx.changed().await.is_ok() {
+                            if *shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    } => {}
+                }
             };
 
-            axum::serve(
+            if let Err(e) = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .with_graceful_shutdown(shutdown)
             .await
-            .unwrap();
+            {
+                tracing::error!(error = %e, "WorkerManager server exited with error");
+            }
         });
+
+        *self
+            .server_abort
+            .lock()
+            .expect("server_abort mutex poisoned") = Some(handle.abort_handle());
 
         Ok(())
     }
@@ -144,6 +171,14 @@ impl Worker for WorkerManager {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
+        let abort = self
+            .server_abort
+            .lock()
+            .expect("server_abort mutex poisoned")
+            .take();
+        if let Some(abort) = abort {
+            abort.abort();
+        }
         Ok(())
     }
 }

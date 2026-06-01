@@ -40,7 +40,7 @@ sequenceDiagram
 Function A creates a channel, sends `readerRef` to Function B through a normal `trigger()` call, then writes chunks to the writer stream. The engine pipes each chunk over WebSocket to Function B's reader stream. When A ends the writer, B's reader emits `end`.
 
 <Info title="Architecture deep-dive">
-  For internal details on the WebSocket framing, backpressure handling, and lazy connection behavior, see the [Channels architecture](../architecture/channels) reference.
+  For internal details on the WebSocket framing, backpressure handling, and lazy connection behavior, see the [Channels architecture](./stream-realtime-data) reference.
 </Info>
 
 ## Why Channels Are Necessary
@@ -643,7 +643,7 @@ type StreamChannelRef = {
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Channels Architecture" href="../architecture/channels" icon="sitemap">
+  <Card title="Channels Architecture" href="./stream-realtime-data" icon="sitemap">
     Internal design: WebSocket framing, backpressure, and lazy connections
   </Card>
   <Card title="Expose an HTTP Endpoint" href="./expose-http-endpoint" icon="globe">

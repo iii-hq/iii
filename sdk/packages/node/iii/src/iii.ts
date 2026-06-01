@@ -18,7 +18,6 @@ import {
   type InvokeFunctionMessage,
   MessageType,
   type RegisterFunctionMessage,
-  type RegisterServiceMessage,
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type StreamChannelRef,
@@ -27,22 +26,25 @@ import {
   type TriggerRequest,
   type WorkerRegisteredMessage,
 } from './iii-types'
-import { registerWorkerGauges, stopWorkerGauges } from './otel-worker-gauges'
+import { registerWorkerGauges, stopWorkerGauges } from '@iii-dev/observability'
+import { getMeter, getTracer } from '@iii-dev/observability/internal'
+import { SpanKind } from '@opentelemetry/api'
 import type { IStream } from './stream'
+import { detectProjectName } from './utils'
 import {
   extractContext,
   getLogger,
-  getMeter,
-  getTracer,
   initOtel,
   injectBaggage,
   injectTraceparent,
   type OtelConfig,
+  recordSpanEvent,
+  redactAndTruncate,
+  resolveMaxBytesFromEnv,
   SeverityNumber,
   shutdownOtel,
-  SpanKind,
   withSpan,
-} from './telemetry-system'
+} from '@iii-dev/observability'
 import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,
@@ -116,7 +118,6 @@ export type InitOptions = {
 class Sdk implements ISdk {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
-  private services = new Map<string, Omit<RegisterServiceMessage, 'functions'>>()
   private invocations = new Map<string, Invocation & { timeout?: NodeJS.Timeout }>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
@@ -318,11 +319,53 @@ class Sdk implements ISdk {
       this.functions.set(functionId, {
         message: fullMessage,
         handler: async (input, traceparent?: string, baggage?: string) => {
+          const tracePayloads = !(
+            process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
+            process.env.III_DISABLE_TRACE_PAYLOADS?.toLowerCase() === 'true'
+          )
+          const payloadMaxBytes = resolveMaxBytesFromEnv()
+
+          const runHandler = async () => {
+            if (tracePayloads) {
+              const { json, truncated } = redactAndTruncate(input, payloadMaxBytes)
+              recordSpanEvent('iii.invocation.input', {
+                'iii.payload.json': json,
+                'iii.payload.truncated': truncated,
+              })
+            }
+            try {
+              const result = await handler(input)
+              if (tracePayloads) {
+                const { json, truncated } = redactAndTruncate(result, payloadMaxBytes)
+                recordSpanEvent('iii.invocation.output', {
+                  'iii.payload.json': json,
+                  'iii.payload.truncated': truncated,
+                  'iii.payload.ok': true,
+                })
+              }
+              return result
+            } catch (err) {
+              if (tracePayloads) {
+                const errMsg = err instanceof Error ? err.message : String(err)
+                const { json, truncated } = redactAndTruncate(
+                  { error: errMsg },
+                  payloadMaxBytes,
+                )
+                recordSpanEvent('iii.invocation.output', {
+                  'iii.payload.json': json,
+                  'iii.payload.truncated': truncated,
+                  'iii.payload.ok': false,
+                })
+              }
+              throw err
+            }
+          }
+
           if (getTracer()) {
             const parentContext = extractContext(traceparent, baggage)
 
             return context.with(parentContext, () =>
-              withSpan(`call ${functionId}`, { kind: SpanKind.SERVER }, async () => await handler(input)),
+              withSpan(`call ${functionId}`, { kind: SpanKind.SERVER }, async () => await runHandler()),
             )
           }
 
@@ -330,7 +373,7 @@ class Sdk implements ISdk {
           const spanId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
           const syntheticSpan = trace.wrapSpanContext({ traceId, spanId, traceFlags: 1 })
 
-          return context.with(trace.setSpan(context.active(), syntheticSpan), async () => await handler(input))
+          return context.with(trace.setSpan(context.active(), syntheticSpan), async () => await runHandler())
         },
       })
     } else {
@@ -344,12 +387,6 @@ class Sdk implements ISdk {
         this.functions.delete(functionId)
       },
     }
-  }
-
-  registerService = (message: Omit<RegisterServiceMessage, 'message_type'>): void => {
-    const msg = { ...message, name: message.name ?? message.id }
-    this.sendMessage(MessageType.RegisterService, msg, true)
-    this.services.set(message.id, { ...msg, message_type: MessageType.RegisterService })
   }
 
   /**
@@ -497,7 +534,7 @@ class Sdk implements ISdk {
         isolation: process.env.III_ISOLATION || null,
         telemetry: {
           language,
-          project_name: telemetryOpts?.project_name,
+          project_name: telemetryOpts?.project_name ?? detectProjectName(),
           framework: telemetryOpts?.framework?.trim() || 'iii-node',
           amplitude_api_key: telemetryOpts?.amplitude_api_key,
         },
@@ -685,9 +722,6 @@ class Sdk implements ISdk {
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
-    })
-    this.services.forEach((service) => {
-      this.sendMessage(MessageType.RegisterService, service, true)
     })
     this.functions.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterFunction, message, true)
@@ -935,6 +969,16 @@ class Sdk implements ISdk {
     }
   }
 
+  private onTriggerRegistrationResult(
+    message: { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+  ): void {
+    if (!message.error) return
+    const triggerType = message.trigger_type ?? message.type ?? ''
+    console.error(
+      `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
+    )
+  }
+
   private onMessage(socketMessage: Data): void {
     let msgType: MessageType
     let message: Record<string, unknown>
@@ -957,6 +1001,10 @@ class Sdk implements ISdk {
       this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> })
+    } else if (msgType === MessageType.TriggerRegistrationResult) {
+      this.onTriggerRegistrationResult(
+        message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+      )
     } else if (msgType === MessageType.WorkerRegistered) {
       const { worker_id } = message as WorkerRegisteredMessage
       this.workerId = worker_id

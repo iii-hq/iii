@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registerWorker } from '../src/iii'
-import type { FunctionInfo } from '../src/iii-types'
+type FunctionRow = { function_id: string }
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
 
@@ -90,7 +90,7 @@ describe('Trigger Registration', () => {
 
   it('should register a function-availability trigger manually', () => {
     const handlerFunctionId = 'test.functions_available.handler'
-    sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionInfo[] }) => null)
+    sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionRow[] }) => null)
     sdk.registerTrigger({
       type: 'engine::functions-available',
       function_id: handlerFunctionId,
@@ -109,7 +109,7 @@ describe('Trigger Registration', () => {
 
   it('should clean up a manually-registered function-availability trigger', () => {
     const handlerFunctionId = 'test.functions_available.cleanup'
-    const fn = sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionInfo[] }) => null)
+    const fn = sdk.registerFunction(handlerFunctionId, async (_: { functions: FunctionRow[] }) => null)
     const trigger = sdk.registerTrigger({
       type: 'engine::functions-available',
       function_id: handlerFunctionId,

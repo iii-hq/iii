@@ -168,7 +168,7 @@ iii.trigger(TriggerRequest {
 
 ### 3. Enqueue (named queue)
 
-`TriggerAction.Enqueue({ queue: 'name' })` routes the invocation through a **named queue** configured in `iii-config.yaml`, check how to [create queues in more detail](use-queues). The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job but does not wait for it to be processed. The queue provides retries, concurrency control, backoff, and optional FIFO ordering. If all retries are exhausted, the job moves to a dead letter queue.
+`TriggerAction.Enqueue({ queue: 'name' })` routes the invocation through a **named queue** configured in `iii-config.yaml`, check how to [create queues in more detail](./use-queues). The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job but does not wait for it to be processed. The queue provides retries, concurrency control, backoff, and optional FIFO ordering. If all retries are exhausted, the job moves to a dead letter queue.
 
 ```mermaid
 sequenceDiagram
@@ -1119,7 +1119,7 @@ let receipt = iii.trigger(TriggerRequest {
   <Card title="Functions & Triggers" href="./use-functions-and-triggers" icon="code">
     Register functions and bind triggers to them
   </Card>
-  <Card title="Trigger Types" href="../architecture/trigger-types" icon="diagram-project">
+  <Card title="Trigger Types" href="./use-functions-and-triggers#trigger-types" icon="diagram-project">
     Deep dive into HTTP, queue, cron, log, and stream triggers
   </Card>
 </CardGroup>

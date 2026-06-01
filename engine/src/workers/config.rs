@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::{
@@ -44,7 +44,7 @@ impl EngineConfig {
         }
     }
 
-    pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
+    pub fn expand_env_vars(yaml_content: &str) -> String {
         static RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
         let re = &*RE;
@@ -77,6 +77,13 @@ impl EngineConfig {
 
     /// Loads config strictly from the given file path.
     /// Returns a clear error if the file does not exist or cannot be parsed.
+    ///
+    /// This function is called from BOTH engine startup
+    /// (`run_serve`) AND the async reload path
+    /// (`workers::reload::ReloadManager::parse_and_normalize`). It must
+    /// therefore not mutate process-global env state, because
+    /// `std::env::set_var` while tokio workers are running is undefined
+    /// behavior on multiple platforms.
     pub fn config_file(path: &str) -> anyhow::Result<Self> {
         let yaml_content = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -90,17 +97,60 @@ impl EngineConfig {
             }
         })?;
         let yaml_content = Self::expand_env_vars(&yaml_content);
-        serde_yaml::from_str(&yaml_content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))
+        let mut cfg: Self = serde_yaml::from_str(&yaml_content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
+        cfg.ensure_builtin_daemons();
+        Ok(cfg)
     }
 
     /// Returns a config with default port and default modules (from inventory).
     /// Use this when explicitly opting in to run without a config file.
     pub fn default_config() -> Self {
         tracing::info!("Using default config (no config file)");
-        Self {
+        let mut cfg = Self {
             modules: default_worker_entries(),
             workers: Vec::new(),
+        };
+        cfg.ensure_builtin_daemons();
+        cfg
+    }
+
+    /// Inject KNOWN_EXTERNAL daemons (e.g. `iii-worker-ops` for the
+    /// `worker::*` SDK triggers) so they ship without requiring a
+    /// `iii.config.yaml` entry. Idempotent.
+    ///
+    /// Injection is gated on `super::external::resolve_external_module`
+    /// being able to find the backing binary — promising a worker we can't
+    /// actually spawn would fail the engine boot on every host that ships
+    /// without `iii-worker` (CI SDK runners that download only the `iii`
+    /// binary, minimal install paths, etc.). Set
+    /// `IIIWORKER_DISABLE_BUILTIN_DAEMONS=1` to opt out explicitly
+    /// regardless of binary availability (used by engine reload tests that
+    /// spawn back-to-back `serve()` instances and need to avoid the
+    /// daemon's lingering listener).
+    pub fn ensure_builtin_daemons(&mut self) {
+        if std::env::var_os("IIIWORKER_DISABLE_BUILTIN_DAEMONS").is_some() {
+            return;
+        }
+        const ALWAYS_ON: &[&str] = &["iii-worker-ops"];
+        for name in ALWAYS_ON {
+            let already_listed = self.workers.iter().any(|w| w.name == *name)
+                || self.modules.iter().any(|m| m.name == *name);
+            if already_listed {
+                continue;
+            }
+            if super::external::resolve_external_module(name).is_none() {
+                tracing::debug!(
+                    daemon = name,
+                    "Skipping builtin daemon auto-injection: backing binary not found on PATH"
+                );
+                continue;
+            }
+            self.workers.push(WorkerEntry {
+                name: (*name).to_string(),
+                image: None,
+                config: None,
+            });
         }
     }
 }
@@ -579,7 +629,13 @@ impl EngineBuilder {
 
     /// Builds and initializes all modules
     pub async fn build(mut self) -> anyhow::Result<Self> {
-        let config = self.config.take().expect("No worker configs found");
+        let mut config = self.config.take().expect("No worker configs found");
+        // Builder entry points (with_config / add_worker / register_worker) don't
+        // route through config_file()/default_config(), so KNOWN_EXTERNAL
+        // daemons (e.g. iii-worker-ops) would be missing for programmatic
+        // engine construction. Re-apply the invariant at the build boundary;
+        // ensure_builtin_daemons is idempotent so duplicate calls are safe.
+        config.ensure_builtin_daemons();
 
         crate::workers::observability::metrics::ensure_default_meter();
 
@@ -1189,6 +1245,51 @@ mod tests {
                 .any(|entry| entry.name == "iii-observability"),
             "default config should include ObservabilityWorker (registered as mandatory)"
         );
+    }
+
+    #[test]
+    fn test_default_config_auto_injects_iii_worker_ops() {
+        // Injection is now gated on the iii-worker binary being resolvable
+        // via `resolve_external_module`. Skip when the host doesn't ship
+        // the binary (CI SDK runners, lean dev installs) so the test
+        // reflects user-visible behavior instead of false-positive failing
+        // on those hosts.
+        if super::super::external::resolve_external_module("iii-worker-ops").is_none() {
+            eprintln!(
+                "skipping: iii-worker binary not on PATH; auto-injection correctly suppressed"
+            );
+            return;
+        }
+        let config = EngineConfig::default_config();
+        let count = config
+            .workers
+            .iter()
+            .filter(|w| w.name == "iii-worker-ops")
+            .count();
+        assert_eq!(
+            count, 1,
+            "default config must auto-inject iii-worker-ops exactly once when the binary is available"
+        );
+    }
+
+    #[test]
+    fn test_ensure_builtin_daemons_is_idempotent() {
+        let mut config = EngineConfig {
+            modules: Vec::new(),
+            workers: vec![WorkerEntry {
+                name: "iii-worker-ops".into(),
+                image: None,
+                config: None,
+            }],
+        };
+        config.ensure_builtin_daemons();
+        config.ensure_builtin_daemons();
+        let count = config
+            .workers
+            .iter()
+            .filter(|w| w.name == "iii-worker-ops")
+            .count();
+        assert_eq!(count, 1, "must not duplicate user-declared entries");
     }
 
     // =========================================================================
@@ -1941,7 +2042,9 @@ modules:
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = occupied.local_addr().expect("local addr").port();
 
-        let err = EngineBuilder::new()
+        // Bind happens in `start_background_tasks` (not `build`/`initialize`),
+        // so we have to step through the worker lifecycle manually.
+        let builder = EngineBuilder::new()
             .add_worker(
                 "iii-stream",
                 Some(serde_json::json!({
@@ -1954,14 +2057,24 @@ modules:
             )
             .build()
             .await
+            .expect("build should succeed");
+
+        let stream_worker = builder
+            .running()
+            .iter()
+            .find(|rw| rw.entry.name == "iii-stream")
+            .expect("iii-stream worker should be running");
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let err = stream_worker
+            .worker
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
             .err()
-            .expect("build should fail when the stream port is occupied");
+            .expect("start_background_tasks should fail when the stream port is occupied");
+        std::mem::forget(shutdown_tx);
 
         let message = err.to_string();
-        assert!(
-            message.contains("iii-stream"),
-            "unexpected error message: {message}"
-        );
         assert!(
             message.contains(&format!("127.0.0.1:{port}")),
             "unexpected error message: {message}"

@@ -1,6 +1,16 @@
+---
+title: "iii Docs"
+description: "A high-level overview of iii and how to work with the documentation in this directory."
+owner: "devrel"
+type: "explanation"
+---
+
 # iii Docs
 
-The iii documentation source lives in this directory and is served locally with Mintlify.
+iii is a software system that eliminates integration complexity. It organizes software into three
+primitives (Worker, Trigger, Function), so every capability (queues, cron, streaming, sandboxing,
+observability, agents, frontend UIs) can be built and composed from the same set of pieces. The
+rendered documentation site is the canonical reference; this directory holds the Mintlify source.
 
 ## Development
 
@@ -16,7 +26,7 @@ Or directly from this directory:
 npx mint dev
 ```
 
-The docs config lives in `docs.json`. Local preview is typically available at `http://localhost:3000`.
+The docs config is in `docs.json`. Local preview is typically available at `http://localhost:3000`.
 
 ## API Reference
 

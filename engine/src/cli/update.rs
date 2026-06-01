@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
 use std::time::Duration;
@@ -81,6 +81,37 @@ pub fn print_update_notifications(updates: &[UpdateInfo]) {
         );
     }
     eprintln!();
+}
+
+/// Print the targets accepted by `iii update <target>`.
+pub fn print_targets() {
+    println!("{}", "Available targets for `iii update`:".bold());
+    println!();
+    println!(
+        "  {} (or {})  - update iii itself",
+        "self".bold(),
+        "iii".bold()
+    );
+    println!();
+    println!("{}", "Managed binaries:".bold());
+    for spec in registry::REGISTRY {
+        let short = spec
+            .commands
+            .iter()
+            .map(|m| m.cli_command)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if short.is_empty() {
+            println!("  {}", spec.name.bold());
+        } else {
+            println!("  {}  (binary: {})", short.bold(), spec.name);
+        }
+    }
+    println!();
+    println!("{}", "Examples:".bold());
+    println!("  iii update              # update everything");
+    println!("  iii update self         # update only iii");
+    println!("  iii update console      # update only console");
 }
 
 /// Get the CLI command name for a binary name.
@@ -618,11 +649,6 @@ mod tests {
     #[test]
     fn cli_command_for_binary_resolves_console() {
         assert_eq!(cli_command_for_binary("iii-console"), Some("console"));
-    }
-
-    #[test]
-    fn cli_command_for_binary_resolves_tools() {
-        assert_eq!(cli_command_for_binary("iii-tools"), Some("create"));
     }
 
     #[test]
