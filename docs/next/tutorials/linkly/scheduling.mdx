@@ -1,0 +1,161 @@
+---
+title: "Ch. 6: Schedule maintenance"
+description:
+  "Give links an expiry, then sweep the stale ones nightly with a link-sweeper worker and iii-cron."
+owner: "devrel"
+type: "tutorial"
+---
+
+Some work isn't triggered by a request — it runs on a clock. In this chapter you give links an
+optional expiry, then add a `link-sweeper` worker that deletes the expired ones on a schedule with
+`iii-cron`.
+
+## Add the workers
+
+`iii-cron` fires functions on a schedule. The `link-sweeper` worker is yours, so scaffold it the
+same way you scaffolded `link` in Chapter 1:
+
+```bash
+iii worker add iii-cron
+iii worker init link-sweeper --language typescript
+```
+
+## Give links an expiry
+
+A sweep needs something to sweep. Add an optional `expires_at` column to the `links` table in the
+`link` worker's `ensureSchema`:
+
+```typescript link/src/index.ts {5}
+await worker.trigger({
+  function_id: "database::execute",
+  payload: {
+    db: DB,
+    sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT)",
+  },
+});
+```
+
+Accept `expires_at` in `link::create` and store it (it stays `null` for links that never expire):
+
+```typescript link/src/index.ts {3,9,10}
+worker.registerFunction(
+  "link::create",
+  async (payload: { url: string; code?: string; expires_at?: string }) => {
+    const code = payload.code ?? makeCode();
+    await worker.trigger({
+      function_id: "database::execute",
+      payload: {
+        db: DB,
+        sql: "INSERT INTO links (code, url, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        params: [code, payload.url, new Date().toISOString(), payload.expires_at ?? null],
+      },
+    });
+    await worker.trigger({
+      function_id: "state::set",
+      payload: { scope: "links", key: code, value: { url: payload.url } },
+    });
+    await worker.trigger({
+      function_id: "publish",
+      payload: { topic: "link.created", data: { code, url: payload.url } },
+    });
+    logger.info("link created", { code, url: payload.url });
+    return { code, url: payload.url };
+  },
+);
+```
+
+## Sweep expired links on a schedule
+
+The `link-sweeper` worker owns the cleanup. It queries the database for expired links, evicts them
+from the `iii-state` cache, deletes the rows, and binds to a `cron` trigger. The cron expression has
+**seven** fields, starting with seconds and ending with year (`0 0 3 * * * *` is 03:00 every day,
+any year). Replace the generated `link-sweeper/src/index.ts`:
+
+```typescript link-sweeper/src/index.ts
+import { registerWorker, Logger } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "link-sweeper",
+});
+const logger = new Logger();
+const DB = "primary";
+
+worker.registerFunction("link-sweeper::sweep_expired", async () => {
+  const now = new Date().toISOString();
+  const { rows } = await worker.trigger<
+    { db: string; sql: string; params: string[] },
+    { rows: Array<{ code: string }> }
+  >({
+    function_id: "database::query",
+    payload: {
+      db: DB,
+      sql: "SELECT code FROM links WHERE expires_at IS NOT NULL AND expires_at < ?",
+      params: [now],
+    },
+  });
+  for (const { code } of rows) {
+    await worker.trigger({ function_id: "state::delete", payload: { scope: "links", key: code } });
+  }
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: {
+      db: DB,
+      sql: "DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at < ?",
+      params: [now],
+    },
+  });
+  logger.info("swept expired links", { count: rows.length });
+  return { swept: rows.length };
+});
+
+worker.registerTrigger({
+  type: "cron",
+  function_id: "link-sweeper::sweep_expired",
+  // Production: 03:00 every day. For the tutorial, sweep every 15 seconds so you can watch it fire.
+  config: { expression: "*/15 * * * * * *" },
+});
+
+logger.info("link-sweeper ready");
+```
+
+Register it with your project:
+
+```bash
+iii worker add ./link-sweeper
+```
+
+`sweep_expired` is an ordinary function, so you can run it on demand to test rather than waiting for
+the schedule to fire.
+
+## See it work
+
+Create one link that already expired and one that doesn't, then run the sweep by hand:
+
+```bash
+iii trigger link::create url=https://old.example code=old expires_at=2000-01-01T00:00:00Z
+iii trigger link::create url=https://keep.example code=keep
+iii trigger link-sweeper::sweep_expired
+```
+
+```json
+{ "swept": 1 }
+```
+
+The expired link is gone from both the database and the cache, while the other still resolves:
+
+```bash
+iii trigger link::resolve code=old
+iii trigger link::resolve code=keep
+```
+
+```json
+{ "url": null }
+{ "url": "https://keep.example" }
+```
+
+## Conclusion
+
+Linkly now maintains itself: a dedicated `link-sweeper` worker expires stale links on a schedule,
+with no request needed to trigger it. Next, in
+[Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn a browser tab into a worker that
+creates links and subscribes to the live click stream.

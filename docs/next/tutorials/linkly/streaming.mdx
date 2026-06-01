@@ -1,0 +1,196 @@
+---
+title: "Ch. 5: Stream live clicks"
+description:
+  "Broadcast every click to subscribers in real time with a click-streamer worker, and bulk-load
+  links from a CSV over a channel."
+owner: "devrel"
+type: "tutorial"
+---
+
+This chapter covers iii's two real-time data paths. With `iii-stream` you push data **out** to
+subscribers the moment it changes, so the browser you build next can show a live click counter. With
+a **channel** you stream data **in**, which you'll use to bulk-load links from a CSV. You'll move
+the live-broadcast concern into its own `click-streamer` worker so the `link` worker stays focused
+on links.
+
+## Add the workers
+
+`iii-stream` carries the live click feed. The `click-streamer` worker is yours, so scaffold it the
+same way you scaffolded `link` in Chapter 1:
+
+```bash
+iii worker add iii-stream
+iii worker init click-streamer --language typescript
+```
+
+## Broadcast clicks in real time
+
+Rather than have the `link` worker know about streaming, keep it decoupled: `link` announces that a
+click happened, and `click-streamer` reacts by pushing it onto the live feed. A live counter can
+tolerate the rare dropped event, so a regular `iii-pubsub` event is the right tool here (durable
+delivery is for state that breaks when an event is missed, as with the cache in Chapter 4).
+
+First, publish a `link.clicked` event from `link::record_click`. The durable write from Chapter 4
+stays; the publish is new:
+
+```typescript link/src/index.ts {12-15}
+worker.registerFunction(
+  "link::record_click",
+  async (payload: { code: string; clicked_at: string }) => {
+    await worker.trigger({
+      function_id: "database::execute",
+      payload: {
+        db: DB,
+        sql: "INSERT INTO clicks (code, clicked_at) VALUES (?, ?)",
+        params: [payload.code, payload.clicked_at],
+      },
+    });
+    await worker.trigger({
+      function_id: "publish",
+      payload: { topic: "link.clicked", data: payload },
+    });
+    return { recorded: true };
+  },
+);
+```
+
+Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
+a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
+WebSocket subscribed to that stream and group. Replace the generated `click-streamer/src/index.ts`:
+
+```typescript click-streamer/src/index.ts
+import { registerWorker, Logger } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "click-streamer",
+});
+const logger = new Logger();
+
+worker.registerFunction(
+  "click-streamer::broadcast",
+  async (data: { code: string; clicked_at: string }) => {
+    await worker.trigger({
+      function_id: "stream::set",
+      payload: {
+        stream_name: "clicks",
+        group_id: "all",
+        item_id: `${data.code}-${data.clicked_at}`,
+        data,
+      },
+    });
+    return { streamed: true };
+  },
+);
+
+worker.registerTrigger({
+  type: "subscribe",
+  function_id: "click-streamer::broadcast",
+  config: { topic: "link.clicked" },
+});
+
+logger.info("click-streamer ready");
+```
+
+Register it with your project:
+
+```bash
+iii worker add ./click-streamer
+```
+
+The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.
+
+## Bulk-load links from a CSV over a channel
+
+A **channel** is a direct, streaming pipe between two endpoints: one side writes bytes, the other
+reads them. Unlike a function call, it isn't request/response — it's a stream, which makes it the
+right fit for moving a file's worth of data. Here you'll let an operator upload a CSV of links.
+
+Add a `link::bulk_import` function to the `link` worker. It receives the read end of a channel,
+streams the CSV in, and creates a link per row:
+
+```typescript link/src/index.ts
+worker.registerFunction("link::bulk_import", async (input) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of input.reader.stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const csv = Buffer.concat(chunks).toString("utf-8");
+  const rows = csv.trim().split("\n").slice(1); // skip the header row
+
+  let imported = 0;
+  for (const row of rows) {
+    const [code, url] = row.split(",");
+    if (!url) continue;
+    await worker.trigger({
+      function_id: "link::create",
+      payload: { code: code.trim(), url: url.trim() },
+    });
+    imported += 1;
+  }
+  logger.info("bulk import complete", { imported });
+  return { imported };
+});
+```
+
+The uploader creates the channel, writes the CSV to the writer end, and hands the reader end to
+`link::bulk_import`. `createChannel` returns serializable `readerRef`/`writerRef` handles you can
+pass through a normal trigger payload. Save this as `import-links.mjs`:
+
+```javascript import-links.mjs
+import { registerWorker } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "uploader",
+});
+
+const csv = ["code,url", "iii,https://iii.dev", "docs,https://iii.dev/docs"].join("\n");
+
+const channel = await worker.createChannel();
+channel.writer.stream.write(Buffer.from(csv));
+channel.writer.stream.end();
+
+const result = await worker.trigger({
+  function_id: "link::bulk_import",
+  payload: { reader: channel.readerRef },
+});
+console.log(result);
+```
+
+## See it work
+
+With the engine running, follow a link a few times and read the live `clicks` stream:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+iii trigger stream::list stream_name=clicks group_id=all
+```
+
+Each redirect lands in the stream as the `click-streamer` worker broadcasts it. Now bulk-load links
+from the CSV:
+
+```bash
+node import-links.mjs
+```
+
+```json
+{ "imported": 2 }
+```
+
+Both new links resolve immediately:
+
+```bash
+iii trigger link::resolve code=docs
+```
+
+```json
+{ "url": "https://iii.dev/docs" }
+```
+
+## Conclusion
+
+Linkly now streams every click to subscribers in real time through a dedicated `click-streamer`
+worker, and accepts bulk link uploads over a channel. Next, in
+[Ch. 6: Schedule maintenance](/tutorials/linkly/scheduling), you add a `link-sweeper` worker that
+expires stale links on a schedule with `iii-cron`.

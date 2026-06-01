@@ -194,6 +194,26 @@
             ]
           },
           {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "next/tutorials/linkly/overview",
+                  "next/tutorials/linkly/foundations",
+                  "next/tutorials/linkly/observability",
+                  "next/tutorials/linkly/persistence",
+                  "next/tutorials/linkly/durable-execution",
+                  "next/tutorials/linkly/streaming",
+                  "next/tutorials/linkly/scheduling",
+                  "next/tutorials/linkly/frontend",
+                  "next/tutorials/linkly/custom-rules",
+                  "next/tutorials/linkly/safety-agent"
+                ]
+              }
+            ]
+          },
+          {
             "tab": "SDK & Engine Reference",
             "groups": [
               {
