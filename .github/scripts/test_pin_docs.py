@@ -83,6 +83,15 @@ class TestAddStripPrefix:
         out = strip_prefix(_tabs("index"), "next")
         assert out[0]["groups"][0]["pages"] == ["index"]
 
+    def test_add_prefix_keeps_shared_changelog_at_root(self):
+        tabs = [{"tab": "D", "groups": [{"group": "G", "pages": [
+            "using-iii/workers", "changelog/index", "changelog/0-11-0/x",
+        ]}]}]
+        out = add_prefix(tabs, "0-16-0")
+        assert out[0]["groups"][0]["pages"] == [
+            "0-16-0/using-iii/workers", "changelog/index", "changelog/0-11-0/x",
+        ]
+
 
 class TestFindIndexByTag:
     def test_finds(self):
@@ -117,13 +126,13 @@ class TestIsExcluded:
     @pytest.mark.parametrize("name", [
         "docs.json", "package.json", "node_modules", "custom.css",
         "navbar-counters.js", ".gitignore", ".mintignore", ".prettierrc",
-        "README.md", "0-11-0", "1-0-0", "index.mdx.skill.md", "next",
+        "README.md", "0-11-0", "1-0-0", "index.mdx.skill.md", "next", "changelog",
     ])
     def test_excluded(self, name):
         assert is_excluded(name) is True
 
     @pytest.mark.parametrize("name", [
-        "index.mdx", "using-iii", "assets", "images", "changelog",
+        "index.mdx", "using-iii", "assets", "images",
     ])
     def test_included(self, name):
         assert is_excluded(name) is False
@@ -256,6 +265,33 @@ class TestRotate:
         assert versions[0]["tag"] == "Next"
         assert versions[1]["tag"] == "Latest"
         assert sum(1 for v in versions if v.get("default")) == 1
+
+    def test_changelog_stays_shared_at_root(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "index.mdx").write_text("# Latest 0.16")
+        (docs / "changelog").mkdir()
+        (docs / "changelog" / "index.mdx").write_text("# changelog")
+        nxt = docs / "next"
+        nxt.mkdir()
+        (nxt / "index.mdx").write_text("# Next")
+        _write_docs(docs, [
+            {"version": "0.16.x", "tag": "Latest", "default": True,
+             "tabs": [{"tab": "D", "groups": [{"group": "G", "pages": ["index"]}]},
+                      {"tab": "Changelog", "groups": [{"group": "C", "pages": ["changelog/index"]}]}]},
+            {"version": "0.17.x", "tag": "Next",
+             "tabs": [{"tab": "D", "groups": [{"group": "G", "pages": ["next/index"]}]},
+                      {"tab": "Changelog", "groups": [{"group": "C", "pages": ["changelog/index"]}]}]},
+        ])
+        rotate(docs, "0.17.0")
+        # Changelog folder never copied into the archive.
+        assert not (docs / "0-16-0" / "changelog").exists()
+        # Shared changelog still at the root.
+        assert (docs / "changelog" / "index.mdx").exists()
+        # Every block's changelog tab points at the root changelog.
+        for block in _read_versions(docs):
+            cl = [t for t in block["tabs"] if t.get("tab") == "Changelog"][0]
+            assert cl["groups"][0]["pages"] == ["changelog/index"]
 
     def test_patch_version_delegates_to_sync(self, tmp_path):
         docs = _ready_docs(tmp_path)  # root=Latest 0.16.x; next/=Next 0.17.x

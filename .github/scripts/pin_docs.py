@@ -65,9 +65,17 @@ def _map_page_strings(node, fn, in_pages=False):
     return node
 
 
+def _is_shared_page(path: str) -> bool:
+    return path.split("/", 1)[0] in SHARED_ROOTS
+
+
 def add_prefix(tabs: list, prefix: str) -> list:
-    """Deep-copy ``tabs`` and prefix every page string with ``prefix/``."""
-    return _map_page_strings(copy.deepcopy(tabs), lambda s: f"{prefix}/{s}")
+    """Deep-copy ``tabs`` and prefix every page string with ``prefix/``, except
+    shared-root pages (e.g. changelog), which always stay at the root."""
+    return _map_page_strings(
+        copy.deepcopy(tabs),
+        lambda s: s if _is_shared_page(s) else f"{prefix}/{s}",
+    )
 
 
 def strip_prefix(tabs: list, prefix: str) -> list:
@@ -106,6 +114,11 @@ def sort_versions(versions: list[dict]) -> list[dict]:
 
 _VERSION_DIR_RE = re.compile(r"^\d+-\d+-\d+$")
 
+# Content shared across all versions: kept at the docs root, never copied into a
+# version folder and never version-prefixed in docs.json (every version's tab
+# points at the single root copy).
+SHARED_ROOTS = {"changelog"}
+
 _EXCLUDED_NAMES = {
     "docs.json", "package.json", "package-lock.json", "node_modules",
     "custom.css", "navbar-counters.js", ".gitignore", ".mintignore",
@@ -115,9 +128,10 @@ _EXCLUDED_NAMES = {
 
 def is_excluded(name: str) -> bool:
     """True if a top-level docs entry is not movable content (infra, sidecars,
-    version folders, or the fixed next/ folder)."""
+    version folders, the fixed next/ folder, or shared root content)."""
     return (
         name in _EXCLUDED_NAMES
+        or name in SHARED_ROOTS
         or name.endswith(".skill.md")
         or bool(_VERSION_DIR_RE.match(name))
     )

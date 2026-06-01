@@ -93,7 +93,7 @@ Entry point for all releases. Provides a form with:
 8. Commits the version bump (including any docs changes), creates an annotated tag, and pushes both
 9. Posts a Slack notification
 
-> **Docs layout:** `Latest` lives at the docs root (unprefixed paths); `Next` lives in the fixed `docs/next/` folder; archived versions live in `docs/MAJOR-MINOR-0/` folders. Rotation assumes this shape already exists (a `Latest` root block + a `Next` block pointing at `docs/next/`).
+> **Docs layout:** `Latest` lives at the docs root (unprefixed paths); `Next` lives in the fixed `docs/next/` folder; archived versions live in `docs/MAJOR-MINOR-0/` folders. `docs/changelog/` is shared by all versions — it stays at the root, is never copied into a version folder, and every version's Changelog tab points at it. Rotation assumes this shape already exists (a `Latest` root block + a `Next` block pointing at `docs/next/`).
 
 The tag push then triggers the corresponding release workflow.
 
