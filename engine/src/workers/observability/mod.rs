@@ -4118,16 +4118,39 @@ mod tests {
         span_storage.add_spans(vec![
             // start 5s, duration 300ms, service "alpha"
             make_span(
-                "t-a", "r-a", None, "root-a", "alpha", 5_000_000_000, 5_300_000_000, "OK", vec![],
+                "t-a",
+                "r-a",
+                None,
+                "root-a",
+                "alpha",
+                5_000_000_000,
+                5_300_000_000,
+                "OK",
+                vec![],
             ),
             // start 1s, duration 900ms, service "charlie"
             make_span(
-                "t-b", "r-b", None, "root-b", "charlie", 1_000_000_000, 1_900_000_000, "OK",
+                "t-b",
+                "r-b",
+                None,
+                "root-b",
+                "charlie",
+                1_000_000_000,
+                1_900_000_000,
+                "OK",
                 vec![],
             ),
             // start 3s, duration 100ms, service "bravo"
             make_span(
-                "t-c", "r-c", None, "root-c", "bravo", 3_000_000_000, 3_100_000_000, "OK", vec![],
+                "t-c",
+                "r-c",
+                None,
+                "root-c",
+                "bravo",
+                3_000_000_000,
+                3_100_000_000,
+                "OK",
+                vec![],
             ),
         ]);
 
