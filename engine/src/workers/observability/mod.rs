@@ -57,7 +57,9 @@ pub struct TracesListInput {
     start_time: Option<u64>,
     /// End time in unix timestamp milliseconds (include spans overlapping before this)
     end_time: Option<u64>,
-    /// Sort field: "duration" | "start_time" | "name" (default: "start_time")
+    /// Sort field: "start_time" | "duration" (alias "duration_ms") |
+    /// "service_name" | "name" (default: "start_time"). Unknown values fall
+    /// back to "start_time".
     sort_by: Option<String>,
     /// Sort order: "asc" | "desc" (default: "asc")
     sort_order: Option<String>,
@@ -788,13 +790,18 @@ impl ObservabilityWorker {
 
                 filtered.sort_by(|a, b| {
                     let cmp = match input.sort_by.as_deref().unwrap_or("start_time") {
-                        "duration" => {
+                        // Accept both "duration" and "duration_ms"; the rest of
+                        // the API (min_duration_ms/max_duration_ms, the output
+                        // span `duration_ms`) uses the `_ms` suffix, so callers
+                        // reasonably pass either spelling.
+                        "duration" | "duration_ms" => {
                             let da =
                                 a.end_time_unix_nano.saturating_sub(a.start_time_unix_nano) as f64;
                             let db =
                                 b.end_time_unix_nano.saturating_sub(b.start_time_unix_nano) as f64;
                             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
                         }
+                        "service_name" => a.service_name.cmp(&b.service_name),
                         "name" => a.name.cmp(&b.name),
                         _ => a.start_time_unix_nano.cmp(&b.start_time_unix_nano),
                     };
@@ -4094,6 +4101,113 @@ mod tests {
             }
             _ => panic!("expected baggage_get_all to succeed"),
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_sort_by_duration_ms_and_service_name() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        // Three root traces whose start-time order differs from both their
+        // duration order and their service-name order, so a silent fallback to
+        // the default start_time sort would be observable in the assertions.
+        span_storage.add_spans(vec![
+            // start 5s, duration 300ms, service "alpha"
+            make_span(
+                "t-a", "r-a", None, "root-a", "alpha", 5_000_000_000, 5_300_000_000, "OK", vec![],
+            ),
+            // start 1s, duration 900ms, service "charlie"
+            make_span(
+                "t-b", "r-b", None, "root-b", "charlie", 1_000_000_000, 1_900_000_000, "OK",
+                vec![],
+            ),
+            // start 3s, duration 100ms, service "bravo"
+            make_span(
+                "t-c", "r-c", None, "root-c", "bravo", 3_000_000_000, 3_100_000_000, "OK", vec![],
+            ),
+        ]);
+
+        let base_input = || TracesListInput {
+            trace_id: None,
+            offset: Some(0),
+            limit: Some(10),
+            service_name: None,
+            name: None,
+            status: None,
+            min_duration_ms: None,
+            max_duration_ms: None,
+            start_time: None,
+            end_time: None,
+            sort_by: None,
+            sort_order: None,
+            attributes: None,
+            include_internal: Some(false),
+            search_all_spans: None,
+        };
+
+        let order = |result: FunctionResult<Option<Value>, ErrorBody>| -> Vec<String> {
+            match result {
+                FunctionResult::Success(Some(value)) => value["spans"]
+                    .as_array()
+                    .expect("spans array")
+                    .iter()
+                    .map(|s| s["trace_id"].as_str().expect("trace_id").to_string())
+                    .collect(),
+                _ => panic!("expected list_traces success"),
+            }
+        };
+
+        // duration_ms desc: 900ms (t-b), 300ms (t-a), 100ms (t-c)
+        let desc = order(
+            module
+                .list_traces(TracesListInput {
+                    sort_by: Some("duration_ms".to_string()),
+                    sort_order: Some("desc".to_string()),
+                    ..base_input()
+                })
+                .await,
+        );
+        assert_eq!(
+            desc,
+            vec!["t-b", "t-a", "t-c"],
+            "duration_ms desc must order by descending duration"
+        );
+
+        // duration_ms asc: 100ms (t-c), 300ms (t-a), 900ms (t-b)
+        let asc = order(
+            module
+                .list_traces(TracesListInput {
+                    sort_by: Some("duration_ms".to_string()),
+                    sort_order: Some("asc".to_string()),
+                    ..base_input()
+                })
+                .await,
+        );
+        assert_eq!(
+            asc,
+            vec!["t-c", "t-a", "t-b"],
+            "duration_ms asc must order by ascending duration"
+        );
+
+        // service_name asc: alpha (t-a), bravo (t-c), charlie (t-b)
+        let by_service = order(
+            module
+                .list_traces(TracesListInput {
+                    sort_by: Some("service_name".to_string()),
+                    sort_order: Some("asc".to_string()),
+                    ..base_input()
+                })
+                .await,
+        );
+        assert_eq!(
+            by_service,
+            vec!["t-a", "t-c", "t-b"],
+            "service_name asc must order alphabetically by service"
+        );
     }
 
     #[tokio::test]
