@@ -9,12 +9,12 @@ single interface: **Workers** host work, **Functions** are the work, **Triggers*
 the work to run, and the **Engine** routes between them. Once you have a mental model for those four
 pieces, everything else in iii is a variation on a theme.
 
-<Note>This page uses the [Quickstart tutorial](/quickstart) as an example.</Note>
+<Note>This page uses the [Quickstart tutorial](../quickstart) as an example.</Note>
 
 ## The four pieces
 
 This is a brief recap of the four pieces. More details about their actual usage are in
-[Using iii / Workers](/using-iii/workers) and the rest of the "Using iii" section.
+[Using iii / Workers](../using-iii/workers) and the rest of the "Using iii" section.
 
 ### Worker
 
@@ -86,8 +86,8 @@ implement in any language that can use a WebSocket and JSON, and the Engine trea
 same regardless of how it was built or where it runs.
 
 <Note>
-  See [Workers](/understanding-iii/workers) for process isolation, and
-  [Creating Workers / Workers](/creating-workers/workers#worker-lifecycle-states) for the connection
+  See [Workers](./workers) for process isolation, and
+  [Creating Workers / Workers](../creating-workers/workers#worker-lifecycle-states) for the connection
   lifecycle.
 </Note>
 
@@ -120,7 +120,7 @@ One Function can have many Triggers. The same Function could be invoked by a cro
 message, and a direct CLI call.
 
 <Note>
-  See [Triggers](/understanding-iii/triggers) for trigger types, invocation modes, the trigger
+  See [Triggers](./triggers) for trigger types, invocation modes, the trigger
   pipeline, the trigger lifecycle, and trigger conditions.
 </Note>
 
@@ -139,9 +139,9 @@ Functions are defined synchronously but can be invoked asynchronously due to the
 Triggers and Functions.
 
 <Note>
-  See [Functions](/understanding-iii/functions) for identifier conventions, direct invocation, and
+  See [Functions](./functions) for identifier conventions, direct invocation, and
   multiple Triggers per Function. See
-  [Triggers / Invocation modes](/understanding-iii/triggers#invocation-modes) for sync and
+  [Triggers / Invocation modes](./triggers#invocation-modes) for sync and
   fire-and-forget behavior.
 </Note>
 
@@ -158,6 +158,6 @@ Worker provides it. The same tutorial can be redeployed across different runtime
 the function code.
 
 <Note>
-  See [Engine](/understanding-iii/engine) for startup flow, config hot-reload, and the live registry
+  See [Engine](./engine) for startup flow, config hot-reload, and the live registry
   and discovery surface.
 </Note>

@@ -87,10 +87,10 @@ The best way to understand iii is to try it. Install the engine and follow the Q
 your first iii-powered project.
 
 <CardGroup cols={2}>
-  <Card title="Install" href="/install" icon="download">
+  <Card title="Install" href="./install" icon="download">
     Install the iii engine.
   </Card>
-  <Card title="Quickstart" href="/quickstart" icon="terminal">
+  <Card title="Quickstart" href="./quickstart" icon="terminal">
     Follow the Quickstart and explore a live iii application.
   </Card>
 </CardGroup>

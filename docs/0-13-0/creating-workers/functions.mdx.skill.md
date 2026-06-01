@@ -10,8 +10,8 @@ A worker contributes capability by registering functions. Each function has an `
 Schemas that describe the request and response shape.
 
 For how callers invoke functions (`worker.trigger` / `iii trigger` / event-bound triggers), see
-[Using iii / Functions](/using-iii/functions) and
-[Using iii / Triggers](/using-iii/triggers). This page is about the authoring surface.
+[Using iii / Functions](../using-iii/functions) and
+[Using iii / Triggers](../using-iii/triggers). This page is about the authoring surface.
 
 ## Register a function
 

@@ -12,12 +12,12 @@ system. Less often, you register a new trigger type from your worker so other wo
 functions to events your worker emits.
 
 This page primarily covers the latter: making your own triggers, if you want to use existing
-triggers in new workers then refer to [Using iii / Triggers](/using-iii/triggers).
+triggers in new workers then refer to [Using iii / Triggers](../using-iii/triggers).
 
 <Note>
   For the caller-side mechanics (direct invocation with `worker.trigger` or `iii trigger`, the
   `TriggerAction` variants, gating with conditions, multiple bindings per function), see [Using iii
-  / Triggers](/using-iii/triggers).
+  / Triggers](../using-iii/triggers).
 </Note>
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
@@ -73,7 +73,7 @@ The `config` shape is defined per trigger type and documented in each publishing
 
 <Note>
   Other binding mechanics are covered in [Using iii /
-  Triggers](/using-iii/triggers#register-a-trigger): the unregister handle, binding multiple
+  Triggers](../using-iii/triggers#register-a-trigger): the unregister handle, binding multiple
   triggers to the same function, gating with `condition_function_id`, and the `TriggerAction`
   variants (`Void`, `Enqueue`, etc.).
 </Note>
@@ -86,7 +86,7 @@ time. The engine stores it as-is and surfaces it in two places:
 1. The publishing worker's `TriggerHandler.registerTrigger(config)` callback sees it as
    `config.metadata`, so the publisher can act on consumer-supplied tags (priority hints, audit
    labels, routing keys for the publisher's own bookkeeping).
-2. [`engine::triggers::list`](/using-iii/functions#engine-functions-engine) returns it on each
+2. [`engine::triggers::list`](../using-iii/functions#engine-functions-engine) returns it on each
    `TriggerInfo`, so the console and any other worker doing discovery can read it.
 
 <Tabs>
@@ -137,7 +137,7 @@ Don't confuse trigger _metadata_ with trigger type [_schemas_](#attach-schemas-t
   It's a free-form tag bag the engine stores as-is, used for the publisher's bookkeeping and for
   discovery. For example, a consumer binding to `http` might attach
   `metadata: { team: "platform", env: "staging", on_call: "alice" }` so the publishing worker can
-  log the team, and [`engine::triggers::list`](/using-iii/functions#engine-functions-engine)
+  log the team, and [`engine::triggers::list`](../using-iii/functions#engine-functions-engine)
   surfaces this information on request.
 - **Schemas** are set by the **publisher** when declaring the trigger type. They document the JSON
   shapes the consumer interacts with. For example, the `http` type published by
@@ -162,7 +162,7 @@ A trigger type is two things bundled together:
 1. A string `id` that consumers reference when they bind to a trigger (ex. `type: "mini-http"`).
 2. A per-binding routing table that **your worker** maintains in-process. The engine's registry
    records the binding canonically (this is what
-   [`engine::triggers::list`](/using-iii/functions#engine-functions-engine) returns), but the engine
+   [`engine::triggers::list`](../using-iii/functions#engine-functions-engine) returns), but the engine
    doesn't dispatch on it. The engine forwards every bind/unbind from any consumer worker on the
    network to the publisher worker as a callback, and this worker decides what to do with each one.
 
@@ -317,23 +317,23 @@ A trigger type can carry two optional JSON Schemas that describe its payloads:
   the trigger fires.
 
 Both feed the iii console, the agent-readable skills, and the
-[`engine::trigger-types::list`](/using-iii/functions#engine-functions-engine) output so consumers
+[`engine::trigger-types::list`](../using-iii/functions#engine-functions-engine) output so consumers
 know what to send and what they'll receive.
 
 <Note>
   Runtime validation is not yet supported. Attached schemas are informational only; the engine does
   not reject `config` values or call payloads that don't match them. Treat the schemas as contract
   documentation for consumers, agents, and the console; same caveat as [function request / response
-  schemas](/creating-workers/functions#attach-request-and-response-schemas).
+  schemas](./functions#attach-request-and-response-schemas).
 </Note>
 
 Each SDK accepts these in its own idiomatic way:
 
 | SDK                                                                                                             | What you pass                                                                                                                                  |
 | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Node](/sdk-reference/node-sdk#registertriggertype) / [Browser](/sdk-reference/browser-sdk#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
-| [Python](/sdk-reference/python-sdk#register_trigger_type)                                                       | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
-| [Rust](/sdk-reference/rust-sdk#register_trigger_type)                                                           | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+| [Node](../sdk-reference/node-sdk#registertriggertype) / [Browser](../sdk-reference/browser-sdk#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
+| [Python](../sdk-reference/python-sdk#register_trigger_type)                                                       | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
+| [Rust](../sdk-reference/rust-sdk#register_trigger_type)                                                           | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 

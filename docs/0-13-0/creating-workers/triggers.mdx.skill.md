@@ -10,7 +10,7 @@ trigger type's handler, and your worker invokes the bound functions when the und
 fires.
 
 This page is about authoring new trigger types from inside your worker. For invoking functions and
-binding triggers to functions from the consumer side, see [Using iii / Triggers](/using-iii/triggers).
+binding triggers to functions from the consumer side, see [Using iii / Triggers](../using-iii/triggers).
 
 ## Declare a trigger type
 

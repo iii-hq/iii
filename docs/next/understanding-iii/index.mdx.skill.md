@@ -9,12 +9,12 @@ single interface: **Workers** host work, **Functions** are the work, **Triggers*
 the work to run, and the **Engine** routes between them. Once you have a mental model for those four
 pieces, everything else in iii is a variation on a theme.
 
-<Note>This page uses the [Quickstart tutorial](/quickstart) as an example.</Note>
+<Note>This page uses the [Quickstart tutorial](../quickstart) as an example.</Note>
 
 ## The four pieces
 
 This is a brief recap of the four pieces; the sections below expand each one with the Quickstart as
-an example. More details about their actual usage are in [Using iii / Workers](/using-iii/workers)
+an example. More details about their actual usage are in [Using iii / Workers](../using-iii/workers)
 and the rest of the "Using iii" section.
 
 ### Worker
@@ -113,7 +113,7 @@ same regardless of how it was built or where it runs.
 
 <Note>
   For the connection lifecycle from worker code, see [Creating Workers /
-  Workers](/creating-workers/workers#worker-lifecycle-states).
+  Workers](../creating-workers/workers#worker-lifecycle-states).
 </Note>
 
 ## Triggers
@@ -275,6 +275,6 @@ Worker provides it. The same tutorial can be redeployed across different runtime
 the function code.
 
 <Note>
-  See [Engine](/understanding-iii/engine) for startup flow, config hot-reload, and the live registry
+  See [Engine](./engine) for startup flow, config hot-reload, and the live registry
   and discovery surface.
 </Note>

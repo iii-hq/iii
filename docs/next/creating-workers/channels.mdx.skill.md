@@ -8,7 +8,7 @@ during long-running work. For small JSON, stick with a regular `worker.trigger(.
 
 <Note>
   For the underlying model (how channels are addressed, multiplexed, and torn down), see [Channels
-  architecture](/understanding-iii/channels).
+  architecture](../understanding-iii/channels).
 </Note>
 
 ## Payload size
@@ -323,6 +323,6 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
 
 <Note>
   For the per-language channel API surface, see the SDK reference:
-  [Node](/sdk-reference/node-sdk#channels), [Python](/sdk-reference/python-sdk#channels), and
-  [Rust](/sdk-reference/rust-sdk#channels).
+  [Node](../sdk-reference/node-sdk#channels), [Python](../sdk-reference/python-sdk#channels), and
+  [Rust](../sdk-reference/rust-sdk#channels).
 </Note>

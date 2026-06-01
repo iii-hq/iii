@@ -112,7 +112,7 @@ from the terminal with `iii trigger`:
   Both calls are synchronous by default; they wait for the function to return. For fire-and-forget
   (`TriggerAction.Void`), queue-routed delivery (`TriggerAction.Enqueue`), per-worker custom
   actions, condition gating, and binding to event-source triggers, see [Triggers / Call a function
-  directly](/using-iii/triggers#call-a-function-directly).
+  directly](./triggers#call-a-function-directly).
 </Note>
 
 ## Define request and response formats
@@ -122,22 +122,22 @@ stored with the function and feed the iii console and the agent-readable skills.
 
 <Note>
   For how to attach schemas when registering a function, see [Creating Workers /
-  Functions](/creating-workers/functions#attach-request-and-response-schemas).
+  Functions](../creating-workers/functions#attach-request-and-response-schemas).
 </Note>
 
 ## Common functions
 
 A handful of functions ship with the iii engine and the standard workers. You'll likely call them
 from almost every iii project. They look like any function you'd register yourself and are invoked
-the same way (via [`iii trigger`](/using-iii/cli) or
-[`worker.trigger`](/using-iii/triggers#call-a-function-directly)). The only thing special about them
+the same way (via [`iii trigger`](./cli) or
+[`worker.trigger`](./triggers#call-a-function-directly)). The only thing special about them
 is that you didn't have to register them.
 
 ### Engine functions (`engine::*`)
 
 The engine itself registers a small set of introspection and lifecycle functions. Full request and
 response schemas are in the
-[engine protocol reference](/sdk-reference/engine-sdk#engine-discovery-functions).
+[engine protocol reference](../sdk-reference/engine-sdk#engine-discovery-functions).
 
 | Function                      | What it does                                                                                                               |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- |

@@ -12,7 +12,7 @@ once (direct CLI calls, an HTTP route, and a cron schedule, for example) without
 handler.
 
 <Note>
-  Some trigger types are: [`iii trigger`](/using-iii/cli), [`worker.trigger`](/using-iii/triggers),
+  Some trigger types are: [`iii trigger`](./cli), [`worker.trigger`](./triggers),
   iii-http,
   iii-cron,
   iii-queue,
@@ -84,7 +84,7 @@ stored with the function and feed the iii console and the agent-readable skills.
 
 <Note>
   For how to attach schemas when registering a function, see [Creating Workers /
-  Functions](/creating-workers/functions#attach-request-and-response-schemas).
+  Functions](../creating-workers/functions#attach-request-and-response-schemas).
 </Note>
 
 ## Invoke a function
@@ -92,5 +92,5 @@ stored with the function and feed the iii console and the agent-readable skills.
 <Note>
   For how to call a registered function from worker code or the terminal (with optional delivery
   actions like fire-and-forget or queue-routed), see
-  [Triggers / Call a function directly](/using-iii/triggers#call-a-function-directly).
+  [Triggers / Call a function directly](./triggers#call-a-function-directly).
 </Note>

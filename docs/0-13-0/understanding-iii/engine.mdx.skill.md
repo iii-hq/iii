@@ -31,7 +31,7 @@ rest of the system keeps serving.
 
 <Note>
   See [Creating Workers / Workers / Handling Worker
-  disconnects](/creating-workers/workers#handling-worker-disconnects) for the cancellation error code
+  disconnects](../creating-workers/workers#handling-worker-disconnects) for the cancellation error code
   and the discovery events that fire (with their consistency semantics).
 </Note>
 
@@ -57,7 +57,7 @@ or subscribe to changes as it evolves.
 
 <Note>
   See [Creating Workers / Workers / Inspecting the live
-  registry](/creating-workers/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
+  registry](../creating-workers/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
   snapshot calls and the `engine::workers-available` / `engine::functions-available` subscription
   events.
 </Note>

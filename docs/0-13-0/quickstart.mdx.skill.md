@@ -7,7 +7,7 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
 
 <Info title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
-  [Install](/install) guide first.
+  [Install](./install) guide first.
 </Info>
 
 ## 1. Create the project
@@ -219,12 +219,12 @@ changes to the handlers themselves.
 ## How it works
 
 For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together,
-see [Understanding iii](/understanding-iii). It uses this project as the worked example.
+see [Understanding iii](./understanding-iii). It uses this project as the worked example.
 
 <Tip title="Inspect what's running">
   Open the iii Console with `iii console` in a new terminal: an interactive UI for workers,
   functions, triggers, logs, traces, and state. See the full [Console
-  documentation](/using-iii/console) for details.
+  documentation](./using-iii/console) for details.
 </Tip>
 
 {/* TODO: re-add the "Give your coding agent context" Tip with `npx skills add iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}
@@ -236,10 +236,10 @@ added persistent state, and exposed everything over HTTP, all by incrementally a
 running system.
 
 <CardGroup cols={2}>
-  <Card title="Use iii" href="/using-iii" icon="table-layout">
+  <Card title="Use iii" href="./using-iii" icon="table-layout">
     Learn how to use iii in production.
   </Card>
-  <Card title="Understanding iii" href="/understanding-iii" icon="table-layout">
+  <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
     Understand functions, triggers, and workers from a conceptual point of view.
   </Card>
 </CardGroup>

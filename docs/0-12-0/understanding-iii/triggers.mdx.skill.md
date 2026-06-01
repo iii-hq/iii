@@ -17,7 +17,7 @@ invocations through Triggers.
 <Note>
   `worker.trigger()` and the `iii trigger` CLI command can invoke any registered Function via its
   `function_id` (see [Functions / Direct
-  invocation](/understanding-iii/functions#direct-invocation)). The trigger types described below
+  invocation](./functions#direct-invocation)). The trigger types described below
   are how Functions get bound to other event sources (HTTP requests, cron schedules, queue messages,
   etc.). Workers can define their own trigger types.
 </Note>
