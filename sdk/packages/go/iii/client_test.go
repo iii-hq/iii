@@ -340,6 +340,51 @@ func TestTriggerVoidFireAndForget(t *testing.T) {
 	}
 }
 
+// TestTriggerEnqueueAwaitsReceipt covers the enqueue path: the worker triggers through
+// a named queue (action:enqueue) and awaits the engine's receipt, which arrives as an
+// ordinary invocationresult keyed by the invocation_id.
+func TestTriggerEnqueueAwaitsReceipt(t *testing.T) {
+	m := newMockEngine(t)
+	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+		if messageType(msg) != string(MsgInvokeFunction) {
+			return
+		}
+		idRaw, ok := msg["invocation_id"]
+		if !ok {
+			return // worker metadata (void) — ignore
+		}
+		// The enqueue invocation must carry the queue action on the wire.
+		if string(msg["action"]) != `{"type":"enqueue","queue":"jobs"}` {
+			t.Errorf("enqueue action = %s, want enqueue/jobs", msg["action"])
+		}
+		var uid uuid.UUID
+		if json.Unmarshal(idRaw, &uid) != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = m.send(ctx, conn, &InvocationResultMessage{
+			InvocationID: uid,
+			FunctionID:   stringField(msg, "function_id"),
+			Result:       json.RawMessage(`{"messageReceiptId":"r-1"}`),
+		})
+	}
+
+	c := connectClient(t, m)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := c.Trigger(ctx, TriggerRequest{
+		FunctionID: "svc::work",
+		Action:     EnqueueAction("jobs"),
+	})
+	if err != nil {
+		t.Fatalf("enqueue Trigger: %v", err)
+	}
+	if string(res) != `{"messageReceiptId":"r-1"}` {
+		t.Errorf("receipt = %s, want the enqueue receipt", res)
+	}
+}
+
 // TestTriggerTimeout returns ErrTimeout when no result arrives in time.
 func TestTriggerTimeout(t *testing.T) {
 	m := newMockEngine(t)

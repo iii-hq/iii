@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+// ErrorBody itself implements error (it is the wire shape); its string form is
+// "code: message", which the richer InvocationError builds on.
+func TestErrorBodyError(t *testing.T) {
+	body := &ErrorBody{Code: "FORBIDDEN", Message: "no access"}
+	if got := body.Error(); got != "FORBIDDEN: no access" {
+		t.Errorf("ErrorBody.Error() = %q, want %q", got, "FORBIDDEN: no access")
+	}
+}
+
 func TestInvocationErrorFromBody(t *testing.T) {
 	trace := "at handler (foo.go:10)"
 	tests := []struct {
