@@ -156,6 +156,8 @@ SDKs:
 
 ## Guardrails
 
+Agents should follow:
+
 - Function IDs use \`::\` (e.g. \`orders::validate\`)
 - HTTP \`api_path\` values use a leading slash (e.g. \`/orders/validate\`)
 - Cron triggers use config field \`expression\`, not \`cron\`

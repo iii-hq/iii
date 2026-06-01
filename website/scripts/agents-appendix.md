@@ -46,7 +46,7 @@ Full docs: https://iii.dev/docs
 
 ## Guardrails
 
-Wire-level conventions agents should follow:
+Agents should follow:
 
 - Function IDs use `::` (e.g. `orders::validate`)
 - HTTP `api_path` values use a leading slash (e.g. `/orders/validate`)
