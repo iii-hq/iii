@@ -183,72 +183,6 @@ def _save(docs_dir: Path, doc: dict) -> None:
     )
 
 
-# Absolute markdown link target, e.g. "](/0-11-0/how-to/x" -> captures the path.
-_LINK_RE = re.compile(r"\]\(/([^)\s#]*)")
-# Absolute href/src attribute (e.g. <Card href="/install">, <img src="/assets/x.png">),
-# single or double quoted.
-_ATTR_RE = re.compile(r"""((?:href|src)=)(["'])/([^"'#]*)""")
-# A leading version-dir (0-16-0) or "next" segment on a link path.
-_LEAD_RE = re.compile(r"^(?:\d+-\d+-\d+|next)(?:/(.*))?$")
-
-
-def _page_exists(docs_dir: Path, target: str) -> bool:
-    """True if ``target`` resolves within ``docs_dir`` — a page (``.mdx``), an
-    asset/file, or a section (a directory that contains pages)."""
-    if not target:
-        return False
-    base = docs_dir / target
-    if base.with_suffix(".mdx").is_file():
-        return True
-    if base.is_file():  # asset (image, video, ...) or an exact file
-        return True
-    if base.is_dir() and next(base.rglob("*.mdx"), None) is not None:
-        return True
-    return False
-
-
-def _reprefix_target(path: str, dst_prefix: str, docs_dir: Path) -> str:
-    """Re-point an absolute doc link at ``dst_prefix`` ("" for root).
-
-    Strips any leading version-dir/next prefix, then prepends ``dst_prefix``.
-    Leaves the link unchanged if the destination page does not exist (e.g. a
-    cross-version reference to a page only present in an older version).
-    """
-    m = _LEAD_RE.match(path)
-    core = (m.group(1) or "") if m else path
-    cand = f"{dst_prefix}/{core}" if dst_prefix else core
-    return cand if _page_exists(docs_dir, cand) else path
-
-
-def _reprefix_mdx(file: Path, dst_prefix: str, docs_dir: Path) -> None:
-    text = file.read_text(encoding="utf-8")
-    new = _LINK_RE.sub(
-        lambda m: f"](/{_reprefix_target(m.group(1), dst_prefix, docs_dir)}",
-        text,
-    )
-    new = _ATTR_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}/{_reprefix_target(m.group(3), dst_prefix, docs_dir)}",
-        new,
-    )
-    if new != text:
-        file.write_text(new, encoding="utf-8")
-
-
-def _reprefix_dir(dir_path: Path, dst_prefix: str, docs_dir: Path) -> None:
-    """Rewrite absolute doc links in every .mdx under ``dir_path`` to ``dst_prefix``."""
-    for f in dir_path.rglob("*.mdx"):
-        _reprefix_mdx(f, dst_prefix, docs_dir)
-
-
-def _reprefix_root(docs_dir: Path) -> None:
-    """Rewrite absolute doc links in root content (.mdx) to be root-absolute."""
-    for entry in _content_entries(docs_dir):
-        if entry.is_dir():
-            _reprefix_dir(entry, "", docs_dir)
-        elif entry.suffix == ".mdx":
-            _reprefix_mdx(entry, "", docs_dir)
-
-
 def validate(docs_dir: Path) -> int:
     """Exit 0 if the Next docs are ready; 1 (with error) otherwise.
 
@@ -306,15 +240,9 @@ def rotate(docs_dir: Path, version: str) -> None:
     old_prefix = dir_prefix(old_major, old_minor)  # e.g. 0-16-0
 
     # --- filesystem (order matters) ---
+    # In-content links are version-relative, so they survive the move untouched.
     copy_root_to_dir(docs_dir, old_prefix)          # archive old Latest -> folder
-    # Archived copy carried root-absolute links; re-point them into its folder
-    # so the archived version's links stay within that version.
-    _reprefix_dir(docs_dir / old_prefix, old_prefix, docs_dir)
     replace_root_with_dir(docs_dir, NEXT_DIR)       # promote next/ -> root (next/ kept)
-    # Promoted content carried next/-prefixed links; strip them to root-absolute
-    # so the new Latest links to itself (the root). The next/ folder is left as
-    # is — its links already point at next/.
-    _reprefix_root(docs_dir)
 
     # --- docs.json ---
     # old Latest -> archived (root paths -> old_prefix), drop tag/default
@@ -342,10 +270,10 @@ def sync_patch(docs_dir: Path) -> None:
 
     Unlike ``rotate`` there is no version ceremony — the old Latest is not
     archived, the Next block is not bumped, and no version blocks in docs.json
-    change. Only the root content is replaced and its links re-pointed to root.
+    change. Only the root content is replaced (in-content links are relative, so
+    they survive the move untouched).
     """
     replace_root_with_dir(docs_dir, NEXT_DIR)
-    _reprefix_root(docs_dir)
     print("pin_docs: patched Latest from docs/next/ (no rotation)")
 
 

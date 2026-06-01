@@ -334,26 +334,21 @@ class TestRotate:
         assert by_tag["Next"]["version"] == "1.1.x"
         assert by_tag["Next"]["tabs"][0]["groups"][0]["pages"] == ["next/index"]
 
-    def test_rewrites_internal_links_on_move(self, tmp_path):
+    def test_relative_links_survive_move(self, tmp_path):
+        # In-content links are version-relative, so rotation moves files verbatim
+        # without rewriting them; cross-version/shared absolute links are untouched.
         docs = tmp_path / "docs"
         docs.mkdir()
-        # Latest (root, 0.16) — root-absolute links + an asset (img src).
         (docs / "using-iii").mkdir()
         (docs / "using-iii" / "workers.mdx").write_text("# root workers")
-        (docs / "assets").mkdir()
-        (docs / "assets" / "pic.png").write_text("png")
         (docs / "index.mdx").write_text(
-            'See [workers](/using-iii/workers). <img src="/assets/pic.png" />'
+            "See [workers](./using-iii/workers) and [cl](/changelog/x)."
         )
-        # Next (next/, 0.17) — next/-prefixed links + a legacy cross-version ref + asset.
         nxt = docs / "next"
         (nxt / "using-iii").mkdir(parents=True)
         (nxt / "using-iii" / "workers.mdx").write_text("# next workers")
-        (nxt / "assets").mkdir()
-        (nxt / "assets" / "n.png").write_text("png")
         (nxt / "index.mdx").write_text(
-            'See [workers](/next/using-iii/workers) and [old](/0-11-0/gone). '
-            '<Card href="/next/using-iii/workers" /> <img src="/next/assets/n.png" />'
+            "See [workers](./using-iii/workers) and [old](/0-11-0/gone)."
         )
         _write_docs(docs, [
             {"version": "0.16.x", "tag": "Latest", "default": True,
@@ -365,20 +360,14 @@ class TestRotate:
         ])
         rotate(docs, "0.17.0")
 
-        # Archived old Latest: root-absolute link + asset src re-pointed into 0-16-0/.
-        archived_index = (docs / "0-16-0" / "index.mdx").read_text()
-        assert "(/0-16-0/using-iii/workers)" in archived_index
-        assert 'src="/0-16-0/assets/pic.png"' in archived_index
-        # Promoted Latest (root): next/-prefix stripped to root-absolute (links,
-        # href and src); legacy cross-version ref to a missing page left untouched.
+        # Archived old Latest: relative link intact, shared absolute untouched.
+        archived = (docs / "0-16-0" / "index.mdx").read_text()
+        assert "](./using-iii/workers)" in archived
+        assert "(/changelog/x)" in archived
+        # Promoted Latest (root): next content moved verbatim (relative survives).
         root_index = (docs / "index.mdx").read_text()
-        assert "(/using-iii/workers)" in root_index
-        assert 'href="/using-iii/workers"' in root_index  # Card href stripped too
-        assert 'src="/assets/n.png"' in root_index        # img src stripped too
-        assert "/next/" not in root_index
+        assert "](./using-iii/workers)" in root_index
         assert "(/0-11-0/gone)" in root_index
-        # Next folder is reused untouched — its links still point at next/.
-        assert "(/next/using-iii/workers)" in (docs / "next" / "index.mdx").read_text()
 
 
 class TestSyncPatch:
@@ -389,9 +378,7 @@ class TestSyncPatch:
         nxt = docs / "next"
         (nxt / "using-iii").mkdir(parents=True)
         (nxt / "using-iii" / "workers.mdx").write_text("# w")
-        (nxt / "index.mdx").write_text(
-            '[w](/next/using-iii/workers) <Card href="/next/using-iii" />'
-        )
+        (nxt / "index.mdx").write_text("# next [w](./using-iii/workers)")
         _write_docs(docs, [
             {"version": "0.17.x", "tag": "Latest", "default": True,
              "tabs": [{"tab": "D", "groups": [{"group": "G", "pages": ["index"]}]}]},
@@ -402,14 +389,12 @@ class TestSyncPatch:
         before = (docs / "docs.json").read_text()
         sync_patch(docs)
 
-        # Root refreshed from next/, links re-pointed to root.
+        # Root refreshed from next/ verbatim (relative link survives the move).
         root_index = (docs / "index.mdx").read_text()
         assert "# old latest" not in root_index
-        assert "(/using-iii/workers)" in root_index
-        assert 'href="/using-iii"' in root_index
-        assert "/next/" not in root_index
+        assert "](./using-iii/workers)" in root_index
         # Next folder untouched.
-        assert "(/next/using-iii/workers)" in (docs / "next" / "index.mdx").read_text()
+        assert "](./using-iii/workers)" in (docs / "next" / "index.mdx").read_text()
         # No archive folder, and docs.json version blocks unchanged.
         assert not (docs / "0-17-0").exists()
         assert (docs / "docs.json").read_text() == before

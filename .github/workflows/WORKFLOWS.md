@@ -89,7 +89,7 @@ Entry point for all releases. Provides a form with:
    - **minor/major** — rotates: archives the old Latest into `docs/OLD-MINOR-0/` (its `Latest` block becomes archived), promotes `docs/next/` into the root as a new `Latest` block labeled with the **tag version** (the official version comes from the tag and can be anything), relabels the `Next` block to `MINOR + 1` (reusing the `docs/next/` folder), and reorders the dropdown (Next, Latest, archived newest-first — Mintlify's own ordering does not work).
    - **patch** — syncs in place: replaces the root content with `docs/next/`. No archive, no `Next` bump, no version-block changes — it just refreshes the current Latest's docs.
    - **all prereleases** (`alpha`/`beta`/`rc`/`next`) leave docs untouched.
-   - In every case, internal links (markdown and `href`) are re-pointed so each version's links stay within that version.
+   - In-content links are version-relative, so files move verbatim; only `docs.json` nav paths carry the version prefix.
 8. Commits the version bump (including any docs changes), creates an annotated tag, and pushes both
 9. Posts a Slack notification
 
