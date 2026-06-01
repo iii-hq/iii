@@ -1,0 +1,162 @@
+---
+title: "Console"
+description: "The visual UI for your running iii system."
+owner: "devrel"
+type: "how-to"
+---
+
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
+<Note>
+  The console is the visual UI for iii systems. It lists workers, functions, and triggers, and shows
+  traces, logs, and metrics from the iii-observability worker. For scripting or agent integration,
+  call worker functions directly.
+</Note>
+
+## Launch the console
+
+The console connects to a running iii engine, so start the engine first, then launch the console in
+a second terminal:
+
+```bash
+iii console
+```
+
+Open `http://127.0.0.1:3113` in your browser.
+
+<Note>
+  Naming review: `iii console` is verb-shaped (launches the console) but doesn't follow the `iii
+  noun verb` convention used elsewhere in the CLI. Flagged for naming review per
+  `project-rules/cli.md`.
+</Note>
+
+## Workers page
+
+Lists every worker process currently connected to the engine. Each row shows the worker's name (or
+short ID), the project / framework / language it reported, a runtime badge with SDK version, an
+optional isolation badge (`libkrun`, `docker`, etc. as reported by the worker), IP, PID, the number
+of functions it has registered, in-flight invocations, and how long it has been connected.
+
+Selecting a worker opens a detail panel with full metadata, the project / framework / language
+fields the worker reported, live metrics (memory breakdown, CPU, event-loop lag, uptime), and the
+list of functions the worker has registered.
+
+<Info title="Isolation badge">
+  The isolation badge reflects what the worker self-reports via the `III_ISOLATION` environment
+  variable. The libkrun launcher injects `III_ISOLATION=libkrun` automatically; for container or
+  Kubernetes deployments, set `III_ISOLATION=docker` (or similar) yourself. Workers that don't set
+  the variable show no badge.
+</Info>
+
+## Functions page
+
+Lists every registered function, grouped by namespace prefix (the part before `::`). A toggle in the
+header includes or excludes system functions.
+
+Select a function to open its detail panel. The panel includes:
+
+- A description (pulled from the function's request schema, if present).
+- A request-body editor pre-filled from the request schema as a template.
+- An **Invoke** button that calls the function with the editor's payload.
+- A result view that shows the response (or error) with the call duration.
+
+## Triggers page
+
+Lists every registered trigger with **All / HTTP / Cron / Event / Other** filter tabs that show
+counts per type. Each row shows a summary (HTTP method and path, the readable cron expression, or
+the event topic), a type badge, the `function_id` it routes to, and the function's description.
+
+Selecting a trigger opens a detail panel with type-specific testing tools:
+
+- **HTTP**. Method dropdown (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`), path parameter inputs, a
+  query-parameter builder, a JSON body editor for write methods, and a **Send Request** button.
+- **Cron**. Schedule (human-readable + raw expression), next-run preview, status, and a **Run Now**
+  button that fires the bound function immediately.
+- **Event**. Event topic display, a JSON payload editor, and an **Emit Event** button.
+
+State-bound triggers don't have a dedicated tester on this page; fire them by editing the relevant
+entry on the [States page](#states-page).
+
+## States page
+
+Browser for the engine's key-value state store. The layout is groups list (left), items table
+(center, sortable on Key / Type), and a detail panel (right) that opens on row click.
+
+Supported operations:
+
+- **Add**. Open the Add Item modal to write a new entry; persisted via `state::set`.
+- **Edit**. Update the value inline from the detail panel; fires any registered `state:updated`
+  triggers.
+- **Delete**. Remove an entry from the detail panel; fires any registered `state:deleted` triggers.
+
+Use the search bar to filter items by key; pagination handles large groups. The page does not push
+live updates over WebSocket; use the refresh control after external writes.
+
+## Streams page
+
+Live WebSocket monitor for the messages flowing through the engine's stream connections. The header
+surfaces inbound / outbound counters, total bytes, and latency. A subscriptions bar lists the
+streams you're currently watching (subscribe and unsubscribe through the modal).
+
+Message rows show timestamp, stream name, event type, a truncated data preview, and message size. A
+direction filter and pause/resume controls let you isolate flows; selected messages open a detail
+panel with the full payload. The filtered set can be exported to JSON.
+
+## Queues page
+
+Lists durable queue topics with **Topic**, **Broker**, a **DLQ** badge (when dead-lettered messages
+exist), and **Subscribers** columns. Selecting a topic opens a resizable detail panel with two tabs:
+
+- **Overview**. Live topic stats and a JSON publisher for sending test messages.
+- **Dead Letters**. Failed messages with retry and delete actions.
+
+Counts and stats refresh by polling. Keyboard shortcuts: `j` / `k` to move through the list, `Enter`
+to select, `1` / `2` to switch tabs.
+
+## Traces page
+
+OpenTelemetry trace visualization across four view modes:
+
+- **Waterfall**. Timeline view with spans laid out by start time and duration. Default.
+- **Flame Graph**. Stack-based view; wider bars mean longer-running spans.
+- **Trace Map**. Topology graph showing service-to-service edges via parent-child spans.
+- **Flow**. Node-based execution flow of parent-child span relationships.
+
+Filter controls cover trace ID, service name, span / operation name, status (`ok` / `error` /
+`unset`), duration range, time range, and arbitrary span attributes; results can be sorted by start
+time, duration, or service. The selected span's detail panel includes its name, service, duration,
+status, IDs, tags, logs, errors, and baggage.
+
+<Info title="Observability worker required">
+  Trace collection requires the iii-observability worker with traces enabled.
+</Info>
+
+## Logs page
+
+Structured OpenTelemetry log viewer. Each row shows timestamp, severity badge
+(`DEBUG`/`INFO`/`WARN`/`ERROR`), a truncated trace ID, the source function / service, the message,
+and a context-field count badge. Expanding a row reveals the full attributes, resource metadata, and
+trace context.
+
+Filters cover severity, time range, and full-text search across message / trace ID / source. The
+trace ID on each row is clickable: it pivots the view to show only logs from that trace, which also
+lets you jump to the corresponding entry on the [Traces page](#traces-page).
+
+<Info title="Observability worker required">
+  Log collection requires the iii-observability worker with logs enabled.
+</Info>
+
+## Configuration
+
+The console reads engine and observability settings from CLI flags and environment variables.
+
+To list every flag the binary accepts (with its default), run:
+
+```bash
+iii console --help
+```
+
+The corresponding environment variables share the same set; each flag's help text names the env var
+that overrides it. The **Config** page in the sidebar shows the resolved values at runtime (the
+engine endpoints, ports, OpenTelemetry settings, and version the console is currently using), so you
+can confirm what's actually in effect without re-reading the flags.

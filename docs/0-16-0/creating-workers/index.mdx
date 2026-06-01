@@ -1,0 +1,41 @@
+---
+title: "Overview"
+description:
+  "Every new capability in iii is added by writing a Worker, never by extending the Engine."
+owner: "devrel"
+type: "explanation"
+---
+
+Every new capability in a iii system is added by creating a Worker. A queue, a scheduler, an HTTP
+edge, a browser tab, an agent, a CRM integration, or a sandbox. Each is a Worker that connects to
+the Engine and registers Triggers and Functions. The Engine itself never needs to change.
+
+## Workers are the services
+
+A Worker is the unit of capability in iii. It is the service. When you need new behaviour, you write
+a new Worker (or install an existing one from the registry); you do not patch the Engine, add a
+plugin to it, or fork it. The Engine is a fixed coordinator, it routes invocations between Workers
+and maintains the live registry of what each Worker provides. Everything that makes a iii system do
+something useful runs in a Worker.
+
+This is why "add a Worker" is the answer to almost every "how do I add X to iii?" question. If a
+capability is missing, the gap is filled by a Worker, not by a change to iii itself.
+
+<Note>
+  For the mental model behind Workers, Triggers, Functions, and the Engine, see [Understanding iii /
+  Overview](../understanding-iii). To build Workers continue with this section.
+</Note>
+
+## What's in this section
+
+<CardGroup cols={3}>
+  <Card title="Workers" href="./workers" icon="server">
+    Connect a Worker to the Engine and deploy it.
+  </Card>
+  <Card title="Triggers" href="./triggers" icon="bolt">
+    Declare what causes those Functions to run.
+  </Card>
+  <Card title="Functions" href="./functions" icon="code">
+    Register the Functions a Worker contributes.
+  </Card>
+</CardGroup>
