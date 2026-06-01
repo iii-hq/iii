@@ -117,7 +117,7 @@ more. See [skills/](skills/) for the full list.
 
 The [iii-console](console/) is a developer and operations console for inspecting workers, functions,
 triggers, queues, traces, logs, and real-time state. See the
-[Console docs](https://iii.dev/docs/console) for setup and usage.
+[Console docs](https://iii.dev/docs/using-iii/console) for setup and usage.
 
 ## Repository Structure
 
