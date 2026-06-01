@@ -99,20 +99,20 @@ Some common actions are:
 <Note>
   In Python, every blocking method has an awaitable twin (`trigger_async`, `shutdown_async`,
   `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](/sdk-reference/python-sdk#trigger--trigger_async).
+  reference](../sdk-reference/python-sdk#trigger--trigger_async).
 </Note>
 
 ## Register a trigger
 
 <Note>
   If you're authoring a worker, you'll want to refer to [Creating Workers /
-  Triggers](/creating-workers/triggers#bind-a-function-to-an-existing-trigger-type) to learn the
+  Triggers](../creating-workers/triggers#bind-a-function-to-an-existing-trigger-type) to learn the
   difference between registering a trigger, and registering a trigger type.
 </Note>
 
 Functions can also run when a trigger is satisfied. A trigger can be any event that happens such as
 a request to an `http` endpoint, a `cron` job, a change in `state`, or any other trigger that a
-worker supports. You can also [write your own](/creating-workers/triggers).
+worker supports. You can also [write your own](../creating-workers/triggers).
 
 You bind triggers to functions via the `function_id`. The trigger declares its `type`, its `config`
 (defined by each type), and the function to invoke.
