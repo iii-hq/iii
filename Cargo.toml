@@ -54,3 +54,9 @@ ctrlc = "3"
 wiremock = "0.6"
 tempfile = "3"
 serial_test = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
