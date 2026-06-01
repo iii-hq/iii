@@ -74,7 +74,7 @@ Entry point for all releases. Provides a form with:
 |-------|---------|
 | `target` | `iii` |
 | `bump` | `patch`, `minor`, `major` |
-| `prerelease` | `none`, `alpha`, `beta`, `rc` |
+| `prerelease` | `none`, `alpha`, `beta`, `rc`, `next` |
 | `dry_run` | boolean |
 
 **What it does:**
@@ -82,10 +82,18 @@ Entry point for all releases. Provides a form with:
 1. Validates it's running on `main` and all required manifest files exist
 2. Reads the current version from the canonical manifest
 3. Calculates the next version (handles semver bump + prerelease labels + dry-run suffixes)
-4. Converts to PEP 440 format for Python packages (e.g., `1.0.0-alpha.1` becomes `1.0.0a1`)
-5. Updates all manifest files in lockstep (Cargo.toml, package.json, pyproject.toml)
-6. Commits the version bump, creates an annotated tag, and pushes both
-7. Posts a Slack notification
+4. **Stable releases only** — validates docs are ready (`pin_docs.py validate`): `docs/docs.json` must have a `Next` block and the `docs/next/` folder must be non-empty (stable releases pull their docs from `docs/next/`). If not, the workflow posts a Slack alert and aborts **before** bumping or tagging. Runs even on dry runs.
+5. Converts to PEP 440 format for Python packages (e.g., `1.0.0-alpha.1` becomes `1.0.0a1`)
+6. Updates all manifest files in lockstep (Cargo.toml, package.json, pyproject.toml)
+7. Updates docs from `docs/next/` on stable releases (`pin_docs.py rotate`, which dispatches on the version):
+   - **minor/major** — rotates: archives the old Latest into `docs/OLD-MINOR-0/` (its `Latest` block becomes archived), promotes `docs/next/` into the root as a new `Latest` block labeled with the **tag version** (the official version comes from the tag and can be anything), relabels the `Next` block to `MINOR + 1` (reusing the `docs/next/` folder), and reorders the dropdown (Next, Latest, archived newest-first — Mintlify's own ordering does not work).
+   - **patch** — syncs in place: replaces the root content with `docs/next/`. No archive, no `Next` bump, no version-block changes — it just refreshes the current Latest's docs.
+   - **all prereleases** (`alpha`/`beta`/`rc`/`next`) leave docs untouched.
+   - In every case, internal links (markdown and `href`) are re-pointed so each version's links stay within that version.
+8. Commits the version bump (including any docs changes), creates an annotated tag, and pushes both
+9. Posts a Slack notification
+
+> **Docs layout:** `Latest` lives at the docs root (unprefixed paths); `Next` lives in the fixed `docs/next/` folder; archived versions live in `docs/MAJOR-MINOR-0/` folders. Rotation assumes this shape already exists (a `Latest` root block + a `Next` block pointing at `docs/next/`).
 
 The tag push then triggers the corresponding release workflow.
 
