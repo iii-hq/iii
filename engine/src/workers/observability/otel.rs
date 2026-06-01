@@ -2184,6 +2184,32 @@ impl std::fmt::Debug for InMemoryLogStorage {
     }
 }
 
+/// Strip ANSI/terminal escape codes from a log's body and string attribute
+/// values before it enters storage.
+///
+/// Logs are colorized at their emission site — engine `tracing` macros (e.g.
+/// `"[REGISTERED]".green()`) and worker output forwarded over OTLP. Color is a
+/// terminal-display concern, but stored logs are queried as structured data via
+/// `engine::logs::list` and the web console, so they must be plain text in every
+/// output mode. `store`/`add_logs` are the single chokepoint that all stored-log
+/// sources funnel through (engine tracing layer, OTLP ingest, the `log`
+/// function), so stripping here covers them all in one place. Terminal coloring
+/// is untouched: console rendering happens before storage (see
+/// `emit_log_to_console`) and via a separate fmt layer, both of which see the
+/// pre-strip value.
+fn strip_ansi_from_log(log: &mut StoredLog) {
+    if let std::borrow::Cow::Owned(clean) = console::strip_ansi_codes(&log.body) {
+        log.body = clean;
+    }
+    for value in log.attributes.values_mut() {
+        if let serde_json::Value::String(s) = value
+            && let std::borrow::Cow::Owned(clean) = console::strip_ansi_codes(s)
+        {
+            *s = clean;
+        }
+    }
+}
+
 impl InMemoryLogStorage {
     pub fn new(max_logs: usize) -> Self {
         let (tx, _) = broadcast::channel(1024);
@@ -2194,7 +2220,8 @@ impl InMemoryLogStorage {
         }
     }
 
-    pub fn store(&self, log: StoredLog) {
+    pub fn store(&self, mut log: StoredLog) {
+        strip_ansi_from_log(&mut log);
         let mut logs = self.logs.write().unwrap();
         if logs.len() >= self.max_logs {
             logs.pop_front();
@@ -2207,7 +2234,8 @@ impl InMemoryLogStorage {
 
     pub fn add_logs(&self, new_logs: Vec<StoredLog>) {
         let mut logs = self.logs.write().unwrap();
-        for log in new_logs {
+        for mut log in new_logs {
+            strip_ansi_from_log(&mut log);
             if logs.len() >= self.max_logs {
                 logs.pop_front();
             }
@@ -3617,6 +3645,82 @@ mod tests {
         assert_eq!(logs[0].body, "Log message 2");
         assert_eq!(logs[1].body, "Log message 3");
         assert_eq!(logs[2].body, "Log message 4");
+    }
+
+    fn ansi_log(body: &str, attrs: HashMap<String, serde_json::Value>) -> StoredLog {
+        StoredLog {
+            timestamp_unix_nano: 1704067200000000000,
+            observed_timestamp_unix_nano: 1704067200000000000,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: body.to_string(),
+            attributes: attrs,
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "test".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        }
+    }
+
+    #[test]
+    fn store_strips_ansi_from_body() {
+        let storage = InMemoryLogStorage::new(10);
+        // Colorized like `"[REGISTERED]".green()` produces.
+        storage.store(ansi_log(
+            "\u{1b}[32m[REGISTERED]\u{1b}[0m Function \u{1b}[35mfoo\u{1b}[0m",
+            HashMap::new(),
+        ));
+        let logs = storage.get_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].body, "[REGISTERED] Function foo");
+    }
+
+    #[test]
+    fn store_strips_ansi_from_string_attributes() {
+        let storage = InMemoryLogStorage::new(10);
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "colored".to_string(),
+            serde_json::Value::String("\u{1b}[31mred\u{1b}[0m".to_string()),
+        );
+        // Non-string attributes must pass through untouched.
+        attrs.insert("count".to_string(), serde_json::json!(42));
+        storage.store(ansi_log("plain", attrs));
+        let logs = storage.get_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].attributes.get("colored"),
+            Some(&serde_json::Value::String("red".to_string()))
+        );
+        assert_eq!(
+            logs[0].attributes.get("count"),
+            Some(&serde_json::json!(42))
+        );
+    }
+
+    #[test]
+    fn add_logs_strips_ansi_worker_otlp_path() {
+        // Worker logs ingested over OTLP land via `add_logs`, not the tracing
+        // layer — this is the path the per-source fix used to miss.
+        let storage = InMemoryLogStorage::new(10);
+        storage.add_logs(vec![
+            ansi_log("\u{1b}[33mworker warn\u{1b}[0m", HashMap::new()),
+            ansi_log("plain worker line", HashMap::new()),
+        ]);
+        let logs = storage.get_logs();
+        assert_eq!(logs.len(), 2);
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"worker warn"));
+        assert!(bodies.contains(&"plain worker line"));
+    }
+
+    #[test]
+    fn store_leaves_plain_text_untouched() {
+        let storage = InMemoryLogStorage::new(10);
+        storage.store(ansi_log("just plain text", HashMap::new()));
+        assert_eq!(storage.get_logs()[0].body, "just plain text");
     }
 
     #[test]

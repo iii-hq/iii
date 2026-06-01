@@ -527,6 +527,28 @@ mod tests {
     }
 
     #[test]
+    fn layer_strips_ansi_from_body() {
+        let (_, logs) = with_layer(|| {
+            // Simulate a colorized message like `"[REGISTERED]".green()` produces.
+            tracing::info!("\u{1b}[32m[REGISTERED]\u{1b}[0m Function \u{1b}[35mabc\u{1b}[0m");
+        });
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].body, "[REGISTERED] Function abc");
+    }
+
+    #[test]
+    fn layer_strips_ansi_from_string_attribute() {
+        let (_, logs) = with_layer(|| {
+            tracing::info!(colored = "\u{1b}[31mred\u{1b}[0m", "with colored attr");
+        });
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].attributes.get("colored"),
+            Some(&serde_json::Value::String("red".to_string()))
+        );
+    }
+
+    #[test]
     fn otel_logs_layer_new_stores_service_name() {
         let storage = Arc::new(InMemoryLogStorage::new(10));
         let layer = OtelLogsLayer::new(storage.clone(), "my-svc".to_string());
