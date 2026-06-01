@@ -104,7 +104,9 @@ tracing-opentelemetry = "0.32"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", features = ["tonic", "grpc-tonic", "logs", "tls-roots"] }
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic"] }
 opentelemetry-semantic-conventions = "0.31"
+tonic = { version = "0.14", features = ["transport", "tls-native-roots"] }
 futures = "0.3"
 futures-util = "0.3"
 http-body-util = "0.1"
@@ -163,6 +165,7 @@ which = "7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 mockall = "0.13"
 serial_test = "3"
 temp-env = "0.3"
