@@ -36,7 +36,7 @@ and execution of new functionality.
   calls opaque.
 </Note>
 
-## Build the `link-safety-agent`
+## Setup for the `link-safety-agent`
 
 This is the autonomous agent that will sample and investigate links for unwanted activity.
 
@@ -101,9 +101,9 @@ the primary database) in a database of its own. Add both to the `database` worke
 
 ### Keep quarantine in the agent, not the link worker
 
-The link worker is decoupled from the safety agent. This means we don't need to modify `link` to
-handle quarantines with an additional table, function(s), and check(s) in `link::resolve`. All of
-these concerns stay with the agent.
+The `link-safety-agent` implemented below is intentionally decoupled from the `link` worker. This
+means we don't need to modify `link` to handle quarantines with an additional table, function(s),
+and check(s) in `link::resolve`. All of these concerns stay with the agent.
 
 The agent records the quarantined link in its own `safety` database, then removes it from the link
 worker through the `link::delete` you already wrote in Chapter 7, as well as clearing the cache
@@ -112,7 +112,7 @@ taken down.
 
 You write the agent's `quarantine` helper as part of the worker below.
 
-## Build the link-safety-agent worker
+## Create the `link-safety-agent` worker
 
 Scaffold the worker the same way you scaffolded `link` in Chapter 1:
 
@@ -120,8 +120,10 @@ Scaffold the worker the same way you scaffolded `link` in Chapter 1:
 iii worker init link-safety-agent --language typescript
 ```
 
-It has three source files: tool definitions, a deterministic stub (used in the tutorial and in tests
-when no API key is available), and the engine wiring.
+We'll now implement it in three files: tool definitions, a deterministic stub (used in the tutorial
+and in tests when no API key is available), and the engine registration.
+
+### Define the agent's tools
 
 `link-safety-agent/src/agent.ts` declares the tools the LLM can call. The shape matches Anthropic's
 `input_schema`:
@@ -178,12 +180,44 @@ export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortene
 
 </Accordion>
 
-`link-safety-agent/src/stub.ts` is the deterministic stand-in for `provider::anthropic::complete`.
-It returns the same message shape the real provider does, so the agent loop is identical in both
-modes. This lets the tutorial run end-to-end with no API key:
+### A deterministic stand-in
+
+Before we connect an actual LLM to our agent we'll first try everything out with a deterministic
+stand-in for `provider::anthropic::complete` (`link-safety-agent/src/stub.ts`). It returns the same
+messages the real provider does, so the agent loop is identical in both modes. This is only to let
+us test without using an API key. Later in this chapter you'll have the option of using a real API
+key:
+
+<Accordion title="link-safety-agent/src/stub.ts — deterministic provider stand-in">
 
 ```typescript src/stub.ts
 type AnthropicMessage = { role: "user" | "assistant"; content: unknown };
+
+// Pull the link's URL out of the first user message, and the latest tool_result
+// (an inspect_url response) out of any later ones.
+function lastUserContext(messages: AnthropicMessage[]): { url: string; toolResult: string | null } {
+  let url = "";
+  let toolResult: string | null = null;
+  for (const m of messages) {
+    if (m.role === "user" && typeof m.content === "string") {
+      const match = m.content.match(/url:\s*(\S+)/);
+      if (match) url = match[1];
+    }
+    if (m.role === "user" && Array.isArray(m.content)) {
+      for (const block of m.content as Array<{ type?: string; content?: unknown }>) {
+        if (block?.type === "tool_result" && typeof block.content === "string") {
+          toolResult = block.content;
+        }
+      }
+    }
+  }
+  return { url, toolResult };
+}
+
+// Build a tool_use block in the same shape the provider returns.
+function toolUse(name: string, input: Record<string, unknown>) {
+  return { type: "tool_use", id: `stub_${Math.random().toString(36).slice(2, 10)}`, name, input };
+}
 
 export function stubDecide(messages: AnthropicMessage[]): {
   content: unknown;
@@ -212,7 +246,7 @@ export function stubDecide(messages: AnthropicMessage[]): {
 }
 ```
 
-(The helpers `lastUserContext` and `toolUse` are small; see the source.)
+</Accordion>
 
 `link-safety-agent/src/index.ts` wires the worker. It subscribes to `link.created`, samples at the
 configured rate, and runs the tool-calling loop:
