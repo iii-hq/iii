@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ApiRequest, ApiResponse } from '../src'
+import type { ApiRequest, ApiResponse } from '../src/public-types'
 import { execute, httpRequest, iii } from './utils'
 
 describe('Healthcheck Endpoint', () => {

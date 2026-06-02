@@ -1,7 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type {
-  AuthInput,
-  AuthResult,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
   OnFunctionRegistrationResult,
@@ -11,6 +9,7 @@ import type {
   OnTriggerTypeRegistrationResult,
 } from '../src/index'
 import { IIIInvocationError, registerWorker } from '../src/index'
+import type { AuthInput, AuthResult } from '../src/public-types'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'
 

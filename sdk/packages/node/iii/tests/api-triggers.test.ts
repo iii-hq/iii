@@ -3,8 +3,8 @@ import * as path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { http, type ApiResponse, type HttpRequest } from '../src'
-import type { HttpResponse } from '../src/types'
+import { http } from '../src'
+import type { ApiResponse, HttpRequest, HttpResponse } from '../src/public-types'
 import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

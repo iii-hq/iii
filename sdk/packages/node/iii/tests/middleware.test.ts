@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ApiResponse, HttpRequest } from '../src'
+import type { ApiResponse, HttpRequest } from '../src/public-types'
 import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
 
 describe('HTTP Middleware', () => {

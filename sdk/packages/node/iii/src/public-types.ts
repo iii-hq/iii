@@ -4,4 +4,5 @@
 // them from `iii-sdk/types` instead of `iii-sdk`.
 
 export type { IIIConnectionState } from './iii-constants'
-export type { MessageType } from './iii-types'
+export type { AuthInput, AuthResult, MessageType } from './iii-types'
+export type { ApiRequest, ApiResponse, HttpRequest, HttpResponse } from './types'

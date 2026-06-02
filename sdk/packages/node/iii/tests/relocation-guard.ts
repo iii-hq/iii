@@ -3,13 +3,29 @@
 // runtime trace, so this boundary can only be enforced by the TypeScript
 // compiler (run via `tsc --noEmit`), not by a runtime test.
 
-// MessageType must remain importable from the new `types` entry point.
-import type { IIIConnectionState, MessageType } from '../src/public-types'
+// All relocated symbols must remain importable from the new `types` entry point.
+import type {
+  ApiRequest,
+  ApiResponse,
+  AuthInput,
+  AuthResult,
+  HttpRequest,
+  HttpResponse,
+  IIIConnectionState,
+  MessageType,
+} from '../src/public-types'
 
 export type _Msg = MessageType
 export type _State = IIIConnectionState
+export type _Api = [ApiRequest, ApiResponse, HttpRequest, HttpResponse, AuthInput, AuthResult]
 
-// MessageType must NO LONGER be exported from the package root. If it is, the
-// `@ts-expect-error` becomes unused and `tsc` fails with TS2578.
+// These must NO LONGER be exported from the package root. If any still is, the
+// matching `@ts-expect-error` becomes unused and `tsc` fails with TS2578.
 // @ts-expect-error relocated to `iii-sdk/types` in 0.18.0
 import type { MessageType as _RootMessageType } from '../src/index'
+// @ts-expect-error relocated to `iii-sdk/types` in 0.18.0
+import type { ApiRequest as _RootApiRequest } from '../src/index'
+// @ts-expect-error relocated to `iii-sdk/types` in 0.18.0
+import type { AuthInput as _RootAuthInput } from '../src/index'
+// @ts-expect-error relocated to `iii-sdk/types` in 0.18.0
+import type { HttpResponse as _RootHttpResponse } from '../src/index'

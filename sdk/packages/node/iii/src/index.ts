@@ -7,8 +7,6 @@ export { type InitOptions, registerWorker, TriggerAction } from './iii'
 export { EngineFunctions, EngineTriggers } from './iii-constants'
 
 export type {
-  AuthInput,
-  AuthResult,
   EnqueueResult,
   HttpAuthConfig,
   HttpInvocationConfig,
@@ -32,12 +30,8 @@ export { Logger } from '@iii-dev/observability'
 export type { TriggerConfig, TriggerHandler } from './triggers'
 
 export type {
-  ApiRequest,
-  ApiResponse,
   Channel,
   FunctionRef,
-  HttpRequest,
-  HttpResponse,
   InternalHttpRequest,
   ISdk,
   RegisterFunctionInput,

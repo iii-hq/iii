@@ -1,4 +1,5 @@
-import { type ApiRequest, type ApiResponse, Logger } from 'iii-sdk'
+import { Logger } from 'iii-sdk'
+import type { ApiRequest, ApiResponse } from 'iii-sdk/types'
 import { iii } from './iii'
 
 // biome-ignore lint/suspicious/noExplicitAny: generic default requires any for handler flexibility
