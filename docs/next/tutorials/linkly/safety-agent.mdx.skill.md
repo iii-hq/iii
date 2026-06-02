@@ -119,8 +119,9 @@ and in tests when no API key is available), and the engine registration.
 
 ### Define the agent's tools
 
-`link-safety-agent/src/agent.ts` declares the tools the LLM can call. The shape matches Anthropic's
-`input_schema`:
+`link-safety-agent/src/agent.ts` declares the tools the LLM can call (the shape matches Anthropic's
+`input_schema`) and two helpers the loop uses to read the model's response, `pickToolCall` and
+`reasonOf`:
 
 <Accordion title="link-safety-agent/src/agent.ts — tool definitions and system prompt">
 
@@ -170,11 +171,38 @@ export const TOOLS: Tool[] = [
 ];
 
 export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
+
+// A single tool_use block from the model's response.
+export type ToolCall = { id: string; name: Tool["name"]; input: Record<string, unknown> };
+
+// Pick one tool_use from an assistant message; null if there is none.
+export function pickToolCall(content: unknown): ToolCall | null {
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "tool_use" &&
+      typeof (block as { id?: unknown }).id === "string" &&
+      typeof (block as { name?: unknown }).name === "string"
+    ) {
+      const b = block as { id: string; name: string; input?: Record<string, unknown> };
+      return { id: b.id, name: b.name as Tool["name"], input: b.input ?? {} };
+    }
+  }
+  return null;
+}
+
+// Read `reason` off a tool_use's input safely.
+export function reasonOf(input: Record<string, unknown>): string {
+  const r = input.reason;
+  return typeof r === "string" ? r : "";
+}
 ```
 
 </Accordion>
 
-### A deterministic stand-in
+### Create a deterministic stand-in
 
 Before we connect an actual LLM to our agent we'll first try everything out with a deterministic
 stand-in for `provider::anthropic::complete` (`link-safety-agent/src/stub.ts`). It returns the same
@@ -242,13 +270,21 @@ export function stubDecide(messages: AnthropicMessage[]): {
 
 </Accordion>
 
-`link-safety-agent/src/index.ts` wires the worker. It subscribes to `link.created`, samples at the
-configured rate, and runs the tool-calling loop:
+### Define the `link-safety-agent` worker
+
+`link-safety-agent/src/index.ts` defines the worker. Start with the imports, the worker handle, and
+a `complete()` helper that returns either the deterministic stub or a real provider call. The tool
+implementations, the investigation loop, and the `link.created` subscription come next, in their own
+steps.
+
+{/* TODO(validation): harness install is currently broken (configuration dep), so the provider::anthropic::complete function id and payload shape below are unverified. Confirm against a running harness, and evaluate using the turn-orchestrator worker instead of a hand-rolled loop. */}
 
 ```typescript src/index.ts
 import { registerWorker, Logger } from "iii-sdk";
 import { TOOLS, SYSTEM_PROMPT, pickToolCall, reasonOf } from "./agent.js";
 import { stubDecide } from "./stub.js";
+
+type AnthropicMessage = { role: "user" | "assistant"; content: unknown };
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "link-safety-agent",
@@ -345,7 +381,16 @@ ensureSchema().then(() => logger.info("safety store ready"));
 ```
 
 `propose_delete` reuses Chapter 7's `link::request_delete`, which routes through the browser admin
-and only deletes on confirmation.
+and only deletes on confirmation:
+
+```typescript src/index.ts
+async function proposeDelete(code: string): Promise<{ confirmed: boolean }> {
+  return worker.trigger<{ code: string }, { confirmed: boolean }>({
+    function_id: "link::request_delete",
+    payload: { code },
+  });
+}
+```
 
 The loop itself reads the assistant message, picks a tool, runs it, appends the result, and calls
 the model again until it picks a terminal tool:
