@@ -178,28 +178,29 @@ export const TOOLS: Tool[] = [
 
 export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
 
-// A single tool_use block from the model's response.
+// A single tool call from the model's response. harness normalizes provider
+// tool calls into `function_call` content blocks, so we read those.
 export type ToolCall = { id: string; name: Tool["name"]; input: Record<string, unknown> };
 
-// Pick one tool_use from an assistant message; null if there is none.
+// Pick one function_call block from an assistant message; null if there is none.
 export function pickToolCall(content: unknown): ToolCall | null {
   if (!Array.isArray(content)) return null;
   for (const block of content) {
     if (
       block &&
       typeof block === "object" &&
-      (block as { type?: unknown }).type === "tool_use" &&
+      (block as { type?: unknown }).type === "function_call" &&
       typeof (block as { id?: unknown }).id === "string" &&
-      typeof (block as { name?: unknown }).name === "string"
+      typeof (block as { function_id?: unknown }).function_id === "string"
     ) {
-      const b = block as { id: string; name: string; input?: Record<string, unknown> };
-      return { id: b.id, name: b.name as Tool["name"], input: b.input ?? {} };
+      const b = block as { id: string; function_id: string; arguments?: Record<string, unknown> };
+      return { id: b.id, name: b.function_id as Tool["name"], input: b.arguments ?? {} };
     }
   }
   return null;
 }
 
-// Read `reason` off a tool_use's input safely.
+// Read `reason` off a tool call's arguments safely.
 export function reasonOf(input: Record<string, unknown>): string {
   const r = input.reason;
   return typeof r === "string" ? r : "";
@@ -219,57 +220,68 @@ key:
 <Accordion title="link-safety-agent/src/stub.ts — deterministic provider stand-in">
 
 ```typescript src/stub.ts
-type AnthropicMessage = { role: "user" | "assistant"; content: unknown };
+type ContentBlock = { type: string; [key: string]: unknown };
+type Message = { role: "user" | "assistant" | "function_result"; content: ContentBlock[] };
 
-// Pull the link's URL out of the first user message, and the latest tool_result
-// (an inspect_url response) out of any later ones.
-function lastUserContext(messages: AnthropicMessage[]): { url: string; toolResult: string | null } {
+// Pull the link's URL out of the first user message, and the latest
+// function_result (an inspect_url response) out of any later ones.
+function lastUserContext(messages: Message[]): { url: string; toolResult: string | null } {
   let url = "";
   let toolResult: string | null = null;
   for (const m of messages) {
-    if (m.role === "user" && typeof m.content === "string") {
-      const match = m.content.match(/url:\s*(\S+)/);
-      if (match) url = match[1];
-    }
-    if (m.role === "user" && Array.isArray(m.content)) {
-      for (const block of m.content as Array<{ type?: string; content?: unknown }>) {
-        if (block?.type === "tool_result" && typeof block.content === "string") {
-          toolResult = block.content;
+    if (m.role === "user") {
+      for (const block of m.content) {
+        if (block.type === "text" && typeof block.text === "string") {
+          const match = block.text.match(/url:\s*(\S+)/);
+          if (match) url = match[1];
         }
+      }
+    }
+    if (m.role === "function_result") {
+      for (const block of m.content) {
+        if (block.type === "text" && typeof block.text === "string") toolResult = block.text;
       }
     }
   }
   return { url, toolResult };
 }
 
-// Build a tool_use block in the same shape the provider returns.
-function toolUse(name: string, input: Record<string, unknown>) {
-  return { type: "tool_use", id: `stub_${Math.random().toString(36).slice(2, 10)}`, name, input };
+// Build a function_call block in the same shape harness returns from a provider.
+function functionCall(functionId: string, args: Record<string, unknown>) {
+  return {
+    type: "function_call",
+    id: `stub_${Math.random().toString(36).slice(2, 10)}`,
+    function_id: functionId,
+    arguments: args,
+  };
 }
 
-export function stubDecide(messages: AnthropicMessage[]): {
+export function stubDecide(messages: Message[]): {
   content: unknown;
   stop_reason: string;
 } {
   const ctx = lastUserContext(messages);
   if (ctx.toolResult === null) {
-    return { content: [toolUse("inspect_url", { url: ctx.url })], stop_reason: "tool_use" };
+    return {
+      content: [functionCall("inspect_url", { url: ctx.url })],
+      stop_reason: "function_call",
+    };
   }
   if (/malware/i.test(ctx.url)) {
     return {
-      content: [toolUse("quarantine", { reason: 'url contains "malware"' })],
-      stop_reason: "tool_use",
+      content: [functionCall("quarantine", { reason: 'url contains "malware"' })],
+      stop_reason: "function_call",
     };
   }
   if (/phishing/i.test(ctx.url)) {
     return {
-      content: [toolUse("propose_delete", { reason: 'url contains "phishing"' })],
-      stop_reason: "tool_use",
+      content: [functionCall("propose_delete", { reason: 'url contains "phishing"' })],
+      stop_reason: "function_call",
     };
   }
   return {
-    content: [toolUse("allow", { reason: "no suspicious markers" })],
-    stop_reason: "tool_use",
+    content: [functionCall("allow", { reason: "no suspicious markers" })],
+    stop_reason: "function_call",
   };
 }
 ```
@@ -281,16 +293,28 @@ export function stubDecide(messages: AnthropicMessage[]): {
 `link-safety-agent/src/index.ts` defines the worker. Start with the imports, the worker handle, and
 a `complete()` helper that returns either the deterministic stub or a real provider call. The tool
 implementations, the investigation loop, and the `link.created` subscription come next, in their own
-steps.
-
-{/* TODO(validation): harness install is currently broken (configuration dep), so the provider::anthropic::complete function id and payload shape below are unverified. Confirm against a running harness, and evaluate using the turn-orchestrator worker instead of a hand-rolled loop. */}
+steps. `provider::anthropic::complete` is harness's synchronous endpoint: it drains a streamed turn
+and hands back the final assistant message, which keeps this loop simple. (harness also exposes
+`provider::anthropic::stream` and a `turn-orchestrator` worker that runs the whole loop for you; a
+production agent would build on those.)
 
 ```typescript src/index.ts
 import { registerWorker, Logger } from "iii-sdk";
 import { TOOLS, SYSTEM_PROMPT, pickToolCall, reasonOf } from "./agent.js";
 import { stubDecide } from "./stub.js";
 
-type AnthropicMessage = { role: "user" | "assistant"; content: unknown };
+// harness normalizes provider messages into these shapes (a content array of
+// typed blocks), not the raw Anthropic wire format.
+type ContentBlock = { type: string; [key: string]: unknown };
+type Message =
+  | { role: "user" | "assistant"; content: ContentBlock[] }
+  | {
+      role: "function_result";
+      function_call_id: string;
+      function_id: string;
+      content: ContentBlock[];
+      is_error: boolean;
+    };
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "link-safety-agent",
@@ -303,7 +327,9 @@ const SAMPLE_RATE = Number(process.env.SAFETY_SAMPLE_RATE ?? "1");
 const STUB = process.env.SAFETY_AGENT_STUB !== "0";
 const MODEL = process.env.SAFETY_AGENT_MODEL ?? "claude-haiku-4-5-20251001";
 
-async function complete(messages: AnthropicMessage[]) {
+async function complete(
+  messages: Message[],
+): Promise<{ content: ContentBlock[]; stop_reason: string }> {
   if (STUB) return stubDecide(messages);
   return worker.trigger({
     function_id: "provider::anthropic::complete",
@@ -405,10 +431,15 @@ the model again until it picks a terminal tool:
 
 ```typescript src/index.ts
 async function investigate(link: { code: string; url: string }): Promise<void> {
-  const messages = [
+  const messages: Message[] = [
     {
       role: "user",
-      content: `A new shortened link was just created.\n\ncode: ${link.code}\nurl: ${link.url}\n\nInvestigate and decide.`,
+      content: [
+        {
+          type: "text",
+          text: `A new shortened link was just created.\n\ncode: ${link.code}\nurl: ${link.url}\n\nInvestigate and decide.`,
+        },
+      ],
     },
   ];
   for (let turn = 0; turn < 6; turn++) {
@@ -432,9 +463,13 @@ async function investigate(link: { code: string; url: string }): Promise<void> {
       const result = await inspectUrl(
         typeof call.input.url === "string" ? call.input.url : link.url,
       );
+      // Feed the result back as a function_result message keyed to the call id.
       messages.push({
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: call.id, content: result }],
+        role: "function_result",
+        function_call_id: call.id,
+        function_id: call.name,
+        content: [{ type: "text", text: result }],
+        is_error: false,
       });
     }
   }
@@ -659,8 +694,8 @@ URLs. Add this branch to `link-safety-agent/src/stub.ts` before the `allow` fall
 ```typescript src/stub.ts
 if (/burst|campaign/i.test(ctx.url)) {
   return {
-    content: [toolUse("quarantine_burst", { reason: "coordinated burst" })],
-    stop_reason: "tool_use",
+    content: [functionCall("quarantine_burst", { reason: "coordinated burst" })],
+    stop_reason: "function_call",
   };
 }
 ```
