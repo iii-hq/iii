@@ -216,7 +216,11 @@ Returns: `{ created: boolean }`.
 
 #### `sandbox::fs::write`
 
-Stream a file into the sandbox. The `content` field is a `StreamChannelRef` that the caller writes to (channel-paced — no envelope timeout cap).
+Write a file into the sandbox. The body is given by exactly one of `content` or `content_b64`:
+
+- `content: "<utf-8 string>"` — a bare JSON string written verbatim. The agent-natural form for source/text.
+- `content_b64: "<base64>"` — inline binary (decoded before write).
+- `content: <StreamChannelRef>` — an object channel handle for large/streaming uploads from a programmatic caller (channel-paced, no envelope timeout cap).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -224,7 +228,8 @@ Stream a file into the sandbox. The `content` field is a `StreamChannelRef` that
 | `path` | string | required | Destination path inside the guest. |
 | `mode` | string | `"0644"` | Octal permissions for the new file. |
 | `parents` | boolean | `false` | Create missing parent directories. |
-| `content` | StreamChannelRef | required | Channel handle the caller writes bytes to. |
+| `content` | string \| StreamChannelRef | one of `content`/`content_b64` | UTF-8 string (inline) or a channel handle (streaming). |
+| `content_b64` | string | one of `content`/`content_b64` | Base64-encoded inline binary body. |
 
 Returns: `{ bytes_written, path }`.
 
@@ -405,8 +410,13 @@ The `sandbox_id` is well-formed but no sandbox with that id exists. Call
 
 <a id="S003"></a>
 #### S003 — concurrent exec
-Another exec is already in flight on this sandbox. Await it before submitting
-another.
+Exec is serialized one-at-a-time per sandbox; another exec is already in flight.
+The error reports how long it has held the slot. If that exec is a long-running
+or FOREGROUND process (a server, `npm install`, a build/watch), waiting will NOT
+free the slot — it holds until the process exits or hits its `timeout_ms`
+(default 300s). Detach servers with `nohup <cmd> > /tmp/out.log 2>&1 &` and read
+progress via `sandbox::fs::read`, or `sandbox::stop` + `sandbox::create` to reset.
+Retry-after-wait only helps for a short in-flight command.
 
 <a id="S004"></a>
 #### S004 — sandbox already stopped

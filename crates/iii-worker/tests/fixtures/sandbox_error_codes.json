@@ -5,7 +5,7 @@
   "codes": [
     {"code": "S001", "type": "validation", "retryable": false, "rust_variant": "InvalidRequest", "summary": "request payload failed validation (e.g. missing/malformed sandbox_id)"},
     {"code": "S002", "type": "validation", "retryable": false, "rust_variant": "NotFound", "summary": "sandbox uuid not found in registry"},
-    {"code": "S003", "type": "validation", "retryable": false, "rust_variant": "ConcurrentExec", "summary": "another exec is in flight on this sandbox; await before firing another"},
+    {"code": "S003", "type": "validation", "retryable": false, "rust_variant": "ConcurrentExec", "summary": "another exec is in flight on this sandbox (exec is serialized one-at-a-time); detach a foreground process or stop+recreate rather than waiting"},
     {"code": "S004", "type": "validation", "retryable": false, "rust_variant": "AlreadyStopped", "summary": "sandbox already stopped; create a new one"},
     {"code": "S100", "type": "config", "retryable": false, "rust_variant": "ImageNotInCatalog", "summary": "image not in catalog or allowlist"},
     {"code": "S101", "type": "internal", "retryable": false, "rust_variant": "RootfsMissing", "summary": "rootfs missing on disk; run iii worker add"},

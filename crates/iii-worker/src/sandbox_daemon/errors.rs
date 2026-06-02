@@ -101,7 +101,9 @@ pub enum SandboxError {
     #[error("sandbox not found: {0}")]
     NotFound(String),
 
-    #[error("concurrent exec on sandbox {0}; await the previous exec before firing another")]
+    #[error(
+        "concurrent exec on sandbox {0}: an exec is already in flight. Exec is serialized one-at-a-time per sandbox"
+    )]
     ConcurrentExec(String),
 
     #[error("sandbox already stopped: {0}")]
@@ -316,7 +318,14 @@ impl SandboxError {
             ),
             Self::ConcurrentExec(_) => (
                 None,
-                Some("wait for the in-flight exec to complete before submitting another"),
+                Some(
+                    "only one exec runs at a time per sandbox. If the in-flight exec is a \
+                     long-running or FOREGROUND process (a server, `npm install`, a build/watch), \
+                     waiting will NOT free the slot — it holds until the process exits or hits its \
+                     timeout_ms (default 300s). Detach servers with `nohup <cmd> > /tmp/out.log \
+                     2>&1 &` and read progress via sandbox::fs::read, or sandbox::stop + \
+                     sandbox::create to reset. Retry-after-wait only helps for a short command.",
+                ),
             ),
             Self::AlreadyStopped(_) | Self::NotFound(_) => (
                 None,

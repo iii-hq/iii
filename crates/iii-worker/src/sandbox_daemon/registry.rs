@@ -155,13 +155,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_begin_exec_returns_s003() {
+    async fn concurrent_begin_exec_returns_s003_with_actionable_recovery() {
         let reg = SandboxRegistry::new();
         let id = Uuid::new_v4();
         reg.insert(fixture(id)).await;
         let _ = reg.begin_exec(id).await.unwrap();
         let err = reg.begin_exec(id).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S003");
+        // The recovery hint must NOT tell the agent to merely "wait" — that
+        // loops forever on a foreground server. It must name detach/stop and
+        // flag the foreground case.
+        let note = err
+            .to_payload()
+            .get("fix_note")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            note.contains("nohup") || note.contains("sandbox::stop"),
+            "fix_note must name a real recovery (detach/stop), got: {note}"
+        );
+        assert!(
+            note.to_lowercase().contains("foreground"),
+            "fix_note must flag the foreground case, got: {note}"
+        );
     }
 
     #[tokio::test]
