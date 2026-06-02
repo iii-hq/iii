@@ -9,10 +9,12 @@ needs a human's go-ahead.
 ## Add the workers
 
 A browser worker connects through `iii-worker-manager`'s RBAC-gated listener, separate from the
-trusted port your local workers use. Add it now:
+trusted port your local workers use. You also need an `auth` worker to gate those connections, so
+scaffold it the same way you scaffolded `link` in Chapter 1:
 
 ```bash
 iii worker add iii-worker-manager
+iii worker init auth --language typescript
 ```
 
 {/* TODO(validation): `iii worker add iii-worker-manager` is being added to the registry; re-verify once the command works end-to-end. */}
@@ -20,9 +22,8 @@ iii worker add iii-worker-manager
 ## Run two listeners
 
 The engine's built-in port at `49134` is the **trusted** listener; local workers (link worker,
-analytics worker) connect there. The browser must not. Replace the built-in with two
-`iii-worker-manager` entries: the trusted one (local workers keep using it) and an RBAC-gated one on
-`3110` for browsers:
+analytics worker) connect there. The browser must not. Add two `iii-worker-manager` entries: the
+trusted one (local workers keep using it) and an RBAC-gated one on `3110` for browsers:
 
 ```yaml config.yaml
 # Trusted listener for local workers. Replaces the engine's built-in 49134.
@@ -37,7 +38,7 @@ analytics worker) connect there. The browser must not. Replace the built-in with
     host: 127.0.0.1
     port: 3110
     rbac:
-      auth_function_id: link::auth_browser
+      auth_function_id: auth::browser
       expose_functions:
         - match("link::create")
         - match("link::request_delete")
@@ -50,13 +51,21 @@ that next.
 
 ## Gate connections with an auth function
 
-`link::auth_browser` runs once per browser connection. It receives the request's `headers`,
+The `auth` worker owns connection gating, so the `link` worker stays focused on links.
+`auth::browser` runs once per browser connection: it receives the request's `headers`,
 `query_params`, and `ip_address`, and returns the session's permissions (allow/deny additions,
-arbitrary context). Throw to reject. Add it to `link/src/index.ts`:
+arbitrary context). Throw to reject. Replace the generated `auth/src/index.ts`:
 
-```typescript src/index.ts
+```typescript auth/src/index.ts
+import { registerWorker, Logger } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "auth",
+});
+const logger = new Logger();
+
 worker.registerFunction(
-  "link::auth_browser",
+  "auth::browser",
   async (input: {
     headers: Record<string, string>;
     query_params: Record<string, string[]>;
@@ -75,10 +84,18 @@ worker.registerFunction(
     };
   },
 );
+
+logger.info("auth worker ready");
 ```
 
 A real deployment would look the token up in a session store; the shape stays the same. The token
 travels in a query parameter because browsers cannot send custom WebSocket headers.
+
+Register it with your project:
+
+```bash
+iii worker add ./auth
+```
 
 ## Add a server-initiated delete
 
