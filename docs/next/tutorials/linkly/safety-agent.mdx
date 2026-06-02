@@ -180,7 +180,7 @@ export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortene
 
 </Accordion>
 
-### A deterministic stand-in
+### Create a deterministic stand-in
 
 Before we connect an actual LLM to our agent we'll first try everything out with a deterministic
 stand-in for `provider::anthropic::complete` (`link-safety-agent/src/stub.ts`). It returns the same
@@ -248,7 +248,9 @@ export function stubDecide(messages: AnthropicMessage[]): {
 
 </Accordion>
 
-`link-safety-agent/src/index.ts` wires the worker. It subscribes to `link.created`, samples at the
+### Define the `link-safety-agent` worker
+
+`link-safety-agent/src/index.ts` defines the worker. It subscribes to `link.created`, samples at the
 configured rate, and runs the tool-calling loop:
 
 ```typescript src/index.ts
