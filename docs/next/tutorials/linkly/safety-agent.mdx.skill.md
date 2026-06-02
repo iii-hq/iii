@@ -21,12 +21,6 @@ all of the immediate benefits of iii out of the box, such as end to end observab
 isolation of its processes, interoperability with the rest of the system, and dynamic registration
 and execution of new functionality.
 
-For this example we use a few small pieces of the harness and trust that by now you have a pretty
-good idea of how to incorporate iii's advanced features into your own projects.
-
-The pieces we'll use in this chapter are iii's `sandbox` worker and the Anthropic provider:
-`provider::anthropic::complete`.
-
 <Note>
   Going through the `harness` worker instead of importing `@anthropic-ai/sdk` or another harness
   directly gives one big thing: **every LLM call shows up as an `iii-observability` span**.
@@ -36,7 +30,18 @@ The pieces we'll use in this chapter are iii's `sandbox` worker and the Anthropi
   calls opaque.
 </Note>
 
-## Run investigations in a sandbox
+## Build the `link-safety-agent`
+
+This is the autonomous agent that will sample and investigate links for unwanted activity.
+
+For this example we use a few small pieces of the harness and trust that by now you have a good idea
+of how to incorporate iii's advanced features into your own projects. Of course if you ever have any
+questions [join our Discord server](https://discord.gg/iiidev).
+
+The pieces we'll use in this chapter are iii's `sandbox` worker, the `database` worker, and the
+Anthropic provider: `provider::anthropic::complete`.
+
+### Install the sandbox for later investigation
 
 The agent investigates a link by probing its target, and it must do that without trusting the
 target. `iii-sandbox` boots an ephemeral microVM for each probe, isolated from the
@@ -66,11 +71,11 @@ caller may boot; the agent only needs `node`:
     default_memory_mb: 512
 ```
 
-## Add databases for harness and the agent
+### Add databases for harness and the agent
 
 Two workers want their own storage. Harness's `auth-credentials` worker stores provider keys in its
-own SQLite, and the safety agent keeps a record of what it quarantined in a database of its own. Add
-both to the `database` worker's config:
+own SQLite database, and the safety agent keeps a record of what it quarantined (ie. removed from
+the primary database) in a database of its own. Add both to the `database` worker's config:
 
 ```yaml config.yaml {11,12,13}
 - name: database
@@ -88,25 +93,34 @@ both to the `database` worker's config:
         url: sqlite:./data/safety.db
 ```
 
-## Keep quarantine in the agent, not the link worker
+### Keep quarantine in the agent, not the link worker
 
-The link worker has no idea the safety agent exists, and it stays that way. Rather than teach `link`
-about quarantine (a table, a function, a check in `link::resolve`), the agent owns the whole
-concern: it records the quarantined link in its own `safety` database, then removes it from the link
-worker through the `link::delete` you already wrote in Chapter 7. The link disappears from `link`'s
-database and cache the same way any deletion does, so `link::resolve` returns `null` with no
-safety-specific code. The agent's database is the system of record for why a link was taken down.
+The link worker is decoupled from the safety agent. This means we don't need to modify `link` to
+handle quarantines with an additional table, function(s), and check(s) in `link::resolve`. All of
+these concerns stay with the agent.
+
+The agent records the quarantined link in its own `safety` database, then removes it from the link
+worker through the `link::delete` you already wrote in Chapter 7, as well as clearing the cache
+entry in `iii-state`. While the agent's database is used as the system of record for why a link was
+taken down.
 
 You write the agent's `quarantine` helper as part of the worker below.
 
 ## Build the link-safety-agent worker
 
-Scaffold a TypeScript worker at `linkly/link-safety-agent/`. It has three source files: tool
-definitions, a deterministic stub (used in the tutorial and in tests when no API key is available),
-and the engine wiring.
+Scaffold the worker the same way you scaffolded `link` in Chapter 1:
+
+```bash
+iii worker init link-safety-agent --language typescript
+```
+
+It has three source files: tool definitions, a deterministic stub (used in the tutorial and in tests
+when no API key is available), and the engine wiring.
 
 `link-safety-agent/src/agent.ts` declares the tools the LLM can call. The shape matches Anthropic's
 `input_schema`:
+
+<Accordion title="link-safety-agent/src/agent.ts — tool definitions and system prompt">
 
 ```typescript src/agent.ts
 export type Tool = {
@@ -155,6 +169,8 @@ export const TOOLS: Tool[] = [
 
 export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
 ```
+
+</Accordion>
 
 `link-safety-agent/src/stub.ts` is the deterministic stand-in for `provider::anthropic::complete`.
 It returns the same message shape the real provider does, so the agent loop is identical in both
@@ -223,6 +239,8 @@ async function complete(messages: AnthropicMessage[]) {
 
 The tool implementations are short. `inspect_url` boots a iii-sandbox and runs `curl`:
 
+<Accordion title="inspectUrl — probe a URL inside a sandbox">
+
 ```typescript src/index.ts
 async function inspectUrl(url: string): Promise<string> {
   const { sandbox_id } = await worker.trigger<{ image: string }, { sandbox_id: string }>({
@@ -256,6 +274,8 @@ async function inspectUrl(url: string): Promise<string> {
   }
 }
 ```
+
+</Accordion>
 
 `quarantine` is where the decoupling pays off. The agent records the link in its own `safety`
 database, then removes it from the link worker with `link::delete`. The `link` worker never learns
@@ -296,6 +316,8 @@ and only deletes on confirmation.
 The loop itself reads the assistant message, picks a tool, runs it, appends the result, and calls
 the model again until it picks a terminal tool:
 
+<Accordion title="investigate — the tool-calling loop">
+
 ```typescript src/index.ts
 async function investigate(link: { code: string; url: string }): Promise<void> {
   const messages = [
@@ -333,6 +355,8 @@ async function investigate(link: { code: string; url: string }): Promise<void> {
   }
 }
 ```
+
+</Accordion>
 
 The loop is what makes the agent agentic: the model picks `inspect_url` (or doesn't), sees what came
 back, and decides what to do next. It is not a fixed pipeline. A real run might inspect once and
@@ -404,11 +428,10 @@ two investigations are ever in flight, no matter how fast `link.created` events 
 In production you'd sample at maybe 1% (`SAFETY_SAMPLE_RATE=0.01`); for this tutorial the default is
 1 so every new link is investigated.
 
-Declare the new worker in `config.yaml`:
+Register it with your project:
 
-```yaml config.yaml
-- name: link-safety-agent
-  worker_path: ./link-safety-agent
+```bash
+iii worker add ./link-safety-agent
 ```
 
 ## See it work (stub mode, no API key)
@@ -477,6 +500,8 @@ export const SYSTEM_PROMPT = `You are Linkly's link safety agent. A new shortene
 The implementation in `link-safety-agent/src/index.ts` reads the burst from traces, then builds,
 runs, and removes the bulk action:
 
+<Accordion title="quarantineBurst — derive the burst from traces, then build, run, and unregister the purge">
+
 ```typescript src/index.ts
 type Span = { start_time_unix_nano: number; attributes: [string, string][] };
 const attrOf = (s: Span, k: string) => s.attributes.find(([key]) => key === k)?.[1];
@@ -530,6 +555,8 @@ async function quarantineBurst(reason: string): Promise<{ purged: string[] }> {
   }
 }
 ```
+
+</Accordion>
 
 Handle the new tool in the loop, alongside the other terminal decisions:
 
