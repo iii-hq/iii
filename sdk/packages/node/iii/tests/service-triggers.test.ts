@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChannelReader } from '../src'
+import { createChannel } from '../src/helpers'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'
 
@@ -200,7 +201,7 @@ describe('Channel readAll', () => {
     )
 
     const sender = iii.registerFunction('test.readall.sender', async (input: { text: string }) => {
-      const channel = await iii.createChannel()
+      const channel = await createChannel(iii)
 
       const writePromise = new Promise<void>((resolve, reject) => {
         const payload = Buffer.from(input.text)
@@ -247,7 +248,7 @@ describe('Channel readAll', () => {
     )
 
     const sender = iii.registerFunction('test.readall.chunked.sender', async (input: { numbers: number[] }) => {
-      const channel = await iii.createChannel()
+      const channel = await createChannel(iii)
 
       const writePromise = new Promise<void>((resolve, reject) => {
         const buf = Buffer.from(JSON.stringify(input.numbers))

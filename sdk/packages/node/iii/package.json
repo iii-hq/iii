@@ -1,6 +1,6 @@
 {
   "name": "iii-sdk",
-  "version": "0.17.0",
+  "version": "0.18.0-next.1",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -36,6 +36,11 @@
       "types": "./dist/state.d.ts",
       "import": "./dist/state.mjs",
       "require": "./dist/state.cjs"
+    },
+    "./helpers": {
+      "types": "./dist/helpers.d.ts",
+      "import": "./dist/helpers.mjs",
+      "require": "./dist/helpers.cjs"
     }
   },
   "dependencies": {

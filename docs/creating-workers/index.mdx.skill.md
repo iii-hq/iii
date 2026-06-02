@@ -20,19 +20,19 @@ capability is missing, the gap is filled by a Worker, not by a change to iii its
 
 <Note>
   For the mental model behind Workers, Triggers, Functions, and the Engine, see [Understanding iii /
-  Overview](/understanding-iii). To build Workers continue with this section.
+  Overview](../understanding-iii). To build Workers continue with this section.
 </Note>
 
 ## What's in this section
 
 <CardGroup cols={3}>
-  <Card title="Workers" href="/creating-workers/workers" icon="server">
+  <Card title="Workers" href="./workers" icon="server">
     Connect a Worker to the Engine and deploy it.
   </Card>
-  <Card title="Triggers" href="/creating-workers/triggers" icon="bolt">
+  <Card title="Triggers" href="./triggers" icon="bolt">
     Declare what causes those Functions to run.
   </Card>
-  <Card title="Functions" href="/creating-workers/functions" icon="code">
+  <Card title="Functions" href="./functions" icon="code">
     Register the Functions a Worker contributes.
   </Card>
 </CardGroup>

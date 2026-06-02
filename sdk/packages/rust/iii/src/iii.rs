@@ -917,16 +917,16 @@ impl III {
     /// ```
     pub fn register_trigger_type<H, C, R>(
         &self,
-        registration: RegisterTriggerType<H, C, R>,
+        trigger_type: RegisterTriggerType<H, C, R>,
     ) -> TriggerTypeRef<C, R>
     where
         H: TriggerHandler + 'static,
     {
         let message = RegisterTriggerTypeMessage {
-            id: registration.id,
-            description: registration.description,
-            trigger_request_format: registration.trigger_request_format,
-            call_request_format: registration.call_request_format,
+            id: trigger_type.id,
+            description: trigger_type.description,
+            trigger_request_format: trigger_type.trigger_request_format,
+            call_request_format: trigger_type.call_request_format,
         };
 
         let trigger_type_id = message.id.clone();
@@ -935,7 +935,7 @@ impl III {
             message.id.clone(),
             RemoteTriggerTypeData {
                 message: message.clone(),
-                handler: Arc::new(registration.handler),
+                handler: Arc::new(trigger_type.handler),
             },
         );
 
@@ -1106,44 +1106,6 @@ impl III {
             return;
         }
         *current = state;
-    }
-
-    /// Create a streaming channel pair for worker-to-worker data transfer.
-    ///
-    /// Returns a `Channel` with writer, reader, and their serializable refs
-    /// that can be passed as fields in invocation data to other functions.
-    pub async fn create_channel(&self, buffer_size: Option<usize>) -> Result<Channel, IIIError> {
-        let result = self
-            .trigger(TriggerRequest {
-                function_id: "engine::channels::create".to_string(),
-                payload: serde_json::json!({ "buffer_size": buffer_size }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await?;
-
-        let writer_ref: StreamChannelRef = serde_json::from_value(
-            result
-                .get("writer")
-                .cloned()
-                .ok_or_else(|| IIIError::Serde("missing 'writer' in channel response".into()))?,
-        )
-        .map_err(|e| IIIError::Serde(e.to_string()))?;
-
-        let reader_ref: StreamChannelRef = serde_json::from_value(
-            result
-                .get("reader")
-                .cloned()
-                .ok_or_else(|| IIIError::Serde("missing 'reader' in channel response".into()))?,
-        )
-        .map_err(|e| IIIError::Serde(e.to_string()))?;
-
-        Ok(Channel {
-            writer: ChannelWriter::new(&self.inner.address, &writer_ref),
-            reader: ChannelReader::new(&self.inner.address, &reader_ref),
-            writer_ref,
-            reader_ref,
-        })
     }
 
     /// Register this worker's metadata with the engine (called automatically on connect)
@@ -1808,6 +1770,49 @@ impl III {
             let _ = iii.send_message(message);
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internal implementations for items relocated to the `helpers` submodule.
+// Exposed at `pub(crate)` so the thin wrappers in `crate::helpers` can call
+// them; user code must continue to go through `crate::helpers::*`.
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn internal_create_channel(
+    iii: &III,
+    buffer_size: Option<usize>,
+) -> Result<Channel, IIIError> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::channels::create".to_string(),
+            payload: serde_json::json!({ "buffer_size": buffer_size }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+
+    let writer_ref: StreamChannelRef = serde_json::from_value(
+        result
+            .get("writer")
+            .cloned()
+            .ok_or_else(|| IIIError::Serde("missing 'writer' in channel response".into()))?,
+    )
+    .map_err(|e| IIIError::Serde(e.to_string()))?;
+
+    let reader_ref: StreamChannelRef = serde_json::from_value(
+        result
+            .get("reader")
+            .cloned()
+            .ok_or_else(|| IIIError::Serde("missing 'reader' in channel response".into()))?,
+    )
+    .map_err(|e| IIIError::Serde(e.to_string()))?;
+
+    Ok(Channel {
+        writer: ChannelWriter::new(&iii.inner.address, &writer_ref),
+        reader: ChannelReader::new(&iii.inner.address, &reader_ref),
+        writer_ref,
+        reader_ref,
+    })
 }
 
 #[cfg(test)]

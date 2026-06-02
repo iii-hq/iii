@@ -42,3 +42,41 @@ export const isChannelRef = (value: unknown): value is StreamChannelRef => {
     (maybe.direction === 'read' || maybe.direction === 'write')
   )
 }
+
+/**
+ * Recursively extract all {@link StreamChannelRef} values from a JSON-like
+ * input, returning each match paired with its dotted/bracketed path. Mirrors
+ * the Rust SDK's `extract_channel_refs`.
+ *
+ * @param data - Arbitrary JSON-like value.
+ * @returns Array of `[path, ref]` tuples. Empty when no refs are found.
+ */
+export const extractChannelRefs = (data: unknown): Array<[string, StreamChannelRef]> => {
+  const refs: Array<[string, StreamChannelRef]> = []
+  extractRefsRecursive(data, '', refs)
+  return refs
+}
+
+const extractRefsRecursive = (
+  data: unknown,
+  prefix: string,
+  refs: Array<[string, StreamChannelRef]>,
+): void => {
+  if (isChannelRef(data)) {
+    refs.push([prefix, data])
+    return
+  }
+  if (Array.isArray(data)) {
+    for (let i = 0; i < data.length; i++) {
+      const path = prefix === '' ? `[${i}]` : `${prefix}[${i}]`
+      extractRefsRecursive(data[i], path, refs)
+    }
+    return
+  }
+  if (typeof data !== 'object' || data === null) return
+
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    const path = prefix === '' ? key : `${prefix}.${key}`
+    extractRefsRecursive(value, path, refs)
+  }
+}

@@ -7,8 +7,8 @@
 
 <Note>
   This page documents the wire-level protocol the engine and SDK workers exchange. Most projects use
-  a language SDK ([Node](/sdk-reference/node-sdk), [Python](/sdk-reference/python-sdk),
-  [Rust](/sdk-reference/rust-sdk), [Browser](/sdk-reference/browser-sdk)) and never touch the
+  a language SDK ([Node](./node-sdk), [Python](./python-sdk),
+  [Rust](./rust-sdk), [Browser](./browser-sdk)) and never touch the
   protocol directly. The shapes below are the source of truth those SDKs serialize to.
 </Note>
 

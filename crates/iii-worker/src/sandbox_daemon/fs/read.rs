@@ -184,8 +184,7 @@ async fn stream_via_channel(
     body: Option<String>,
     _path: String,
 ) -> Result<ReadResponse, SandboxError> {
-    let channel = iii
-        .create_channel(Some(64))
+    let channel = iii_sdk::helpers::create_channel(iii, Some(64))
         .await
         .map_err(|e| SandboxError::FsIo(format!("create_channel: {e}")))?;
 

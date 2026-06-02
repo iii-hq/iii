@@ -8,7 +8,7 @@ during long-running work. For small JSON, stick with a regular `worker.trigger(.
 
 <Note>
   For the underlying model (how channels are addressed, multiplexed, and torn down), see [Channels
-  architecture](/understanding-iii/channels).
+  architecture](../understanding-iii/channels).
 </Note>
 
 ## Payload size
@@ -45,14 +45,17 @@ reading bytes from its `reader`.
 
 ### Create a channel
 
-`worker.createChannel()` returns a channel with two local stream objects and two serializable refs:
-`writer` and `reader` are the local stream ends, and `writerRef` / `readerRef` are the tokens you
-pass to another function so it can read or write the other end.
+The `createChannel` helper returns a channel with two local stream objects and two serializable
+refs: `writer` and `reader` are the local stream ends, and `writerRef` / `readerRef` are the tokens
+you pass to another function so it can read or write the other end. It is imported from the
+`helpers` submodule and takes the worker as its first argument.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const channel = await worker.createChannel();
+    import { createChannel } from "iii-sdk/helpers";
+
+    const channel = await createChannel(worker);
 
     // channel.writer
     // channel.reader
@@ -63,7 +66,9 @@ pass to another function so it can read or write the other end.
   </Tab>
   <Tab title="Python">
     ```python
-    channel = iii_client.create_channel()
+    from iii.helpers import create_channel
+
+    channel = create_channel(iii_client)
 
     # channel.writer
     # channel.reader
@@ -74,7 +79,9 @@ pass to another function so it can read or write the other end.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let channel = worker.create_channel(None).await?;
+    use iii_sdk::helpers::create_channel;
+
+    let channel = create_channel(&worker, None).await?;
 
     // channel.writer
     // channel.reader
@@ -93,7 +100,9 @@ engine to whichever worker holds the matching `reader`.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const channel = await worker.createChannel();
+    import { createChannel } from "iii-sdk/helpers";
+
+    const channel = await createChannel(worker);
 
     channel.writer.stream.end(Buffer.from("file contents"));
     ```
@@ -101,7 +110,9 @@ engine to whichever worker holds the matching `reader`.
   </Tab>
   <Tab title="Python">
     ```python
-    channel = await iii_client.create_channel_async()
+    from iii.helpers import create_channel_async
+
+    channel = await create_channel_async(iii_client)
 
     await channel.writer.write(b"file contents")
     await channel.writer.close_async()
@@ -110,7 +121,9 @@ engine to whichever worker holds the matching `reader`.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let channel = worker.create_channel(None).await?;
+    use iii_sdk::helpers::create_channel;
+
+    let channel = create_channel(&worker, None).await?;
 
     channel.writer.write(b"file contents").await?;
     channel.writer.close().await?;
@@ -127,7 +140,9 @@ by whichever worker holds the matching `writer`.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const channel = await worker.createChannel();
+    import { createChannel } from "iii-sdk/helpers";
+
+    const channel = await createChannel(worker);
 
     let bytes = 0;
     for await (const chunk of channel.reader.stream) {
@@ -138,7 +153,9 @@ by whichever worker holds the matching `writer`.
   </Tab>
   <Tab title="Python">
     ```python
-    channel = await iii_client.create_channel_async()
+    from iii.helpers import create_channel_async
+
+    channel = await create_channel_async(iii_client)
 
     bytes_total = 0
     async for chunk in channel.reader:
@@ -148,7 +165,9 @@ by whichever worker holds the matching `writer`.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let channel = worker.create_channel(None).await?;
+    use iii_sdk::helpers::create_channel;
+
+    let channel = create_channel(&worker, None).await?;
 
     let mut bytes = 0;
     while let Some(chunk) = channel.reader.next_binary().await? {
@@ -252,10 +271,11 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{ChannelDirection, ChannelReader, IIIError};
+    use iii_sdk::helpers::{ChannelDirection, extract_channel_refs};
+    use iii_sdk::{ChannelReader, IIIError};
     use serde_json::json;
 
-    let refs = iii_sdk::extract_channel_refs(&input);
+    let refs = extract_channel_refs(&input);
     let (_, reader_ref) = refs
         .iter()
         .find(|(k, r)| k == "reader" && matches!(r.direction, ChannelDirection::Read))
@@ -302,10 +322,11 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{ChannelDirection, ChannelWriter, IIIError};
+    use iii_sdk::helpers::{ChannelDirection, extract_channel_refs};
+    use iii_sdk::{ChannelWriter, IIIError};
     use serde_json::json;
 
-    let refs = iii_sdk::extract_channel_refs(&input);
+    let refs = extract_channel_refs(&input);
     let (_, writer_ref) = refs
         .iter()
         .find(|(k, r)| k == "writer" && matches!(r.direction, ChannelDirection::Write))
@@ -323,6 +344,6 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
 
 <Note>
   For the per-language channel API surface, see the SDK reference:
-  [Node](/sdk-reference/node-sdk#channels), [Python](/sdk-reference/python-sdk#channels), and
-  [Rust](/sdk-reference/rust-sdk#channels).
+  [Node](../sdk-reference/node-sdk#channels), [Python](../sdk-reference/python-sdk#channels), and
+  [Rust](../sdk-reference/rust-sdk#channels).
 </Note>

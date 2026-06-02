@@ -7,7 +7,6 @@ import type {
   StreamChannelRef,
   TriggerRequest,
 } from './iii-types'
-import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
 
 /**
@@ -201,66 +200,6 @@ export interface ISdk {
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
 
   /**
-   * Creates a streaming channel pair for worker-to-worker data transfer.
-   * Returns a Channel with a local writer/reader and serializable refs that
-   * can be passed as fields in the invocation data to other functions.
-   *
-   * @param bufferSize - Optional buffer size for the channel (default: 64)
-   * @returns A Channel with writer, reader, and their serializable refs
-   *
-   * @example
-   * ```typescript
-   * const channel = await iii.createChannel()
-   *
-   * // Pass the writer ref to another function
-   * await iii.trigger({
-   *   function_id: 'stream-producer',
-   *   payload: { outputChannel: channel.writerRef },
-   * })
-   *
-   * // Read data locally
-   * channel.reader.onMessage((msg) => {
-   *   console.log('Received:', msg)
-   * })
-   * ```
-   */
-  createChannel(bufferSize?: number): Promise<Channel>
-
-  /**
-   * Creates a new stream implementation.
-   *
-   * This overrides the default stream implementation.
-   *
-   * @param streamName - The name of the stream
-   * @param stream - The stream implementation
-   *
-   * @example
-   * ```typescript
-   * const redisStream: IStream<UserSession> = {
-   *   async get({ group_id, item_id }) {
-   *     return JSON.parse(await redis.get(`${group_id}:${item_id}`) ?? 'null')
-   *   },
-   *   async set({ group_id, item_id, data }) {
-   *     const old = await this.get({ stream_name: 'sessions', group_id, item_id })
-   *     await redis.set(`${group_id}:${item_id}`, JSON.stringify(data))
-   *     return { old_value: old ?? undefined, new_value: data }
-   *   },
-   *   async delete({ group_id, item_id }) {
-   *     const old = await this.get({ stream_name: 'sessions', group_id, item_id })
-   *     await redis.del(`${group_id}:${item_id}`)
-   *     return { old_value: old ?? undefined }
-   *   },
-   *   async list({ group_id }) { return [] },
-   *   async listGroups() { return [] },
-   *   async update({ group_id, item_id, ops }) { return { new_value: {} } },
-   * }
-   *
-   * iii.createStream('sessions', redisStream)
-   * ```
-   */
-  createStream<TData>(streamName: string, stream: IStream<TData>): void
-
-  /**
    * Gracefully shutdown the iii, cleaning up all resources.
    *
    * @example
@@ -357,7 +296,7 @@ export type TriggerTypeRef<TConfig = unknown> = {
 
 /**
  * A streaming channel pair for worker-to-worker data transfer. Created via
- * {@link ISdk.createChannel}.
+ * the `createChannel` helper from `iii-sdk/helpers`.
  */
 export type Channel = {
   /** Writer end of the channel. */
