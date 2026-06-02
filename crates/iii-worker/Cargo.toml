@@ -83,8 +83,6 @@ humantime = "2"
 regex = "1"
 # Used by sandbox_daemon for unique identifiers.
 uuid = { version = "1", features = ["v4", "serde"] }
-# Used by sandbox_daemon for lazy-initialized statics.
-once_cell = "1"
 # Used by sandbox_daemon for derive-based error types.
 thiserror = "2"
 

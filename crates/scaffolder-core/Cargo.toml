@@ -11,11 +11,8 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
-clap = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 semver = { workspace = true }
-walkdir = { workspace = true }
 open = { workspace = true }
 colored = { workspace = true }
 dirs = { workspace = true }
@@ -24,7 +21,6 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 cliclack = { workspace = true }
 console = { workspace = true }
-ctrlc = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
