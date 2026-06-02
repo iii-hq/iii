@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, AsyncIterator, Callable
 from urllib.parse import quote
 
@@ -15,6 +17,51 @@ from .iii_types import StreamChannelRef
 log = logging.getLogger("iii.channels")
 
 MAX_FRAME_SIZE = 64 * 1024
+
+
+class ChannelDirection(str, Enum):
+    """Direction of a streaming channel reference.
+
+    Mirrors the Rust SDK's ``ChannelDirection`` enum. The string values
+    (``"read"`` / ``"write"``) match the wire format used by
+    :class:`StreamChannelRef.direction`.
+    """
+
+    READ = "read"
+    WRITE = "write"
+
+
+@dataclass
+class ChannelItem:
+    """A single frame transferred over a channel.
+
+    Mirrors the Rust SDK's ``ChannelItem`` enum. Exactly one of ``text`` or
+    ``binary`` is set; use :meth:`text_item` / :meth:`binary_item` to
+    construct instances.
+    """
+
+    text: str | None = None
+    binary: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if (self.text is None) == (self.binary is None):
+            raise ValueError("ChannelItem requires exactly one of `text` or `binary`")
+
+    @classmethod
+    def text_item(cls, value: str) -> "ChannelItem":
+        return cls(text=value, binary=None)
+
+    @classmethod
+    def binary_item(cls, value: bytes) -> "ChannelItem":
+        return cls(text=None, binary=value)
+
+    @property
+    def is_text(self) -> bool:
+        return self.text is not None
+
+    @property
+    def is_binary(self) -> bool:
+        return self.binary is not None
 
 
 def build_channel_url(

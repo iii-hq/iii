@@ -546,7 +546,7 @@ wheels = [
 
 [[package]]
 name = "iii-observability"
-version = "0.13.0.dev1"
+version = "0.16.0.dev3"
 source = { editable = "../observability" }
 dependencies = [
     { name = "httpx" },
@@ -572,7 +572,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "iii-sdk"
-version = "0.13.0.dev1"
+version = "0.16.0.dev3"
 source = { editable = "." }
 dependencies = [
     { name = "iii-observability" },

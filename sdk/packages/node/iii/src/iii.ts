@@ -390,21 +390,14 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `createChannel` helper in the
+   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Creates a streaming channel pair for worker-to-worker data transfer.
    * Returns a {@link Channel} with a local writer/reader and serializable refs
    * that can be passed as fields in invocation data to other functions.
-   *
-   * @param bufferSize - Optional buffer size for the channel (default: 64).
-   * @returns A {@link Channel} with `writer`, `reader`, and their serializable refs.
-   *
-   * @example
-   * ```typescript
-   * const channel = await iii.createChannel()
-   * channel.writer.stream.write(Buffer.from('hello'))
-   * channel.writer.close()
-   * ```
    */
-  createChannel = async (bufferSize?: number): Promise<import('./types').Channel> => {
+  __helpers_create_channel = async (bufferSize?: number): Promise<import('./types').Channel> => {
     const result = await this.trigger<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>(
       { function_id: 'engine::channels::create', payload: { buffer_size: bufferSize } },
     )
@@ -544,29 +537,16 @@ class Sdk implements ISdk {
   }
 
   /**
+   * @internal Implementation backing the `createStream` helper in the
+   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   *
    * Registers a custom stream implementation, overriding the engine default
-   * for the given stream name.
-   *
-   * Registers 5 of the 6 `IStream` methods (`get`, `set`, `delete`, `list`,
-   * `listGroups`). The `update` method is not registered -- atomic updates are
-   * handled by the engine's built-in stream update logic.
-   *
-   * @param streamName - Name of the stream.
-   * @param stream - Object implementing the {@link IStream} interface.
-   *
-   * @example
-   * ```typescript
-   * iii.createStream('my-stream', {
-   *   async get(input) { return null },
-   *   async set(input) { return null },
-   *   async delete(input) { return { old_value: undefined } },
-   *   async list(input) { return [] },
-   *   async listGroups(input) { return [] },
-   *   async update(input) { return null },
-   * })
-   * ```
+   * for the given stream name. Registers 5 of the 6 `IStream` methods
+   * (`get`, `set`, `delete`, `list`, `listGroups`). The `update` method is
+   * not registered -- atomic updates are handled by the engine's built-in
+   * stream update logic.
    */
-  createStream = <TData>(streamName: string, stream: IStream<TData>): void => {
+  __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
     this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))
     this.registerFunction(`stream::set(${streamName})`, stream.set.bind(stream))
     this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))

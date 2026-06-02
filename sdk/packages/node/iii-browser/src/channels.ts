@@ -1,11 +1,44 @@
 import type { StreamChannelRef } from './iii-types'
 
 /**
+ * Direction of a streaming channel endpoint. Mirrors the Rust SDK's
+ * `ChannelDirection` enum and matches the literal values used by
+ * {@link StreamChannelRef.direction}.
+ */
+export const ChannelDirection = {
+  Read: 'read',
+  Write: 'write',
+} as const
+export type ChannelDirection = (typeof ChannelDirection)[keyof typeof ChannelDirection]
+
+/**
+ * Discriminated runtime tag for an item observed on a streaming channel.
+ * Mirrors the Rust SDK's `ChannelItem` enum (`Text` / `Binary`). Carrier for
+ * factory + type-guard helpers so callers can construct and discriminate
+ * channel items without depending on Rust-specific shape.
+ */
+export type ChannelItem =
+  | { type: 'text'; value: string }
+  | { type: 'binary'; value: Uint8Array }
+
+export const ChannelItem = {
+  /** Construct a text channel item. */
+  Text(value: string): ChannelItem {
+    return { type: 'text', value }
+  },
+  /** Construct a binary channel item. */
+  Binary(value: Uint8Array): ChannelItem {
+    return { type: 'binary', value }
+  },
+} as const
+
+/**
  * Write end of a streaming channel. Uses native browser WebSocket.
  *
  * @example
  * ```typescript
- * const channel = await iii.createChannel()
+ * import { createChannel } from 'iii-browser-sdk/helpers'
+ * const channel = await createChannel(iii)
  *
  * channel.writer.sendMessage(JSON.stringify({ type: 'event', data: 'test' }))
  * channel.writer.sendBinary(new Uint8Array([1, 2, 3]))
@@ -117,7 +150,8 @@ export class ChannelWriter {
  *
  * @example
  * ```typescript
- * const channel = await iii.createChannel()
+ * import { createChannel } from 'iii-browser-sdk/helpers'
+ * const channel = await createChannel(iii)
  *
  * channel.reader.onMessage((msg) => console.log('Got:', msg))
  * channel.reader.onBinary((data) => console.log('Binary:', data.byteLength))

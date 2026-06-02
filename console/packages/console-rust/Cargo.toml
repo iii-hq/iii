@@ -1,6 +1,6 @@
 [package]
 name = "iii-console"
-version = "0.16.2-next.1"
+version = "0.18.0-next.1"
 edition = "2021"
 description = "Developer console for the iii engine"
 license = "Apache-2.0"
@@ -30,7 +30,6 @@ rust-embed = "8"
 clap = { version = "4", features = ["derive", "env"] }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # MIME type detection
@@ -42,9 +41,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
-
-[profile.release]
-strip = true
-lto = true
-codegen-units = 1
-opt-level = "z"

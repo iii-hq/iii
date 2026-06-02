@@ -1,3 +1,4 @@
+import { createStream } from 'iii-sdk/helpers'
 import { iii } from './iii'
 import type { Todo } from './types'
 
@@ -28,7 +29,7 @@ export const streams = {
 
 let todoState: Todo[] = []
 
-iii.createStream('todo', {
+createStream(iii, 'todo', {
   get: async input => todoState.find(todo => todo.id === input.item_id),
   set: async input => {
     const existingTodo = todoState.find(todo => todo.id === input.item_id)

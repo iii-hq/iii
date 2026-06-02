@@ -89,7 +89,7 @@ want a snapshot or a live subscription:
 
 <Note>
   These are the high-level call surfaces. For the wire-level shapes, see [Engine
-  protocol](/sdk-reference/engine-sdk#engine-discovery-functions).
+  protocol](../sdk-reference/engine-sdk#engine-discovery-functions).
 </Note>
 
 ## Worker manifest
@@ -112,16 +112,16 @@ The manifest is metadata about _starting_ the Worker. Once the Worker is running
 connection to the Engine and the function registrations are what matter. A Worker started by
 `iii worker add` and a Worker started by hand in a container behave identically to the Engine.
 
-For the full manifest field schema, see [Using iii / Workers](/using-iii/workers).
+For the full manifest field schema, see [Using iii / Workers](../using-iii/workers).
 
 ## What a worker contributes
 
 Once connected, a worker exposes:
 
 - Functions, callable by `function_id` from anywhere in the system (see
-  [Using iii / Functions](/using-iii/functions)).
+  [Using iii / Functions](../using-iii/functions)).
 - Triggers it advertises, which other workers can bind their functions to (see
-  [Using iii / Triggers](/using-iii/triggers)).
+  [Using iii / Triggers](../using-iii/triggers)).
 
 The SDK calls a worker uses to register these are language-specific and documented in each
 language's Worker Docs authoring guide.

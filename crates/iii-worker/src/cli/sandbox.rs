@@ -467,7 +467,7 @@ pub async fn handle_upload(
     let iii = connect(port);
 
     // Caller creates the channel; worker reads from the reader half.
-    let channel = match iii.create_channel(None).await {
+    let channel = match iii_sdk::helpers::create_channel(&iii, None).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: create_channel: {e}");

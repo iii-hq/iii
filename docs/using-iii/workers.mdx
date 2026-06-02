@@ -7,7 +7,7 @@ type: "reference"
 
 {/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
 
-{/* TODO: Add back once worker init is merged. <Note> This page covers using existing workers. For creating new workers (`iii worker init`), registering functions and triggers, and building or publishing worker images, see [Creating Workers / Workers](/creating-workers/workers). </Note> */}
+{/* TODO: Add back once worker init is merged. <Note> This page covers using existing workers. For creating new workers (`iii worker init`), registering functions and triggers, and building or publishing worker images, see [Creating Workers / Workers](../creating-workers/workers). </Note> */}
 
 ## Workers are sort of like services
 
@@ -30,7 +30,7 @@ being callable until it reconnects.
 
 <Note>
   For the SDK calls that establish the connection from worker code, see [Creating Workers /
-  Workers](/creating-workers/workers#connecting-to-the-engine).
+  Workers](../creating-workers/workers#connecting-to-the-engine).
 </Note>
 
 ## Managing workers
@@ -48,9 +48,9 @@ The registry contains many workers that encapsulate common services. See
 ### Adding a worker
 
 <Note>
-  You need iii [installed](/install) and [running](/using-iii/engine) before adding a worker. To
+  You need iii [installed](../install) and [running](./engine) before adding a worker. To
   spin up a temporary iii instance for testing, run `iii --use-default-config` (see [Default
-  configuration](/using-iii/engine#default-configuration)).
+  configuration](./engine#default-configuration)).
 </Note>
 
 `iii worker add <name>` installs a worker into your project:
@@ -91,7 +91,7 @@ iii worker restart <name>      # stop then start
 
 <Note>
   To call functions inside running workers (directly with `worker.trigger` / `iii trigger`, or by
-  binding them to events with optional condition gates), see [Triggers](/using-iii/triggers).
+  binding them to events with optional condition gates), see [Triggers](./triggers).
 </Note>
 
 ### Inspecting a worker
@@ -189,4 +189,4 @@ to the latest permitted versions and writes them back to `iii.lock`.
 
 Creating a new worker, registering functions and triggers in worker code, and building or publishing
 a worker image are out of scope for this page. See
-[Creating Workers / Workers](/creating-workers/workers).
+[Creating Workers / Workers](../creating-workers/workers).

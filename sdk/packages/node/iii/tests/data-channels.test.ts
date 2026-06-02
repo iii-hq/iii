@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChannelReader, ChannelWriter } from '../src'
+import { createChannel } from '../src/helpers'
 import { iii, sleep } from './utils'
 
 describe('Data Channels', () => {
@@ -36,7 +37,7 @@ describe('Data Channels', () => {
     const sender = iii.registerFunction(
       'test.data.sender',
       async (input: { records: Record[] }) => {
-        const channel = await iii.createChannel()
+        const channel = await createChannel(iii)
 
         const writePromise = new Promise<void>((resolve, reject) => {
           const payload = Buffer.from(JSON.stringify(input.records))
@@ -129,8 +130,8 @@ describe('Data Channels', () => {
     const coordinator = iii.registerFunction(
       'test.stream.coordinator',
       async (input: { text: string; chunkSize: number }) => {
-        const inputChannel = await iii.createChannel()
-        const outputChannel = await iii.createChannel()
+        const inputChannel = await createChannel(iii)
+        const outputChannel = await createChannel(iii)
 
         const messages: unknown[] = []
         outputChannel.reader.onMessage(msg => {

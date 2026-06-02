@@ -34,7 +34,7 @@ The root URL redirects to the **Workers** page. The sidebar includes Workers, Fu
 
 The Workers page lists every worker process currently connected to the engine, with live metrics (memory, CPU, event-loop lag), connection time, active invocations, and registered functions.
 
-<img src="/0-11-0/assets/console-workers-list.png" alt="iii Console Workers page showing connected workers grouped by runtime with status, PID, IP, and active invocation counts" />
+<img src="../assets/console-workers-list.png" alt="iii Console Workers page showing connected workers grouped by runtime with status, PID, IP, and active invocation counts" />
 
 | Column     | Description                                                             |
 |------------|-------------------------------------------------------------------------|
@@ -49,7 +49,7 @@ The Workers page lists every worker process currently connected to the engine, w
 
 The worker detail panel shows full metadata, telemetry (language, project, framework), live metrics, and the list of functions the worker has registered.
 
-<img src="/0-11-0/assets/console-workers-detail.png" alt="iii Console Workers page with a selected worker detail panel showing runtime, version, OS, metrics, and registered functions" />
+<img src="../assets/console-workers-detail.png" alt="iii Console Workers page with a selected worker detail panel showing runtime, version, OS, metrics, and registered functions" />
 
 <Info title="Isolation badge">
   Workers launched via `iii worker add ./path` or `iii worker add <image>` run inside libkrun microVMs. The libkrun launcher builds the VM boot environment and injects `III_ISOLATION=libkrun` at VM boot time, so you'll see a purple `LIBKRUN` badge next to the runtime badge. The badge is descriptive (what the worker reports about its environment), not an attestation — a direct SDK connection can self-set `III_ISOLATION=docker` (or anything else) before starting. Workers that don't set the variable show no isolation badge.
@@ -59,7 +59,7 @@ The worker detail panel shows full metadata, telemetry (language, project, frame
 
 The Functions page lists every function registered with the iii engine and lets you invoke any of them directly with custom JSON input.
 
-<img src="/0-11-0/assets/console-functions-invoke.png" alt="iii Console Functions page showing grouped functions and the invoke panel for a selected function" />
+<img src="../assets/console-functions-invoke.png" alt="iii Console Functions page showing grouped functions and the invoke panel for a selected function" />
 
 All registered functions are displayed with their metadata:
 
@@ -77,7 +77,7 @@ Use the **search bar** at the top to filter functions by name.
 The detail panel includes a JSON editor for invoking functions directly. Enter a payload, click **Invoke**, and view the result inline. The console sends requests via `POST /_console/invoke`.
 
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#invoke-a-function) for step-by-step instructions.
+  See [Use the Console](../how-to/use-console#invoke-a-function) for step-by-step instructions.
 </Info>
 
 <Info title="Function must be registered">
@@ -88,7 +88,7 @@ The detail panel includes a JSON editor for invoking functions directly. Enter a
 
 The Triggers page shows every trigger registered with the engine and provides interactive tools to test each trigger type. Triggers are grouped by kind (`http`, `cron`, `event`, `state`) with a total count badge and per-type filter tabs.
 
-<img src="/0-11-0/assets/console-triggers-http-test.png" alt="iii Console Triggers page showing HTTP triggers and the request builder for testing a selected endpoint" />
+<img src="../assets/console-triggers-http-test.png" alt="iii Console Triggers page showing HTTP triggers and the request builder for testing a selected endpoint" />
 
 | Column       | Description                                              |
 |--------------|----------------------------------------------------------|
@@ -108,18 +108,18 @@ The console provides interactive testing tools for each trigger type:
 | Event | Event emitter with pre-filled event name and JSON payload input |
 | State | Update/delete entries in **States** to fire `state:updated` / `state:deleted` triggers |
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#test-an-http-trigger) for step-by-step instructions on testing each trigger type.
+  See [Use the Console](../how-to/use-console#test-an-http-trigger) for step-by-step instructions on testing each trigger type.
 </Info>
 
 <Info title="Trigger types">
-  The available trigger types depend on which workers are loaded in your engine configuration. See [Trigger Types](/0-11-0/architecture/trigger-types) and [Workers](/0-11-0/workers) for the full list.
+  The available trigger types depend on which workers are loaded in your engine configuration. See [Trigger Types](../architecture/trigger-types) and [Workers](../workers) for the full list.
 </Info>
 
 ## States
 
 The States page provides a browser for the engine's key-value state store. You can view, create, edit, and delete state entries organized by scope. The layout is divided into three panels: a group list on the left, an items table in the center, and a detail sidebar on the right.
 
-<img src="/0-11-0/assets/console-states-detail.png" alt="iii Console States page showing state groups, key-value items, and JSON value details for a selected item" />
+<img src="../assets/console-states-detail.png" alt="iii Console States page showing state groups, key-value items, and JSON value details for a selected item" />
 
 The state browser displays a two-level hierarchy:
 
@@ -139,11 +139,11 @@ The console supports full CRUD operations on state entries:
 | Delete | Fires `state:deleted` triggers if registered |
 
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#manage-state-entries) for step-by-step instructions.
+  See [Use the Console](../how-to/use-console#manage-state-entries) for step-by-step instructions.
 </Info>
 
 <Info title="State persistence">
-  State persistence depends on your engine's State worker configuration. With `in_memory` storage, state is lost on engine restart. With `file_based` or `RedisAdapter`, state persists across restarts. See [State Worker](/0-11-0/workers/iii-state) for configuration details.
+  State persistence depends on your engine's State worker configuration. With `in_memory` storage, state is lost on engine restart. With `file_based` or `RedisAdapter`, state persists across restarts. See [State Worker](../workers/iii-state) for configuration details.
 </Info>
 
 Use the search bar to filter items by key name. For groups with many items, the browser supports pagination.
@@ -161,14 +161,14 @@ The Streams page is a live WebSocket monitor that captures messages flowing thro
 Use the filter toggle to show or hide system streams. Streams update in real time via WebSocket.
 
 <Info title="Stream worker required">
-  Streams are provided by the Stream worker. Make sure `iii-stream` is included in your engine configuration. See [Stream Worker](/0-11-0/workers/iii-stream) for details.
+  Streams are provided by the Stream worker. Make sure `iii-stream` is included in your engine configuration. See [Stream Worker](../workers/iii-stream) for details.
 </Info>
 
 ## Queues
 
 The Queues page lists durable queue topics, subscriber counts, queued message counts, in-flight work, retry counts, and dead-letter activity.
 
-<img src="/0-11-0/assets/console-queues-overview.png" alt="iii Console Queues page showing durable topics, subscriber counts, dead-letter counts, and the selected topic overview panel" />
+<img src="../assets/console-queues-overview.png" alt="iii Console Queues page showing durable topics, subscriber counts, dead-letter counts, and the selected topic overview panel" />
 
 | Column      | Description                                      |
 |-------------|--------------------------------------------------|
@@ -187,17 +187,17 @@ The topic detail panel has two tabs:
 | Dead Letters | Failed messages with retry and delete options |
 
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#send-a-test-message-to-a-queue) for step-by-step instructions on testing queues and managing dead letters.
+  See [Use the Console](../how-to/use-console#send-a-test-message-to-a-queue) for step-by-step instructions on testing queues and managing dead letters.
 </Info>
 
 ## Traces
 
 The Traces page provides full OpenTelemetry trace visualization with multiple view modes, advanced filtering, and detailed span inspection.
 
-<img src="/0-11-0/assets/console-traces-waterfall.png" alt="iii Console Traces page showing a waterfall chart for a selected trace and span timing details" />
+<img src="../assets/console-traces-waterfall.png" alt="iii Console Traces page showing a waterfall chart for a selected trace and span timing details" />
 
 <Info title="Observability worker required">
-  Trace collection requires the Observability worker with `exporter` set to `memory` or `both`. See [Observability Worker](/0-11-0/workers/iii-observability) for configuration.
+  Trace collection requires the Observability worker with `exporter` set to `memory` or `both`. See [Observability Worker](../workers/iii-observability) for configuration.
 </Info>
 
 ### Trace List
@@ -224,11 +224,11 @@ The trace detail view provides five visualization modes:
 | Trace Map | Topology graph showing service communication via parent-child span relationships. |
 | Flow | Node-based execution flow showing parent-child span relationships. |
 
-<img src="/0-11-0/assets/console-traces-flame-graph.png" alt="iii Console Traces page showing the flame graph view for a selected trace" />
+<img src="../assets/console-traces-flame-graph.png" alt="iii Console Traces page showing the flame graph view for a selected trace" />
 
-<img src="/0-11-0/assets/console-traces-map.png" alt="iii Console Traces page showing a service trace map with connected services for a selected trace" />
+<img src="../assets/console-traces-map.png" alt="iii Console Traces page showing a service trace map with connected services for a selected trace" />
 
-<img src="/0-11-0/assets/console-traces-flow.png" alt="iii Console Traces page showing the flow graph view for a selected trace" />
+<img src="../assets/console-traces-flow.png" alt="iii Console Traces page showing the flow graph view for a selected trace" />
 
 ### Span Details
 
@@ -257,17 +257,17 @@ The span detail panel includes the following tabs:
 Multiple filters are combined with AND logic. Pagination controls at the bottom allow browsing large result sets.
 
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#inspect-a-trace) for step-by-step instructions on inspecting traces and spans.
+  See [Use the Console](../how-to/use-console#inspect-a-trace) for step-by-step instructions on inspecting traces and spans.
 </Info>
 
 ## Logs
 
 The Logs page provides a viewer for structured OpenTelemetry logs collected by the engine. Logs are displayed in reverse chronological order. Each entry shows a timestamp, severity level, service name, trace/span context, and message. A severity filter toggle, full-text search, and time-range controls let you zero in on specific log entries. The source breakdown at the bottom shows which services are contributing the most log volume.
 
-<img src="/0-11-0/assets/console-logs-detail.png" alt="iii Console Logs page showing structured log rows and a selected log detail panel with context data" />
+<img src="../assets/console-logs-detail.png" alt="iii Console Logs page showing structured log rows and a selected log detail panel with context data" />
 
 <Info title="Observability worker required">
-  Log collection requires the Observability worker with `logs_enabled: true`. See [Observability Worker](/0-11-0/workers/iii-observability) for configuration.
+  Log collection requires the Observability worker with `logs_enabled: true`. See [Observability Worker](../workers/iii-observability) for configuration.
 </Info>
 
 <Info title="Console vs console output">
@@ -340,14 +340,14 @@ Edges show the data flow direction between components — from triggers to the f
 The graph uses auto-layout (Dagre) and supports pan, zoom, and node inspection. Layout configuration is saved to the engine's state store and restored on next visit.
 
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#navigate-the-flow-graph) for navigation instructions.
+  See [Use the Console](../how-to/use-console#navigate-the-flow-graph) for navigation instructions.
 </Info>
 
 ## Configuration
 
 The iii Console is configured via CLI flags and environment variables. All settings have sensible defaults for local development.
 
-<img src="/0-11-0/assets/console-config-overview.png" alt="iii Console Config page showing engine endpoints, trigger types, active workers, trigger handlers, and worker pools" />
+<img src="../assets/console-config-overview.png" alt="iii Console Config page showing engine endpoints, trigger types, active workers, trigger handlers, and worker pools" />
 
 ### CLI Flags
 

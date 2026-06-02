@@ -237,19 +237,19 @@
             "groups": [
               {
                 "group": "Changelog",
-                "pages": ["next/changelog/index"]
+                "pages": ["changelog/index"]
               },
               {
                 "group": "0.16.0",
-                "pages": ["next/changelog/0-16-0/align-rust-register-function-with-signature"]
+                "pages": ["changelog/0-16-0/align-rust-register-function-with-signature"]
               },
               {
                 "group": "0.11.0",
                 "pages": [
-                  "next/changelog/0-11-0/everything-is-a-worker",
-                  "next/changelog/0-11-0/migrating-from-motia-js",
-                  "next/changelog/0-11-0/migrating-from-motia-py",
-                  "next/changelog/0-11-0/migrated-examples"
+                  "changelog/0-11-0/everything-is-a-worker",
+                  "changelog/0-11-0/migrating-from-motia-js",
+                  "changelog/0-11-0/migrating-from-motia-py",
+                  "changelog/0-11-0/migrated-examples"
                 ]
               }
             ]
@@ -326,15 +326,15 @@
             "groups": [
               {
                 "group": "Changelog",
-                "pages": ["0-13-0/changelog/index"]
+                "pages": ["changelog/index"]
               },
               {
                 "group": "0.11.0",
                 "pages": [
-                  "0-13-0/changelog/0-11-0/everything-is-a-worker",
-                  "0-13-0/changelog/0-11-0/migrating-from-motia-js",
-                  "0-13-0/changelog/0-11-0/migrating-from-motia-py",
-                  "0-13-0/changelog/0-11-0/migrated-examples"
+                  "changelog/0-11-0/everything-is-a-worker",
+                  "changelog/0-11-0/migrating-from-motia-js",
+                  "changelog/0-11-0/migrating-from-motia-py",
+                  "changelog/0-11-0/migrated-examples"
                 ]
               }
             ]
@@ -411,15 +411,15 @@
             "groups": [
               {
                 "group": "Changelog",
-                "pages": ["0-12-0/changelog/index"]
+                "pages": ["changelog/index"]
               },
               {
                 "group": "0.11.0",
                 "pages": [
-                  "0-12-0/changelog/0-11-0/everything-is-a-worker",
-                  "0-12-0/changelog/0-11-0/migrating-from-motia-js",
-                  "0-12-0/changelog/0-11-0/migrating-from-motia-py",
-                  "0-12-0/changelog/0-11-0/migrated-examples"
+                  "changelog/0-11-0/everything-is-a-worker",
+                  "changelog/0-11-0/migrating-from-motia-js",
+                  "changelog/0-11-0/migrating-from-motia-py",
+                  "changelog/0-11-0/migrated-examples"
                 ]
               }
             ]
@@ -585,15 +585,15 @@
             "groups": [
               {
                 "group": "Changelog",
-                "pages": ["0-11-0/changelog"]
+                "pages": ["changelog"]
               },
               {
                 "group": "0.11.0",
                 "pages": [
-                  "0-11-0/changelog/0-11-0/everything-is-a-worker",
-                  "0-11-0/changelog/0-11-0/migrating-from-motia-js",
-                  "0-11-0/changelog/0-11-0/migrating-from-motia-py",
-                  "0-11-0/changelog/0-11-0/migrated-examples"
+                  "changelog/0-11-0/everything-is-a-worker",
+                  "changelog/0-11-0/migrating-from-motia-js",
+                  "changelog/0-11-0/migrating-from-motia-py",
+                  "changelog/0-11-0/migrated-examples"
                 ]
               }
             ]

@@ -821,7 +821,12 @@ impl ConfigurableWorker for QueueWorker {
         &REGISTRY
     }
 
-    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+    fn build(engine: Arc<Engine>, mut config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        // Provision the built-in `default` queue so enqueues to it work with no
+        // user config. Done here (the single construction site) so both the
+        // consumer spawn in `start_background_tasks` and the lookup in
+        // `enqueue_to_function_queue` see it.
+        config.ensure_default_queue();
         Self {
             engine,
             _config: config,
@@ -1525,6 +1530,54 @@ mod tests {
         let config = super::super::config::QueueModuleConfig::default();
         let module = QueueWorker::build(engine.clone(), config, adapter);
         assert_eq!(Worker::name(&module), "QueueModule");
+    }
+
+    #[test]
+    fn build_provisions_builtin_default_queue() {
+        use super::super::config::{DEFAULT_QUEUE_NAME, QueueModuleConfig};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let adapter: Arc<dyn QueueAdapter> = Arc::new(MockQueueAdapter::new());
+        // Empty config — the operator declared no queues.
+        let module = QueueWorker::build(engine, QueueModuleConfig::default(), adapter);
+        assert!(
+            module
+                ._config
+                .queue_configs
+                .contains_key(DEFAULT_QUEUE_NAME),
+            "build() must provision the built-in default queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_to_default_queue_succeeds_without_config() {
+        use super::super::config::{DEFAULT_QUEUE_NAME, QueueModuleConfig};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let adapter = Arc::new(MockQueueAdapter::new());
+        // A worker built from empty config — exactly what a user gets when they
+        // never touch `queue_configs` in config.yaml.
+        let module = QueueWorker::build(engine, QueueModuleConfig::default(), adapter.clone());
+
+        let result = module
+            .enqueue_to_function_queue(
+                DEFAULT_QUEUE_NAME,
+                "fn-1",
+                json!({"key": "value"}),
+                "test-msg-id",
+                None,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "enqueue to the built-in default queue should succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(adapter.enqueue_to_queue_count.load(Ordering::SeqCst), 1);
     }
 
     // =========================================================================

@@ -278,7 +278,7 @@ pub struct SetResult {
     pub new_value: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,

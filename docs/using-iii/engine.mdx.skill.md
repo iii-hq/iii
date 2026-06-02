@@ -44,13 +44,13 @@ Per-worker config schemas live on each worker's Worker Docs page. See
   The engine reads `config.yaml` and launches the worker installations on disk; it does not read
   `iii.lock`. The lockfile is a worker-installation concern, written and consumed by `iii worker
   sync` / `update` / `verify` to make installs reproducible. See [Workers / The lockfile
-  (iii.lock)](/using-iii/workers#the-lockfile-iii-lock) for the full story.
+  (iii.lock)](./workers#the-lockfile-iii-lock) for the full story.
 </Note>
 
 <Note>
   Workers do not need to be running alongside iii; configuring them in config.yaml is a convenience. A worker
   can be deployed anywhere and only needs a connection string to the iii instance. See
-  [Creating Workers / Connecting to the engine](/creating-workers/workers#connecting-to-the-engine) for more information.
+  [Creating Workers / Connecting to the engine](../creating-workers/workers#connecting-to-the-engine) for more information.
 </Note>
 
 ## Environment variable expansion

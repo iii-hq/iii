@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { createStream } from '../src/helpers'
 import { iii, sleep } from './utils'
 import type {
   StreamSetInput,
@@ -462,7 +463,7 @@ describe('Stream Operations', () => {
       const testStreamName = `test-stream-${Date.now()}`
       const state: Map<string, TestData> = new Map()
 
-      iii.createStream(testStreamName, {
+      createStream(iii, testStreamName, {
         get: async input => state.get(`${input.group_id}::${input.item_id}`),
         set: async input => {
           const key = `${input.group_id}::${input.item_id}`

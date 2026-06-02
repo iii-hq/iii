@@ -1,6 +1,6 @@
 [package]
 name = "iii-observability"
-version = "0.16.2-next.1"
+version = "0.18.0-next.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -16,10 +16,7 @@ name = "iii_observability"
 path = "src/lib.rs"
 
 [dependencies]
-async-trait = "0.1"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
@@ -28,15 +25,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 opentelemetry = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs", "metrics", "trace"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "trace", "metrics", "logs", "with-serde"] }
-prost = { version = "0.14" }
 sysinfo = { version = "0.38" }
 
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 opentelemetry-http = { version = "0.31", features = ["reqwest"] }
 
 [dev-dependencies]
-ctor = "0.6.3"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "trace", "testing"] }
 serial_test = "3"
 tokio = { version = "1", features = ["test-util"] }

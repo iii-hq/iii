@@ -4,8 +4,9 @@ import asyncio
 import json
 import time
 
-from iii.iii import III
 from iii.channels import ChannelReader, ChannelWriter
+from iii.helpers import create_channel_async
+from iii.iii import III
 
 
 def test_stream_data_from_sender_to_processor(iii_client: III):
@@ -35,7 +36,7 @@ def test_stream_data_from_sender_to_processor(iii_client: III):
 
     async def sender_handler(input_data):
         records = input_data["records"]
-        channel = await iii_client.create_channel_async()
+        channel = await create_channel_async(iii_client)
 
         payload = json.dumps(records).encode("utf-8")
         await channel.writer.write(payload)
@@ -137,8 +138,8 @@ def test_bidirectional_streaming(iii_client: III):
         text = input_data["text"]
         chunk_size = input_data["chunkSize"]
 
-        input_channel = await iii_client.create_channel_async()
-        output_channel = await iii_client.create_channel_async()
+        input_channel = await create_channel_async(iii_client)
+        output_channel = await create_channel_async(iii_client)
 
         messages = []
         output_channel.reader.on_message(lambda msg: messages.append(json.loads(msg)))
