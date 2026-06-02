@@ -9,8 +9,8 @@ needs a human's go-ahead.
 ## Add the workers
 
 A browser worker connects through `iii-worker-manager`'s RBAC-gated listener, separate from the
-trusted port your local workers use. You also need an `auth` worker to gate those connections, so
-scaffold it the same way you scaffolded `link` in Chapter 1:
+trusted port your local workers use. We'll encapsulate the authentication logic in an `auth` worker
+to gate those connections, so scaffold it the same way you scaffolded `link` in Chapter 1:
 
 ```bash
 iii worker add iii-worker-manager
@@ -122,14 +122,28 @@ worker.registerFunction("link::request_delete", async (payload: { code: string }
 
 ## Scaffold the frontend
 
+### Initialize a Vite project
+
 Create a Vite + React + TypeScript app under `linkly/frontend/`:
 
 ```bash
 npm create vite@latest frontend -- --template react-ts
+```
+
+<Note>
+  Vite may ask you to "Install with npm and start now", answer no here as we first need to install
+  `iii-browser-sdk`
+</Note>
+
+Now install the dependencies:
+
+```bash
 cd frontend
 npm install
 npm install iii-browser-sdk
 ```
+
+### Setup a client-side worker
 
 Wire the SDK in `src/iii.ts`:
 
@@ -141,8 +155,15 @@ const TOKEN = import.meta.env.VITE_LINKLY_TOKEN ?? "dev-token";
 export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(TOKEN)}`);
 ```
 
-Build `src/App.tsx` in pieces. First the imports and types: `Click` is one row from the `clicks`
-table, and `StreamEvent` is the wrapper `iii-stream` delivers to subscribers.
+### Create the application
+
+We'll build `src/App.tsx` in pieces. You can replace the template's `src/App.tsx` with the code
+samples below.
+
+#### Add imports
+
+First the imports and types: `Click` is one row from the `clicks` table, and `StreamEvent` is the
+wrapper `iii-stream` delivers to subscribers.
 
 ```tsx src/App.tsx
 import { useEffect, useState } from "react";
@@ -154,11 +175,13 @@ type StreamEvent = {
 };
 ```
 
+#### Add client-side state
+
 Open the component and declare its state: the form fields, the newly created link, and the live
 click counter.
 
 ```tsx src/App.tsx
-export function App() {
+export default function App() {
   const [url, setUrl] = useState('')
   const [code, setCode] = useState('')
   const [created, setCreated] = useState<{ code: string; url: string } | null>(null)
@@ -166,9 +189,11 @@ export function App() {
   const [latest, setLatest] = useState<Click | null>(null)
 ```
 
-Subscribe to the `clicks` stream. The `useEffect` registers a function the browser exposes
-(`ui::on_click`) and a `stream` trigger that routes every new row to it; the cleanup unregisters
-both on unmount:
+#### Subscribe to `clicks`
+
+Subscribe to the `clicks` stream we setup in Chapter 5. The `useEffect` registers a function the
+browser exposes (`ui::on_click`) and a `stream` trigger that routes every new row to it; the cleanup
+unregisters both on unmount:
 
 ```tsx src/App.tsx
 useEffect(() => {
@@ -189,8 +214,16 @@ useEffect(() => {
 }, []);
 ```
 
+#### Create a function
+
 Register the function the server calls back when it needs human confirmation. It shows a native
 prompt and returns the user's decision:
+
+<Note>
+  This function registers and runs the exact same as other functions did in previous chapters.
+  Except for managing auth and permissions there is no functional difference between client side and
+  server side.
+</Note>
 
 ```tsx src/App.tsx
 useEffect(() => {
@@ -205,7 +238,14 @@ useEffect(() => {
 }, []);
 ```
 
-Submit the form by calling `link::create` directly. No `fetch`, no REST. The browser is on the bus.
+#### Create links directly, no gateways
+
+Submit the form by calling `link::create` directly.
+
+<Note>
+  There is no `fetch` or REST API in the way here, the client worker in the browser works the exact
+  same as every other worker.
+</Note>
 
 ```tsx src/App.tsx
 async function onSubmit(e: React.FormEvent) {
@@ -220,7 +260,9 @@ async function onSubmit(e: React.FormEvent) {
 }
 ```
 
-Finally, the render: a shorten form, the last-created link, and the live click counter.
+#### Create the UI
+
+Finally, the UI: a link shortener form, the last-created link, and the live streaming click counter.
 
 ```tsx src/App.tsx
   return (
@@ -252,10 +294,10 @@ Finally, the render: a shorten form, the last-created link, and the live click c
 
 ## See it work
 
-In one terminal the engine keeps running; in another, start the UI:
+Start the UI:
 
 ```bash
-cd frontend && npm run dev
+npm run dev
 ```
 
 Open the Vite URL (typically `http://localhost:5173`). Shorten a link from the form, then visit
