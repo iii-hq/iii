@@ -306,10 +306,23 @@ Start the UI:
 npm run dev
 ```
 
-Open the Vite URL (typically `http://localhost:5173`). Shorten a link from the form, then visit
-`http://localhost:3111/s/<code>` a few times. The "Live clicks" counter goes up in real time, with
-no HTTP polling. Run `iii trigger link::request_delete code=<code>` from a third terminal; the
-browser shows a confirm prompt, and the server deletes only after you click OK.
+Open your browser, Vite typically hosts local websites at
+[http://localhost:5173](http://localhost:5173).
+
+### Shorten a link, then see the visits streamed in realtime
+
+Shorten a link from the form, then visit `http://localhost:3111/s/<code>` a few times. You'll see
+the "Live clicks" counter goes up in real time.
+
+### Request user confirmation directly from the backend
+
+Then run a function in the browser via iii by runnning:
+
+```bash
+iii trigger link::request_delete code=<code>
+```
+
+The browser will show a confirm prompt, and the server deletes only after you click OK.
 
 The same browser tab is now a iii worker. The next chapter lets customers attach per-link logic that
 runs in a sandbox.
