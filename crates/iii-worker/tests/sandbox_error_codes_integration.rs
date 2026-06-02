@@ -78,7 +78,10 @@ fn representative(code_str: &str) -> Option<SandboxError> {
 fn fixture_version_is_supported() {
     let f = load_fixture();
     assert_eq!(f.version, 1, "test asserts against fixture version 1");
-    assert_eq!(f.docs_base, "https://docs.iii.dev/errors/sandbox/");
+    assert_eq!(
+        f.docs_base,
+        "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#"
+    );
 }
 
 #[test]
@@ -113,6 +116,13 @@ fn every_fixture_row_matches_rust_to_payload() {
             docs_url.ends_with(&row.code),
             "docs_url {docs_url} must end with code {}",
             row.code
+        );
+        // docs_base in the fixture must reproduce the runtime docs_url so the
+        // fixture cannot drift from errors.rs `DOCS_BASE` again.
+        assert_eq!(
+            docs_url,
+            format!("{}{}", f.docs_base, row.code),
+            "docs_url must equal docs_base + code; update the fixture docs_base to match errors.rs DOCS_BASE"
         );
         assert!(
             !row.summary.is_empty(),

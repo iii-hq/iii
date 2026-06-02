@@ -1,7 +1,7 @@
 {
   "_comment": "Wire ABI for sandbox::* error codes. Pinned by sandbox_error_codes_integration.rs (Rust) and consumed by SDK contract tests in Node + Python. Adding a new SandboxError variant requires adding a row here. Changing a `code` is a breaking SDK change.",
   "version": 1,
-  "docs_base": "https://docs.iii.dev/errors/sandbox/",
+  "docs_base": "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#",
   "codes": [
     {"code": "S001", "type": "validation", "retryable": false, "rust_variant": "InvalidRequest", "summary": "request payload failed validation (e.g. missing/malformed sandbox_id)"},
     {"code": "S002", "type": "validation", "retryable": false, "rust_variant": "NotFound", "summary": "sandbox uuid not found in registry"},

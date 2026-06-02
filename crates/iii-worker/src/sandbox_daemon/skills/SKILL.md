@@ -25,7 +25,8 @@ Prerequisites: the worker is enabled by adding `iii-sandbox` to `config.yaml`, a
 
 - Not for long-lived services or durable state — the overlay is wiped on stop. Use a regular worker for daemons and `iii-state` for persistence.
 - `image` is a catalog name (`node`, `python`, or an operator-registered custom image), never an OCI ref — unknown names return `S100`; discover the live set with `sandbox::catalog::list`.
-- `sandbox::exec` runs one command at a time per sandbox (serialized, `S003` on overlap) and is not a shell — for pipes, `&&`, redirects, or variable expansion use `sandbox::run` with `lang: "shell"` or wrap in `sh -c`.
+- `sandbox::exec` runs one command at a time per sandbox (serialized) — a concurrent call returns `S003`, and waiting does NOT free the slot when the in-flight command is a long-running or foreground process (a server, `npm install`, a build). Run those detached (`nohup … &`, or `sandbox::run` with `lang: "shell"`), or recover by replacing the sandbox with `sandbox::stop` then `sandbox::create`.
+- `sandbox::exec` is not a shell — for pipes, `&&`, redirects, or variable expansion use `sandbox::run` with `lang: "shell"` or wrap in `sh -c`.
 - Requires host virtualization; boot failures on unsupported hosts surface as `S300`.
 
 ## Functions
@@ -36,7 +37,7 @@ Prerequisites: the worker is enabled by adding `iii-sandbox` to `config.yaml`, a
 - `sandbox::stop` — destroy a sandbox and reclaim its resources.
 - `sandbox::list` — enumerate sandboxes currently running on this engine.
 - `sandbox::catalog::list` — list bootable image names (bundled presets plus operator custom images).
-- `sandbox::fs::write` — write a file into a sandbox (UTF-8 string or base64 binary).
+- `sandbox::fs::write` — write a file into a sandbox; the body is exactly one of `content` (UTF-8 string), `content_b64` (base64 binary), or `content` as a `StreamChannelRef` for streaming uploads.
 - `sandbox::fs::read` — read a file out of a sandbox.
 - `sandbox::fs::ls` — list the entries of a directory.
 - `sandbox::fs::stat` — read metadata for a single path.

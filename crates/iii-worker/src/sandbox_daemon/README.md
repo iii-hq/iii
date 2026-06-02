@@ -1,6 +1,6 @@
 # iii-sandbox
 
-Spawn ephemeral microVMs from worker code or the terminal. The daemon registers 14 `sandbox::*` triggers — 4 lifecycle ops plus 10 filesystem ops — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
+Spawn ephemeral microVMs from worker code or the terminal. The daemon registers 16 `sandbox::*` triggers — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
 
 > **Implementation:** `crates/iii-worker/src/sandbox_daemon/`. Ships inside the `iii-worker` binary; the engine starts the daemon as `iii-worker sandbox-daemon` when `iii-sandbox` appears in `config.yaml`.
 
@@ -82,8 +82,12 @@ const detail = JSON.parse(err.message);
 // detail.fix_note  — one-liner explaining why fix is null
 ```
 
-If `detail.fix` is non-null, your next call is `await fn(detail.fix)`. The error IS
-the recovery path.
+If `detail.fix` is non-null, **merge** its fields into your original request and
+resubmit with `await fn(mergedRequest)` — keep your original fields and let
+`detail.fix` override only what it names; do not call `fn(detail.fix)` on its own.
+For example `FsParentNotFound` returns `fix: { "parents": true }`, which you merge
+into the original `sandbox::fs::write` / `sandbox::fs::mkdir` request rather than
+replacing it. `detail.fix_note` spells out the merge. The error IS the recovery path.
 
 ### Error codes (anchors below)
 
@@ -130,7 +134,7 @@ Hosts without hardware virtualization will fail `sandbox::create` with error `S3
 
 ## Triggers
 
-All 14 triggers are dispatched via `iii.trigger({ function_id, payload, timeoutMs })`. Recommended `timeoutMs` is in each table; lifecycle ops have meaningful timeout pressure, filesystem ops generally don't (the daemon is local).
+All 16 triggers are dispatched via `iii.trigger({ function_id, payload, timeoutMs })`. Recommended `timeoutMs` is in each table; lifecycle ops have meaningful timeout pressure, filesystem ops generally don't (the daemon is local).
 
 ### Lifecycle (4)
 
@@ -180,6 +184,33 @@ Tear down a sandbox and reclaim resources.
 | `wait` | boolean | `false` | Block until the VM process has exited. |
 
 Returns: `{ sandbox_id, stopped }`.
+
+### One-shot (1)
+
+#### `sandbox::run`
+
+Boot a VM, run a code snippet, capture output, and auto-stop — in a single call. The fast path for agents; see the [Agent Quickstart](#one-call-workflow-recommended-sandboxrun) above for the full walkthrough. Recommended `timeoutMs`: `300_000`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `image` | string | required | Preset (`python`, `node`) or `custom_images` key. |
+| `code` | string | required | Source written to `/tmp/run.{ext}` and executed. |
+| `lang` | string | required | `node`, `python`, `shell`, or a literal interpreter binary path. No default. |
+| `files` | object[] | `[]` | Extra files dropped in first, each `{ path, content }` (UTF-8). |
+| `env` | string[] \| map | `[]` | Injected into the interpreter (both env shapes accepted). |
+| `stdin` | string (base64) | none | Bytes piped to the interpreter's stdin. |
+| `timeout_ms` | number | `300_000` | Per-run deadline. |
+| `keep_sandbox` | boolean | `false` | Keep the VM alive after the run and return its `sandbox_id`. |
+
+Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success, sandbox_id? }`. `sandbox_id` is present only when `keep_sandbox: true`; otherwise the VM is stopped on success and on failure.
+
+### Catalog (1)
+
+#### `sandbox::catalog::list`
+
+List the images this engine can boot — bundled presets plus operator-registered `custom_images`. Call it before `sandbox::create` / `sandbox::run` when you don't already know what's available (closes the `S100` "image not in catalog" loop). Empty payload (`{}`).
+
+Returns: `{ images: [ { name, oci_ref, kind } ] }` where `name` is the value you pass to `image`, `oci_ref` is the pulled reference, and `kind` is `"preset"` or `"custom"`. Presets come first; custom entries follow, sorted by name.
 
 ### Filesystem (10)
 
@@ -411,8 +442,8 @@ The `sandbox_id` is well-formed but no sandbox with that id exists. Call
 <a id="S003"></a>
 #### S003 — concurrent exec
 Exec is serialized one-at-a-time per sandbox; another exec is already in flight.
-The error reports how long it has held the slot. If that exec is a long-running
-or FOREGROUND process (a server, `npm install`, a build/watch), waiting will NOT
+If that exec is a long-running or FOREGROUND process (a server, `npm install`, a
+build/watch), waiting will NOT
 free the slot — it holds until the process exits or hits its `timeout_ms`
 (default 300s). Detach servers with `nohup <cmd> > /tmp/out.log 2>&1 &` and read
 progress via `sandbox::fs::read`, or `sandbox::stop` + `sandbox::create` to reset.
