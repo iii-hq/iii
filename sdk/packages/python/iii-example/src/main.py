@@ -7,7 +7,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-from iii import ApiRequest, ApiResponse, InitOptions, register_worker
+from iii import HttpRequest, HttpResponse, InitOptions, register_worker
 
 state: Any = None
 streams: Any = None
@@ -96,7 +96,7 @@ def _setup(iii) -> None:
     )
 
 
-async def _create_todo(req: ApiRequest, logger) -> ApiResponse:
+async def _create_todo(req: HttpRequest, logger) -> HttpResponse:
     logger.info("Creating new todo", {"body": req.body})
 
     description = req.body.get("description") if req.body else None
@@ -104,7 +104,7 @@ async def _create_todo(req: ApiRequest, logger) -> ApiResponse:
     todo_id = _generate_todo_id()
 
     if not description:
-        return ApiResponse(statusCode=400, body={"error": "Description is required"})
+        return HttpResponse(statusCode=400, body={"error": "Description is required"})
 
     new_todo = {
         "id": todo_id,
@@ -114,25 +114,25 @@ async def _create_todo(req: ApiRequest, logger) -> ApiResponse:
         "completedAt": None,
     }
     todo = await streams.set("todo", "inbox", todo_id, new_todo)
-    return ApiResponse(statusCode=201, body=todo, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=201, body=todo, headers={"Content-Type": "application/json"})
 
 
-async def _delete_todo(req: ApiRequest, logger) -> ApiResponse:
+async def _delete_todo(req: HttpRequest, logger) -> HttpResponse:
     todo_id = req.body.get("todoId") if req.body else None
 
     logger.info("Deleting todo", {"body": req.body})
 
     if not todo_id:
         logger.error("todoId is required")
-        return ApiResponse(statusCode=400, body={"error": "todoId is required"})
+        return HttpResponse(statusCode=400, body={"error": "todoId is required"})
 
     await streams.delete("todo", "inbox", todo_id)
 
     logger.info("Todo deleted successfully", {"todoId": todo_id})
-    return ApiResponse(statusCode=200, body={"success": True}, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=200, body={"success": True}, headers={"Content-Type": "application/json"})
 
 
-async def _update_todo(req: ApiRequest, logger) -> ApiResponse:
+async def _update_todo(req: HttpRequest, logger) -> HttpResponse:
     todo_id = req.path_params.get("id")
     existing_todo = await streams.get("todo", "inbox", todo_id) if todo_id else None
 
@@ -140,16 +140,16 @@ async def _update_todo(req: ApiRequest, logger) -> ApiResponse:
 
     if not existing_todo:
         logger.error("Todo not found")
-        return ApiResponse(statusCode=404, body={"error": "Todo not found"})
+        return HttpResponse(statusCode=404, body={"error": "Todo not found"})
 
     merged = {**existing_todo, **(req.body or {})}
     todo = await streams.set("todo", "inbox", todo_id, merged)
 
     logger.info("Todo updated successfully", {"todoId": todo_id})
-    return ApiResponse(statusCode=200, body=todo, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=200, body=todo, headers={"Content-Type": "application/json"})
 
 
-async def _create_state(req: ApiRequest, logger) -> ApiResponse:
+async def _create_state(req: HttpRequest, logger) -> HttpResponse:
     logger.info("Creating new todo", {"body": req.body})
 
     description = req.body.get("description") if req.body else None
@@ -157,7 +157,7 @@ async def _create_state(req: ApiRequest, logger) -> ApiResponse:
     todo_id = _generate_todo_id()
 
     if not description:
-        return ApiResponse(statusCode=400, body={"error": "Description is required"})
+        return HttpResponse(statusCode=400, body={"error": "Description is required"})
 
     new_todo = {
         "id": todo_id,
@@ -167,29 +167,29 @@ async def _create_state(req: ApiRequest, logger) -> ApiResponse:
         "completedAt": None,
     }
     todo = await state.set("todo", todo_id, new_todo)
-    return ApiResponse(statusCode=201, body=todo, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=201, body=todo, headers={"Content-Type": "application/json"})
 
 
-async def _get_state(req: ApiRequest, logger) -> ApiResponse:
+async def _get_state(req: HttpRequest, logger) -> HttpResponse:
     logger.info("Getting todo", req.path_params)
 
     todo_id = req.path_params.get("id")
     todo = await state.get("todo", todo_id)
-    return ApiResponse(statusCode=200, body=todo, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=200, body=todo, headers={"Content-Type": "application/json"})
 
 
-async def _error_test(req: ApiRequest, logger) -> ApiResponse:
+async def _error_test(req: HttpRequest, logger) -> HttpResponse:
     raise ValueError("Intentional error for OTEL stacktrace testing")
 
 
-async def _fetch_example(req: ApiRequest, logger) -> ApiResponse:
+async def _fetch_example(req: HttpRequest, logger) -> HttpResponse:
     logger.info("Fetching todo from JSONPlaceholder")
     with urllib.request.urlopen("https://jsonplaceholder.typicode.com/todos/1") as response:
         data = json.loads(response.read().decode())
-    return ApiResponse(statusCode=200, body=data, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=200, body=data, headers={"Content-Type": "application/json"})
 
 
-async def _post_example(req: ApiRequest, logger) -> ApiResponse:
+async def _post_example(req: HttpRequest, logger) -> HttpResponse:
     logger.info("Posting to httpbin", {"body": req.body})
     payload = json.dumps(req.body or {}).encode()
     post_req = urllib.request.Request(
@@ -200,7 +200,7 @@ async def _post_example(req: ApiRequest, logger) -> ApiResponse:
     )
     with urllib.request.urlopen(post_req) as response:
         data = json.loads(response.read().decode())
-    return ApiResponse(statusCode=200, body=data, headers={"Content-Type": "application/json"})
+    return HttpResponse(statusCode=200, body=data, headers={"Content-Type": "application/json"})
 
 
 def main() -> None:

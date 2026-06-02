@@ -68,16 +68,15 @@ from .stream import (
 )
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
-    ApiRequest,
-    ApiResponse,
     Channel,
     HttpRequest,
     HttpResponse,
     IIIClient,
-    InternalHttpRequest,
     RemoteFunctionHandler,
+    StreamingRequest,
+    StreamingResponse,
 )
-from .utils import http
+from .utils import http, http_stream
 
 __all__ = [
     # Telemetry helpers
@@ -150,14 +149,13 @@ __all__ = [
     "TriggerHandler",
     "TriggerTypeRef",
     # Types
-    "ApiRequest",
-    "ApiResponse",
     "Channel",
     "HttpRequest",
     "HttpResponse",
     "IIIClient",
-    "InternalHttpRequest",
     "RemoteFunctionHandler",
+    "StreamingRequest",
+    "StreamingResponse",
     # Stream
     "IStream",
     "StreamChangeEvent",
@@ -168,6 +166,7 @@ __all__ = [
     "StreamTriggerConfig",
     # Utilities
     "http",
+    "http_stream",
     # Format extraction
     "extract_request_format",
     "extract_response_format",

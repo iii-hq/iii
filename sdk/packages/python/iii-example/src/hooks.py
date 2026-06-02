@@ -1,22 +1,22 @@
 import uuid
 from typing import Any, Awaitable, Callable
 
-from iii import ApiRequest, ApiResponse, IIIClient
+from iii import HttpRequest, HttpResponse, IIIClient
 from iii_observability import Logger
 
 
 def use_api(
     iii: IIIClient,
     config: dict[str, Any],
-    handler: Callable[[ApiRequest[Any], Logger], Awaitable[ApiResponse[Any]]],
+    handler: Callable[[HttpRequest[Any], Logger], Awaitable[HttpResponse[Any]]],
 ) -> None:
     api_path = config["api_path"]
     http_method = config["http_method"]
     function_id = f"api.{http_method.lower()}.{api_path}"
     logger = Logger(service_name=function_id)
 
-    async def wrapped(data: ApiRequest) -> dict[str, Any]:
-        req = ApiRequest(**data) if isinstance(data, dict) else data
+    async def wrapped(data: HttpRequest) -> dict[str, Any]:
+        req = HttpRequest(**data) if isinstance(data, dict) else data
         result = await handler(req, logger)
         return result.model_dump(by_alias=True)
 
