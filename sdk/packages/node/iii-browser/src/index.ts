@@ -28,10 +28,10 @@ export type {
 export type { TriggerConfig, TriggerHandler } from './triggers'
 
 export type {
-  ApiRequest,
-  ApiResponse,
   Channel,
   FunctionRef,
+  HttpRequest,
+  HttpResponse,
   ISdk,
   RegisterFunctionInput,
   RegisterFunctionOptions,

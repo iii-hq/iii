@@ -299,7 +299,7 @@ export type Channel = {
  *
  * @typeParam TBody - Type of the parsed request body.
  */
-export type ApiRequest<TBody = unknown> = {
+export type HttpRequest<TBody = unknown> = {
   path_params: Record<string, string>
   query_params: Record<string, string | string[]>
   body: TBody
@@ -315,14 +315,14 @@ export type ApiRequest<TBody = unknown> = {
  *
  * @example
  * ```typescript
- * const response: ApiResponse = {
+ * const response: HttpResponse = {
  *   status_code: 200,
  *   headers: { 'content-type': 'application/json' },
  *   body: { message: 'ok' },
  * }
  * ```
  */
-export type ApiResponse<TStatus extends number = number, TBody = string | Record<string, unknown>> = {
+export type HttpResponse<TStatus extends number = number, TBody = string | Record<string, unknown>> = {
   /** HTTP status code. */
   status_code: TStatus
   /** Response headers. */
