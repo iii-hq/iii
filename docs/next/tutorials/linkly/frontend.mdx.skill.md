@@ -254,5 +254,5 @@ runs in a sandbox.
 The browser is a worker on the same bus as everything else, connected through an RBAC-gated listener
 that an auth function admits. It calls server functions directly, subscribes to streams for live
 updates, and registers functions the server calls back. Next, in
-[Ch. 9: Open it to users](/tutorials/linkly/custom-rules), customers attach per-link scripts that
+[Ch. 8: Open it to users](/tutorials/linkly/custom-rules), customers attach per-link scripts that
 `iii-sandbox` runs on every redirect.

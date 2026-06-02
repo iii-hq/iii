@@ -11,7 +11,7 @@ links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 8. The `click-streamer` worker is
+`iii-stream` is how we will send clicks to clients in Chapter 7. The `click-streamer` worker is
 yours, so scaffold it the same way you scaffolded `link` in Chapter 1:
 
 ```bash
@@ -93,7 +93,7 @@ Register it with your project:
 iii worker add ./click-streamer
 ```
 
-The browser you build in Chapter 8 subscribes to `clicks`/`all` and counts those broadcasts live.
+The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.
 
 ## See it work
 

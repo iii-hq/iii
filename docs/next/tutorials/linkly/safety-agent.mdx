@@ -1,5 +1,5 @@
 ---
-title: "Ch. 10: Make it agentic"
+title: "Ch. 9: Make it agentic"
 description:
   "Drop in an autonomous LLM agent that samples new links, investigates destinations in sandboxes,
   and quarantines or asks a human to confirm deletion."
@@ -261,7 +261,7 @@ async function inspectUrl(url: string): Promise<string> {
 }
 ```
 
-`quarantine` calls `link::quarantine`; `propose_delete` reuses Chapter 8's `link::request_delete`,
+`quarantine` calls `link::quarantine`; `propose_delete` reuses Chapter 7's `link::request_delete`,
 which routes through the browser admin and only deletes on confirmation.
 
 The loop itself reads the assistant message, picks a tool, runs it, appends the result, and calls
@@ -403,7 +403,7 @@ iii trigger link::resolve code=bad1
 ```
 
 For the phishing link, the agent calls `link::request_delete`, which goes through the browser admin
-prompt from Chapter 8. With a frontend connected, the operator sees the confirm dialog; otherwise
+prompt from Chapter 7. With a frontend connected, the operator sees the confirm dialog; otherwise
 the proposal sits unanswered until someone connects. The benign link is untouched.
 
 ## Switch to a real LLM
@@ -453,7 +453,7 @@ you'll see the LLM call, each `sandbox::exec` it triggered, and the terminal `li
 
 ## Browser-confirmed deletes ride a queue
 
-The agent's `propose_delete` tool routes through Chapter 8's `user::confirm_destructive_op` in the
+The agent's `propose_delete` tool routes through Chapter 7's `user::confirm_destructive_op` in the
 browser. Currently `link::request_delete` does the delete server-side after the operator clicks OK.
 Make the **browser** the queue producer instead: when the operator confirms, the browser itself
 enqueues `link::delete` on a `deletes` queue. The actual delete becomes durable (retried on failure)
@@ -545,7 +545,6 @@ verdicts: quarantine (auto-applied), propose delete (routed through a human via 
 or allow. Every step (the trigger, each LLM call, each sandbox probe, the final action) is one span
 on the trace, because the LLM call goes through `harness` instead of a private SDK.
 
-That ends the tutorial. You built a single-worker URL shortener in Chapter 1 and finished with a
-real system: HTTP, durable storage, an event bus, a queue, scheduled jobs, a live stream, a browser
-worker, sandboxed customer scripts, and an autonomous agent: all on the same iii bus, all visible in
-the same console.
+One housekeeping capability is left. Next, in
+[Ch. 10: Schedule maintenance](/tutorials/linkly/scheduling), you add a `link-sweeper` worker that
+expires stale links on a schedule with `iii-cron`.

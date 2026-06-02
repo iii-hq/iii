@@ -88,5 +88,5 @@ iii trigger link::resolve code=docs
 ## Conclusion
 
 Linkly can now ingest a file's worth of links in a single streamed upload. Next, in
-[Ch. 7: Schedule maintenance](/tutorials/linkly/scheduling), you add a `link-sweeper` worker that
-expires stale links on a schedule with `iii-cron`.
+[Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn a browser tab into a worker that
+creates links and subscribes to the live click stream.

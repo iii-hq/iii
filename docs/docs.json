@@ -206,10 +206,10 @@
                   "next/tutorials/linkly/durable-execution",
                   "next/tutorials/linkly/streaming",
                   "next/tutorials/linkly/channels",
-                  "next/tutorials/linkly/scheduling",
                   "next/tutorials/linkly/frontend",
                   "next/tutorials/linkly/custom-rules",
-                  "next/tutorials/linkly/safety-agent"
+                  "next/tutorials/linkly/safety-agent",
+                  "next/tutorials/linkly/scheduling"
                 ]
               }
             ]
