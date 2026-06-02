@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 
@@ -101,9 +102,9 @@ func Init(ctx context.Context, cfg OtelConfig) (shutdown func(context.Context) e
 func newLogExporter(ctx context.Context, cfg OtelConfig) (log.Exporter, error) {
 	switch cfg.Exporter {
 	case ExporterOTLP:
-		opts := []otlploghttp.Option{}
-		if cfg.OTLPEndpoint != "" {
-			opts = append(opts, otlploghttp.WithEndpointURL(cfg.OTLPEndpoint))
+		opts, err := otlpOptions(cfg.OTLPEndpoint)
+		if err != nil {
+			return nil, err
 		}
 		exp, err := otlploghttp.New(ctx, opts...)
 		if err != nil {
@@ -119,6 +120,31 @@ func newLogExporter(ctx context.Context, cfg OtelConfig) (log.Exporter, error) {
 	default:
 		return nil, fmt.Errorf("observability: unknown exporter %q", cfg.Exporter)
 	}
+}
+
+// otlpOptions turns a user-supplied endpoint (e.g. "http://localhost:4318") into
+// otlploghttp options. It passes the host:port via WithEndpoint — which appends the
+// standard "/v1/logs" path — rather than WithEndpointURL, so a base URL without an
+// explicit signal path still reaches the right endpoint. An http:// scheme selects an
+// insecure (plaintext) connection. An empty endpoint leaves the exporter to honor the
+// standard OTEL_EXPORTER_OTLP_* env vars.
+func otlpOptions(endpoint string) ([]otlploghttp.Option, error) {
+	if endpoint == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("observability: invalid OTLP endpoint %q: %w", endpoint, err)
+	}
+	// If the caller already included a signal path, honor the full URL as-is.
+	if u.Path != "" && u.Path != "/" {
+		return []otlploghttp.Option{otlploghttp.WithEndpointURL(endpoint)}, nil
+	}
+	opts := []otlploghttp.Option{otlploghttp.WithEndpoint(u.Host)}
+	if u.Scheme == "http" {
+		opts = append(opts, otlploghttp.WithInsecure())
+	}
+	return opts, nil
 }
 
 // getLoggerProvider returns the installed OTel logger provider, or nil if Init has not

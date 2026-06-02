@@ -27,9 +27,33 @@ func jsonToLogValue(v any) log.Value {
 		return log.StringValue(t)
 	case bool:
 		return log.BoolValue(t)
+	// Native Go integer types — these reach us when a caller passes a map[string]any
+	// directly to Logger (not via JSON). Map them to Int64 so they aren't stringified.
+	case int:
+		return log.Int64Value(int64(t))
+	case int8:
+		return log.Int64Value(int64(t))
+	case int16:
+		return log.Int64Value(int64(t))
+	case int32:
+		return log.Int64Value(int64(t))
+	case int64:
+		return log.Int64Value(t)
+	case uint:
+		return log.Int64Value(int64(t))
+	case uint8:
+		return log.Int64Value(int64(t))
+	case uint16:
+		return log.Int64Value(int64(t))
+	case uint32:
+		return log.Int64Value(int64(t))
+	case uint64:
+		return log.Int64Value(int64(t))
+	case float32:
+		return log.Float64Value(float64(t))
 	case float64:
-		// encoding/json decodes all numbers as float64. Preserve integers as Int64 when
-		// the value is whole, matching the Rust as_i64-first behavior.
+		// encoding/json decodes all numbers as float64. Preserve whole values as Int64,
+		// matching the Rust as_i64-first behavior.
 		if t == float64(int64(t)) {
 			return log.Int64Value(int64(t))
 		}

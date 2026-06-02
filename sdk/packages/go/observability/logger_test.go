@@ -98,6 +98,38 @@ func TestAllLevelsEmitViaProvider(t *testing.T) {
 	l.Debug(ctx, "d", map[string]any{"c": "x"})
 }
 
+// TestNativeGoNumbers locks in that native Go numeric types passed directly in a
+// map[string]any (the common case — callers don't go through JSON) map to OTel
+// Int64/Float64, not stringified. This is the path Logger's map[string]any data takes.
+func TestNativeGoNumbers(t *testing.T) {
+	ints := []any{
+		int(3), int8(3), int16(3), int32(3), int64(3),
+		uint(3), uint8(3), uint16(3), uint32(3), uint64(3),
+	}
+	for _, n := range ints {
+		if v := jsonToLogValue(n); v.Kind() != otellog.KindInt64 {
+			t.Errorf("%T(%v) kind = %v, want Int64", n, n, v.Kind())
+		}
+	}
+	if v := jsonToLogValue(float32(1.5)); v.Kind() != otellog.KindFloat64 {
+		t.Errorf("float32 kind = %v, want Float64", v.Kind())
+	}
+	if v := jsonToLogValue(2.5); v.Kind() != otellog.KindFloat64 {
+		t.Errorf("float64 kind = %v, want Float64", v.Kind())
+	}
+	// A whole float64 (e.g. from JSON) collapses to Int64.
+	if v := jsonToLogValue(float64(10)); v.Kind() != otellog.KindInt64 {
+		t.Errorf("whole float64 kind = %v, want Int64", v.Kind())
+	}
+	// An unexpected type falls back to a JSON string rather than panicking.
+	type custom struct {
+		A int `json:"a"`
+	}
+	if v := jsonToLogValue(custom{A: 1}); v.Kind() != otellog.KindString {
+		t.Errorf("unexpected type kind = %v, want String fallback", v.Kind())
+	}
+}
+
 // TestJSONNumberPath covers the json.Number branch (used when a decoder is configured
 // with UseNumber), which the plain interface{} decode path does not hit.
 func TestJSONNumberPath(t *testing.T) {
@@ -106,6 +138,35 @@ func TestJSONNumberPath(t *testing.T) {
 	}
 	if v := jsonToLogValue(json.Number("7.5")); v.Kind() != otellog.KindFloat64 {
 		t.Errorf("json.Number float kind = %v, want Float64", v.Kind())
+	}
+}
+
+// TestOTLPOptions guards the endpoint parsing: a base URL (no signal path) goes through
+// WithEndpoint so "/v1/logs" is appended, an http:// scheme is insecure, a URL with an
+// explicit path is honored as-is, and an empty endpoint yields no options (env-driven).
+func TestOTLPOptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		wantOpts int
+		wantErr  bool
+	}{
+		{"base http url", "http://localhost:4318", 2, false},                // WithEndpoint + WithInsecure
+		{"base https url", "https://otlp.example:4318", 1, false},           // WithEndpoint only
+		{"explicit signal path", "http://localhost:4318/v1/logs", 1, false}, // WithEndpointURL
+		{"empty is env-driven", "", 0, false},
+		{"invalid url", "://nope", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, err := otlpOptions(tt.endpoint)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && len(opts) != tt.wantOpts {
+				t.Errorf("len(opts) = %d, want %d", len(opts), tt.wantOpts)
+			}
+		})
 	}
 }
 
