@@ -1,49 +1,52 @@
 ---
 title: "Ch. 8: Create sandboxed link safety agents"
 description:
-  "Drop in an autonomous LLM agent that samples new links, investigates destinations in sandboxes,
-  and quarantines or asks a human to confirm deletion."
+  "Drop in an autonomous LLM agent that samples new links, investigates targets in sandboxes, and
+  quarantines or asks a human to confirm deletion."
 owner: "devrel"
 type: "tutorial"
 ---
 
-In this chapter Linkly gets a **link-safety agent**: an autonomous worker that samples newly created
-links, investigates their destinations in `iii-sandbox`, and decides on its own whether to
+In this chapter Linkly gets a **link-safety-agent** worker: an autonomous worker that samples newly
+created links, investigates their targets in `iii-sandbox`, and decides on its own whether to
 quarantine the link, ask a human operator to confirm deletion, or let it through. The agent uses a
 real LLM tool-calling loop, with every model call routed through `harness` so we get end to end
 traces of the agent's activity. Whatever the agent decides to run to investigate a link runs inside
 a sandbox, never on the worker process.
 
-## Why harness, not a vendor SDK directly
-
-You install one new worker:
+## Install the harness
 
 ```bash
 iii worker add harness
 ```
 
-`harness` is iii's agent backbone: a Node bundle that ships providers for Anthropic, OpenAI, Kimi,
-LM Studio, plus turn orchestration, credentials, budgets, and approval-gate. Because it is a worker,
-you get all of the immediate benefits of iii: process isolation, interoperability, and dynamic
-registration of new functionality.
+The harness, like most workers, is essentially an already implemented reusable SDK and forms iii's
+agent backbone. It is a Node bundle that ships providers for Anthropic, OpenAI, Kimi, LM Studio,
+plus turn orchestration, credentials, budgets, and approval-gate. Since it is a worker you also get
+all of the immediate benefits of iii out of the box, such as end to end observability of the agent,
+isolation of its processes, interoperability with the rest of the system, and dynamic registration
+and execution of new functionality.
 
 For this example we use a few small pieces of the harness and trust that by now you have a pretty
 good idea of how to incorporate iii's advanced features into your own projects.
 
-The pieces we'll use are iii's `sandbox` worker and the Anthropic provider:
+The pieces we'll use in this chapter are iii's `sandbox` worker and the Anthropic provider:
 `provider::anthropic::complete`.
 
-Going through harness instead of importing `@anthropic-ai/sdk` directly costs a little setup and
-buys one big thing: **every LLM call shows up as an `iii-observability` span**. The agent's trace
-becomes
-`link.created → safety::on_link_created → provider::anthropic::complete → sandbox::exec → link::quarantine`:
-one tree in the console. A locally-imported vendor SDK would make those calls opaque.
+<Note>
+  Going through the `harness` worker instead of importing `@anthropic-ai/sdk` or another harness
+  directly gives one very big thing: **every LLM call shows up as an `iii-observability` span**.
+  <br /> <br /> The agent's trace becomes `link.created → safety::on_link_created →
+  provider::anthropic::complete → sandbox::exec → link::delete` and is visible as one unified tree
+  in the console or your OTel provider of choice. A locally-imported vendor SDK would make those
+  calls opaque.
+</Note>
 
 ## Run investigations in a sandbox
 
-The agent investigates a link by probing its destination, and it must do that without trusting the
-destination. `iii-sandbox` boots an ephemeral microVM for each probe, isolated from the
-`safety-agent` worker and from the host. Add it:
+The agent investigates a link by probing its target, and it must do that without trusting the
+target. `iii-sandbox` boots an ephemeral microVM for each probe, isolated from the
+`link-safety-agent` worker and from the host. Add it:
 
 <Warning>
   `iii-sandbox` requires hardware virtualization. macOS works on Apple Silicon (M-series). Linux
@@ -69,12 +72,13 @@ caller may boot; the agent only needs `node`:
     default_memory_mb: 512
 ```
 
-## Add a database for harness
+## Add databases for harness and the agent
 
-Harness's `auth-credentials` worker stores provider keys in its own SQLite. Add a second database to
-the `database` worker's config:
+Two workers want their own storage. Harness's `auth-credentials` worker stores provider keys in its
+own SQLite, and the safety agent keeps a record of what it quarantined in a database of its own. Add
+both to the `database` worker's config:
 
-```yaml config.yaml
+```yaml config.yaml {11,12,13}
 - name: database
   config:
     databases:
@@ -86,68 +90,28 @@ the `database` worker's config:
         url: sqlite:./data/iii.db
       harness:
         url: sqlite:./data/harness.db
+      safety:
+        url: sqlite:./data/safety.db
 ```
 
-## Add a quarantine path to link worker
+## Keep quarantine in the agent, not the link worker
 
-Quarantined links don't resolve. In `link/src/index.ts`, extend `ensureSchema` with the
-`link_quarantine` table, add `link::quarantine`, and have `link::resolve` check it before the cache:
+The link worker has no idea the safety agent exists, and it stays that way. Rather than teach `link`
+about quarantine (a table, a function, a check in `link::resolve`), the agent owns the whole
+concern: it records the quarantined link in its own `safety` database, then removes it from the link
+worker through the `link::delete` you already wrote in Chapter 7. The link disappears from `link`'s
+database and cache the same way any deletion does, so `link::resolve` returns `null` with no
+safety-specific code. The agent's database is the system of record for why a link was taken down.
 
-```typescript src/index.ts
-await worker.trigger({
-  function_id: "database::execute",
-  payload: {
-    db: DB,
-    sql: "CREATE TABLE IF NOT EXISTS link_quarantine (code TEXT PRIMARY KEY, reason TEXT NOT NULL, quarantined_at TEXT NOT NULL)",
-  },
-});
-```
+You write the agent's `quarantine` helper as part of the worker below.
 
-```typescript src/index.ts
-worker.registerFunction("link::quarantine", async (payload: { code: string; reason: string }) => {
-  await worker.trigger({
-    function_id: "database::execute",
-    payload: {
-      db: DB,
-      sql: "INSERT INTO link_quarantine (code, reason, quarantined_at) VALUES (?, ?, ?) ON CONFLICT(code) DO UPDATE SET reason = excluded.reason, quarantined_at = excluded.quarantined_at",
-      params: [payload.code, payload.reason, new Date().toISOString()],
-    },
-  });
-  await worker.trigger({
-    function_id: "state::delete",
-    payload: { scope: "links", key: payload.code },
-  });
-  logger.info("link quarantined", { code: payload.code, reason: payload.reason });
-  return { quarantined: true };
-});
-```
+## Build the link-safety-agent worker
 
-In `link::resolve`, look up the quarantine table first; if the code is quarantined, return null:
+Scaffold a TypeScript worker at `linkly/link-safety-agent/`. It has three source files: tool
+definitions, a deterministic stub (used in the tutorial and in tests when no API key is available),
+and the engine wiring.
 
-```typescript src/index.ts
-const { rows: qrows } = await worker.trigger<
-  { db: string; sql: string; params: string[] },
-  { rows: Array<{ code: string }> }
->({
-  function_id: "database::query",
-  payload: {
-    db: DB,
-    sql: "SELECT code FROM link_quarantine WHERE code = ?",
-    params: [payload.code],
-  },
-});
-if (qrows[0]) {
-  return { url: null };
-}
-```
-
-## Build the safety-agent worker
-
-Scaffold a TypeScript worker at `linkly/safety-agent/`. It has three source files: tool definitions,
-a deterministic stub (used in the tutorial and in tests when no API key is available), and the
-engine wiring.
-
-`safety-agent/src/agent.ts` declares the tools the LLM can call. The shape matches Anthropic's
+`link-safety-agent/src/agent.ts` declares the tools the LLM can call. The shape matches Anthropic's
 `input_schema`:
 
 ```typescript src/agent.ts
@@ -167,7 +131,7 @@ export const TOOLS: Tool[] = [
   {
     name: "quarantine",
     description:
-      "Mark the link malicious. Resolves stop returning a URL; auto-applied, no human review. Use for clear-cut bad destinations.",
+      "Mark the link malicious. Resolves stop returning a URL; auto-applied, no human review. Use for clear-cut bad targets.",
     parameters: {
       type: "object",
       properties: { reason: { type: "string" } },
@@ -195,12 +159,12 @@ export const TOOLS: Tool[] = [
   },
 ];
 
-export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
+export const SYSTEM_PROMPT = `You are Linkly's link-safety-agent agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
 ```
 
-`safety-agent/src/stub.ts` is the deterministic stand-in for `provider::anthropic::complete`. It
-returns the same message shape the real provider does, so the agent loop is identical in both modes.
-This lets the tutorial run end-to-end with no API key:
+`link-safety-agent/src/stub.ts` is the deterministic stand-in for `provider::anthropic::complete`.
+It returns the same message shape the real provider does, so the agent loop is identical in both
+modes. This lets the tutorial run end-to-end with no API key:
 
 ```typescript src/stub.ts
 type AnthropicMessage = { role: "user" | "assistant"; content: unknown };
@@ -234,7 +198,7 @@ export function stubDecide(messages: AnthropicMessage[]): {
 
 (The helpers `lastUserContext` and `toolUse` are small; see the source.)
 
-`safety-agent/src/index.ts` wires the worker. It subscribes to `link.created`, samples at the
+`link-safety-agent/src/index.ts` wires the worker. It subscribes to `link.created`, samples at the
 configured rate, and runs the tool-calling loop:
 
 ```typescript src/index.ts
@@ -243,7 +207,7 @@ import { TOOLS, SYSTEM_PROMPT, pickToolCall, reasonOf } from "./agent.js";
 import { stubDecide } from "./stub.js";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
-  workerName: "safety-agent",
+  workerName: "link-safety-agent",
 });
 const logger = new Logger();
 
@@ -299,8 +263,41 @@ async function inspectUrl(url: string): Promise<string> {
 }
 ```
 
-`quarantine` calls `link::quarantine`; `propose_delete` reuses Chapter 7's `link::request_delete`,
-which routes through the browser admin and only deletes on confirmation.
+`quarantine` is where the decoupling pays off. The agent records the link in its own `safety`
+database, then removes it from the link worker with `link::delete`. The `link` worker never learns
+what quarantine means. Create the table on startup and write the helper:
+
+```typescript src/index.ts
+const SAFETY_DB = "safety";
+
+async function ensureSchema(): Promise<void> {
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: {
+      db: SAFETY_DB,
+      sql: "CREATE TABLE IF NOT EXISTS quarantined_links (code TEXT PRIMARY KEY, url TEXT, reason TEXT NOT NULL, quarantined_at TEXT NOT NULL)",
+    },
+  });
+}
+
+async function quarantine(code: string, url: string | null, reason: string): Promise<void> {
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: {
+      db: SAFETY_DB,
+      sql: "INSERT INTO quarantined_links (code, url, reason, quarantined_at) VALUES (?, ?, ?, ?) ON CONFLICT(code) DO UPDATE SET reason = excluded.reason, quarantined_at = excluded.quarantined_at",
+      params: [code, url, reason, new Date().toISOString()],
+    },
+  });
+  await worker.trigger({ function_id: "link::delete", payload: { code } });
+  logger.info("link quarantined", { code, reason });
+}
+
+ensureSchema().then(() => logger.info("safety store ready"));
+```
+
+`propose_delete` reuses Chapter 7's `link::request_delete`, which routes through the browser admin
+and only deletes on confirmation.
 
 The loop itself reads the assistant message, picks a tool, runs it, appends the result, and calls
 the model again until it picks a terminal tool:
@@ -323,7 +320,7 @@ async function investigate(link: { code: string; url: string }): Promise<void> {
       return;
     }
     if (call.name === "quarantine") {
-      await quarantine(link.code, reasonOf(call.input));
+      await quarantine(link.code, link.url, reasonOf(call.input));
       return;
     }
     if (call.name === "propose_delete") {
@@ -377,7 +374,7 @@ Add a `safety-investigations` entry to `iii-queue`'s `queue_configs` in `config.
       name: builtin
 ```
 
-In `safety-agent/src/index.ts`, the subscriber enqueues; a separate consumer runs the loop:
+In `link-safety-agent/src/index.ts`, the subscriber enqueues; a separate consumer runs the loop:
 
 ```typescript src/index.ts {1,5-15,19-22}
 import { registerWorker, Logger, TriggerAction } from "iii-sdk";
@@ -416,8 +413,8 @@ In production you'd sample at maybe 1% (`SAFETY_SAMPLE_RATE=0.01`); for this tut
 Declare the new worker in `config.yaml`:
 
 ```yaml config.yaml
-- name: safety-agent
-  worker_path: ./safety-agent
+- name: link-safety-agent
+  worker_path: ./link-safety-agent
 ```
 
 ## See it work (stub mode, no API key)
@@ -430,14 +427,15 @@ iii trigger link::create url=https://phishing-bad.example code=bad2
 iii trigger link::create url=https://iii.dev               code=good1
 ```
 
-The agent investigates each one. For the malware link, it quarantines:
+The agent investigates each one. For the malware link, it quarantines: the record lands in the
+agent's own `safety` database, and the link is gone from the link worker.
 
 ```bash
-iii trigger database::query db=primary sql="SELECT code, reason FROM link_quarantine"
+iii trigger database::query db=safety sql="SELECT code, reason FROM quarantined_links"
 # [{"code": "bad1", "reason": "url contains \"malware\""}]
 
 iii trigger link::resolve code=bad1
-# {"url": null}            ← quarantine wins; the redirect 404s
+# {"url": null}            ← the agent deleted it from link; the redirect 404s
 ```
 
 For the phishing link, the agent calls `link::request_delete`, which goes through the browser admin
@@ -457,7 +455,7 @@ derives the burst's time window from traces, registers a short-lived `safety::pu
 that quarantines every link created in that window, runs it once, and unregisters it. The capability
 exists on the bus only as long as it is needed, and each invocation of it is its own span.
 
-Add a fifth tool in `safety-agent/src/agent.ts`. Widen the `name` union and append the tool:
+Add a fifth tool in `link-safety-agent/src/agent.ts`. Widen the `name` union and append the tool:
 
 ```typescript src/agent.ts
 name: "inspect_url" | "quarantine" | "propose_delete" | "allow" | "quarantine_burst";
@@ -479,11 +477,11 @@ name: "inspect_url" | "quarantine" | "propose_delete" | "allow" | "quarantine_bu
 Extend `SYSTEM_PROMPT` so the model knows when to reach for it:
 
 ```typescript src/agent.ts
-export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident. If the link looks like one of many created in a rapid burst, prefer quarantine_burst to take the whole batch down at once.`;
+export const SYSTEM_PROMPT = `You are Linkly's link safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident. If the link looks like one of many created in a rapid burst, prefer quarantine_burst to take the whole batch down at once.`;
 ```
 
-The implementation in `safety-agent/src/index.ts` reads the burst from traces, then builds, runs,
-and removes the bulk action:
+The implementation in `link-safety-agent/src/index.ts` reads the burst from traces, then builds,
+runs, and removes the bulk action:
 
 ```typescript src/index.ts
 type Span = { start_time_unix_nano: number; attributes: [string, string][] };
@@ -513,17 +511,17 @@ async function quarantineBurst(reason: string): Promise<{ purged: string[] }> {
   const ref = worker.registerFunction(fnId, async (p: { start: string; end: string }) => {
     const { rows } = await worker.trigger<
       { db: string; sql: string; params: string[] },
-      { rows: Array<{ code: string }> }
+      { rows: Array<{ code: string; url: string }> }
     >({
       function_id: "database::query",
       payload: {
         db: "primary",
-        sql: "SELECT code FROM links WHERE created_at BETWEEN ? AND ?",
+        sql: "SELECT code, url FROM links WHERE created_at BETWEEN ? AND ?",
         params: [p.start, p.end],
       },
     });
-    for (const { code } of rows) {
-      await worker.trigger({ function_id: "link::quarantine", payload: { code, reason } });
+    for (const { code, url } of rows) {
+      await quarantine(code, url, reason);
     }
     return { codes: rows.map((r) => r.code) };
   });
@@ -550,7 +548,7 @@ if (call.name === "quarantine_burst") {
 ```
 
 So the stub can demonstrate it without an API key, have it pick `quarantine_burst` for campaign
-URLs. Add this branch to `safety-agent/src/stub.ts` before the `allow` fallback:
+URLs. Add this branch to `link-safety-agent/src/stub.ts` before the `allow` fallback:
 
 ```typescript src/stub.ts
 if (/burst|campaign/i.test(ctx.url)) {
@@ -581,8 +579,8 @@ Each create triggers an investigation. The first to reach a verdict reads the tr
 batch:
 
 ```bash
-iii trigger database::query db=primary \
-  sql="SELECT code FROM link_quarantine WHERE reason = 'coordinated burst' ORDER BY code"
+iii trigger database::query db=safety \
+  sql="SELECT code FROM quarantined_links WHERE reason = 'coordinated burst' ORDER BY code"
 # [{"code":"burst1"}, {"code":"burst2"}, {"code":"burst3"}, {"code":"burst4"}, {"code":"burst5"}]
 ```
 
@@ -605,11 +603,11 @@ iii trigger auth::set_token --json '{
 ```
 
 Then turn the stub off by adding an `env:` block to the worker's own manifest at
-`safety-agent/iii.worker.yaml`. iii merges these into the worker process's environment when it
+`link-safety-agent/iii.worker.yaml`. iii merges these into the worker process's environment when it
 starts the worker, so `process.env.SAFETY_AGENT_STUB` reads `'0'`:
 
-```yaml safety-agent/iii.worker.yaml
-name: safety-agent
+```yaml link-safety-agent/iii.worker.yaml
+name: link-safety-agent
 runtime:
   kind: typescript
   package_manager: npm
@@ -624,7 +622,7 @@ env:
 Restart the worker so it picks up the change:
 
 ```bash
-iii worker restart safety-agent
+iii worker restart link-safety-agent
 ```
 
 <Note>
@@ -635,8 +633,8 @@ iii worker restart safety-agent
 
 Now every `link.created` triggers a real Claude call through `provider::anthropic::complete`, which
 shows up as a span in `iii-observability`. Open `engine::traces::tree` on the agent's `trace_id` and
-you'll see the LLM call, each `sandbox::exec` it triggered, and the terminal `link::quarantine` or
-`link::request_delete` all in one tree.
+you'll see the LLM call, each `sandbox::exec` it triggered, and the terminal `link::delete` (from a
+quarantine) or `link::request_delete` all in one tree.
 
 ## Browser-confirmed deletes ride a queue
 
@@ -726,13 +724,13 @@ worker.registerFunction("link::request_delete", async (payload: { code: string }
 
 ## Conclusion
 
-Linkly now has an autonomous link-safety agent. It samples newly created links, decides on its own
-how to investigate (call `inspect_url` as many times as it likes), and reaches a terminal verdict:
-quarantine (auto-applied), propose delete (routed through a human via the browser admin), or allow.
-When it spots a coordinated burst, it reads the execution context from traces and builds a one-shot
-`safety::purge_window` function to take down the whole batch, then unregisters it. Every step (the
-trigger, each LLM call, each sandbox probe, the bulk action it built, the final verdict) is one span
-on the trace, because the LLM call goes through `harness` instead of a private SDK.
+Linkly now has an autonomous link-safety-agent agent. It samples newly created links, decides on its
+own how to investigate (call `inspect_url` as many times as it likes), and reaches a terminal
+verdict: quarantine (auto-applied), propose delete (routed through a human via the browser admin),
+or allow. When it spots a coordinated burst, it reads the execution context from traces and builds a
+one-shot `safety::purge_window` function to take down the whole batch, then unregisters it. Every
+step (the trigger, each LLM call, each sandbox probe, the bulk action it built, the final verdict)
+is one span on the trace, because the LLM call goes through `harness` instead of a private SDK.
 
 One housekeeping capability is left. Next, in
 [Ch. 9: Schedule maintenance](/tutorials/linkly/scheduling), you add a `link-sweeper` worker that
