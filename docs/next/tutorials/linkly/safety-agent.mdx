@@ -35,7 +35,7 @@ The pieces we'll use in this chapter are iii's `sandbox` worker and the Anthropi
 
 <Note>
   Going through the `harness` worker instead of importing `@anthropic-ai/sdk` or another harness
-  directly gives one very big thing: **every LLM call shows up as an `iii-observability` span**.
+  directly gives one big thing: **every LLM call shows up as an `iii-observability` span**.
   <br /> <br /> The agent's trace becomes `link.created → safety::on_link_created →
   provider::anthropic::complete → sandbox::exec → link::delete` and is visible as one unified tree
   in the console or your OTel provider of choice. A locally-imported vendor SDK would make those
@@ -159,7 +159,7 @@ export const TOOLS: Tool[] = [
   },
 ];
 
-export const SYSTEM_PROMPT = `You are Linkly's link-safety-agent agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
+export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
 ```
 
 `link-safety-agent/src/stub.ts` is the deterministic stand-in for `provider::anthropic::complete`.
@@ -724,13 +724,13 @@ worker.registerFunction("link::request_delete", async (payload: { code: string }
 
 ## Conclusion
 
-Linkly now has an autonomous link-safety-agent agent. It samples newly created links, decides on its
-own how to investigate (call `inspect_url` as many times as it likes), and reaches a terminal
-verdict: quarantine (auto-applied), propose delete (routed through a human via the browser admin),
-or allow. When it spots a coordinated burst, it reads the execution context from traces and builds a
-one-shot `safety::purge_window` function to take down the whole batch, then unregisters it. Every
-step (the trigger, each LLM call, each sandbox probe, the bulk action it built, the final verdict)
-is one span on the trace, because the LLM call goes through `harness` instead of a private SDK.
+Linkly now has an autonomous link-safety agent. It samples newly created links, decides on its own
+how to investigate (call `inspect_url` as many times as it likes), and reaches a terminal verdict:
+quarantine (auto-applied), propose delete (routed through a human via the browser admin), or allow.
+When it spots a coordinated burst, it reads the execution context from traces and builds a one-shot
+`safety::purge_window` function to take down the whole batch, then unregisters it. Every step (the
+trigger, each LLM call, each sandbox probe, the bulk action it built, the final verdict) is one span
+on the trace, because the LLM call goes through `harness` instead of a private SDK.
 
 One housekeeping capability is left. Next, in
 [Ch. 9: Schedule maintenance](/tutorials/linkly/scheduling), you add a `link-sweeper` worker that
