@@ -14,8 +14,9 @@ links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 7. The `click-streamer` worker is
-yours, so scaffold it the same way you scaffolded `link` in Chapter 1:
+`iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
+worker to manage the streaming, so scaffold it the same way you scaffolded `link` in Chapter 1, and
+`analytics` in Chapter 4:
 
 ```bash
 iii worker add iii-stream
@@ -24,15 +25,13 @@ iii worker init click-streamer --language typescript
 
 ## Broadcast clicks in real time
 
-Rather than have the `link` worker know about streaming, keep it decoupled: `link` announces that a
-click happened, and `click-streamer` reacts by pushing it onto the live feed. A live counter can
-tolerate the rare dropped event, so a regular `iii-pubsub` event is the right tool here (durable
-delivery is for state that breaks when an event is missed, as with the cache in Chapter 4).
+We'll continue to keep `link` decoupled by having it announce that a click happened, and
+`click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
+dropped event, so a regular `iii-pubsub` event is the right tool here.
 
-First, publish a `link.clicked` event from `link::record_click`. The durable write from Chapter 4
-stays; the publish is new:
+First, publish a `link.clicked` event from `link::record_click`:
 
-```typescript link/src/index.ts {12-15}
+```typescript link/src/index.ts {12-16}
 worker.registerFunction(
   "link::record_click",
   async (payload: { code: string; clicked_at: string }) => {
@@ -44,14 +43,21 @@ worker.registerFunction(
         params: [payload.code, payload.clicked_at],
       },
     });
-    await worker.trigger({
+    worker.trigger({
       function_id: "publish",
       payload: { topic: "link.clicked", data: payload },
+      action: TriggerAction.Void(),
     });
     return { recorded: true };
   },
 );
 ```
+
+<Info>
+  In the new code above we didn't use `await` and set the `action` to `TriggerAction.Void()`. This
+  causes the function to return immediately before it completes. This is a simple performance
+  enhancement with things like pubsub where we don't need guaranteed execution.
+</Info>
 
 Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
 a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
