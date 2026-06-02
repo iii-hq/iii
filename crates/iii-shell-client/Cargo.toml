@@ -14,7 +14,6 @@ path = "src/lib.rs"
 iii-shell-proto = { path = "../iii-shell-proto", version = "0.1.0" }
 tokio = { version = "1", features = ["net", "io-util", "time", "rt", "sync", "macros"] }
 base64 = "0.22"
-anyhow = "1.0.100"
 thiserror = "2"
 tracing = "0.1"
 libc = "0.2"
