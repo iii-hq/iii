@@ -114,18 +114,19 @@ class IIIClient(Protocol):
     def shutdown(self) -> None: ...
 
 
-class ApiRequest(BaseModel, Generic[TInput]):
-    """Represents an API request."""
+class HttpRequest(BaseModel, Generic[TInput]):
+    """Buffered HTTP request: parsed body, no streaming reader."""
 
     path_params: dict[str, str] = Field(default_factory=dict)
     query_params: dict[str, str | list[str]] = Field(default_factory=dict)
     body: Any | None = None
     headers: dict[str, str | list[str]] = Field(default_factory=dict)
     method: str = "GET"
+    path: str = ""
 
 
-class ApiResponse(BaseModel, Generic[TOutput]):
-    """Represents an API response."""
+class HttpResponse(BaseModel, Generic[TOutput]):
+    """Buffered HTTP response value."""
 
     model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
 
@@ -157,7 +158,19 @@ class InternalHttpRequest:
     request_body: ChannelReader
 
 
-class HttpResponse:
+@dataclass
+class StreamingRequest:
+    """Streaming HTTP request: exposes a reader for the request body channel."""
+
+    path_params: dict[str, str]
+    query_params: dict[str, str | list[str]]
+    headers: dict[str, str | list[str]]
+    method: str
+    request_body: ChannelReader
+    path: str = ""
+
+
+class StreamingResponse:
     """Streaming HTTP response built on top of a ChannelWriter."""
 
     def __init__(self, writer: ChannelWriter) -> None:
@@ -179,18 +192,6 @@ class HttpResponse:
 
     def close(self) -> None:
         self._writer.close()
-
-
-@dataclass
-class HttpRequest:
-    """HTTP request without the response writer."""
-
-    path_params: dict[str, str]
-    query_params: dict[str, str | list[str]]
-    body: Any
-    headers: dict[str, str | list[str]]
-    method: str
-    request_body: ChannelReader
 
 
 class StreamChannelRefDict(TypedDict):
