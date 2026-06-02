@@ -6,15 +6,32 @@
 Where a stream is for a live trickle of events, a **channel** is for **moving a large amount of data
 at once**: a direct streaming pipe between two endpoints, rather than one request and response.
 Channels are bidirectional (each end has both a reader and a writer), but here you'll stream in one
-direction, uploading a CSV of links into the `link` worker.
+direction, uploading a CSV of links. You'll give this its own `bulk-importer` worker so the `link`
+worker stays focused on single links.
 
-## Add a bulk-import function
+## Add the worker
 
-Add a `link::bulk_import` function to the `link` worker. It receives the read end of a channel,
-streams the CSV in, and creates a link per row:
+Scaffold the importer the same way you scaffolded `link` in Chapter 1:
 
-```typescript link/src/index.ts
-worker.registerFunction("link::bulk_import", async (input) => {
+```bash
+iii worker init bulk-importer --language typescript
+```
+
+## Import a CSV over a channel
+
+The `bulk-importer` worker exposes one function that receives the read end of a channel, streams the
+CSV in, and triggers `link::create` from the `link` worker for each row. Replace the generated
+`bulk-importer/src/index.ts`:
+
+```typescript bulk-importer/src/index.ts
+import { registerWorker, Logger } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "bulk-importer",
+});
+const logger = new Logger();
+
+worker.registerFunction("bulk-importer::import_csv", async (input) => {
   const chunks: Buffer[] = [];
   for await (const chunk of input.reader.stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -35,40 +52,67 @@ worker.registerFunction("link::bulk_import", async (input) => {
   logger.info("bulk import complete", { imported });
   return { imported };
 });
+
+logger.info("bulk-importer ready");
 ```
 
-## Upload a CSV
+Register it with your project:
 
-The uploader creates the channel, writes the CSV to the writer end, and hands the reader end to
-`link::bulk_import`. `createChannel` returns serializable `readerRef`/`writerRef` handles you can
-pass through a normal trigger payload. Save this as `import-links.mjs`:
+```bash
+iii worker add ./bulk-importer
+```
 
-```javascript import-links.mjs
+## See it work
+
+With the engine running, let's bulk-load some links.
+
+<Note>
+  Unlike previous chapters this section and Chapter 7 require that you have [node and npm
+  installed](https://nodejs.org/en/download/current) locally. This is because we're now creating
+  client side code that runs outside of workers.
+</Note>
+
+### Upload a CSV
+
+The uploader is a small standalone script that creates the channel, writes the CSV to the writer
+end, and hands the reader end to `bulk-importer::import_csv`. `createChannel` returns serializable
+`readerRef`/`writerRef` handles you can pass through a normal trigger payload. It is not a worker,
+so give it its own throwaway directory outside your project:
+
+```bash
+mkdir test-channels
+cd test-channels
+npm init -y
+npm pkg set type=module
+npm install iii-sdk
+```
+
+Save this as `test-channels/import-links.js`:
+
+```javascript import-links.js
 import { registerWorker } from "iii-sdk";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "uploader",
 });
 
-const csv = ["code,url", "iii,https://iii.dev", "docs,https://iii.dev/docs"].join("\n");
+const csv = ["code,url", "mylink,https://iii.dev", "mydocslink,https://iii.dev/docs"].join("\n");
 
 const channel = await worker.createChannel();
 channel.writer.stream.write(Buffer.from(csv));
 channel.writer.stream.end();
 
 const result = await worker.trigger({
-  function_id: "link::bulk_import",
+  function_id: "bulk-importer::import_csv",
   payload: { reader: channel.readerRef },
 });
 console.log(result);
+
+await worker.shutdown();
 ```
 
-## See it work
-
-With the engine running, bulk-load the links:
-
 ```bash
-node import-links.mjs
+node import-links.js
 ```
 
 ```json
@@ -78,7 +122,7 @@ node import-links.mjs
 Both new links resolve immediately:
 
 ```bash
-iii trigger link::resolve code=docs
+iii trigger link::resolve code=mydocslink
 ```
 
 ```json
@@ -87,6 +131,6 @@ iii trigger link::resolve code=docs
 
 ## Conclusion
 
-Linkly can now ingest a file's worth of links in a single streamed upload. Next, in
-[Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn a browser tab into a worker that
-creates links and subscribes to the live click stream.
+Linkly can now ingest a file's worth of links in a single streamed upload through a dedicated
+`bulk-importer` worker. Next, in [Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn
+a browser tab into a worker that creates links and subscribes to the live click stream.
