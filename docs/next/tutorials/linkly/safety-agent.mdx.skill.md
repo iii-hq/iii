@@ -438,6 +438,155 @@ For the phishing link, the agent calls `link::request_delete`, which goes throug
 prompt from Chapter 7. With a frontend connected, the operator sees the confirm dialog; otherwise
 the proposal sits unanswered until someone connects. The benign link is untouched.
 
+## Build a remediation tool from traces
+
+A single bad link is often one of many. Someone running an abuse campaign creates dozens of links in
+seconds, and judging each one in isolation lets the rest through while the agent works. What ties
+them together is not in any one database row; it is in the **trace**: a burst of `link::create`
+invocations clustered in a few seconds. That is execution context, and the agent reads it from the
+in-memory trace store you set up in Chapter 2 with `engine::traces::list`.
+
+The remediation does not exist yet. Linkly has no bulk-quarantine. So the agent builds one: it
+derives the burst's time window from traces, registers a short-lived `safety::purge_window` function
+that quarantines every link created in that window, runs it once, and unregisters it. The capability
+exists on the bus only as long as it is needed, and each invocation of it is its own span.
+
+Add a fifth tool in `safety-agent/src/agent.ts`. Widen the `name` union and append the tool:
+
+```typescript src/agent.ts
+name: "inspect_url" | "quarantine" | "propose_delete" | "allow" | "quarantine_burst";
+```
+
+```typescript src/agent.ts
+{
+  name: "quarantine_burst",
+  description:
+    "Quarantine every link created in the same burst as this one. Use after confirming the link is part of a coordinated batch (many links created within seconds of each other).",
+  parameters: {
+    type: "object",
+    properties: { reason: { type: "string" } },
+    required: ["reason"],
+  },
+},
+```
+
+Extend `SYSTEM_PROMPT` so the model knows when to reach for it:
+
+```typescript src/agent.ts
+export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident. If the link looks like one of many created in a rapid burst, prefer quarantine_burst to take the whole batch down at once.`;
+```
+
+The implementation in `safety-agent/src/index.ts` reads the burst from traces, then builds, runs,
+and removes the bulk action:
+
+```typescript src/index.ts
+type Span = { start_time_unix_nano: number; attributes: [string, string][] };
+const attrOf = (s: Span, k: string) => s.attributes.find(([key]) => key === k)?.[1];
+
+async function quarantineBurst(reason: string): Promise<{ purged: string[] }> {
+  // Execution context comes from traces: every link::create span in the last
+  // minute. A cluster of them is the coordinated burst.
+  const { spans } = await worker.trigger<{ limit: number }, { spans: Span[] }>({
+    function_id: "engine::traces::list",
+    payload: { limit: 500 },
+  });
+  const cutoff = Date.now() * 1e6 - 60e9; // last 60s, in unix nanos
+  const created = spans
+    .filter((s) => attrOf(s, "function_id") === "link::create")
+    .map((s) => s.start_time_unix_nano)
+    .filter((t) => t >= cutoff)
+    .sort((a, b) => a - b);
+  if (created.length < 2) return { purged: [] };
+  const start = new Date(created[0] / 1e6).toISOString();
+  const end = new Date(created[created.length - 1] / 1e6).toISOString();
+
+  // The bulk action doesn't exist yet. Register it as a real function on the
+  // bus so it gets its own span and shows up in engine::functions::list, run
+  // it once, then unregister it so it leaves no permanent surface area.
+  const fnId = `safety::purge_window_${Date.now()}`;
+  const ref = worker.registerFunction(fnId, async (p: { start: string; end: string }) => {
+    const { rows } = await worker.trigger<
+      { db: string; sql: string; params: string[] },
+      { rows: Array<{ code: string }> }
+    >({
+      function_id: "database::query",
+      payload: {
+        db: "primary",
+        sql: "SELECT code FROM links WHERE created_at BETWEEN ? AND ?",
+        params: [p.start, p.end],
+      },
+    });
+    for (const { code } of rows) {
+      await worker.trigger({ function_id: "link::quarantine", payload: { code, reason } });
+    }
+    return { codes: rows.map((r) => r.code) };
+  });
+  try {
+    const { codes } = await worker.trigger<{ start: string; end: string }, { codes: string[] }>({
+      function_id: fnId,
+      payload: { start, end },
+    });
+    return { purged: codes };
+  } finally {
+    ref.unregister();
+  }
+}
+```
+
+Handle the new tool in the loop, alongside the other terminal decisions:
+
+```typescript src/index.ts
+if (call.name === "quarantine_burst") {
+  const { purged } = await quarantineBurst(reasonOf(call.input));
+  logger.info("agent: quarantine_burst", { code: link.code, purged });
+  return;
+}
+```
+
+So the stub can demonstrate it without an API key, have it pick `quarantine_burst` for campaign
+URLs. Add this branch to `safety-agent/src/stub.ts` before the `allow` fallback:
+
+```typescript src/stub.ts
+if (/burst|campaign/i.test(ctx.url)) {
+  return {
+    content: [toolUse("quarantine_burst", { reason: "coordinated burst" })],
+    stop_reason: "tool_use",
+  };
+}
+```
+
+This version sweeps every link created in the burst's time span. A production agent would cluster
+more tightly, requiring sub-second gaps or matching `user_agent.original` (the one caller signal
+traces do carry on HTTP-created links) so it never catches an unrelated link created in the same
+window.
+
+### Watch it take down a burst
+
+Create a batch of links pointing at the same campaign, back to back:
+
+```bash
+for i in 1 2 3 4 5; do
+  iii trigger link::create url=https://burst-campaign.example code=burst$i
+done
+```
+
+Each create triggers an investigation. The first to reach a verdict reads the trace of recent
+`link::create` calls, sees the cluster, builds `safety::purge_window_*`, and quarantines the whole
+batch:
+
+```bash
+iii trigger database::query db=primary \
+  sql="SELECT code FROM link_quarantine WHERE reason = 'coordinated burst' ORDER BY code"
+# [{"code":"burst1"}, {"code":"burst2"}, {"code":"burst3"}, {"code":"burst4"}, {"code":"burst5"}]
+```
+
+The function the agent built is already gone, unregistered the moment its work finished:
+
+```bash
+iii trigger engine::functions::list --json '{"include_internal":true}' | grep purge_window || echo gone
+# gone
+```
+
 ## Switch to a real LLM
 
 Set the Anthropic key via `auth::set_token`:
@@ -572,9 +721,11 @@ worker.registerFunction("link::request_delete", async (payload: { code: string }
 ## Conclusion
 
 Linkly now has an autonomous link-safety agent. It samples newly created links, decides on its own
-how to investigate (call `inspect_url` as many times as it likes), and reaches one of three terminal
-verdicts: quarantine (auto-applied), propose delete (routed through a human via the browser admin),
-or allow. Every step (the trigger, each LLM call, each sandbox probe, the final action) is one span
+how to investigate (call `inspect_url` as many times as it likes), and reaches a terminal verdict:
+quarantine (auto-applied), propose delete (routed through a human via the browser admin), or allow.
+When it spots a coordinated burst, it reads the execution context from traces and builds a one-shot
+`safety::purge_window` function to take down the whole batch, then unregisters it. Every step (the
+trigger, each LLM call, each sandbox probe, the bulk action it built, the final verdict) is one span
 on the trace, because the LLM call goes through `harness` instead of a private SDK.
 
 One housekeeping capability is left. Next, in
