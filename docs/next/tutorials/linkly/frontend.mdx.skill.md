@@ -26,23 +26,25 @@ analytics worker) connect there. The browser must not. Add two `iii-worker-manag
 trusted one (local workers keep using it) and an RBAC-gated one on `3110` for browsers:
 
 ```yaml config.yaml
-# Trusted listener for local workers. Replaces the engine's built-in 49134.
-- name: iii-worker-manager
-  config:
-    port: 49134
+workers:
+  # ...
+  # Trusted listener for local workers. Replaces the engine's built-in 49134.
+  - name: iii-worker-manager
+    config:
+      port: 49134
 
-# Browser-facing listener. The auth function gates every connection; only the
-# functions in `expose_functions` are reachable from sessions it admits.
-- name: iii-worker-manager
-  config:
-    host: 127.0.0.1
-    port: 3110
-    rbac:
-      auth_function_id: auth::browser
-      expose_functions:
-        - match("link::create")
-        - match("link::request_delete")
-        - match("stream::*")
+  # Browser-facing listener. The auth function gates every connection; only the
+  # functions in `expose_functions` are reachable from sessions it admits.
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: 3110
+      rbac:
+        auth_function_id: auth::browser
+        expose_functions:
+          - match("link::create")
+          - match("link::request_delete")
+          - match("stream::*")
 ```
 
 `expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`

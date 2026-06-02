@@ -38,9 +38,11 @@ it to an in-memory store instead. Find the `iii-state` entry in `config.yaml` an
 `store_method`:
 
 ```yaml config.yaml
-- name: iii-state
-  config:
-    store_method: in_memory
+workers:
+  # ...
+  - name: iii-state
+    config:
+      store_method: in_memory
 ```
 
 Now restarting the engine clears every link. That's fine here;

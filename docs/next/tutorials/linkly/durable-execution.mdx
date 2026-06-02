@@ -28,16 +28,18 @@ A queue holds work that is accepted now and run later: each message in the `clic
 worker (already in your project from `iii project init`), but requiring a few updates to
 `queue_configs`:
 
-```yaml {3-7} config.yaml
-- name: iii-queue
-  config:
-    queue_configs:
-      clicks:
-        type: standard
-        max_retries: 5
-        concurrency: 5
-    adapter:
-      name: builtin
+```yaml {5-9} config.yaml
+workers:
+  # ...
+  - name: iii-queue
+    config:
+      queue_configs:
+        clicks:
+          type: standard
+          max_retries: 5
+          concurrency: 5
+      adapter:
+        name: builtin
 ```
 
 You already wrote `link::record_click` in Chapter 3, where `http::redirect` triggers it directly.
@@ -278,15 +280,17 @@ scripts:
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
 Add an `analytics` database to the `database` worker, alongside the `primary` one from Chapter 3:
 
-```yaml {7-8} config.yaml
-- name: database
-  config:
-    databases:
-      primary:
-        # ...
-        url: sqlite:./data/iii.db
-      analytics:
-        url: sqlite:./data/analytics.db
+```yaml {9-10} config.yaml
+workers:
+  # ...
+  - name: database
+    config:
+      databases:
+        primary:
+          # ...
+          url: sqlite:./data/iii.db
+        analytics:
+          url: sqlite:./data/analytics.db
 ```
 
 Finally, add the new analytics worker to your `config.yaml`:

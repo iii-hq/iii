@@ -28,13 +28,15 @@ iii worker init link-sweeper --language typescript
 The sweeper tracks expiry itself, so it needs somewhere to keep it. Add an `expiry` database to the
 `database` worker's config, alongside the ones from earlier chapters:
 
-```yaml config.yaml {5,6}
-- name: database
-  config:
-    databases:
-      # ...primary, harness, and safety from earlier chapters
-      expiry:
-        url: sqlite:./data/expiry.db
+```yaml config.yaml {7,8}
+workers:
+  # ...
+  - name: database
+    config:
+      databases:
+        # ...primary, harness, and safety from earlier chapters
+        expiry:
+          url: sqlite:./data/expiry.db
 ```
 
 ## Build the link-sweeper worker
