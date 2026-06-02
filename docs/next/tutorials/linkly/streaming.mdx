@@ -29,6 +29,8 @@ We'll continue to keep `link` decoupled by having it announce that a click happe
 `click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
 dropped event, so a regular `iii-pubsub` event is the right tool here.
 
+### Add a `link.clicked` event to the `link` worker
+
 First, publish a `link.clicked` event from `link::record_click`:
 
 ```typescript link/src/index.ts {12-16}
@@ -58,6 +60,8 @@ worker.registerFunction(
   causes the function to return immediately before it completes. This is a simple performance
   enhancement with things like pubsub where we don't need guaranteed execution.
 </Info>
+
+### Setup the `click-streamer` worker
 
 Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
 a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every

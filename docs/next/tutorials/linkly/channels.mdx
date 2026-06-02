@@ -1,7 +1,6 @@
 ---
 title: "Ch. 6: Move bulk data with channels"
-description:
-  "Stream a file's worth of data in one shot over a channel by bulk-loading links from a CSV."
+description: "Send a large amounts of data over channels by bulk-loading links from a CSV."
 owner: "devrel"
 type: "tutorial"
 ---
@@ -14,7 +13,7 @@ direction, uploading a CSV of links into the `link` worker.
 ## Add a bulk-import function
 
 Add a `link::bulk_import` function to the `link` worker. It receives the read end of a channel,
-streams the CSV in, and creates a link per row:
+streams the CSV in, and triggers `link::create` to create a link per row:
 
 ```typescript link/src/index.ts
 worker.registerFunction("link::bulk_import", async (input) => {

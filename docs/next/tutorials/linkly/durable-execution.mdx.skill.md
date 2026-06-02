@@ -259,19 +259,6 @@ print("Analytics worker started")
 
 </Accordion>
 
-### Add watchfiles to `pyproject.toml`
-
-This project will use watchfiles to react to file changes on `main.py`, so let's add it now:
-
-```toml {4-5} pyproject.toml
-[project]
-# ...
-dependencies = [
-    "iii-sdk>=0.17.0",
-    "watchfiles >= 1.2.0",
-]
-```
-
 ### Configure the worker's manifest
 
 The generated manifest has no run scripts yet, so give it an install and start script:
