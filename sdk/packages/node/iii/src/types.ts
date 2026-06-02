@@ -320,11 +320,10 @@ export type InternalHttpRequest<TBody = unknown> = {
 }
 
 /**
- * Response object passed to HTTP function handlers. Use `status()` and
- * `headers()` to set response metadata, write to `stream` for streaming
- * responses, and call `close()` when done.
+ * Streaming response handle passed to HTTP function handlers. Use `status()`
+ * and `headers()` to set metadata, write to `stream`, and `close()` when done.
  */
-export type HttpResponse = {
+export type StreamingResponse = {
   /** Set the HTTP status code. */
   status: (statusCode: number) => void
   /** Set response headers. */
@@ -336,35 +335,33 @@ export type HttpResponse = {
 }
 
 /**
- * Incoming HTTP request received by a function registered with an HTTP trigger.
+ * Buffered HTTP request: parsed body, no streaming reader.
  *
  * @typeParam TBody - Type of the parsed request body.
  */
-export type HttpRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
+export type HttpRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response' | 'request_body'>
 
 /**
- * Alias for {@link HttpRequest}. Represents an incoming API request.
- *
- * @typeParam TBody - Type of the parsed request body.
+ * Streaming HTTP request: exposes `request_body` reader, no pre-parsed body.
  */
-export type ApiRequest<TBody = unknown> = HttpRequest<TBody>
+export type StreamingRequest = Omit<InternalHttpRequest, 'response' | 'body'>
 
 /**
- * Structured API response returned from HTTP function handlers.
+ * Buffered structured response returned from HTTP function handlers.
  *
  * @typeParam TStatus - HTTP status code literal type.
  * @typeParam TBody - Type of the response body.
  *
  * @example
  * ```typescript
- * const response: ApiResponse = {
+ * const response: HttpResponse = {
  *   status_code: 200,
  *   headers: { 'content-type': 'application/json' },
  *   body: { message: 'ok' },
  * }
  * ```
  */
-export type ApiResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
+export type HttpResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
   /** HTTP status code. */
   status_code: TStatus
   /** Response headers. */
