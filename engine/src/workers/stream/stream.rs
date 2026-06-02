@@ -332,6 +332,14 @@ impl StreamWorker {
             triggers
         };
 
+        // No trigger matches this stream write (name index already filtered by
+        // stream_name/group_id/item_id) → skip the `stream_triggers` eval span
+        // and the spawn entirely. The engine fires one evaluation per stream
+        // write, so this avoids the span/CPU/export for the common no-match case.
+        if triggers_to_invoke.is_empty() {
+            return;
+        }
+
         let current_span = tracing::Span::current();
 
         if let Ok(event_data) = serde_json::to_value(event_data) {

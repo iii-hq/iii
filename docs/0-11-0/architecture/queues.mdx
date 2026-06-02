@@ -61,11 +61,11 @@ This separation solves three problems:
 | Work must survive process restarts | **Yes** | Queues persist messages and retry on failure |
 | External API has rate limits | **Yes** | Concurrency control throttles parallel requests |
 | Transactions for the same entity must be ordered | **Yes** | FIFO queues guarantee per-group ordering |
-| You need the function's return value right now | **No** | Use a [synchronous trigger](/0-11-0/how-to/trigger-actions#1-synchronous-no-action) instead |
-| The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](/0-11-0/how-to/trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
+| You need the function's return value right now | **No** | Use a [synchronous trigger](../how-to/trigger-actions#1-synchronous-no-action) instead |
+| The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](../how-to/trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
 
 <Info title="How-to guide">
-  For queue modes, configuration, retries, and adapter guidance, see the [Queue worker reference](/0-11-0/workers/iii-queue).
+  For queue modes, configuration, retries, and adapter guidance, see the [Queue worker reference](../workers/iii-queue).
 </Info>
 
 ## RabbitMQ Resource Topology
@@ -108,7 +108,7 @@ Because each of the three lifecycle stages is a separate routing destination, an
 | Dead-letter | `iii.__fn_queue::<name>::dlq` | `iii.__fn_queue::<name>::dlq.queue` |
 
 <Info title="Full resource map">
-  For the complete naming convention and examples, see the [Queue worker reference — Queue naming in RabbitMQ](/0-11-0/workers/iii-queue#queue-naming-in-rabbitmq).
+  For the complete naming convention and examples, see the [Queue worker reference — Queue naming in RabbitMQ](../workers/iii-queue#queue-naming-in-rabbitmq).
 </Info>
 
 ## The Delayed Retry Problem
@@ -137,7 +137,7 @@ The DLQ stores the original payload, the error from the last attempt, a timestam
 The DLQ exchange exists as a separate resource because the main queue's `x-dead-letter-exchange` property points to it. When the engine `nack`s a message with `requeue=false` after all retries are exhausted, RabbitMQ routes it to the DLQ automatically through this DLX binding.
 
 <Info title="DLQ operations">
-  For instructions on inspecting and redriving DLQ messages, see [Manage Failed Triggers](/0-11-0/how-to/dead-letter-queues).
+  For instructions on inspecting and redriving DLQ messages, see [Manage Failed Triggers](../how-to/dead-letter-queues).
 </Info>
 
 ## Redriving DLQ Messages
@@ -146,7 +146,7 @@ Once the root cause of a failure is fixed, the messages sitting in the DLQ need 
 
 The redrive operation iterates over every message in the DLQ for a given named queue, resets the attempt counter to zero, and republishes each message to the main exchange. The original payload, function ID, and metadata are preserved — only the attempt counter changes. After the redrive, the messages re-enter the normal processing lifecycle with a fresh set of retries.
 
-You invoke the redrive function using the [`iii trigger`](/0-11-0/how-to/trigger-functions-from-cli) CLI command against a running engine:
+You invoke the redrive function using the [`iii trigger`](../how-to/trigger-functions-from-cli) CLI command against a running engine:
 
 ```bash
 iii trigger \
@@ -190,19 +190,19 @@ The builtin adapter implements the same three-stage lifecycle entirely in-proces
 The conceptual model is identical across all adapters. Only the transport differs. This means you can develop locally with the builtin adapter and deploy to production with RabbitMQ, and the retry and DLQ behavior stays the same.
 
 <Info title="Choosing an adapter">
-  For a feature comparison of all queue adapters and scenario-based recommendations, see the [adapter comparison](/0-11-0/workers/iii-queue#adapter-comparison).
+  For a feature comparison of all queue adapters and scenario-based recommendations, see the [adapter comparison](../workers/iii-queue#adapter-comparison).
 </Info>
 
 ## Related
 
 <CardGroup cols={3}>
-  <Card title="Use Queues" href="/0-11-0/workers/iii-queue" icon="list-check">
+  <Card title="Use Queues" href="../workers/iii-queue" icon="list-check">
     Configure named queues with retries, concurrency, and FIFO ordering
   </Card>
-  <Card title="Dead Letter Queues" href="/0-11-0/how-to/dead-letter-queues" icon="skull">
+  <Card title="Dead Letter Queues" href="../how-to/dead-letter-queues" icon="skull">
     Inspect and redrive failed queue messages
   </Card>
-  <Card title="Queue Worker Reference" href="/0-11-0/workers/iii-queue" icon="gear">
+  <Card title="Queue Worker Reference" href="../workers/iii-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
 </CardGroup>

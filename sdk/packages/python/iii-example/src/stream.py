@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from iii import IIIClient
+from iii.helpers import create_stream
 from iii.stream import (
     IStream,
     StreamDeleteInput,
@@ -90,4 +91,4 @@ class TodoStream(IStream[dict[str, Any]]):
 
 
 def register_streams(iii: IIIClient) -> None:
-    iii.create_stream("todo", TodoStream())
+    create_stream(iii, "todo", TodoStream())

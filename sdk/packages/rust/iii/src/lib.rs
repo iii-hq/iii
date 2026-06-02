@@ -1,9 +1,11 @@
 pub mod builtin_triggers;
 pub mod channels;
 pub mod error;
+pub mod helpers;
 pub mod iii;
 pub mod protocol;
 pub mod stream;
+pub mod stream_provider;
 pub mod structs;
 pub mod triggers;
 pub mod types;
@@ -12,10 +14,7 @@ pub use builtin_triggers::{
     IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
     StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
-pub use channels::{
-    ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
-    extract_channel_refs, is_channel_ref,
-};
+pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
 pub use error::IIIError;
 pub use iii::{
     FunctionInfo, FunctionRef, III, IIIConnectionState, RegisterFunction, RegisterTriggerType,
@@ -27,6 +26,7 @@ pub use protocol::{
     RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream::UpdateBuilder;
+pub use stream_provider::IStream;
 pub use structs::{
     AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
     OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
@@ -106,3 +106,45 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
 
     iii
 }
+
+// ---------------------------------------------------------------------------
+// Compile-fail doctests: these enforce that the four channel items relocated
+// to `helpers` are NOT reachable at the crate root. They live here (not in
+// `tests/`) because `cargo test --doc` only picks up doctests inside `src/`.
+// ---------------------------------------------------------------------------
+
+/// ```compile_fail
+/// use iii_sdk::ChannelDirection;
+/// ```
+#[allow(dead_code)]
+fn _ensure_channel_direction_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::ChannelItem;
+/// ```
+#[allow(dead_code)]
+fn _ensure_channel_item_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::extract_channel_refs;
+/// ```
+#[allow(dead_code)]
+fn _ensure_extract_channel_refs_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::is_channel_ref;
+/// ```
+#[allow(dead_code)]
+fn _ensure_is_channel_ref_not_top_level() {}
+
+// ---------------------------------------------------------------------------
+// Compile-fail doctest: enforces that `create_channel` (relocated to
+// `helpers`) is no longer callable on `III`.
+// ---------------------------------------------------------------------------
+
+/// ```compile_fail
+/// let iii = iii_sdk::III::new("ws://x");
+/// iii.create_channel(None);
+/// ```
+#[allow(dead_code)]
+fn _ensure_create_channel_not_on_instance() {}

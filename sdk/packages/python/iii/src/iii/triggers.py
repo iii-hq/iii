@@ -52,7 +52,7 @@ class Trigger:
 
 
 class TriggerTypeRef(Generic[C, R]):
-    """Typed handle returned by :meth:`III.register_trigger_type`.
+    """Typed handle returned by :meth:`iii.III.register_trigger_type`.
 
     Type parameters:
 

@@ -9,6 +9,7 @@ import pytest
 
 import iii.iii as iii_module
 from iii import InitOptions, RegisterTriggerTypeInput
+from iii.helpers import create_channel
 from iii.iii import III
 from iii.triggers import TriggerConfig, TriggerHandler
 
@@ -179,7 +180,7 @@ def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: p
 
 
 def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """trigger and create_channel should be sync."""
+    """trigger and the helpers.create_channel free function should be sync."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
@@ -187,7 +188,7 @@ def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     import inspect
 
     assert not inspect.iscoroutinefunction(client.trigger)
-    assert not inspect.iscoroutinefunction(client.create_channel)
+    assert not inspect.iscoroutinefunction(create_channel)
 
     client.shutdown()
 

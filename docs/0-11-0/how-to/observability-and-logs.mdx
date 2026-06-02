@@ -30,7 +30,7 @@ Every iii SDK ships a `Logger` class that emits logs as OpenTelemetry LogRecords
 
 When you use the iii Logger, every log entry is attached to the trace that was active when the log was emitted. In the iii Console, clicking a trace in the waterfall chart opens a detail drawer. The **Logs** tab shows every log entry from that exact execution — with severity, timestamp, message, and any structured data you attached.
 
-<img src="/0-11-0/assets/console-logs-detail.png" alt="iii Console Logs page showing structured log rows with a selected log entry and its context data" />
+<img src="../assets/console-logs-detail.png" alt="iii Console Logs page showing structured log rows with a selected log entry and its context data" />
 
 This is the core value of using the iii Logger: you can go from a slow trace in the waterfall chart directly to the logs that explain what happened, without grepping through stdout or cross-referencing timestamps manually.
 
@@ -276,7 +276,7 @@ graph LR
 ```
 
 <Info>
-  The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability worker reference](/0-11-0/workers/iii-observability) for the full list of configuration fields and environment variable overrides.
+  The `endpoint` field can also be set via the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. See the [Observability worker reference](../workers/iii-observability) for the full list of configuration fields and environment variable overrides.
 </Info>
 
 ## Viewing Logs in iii Console
@@ -284,16 +284,16 @@ graph LR
 Once you've instrumented your code with the Logger, view trace-correlated logs in the iii Console.
 
 <Info title="How-to guide">
-  See [Use the Console](/0-11-0/how-to/use-console#inspect-a-trace) for step-by-step instructions on navigating traces and viewing span details.
+  See [Use the Console](./use-console#inspect-a-trace) for step-by-step instructions on navigating traces and viewing span details.
 </Info>
 
 Navigate to **Traces**, select a trace, and open the **Logs** tab on any span to see every log entry from that execution — with severity, timestamp, message, and structured attributes you attached.
 
-<img src="/0-11-0/assets/console-logs-detail.png" alt="Trace and log inspection in iii Console with structured log details and context data" />
+<img src="../assets/console-logs-detail.png" alt="Trace and log inspection in iii Console with structured log details and context data" />
 
 The dedicated **Logs** page provides a full log viewer with severity filters, full-text search, and time-range controls. If a log entry has a `trace_id`, click it to jump directly to the corresponding trace.
 
-For the full console feature set, see the [Console reference](/0-11-0/console).
+For the full console feature set, see the [Console reference](../console).
 
 ## Result
 
@@ -307,16 +307,16 @@ Your iii application is now fully observable:
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Console" href="/0-11-0/console" icon="desktop">
+  <Card title="Console" href="../console" icon="desktop">
     Full iii Console feature reference
   </Card>
-  <Card title="OpenTelemetry Integration" href="/0-11-0/advanced/telemetry" icon="signal">
+  <Card title="OpenTelemetry Integration" href="../advanced/telemetry" icon="signal">
     Custom spans, metrics, and telemetry utilities
   </Card>
-  <Card title="Observability Worker" href="/0-11-0/workers/iii-observability" icon="gear">
+  <Card title="Observability Worker" href="../workers/iii-observability" icon="gear">
     Full configuration reference for traces, logs, metrics, alerts, and sampling
   </Card>
-  <Card title="Observability Example" href="/0-11-0/examples/observability" icon="code">
+  <Card title="Observability Example" href="../examples/observability" icon="code">
     End-to-end multi-step workflow with trace correlation
   </Card>
 </CardGroup>

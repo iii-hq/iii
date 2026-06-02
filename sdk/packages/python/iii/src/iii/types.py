@@ -5,7 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Protocol, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Generic,
+    Literal,
+    Protocol,
+    TypedDict,
+    TypeGuard,
+    TypeVar,
+)
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,7 +29,6 @@ from .iii_types import (
     StreamChannelRef,
     TriggerRequest,
 )
-from .stream import IStream
 from .triggers import Trigger, TriggerHandler
 
 if TYPE_CHECKING:
@@ -77,7 +87,11 @@ class RemoteServiceFunctionData(BaseModel):
 
 
 class IIIClient(Protocol):
-    """Protocol for III client implementations."""
+    """Protocol for III client implementations.
+
+    Helper free functions live in :mod:`iii.helpers`. See
+    :func:`iii.helpers.create_channel` and :func:`iii.helpers.create_stream`.
+    """
 
     def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
 
@@ -96,10 +110,6 @@ class IIIClient(Protocol):
     ) -> Any: ...
 
     def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
-
-    def create_channel(self, buffer_size: int | None = None) -> Channel: ...
-
-    def create_stream(self, stream_name: str, stream: IStream[Any]) -> None: ...
 
     def shutdown(self) -> None: ...
 
@@ -183,11 +193,59 @@ class HttpRequest:
     request_body: ChannelReader
 
 
-def is_channel_ref(value: Any) -> bool:
-    """Check if a value looks like a StreamChannelRef."""
+class StreamChannelRefDict(TypedDict):
+    """Wire-shape of a :class:`StreamChannelRef` as it appears in raw payloads.
+
+    Used as the narrowed type for :func:`is_channel_ref` so type checkers can
+    validate ``value["channel_id"]`` style access after the guard passes.
+    """
+
+    channel_id: str
+    access_key: str
+    direction: Literal["read", "write"]
+
+
+def is_channel_ref(value: Any) -> TypeGuard[StreamChannelRefDict]:
+    """Check if a value looks like a StreamChannelRef.
+
+    Returns a :class:`typing.TypeGuard` that narrows ``value`` to
+    :class:`StreamChannelRefDict`, mirroring the TypeScript SDK's
+    ``value is StreamChannelRef`` predicate.
+    """
     return (
         isinstance(value, dict)
         and isinstance(value.get("channel_id"), str)
         and isinstance(value.get("access_key"), str)
         and value.get("direction") in {"read", "write"}
     )
+
+
+def extract_channel_refs(data: Any) -> list[tuple[str, StreamChannelRef]]:
+    """Extract all channel references from a nested value, returning ``(path, ref)`` tuples.
+
+    Recursively walks ``dict`` and ``list`` structures. Dotted paths are
+    used for object fields, bracketed indices for list elements (e.g.
+    ``items[0].writer``). Mirrors the Rust SDK's ``extract_channel_refs``.
+    """
+    refs: list[tuple[str, StreamChannelRef]] = []
+    _extract_refs_recursive(data, "", refs)
+    return refs
+
+
+def _extract_refs_recursive(
+    data: Any, prefix: str, refs: list[tuple[str, StreamChannelRef]]
+) -> None:
+    if is_channel_ref(data):
+        try:
+            refs.append((prefix, StreamChannelRef(**data)))
+        except Exception:
+            pass
+        return
+    if isinstance(data, dict):
+        for key, value in data.items():
+            path = key if not prefix else f"{prefix}.{key}"
+            _extract_refs_recursive(value, path, refs)
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            path = f"[{idx}]" if not prefix else f"{prefix}[{idx}]"
+            _extract_refs_recursive(item, path, refs)
