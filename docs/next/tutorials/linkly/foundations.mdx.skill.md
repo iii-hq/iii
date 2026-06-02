@@ -150,12 +150,15 @@ worker doesn't import anything from `iii-state`; it knows the function name. App
 ```typescript src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
   const code = payload.code ?? makeCode();
+  // Store an absolute URL so the redirect's Location header is absolute, not
+  // resolved relative to /s/:code.
+  const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
   await worker.trigger({
     function_id: "state::set",
-    payload: { scope: "links", key: code, value: { url: payload.url } },
+    payload: { scope: "links", key: code, value: { url } },
   });
-  logger.info("link created", { code, url: payload.url });
-  return { code, url: payload.url };
+  logger.info("link created", { code, url });
+  return { code, url };
 });
 ```
 

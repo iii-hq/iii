@@ -93,23 +93,24 @@ ensureSchema()
 
 Change `link::create` to write to both the database (durable record) and `iii-state` (hot cache):
 
-```typescript src/index.ts {3-10}
+```typescript src/index.ts {4-11}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
   const code = payload.code ?? makeCode();
+  const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
   await worker.trigger({
     function_id: "database::execute",
     payload: {
       db: DB,
       sql: "INSERT INTO links (code, url, created_at) VALUES (?, ?, ?)",
-      params: [code, payload.url, new Date().toISOString()],
+      params: [code, url, new Date().toISOString()],
     },
   });
   await worker.trigger({
     function_id: "state::set",
-    payload: { scope: "links", key: code, value: { url: payload.url } },
+    payload: { scope: "links", key: code, value: { url } },
   });
-  logger.info("link created", { code, url: payload.url });
-  return { code, url: payload.url };
+  logger.info("link created", { code, url });
+  return { code, url };
 });
 ```
 

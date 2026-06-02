@@ -92,7 +92,7 @@ database write and `state::set`, trigger the built-in `publish` function:
 // ...inside link::create, after the database write and state::set:
 await worker.trigger({
   function_id: "publish",
-  payload: { topic: "link.created", data: { code, url: payload.url } },
+  payload: { topic: "link.created", data: { code, url } },
 });
 ```
 
@@ -104,19 +104,20 @@ updates the database row and publishes a `link.updated` event through durable pu
 
 ```typescript src/index.ts
 worker.registerFunction("link::update", async (payload: { code: string; url: string }) => {
+  const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
   await worker.trigger({
     function_id: "database::execute",
     payload: {
       db: DB,
       sql: "UPDATE links SET url = ? WHERE code = ?",
-      params: [payload.url, payload.code],
+      params: [url, payload.code],
     },
   });
   await worker.trigger({
     function_id: "iii::durable::publish",
-    payload: { topic: "link.updated", data: { code: payload.code, url: payload.url } },
+    payload: { topic: "link.updated", data: { code: payload.code, url } },
   });
-  return { code: payload.code, url: payload.url };
+  return { code: payload.code, url };
 });
 ```
 

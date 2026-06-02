@@ -105,11 +105,29 @@ iii worker add ./auth
 
 ## Add a server-initiated delete
 
-Linkly already has `link::delete`. Add a wrapper that asks the connected browser first, then deletes
-only if the browser confirms. The server-side `worker.trigger` of a browser-registered function is
-the same primitive you've used between server workers, in reverse:
+First give the `link` worker a `link::delete` that removes a link from both the database and the
+`iii-state` cache. Add it to `link/src/index.ts`:
 
-```typescript src/index.ts
+```typescript link/src/index.ts
+worker.registerFunction("link::delete", async (payload: { code: string }) => {
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: { db: DB, sql: "DELETE FROM links WHERE code = ?", params: [payload.code] },
+  });
+  await worker.trigger({
+    function_id: "state::delete",
+    payload: { scope: "links", key: payload.code },
+  });
+  logger.info("link deleted", { code: payload.code });
+  return { deleted: true };
+});
+```
+
+Now add a wrapper that asks the connected browser first, then deletes only if the browser confirms.
+The server-side `worker.trigger` of a browser-registered function is the same primitive you've used
+between server workers, in reverse:
+
+```typescript link/src/index.ts
 worker.registerFunction("link::request_delete", async (payload: { code: string }) => {
   const { confirmed } = await worker.trigger<
     { code: string; action: string },

@@ -34,29 +34,30 @@ await worker.trigger({
 
 Accept `expires_at` in `link::create` and store it (it stays `null` for links that never expire):
 
-```typescript link/src/index.ts {3,9,10}
+```typescript link/src/index.ts {3,10,11}
 worker.registerFunction(
   "link::create",
   async (payload: { url: string; code?: string; expires_at?: string }) => {
     const code = payload.code ?? makeCode();
+    const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
     await worker.trigger({
       function_id: "database::execute",
       payload: {
         db: DB,
         sql: "INSERT INTO links (code, url, created_at, expires_at) VALUES (?, ?, ?, ?)",
-        params: [code, payload.url, new Date().toISOString(), payload.expires_at ?? null],
+        params: [code, url, new Date().toISOString(), payload.expires_at ?? null],
       },
     });
     await worker.trigger({
       function_id: "state::set",
-      payload: { scope: "links", key: code, value: { url: payload.url } },
+      payload: { scope: "links", key: code, value: { url } },
     });
     await worker.trigger({
       function_id: "publish",
-      payload: { topic: "link.created", data: { code, url: payload.url } },
+      payload: { topic: "link.created", data: { code, url } },
     });
-    logger.info("link created", { code, url: payload.url });
-    return { code, url: payload.url };
+    logger.info("link created", { code, url });
+    return { code, url };
   },
 );
 ```
