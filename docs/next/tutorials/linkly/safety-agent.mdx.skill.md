@@ -4,9 +4,9 @@
 In this chapter Linkly gets a **link-safety agent**: an autonomous worker that samples newly created
 links, investigates their destinations in `iii-sandbox`, and decides on its own whether to
 quarantine the link, ask a human operator to confirm deletion, or let it through. The agent uses a
-real LLM tool-calling loop, with every model call routed through `harness` so the trace explorer
-from Chapter 2 covers the agent end-to-end. Whatever the agent decides to run to investigate a link
-runs inside a sandbox, never on the worker process.
+real LLM tool-calling loop, with every model call routed through `harness` so we get end to end
+traces of the agent's activity. Whatever the agent decides to run to investigate a link runs inside
+a sandbox, never on the worker process.
 
 ## Why harness, not a vendor SDK directly
 
@@ -17,8 +17,15 @@ iii worker add harness
 ```
 
 `harness` is iii's agent backbone: a Node bundle that ships providers for Anthropic, OpenAI, Kimi,
-LM Studio, plus turn orchestration, credentials, budgets, and approval-gate. We use a small piece:
-`provider::anthropic::complete`, the LLM-call function.
+LM Studio, plus turn orchestration, credentials, budgets, and approval-gate. It being a worker
+max_concurrent_sandboxes we get all of the immediate benefits of iii: process isolation,
+interoperability, and dynamic registration of new functionality.
+
+For this example we'll just use a few small pieces of the harness and trust that by now you have a
+pretty good idea of how to incorporate iii's advanced features into your own projects.
+
+The pieces we'll use are iii's `sandbox` worker and the Anthropic provider:
+`provider::anthropic::complete`.
 
 Going through harness instead of importing `@anthropic-ai/sdk` directly costs a little setup and
 buys one big thing: **every LLM call shows up as an `iii-observability` span**. The agent's trace
