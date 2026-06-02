@@ -345,5 +345,5 @@ way.
 
 Once everything is set up our client calls server functions directly, subscribes to streams for live
 updates, and registers functions the server calls back. Next, in
-[Ch. 8: Open it to users](/tutorials/linkly/custom-rules), customers attach per-link scripts that
-`iii-sandbox` runs on every redirect.
+[Ch. 8: Make it agentic](/tutorials/linkly/safety-agent), an autonomous agent samples new links and
+investigates their destinations in an `iii-sandbox` before deciding whether to quarantine them.

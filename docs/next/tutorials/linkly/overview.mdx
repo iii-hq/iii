@@ -7,8 +7,8 @@ type: "tutorial"
 
 This tutorial builds **Linkly**, a link shortener, one worker at a time. You start with a single
 function that turns `/s/abc` into a redirect, and finish with a multi-tenant link platform that has
-durable execution, storage, analytics, expiry, a live ops dashboard, custom redirect rules, and an
-autonomous link-safety agent.
+durable execution, storage, analytics, expiry, a live ops dashboard, and an autonomous link-safety
+agent.
 
 Each chapter adds one capability by adding a worker to your existing system. The point is not the
 link shortener itself, but the pattern: a real system on iii is a set of small workers that invoke
@@ -53,17 +53,12 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
 Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, subscribe to
 the click stream, and register a browser-side function the server can call.
 
-## Ch. 8: Open it to users
+## Ch. 8: Make it agentic
 
-Let customers attach per-link redirect logic (geo-routing, A/B splits) as scripts that run in an
-`iii-sandbox` on each request.
+Drop in the `harness` agent to sample new links, investigate suspicious destinations in an
+`iii-sandbox`, and decide on its own whether to quarantine them or ask a human to confirm deletion.
 
-## Ch. 9: Make it agentic
-
-Drop in the `harness` agent to sample new links, investigate suspicious destinations in a sandbox,
-and decide on its own whether to quarantine them or ask a human to confirm deletion.
-
-## Ch. 10: Schedule maintenance
+## Ch. 9: Schedule maintenance
 
 Give links an optional expiry and sweep the stale ones on a schedule with a `link-sweeper` worker
 and `iii-cron`.
