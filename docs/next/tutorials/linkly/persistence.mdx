@@ -12,9 +12,9 @@ record of links and a timestamped row for every click on a short code. `iii-stat
 picture as a fast read cache in front of the database.
 
 <Info>
-  If you prefer to keep `iii-state` as the only persistence layer rather than introducing a
-  database, change it to file-backed instead by setting `store_method: file_based` and a `file_path`
-  in the `iii-state` entry in `config.yaml`. The rest of this chapter assumes the database route.
+  `iii-state` can also persist on its own (`store_method: file_based` with a `file_path`). This
+  chapter uses a dedicated `database` worker instead, which gives you durable storage plus SQL to
+  query it.
 </Info>
 
 ## Add the database worker
@@ -116,8 +116,8 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
 ### Setup database retrieval
 
 Change `link::resolve` to check the cache first; on a miss, fall back to the database and warm the
-cache for the next read. It's easiest to just replace the existing `link::resolve` function with our
-new version:
+cache for the next read. It's easiest to replace the existing `link::resolve` function with our new
+version:
 
 ```typescript src/index.ts
 worker.registerFunction("link::resolve", async (payload: { code: string }) => {
@@ -148,8 +148,8 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
 
 ## Add click tracking
 
-Since we have a database now it's trivial to start click tracking. Pull the write into its own
-`link::record_click` function so the redirect records a click instead of issuing SQL itself — and so
+Since we have a database now, you can start click tracking. Pull the write into its own
+`link::record_click` function so the redirect records a click instead of issuing SQL itself, and so
 the next chapter can move that work onto a queue without touching the redirect's logic. Add it below
 `link::resolve`:
 

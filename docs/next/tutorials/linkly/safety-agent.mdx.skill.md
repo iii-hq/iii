@@ -4,8 +4,8 @@
 In this final chapter Linkly gets a **link-safety agent**: an autonomous worker that samples newly
 created links, investigates their destinations in `iii-sandbox`, and decides on its own whether to
 quarantine the link, ask a human operator to confirm deletion, or let it through. The agent uses a
-real LLM tool-calling loop, with every model call routed through `harness` so the trace explorer from
-Chapter 2 covers the agent end-to-end.
+real LLM tool-calling loop, with every model call routed through `harness` so the trace explorer
+from Chapter 2 covers the agent end-to-end.
 
 ## Why harness, not a vendor SDK directly
 
@@ -21,9 +21,9 @@ LM Studio, plus turn orchestration, credentials, budgets, and approval-gate. We 
 
 Going through harness instead of importing `@anthropic-ai/sdk` directly costs a little setup and
 buys one big thing: **every LLM call shows up as an `iii-observability` span**. The agent's trace
-becomes `link.created → safety::on_link_created → provider::anthropic::complete → sandbox::exec
-→ link::quarantine`: one tree in the console. A locally-imported vendor SDK would make those calls
-opaque.
+becomes
+`link.created → safety::on_link_created → provider::anthropic::complete → sandbox::exec → link::quarantine`:
+one tree in the console. A locally-imported vendor SDK would make those calls opaque.
 
 ## Add a database for harness
 
@@ -31,17 +31,17 @@ Harness's `auth-credentials` worker stores provider keys in its own SQLite. Add 
 the `database` worker's config:
 
 ```yaml config.yaml
-  - name: database
-    config:
-      databases:
-        primary:
-          pool:
-            acquire_timeout_ms: 5000
-            idle_timeout_ms: 30000
-            max: 10
-          url: sqlite:./data/iii.db
-        harness:
-          url: sqlite:./data/harness.db
+- name: database
+  config:
+    databases:
+      primary:
+        pool:
+          acquire_timeout_ms: 5000
+          idle_timeout_ms: 30000
+          max: 10
+        url: sqlite:./data/iii.db
+      harness:
+        url: sqlite:./data/harness.db
 ```
 
 ## Add a quarantine path to link worker
@@ -51,28 +51,31 @@ Quarantined links don't resolve. In `link/src/index.ts`, extend `ensureSchema` w
 
 ```typescript src/index.ts
 await worker.trigger({
-  function_id: 'database::execute',
+  function_id: "database::execute",
   payload: {
     db: DB,
-    sql: 'CREATE TABLE IF NOT EXISTS link_quarantine (code TEXT PRIMARY KEY, reason TEXT NOT NULL, quarantined_at TEXT NOT NULL)',
+    sql: "CREATE TABLE IF NOT EXISTS link_quarantine (code TEXT PRIMARY KEY, reason TEXT NOT NULL, quarantined_at TEXT NOT NULL)",
   },
-})
+});
 ```
 
 ```typescript src/index.ts
-worker.registerFunction('link::quarantine', async (payload: { code: string; reason: string }) => {
+worker.registerFunction("link::quarantine", async (payload: { code: string; reason: string }) => {
   await worker.trigger({
-    function_id: 'database::execute',
+    function_id: "database::execute",
     payload: {
       db: DB,
-      sql: 'INSERT INTO link_quarantine (code, reason, quarantined_at) VALUES (?, ?, ?) ON CONFLICT(code) DO UPDATE SET reason = excluded.reason, quarantined_at = excluded.quarantined_at',
+      sql: "INSERT INTO link_quarantine (code, reason, quarantined_at) VALUES (?, ?, ?) ON CONFLICT(code) DO UPDATE SET reason = excluded.reason, quarantined_at = excluded.quarantined_at",
       params: [payload.code, payload.reason, new Date().toISOString()],
     },
-  })
-  await worker.trigger({ function_id: 'state::delete', payload: { scope: 'links', key: payload.code } })
-  logger.info('link quarantined', { code: payload.code, reason: payload.reason })
-  return { quarantined: true }
-})
+  });
+  await worker.trigger({
+    function_id: "state::delete",
+    payload: { scope: "links", key: payload.code },
+  });
+  logger.info("link quarantined", { code: payload.code, reason: payload.reason });
+  return { quarantined: true };
+});
 ```
 
 In `link::resolve`, look up the quarantine table first; if the code is quarantined, return null:
@@ -82,11 +85,15 @@ const { rows: qrows } = await worker.trigger<
   { db: string; sql: string; params: string[] },
   { rows: Array<{ code: string }> }
 >({
-  function_id: 'database::query',
-  payload: { db: DB, sql: 'SELECT code FROM link_quarantine WHERE code = ?', params: [payload.code] },
-})
+  function_id: "database::query",
+  payload: {
+    db: DB,
+    sql: "SELECT code FROM link_quarantine WHERE code = ?",
+    params: [payload.code],
+  },
+});
 if (qrows[0]) {
-  return { url: null }
+  return { url: null };
 }
 ```
 
@@ -101,35 +108,50 @@ engine wiring.
 
 ```typescript src/agent.ts
 export type Tool = {
-  name: 'inspect_url' | 'quarantine' | 'propose_delete' | 'allow'
-  description: string
-  parameters: Record<string, unknown>
-}
+  name: "inspect_url" | "quarantine" | "propose_delete" | "allow";
+  description: string;
+  parameters: Record<string, unknown>;
+};
 
 export const TOOLS: Tool[] = [
   {
-    name: 'inspect_url',
-    description: 'Fetch the target URL inside an ephemeral iii-sandbox and return the HTTP status, redirect chain, and a short body excerpt.',
-    parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+    name: "inspect_url",
+    description:
+      "Fetch the target URL inside an ephemeral iii-sandbox and return the HTTP status, redirect chain, and a short body excerpt.",
+    parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
   },
   {
-    name: 'quarantine',
-    description: 'Mark the link malicious. Resolves stop returning a URL; auto-applied, no human review. Use for clear-cut bad destinations.',
-    parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] },
+    name: "quarantine",
+    description:
+      "Mark the link malicious. Resolves stop returning a URL; auto-applied, no human review. Use for clear-cut bad destinations.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string" } },
+      required: ["reason"],
+    },
   },
   {
-    name: 'propose_delete',
-    description: 'Ask a human operator to confirm deletion. The browser admin shows a confirm prompt; the link is only removed if confirmed.',
-    parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] },
+    name: "propose_delete",
+    description:
+      "Ask a human operator to confirm deletion. The browser admin shows a confirm prompt; the link is only removed if confirmed.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string" } },
+      required: ["reason"],
+    },
   },
   {
-    name: 'allow',
-    description: 'Conclude the investigation; the link is fine. End the turn.',
-    parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] },
+    name: "allow",
+    description: "Conclude the investigation; the link is fine. End the turn.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string" } },
+      required: ["reason"],
+    },
   },
-]
+];
 
-export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`
+export const SYSTEM_PROMPT = `You are Linkly's link-safety agent. A new shortened link was created. Decide whether to investigate further with inspect_url, then reach one terminal decision: quarantine, propose_delete, or allow. Quarantine is auto-applied; only use it when you are confident.`;
 ```
 
 `safety-agent/src/stub.ts` is the deterministic stand-in for `provider::anthropic::complete`. It
@@ -137,20 +159,32 @@ returns the same message shape the real provider does, so the agent loop is iden
 This lets the tutorial run end-to-end with no API key:
 
 ```typescript src/stub.ts
-type AnthropicMessage = { role: 'user' | 'assistant'; content: unknown }
+type AnthropicMessage = { role: "user" | "assistant"; content: unknown };
 
-export function stubDecide(messages: AnthropicMessage[]): { content: unknown; stop_reason: string } {
-  const ctx = lastUserContext(messages)
+export function stubDecide(messages: AnthropicMessage[]): {
+  content: unknown;
+  stop_reason: string;
+} {
+  const ctx = lastUserContext(messages);
   if (ctx.toolResult === null) {
-    return { content: [toolUse('inspect_url', { url: ctx.url })], stop_reason: 'tool_use' }
+    return { content: [toolUse("inspect_url", { url: ctx.url })], stop_reason: "tool_use" };
   }
   if (/malware/i.test(ctx.url)) {
-    return { content: [toolUse('quarantine', { reason: 'url contains "malware"' })], stop_reason: 'tool_use' }
+    return {
+      content: [toolUse("quarantine", { reason: 'url contains "malware"' })],
+      stop_reason: "tool_use",
+    };
   }
   if (/phishing/i.test(ctx.url)) {
-    return { content: [toolUse('propose_delete', { reason: 'url contains "phishing"' })], stop_reason: 'tool_use' }
+    return {
+      content: [toolUse("propose_delete", { reason: 'url contains "phishing"' })],
+      stop_reason: "tool_use",
+    };
   }
-  return { content: [toolUse('allow', { reason: 'no suspicious markers' })], stop_reason: 'tool_use' }
+  return {
+    content: [toolUse("allow", { reason: "no suspicious markers" })],
+    stop_reason: "tool_use",
+  };
 }
 ```
 
@@ -160,57 +194,68 @@ export function stubDecide(messages: AnthropicMessage[]): { content: unknown; st
 configured rate, and runs the tool-calling loop:
 
 ```typescript src/index.ts
-import { registerWorker, Logger } from 'iii-sdk'
-import { TOOLS, SYSTEM_PROMPT, pickToolCall, reasonOf } from './agent.js'
-import { stubDecide } from './stub.js'
+import { registerWorker, Logger } from "iii-sdk";
+import { TOOLS, SYSTEM_PROMPT, pickToolCall, reasonOf } from "./agent.js";
+import { stubDecide } from "./stub.js";
 
-const worker = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
-  workerName: 'safety-agent',
-})
-const logger = new Logger()
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "safety-agent",
+});
+const logger = new Logger();
 
-const SAMPLE_RATE = Number(process.env.SAFETY_SAMPLE_RATE ?? '1')
+const SAMPLE_RATE = Number(process.env.SAFETY_SAMPLE_RATE ?? "1");
 // Default to the deterministic stub so the tutorial runs without ANTHROPIC_API_KEY.
 // Set SAFETY_AGENT_STUB=0 to call provider::anthropic::complete for real.
-const STUB = process.env.SAFETY_AGENT_STUB !== '0'
-const MODEL = process.env.SAFETY_AGENT_MODEL ?? 'claude-haiku-4-5-20251001'
+const STUB = process.env.SAFETY_AGENT_STUB !== "0";
+const MODEL = process.env.SAFETY_AGENT_MODEL ?? "claude-haiku-4-5-20251001";
 
 async function complete(messages: AnthropicMessage[]) {
-  if (STUB) return stubDecide(messages)
+  if (STUB) return stubDecide(messages);
   return worker.trigger({
-    function_id: 'provider::anthropic::complete',
+    function_id: "provider::anthropic::complete",
     payload: { model: MODEL, system_prompt: SYSTEM_PROMPT, messages, tools: TOOLS },
     timeoutMs: 60_000,
-  })
+  });
 }
 ```
 
-The tool implementations are short. `inspect_url` boots an iii-sandbox and runs `curl`:
+The tool implementations are short. `inspect_url` boots a iii-sandbox and runs `curl`:
 
 ```typescript src/index.ts
 async function inspectUrl(url: string): Promise<string> {
   const { sandbox_id } = await worker.trigger<{ image: string }, { sandbox_id: string }>({
-    function_id: 'sandbox::create',
-    payload: { image: 'node' },
-  })
+    function_id: "sandbox::create",
+    payload: { image: "node" },
+  });
   try {
     const exec = await worker.trigger({
-      function_id: 'sandbox::exec',
+      function_id: "sandbox::exec",
       payload: {
         sandbox_id,
-        cmd: 'curl',
-        args: ['-sIL', '--max-time', '5', '-o', '/dev/null', '-w', '%{http_code} %{redirect_url}\\n', url],
+        cmd: "curl",
+        args: [
+          "-sIL",
+          "--max-time",
+          "5",
+          "-o",
+          "/dev/null",
+          "-w",
+          "%{http_code} %{redirect_url}\\n",
+          url,
+        ],
         timeout_ms: 8000,
       },
-    })
-    return exec.success ? exec.stdout.trim().slice(0, 400) : `inspect failed: ${exec.stderr.slice(0, 200)}`
+    });
+    return exec.success
+      ? exec.stdout.trim().slice(0, 400)
+      : `inspect failed: ${exec.stderr.slice(0, 200)}`;
   } finally {
-    await worker.trigger({ function_id: 'sandbox::stop', payload: { sandbox_id } }).catch(() => {})
+    await worker.trigger({ function_id: "sandbox::stop", payload: { sandbox_id } }).catch(() => {});
   }
 }
 ```
 
-`quarantine` calls `link::quarantine`; `propose_delete` reuses Chapter 6's `link::request_delete`,
+`quarantine` calls `link::quarantine`; `propose_delete` reuses Chapter 8's `link::request_delete`,
 which routes through the browser admin and only deletes on confirmation.
 
 The loop itself reads the assistant message, picks a tool, runs it, appends the result, and calls
@@ -218,18 +263,37 @@ the model again until it picks a terminal tool:
 
 ```typescript src/index.ts
 async function investigate(link: { code: string; url: string }): Promise<void> {
-  const messages = [{ role: 'user', content: `A new shortened link was just created.\n\ncode: ${link.code}\nurl: ${link.url}\n\nInvestigate and decide.` }]
+  const messages = [
+    {
+      role: "user",
+      content: `A new shortened link was just created.\n\ncode: ${link.code}\nurl: ${link.url}\n\nInvestigate and decide.`,
+    },
+  ];
   for (let turn = 0; turn < 6; turn++) {
-    const resp = await complete(messages)
-    messages.push({ role: 'assistant', content: resp.content })
-    const call = pickToolCall(resp.content)
-    if (!call) return
-    if (call.name === 'allow')           { logger.info('agent: allow', { code: link.code, reason: reasonOf(call.input) }); return }
-    if (call.name === 'quarantine')      { await quarantine(link.code, reasonOf(call.input)); return }
-    if (call.name === 'propose_delete')  { await proposeDelete(link.code); return }
-    if (call.name === 'inspect_url') {
-      const result = await inspectUrl(typeof call.input.url === 'string' ? call.input.url : link.url)
-      messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: result }] })
+    const resp = await complete(messages);
+    messages.push({ role: "assistant", content: resp.content });
+    const call = pickToolCall(resp.content);
+    if (!call) return;
+    if (call.name === "allow") {
+      logger.info("agent: allow", { code: link.code, reason: reasonOf(call.input) });
+      return;
+    }
+    if (call.name === "quarantine") {
+      await quarantine(link.code, reasonOf(call.input));
+      return;
+    }
+    if (call.name === "propose_delete") {
+      await proposeDelete(link.code);
+      return;
+    }
+    if (call.name === "inspect_url") {
+      const result = await inspectUrl(
+        typeof call.input.url === "string" ? call.input.url : link.url,
+      );
+      messages.push({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: call.id, content: result }],
+      });
     }
   }
 }
@@ -243,8 +307,8 @@ see a 302 to a known-bad domain, and propose deletion.
 ### Run investigations on a queue
 
 The agent could subscribe to `link.created` and run the whole investigation in the subscriber. That
-works once. The first crash mid-investigation loses the link forever, because pubsub is fire-and-forget.
-A flood of new links fans out as many concurrent investigations as you have CPU.
+works once. The first crash mid-investigation loses the link forever, because pubsub is
+fire-and-forget. A flood of new links fans out as many concurrent investigations as you have CPU.
 
 Both problems go away when the subscriber's only job is to **enqueue** an investigation, and the
 investigation itself is the queue's consumer. `iii-queue` then gives you retries on crash, a
@@ -254,53 +318,53 @@ investigations never run faster than you can absorb.
 Add a `safety-investigations` entry to `iii-queue`'s `queue_configs` in `config.yaml`:
 
 ```yaml config.yaml {4-7}
-  - name: iii-queue
-    config:
-      queue_configs:
-        safety-investigations:
-          type: standard
-          max_retries: 3
-          concurrency: 2
-        clicks:
-          type: standard
-          max_retries: 5
-          concurrency: 5
-      adapter:
-        name: builtin
+- name: iii-queue
+  config:
+    queue_configs:
+      safety-investigations:
+        type: standard
+        max_retries: 3
+        concurrency: 2
+      clicks:
+        type: standard
+        max_retries: 5
+        concurrency: 5
+    adapter:
+      name: builtin
 ```
 
 In `safety-agent/src/index.ts`, the subscriber enqueues; a separate consumer runs the loop:
 
 ```typescript src/index.ts {1,5-15,19-22}
-import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
+import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
 // ...
 
-worker.registerFunction('safety::on_link_created', async (data: { code: string; url: string }) => {
-  if (Math.random() >= SAMPLE_RATE) return { sampled: false }
+worker.registerFunction("safety::on_link_created", async (data: { code: string; url: string }) => {
+  if (Math.random() >= SAMPLE_RATE) return { sampled: false };
   await worker.trigger({
-    function_id: 'safety::investigate',
+    function_id: "safety::investigate",
     payload: data,
-    action: TriggerAction.Enqueue({ queue: 'safety-investigations' }),
-  })
-  return { sampled: true, queued: true }
-})
+    action: TriggerAction.Enqueue({ queue: "safety-investigations" }),
+  });
+  return { sampled: true, queued: true };
+});
 
 worker.registerTrigger({
-  type: 'subscribe',
-  function_id: 'safety::on_link_created',
-  config: { topic: 'link.created' },
-})
+  type: "subscribe",
+  function_id: "safety::on_link_created",
+  config: { topic: "link.created" },
+});
 
-worker.registerFunction('safety::investigate', async (data: { code: string; url: string }) => {
-  await investigate(data)
-  return { investigated: true }
-})
+worker.registerFunction("safety::investigate", async (data: { code: string; url: string }) => {
+  await investigate(data);
+  return { investigated: true };
+});
 ```
 
-When `safety::investigate` throws, iii-queue retries it (up to `max_retries`); after that the message
-lands in the dead-letter queue and the agent moves on. With `concurrency: 2`, no more than two
-investigations are ever in flight, no matter how fast `link.created` events arrive.
+When `safety::investigate` throws, iii-queue retries it (up to `max_retries`); after that the
+message lands in the dead-letter queue and the agent moves on. With `concurrency: 2`, no more than
+two investigations are ever in flight, no matter how fast `link.created` events arrive.
 
 In production you'd sample at maybe 1% (`SAFETY_SAMPLE_RATE=0.01`); for this tutorial the default is
 1 so every new link is investigated.
@@ -308,8 +372,8 @@ In production you'd sample at maybe 1% (`SAFETY_SAMPLE_RATE=0.01`); for this tut
 Declare the new worker in `config.yaml`:
 
 ```yaml config.yaml
-  - name: safety-agent
-    worker_path: ./safety-agent
+- name: safety-agent
+  worker_path: ./safety-agent
 ```
 
 ## See it work (stub mode, no API key)
@@ -333,113 +397,138 @@ iii trigger link::resolve code=bad1
 ```
 
 For the phishing link, the agent calls `link::request_delete`, which goes through the browser admin
-prompt from Chapter 6. With a frontend connected, the operator sees the confirm dialog; otherwise
+prompt from Chapter 8. With a frontend connected, the operator sees the confirm dialog; otherwise
 the proposal sits unanswered until someone connects. The benign link is untouched.
 
 ## Switch to a real LLM
 
-Set the Anthropic key via `auth::set_token`, then turn the stub off:
+Set the Anthropic key via `auth::set_token`:
 
 ```bash
 iii trigger auth::set_token --json '{
   "provider": "anthropic",
   "credential": { "type": "api_key", "value": "sk-ant-…" }
 }'
-
-# Then edit config.yaml's safety-agent block to disable the stub:
-#   - name: safety-agent
-#     worker_path: ./safety-agent
-#     env:
-#       SAFETY_AGENT_STUB: '0'
-# and restart: iii worker restart safety-agent
 ```
 
+Then turn the stub off by adding an `env:` block to the worker's own manifest at
+`safety-agent/iii.worker.yaml`. iii merges these into the worker process's environment when it
+starts the worker, so `process.env.SAFETY_AGENT_STUB` reads `'0'`:
+
+```yaml safety-agent/iii.worker.yaml
+name: safety-agent
+runtime:
+  kind: typescript
+  package_manager: npm
+  entry: src/index.ts
+scripts:
+  install: "npm install"
+  start: "npm run dev"
+env:
+  SAFETY_AGENT_STUB: "0"
+```
+
+Restart the worker so it picks up the change:
+
+```bash
+iii worker restart safety-agent
+```
+
+<Note>
+  `env:` belongs in the worker's `iii.worker.yaml`, not under the worker's entry in the project
+  `config.yaml`. `III_URL` and `III_ENGINE_URL` are filtered out. iii sets those for you from the
+  engine port. Anything else flows through to the process.
+</Note>
+
 Now every `link.created` triggers a real Claude call through `provider::anthropic::complete`, which
-shows up as a span in `iii-observability`. Open `engine::traces::tree` on the agent's `trace_id`
-and you'll see the LLM call, each `sandbox::exec` it triggered, and the terminal `link::quarantine`
-or `link::request_delete` all in one tree.
+shows up as a span in `iii-observability`. Open `engine::traces::tree` on the agent's `trace_id` and
+you'll see the LLM call, each `sandbox::exec` it triggered, and the terminal `link::quarantine` or
+`link::request_delete` all in one tree.
 
 ## Browser-confirmed deletes ride a queue
 
-The agent's `propose_delete` tool routes through Chapter 6's `user::confirm_destructive_op` in the
+The agent's `propose_delete` tool routes through Chapter 8's `user::confirm_destructive_op` in the
 browser. Currently `link::request_delete` does the delete server-side after the operator clicks OK.
 Make the **browser** the queue producer instead: when the operator confirms, the browser itself
-enqueues `link::delete` on a `deletes` queue. The actual delete becomes durable (retried on
-failure) and the browser tab can close without losing the work.
+enqueues `link::delete` on a `deletes` queue. The actual delete becomes durable (retried on failure)
+and the browser tab can close without losing the work.
 
 Add a `deletes` queue alongside `safety-investigations`:
 
 ```yaml config.yaml {8-11}
-  - name: iii-queue
-    config:
-      queue_configs:
-        safety-investigations:
-          type: standard
-          max_retries: 3
-          concurrency: 2
-        deletes:
-          type: standard
-          max_retries: 3
-          concurrency: 5
-        clicks:
-          type: standard
-          max_retries: 5
-          concurrency: 5
+- name: iii-queue
+  config:
+    queue_configs:
+      safety-investigations:
+        type: standard
+        max_retries: 3
+        concurrency: 2
+      deletes:
+        type: standard
+        max_retries: 3
+        concurrency: 5
+      clicks:
+        type: standard
+        max_retries: 5
+        concurrency: 5
 ```
 
 Add `link::delete` to the browser RBAC allowlist so the browser session is allowed to enqueue it:
 
 ```yaml config.yaml {7}
-  - name: iii-worker-manager
-    config:
-      port: 3110
-      rbac:
-        auth_function_id: link::auth_browser
-        expose_functions:
-          - match("link::create")
-          - match("link::request_delete")
-          - match("link::delete")
-          - match("stream::*")
+- name: iii-worker-manager
+  config:
+    port: 3110
+    rbac:
+      auth_function_id: link::auth_browser
+      expose_functions:
+        - match("link::create")
+        - match("link::request_delete")
+        - match("link::delete")
+        - match("stream::*")
 ```
 
 In the frontend, update `src/App.tsx` to enqueue the delete when the operator confirms:
 
 ```tsx src/App.tsx {2,12-21}
-import { useEffect, useState } from 'react'
-import { TriggerAction } from 'iii-browser-sdk'
-import { worker } from './iii.js'
+import { useEffect, useState } from "react";
+import { TriggerAction } from "iii-browser-sdk";
+import { worker } from "./iii.js";
 
 // ...inside the user::confirm_destructive_op handler:
 worker.registerFunction(
-  'user::confirm_destructive_op',
+  "user::confirm_destructive_op",
   async (data: { action: string; code: string }) => {
-    const confirmed = window.confirm(`Confirm: ${data.action}?`)
+    const confirmed = window.confirm(`Confirm: ${data.action}?`);
     if (confirmed) {
       // Operator approved. Enqueue the delete on the durable `deletes` queue;
       // iii-queue retries on crash, dead-letters on persistent failure, and
       // survives this tab closing.
       await worker.trigger({
-        function_id: 'link::delete',
+        function_id: "link::delete",
         payload: { code: data.code },
-        action: TriggerAction.Enqueue({ queue: 'deletes' }),
-      })
+        action: TriggerAction.Enqueue({ queue: "deletes" }),
+      });
     }
-    return { confirmed }
+    return { confirmed };
   },
-)
+);
 ```
 
-The server-side `link::request_delete` no longer does the delete itself; it relays the
-operator's decision back to the agent:
+The server-side `link::request_delete` no longer does the delete itself; it relays the operator's
+decision back to the agent:
 
 ```typescript src/index.ts {6}
-worker.registerFunction('link::request_delete', async (payload: { code: string }) => {
-  const { confirmed } = await worker.trigger<{ code: string; action: string }, { confirmed: boolean }>({
-    function_id: 'user::confirm_destructive_op',
+worker.registerFunction("link::request_delete", async (payload: { code: string }) => {
+  const { confirmed } = await worker.trigger<
+    { code: string; action: string },
+    { confirmed: boolean }
+  >({
+    function_id: "user::confirm_destructive_op",
     payload: { code: payload.code, action: `delete link "${payload.code}"` },
-  })
-  return { confirmed }
-})
+  });
+  return { confirmed };
+});
 ```
 
 ## Conclusion
@@ -447,10 +536,10 @@ worker.registerFunction('link::request_delete', async (payload: { code: string }
 Linkly now has an autonomous link-safety agent. It samples newly created links, decides on its own
 how to investigate (call `inspect_url` as many times as it likes), and reaches one of three terminal
 verdicts: quarantine (auto-applied), propose delete (routed through a human via the browser admin),
-or allow. Every step (the trigger, each LLM call, each sandbox probe, the final action) is one
-span on the trace, because the LLM call goes through `harness` instead of a private SDK.
+or allow. Every step (the trigger, each LLM call, each sandbox probe, the final action) is one span
+on the trace, because the LLM call goes through `harness` instead of a private SDK.
 
 That ends the tutorial. You built a single-worker URL shortener in Chapter 1 and finished with a
 real system: HTTP, durable storage, an event bus, a queue, scheduled jobs, a live stream, a browser
-worker, sandboxed customer scripts, and an autonomous agent: all on the same iii bus, all visible
-in the same console.
+worker, sandboxed customer scripts, and an autonomous agent: all on the same iii bus, all visible in
+the same console.

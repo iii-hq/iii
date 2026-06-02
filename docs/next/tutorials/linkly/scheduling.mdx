@@ -1,12 +1,12 @@
 ---
-title: "Ch. 6: Schedule maintenance"
+title: "Ch. 7: Schedule maintenance"
 description:
   "Give links an expiry, then sweep the stale ones nightly with a link-sweeper worker and iii-cron."
 owner: "devrel"
 type: "tutorial"
 ---
 
-Some work isn't triggered by a request — it runs on a clock. In this chapter you give links an
+Some work isn't triggered by a request; it runs on a clock. In this chapter you give links an
 optional expiry, then add a `link-sweeper` worker that deletes the expired ones on a schedule with
 `iii-cron`.
 
@@ -157,5 +157,5 @@ iii trigger link::resolve code=keep
 
 Linkly now maintains itself: a dedicated `link-sweeper` worker expires stale links on a schedule,
 with no request needed to trigger it. Next, in
-[Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn a browser tab into a worker that
+[Ch. 8: Bring in the browser](/tutorials/linkly/frontend), you turn a browser tab into a worker that
 creates links and subscribes to the live click stream.

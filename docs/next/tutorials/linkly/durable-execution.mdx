@@ -81,7 +81,7 @@ and `subscribe`.
 </Info>
 
 Here we'll implement topics that publish when a link is created, and when a link is updated. We
-don't have link updating functionality just yet so we'll add that and an HTTP endpoint for it too.
+don't have link updating functionality yet, so we'll add that and an HTTP endpoint for it too.
 
 ### Publish on link.created
 
@@ -335,4 +335,4 @@ Redirects no longer wait on a database write: click rows ride a queue, drained i
 Link events fan out over pub/sub to a Python analytics counter and a cache refresher, and the `link`
 worker does not know either of them exists. Next, in
 [Ch. 5: Stream live clicks](/tutorials/linkly/streaming), you broadcast every click in real time
-from a dedicated `click-streamer` worker and bulk-load links from a CSV over a channel.
+from a dedicated `click-streamer` worker.

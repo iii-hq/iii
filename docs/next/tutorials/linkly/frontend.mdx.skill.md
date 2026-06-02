@@ -24,28 +24,29 @@ analytics worker) connect there. The browser must not. Replace the built-in with
 `iii-worker-manager` entries: the trusted one (local workers keep using it) and an RBAC-gated one on
 `3110` for browsers:
 
-```yaml config.yaml {1-17}
-  # Trusted listener for local workers. Replaces the engine's built-in 49134.
-  - name: iii-worker-manager
-    config:
-      port: 49134
+```yaml config.yaml
+# Trusted listener for local workers. Replaces the engine's built-in 49134.
+- name: iii-worker-manager
+  config:
+    port: 49134
 
-  # Browser-facing listener. The auth function gates every connection; only the
-  # functions in `expose_functions` are reachable from sessions it admits.
-  - name: iii-worker-manager
-    config:
-      host: 127.0.0.1
-      port: 3110
-      rbac:
-        auth_function_id: link::auth_browser
-        expose_functions:
-          - match("link::create")
-          - match("link::request_delete")
-          - match("stream::*")
+# Browser-facing listener. The auth function gates every connection; only the
+# functions in `expose_functions` are reachable from sessions it admits.
+- name: iii-worker-manager
+  config:
+    host: 127.0.0.1
+    port: 3110
+    rbac:
+      auth_function_id: link::auth_browser
+      expose_functions:
+        - match("link::create")
+        - match("link::request_delete")
+        - match("stream::*")
 ```
 
 `expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`
-names a function the engine runs on every connection to admit or reject it; you write that next.
+names a function `iii-worker-manager` invokes on every connection to admit or reject it; you write
+that next.
 
 ## Gate connections with an auth function
 
@@ -53,23 +54,27 @@ names a function the engine runs on every connection to admit or reject it; you 
 `query_params`, and `ip_address`, and returns the session's permissions (allow/deny additions,
 arbitrary context). Throw to reject. Add it to `link/src/index.ts`:
 
-```typescript src/index.ts {1-16}
+```typescript src/index.ts
 worker.registerFunction(
-  'link::auth_browser',
-  async (input: { headers: Record<string, string>; query_params: Record<string, string[]>; ip_address: string }) => {
-    const token = input.query_params.token?.[0]
-    if (!token || token !== (process.env.LINKLY_BROWSER_TOKEN ?? 'dev-token')) {
-      throw new Error('unauthorized')
+  "link::auth_browser",
+  async (input: {
+    headers: Record<string, string>;
+    query_params: Record<string, string[]>;
+    ip_address: string;
+  }) => {
+    const token = input.query_params.token?.[0];
+    if (!token || token !== (process.env.LINKLY_BROWSER_TOKEN ?? "dev-token")) {
+      throw new Error("unauthorized");
     }
     return {
       allowed_functions: [],
       forbidden_functions: [],
       allow_trigger_type_registration: false,
       allow_function_registration: true,
-      context: { source: 'browser' },
-    }
+      context: { source: "browser" },
+    };
   },
-)
+);
 ```
 
 A real deployment would look the token up in a session store; the shape stays the same. The token
@@ -81,21 +86,21 @@ Linkly already has `link::delete`. Add a wrapper that asks the connected browser
 only if the browser confirms. The server-side `worker.trigger` of a browser-registered function is
 the same primitive you've used between server workers, in reverse:
 
-```typescript src/index.ts {1-14}
-worker.registerFunction('link::request_delete', async (payload: { code: string }) => {
+```typescript src/index.ts
+worker.registerFunction("link::request_delete", async (payload: { code: string }) => {
   const { confirmed } = await worker.trigger<
     { code: string; action: string },
     { confirmed: boolean }
   >({
-    function_id: 'user::confirm_destructive_op',
+    function_id: "user::confirm_destructive_op",
     payload: { code: payload.code, action: `delete link "${payload.code}"` },
-  })
+  });
   if (!confirmed) {
-    return { deleted: false }
+    return { deleted: false };
   }
-  await worker.trigger({ function_id: 'link::delete', payload: { code: payload.code } })
-  return { deleted: true }
-})
+  await worker.trigger({ function_id: "link::delete", payload: { code: payload.code } });
+  return { deleted: true };
+});
 ```
 
 ## Scaffold the frontend
@@ -112,71 +117,95 @@ npm install iii-browser-sdk
 Wire the SDK in `src/iii.ts`:
 
 ```typescript src/iii.ts
-import { registerWorker } from 'iii-browser-sdk'
+import { registerWorker } from "iii-browser-sdk";
 
-const TOKEN = import.meta.env.VITE_LINKLY_TOKEN ?? 'dev-token'
+const TOKEN = import.meta.env.VITE_LINKLY_TOKEN ?? "dev-token";
 
-export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(TOKEN)}`)
+export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(TOKEN)}`);
 ```
 
-Replace `src/App.tsx`. The component creates links, registers a `stream` trigger that increments a
-live counter on every click, and registers `user::confirm_destructive_op` for the server to call:
+Build `src/App.tsx` in pieces. First the imports and types: `Click` is one row from the `clicks`
+table, and `StreamEvent` is the wrapper `iii-stream` delivers to subscribers.
 
 ```tsx src/App.tsx
-import { useEffect, useState } from 'react'
-import { worker } from './iii.js'
+import { useEffect, useState } from "react";
+import { worker } from "./iii.js";
 
-type Click = { code: string; clicked_at: string }
+type Click = { code: string; clicked_at: string };
 type StreamEvent = {
-  event: { type: 'create' | 'update' | 'delete'; data: Click }
-}
+  event: { type: "create" | "update" | "delete"; data: Click };
+};
+```
 
+Open the component and declare its state: the form fields, the newly created link, and the live
+click counter.
+
+```tsx src/App.tsx
 export function App() {
   const [url, setUrl] = useState('')
   const [code, setCode] = useState('')
   const [created, setCreated] = useState<{ code: string; url: string } | null>(null)
   const [clicks, setClicks] = useState(0)
   const [latest, setLatest] = useState<Click | null>(null)
+```
 
-  useEffect(() => {
-    const fn = worker.registerFunction('ui::on_click', async (event: StreamEvent) => {
-      setClicks((n) => n + 1)
-      setLatest(event.event.data)
-      return null
-    })
-    const trig = worker.registerTrigger({
-      type: 'stream',
-      function_id: 'ui::on_click',
-      config: { stream_name: 'clicks', group_id: 'all' },
-    })
-    return () => {
-      trig.unregister()
-      fn.unregister()
-    }
-  }, [])
+Subscribe to the `clicks` stream. The `useEffect` registers a function the browser exposes
+(`ui::on_click`) and a `stream` trigger that routes every new row to it; the cleanup unregisters
+both on unmount:
 
-  useEffect(() => {
-    const fn = worker.registerFunction(
-      'user::confirm_destructive_op',
-      async (data: { action: string; code: string }) => {
-        const confirmed = window.confirm(`Confirm: ${data.action}?`)
-        return { confirmed }
-      },
-    )
-    return () => fn.unregister()
-  }, [])
+```tsx src/App.tsx
+useEffect(() => {
+  const fn = worker.registerFunction("ui::on_click", async (event: StreamEvent) => {
+    setClicks((n) => n + 1);
+    setLatest(event.event.data);
+    return null;
+  });
+  const trig = worker.registerTrigger({
+    type: "stream",
+    function_id: "ui::on_click",
+    config: { stream_name: "clicks", group_id: "all" },
+  });
+  return () => {
+    trig.unregister();
+    fn.unregister();
+  };
+}, []);
+```
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
-      function_id: 'link::create',
-      payload: { url, code: code || undefined },
-    })
-    setCreated(link)
-    setUrl('')
-    setCode('')
-  }
+Register the function the server calls back when it needs human confirmation. It shows a native
+prompt and returns the user's decision:
 
+```tsx src/App.tsx
+useEffect(() => {
+  const fn = worker.registerFunction(
+    "user::confirm_destructive_op",
+    async (data: { action: string; code: string }) => {
+      const confirmed = window.confirm(`Confirm: ${data.action}?`);
+      return { confirmed };
+    },
+  );
+  return () => fn.unregister();
+}, []);
+```
+
+Submit the form by calling `link::create` directly. No `fetch`, no REST. The browser is on the bus.
+
+```tsx src/App.tsx
+async function onSubmit(e: React.FormEvent) {
+  e.preventDefault();
+  const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
+    function_id: "link::create",
+    payload: { url, code: code || undefined },
+  });
+  setCreated(link);
+  setUrl("");
+  setCode("");
+}
+```
+
+Finally, the render: a shorten form, the last-created link, and the live click counter.
+
+```tsx src/App.tsx
   return (
     <main>
       <h1>Linkly</h1>
@@ -213,11 +242,11 @@ cd frontend && npm run dev
 ```
 
 Open the Vite URL (typically `http://localhost:5173`). Shorten a link from the form, then visit
-`http://localhost:3111/s/<code>` a few times. The "Live clicks" counter goes up in real time, with no
-HTTP polling. Run `iii trigger link::request_delete code=<code>` from a third terminal; the browser
-shows a confirm prompt, and the server deletes only after you click OK.
+`http://localhost:3111/s/<code>` a few times. The "Live clicks" counter goes up in real time, with
+no HTTP polling. Run `iii trigger link::request_delete code=<code>` from a third terminal; the
+browser shows a confirm prompt, and the server deletes only after you click OK.
 
-The same browser tab is now an iii worker. The next chapter lets customers attach per-link logic that
+The same browser tab is now a iii worker. The next chapter lets customers attach per-link logic that
 runs in a sandbox.
 
 ## Conclusion
@@ -225,5 +254,5 @@ runs in a sandbox.
 The browser is a worker on the same bus as everything else, connected through an RBAC-gated listener
 that an auth function admits. It calls server functions directly, subscribes to streams for live
 updates, and registers functions the server calls back. Next, in
-[Ch. 7: Open it to users](/tutorials/linkly/custom-rules), customers attach per-link scripts that the
-engine runs in an isolated sandbox on every redirect.
+[Ch. 9: Open it to users](/tutorials/linkly/custom-rules), customers attach per-link scripts that
+`iii-sandbox` runs on every redirect.

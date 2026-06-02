@@ -34,7 +34,7 @@ If you open `config.yaml` now you'll notice both workers have been added, plus a
 by default and uses itself.
 
 `iii-state` keeps its store on disk by default, so links survive restarts. For this chapter, switch
-it to an in-memory store instead — find the `iii-state` entry in `config.yaml` and set its
+it to an in-memory store instead. Find the `iii-state` entry in `config.yaml` and set its
 `store_method`:
 
 ```yaml config.yaml
@@ -147,7 +147,7 @@ function makeCode(): string {
 `registerFunction` publishes a function under a name like `link::create` that anything else on the
 engine can call. This one stores the mapping by calling `state::set` on the `iii-state` worker
 through `worker.trigger`. Worker-to-worker calls always flow through the engine, so the `link`
-worker doesn't import anything from `iii-state`; it just knows the function name. Append it:
+worker doesn't import anything from `iii-state`; it knows the function name. Append it:
 
 ```typescript src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -301,7 +301,7 @@ worker.registerTrigger({
 ```
 
 <Check>
-  This is the very first Trigger you've registered yourself. In iii Triggers serve a very important
+  This is the first Trigger you've registered yourself. In iii Triggers serve a very important
   purpose, they control what causes something to happen. In this case an http request causes a
   function to run. Learn more about [Using iii / Triggers](/using-iii/triggers).
 </Check>
@@ -356,7 +356,7 @@ worker.registerFunction("http::redirect", async (req) => {
 
 ### Bind your redirect function to a Trigger
 
-Just like before, bind `http::redirect` to `GET /s/:code` with a new Trigger:
+Like before, bind `http::redirect` to `GET /s/:code` with a new Trigger:
 
 ```typescript src/index.ts
 worker.registerTrigger({

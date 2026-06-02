@@ -19,16 +19,16 @@ iii worker add iii-sandbox
 This adds the daemon and its config to `config.yaml`. The `image_allowlist` controls which images a
 caller may boot; you only need `node`:
 
-```yaml config.yaml {1-9}
-  - name: iii-sandbox
-    config:
-      auto_install: true
-      image_allowlist:
-        - node
-      default_idle_timeout_secs: 300
-      max_concurrent_sandboxes: 32
-      default_cpus: 1
-      default_memory_mb: 512
+```yaml config.yaml
+- name: iii-sandbox
+  config:
+    auto_install: true
+    image_allowlist:
+      - node
+    default_idle_timeout_secs: 300
+    max_concurrent_sandboxes: 32
+    default_cpus: 1
+    default_memory_mb: 512
 ```
 
 ## Store the rule
@@ -36,54 +36,60 @@ caller may boot; you only need `node`:
 A rule is a Node.js script that reads one JSON request from stdin and writes one JSON line on stdout
 with `chosen_url`. Persist rules alongside links. Add a table in `ensureSchema`:
 
-```typescript src/index.ts {1-7}
+```typescript src/index.ts
 await worker.trigger({
-  function_id: 'database::execute',
+  function_id: "database::execute",
   payload: {
     db: DB,
-    sql: 'CREATE TABLE IF NOT EXISTS link_rules (code TEXT PRIMARY KEY, rule TEXT NOT NULL)',
+    sql: "CREATE TABLE IF NOT EXISTS link_rules (code TEXT PRIMARY KEY, rule TEXT NOT NULL)",
   },
-})
+});
 ```
 
 Then a function that upserts a rule, and a small helper that reads one back:
 
-```typescript src/index.ts {1-22}
-worker.registerFunction('link::set_rule', async (payload: { code: string; rule: string }) => {
+```typescript src/index.ts
+worker.registerFunction("link::set_rule", async (payload: { code: string; rule: string }) => {
   await worker.trigger({
-    function_id: 'database::execute',
+    function_id: "database::execute",
     payload: {
       db: DB,
-      sql: 'INSERT INTO link_rules (code, rule) VALUES (?, ?) ON CONFLICT(code) DO UPDATE SET rule = excluded.rule',
+      sql: "INSERT INTO link_rules (code, rule) VALUES (?, ?) ON CONFLICT(code) DO UPDATE SET rule = excluded.rule",
       params: [payload.code, payload.rule],
     },
-  })
-  return { code: payload.code }
-})
+  });
+  return { code: payload.code };
+});
 
 async function loadRule(code: string): Promise<string | null> {
   const { rows } = await worker.trigger<
     { db: string; sql: string; params: string[] },
     { rows: Array<{ rule: string }> }
   >({
-    function_id: 'database::query',
-    payload: { db: DB, sql: 'SELECT rule FROM link_rules WHERE code = ?', params: [code] },
-  })
-  return rows[0]?.rule ?? null
+    function_id: "database::query",
+    payload: { db: DB, sql: "SELECT rule FROM link_rules WHERE code = ?", params: [code] },
+  });
+  return rows[0]?.rule ?? null;
 }
 ```
 
 ## Run a rule in a sandbox
 
-`runRuleInSandbox` boots a `node` microVM, pipes the request to its stdin, and reads `chosen_url` off
-stdout. The sandbox is stopped on the way out, regardless of outcome:
+`runRuleInSandbox` boots a `node` microVM, pipes the request to its stdin, and reads `chosen_url`
+off stdout. Build it up in pieces. Start a fresh sandbox for this call:
 
-```typescript src/index.ts {1-32}
+```typescript src/index.ts
 async function runRuleInSandbox(rule: string, ctx: unknown): Promise<string | null> {
   const { sandbox_id } = await worker.trigger<{ image: string }, { sandbox_id: string }>({
     function_id: 'sandbox::create',
     payload: { image: 'node' },
   })
+```
+
+Execute the rule inside it. `node -e <rule>` runs the script, the request `ctx` arrives on stdin as
+base64-encoded JSON, and `iii-sandbox` enforces the 2-second wall-clock cap:
+
+```typescript src/index.ts
   try {
     const exec = await worker.trigger<
       { sandbox_id: string; cmd: string; args: string[]; stdin: string; timeout_ms: number },
@@ -98,6 +104,12 @@ async function runRuleInSandbox(rule: string, ctx: unknown): Promise<string | nu
         timeout_ms: 2000,
       },
     })
+```
+
+Parse `chosen_url` from stdout if the exec succeeded, swallow any error (a bad rule should not break
+the redirect), and stop the sandbox on the way out:
+
+```typescript src/index.ts
     if (!exec.success) {
       logger.warn('rule exec failed', { exit_code: exec.exit_code, stderr: exec.stderr.slice(0, 200) })
       return null
@@ -114,36 +126,40 @@ async function runRuleInSandbox(rule: string, ctx: unknown): Promise<string | nu
 ```
 
 A rule that fails, times out, or returns the wrong shape resolves to `null`; the redirect falls back
-to the stored URL. Untrusted scripts never run on the link worker process; they run in a fresh microVM
-with their own rootfs, no host filesystem, and a 2-second wall-clock cap.
+to the stored URL. Untrusted scripts never run on the link worker process; they run in a fresh
+microVM with their own rootfs, no host filesystem, and a 2-second wall-clock cap.
 
 ## Use the rule in the redirect path
 
 In `http::redirect`, look up a rule after resolving the URL. If one is set, run it; if it returns a
 URL, redirect there instead:
 
-```typescript src/index.ts {1-21}
-worker.registerFunction('http::redirect', async (req: ApiRequest): Promise<ApiResponse> => {
-  const code = req.path_params.code
+```typescript src/index.ts
+worker.registerFunction("http::redirect", async (req) => {
+  const code = req.path_params.code;
   const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
-    function_id: 'link::resolve',
+    function_id: "link::resolve",
     payload: { code },
-  })
+  });
   if (!url) {
-    return { status_code: 404, body: { error: 'link not found' }, headers: { 'Content-Type': 'application/json' } }
+    return {
+      status_code: 404,
+      body: { error: "link not found" },
+      headers: { "Content-Type": "application/json" },
+    };
   }
-  const rule = await loadRule(code)
+  const rule = await loadRule(code);
   const chosen =
     rule === null
       ? url
-      : (await runRuleInSandbox(rule, { url, code, headers: req.headers ?? {} })) ?? url
+      : ((await runRuleInSandbox(rule, { url, code, headers: req.headers ?? {} })) ?? url);
   await worker.trigger({
-    function_id: 'link::record_click',
+    function_id: "link::record_click",
     payload: { code, clicked_at: new Date().toISOString() },
-    action: TriggerAction.Enqueue({ queue: 'clicks' }),
-  })
-  return { status_code: 302, headers: { Location: chosen } }
-})
+    action: TriggerAction.Enqueue({ queue: "clicks" }),
+  });
+  return { status_code: 302, headers: { Location: chosen } };
+});
 ```
 
 ## See it work
@@ -190,6 +206,6 @@ never yours.
 ## Conclusion
 
 Linkly now lets customers attach per-link redirect logic that runs safely on every request. Next, in
-[Ch. 8: Make it agentic](/tutorials/linkly/safety-agent), an autonomous agent samples newly created links,
-investigates their destinations in sandboxes, and decides on its own whether to quarantine them or
-ask a human to confirm deletion.
+[Ch. 10: Make it agentic](/tutorials/linkly/safety-agent), an autonomous agent samples newly created
+links, investigates their destinations in sandboxes, and decides on its own whether to quarantine
+them or ask a human to confirm deletion.

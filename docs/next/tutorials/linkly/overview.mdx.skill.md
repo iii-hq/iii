@@ -29,30 +29,39 @@ and live invocations.
 
 ## Ch. 3: Persist everything
 
-Move the in-memory map into `iii-state` so restarts keep your links, then graduate links and click
-events into a table using the `database` worker for long term storage.
+Add a `database` worker (SQLite) so links and click events are stored durably and survive restarts,
+with `iii-state` kept in front as a fast read cache.
 
 ## Ch. 4: Make it durable
 
 Push click events onto `iii-queue` so redirects stay fast, and publish `link.created` events with
 `iii-pubsub` that a cache and an analytics function each subscribe to.
 
-## Ch. 5: Schedule and stream
+## Ch. 5: Stream live clicks
 
-Sweep expired links nightly with `iii-cron`, and stream live clicks to the browser over a single
-WebSocket with `iii-stream`.
+Push every click to subscribers in real time from a dedicated `click-streamer` worker with
+`iii-stream`.
 
-## Ch. 6: Bring in the browser
+## Ch. 6: Move bulk data with channels
+
+Bulk-load links from a CSV in a single streamed upload over a channel.
+
+## Ch. 7: Schedule maintenance
+
+Give links an optional expiry and sweep the stale ones on a schedule with a `link-sweeper` worker
+and `iii-cron`.
+
+## Ch. 8: Bring in the browser
 
 Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, subscribe to
 the click stream, and register a browser-side function the server can call.
 
-## Ch. 7: Open it to users
+## Ch. 9: Open it to users
 
 Let customers attach per-link redirect logic (geo-routing, A/B splits) as scripts that run in an
 `iii-sandbox` on each request.
 
-## Ch. 8: Make it agentic
+## Ch. 10: Make it agentic
 
 Drop in the `harness` agent to sample new links, investigate suspicious destinations in a sandbox,
 and decide on its own whether to quarantine them or ask a human to confirm deletion.

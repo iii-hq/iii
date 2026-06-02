@@ -8,7 +8,7 @@ type: "tutorial"
 
 Observability in iii isn't something you bolt onto each service. Every cross-worker call already
 flows through the engine, so the engine can trace and log the whole system end to end. In this
-chapter you open the console to see that, then — if you want — read the same data directly from the
+chapter you open the console to see that, then, if you want, read the same data directly from the
 engine.
 
 ## Open the console
@@ -34,15 +34,15 @@ back:
 
 ![iii console Traces page showing redirect spans sorted by duration with the waterfall for a selected GET /s/:code trace](/next/tutorials/linkly/console-traces.png)
 
-You didn't wire up a tracing library or thread a request ID between services to get this.
+You didn't add a tracing library or thread a request ID between services to get this.
 `iii project init` added the `iii-observability` worker to `config.yaml`, and from then on every
-request gets a trace and every `Logger` line is collected — automatically, across workers. That is
-the point worth pausing on: in iii, end-to-end observability is a property of the system, not a
+request gets a trace and every `Logger` line is collected automatically, across workers. That is the
+point worth pausing on: in iii, end-to-end observability is a property of the system, not a
 per-service add-on.
 
 <Info>
-  **iii-observability speaks OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
-  you aren't locked into the console — point the worker at Honeycomb, Grafana, Datadog, or any other
+  **iii-observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
+  you aren't locked into the console. Point the worker at Honeycomb, Grafana, Datadog, or any other
   OTel-compatible backend and your iii traces flow straight in. See the worker's configuration on
   [workers.iii.dev/workers/iii-observability](https://workers.iii.dev/workers/iii-observability).
 </Info>
