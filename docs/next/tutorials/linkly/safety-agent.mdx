@@ -23,12 +23,12 @@ iii worker add harness
 ```
 
 `harness` is iii's agent backbone: a Node bundle that ships providers for Anthropic, OpenAI, Kimi,
-LM Studio, plus turn orchestration, credentials, budgets, and approval-gate. It being a worker
-max_concurrent_sandboxes we get all of the immediate benefits of iii: process isolation,
-interoperability, and dynamic registration of new functionality.
+LM Studio, plus turn orchestration, credentials, budgets, and approval-gate. Because it is a worker,
+you get all of the immediate benefits of iii: process isolation, interoperability, and dynamic
+registration of new functionality.
 
-For this example we'll just use a few small pieces of the harness and trust that by now you have a
-pretty good idea of how to incorporate iii's advanced features into your own projects.
+For this example we use a few small pieces of the harness and trust that by now you have a pretty
+good idea of how to incorporate iii's advanced features into your own projects.
 
 The pieces we'll use are iii's `sandbox` worker and the Anthropic provider:
 `provider::anthropic::complete`.
