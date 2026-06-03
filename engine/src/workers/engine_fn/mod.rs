@@ -1007,7 +1007,15 @@ impl EngineFunctionsWorker {
         let mut functions = self.list_function_summaries().await;
 
         if !input.include_internal.unwrap_or(false) {
-            functions.retain(|f| !f.function_id.starts_with("engine::"));
+            // Hide engine-internal builtins by default, EXCEPT the caller-facing
+            // queue ops (`engine::queue::*`: list_topics / topic_stats /
+            // dlq_topics / dlq_messages). Those are a public queue/DLQ API a
+            // client legitimately needs to discover — keeping them out of the
+            // default list left agents unable to find the DLQ-inspection surface.
+            functions.retain(|f| {
+                !f.function_id.starts_with("engine::")
+                    || f.function_id.starts_with("engine::queue::")
+            });
         }
 
         if let Some(prefix) = input.prefix.as_deref() {
