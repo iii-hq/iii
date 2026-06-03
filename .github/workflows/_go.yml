@@ -1,0 +1,118 @@
+name: Go Module Publish
+
+# Publishing a Go module is not an upload: there is no registry. A module is "published"
+# by pushing a git tag, after which `go get <module>@<version>` resolves it straight from
+# the repo via proxy.golang.org. So unlike _npm.yml / _rust-cargo.yml there is no token —
+# the only side effect is the tag push, and dry-run runs the full validation without it.
+#
+# Tag shape (the one hard constraint): the module lives in a subdirectory, so Go requires
+# its tag to be PREFIXED with the module path relative to the repo root, i.e.
+# `sdk/packages/go/iii/vX.Y.Z`. The repo's release tag `iii/vX.Y.Z` does NOT make a
+# subdirectory module resolvable (`go get …@vX.Y.Z` would fail). This job therefore pushes
+# its own subdir-scoped tag in lockstep with the engine release (issue iii-hq/iii#1719).
+
+on:
+  workflow_call:
+    inputs:
+      package_path:
+        description: 'Path to the Go module (e.g., sdk/packages/go/iii)'
+        required: true
+        type: string
+      module_path:
+        description: 'Go module import path (e.g., github.com/iii-hq/iii/sdk/packages/go/iii)'
+        required: true
+        type: string
+      version:
+        description: 'Semantic version without the v prefix (e.g., 0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build and validate without pushing the tag'
+        required: false
+        type: boolean
+        default: false
+      slack_thread_ts:
+        description: 'Slack parent message timestamp for thread replies (optional)'
+        required: false
+        type: string
+        default: ''
+      slack_label:
+        description: 'Label for this step in Slack notifications (optional)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SLACK_BOT_TOKEN:
+        required: false
+      SLACK_CHANNEL_ID:
+        required: false
+
+jobs:
+  publish:
+    name: Publish Go module
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the version tag
+    steps:
+      - name: Notify Slack — in progress
+        if: inputs.slack_thread_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ inputs.slack_thread_ts }}"
+            text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so we can tag
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: ${{ inputs.package_path }}/go.sum
+
+      # Validation — runs in BOTH dry-run and real release.
+      - name: Build, vet, test, verify
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+          go mod verify
+
+      # The only side effect — skipped on dry-run. Subdir-scoped tag (see header note).
+      - name: Push subdirectory-scoped module tag
+        if: ${{ inputs.dry_run == false }}
+        env:
+          TAG: ${{ inputs.package_path }}/v${{ inputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists, nothing to push."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Verify the proxy resolves the published version
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GOPROXY: proxy.golang.org
+          GOFLAGS: -mod=mod
+        run: go list -m ${{ inputs.module_path }}@v${{ inputs.version }}
+
+      - name: Notify Slack — result
+        if: always() && steps.slack.outputs.ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ steps.slack.outputs.ts }}"
+            text: "${{ job.status == 'success' && ':large_green_circle:' || ':red_circle:' }} ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — ${{ job.status }}"
