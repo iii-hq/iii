@@ -26,6 +26,10 @@ engine::triggers::info { id: "http" }
 
 returns the `http` trigger's configuration schema (the route fields — path, method, optional route gating, per-route middleware) and the request envelope your handler receives. For the response envelope your handler must return, inspect a bound handler with `engine::functions::info { function_id: "<your-handler-id>" }`. Use `engine::triggers::list` to discover trigger types in the first place.
 
+## Set the right HTTP status
+
+YOUR handler chooses the HTTP status code — it is a field on the response envelope (fetch its exact name/shape from the contract above; do not hardcode it from memory). The status is NOT inferred from the body, so a handler that just returns a value or an error object yields `200` by default. For error cases, set the matching status explicitly: a not-found path returns `404`, a bad request `400`, and so on. Returning `200` with an `{ error: ... }` body is a bug — it "isn't a 500," but it also isn't the status the requirement asked for, and callers (and tests) will read it as success. Avoiding a crash is not the same as returning the right status.
+
 ## When to Use
 
 - Expose a function as a REST endpoint without standing up a separate HTTP server.
