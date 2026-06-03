@@ -21,8 +21,8 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
 
 <Note>
   The Quickstart is a barebones tutorial intended to be completed within minutes. If you are more
-  interested in learning and exploring the full power of iii then visit our
-  [real world tutorial](./tutorials/linkly/overview).
+  interested in learning and exploring the full power of iii then visit our [real world
+  tutorial](./tutorials/linkly/overview).
 </Note>
 
 ## 1. Create the project
@@ -251,13 +251,13 @@ added persistent state, and exposed everything over HTTP, all by incrementally a
 running system.
 
 <CardGroup cols={2}>
+  <Card title="Real-world tutorial" href="./tutorials/linkly/overview" icon="graduation-cap">
+    Go beyond the basics and explore the full power of iii by building a real-world application.
+  </Card>
   <Card title="Use iii" href="./using-iii" icon="table-layout">
     Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
     Understand functions, triggers, and workers from a conceptual point of view.
-  </Card>
-  <Card title="Real-world tutorial" href="./tutorials/linkly/overview" icon="graduation-cap">
-    Go beyond the basics and explore the full power of iii by building a real-world application.
   </Card>
 </CardGroup>
