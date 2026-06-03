@@ -52,7 +52,9 @@ pub struct QueueInput {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RedriveInput {
-    /// Queue name whose dead-letter messages should be moved back to the main queue.
+    /// Queue or topic whose dead-letter messages should be moved back to the main
+    /// queue. For a durable topic this is the topic name.
+    #[serde(alias = "topic")]
     queue: String,
 }
 
@@ -64,9 +66,12 @@ pub struct RedriveResult {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RedriveSingleInput {
-    /// Queue name owning the dead-letter message.
+    /// Queue or topic owning the dead-letter message. For a durable topic this is
+    /// the topic name.
+    #[serde(alias = "topic")]
     queue: String,
-    /// Identifier of the dead-letter message to redrive.
+    /// Identifier of the dead-letter message to redrive (from
+    /// `engine::queue::dlq_messages`).
     message_id: String,
 }
 
@@ -75,6 +80,31 @@ pub struct RedriveSingleResult {
     pub queue: String,
     pub message_id: String,
     pub redriven: u64,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TopicStatsInput {
+    /// Topic or named queue to inspect. For a durable topic this is the topic name.
+    #[serde(alias = "queue")]
+    topic: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DlqMessagesInput {
+    /// Topic or named queue whose dead-letter messages to browse. For a durable
+    /// topic this is the topic name.
+    #[serde(alias = "queue")]
+    topic: String,
+    /// Number of messages to skip (default 0).
+    #[serde(default)]
+    offset: u64,
+    /// Maximum number of messages to return (default 50).
+    #[serde(default = "default_dlq_limit")]
+    limit: u64,
+}
+
+fn default_dlq_limit() -> u64 {
+    50
 }
 
 #[service(name = "queue")]
@@ -400,9 +430,9 @@ impl QueueWorker {
     )]
     pub async fn console_topic_stats(
         &self,
-        input: Value,
+        input: TopicStatsInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let topic = input.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+        let topic = input.topic;
         if topic.is_empty() {
             return FunctionResult::Failure(ErrorBody {
                 code: "topic_required".into(),
@@ -411,13 +441,13 @@ impl QueueWorker {
             });
         }
 
-        let resolved = self.resolve_queue_key(topic);
+        let resolved = self.resolve_queue_key(&topic);
         match self.adapter.topic_stats(&resolved).await {
             Ok(mut stats) => {
                 // Adapters report consumer_count=0 for function queues because
                 // internal consumers aren't tracked in the subscription map.
                 // Override with the configured concurrency.
-                if let Some(config) = self._config.queue_configs.get(topic) {
+                if let Some(config) = self._config.queue_configs.get(&topic) {
                     stats.consumer_count = config.concurrency as u64;
                 }
                 FunctionResult::Success(Some(serde_json::to_value(&stats).unwrap_or(json!({}))))
@@ -475,9 +505,9 @@ impl QueueWorker {
     )]
     pub async fn console_dlq_messages(
         &self,
-        input: Value,
+        input: DlqMessagesInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let topic = input.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+        let topic = input.topic;
         if topic.is_empty() {
             return FunctionResult::Failure(ErrorBody {
                 code: "topic_required".into(),
@@ -485,10 +515,10 @@ impl QueueWorker {
                 stacktrace: None,
             });
         }
-        let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+        let offset = input.offset;
+        let limit = input.limit;
 
-        let resolved = self.resolve_queue_key(topic);
+        let resolved = self.resolve_queue_key(&topic);
         match self.adapter.dlq_peek(&resolved, offset, limit).await {
             Ok(messages) => {
                 FunctionResult::Success(Some(serde_json::to_value(&messages).unwrap_or(json!([]))))
