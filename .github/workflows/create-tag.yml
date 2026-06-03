@@ -108,6 +108,35 @@ jobs:
             ${{ inputs.dry_run && '--dry-run' || '' }} \
             --current-version-file "$current_version_file"
 
+      # Stable releases pull their docs from docs/next/, so it must be prepared.
+      # Validate even on dry runs so a release cannot be tagged without docs.
+      - name: Validate docs ready for stable release
+        id: docs_check
+        if: inputs.target == 'iii' && inputs.prerelease == 'none'
+        run: |
+          python3 .github/scripts/pin_docs.py validate \
+            --docs-dir docs
+
+      - name: Notify Slack — release blocked (missing docs)
+        if: always() && steps.docs_check.outcome == 'failure'
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "Release blocked — missing documentation"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: ":no_entry: *Release blocked* — Next docs not ready for `iii v${{ steps.versions.outputs.version }}`.\nExpected a `Next` block in `docs/docs.json` and a non-empty `docs/next/` folder before tagging. Prepare the docs, then re-run."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
+
       - name: Update iii manifests
         if: inputs.target == 'iii' && inputs.dry_run != true
         env:
@@ -118,6 +147,18 @@ jobs:
             --root . \
             --version "${NEW_VERSION}" \
             --python-version "${PY_VERSION}"
+
+      # Update docs from docs/next/ on stable releases. rotate dispatches on the
+      # version: minor/major rotate (archive + promote + bump Next); patch just
+      # refreshes the current Latest in place (no archive, no Next bump).
+      - name: Update documentation versions
+        if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
+        env:
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          python3 .github/scripts/pin_docs.py rotate \
+            --docs-dir docs \
+            --version "${NEW_VERSION}"
 
       - name: Sync Cargo.lock
         if: inputs.target == 'iii' && inputs.dry_run != true

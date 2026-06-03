@@ -1,0 +1,205 @@
+---
+title: "Rust SDK"
+description: "Public surface of the iii Rust SDK (`iii-sdk`, imported as `iii_sdk`)."
+owner: "engineering"
+type: "reference"
+---
+
+{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
+
+<Note>
+  This page is a hand-authored snapshot of the planned public surface. The final reference will be
+  generated from the SDK source.
+</Note>
+
+## Installation
+
+```bash
+cargo add iii-sdk
+```
+
+Imported as `iii_sdk`.
+
+## Common methods
+
+### `register_worker`
+
+Connect a worker to a running iii engine and return its handle.
+
+```rust
+pub fn register_worker(address: &str, options: InitOptions) -> III;
+```
+
+The returned `III` carries every method below. Spawned async tasks are driven on the SDK's
+internal tokio runtime.
+
+### `register_function`
+
+Register a callable function on this worker. Request and response schemas are derived from the
+handler's input and output types via the `schemars::JsonSchema` derive; the call site doesn't
+restate them.
+
+```rust
+pub fn register_function<R: IntoFunctionRegistration>(
+    &self,
+    registration: R,
+) -> FunctionRef;
+```
+
+Build the `RegisterFunction` value via `RegisterFunction::new("namespace::name", handler)` and pass
+it to `register_function`. The handler's parameter and return types must implement
+`serde::Deserialize`, `serde::Serialize`, and `schemars::JsonSchema`.
+
+### `register_trigger`
+
+Bind a registered function to a configured trigger instance.
+
+```rust
+pub fn register_trigger(
+    &self,
+    input: RegisterTriggerInput,
+) -> Result<Trigger, IIIError>;
+```
+
+Drop the trigger with `trigger.unregister()` on the returned handle. There is no free-function
+`unregister_trigger`.
+
+### `register_trigger_type`
+
+Declare a new trigger type that this worker advertises.
+
+```rust
+pub fn register_trigger_type<H, C, R>(
+    &self,
+    registration: RegisterTriggerType<H, C, R>,
+) -> TriggerTypeRef<C, R>
+where
+    H: TriggerHandler + 'static;
+```
+
+`C` and `R` are the trigger config and result types, each `schemars::JsonSchema`.
+
+### `unregister_trigger_type`
+
+Remove a previously registered trigger type.
+
+```rust
+pub fn unregister_trigger_type(&self, id: impl Into<String>);
+```
+
+### `trigger`
+
+Invoke a registered function. Always async; await the future to receive the result.
+
+```rust
+pub async fn trigger(
+    &self,
+    request: impl Into<TriggerRequest>,
+) -> Result<serde_json::Value, IIIError>;
+```
+
+The returned `Value` is the function's return JSON for synchronous calls, an `EnqueueResult`-shaped
+JSON for `TriggerAction::Enqueue` actions, and `Null` for `TriggerAction::Void`.
+
+### `shutdown`
+
+Disconnect from the engine and release resources. Returns immediately; in-flight tasks are aborted.
+
+```rust
+pub fn shutdown(&self);
+```
+
+## Trigger actions
+
+`TriggerAction` is a plain enum.
+
+```rust
+pub enum TriggerAction {
+    Void,
+    Enqueue { queue: String },
+}
+```
+
+Pass it in `TriggerRequest::action` as `Some(TriggerAction::Void)` or
+`Some(TriggerAction::Enqueue { queue: "math".to_string() })`. `None` means synchronous.
+
+## Error type
+
+`IIIError` is the public error enum. Most invocation failures arrive on the `Remote` or `Runtime`
+variants.
+
+```rust
+pub enum IIIError {
+    NotConnected,
+    Timeout,
+    Runtime(String),
+    Remote(ErrorBody),
+    Handler(String),
+    Serde(serde_json::Error),
+    WebSocket(String),
+}
+```
+
+`ErrorBody` carries the engine's `{ code, message, stacktrace? }` payload; match on
+`IIIError::Remote(body) => body.code.as_str()` to branch on engine error codes
+(`invocation_failed`, `invocation_stopped`, `function_not_found`, `FORBIDDEN`, `TIMEOUT`, etc.).
+
+## Channels
+
+`ChannelReader` and `ChannelWriter` wrap the engine's stream WebSockets. `StreamChannelRef`
+identifies a channel:
+
+```rust
+pub struct StreamChannelRef {
+    pub channel_id: String,
+    pub access_key: String,
+    pub direction: ChannelDirection,
+}
+```
+
+`ChannelDirection`, `ChannelItem`, `is_channel_ref`, and `extract_channel_refs` are exported from
+the `iii_sdk::helpers` submodule. Create a channel pair with `iii_sdk::helpers::create_channel(&iii, buffer_size)`.
+
+`ChannelReader::new(engine_ws_base, ref)` and `ChannelWriter::new(engine_ws_base, ref)` open the
+underlying WebSocket. Reader methods include `read()`, `on_message()`, and `close()`; writer
+methods include `write()`, `send_message()`, and `close()`.
+
+## Logger
+
+`Logger` is a `Clone + Default` struct that emits structured log records. The output integrates
+with the SDK's OpenTelemetry setup; see
+iii-observability for the export side.
+
+## Connection state
+
+`IIIConnectionState` is the public enum mirroring the wire-level connection lifecycle.
+
+```rust
+pub enum IIIConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+    Failed,
+}
+```
+
+## Info types
+
+The SDK re-exports the engine's structured introspection types:
+
+- `FunctionInfo`. `function_id`, optional `description`, optional `request_format` /
+  `response_format`, optional `metadata`.
+- `TriggerInfo`. `id`, `trigger_type`, `function_id`, optional `config` / `metadata`.
+- `WorkerInfo`. `id`, `name`, runtime / version / OS fields, IP, `status`, `connected_at_ms`,
+  `function_count`, registered `functions`, `active_invocations`, optional `isolation`.
+- `WorkerMetadata`. The structured metadata a worker reports about itself: `runtime`, `version`,
+  `name`, `os`, `pid`, `telemetry` (an optional `WorkerTelemetryMeta` carrying language /
+  framework / project labels plus an Amplitude key, used by iii-telemetry for anonymous usage
+  reporting; distinct from the OpenTelemetry observability surfaces owned by iii-observability),
+  `isolation`. Rust is the only SDK that surfaces this as a distinct type today.
+
+## `MessageType`
+
+Not part of this SDK. Wire frames are typed via the protocol module's `Message` enum, which is
+internal to the SDK.

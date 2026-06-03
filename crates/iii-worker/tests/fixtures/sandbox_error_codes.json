@@ -1,11 +1,11 @@
 {
   "_comment": "Wire ABI for sandbox::* error codes. Pinned by sandbox_error_codes_integration.rs (Rust) and consumed by SDK contract tests in Node + Python. Adding a new SandboxError variant requires adding a row here. Changing a `code` is a breaking SDK change.",
   "version": 1,
-  "docs_base": "https://docs.iii.dev/errors/sandbox/",
+  "docs_base": "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#",
   "codes": [
     {"code": "S001", "type": "validation", "retryable": false, "rust_variant": "InvalidRequest", "summary": "request payload failed validation (e.g. missing/malformed sandbox_id)"},
     {"code": "S002", "type": "validation", "retryable": false, "rust_variant": "NotFound", "summary": "sandbox uuid not found in registry"},
-    {"code": "S003", "type": "validation", "retryable": false, "rust_variant": "ConcurrentExec", "summary": "another exec is in flight on this sandbox; await before firing another"},
+    {"code": "S003", "type": "validation", "retryable": false, "rust_variant": "ConcurrentExec", "summary": "another exec is in flight on this sandbox (exec is serialized one-at-a-time); detach a foreground process or stop+recreate rather than waiting"},
     {"code": "S004", "type": "validation", "retryable": false, "rust_variant": "AlreadyStopped", "summary": "sandbox already stopped; create a new one"},
     {"code": "S100", "type": "config", "retryable": false, "rust_variant": "ImageNotInCatalog", "summary": "image not in catalog or allowlist"},
     {"code": "S101", "type": "internal", "retryable": false, "rust_variant": "RootfsMissing", "summary": "rootfs missing on disk; run iii worker add"},
