@@ -351,6 +351,5 @@ RBAC-gated listener (via `iii-worker-manager`) that uses an auth function to adm
 browser isn't trusted like our other workers. However any other worker can be gated this same way.
 
 Once everything is set up our client calls server functions directly, subscribes to streams for live
-updates, and registers functions the server calls back. Next, in
-[Ch. 8: Make it agentic](/tutorials/linkly/safety-agent), an autonomous agent samples new links and
-investigates their destinations in an `iii-sandbox` before deciding whether to quarantine them.
+updates, and registers functions the server calls back, all on the same iii bus as the rest of
+Linkly.
