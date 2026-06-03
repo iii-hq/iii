@@ -19,6 +19,12 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
   [Install](./install) guide first.
 </Info>
 
+<Note>
+  The Quickstart is a barebones tutorial intended to be completed within minutes. If you are more
+  interested in learning and exploring the full power of iii then visit our
+  [real world tutorial](./tutorials/linkly/overview).
+</Note>
+
 ## 1. Create the project
 
 ```bash
