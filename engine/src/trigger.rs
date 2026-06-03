@@ -62,6 +62,7 @@ pub struct TriggerType {
     pub _description: String,
     pub trigger_request_format: Option<Value>,
     pub call_request_format: Option<Value>,
+    pub call_response_format: Option<Value>,
     pub registrator: Box<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
 }
@@ -76,11 +77,13 @@ impl TriggerType {
         let id = id.into();
         let trigger_request_format = Self::trigger_request_format_for(&id);
         let call_request_format = Self::call_request_format_for(&id);
+        let call_response_format = Self::call_response_format_for(&id);
         Self {
             id,
             _description: description.into(),
             trigger_request_format,
             call_request_format,
+            call_response_format,
             registrator,
             worker_id,
         }
@@ -93,6 +96,14 @@ impl TriggerType {
 
     pub fn with_call_request_format<T: schemars::JsonSchema>(mut self) -> Self {
         self.call_request_format = Self::schema_for::<T>();
+        self
+    }
+
+    /// Schema for what a bound handler must RETURN when this trigger fires
+    /// (e.g. the HTTP response envelope). Exposed via `engine::triggers::info`
+    /// as `response_schema` so callers can discover the return contract.
+    pub fn with_call_response_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.call_response_format = Self::schema_for::<T>();
         self
     }
 
@@ -128,6 +139,19 @@ impl TriggerType {
             "stream" => Self::schema_for::<StreamCallRequest>(),
             "log" => Self::schema_for::<LogCallRequest>(),
             "configuration" => Self::schema_for::<ConfigurationCallRequest>(),
+            _ => None,
+        }
+    }
+
+    /// Schema a bound handler must RETURN when this trigger fires. Only trigger
+    /// types whose handler return shape is fixed declare one. `http` returns an
+    /// `HttpCallResponse` (`status_code` / `headers` / `body`); most triggers
+    /// place no constraint on the return and report `None`.
+    fn call_response_format_for(id: &str) -> Option<Value> {
+        use crate::trigger_formats::*;
+
+        match id {
+            "http" => Self::schema_for::<HttpCallResponse>(),
             _ => None,
         }
     }

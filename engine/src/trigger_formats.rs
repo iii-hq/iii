@@ -63,6 +63,23 @@ pub struct HttpCallRequest {
     pub body: Value,
 }
 
+/// Response envelope a bound HTTP handler returns. The `iii-http` worker reads
+/// these fields from the handler's return value; any absent field uses its
+/// default. This is the contract for "what should my HTTP handler return".
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HttpCallResponse {
+    /// HTTP status code to send. Defaults to 200 when omitted, so set it
+    /// explicitly for error cases (e.g. 404 for not-found, 400 for bad input).
+    /// The field is `status_code` — not `status`.
+    pub status_code: u16,
+    /// Response headers as a `{ "Header-Name": "value" }` map. An array of
+    /// `"Name: value"` strings is also accepted.
+    pub headers: HashMap<String, String>,
+    /// Response body. Serialized to the wire as JSON, text, or bytes according to
+    /// the `Content-Type` header you set.
+    pub body: Value,
+}
+
 // ── Cron ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

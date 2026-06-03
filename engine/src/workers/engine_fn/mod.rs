@@ -185,6 +185,11 @@ pub struct TriggerTypeDetail {
     pub configuration_schema: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_schema: Option<Value>,
+    /// Schema a bound handler must RETURN when the trigger fires (e.g. the HTTP
+    /// response envelope). Present only for trigger types with a fixed return
+    /// contract; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_schema: Option<Value>,
     pub instance_count: usize,
 }
 
@@ -613,6 +618,7 @@ impl EngineFunctionsWorker {
             description: tt._description.clone(),
             configuration_schema: tt.trigger_request_format.clone(),
             request_schema: tt.call_request_format.clone(),
+            response_schema: tt.call_response_format.clone(),
             instance_count: self.instance_count_for_type(&tt.id),
         })
     }
@@ -1817,6 +1823,7 @@ mod tests {
             description: "HTTP trigger".to_string(),
             configuration_schema: Some(serde_json::json!({"type": "object"})),
             request_schema: Some(serde_json::json!({"type": "object"})),
+            response_schema: None,
             instance_count: 2,
         };
         let json = serde_json::to_value(&detail).expect("serialize");
