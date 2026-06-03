@@ -25,9 +25,7 @@ mkdir -p data
 The default config that the database worker ships with is below, it will work well for our purposes
 but let's modify its url to put `iii.db` in the `./data` folder.
 
-<Info>
-The database worker will automatically create `iii.db` on first run.
-<Info>
+<Info>The database worker will automatically create `iii.db` on first run.</Info>
 
 <Info>
   The database worker supports more than SQLite, refer to the [`database` worker
