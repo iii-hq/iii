@@ -19,7 +19,7 @@ iii worker init link-sweeper --language typescript
 
 ## Give the sweeper its own database
 
-The sweeper tracks expiry itself, so it needs somewhere to keep it. Add an `expiry` database to the
+The sweeper tracks expiry itself, so it needs somewhere to keep it. Add a `sweeper` database to the
 `database` worker's config, alongside the ones from earlier chapters:
 
 ```yaml config.yaml {7,8}
@@ -29,8 +29,8 @@ workers:
     config:
       databases:
         # ...primary, harness, and safety from earlier chapters
-        expiry:
-          url: sqlite:./data/expiry.db
+        sweeper:
+          url: sqlite:./data/sweeper.db
 ```
 
 ## Build the link-sweeper worker
@@ -47,7 +47,7 @@ const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "link-sweeper",
 });
 const logger = new Logger();
-const DB = "expiry";
+const DB = "sweeper";
 
 // One minute by default so expiry is observable in the tutorial. In production
 // set SWEEP_TTL_SECONDS to something like 31536000 (365 days).
