@@ -257,4 +257,7 @@ running system.
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
     Understand functions, triggers, and workers from a conceptual point of view.
   </Card>
+  <Card title="Real-world tutorial" href="./tutorials/linkly/overview" icon="graduation-cap">
+    Go beyond the basics and explore the full power of iii by building a real-world application.
+  </Card>
 </CardGroup>
