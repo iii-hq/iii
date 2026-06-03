@@ -38,7 +38,10 @@ workers:
   # ...
   - name: iii-state
     config:
-      store_method: in_memory
+      adapter:
+        name: kv
+        config:
+          store_method: in_memory
 ```
 
 Now restarting the engine clears every link. That's fine here;
@@ -195,7 +198,7 @@ iii
 
 `iii worker init` scaffolds the worker but leaves your project untouched. To add this worker to your
 config run the following command from the root `linkly` directory (ie. where the `config.yaml` is).
-Add the `link` worker to your sytem by running:
+Add the `link` worker to your system by running:
 
 ```bash
 iii worker add ./link
@@ -384,7 +387,7 @@ curl -i http://127.0.0.1:3111/s/learn-iii
 
 ```http
 HTTP/1.1 302 Found
-location: https://example.com
+location: http://iii.dev/docs/understanding-iii
 ```
 
 An unknown code returns `404`:
