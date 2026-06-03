@@ -29,7 +29,9 @@ import (
 )
 
 func main() {
-	client := iii.New(iii.DefaultEngineURL) // ws://localhost:49134
+	// registerWorker-style entry point, matching the Node/Rust SDKs: creates the client
+	// and starts connecting in the background.
+	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://localhost:49134
 
 	// Exposed over HTTP, so the handler speaks the engine's HTTP envelope: the request
 	// body is under "body", and the response is { status_code, body }.
@@ -51,6 +53,8 @@ func main() {
 	client.RegisterTrigger("hello-http", "http", "hello::greet",
 		json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`), nil)
 
+	// RegisterWorker already started connecting; Connect blocks until the first
+	// connection is established (or the context is cancelled).
 	if err := client.Connect(context.Background()); err != nil {
 		log.Fatal(err)
 	}
@@ -79,8 +83,10 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 
 | Operation | Signature | Description |
 | --- | --- | --- |
-| Create | `iii.New(url, opts...) *Client` | Build a client for the engine. Does not connect. |
-| Connect | `client.Connect(ctx) error` | Start the connection lifecycle; blocks until connected. |
+| Register worker | `iii.RegisterWorker(url, opts...) *Client` | Create a client and start connecting in the background (the `registerWorker` entry point). |
+| Create | `iii.New(url, opts...) *Client` | Build a client without connecting (call `Connect` yourself). |
+| Connect | `client.Connect(ctx) error` | Start the lifecycle if needed and block until connected. |
+| Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler)` | Register a function with request/response schemas inferred from the types. |
 | Register function | `client.RegisterFunction(id, handler) error` | Register a function the engine can invoke by name. |
 | Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
 | Register trigger type | `client.RegisterTriggerType(id, description, handler) error` | Implement a custom trigger type. |
@@ -113,6 +119,39 @@ client.RegisterFunction("orders::create", func(ctx context.Context, data json.Ra
 Returning an `*iii.InvocationError` preserves its `Code` on the wire; any other error is
 reported with code `invocation_failed`. A handler panic is recovered and reported the
 same way, so a caller gets an error rather than a timeout.
+
+### Schema inference
+
+For the engine (and typed callers / the dashboard) to know a function's contract, use
+`RegisterFunctionTyped`, which infers the request and response JSON Schemas from the type
+parameters and advertises them as `request_format` / `response_format`. This is the Go
+counterpart of the Rust SDK's `#[derive(JsonSchema)]`. Go has no compile-time derive, so
+inference is reflection-based (via [`invopop/jsonschema`](https://github.com/invopop/jsonschema),
+the analog of Rust's `schemars`); use `json` and `jsonschema` struct tags to shape the
+schema.
+
+```go
+type CreateOrderRequest struct {
+	Item     string `json:"item" jsonschema:"required"`
+	Quantity int    `json:"quantity" jsonschema:"minimum=1"`
+}
+type OrderResult struct {
+	ID string `json:"id"`
+}
+
+iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::create",
+	func(ctx context.Context, req CreateOrderRequest) (OrderResult, error) {
+		return OrderResult{ID: "ord_123"}, nil
+	})
+// Advertised request_format:
+// {"type":"object","properties":{"item":{"type":"string"},
+//  "quantity":{"type":"integer","minimum":1}},"required":["item","quantity"]}
+```
+
+The handler works with the concrete `CreateOrderRequest` (the SDK unmarshals the payload)
+and returns the typed `OrderResult`. Use `RegisterFunction` for schemaless functions or
+when you want to send a hand-written schema. `iii.InferSchema[T]()` returns the schema for
+a type if you want to inspect or reuse it.
 
 ### Invoking functions
 

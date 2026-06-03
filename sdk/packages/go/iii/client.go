@@ -60,10 +60,13 @@ type Client struct {
 	offline [][]byte
 
 	// lifecycle
-	shutdown  chan struct{}
-	shutOnce  sync.Once
-	connected chan struct{} // closed once the first connection is established
-	connOnce  sync.Once
+	shutdown      chan struct{}
+	shutOnce      sync.Once
+	connected     chan struct{} // closed once the first connection is established
+	connOnce      sync.Once
+	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
+	failOnce      sync.Once
+	superviseOnce sync.Once // ensures only one supervisor goroutine runs
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
@@ -118,10 +121,26 @@ func New(url string, opts ...Option) *Client {
 		pending:      map[uuid.UUID]chan invocationOutcome{},
 		shutdown:     make(chan struct{}),
 		connected:    make(chan struct{}),
+		failed:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	return c
+}
+
+// RegisterWorker creates a Client for the engine at url and starts the connection
+// lifecycle in the background, returning immediately. It is the idiomatic entry point,
+// matching registerWorker in the Node SDK and register_worker in the Rust SDK. Register
+// functions and triggers on the returned client; they are (re)sent on each connection.
+// Call Close to stop.
+//
+// To wait for the first connection (or fail fast on a bad URL), call Connect instead of
+// — or after — RegisterWorker; Connect blocks until connected, ctx is done, or the
+// reconnect budget is exhausted.
+func RegisterWorker(url string, opts ...Option) *Client {
+	c := New(url, opts...)
+	c.startSupervisor()
 	return c
 }
 
@@ -330,15 +349,27 @@ func (c *Client) enqueueOutbound(frame []byte) {
 	}
 }
 
-// Connect starts the connection lifecycle and blocks until the first connection is
-// established or ctx is cancelled. The supervisor goroutine then keeps the connection
-// alive (reconnecting with backoff) until Close.
+// startSupervisor launches the connect/reconnect loop exactly once, no matter how many
+// times Connect (or RegisterWorker) is called, so there is never more than one goroutine
+// driving the socket.
+func (c *Client) startSupervisor() {
+	c.superviseOnce.Do(func() { go c.supervise() })
+}
+
+// Connect starts the connection lifecycle (if not already started) and blocks until the
+// first connection is established, ctx is cancelled, or the reconnect budget is
+// exhausted. The supervisor goroutine then keeps the connection alive (reconnecting with
+// backoff) until Close. Connect is safe to call multiple times and from multiple
+// goroutines; only one supervisor ever runs.
 func (c *Client) Connect(ctx context.Context) error {
-	go c.supervise()
+	c.startSupervisor()
 
 	select {
 	case <-c.connected:
 		return nil
+	case <-c.failed:
+		// The supervisor gave up (MaxRetries exceeded) before ever connecting.
+		return fmt.Errorf("iii: connection failed after exhausting retries: %w", ErrNotConnected)
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.shutdown:
@@ -372,6 +403,8 @@ func (c *Client) supervise() {
 		attempt++
 		if c.reconnect.MaxRetries != -1 && attempt > c.reconnect.MaxRetries {
 			c.setState(StateFailed)
+			// Unblock any Connect callers waiting on the first connection.
+			c.failOnce.Do(func() { close(c.failed) })
 			return
 		}
 
