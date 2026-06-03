@@ -205,14 +205,15 @@ async fn provider_reconnect_rebinds_trigger() {
     let provider = create_provider(&state).await;
     wait_register_calls(&state, 1).await;
 
-    let register_calls = state.register_calls.lock().unwrap();
-    assert!(
-        register_calls
-            .iter()
-            .any(|c| c.id == bound_trigger_id && c.function_id == CONSUMER_FN),
-        "expected re-bind for trigger {bound_trigger_id}"
-    );
-    drop(register_calls);
+    {
+        let register_calls = state.register_calls.lock().unwrap();
+        assert!(
+            register_calls
+                .iter()
+                .any(|c| c.id == bound_trigger_id && c.function_id == CONSUMER_FN),
+            "expected re-bind for trigger {bound_trigger_id}"
+        );
+    }
 
     state.handler_calls.lock().unwrap().clear();
 
