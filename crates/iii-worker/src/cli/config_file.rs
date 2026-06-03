@@ -646,7 +646,8 @@ fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorker
 /// Bundle takes precedence over binary because the bundle install root is a
 /// distinct, newer install type (introduced for registry-published JS/Python
 /// workers). The two roots should never collide for the same name in
-/// practice; the `iii worker add` path returns W111 AlreadyExists if they do.
+/// practice; if they do, the bundle install wins and a re-add replaces it
+/// in place (`atomic_install`).
 pub fn resolve_worker_type(name: &str) -> ResolvedWorkerType {
     let path = std::path::Path::new(CONFIG_FILE);
     let content = match std::fs::read_to_string(path) {

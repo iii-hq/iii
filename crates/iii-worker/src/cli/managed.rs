@@ -193,9 +193,10 @@ pub async fn handle_binary_add(
 ///
 /// Runs the bundle install pipeline: acquire fslock + staging, stream
 /// archive, verify sha256, extract with bundle-tight limits, validate
-/// strict manifest, atomic install into `~/.iii/workers-bundle/{name}/`,
-/// and write a name-only entry to config.yaml so the resolver
-/// dispatches the worker on the next `iii worker start`.
+/// strict manifest, atomic install into `~/.iii/workers-bundle/{name}/`
+/// (replacing any previous install of the same name), and write a
+/// name-only entry to config.yaml so the resolver dispatches the worker
+/// on the next `iii worker start`.
 pub async fn handle_bundle_add(
     worker_name: &str,
     response: &BundleWorkerResponse,
@@ -220,50 +221,6 @@ pub async fn handle_bundle_add(
         eprintln!("  {} Resolved to bundle v{}", "✓".green(), response.version);
     }
 
-    // Fast path: bundle installs are a global, machine-wide cache keyed by
-    // NAME ONLY (~/.iii/workers-bundle/{name}/), shared across every project.
-    // If another project already installed this bundle, the payload is on
-    // disk and atomic_install (step 6) would refuse to clobber it, failing
-    // the whole add with W111 AlreadyExists BEFORE the worker is ever
-    // registered in THIS project's config.yaml. Detect the existing install
-    // and just register it — no second download, no install, no false
-    // "already exists" failure. append_worker is idempotent, so re-adding in
-    // a project that already has the entry is a harmless merge.
-    //
-    // Intentionally lock-free (unlike the install path, which holds the
-    // per-worker staging lock): this branch only mutates THIS project's
-    // config.yaml, never the shared bundle dir. A racing `iii worker update`
-    // could transiently remove the dir, but start-time re-resolves the
-    // filesystem, so the worst case is a name-only entry whose dir reappears.
-    if super::config_file::bundle_is_installed(worker_name) {
-        let final_dir = super::config_file::bundle_worker_path(worker_name);
-        // Name-only entry, same as the fresh-install path below (step 7), so
-        // the resolver routes starts through the immutable bundle install.
-        if let Err(e) = super::config_file::append_worker(worker_name, None) {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-        if !brief {
-            eprintln!(
-                "  {} Worker {} reused already-installed bundle at {}",
-                "✓".green(),
-                worker_name.bold(),
-                final_dir.display().to_string().dimmed(),
-            );
-            eprintln!(
-                "  {} bundle workers are shared by name across projects; the \
-                 on-disk bundle may differ from the resolved v{}. Run `iii \
-                 worker update {}` to refresh it.",
-                "note:".dimmed(),
-                response.version,
-                worker_name,
-            );
-        } else {
-            eprintln!("        {} {}", "✓".green(), worker_name.bold());
-        }
-        return 0;
-    }
-
     // 1. Acquire per-worker lock + staging directory.
     let mut guard = match super::bundle_download::acquire_staging(worker_name).await {
         Ok(g) => g,
@@ -273,6 +230,24 @@ pub async fn handle_bundle_add(
         }
     };
     let staging_dir = guard.staging_dir().to_path_buf();
+
+    // Bundle installs are a global, machine-wide cache keyed by NAME ONLY
+    // (~/.iii/workers-bundle/{name}/), shared across every project. An add
+    // always installs the freshly resolved version: when another project (or
+    // a previous add) already installed this bundle, atomic_install (step 6)
+    // replaces the on-disk payload so it can never go stale. This is also
+    // what lets `iii worker update` refresh bundles — update funnels here.
+    // Checked AFTER acquiring the per-worker lock so the answer can't be
+    // changed by a racing install before step 6 runs (the rollback in step 7
+    // relies on it).
+    let replacing = super::config_file::bundle_is_installed(worker_name);
+    if !brief && replacing {
+        eprintln!(
+            "  {} Replacing existing bundle install with v{}",
+            "✓".green(),
+            response.version,
+        );
+    }
 
     // 2. Stream-download + sha256 verify into staging/.archive.tar.gz.
     //    download_archive does seconds of work with no internal progress
@@ -404,12 +379,15 @@ pub async fn handle_bundle_add(
     //    install).
     if let Err(e) = super::config_file::append_worker(worker_name, None) {
         eprintln!("{} {}", "error:".red(), e);
-        // Roll back the installed bundle dir so a retry isn't blocked
-        // by `AlreadyExists` from atomic_install. The StagingGuard has
-        // already committed by this point — final_dir is the only
-        // on-disk state we still own. Cleanup errors are logged but
-        // the install still fails (return 1).
-        if let Err(rm_err) = std::fs::remove_dir_all(&final_dir) {
+        // FRESH installs are rolled back: the config.yaml entry never
+        // landed, so leaving the payload would strand a dir no project
+        // references. A REPLACE is kept: the previous install is already
+        // gone, and OTHER projects resolve this bundle by name from disk —
+        // deleting final_dir would break every one of them, while keeping
+        // the new payload breaks nobody. A retry re-runs the full pipeline
+        // either way. Cleanup errors are logged but the install still
+        // fails (return 1).
+        if !replacing && let Err(rm_err) = std::fs::remove_dir_all(&final_dir) {
             eprintln!(
                 "  {} failed to roll back bundle install dir {}: {}",
                 "warning:".yellow(),
@@ -2768,8 +2746,8 @@ pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
 
     // Bundle worker: ~/.iii/workers-bundle/{name}/. Without this branch,
     // `iii worker remove foo` and `iii worker clear` would silently leak
-    // the bundle install dir, and `iii worker add foo --force` would
-    // hit `AlreadyExists` from atomic_install.
+    // the bundle install dir: nothing references it anymore, but the
+    // machine-wide payload would sit on disk until a re-add replaces it.
     let bundle_dir = super::config_file::bundle_worker_path(worker_name);
     if bundle_dir.is_dir() {
         freed += dir_size(&bundle_dir);
