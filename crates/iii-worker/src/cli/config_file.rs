@@ -677,16 +677,29 @@ pub fn bundle_worker_path(name: &str) -> std::path::PathBuf {
     bundle_workers_dir().join(name)
 }
 
+/// Returns true when a bundle worker named `name` is already installed at the
+/// global cache path (`~/.iii/workers-bundle/{name}/`) with a valid
+/// `iii.worker.yaml` manifest.
+///
+/// Bundle installs are shared machine-wide by name, not per project, so this
+/// is how a second project detects that another project already installed the
+/// bundle and can register it without re-downloading. Mirrors the bundle
+/// detection in `check_install_fallback`: a stray empty directory does NOT
+/// count as installed (manifest must be present).
+pub fn bundle_is_installed(name: &str) -> bool {
+    let bundle_dir = bundle_worker_path(name);
+    bundle_dir.is_dir() && bundle_dir.join("iii.worker.yaml").is_file()
+}
+
 /// Filesystem fallback precedence: bundle → binary → config-only.
 ///
 /// A bundle install is detected by the presence of `iii.worker.yaml` inside
 /// the bundle directory (not just dir existence) so a stray empty directory
 /// or escaped staging dir doesn't trigger a false-positive Bundle resolve.
 fn check_install_fallback(name: &str) -> ResolvedWorkerType {
-    let bundle_dir = bundle_worker_path(name);
-    if bundle_dir.is_dir() && bundle_dir.join("iii.worker.yaml").is_file() {
+    if bundle_is_installed(name) {
         return ResolvedWorkerType::Bundle {
-            worker_path: bundle_dir,
+            worker_path: bundle_worker_path(name),
         };
     }
     let binary_path = dirs::home_dir()

@@ -220,6 +220,50 @@ pub async fn handle_bundle_add(
         eprintln!("  {} Resolved to bundle v{}", "✓".green(), response.version);
     }
 
+    // Fast path: bundle installs are a global, machine-wide cache keyed by
+    // NAME ONLY (~/.iii/workers-bundle/{name}/), shared across every project.
+    // If another project already installed this bundle, the payload is on
+    // disk and atomic_install (step 6) would refuse to clobber it, failing
+    // the whole add with W111 AlreadyExists BEFORE the worker is ever
+    // registered in THIS project's config.yaml. Detect the existing install
+    // and just register it — no second download, no install, no false
+    // "already exists" failure. append_worker is idempotent, so re-adding in
+    // a project that already has the entry is a harmless merge.
+    //
+    // Intentionally lock-free (unlike the install path, which holds the
+    // per-worker staging lock): this branch only mutates THIS project's
+    // config.yaml, never the shared bundle dir. A racing `iii worker update`
+    // could transiently remove the dir, but start-time re-resolves the
+    // filesystem, so the worst case is a name-only entry whose dir reappears.
+    if super::config_file::bundle_is_installed(worker_name) {
+        let final_dir = super::config_file::bundle_worker_path(worker_name);
+        // Name-only entry, same as the fresh-install path below (step 7), so
+        // the resolver routes starts through the immutable bundle install.
+        if let Err(e) = super::config_file::append_worker(worker_name, None) {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+        if !brief {
+            eprintln!(
+                "  {} Worker {} reused already-installed bundle at {}",
+                "✓".green(),
+                worker_name.bold(),
+                final_dir.display().to_string().dimmed(),
+            );
+            eprintln!(
+                "  {} bundle workers are shared by name across projects; the \
+                 on-disk bundle may differ from the resolved v{}. Run `iii \
+                 worker update {}` to refresh it.",
+                "note:".dimmed(),
+                response.version,
+                worker_name,
+            );
+        } else {
+            eprintln!("        {} {}", "✓".green(), worker_name.bold());
+        }
+        return 0;
+    }
+
     // 1. Acquire per-worker lock + staging directory.
     let mut guard = match super::bundle_download::acquire_staging(worker_name).await {
         Ok(g) => g,

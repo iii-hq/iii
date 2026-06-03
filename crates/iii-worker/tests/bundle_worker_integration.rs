@@ -45,11 +45,13 @@ use iii_worker::cli::bundle_download::{
     validate_bundle_manifest,
 };
 use iii_worker::cli::config_file::{
-    ResolvedWorkerType, bundle_worker_path, bundle_workers_dir, resolve_worker_type,
+    ResolvedWorkerType, bundle_is_installed, bundle_worker_path, bundle_workers_dir,
+    resolve_worker_type,
 };
+use iii_worker::cli::managed::handle_bundle_add;
 use iii_worker::cli::registry::{
-    MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS, ResolvedEdge, ResolvedRoot, ResolvedWorker,
-    ResolvedWorkerGraph, enforce_dep_graph_bounds,
+    BundleWorkerResponse, MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS, ResolvedEdge, ResolvedRoot,
+    ResolvedWorker, ResolvedWorkerGraph, enforce_dep_graph_bounds,
 };
 use iii_worker::core::error::WorkerOpError;
 
@@ -645,6 +647,87 @@ fn atomic_install_renames_into_place() {
     assert!(!staging.exists(), "staging dir was consumed by rename");
 }
 
+#[test]
+#[serial]
+fn bundle_is_installed_detects_shared_global_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(tmp.path());
+
+    // Nothing installed yet.
+    assert!(!bundle_is_installed("harness"), "absent before any install");
+
+    // Simulate project A installing the shared bundle.
+    let dir = bundle_worker_path("harness");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("iii.worker.yaml"), "name: harness\n").unwrap();
+    assert!(
+        bundle_is_installed("harness"),
+        "detected once the manifest is on disk"
+    );
+
+    // A bare directory with no manifest must NOT count as installed,
+    // matching the resolver's bundle detection (manifest-gated).
+    let empty = bundle_worker_path("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(
+        !bundle_is_installed("empty"),
+        "empty dir without manifest is not a valid install"
+    );
+}
+
+// Regression: a bundle worker already installed by one project must be
+// reusable in a second project. Bundle installs are a global, machine-wide
+// cache keyed by name (~/.iii/workers-bundle/{name}/). Before the reuse
+// fast-path in `handle_bundle_add`, the second `iii worker add` ran the full
+// install pipeline and `atomic_install` refused to clobber the shared dir,
+// failing with W111 AlreadyExists (rc 1) BEFORE the worker was ever written
+// into the second project's config.yaml.
+#[tokio::test]
+#[serial]
+async fn bundle_add_reuses_existing_install_in_second_project() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(home.path());
+
+    // Project A already installed the shared bundle.
+    let install_dir = bundle_worker_path("harness");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    std::fs::write(install_dir.join("iii.worker.yaml"), "name: harness\n").unwrap();
+
+    // Project B is a fresh working directory with no config.yaml yet.
+    let project_b = tempfile::tempdir().unwrap();
+    let _cwd = CwdGuard::set(project_b.path());
+
+    let response = BundleWorkerResponse {
+        name: "harness".to_string(),
+        version: "0.5.4".to_string(),
+        // Never fetched: the reuse path returns before any network I/O.
+        archive_url: "https://example.invalid/should-not-be-fetched.tar.gz".to_string(),
+        sha256: "0".repeat(64),
+    };
+
+    let rc = handle_bundle_add("harness", &response, true).await;
+    assert_eq!(rc, 0, "second-project add must succeed, not fail with W111");
+
+    let config = std::fs::read_to_string("config.yaml")
+        .expect("config.yaml written in project B working dir");
+    assert!(
+        config.contains("harness"),
+        "worker registered in project B config.yaml, got:\n{config}"
+    );
+    // Must be a name-only (bundle-shaped) entry: the resolver routes starts to
+    // the immutable bundle install ONLY when neither worker_path nor image is
+    // present. A regression that wrote either would break bundle dispatch at
+    // start while still passing the substring check above.
+    assert!(
+        !config.contains("worker_path:"),
+        "bundle entry must not carry worker_path, got:\n{config}"
+    );
+    assert!(
+        !config.contains("image:"),
+        "bundle entry must not carry image, got:\n{config}"
+    );
+}
+
 // StagingGuard drop semantics are covered by the in-module unit test
 // in `bundle_download.rs`. Constructing one from this integration test
 // crate would require a test-only public constructor; we deliberately
@@ -1235,6 +1318,27 @@ impl Drop for HomeGuard {
                 None => std::env::remove_var("HOME"),
             }
         }
+    }
+}
+
+/// RAII guard that switches the process working directory and restores it
+/// on drop. Process CWD is global; all callers must be `#[serial]`.
+/// Used to simulate running `iii worker add` from a second project dir.
+struct CwdGuard {
+    previous: std::path::PathBuf,
+}
+
+impl CwdGuard {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(path).unwrap();
+        Self { previous }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous);
     }
 }
 
