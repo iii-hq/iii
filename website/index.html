@@ -4575,7 +4575,7 @@
         <span class="nav-tabs">
           <a class="nav-tab" href="/docs">docs</a>
           <a class="nav-tab" href="/blog/">blog</a>
-          <a class="nav-tab" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry<span class="nav-tab-ext" aria-hidden="true">&#x2197;</span></a>
+          <a class="nav-tab" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer" aria-label="registry, opens in a new tab">registry<span class="nav-tab-ext" aria-hidden="true">&#x2197;</span></a>
         </span>
       </div>
     </div>
@@ -6887,10 +6887,10 @@ iii.register_function(
     el.addEventListener('click', copyInstall);
   });
 
-  // Desktop nav links — internal anchors and external destinations
-  document.querySelectorAll('.nav-links .nav-link').forEach(a => {
+  // Desktop nav links — internal anchors and external destination tabs
+  document.querySelectorAll('.nav-links .nav-link, .nav-tabs .nav-tab').forEach(a => {
     a.addEventListener('click', () => {
-      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      const label = (a.textContent || '').replace(/↗/g, '').trim().toLowerCase().replace(/\s+/g, '_');
       iiiTrack('cta_click', {
         cta_id: 'nav_link',
         cta_location: 'nav',
