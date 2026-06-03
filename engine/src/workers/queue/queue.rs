@@ -2521,7 +2521,9 @@ mod tests {
         }];
 
         let result = module
-            .console_dlq_messages(dlq_messages_input(json!({"topic": "my-queue", "offset": 0, "limit": 50})))
+            .console_dlq_messages(dlq_messages_input(
+                json!({"topic": "my-queue", "offset": 0, "limit": 50}),
+            ))
             .await;
         match result {
             FunctionResult::Success(Some(val)) => {
