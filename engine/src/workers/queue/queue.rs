@@ -2375,6 +2375,14 @@ mod tests {
         }
     }
 
+    fn topic_stats_input(v: Value) -> TopicStatsInput {
+        serde_json::from_value(v).expect("valid TopicStatsInput")
+    }
+
+    fn dlq_messages_input(v: Value) -> DlqMessagesInput {
+        serde_json::from_value(v).expect("valid DlqMessagesInput")
+    }
+
     // =========================================================================
     // console_topic_stats tests
     // =========================================================================
@@ -2382,7 +2390,9 @@ mod tests {
     #[tokio::test]
     async fn console_topic_stats_empty_topic_returns_failure() {
         let (_engine, module, _adapter) = setup_queue_module();
-        let result = module.console_topic_stats(json!({})).await;
+        let result = module
+            .console_topic_stats(topic_stats_input(json!({"topic": ""})))
+            .await;
         match result {
             FunctionResult::Failure(e) => {
                 assert_eq!(e.code, "topic_required");
@@ -2402,7 +2412,7 @@ mod tests {
         };
 
         let result = module
-            .console_topic_stats(json!({"topic": "default"}))
+            .console_topic_stats(topic_stats_input(json!({"topic": "default"})))
             .await;
         match result {
             FunctionResult::Success(Some(val)) => {
@@ -2427,7 +2437,7 @@ mod tests {
             .store(true, Ordering::SeqCst);
 
         let result = module
-            .console_topic_stats(json!({"topic": "some-topic"}))
+            .console_topic_stats(topic_stats_input(json!({"topic": "some-topic"})))
             .await;
         match result {
             FunctionResult::Failure(e) => {
@@ -2487,7 +2497,9 @@ mod tests {
     #[tokio::test]
     async fn console_dlq_messages_empty_topic_returns_failure() {
         let (_engine, module, _adapter) = setup_queue_module();
-        let result = module.console_dlq_messages(json!({})).await;
+        let result = module
+            .console_dlq_messages(dlq_messages_input(json!({"topic": ""})))
+            .await;
         match result {
             FunctionResult::Failure(e) => {
                 assert_eq!(e.code, "topic_required");
@@ -2509,7 +2521,7 @@ mod tests {
         }];
 
         let result = module
-            .console_dlq_messages(json!({"topic": "my-queue", "offset": 0, "limit": 50}))
+            .console_dlq_messages(dlq_messages_input(json!({"topic": "my-queue", "offset": 0, "limit": 50})))
             .await;
         match result {
             FunctionResult::Success(Some(val)) => {
@@ -2529,7 +2541,7 @@ mod tests {
         *adapter.dlq_peek_result.lock().await = vec![];
 
         let result = module
-            .console_dlq_messages(json!({"topic": "default"}))
+            .console_dlq_messages(dlq_messages_input(json!({"topic": "default"})))
             .await;
         // Should succeed (even with empty results)
         assert!(matches!(result, FunctionResult::Success(_)));
@@ -2541,7 +2553,7 @@ mod tests {
         adapter.dlq_peek_should_fail.store(true, Ordering::SeqCst);
 
         let result = module
-            .console_dlq_messages(json!({"topic": "my-queue"}))
+            .console_dlq_messages(dlq_messages_input(json!({"topic": "my-queue"})))
             .await;
         match result {
             FunctionResult::Failure(e) => {
@@ -2558,7 +2570,7 @@ mod tests {
 
         // Only provide topic, offset and limit should default
         let result = module
-            .console_dlq_messages(json!({"topic": "my-queue"}))
+            .console_dlq_messages(dlq_messages_input(json!({"topic": "my-queue"})))
             .await;
         assert!(matches!(result, FunctionResult::Success(_)));
     }
