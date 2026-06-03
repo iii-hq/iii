@@ -110,6 +110,24 @@
             ]
           },
           {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "next/tutorials/linkly/overview",
+                  "next/tutorials/linkly/foundations",
+                  "next/tutorials/linkly/observability",
+                  "next/tutorials/linkly/persistence",
+                  "next/tutorials/linkly/durable-execution",
+                  "next/tutorials/linkly/streaming",
+                  "next/tutorials/linkly/channels",
+                  "next/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
             "tab": "SDK & Engine Reference",
             "groups": [
               {

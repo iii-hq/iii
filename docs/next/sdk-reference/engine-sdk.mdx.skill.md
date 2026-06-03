@@ -189,7 +189,7 @@ to the queue's retry policy.
 
 ## Engine discovery functions
 
-The engine registers a built-in set of functions under the `engine::*` namespace for introspection
+The engine registers a set of functions under the `engine::*` namespace for introspection
 and worker lifecycle. Defined in
 [`engine/src/workers/engine_fn/mod.rs`](https://github.com/iii-hq/iii/blob/main/engine/src/workers/engine_fn/mod.rs):
 

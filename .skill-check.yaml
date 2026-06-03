@@ -9,6 +9,7 @@ docs:
     - "docs/0-11-0/**"
     - "docs/changelog/**"
     - "docs/**/changelog/**"
+    - "docs/next/tutorials/linkly/_workspace/**"
 ai_check:
   provider: anthropic
   model: claude-sonnet-4-6

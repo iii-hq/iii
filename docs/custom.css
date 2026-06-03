@@ -204,6 +204,37 @@ pre code,
   background: transparent !important;
 }
 
+/* Mintlify line-highlighting (`{N-M}` syntax). The product marks highlighted
+   lines with the class `.line.line-highlight` (singular; confirmed against
+   the rendered HTML and CSS at mintlify.com/docs/_next/static/css).
+   The line itself takes `background:rgb(var(--primary-light)/.2)`, and a
+   `::after` pseudo-element extends from `left:-1rem` to `right:-1rem` with
+   the same `--primary-light` background plus a 1px `border-left` — that
+   pseudo is what paints the left and right gutters, so the override has to
+   target it too or peach leaks at the edges. */
+.code-block .line.line-highlight {
+  background: #c5e4c0 !important;
+}
+
+.code-block .line.line-highlight::after,
+.code-block [data-component-part="code-block-root"]:not(.has-line-numbers) .line.line-highlight::before {
+  background: #c5e4c0 !important;
+  border-left-color: #6da46d !important;
+}
+
+html.dark .code-block .line.line-highlight,
+[data-theme="dark"] .code-block .line.line-highlight {
+  background: #3d5e3d !important;
+}
+
+html.dark .code-block .line.line-highlight::after,
+html.dark .code-block [data-component-part="code-block-root"]:not(.has-line-numbers) .line.line-highlight::before,
+[data-theme="dark"] .code-block .line.line-highlight::after,
+[data-theme="dark"] .code-block [data-component-part="code-block-root"]:not(.has-line-numbers) .line.line-highlight::before {
+  background: #3d5e3d !important;
+  border-left-color: #8fbf8f !important;
+}
+
 :not(pre) > code {
   background-color: var(--iii-panel) !important;
   border: 1px solid var(--iii-rule-2) !important;

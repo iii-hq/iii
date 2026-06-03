@@ -93,4 +93,7 @@ your first iii-powered project.
   <Card title="Quickstart" href="./quickstart" icon="terminal">
     Follow the Quickstart and explore a live iii application.
   </Card>
+  <Card title="Real-world tutorial" href="./tutorials/linkly/overview" icon="graduation-cap">
+    Go beyond the basics and explore the full power of iii by building a real-world application.
+  </Card>
 </CardGroup>
