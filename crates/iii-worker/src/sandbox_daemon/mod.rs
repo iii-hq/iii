@@ -92,7 +92,7 @@ If detail.fix is non-null, your next call is fn(detail.fix).
 
   S001 validation       request shape error
   S002 sandbox missing  call sandbox::create first
-  S003 concurrent exec  await previous exec
+  S003 concurrent exec  one exec at a time per sandbox; detach servers (nohup &) or stop+recreate (waiting won't free a foreground exec)
   S100 image catalog    pick "python" or "node" (call sandbox::catalog::list for custom_images keys)
   S200 exec timeout     raise timeout_ms
   S211 file not found    (parent-missing variants carry fix:{parents:true})

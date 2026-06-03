@@ -1,0 +1,3 @@
+# Written by .github/scripts/pin_docs.py with Python json.dumps; keep
+# formatters from re-collapsing its arrays and causing format ping-pong.
+docs/docs.json

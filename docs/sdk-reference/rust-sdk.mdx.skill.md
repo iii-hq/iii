@@ -155,9 +155,6 @@ pub struct StreamChannelRef {
 }
 ```
 
-`ChannelDirection`, `ChannelItem`, `is_channel_ref`, and `extract_channel_refs` are exported from
-the `iii_sdk::helpers` submodule. Create a channel pair with `iii_sdk::helpers::create_channel(&iii, buffer_size)`.
-
 `ChannelReader::new(engine_ws_base, ref)` and `ChannelWriter::new(engine_ws_base, ref)` open the
 underlying WebSocket. Reader methods include `read()`, `on_message()`, and `close()`; writer
 methods include `write()`, `send_message()`, and `close()`.
