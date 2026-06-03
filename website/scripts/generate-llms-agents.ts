@@ -154,6 +154,26 @@ SDKs:
 - Node (browser, RBAC-scoped): \`npm install iii-browser-sdk\`
 - Python: \`pip install iii-sdk\`
 
+## Guardrails
+
+Agents should follow:
+
+- Function IDs use \`::\` (e.g. \`orders::validate\`)
+- HTTP \`api_path\` values use a leading slash (e.g. \`/orders/validate\`)
+- Cron triggers use config field \`expression\`, not \`cron\`
+- Call functions via the SDK from workers — use \`iii trigger\` only for manual debugging
+- Engine listeners and ports come from \`config.yaml\`; use \`iii console\` for observability
+
+## Agent skills (after onboarding)
+
+After iii is installed and your first worker runs locally with a Function and HTTP Trigger, run:
+
+\`\`\`bash
+npx skills add iii-hq/iii/skills
+\`\`\`
+
+This installs iii agent skills (primitives, SDK reference, engine config, architecture patterns, error handling) so your coding agent has full iii context. See https://github.com/iii-hq/iii/tree/main/skills
+
 Last updated: ${isoDate()}
 `.trimStart()
 

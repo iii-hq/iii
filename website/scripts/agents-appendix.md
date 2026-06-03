@@ -44,6 +44,26 @@ Install an SDK:
 
 Full docs: https://iii.dev/docs
 
+## Guardrails
+
+Agents should follow:
+
+- Function IDs use `::` (e.g. `orders::validate`)
+- HTTP `api_path` values use a leading slash (e.g. `/orders/validate`)
+- Cron triggers use config field `expression`, not `cron`
+- Call functions via the SDK from workers — use `iii trigger` only for manual debugging, not app automation
+- Engine listeners and ports come from `config.yaml`; use `iii console` for observability
+
+## Agent skills (after onboarding)
+
+Once iii is installed, your first worker runs locally, and you have a Function with an HTTP Trigger working, install the iii agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling):
+
+```bash
+npx skills add iii-hq/iii/skills
+```
+
+Install a single skill with `--skill <name>` (e.g. `--skill iii-core-primitives`). Catalog: https://github.com/iii-hq/iii/tree/main/skills
+
 ## Harness composition as a shape, not a product
 
 The thin-vs-thick harness debate is a composition choice in iii. A thin harness is a worker with a few functions that lets the model decide what to trigger next. A thick harness is a worker with more functions, approval gates, and conditional logic before enqueuing the next step. Same primitives, different shape. Change the shape by adding or removing functions, not by rearchitecting.
