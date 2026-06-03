@@ -144,6 +144,14 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
 });
 ```
 
+<Note>
+  This replacement drops the `logger.info("link resolved", …)` line you added in Chapter 2. The
+  resolve still shows up as a trace, so the log is optional. If you want parity with Chapter 2, keep
+  logging before you return, for example `logger.info("link resolved", { code: payload.code, found:
+  !!url })` (resolve to a single `url` for both the cache-hit and database paths first, so the log
+  fires on every call).
+</Note>
+
 ## Add click tracking
 
 Since we have a database now, you can start click tracking. Pull the write into its own
