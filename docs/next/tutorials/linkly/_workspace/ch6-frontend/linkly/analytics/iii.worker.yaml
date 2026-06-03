@@ -1,8 +1,0 @@
-name: analytics
-runtime:
-  kind: python
-  package_manager: pip
-  entry: main.py
-scripts:
-  install: 'pip install -r requirements.txt'
-  start: "watchfiles 'python main.py'"

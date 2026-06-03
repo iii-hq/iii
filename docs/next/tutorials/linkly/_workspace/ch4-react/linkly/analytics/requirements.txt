@@ -1,2 +1,0 @@
-iii-sdk>=0.17.0
-watchfiles

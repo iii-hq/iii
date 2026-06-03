@@ -1,8 +1,0 @@
-name: safety-agent
-runtime:
-  kind: typescript
-  package_manager: npm
-  entry: src/index.ts
-scripts:
-  install: 'npm install'
-  start: 'npm run dev'

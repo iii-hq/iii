@@ -1,4 +1,0 @@
-# iii project identity/runtime state (regenerated locally; never commit)
-.iii/
-# stray SQLite files (the database worker uses ./data/iii.db, which is gitignored)
-*.db
