@@ -19,10 +19,15 @@ timestamped row each time someone follows one. Add the `database` worker:
 
 ```bash
 iii worker add database
+mkdir -p data
 ```
 
 The default config that the database worker ships with is below, it will work well for our purposes
-but let's put iii.db in the `/data` folder.
+but let's modify its url to put `iii.db` in the `./data` folder.
+
+<Info>
+The database worker will automatically create `iii.db` on first run.
+<Info>
 
 <Info>
   The database worker supports more than SQLite, refer to the [`database` worker
@@ -124,6 +129,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
     payload: { scope: "links", key: payload.code },
   });
   if (cached) {
+    logger.info("link resolved", { code: payload.code, found: true });
     return { url: cached.url };
   }
   const { rows } = await worker.trigger<
@@ -140,17 +146,10 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
       payload: { scope: "links", key: payload.code, value: { url } },
     });
   }
+  logger.info("link resolved", { code: payload.code, found: !!url });
   return { url };
 });
 ```
-
-<Note>
-  This replacement drops the `logger.info("link resolved", …)` line you added in Chapter 2. The
-  resolve still shows up as a trace, so the log is optional. If you want parity with Chapter 2, keep
-  logging before you return, for example `logger.info("link resolved", { code: payload.code, found:
-  !!url })` (resolve to a single `url` for both the cache-hit and database paths first, so the log
-  fires on every call).
-</Note>
 
 ## Add click tracking
 
