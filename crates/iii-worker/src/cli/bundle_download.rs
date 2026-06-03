@@ -42,8 +42,10 @@
 //! - `sweep_orphans()` runs at engine/CLI startup and removes any
 //!   leftover staging directories. See T18.
 //! - `{name}.old.*` siblings leaked by a replacement that crashed
-//!   between rename-aside and cleanup are swept on the next install of
-//!   the same worker (`sweep_stale_old_siblings`).
+//!   between rename-aside and cleanup are swept on the next SUCCESSFUL
+//!   install of the same worker (`sweep_stale_old_siblings`) — never
+//!   before, since a parked sibling with no `final_dir` is the only
+//!   remaining copy of the worker.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -815,11 +817,19 @@ pub fn atomic_install(staging_dir: &Path, name: &str) -> Result<PathBuf, WorkerO
         })?;
     }
 
-    sweep_stale_old_siblings(&final_dir);
-
     if !final_dir.exists() {
-        return install_fresh(staging_dir, &final_dir);
+        // A missing final_dir with a parked `.old.*` sibling means a prior
+        // replacement crashed after its rename-aside: the parked dir is the
+        // only remaining copy of the worker. Sweep it only AFTER the new
+        // install has landed, so a failed install never destroys it.
+        let installed = install_fresh(staging_dir, &final_dir)?;
+        sweep_stale_old_siblings(&final_dir);
+        return Ok(installed);
     }
+
+    // final_dir exists, so any `.old.*` siblings are truly stale leftovers
+    // (the live install is final_dir itself) — safe to sweep before parking.
+    sweep_stale_old_siblings(&final_dir);
 
     // Move the previous install aside so install_fresh's final rename
     // targets an absent `final_dir`.

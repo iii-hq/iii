@@ -716,6 +716,44 @@ fn atomic_install_sweeps_stale_old_siblings() {
     assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
 }
 
+// Regression: when a prior replacement crashed after its rename-aside,
+// final_dir is missing and the parked `.old.*` sibling is the ONLY
+// remaining copy of the worker. A failed next install must not sweep it
+// — cleanup is deferred until an install actually lands.
+#[test]
+#[serial]
+fn atomic_install_failure_preserves_parked_old_sibling() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(tmp.path());
+
+    let final_dir = bundle_worker_path("crashed");
+    let parent = final_dir.parent().unwrap().to_path_buf();
+    let parked = parent.join("crashed.old.123.0");
+    std::fs::create_dir_all(&parked).unwrap();
+    std::fs::write(parked.join("iii.worker.yaml"), "name: crashed\n").unwrap();
+
+    // The next install fails (nonexistent staging → ENOENT on rename).
+    let missing_staging = bundle_staging_root().join("crashed-missing");
+    atomic_install(&missing_staging, "crashed").expect_err("install must fail");
+
+    // The only good copy must survive the failed install.
+    let manifest = std::fs::read_to_string(parked.join("iii.worker.yaml"))
+        .expect("parked previous install preserved");
+    assert_eq!(manifest, "name: crashed\n");
+
+    // A later successful install sweeps it.
+    let staging = bundle_staging_root().join("crashed-fresh");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("iii.worker.yaml"), "name: crashed\n").unwrap();
+    atomic_install(&staging, "crashed").expect("install ok");
+    assert!(
+        !parked.exists(),
+        "parked copy swept after a successful install"
+    );
+    let leftovers = sibling_leftovers(&parent);
+    assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
+}
+
 #[test]
 #[serial]
 fn atomic_install_renames_into_place() {
