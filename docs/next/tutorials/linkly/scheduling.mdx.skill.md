@@ -171,16 +171,14 @@ iii trigger link-sweeper::sweep_expired
 { "swept": 0 }
 ```
 
-Wait 30 seconds (the cron also fires every 15 seconds on its own), then sweep again. The link is
-gone from the `link` worker, even though `link` never knew it had an expiry:
+Wait 30 seconds (the cron also fires every 15 seconds on its own), then resolve the code again: The
+link has been swept from the `link` worker:
 
 ```bash
-iii trigger link-sweeper::sweep_expired
 iii trigger link::resolve code=temp
 ```
 
 ```json
-{ "swept": 1 }
 { "url": null }
 ```
 
