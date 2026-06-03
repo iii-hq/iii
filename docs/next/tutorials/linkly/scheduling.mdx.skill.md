@@ -35,10 +35,14 @@ workers:
 
 ## Build the link-sweeper worker
 
-The worker does two jobs. First, it subscribes to `link.created` and records an expiry for each new
-link in its own database. The TTL defaults to one minute so you can watch links expire during the
-tutorial; in production you'd set `SWEEP_TTL_SECONDS` to something like a year. Replace the
-generated `link-sweeper/src/index.ts`:
+The worker leverages two other workers: `iii-pubsub` and `iii-cron`.
+
+### Subscribe to `link.created` events
+
+First we'll subscribe to `link.created` and record an expiry for each new link in the `sweeper`
+database. The TTL defaults to 30 seconds so you can watch links expire during the tutorial; in
+production you'd set `SWEEP_TTL_SECONDS` to something like a year. Replace the generated
+`link-sweeper/src/index.ts` with:
 
 ```typescript link-sweeper/src/index.ts
 import { registerWorker, Logger } from "iii-sdk";
@@ -49,9 +53,9 @@ const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
 const logger = new Logger();
 const DB = "sweeper";
 
-// One minute by default so expiry is observable in the tutorial. In production
+// 30 seconds by default so expiry is observable in the tutorial. In production
 // set SWEEP_TTL_SECONDS to something like 31536000 (365 days).
-const TTL_SECONDS = Number(process.env.SWEEP_TTL_SECONDS ?? "60");
+const TTL_SECONDS = Number(process.env.SWEEP_TTL_SECONDS ?? "30");
 
 async function ensureSchema(): Promise<void> {
   await worker.trigger({
@@ -63,7 +67,7 @@ async function ensureSchema(): Promise<void> {
   });
 }
 
-// The link worker doesn't know expiry exists; the sweeper records it by
+// The sweeper is decoupled from the link worker and records its own data by
 // subscribing to the same link.created event everything else does.
 worker.registerFunction("link-sweeper::on_link_created", async (data: { code: string }) => {
   const expiresAt = new Date(Date.now() + TTL_SECONDS * 1000).toISOString();
@@ -84,9 +88,12 @@ worker.registerTrigger({
 });
 ```
 
-Then it sweeps on a schedule: query its own table for expired codes, delete each from the link
-worker through `link::delete`, and forget it locally. The cron expression has **seven** fields,
-starting with seconds and ending with year (`0 0 3 * * * *` is 03:00 every day, any year):
+### Schedule sweeping
+
+Then it sweeps on a schedule: it queries its own table for expired codes (ie. `expires_at < TTL`),
+deletes each from the link worker through `link::delete`, and removes its local entry. The cron
+expression has **seven** fields, starting with seconds and ending with year (`0 0 3 * * * *` is
+03:00 every day, any year):
 
 ```typescript link-sweeper/src/index.ts
 worker.registerFunction("link-sweeper::sweep_expired", async () => {
@@ -102,22 +109,34 @@ worker.registerFunction("link-sweeper::sweep_expired", async () => {
       params: [now],
     },
   });
+  let swept = 0;
   for (const { code } of rows) {
-    await worker.trigger({ function_id: "link::delete", payload: { code } });
-    await worker.trigger({
-      function_id: "database::execute",
-      payload: { db: DB, sql: "DELETE FROM expirations WHERE code = ?", params: [code] },
-    });
+    // Only forget the link locally once link::delete actually succeeds; on
+    // failure keep the row so the next sweep retries it.
+    await worker
+      .trigger({ function_id: "link::delete", payload: { code } })
+      .then(() =>
+        worker.trigger({
+          function_id: "database::execute",
+          payload: { db: DB, sql: "DELETE FROM expirations WHERE code = ?", params: [code] },
+        }),
+      )
+      .then(() => {
+        swept += 1;
+      })
+      .catch((err) => {
+        logger.error("link::delete failed; will retry next sweep", { code, error: String(err) });
+      });
   }
-  logger.info("swept expired links", { count: rows.length });
-  return { swept: rows.length };
+  logger.info("swept expired links", { count: swept });
+  return { swept };
 });
 
 worker.registerTrigger({
   type: "cron",
   function_id: "link-sweeper::sweep_expired",
-  // Production: 03:00 every day. For the tutorial, sweep every 15 seconds so
-  // you can watch it fire.
+  // For the tutorial, sweep every 15 seconds so you can watch it fire.
+  // In production use "0 0 3 * * * *" (03:00 every day).
   config: { expression: "*/15 * * * * * *" },
 });
 
@@ -135,14 +154,14 @@ the schedule to fire.
 
 ## See it work
 
-Create a link. The sweeper records a one-minute expiry for it behind the scenes, off the
+Create a link. The sweeper records a 30-second expiry for it behind the scenes, off the
 `link.created` event:
 
 ```bash
 iii trigger link::create url=https://example.com code=temp
 ```
 
-Run the sweep right away and nothing happens, because the minute hasn't passed:
+Run the sweep right away and nothing happens, because the 30 seconds haven't passed:
 
 ```bash
 iii trigger link-sweeper::sweep_expired
@@ -152,8 +171,8 @@ iii trigger link-sweeper::sweep_expired
 { "swept": 0 }
 ```
 
-Wait a minute (the cron also fires every 15 seconds on its own), then sweep again. The link is gone
-from the `link` worker, even though `link` never knew it had an expiry:
+Wait 30 seconds (the cron also fires every 15 seconds on its own), then sweep again. The link is
+gone from the `link` worker, even though `link` never knew it had an expiry:
 
 ```bash
 iii trigger link-sweeper::sweep_expired
