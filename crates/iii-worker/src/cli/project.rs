@@ -141,6 +141,30 @@ pub fn load_project_info(path: &std::path::Path) -> Option<ProjectInfo> {
     auto_detect_project(path)
 }
 
+/// Resolve `scripts.install` from a manifest's `scripts` block. Returns
+/// the install command plus whether the key was *omitted* entirely.
+/// An omitted key yields `("", true)` so the caller can warn that the
+/// dependency install will be skipped; an explicit `install: ""`
+/// is an intentional opt-out and reports `("", false)`.
+fn resolve_install(scripts: Option<&serde_yaml::Value>) -> (String, bool) {
+    match scripts.and_then(|s| s.get("install")) {
+        Some(v) => (v.as_str().unwrap_or("").trim().to_string(), false),
+        None => (String::new(), true),
+    }
+}
+
+/// The warning printed when `scripts.install` is omitted.
+fn install_skipped_warning(manifest_path: &std::path::Path) -> String {
+    format!(
+        "{} {}: `scripts.install` omitted; dependency install will be skipped. \
+         Add a `scripts.install` command (e.g. `npm install`, \
+         `python3 -m venv .venv && .venv/bin/pip install -e .`, `cargo build`) \
+         or your worker may fail at runtime with missing dependencies.",
+        "warning:".yellow(),
+        manifest_path.display()
+    )
+}
+
 pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo> {
     let content = std::fs::read_to_string(manifest_path).ok()?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
@@ -208,12 +232,14 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
             .unwrap_or("")
             .trim()
             .to_string();
-        let install = scripts
-            .and_then(|s| s.get("install"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        // `scripts.install` omitted means no dependency install runs.
+        // That silently breaks workers whose code imports those deps
+        // (e.g. ModuleNotFoundError at boot), so warn loudly.
+        // An explicit `install: ""` is an intentional opt-out — no warning.
+        let (install, install_omitted) = resolve_install(scripts);
+        if install_omitted {
+            eprintln!("{}", install_skipped_warning(manifest_path));
+        }
         let start = scripts
             .and_then(|s| s.get("start"))
             .and_then(|v| v.as_str())
@@ -360,6 +386,81 @@ env:
         assert_eq!(info.env.get("FOO").unwrap(), "bar");
         assert!(!info.env.contains_key("III_URL"));
         assert!(!info.env.contains_key("III_ENGINE_URL"));
+    }
+
+    // `scripts.start` without `scripts.install` leaves install
+    // empty (deps skipped). A warning is emitted to stderr; install_cmd
+    // stays empty so the author's explicit `scripts` block is honored.
+    #[test]
+    fn omitted_install_skips_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: my-worker
+runtime:
+  kind: python
+  entry: worker
+scripts:
+  start: "python3 worker.py"
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert_eq!(info.run_cmd, "python3 worker.py");
+        assert_eq!(info.install_cmd, "");
+    }
+
+    // The omitted/opt-out/explicit decision that drives the warning.
+    #[test]
+    fn resolve_install_reports_omission() {
+        let omitted: serde_yaml::Value = serde_yaml::from_str("start: run").unwrap();
+        assert_eq!(resolve_install(Some(&omitted)), (String::new(), true));
+
+        let opt_out: serde_yaml::Value = serde_yaml::from_str("install: \"\"").unwrap();
+        assert_eq!(resolve_install(Some(&opt_out)), (String::new(), false));
+
+        let explicit: serde_yaml::Value = serde_yaml::from_str("install: npm install").unwrap();
+        assert_eq!(
+            resolve_install(Some(&explicit)),
+            ("npm install".to_string(), false)
+        );
+
+        assert_eq!(resolve_install(None), (String::new(), true));
+    }
+
+    // The skipped-install warning text is generic (not python-specific)
+    // and names the manifest path.
+    #[test]
+    fn install_skipped_warning_is_generic() {
+        let msg = install_skipped_warning(std::path::Path::new("/tmp/iii.worker.yaml"));
+        assert!(msg.contains("warning:"));
+        assert!(msg.contains("`scripts.install` omitted"));
+        assert!(msg.contains("dependency install will be skipped"));
+        assert!(msg.contains("/tmp/iii.worker.yaml"));
+        // mentions all three runtimes, not just python
+        assert!(msg.contains("npm install"));
+        assert!(msg.contains("pip install"));
+        assert!(msg.contains("cargo build"));
+    }
+
+    // An explicit `install: ""` is an intentional opt-out (no warning),
+    // and resolves to empty just like before.
+    #[test]
+    fn explicit_empty_install_opts_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: my-worker
+runtime:
+  kind: python
+  entry: worker
+scripts:
+  install: ""
+  start: "python3 worker.py"
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert_eq!(info.install_cmd, "");
+        assert_eq!(info.run_cmd, "python3 worker.py");
     }
 
     #[test]
