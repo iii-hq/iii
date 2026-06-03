@@ -348,8 +348,7 @@ The browser will show a confirm prompt, and the server deletes only after you cl
 
 The client is a worker that is exactly the same as every other worker. We connected it through an
 RBAC-gated listener (via `iii-worker-manager`) that uses an auth function to admit it because the
-browser isn't trusted like our other workers. However any other worker can be gated this very same
-way.
+browser isn't trusted like our other workers. However any other worker can be gated this same way.
 
 Once everything is set up our client calls server functions directly, subscribes to streams for live
 updates, and registers functions the server calls back. Next, in

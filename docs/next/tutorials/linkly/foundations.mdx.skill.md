@@ -302,9 +302,9 @@ worker.registerTrigger({
 ```
 
 <Check>
-  This is the first Trigger you've registered yourself. In iii Triggers serve a very important
-  purpose, they control what causes something to happen. In this case an http request causes a
-  function to run. Learn more about [Using iii / Triggers](/using-iii/triggers).
+  This is the first Trigger you've registered yourself. In iii, Triggers control what causes
+  something to happen. In this case an http request causes a function to run. Learn more about
+  [Using iii / Triggers](/using-iii/triggers).
 </Check>
 
 <Info>

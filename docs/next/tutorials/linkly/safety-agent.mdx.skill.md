@@ -19,12 +19,12 @@ a sandbox, never on the worker process.
 iii worker add harness
 ```
 
-The harness, like most workers, is essentially an already implemented reusable SDK and forms iii's
-agent backbone. It is a Node bundle that ships providers for Anthropic, OpenAI, Kimi, LM Studio,
-plus turn orchestration, credentials, budgets, and approval-gate. Since it is a worker you also get
-all of the immediate benefits of iii out of the box, such as end to end observability of the agent,
-isolation of its processes, interoperability with the rest of the system, and dynamic registration
-and execution of new functionality.
+The harness, like most workers, is a reusable SDK packaged as a worker, and forms iii's agent
+backbone. It is a Node bundle that ships providers for Anthropic, OpenAI, Kimi, LM Studio, plus turn
+orchestration, credentials, budgets, and approval-gate. Because it runs as a worker, the agent
+inherits the same iii guarantees as everything else: end to end observability, process isolation,
+interoperability with the rest of the system, and dynamic registration and execution of new
+functionality.
 
 <Note>
   Going through the `harness` worker instead of importing `@anthropic-ai/sdk` or another harness
@@ -40,8 +40,8 @@ and execution of new functionality.
 This is the autonomous agent that will sample and investigate links for unwanted activity.
 
 For this example we use a few small pieces of the harness and trust that by now you have a good idea
-of how to incorporate iii's advanced features into your own projects. Of course if you ever have any
-questions [join our Discord server](https://discord.gg/iiidev).
+of how to incorporate iii's advanced features into your own projects. If you ever have any questions
+[join our Discord server](https://discord.gg/iiidev).
 
 The pieces we'll use in this chapter are iii's `sandbox` worker, the `database` worker, and the
 Anthropic provider: `provider::anthropic::complete`.
