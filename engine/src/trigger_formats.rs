@@ -63,6 +63,36 @@ pub struct HttpCallRequest {
     pub body: Value,
 }
 
+/// Response envelope a bound HTTP handler returns. The `iii-http` worker reads
+/// these fields from the handler's return value; **every field is optional** and
+/// any absent field uses its default. This is the contract for "what should my
+/// HTTP handler return".
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HttpCallResponse {
+    /// HTTP status code to send. Defaults to 200 when omitted, so set it
+    /// explicitly for error cases (e.g. 404 for not-found, 400 for bad input).
+    /// The field is `status_code` — not `status`.
+    pub status_code: Option<u16>,
+    /// Response headers. Accepts either a `{ "Header-Name": "value" }` map or an
+    /// array of `"Header-Name: value"` strings. Defaults to no headers when omitted.
+    pub headers: Option<HttpResponseHeaders>,
+    /// Response body. Serialized to the wire as JSON, text, or bytes according to
+    /// the `Content-Type` header you set. Defaults to an empty object when omitted.
+    pub body: Option<Value>,
+}
+
+/// The two accepted forms for HTTP response headers. The `iii-http` worker reads
+/// both: a `{ "Header-Name": "value" }` object map, or an array of
+/// `"Header-Name: value"` strings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum HttpResponseHeaders {
+    /// `{ "Header-Name": "value" }` object map.
+    Map(HashMap<String, String>),
+    /// Array of `"Header-Name: value"` strings.
+    List(Vec<String>),
+}
+
 // ── Cron ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

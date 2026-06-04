@@ -185,6 +185,11 @@ pub struct TriggerTypeDetail {
     pub configuration_schema: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_schema: Option<Value>,
+    /// Schema a bound handler must RETURN when the trigger fires (e.g. the HTTP
+    /// response envelope). Present only for trigger types with a fixed return
+    /// contract; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_schema: Option<Value>,
     pub instance_count: usize,
 }
 
@@ -613,6 +618,7 @@ impl EngineFunctionsWorker {
             description: tt._description.clone(),
             configuration_schema: tt.trigger_request_format.clone(),
             request_schema: tt.call_request_format.clone(),
+            response_schema: tt.call_response_format.clone(),
             instance_count: self.instance_count_for_type(&tt.id),
         })
     }
@@ -1817,11 +1823,13 @@ mod tests {
             description: "HTTP trigger".to_string(),
             configuration_schema: Some(serde_json::json!({"type": "object"})),
             request_schema: Some(serde_json::json!({"type": "object"})),
+            response_schema: None,
             instance_count: 2,
         };
         let json = serde_json::to_value(&detail).expect("serialize");
         assert!(json.get("configuration_schema").is_some());
         assert!(json.get("request_schema").is_some());
+        assert!(json.get("response_schema").is_none());
         assert!(json.get("call_request_format").is_none());
         assert!(json.get("trigger_request_format").is_none());
         assert_eq!(json["instance_count"], 2);
@@ -2202,6 +2210,85 @@ mod tests {
                 assert_eq!(detail.instance_count, 2);
                 assert!(detail.configuration_schema.is_some());
                 assert!(detail.request_schema.is_some());
+                assert!(detail.response_schema.is_none());
+            }
+            _ => panic!("expected triggers_info success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn triggers_info_returns_http_response_schema() {
+        let (engine, module) = setup_engine_and_module();
+        let tt = crate::trigger::TriggerType::new(
+            "http",
+            "HTTP trigger",
+            Box::new(module.clone()),
+            None,
+        );
+        engine
+            .trigger_registry
+            .register_trigger_type(tt)
+            .await
+            .unwrap();
+
+        let result = module
+            .triggers_info(TriggerInfoInput {
+                id: "http".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                let schema = detail
+                    .response_schema
+                    .clone()
+                    .expect("http trigger type exposes response_schema");
+                let properties = schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .expect("response_schema has a properties object");
+                for key in ["status_code", "headers", "body"] {
+                    assert!(
+                        properties.contains_key(key),
+                        "expected property '{key}', got: {properties:?}"
+                    );
+                }
+                // Pin optionality: the worker treats every field as optional, so
+                // none may be in the schema's `required` array.
+                if let Some(required) = schema.get("required").and_then(Value::as_array) {
+                    for key in ["status_code", "headers", "body"] {
+                        assert!(
+                            !required.iter().any(|v| v.as_str() == Some(key)),
+                            "'{key}' must not be required, got required: {required:?}"
+                        );
+                    }
+                }
+
+                let json = serde_json::to_value(&detail).expect("serialize");
+                let serialized_response_schema = json
+                    .get("response_schema")
+                    .expect("serialized response_schema present");
+                let serialized_properties = serialized_response_schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .expect("serialized response_schema has a properties object");
+                for key in ["status_code", "headers", "body"] {
+                    assert!(
+                        serialized_properties.contains_key(key),
+                        "expected serialized property '{key}', got: {serialized_properties:?}"
+                    );
+                }
+                // Pin optionality on the serialized form too.
+                if let Some(required) = serialized_response_schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                {
+                    for key in ["status_code", "headers", "body"] {
+                        assert!(
+                            !required.iter().any(|v| v.as_str() == Some(key)),
+                            "'{key}' must not be required in serialized schema, got required: {required:?}"
+                        );
+                    }
+                }
             }
             _ => panic!("expected triggers_info success"),
         }
