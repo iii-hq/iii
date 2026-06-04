@@ -34,10 +34,9 @@ pub use structs::{
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
-    ApiRequest, ApiResponse, Channel, DeleteResult, FieldPath, MergePath, SetResult,
-    StreamAuthInput, StreamAuthResult, StreamDeleteInput, StreamGetInput, StreamJoinResult,
-    StreamListGroupsInput, StreamListInput, StreamSetInput, StreamUpdateInput, UpdateOp,
-    UpdateOpError, UpdateResult,
+    ApiRequest, ApiResponse, Channel, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
+    StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput, StreamListInput,
+    StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
 };
 
 pub use serde_json::Value;

@@ -19,32 +19,6 @@ pub type RemoteFunctionHandler =
 // Stream Update Types
 // ============================================================================
 
-/// Represents a path to a field in a JSON object
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-pub struct FieldPath(pub String);
-
-impl FieldPath {
-    pub fn new(path: impl Into<String>) -> Self {
-        Self(path.into())
-    }
-
-    pub fn root() -> Self {
-        Self(String::new())
-    }
-}
-
-impl From<&str> for FieldPath {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl From<String> for FieldPath {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
 /// Path target for a [`UpdateOp::Merge`] operation. Accepts either a
 /// single string (legacy / first-level field) or an array of literal
 /// segments (nested path).
@@ -95,26 +69,12 @@ impl From<Vec<&str>> for MergePath {
     }
 }
 
-// Compatibility shim for callers that constructed paths via `FieldPath`
-// before `Append.path` widened to `Option<MergePath>` in PR #1552-fix.
-// `impl From<FieldPath> for Option<MergePath>` would violate Rust orphan
-// rules (both `From` and `Option` are foreign); call sites needing the
-// `Option` wrapping use `.map(Into::into)` or `Some(fp.into())`.
-impl From<FieldPath> for MergePath {
-    fn from(value: FieldPath) -> Self {
-        Self::Single(value.0)
-    }
-}
-
 /// Operations that can be performed atomically on a stream value
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
-    Set {
-        path: FieldPath,
-        value: Option<Value>,
-    },
+    Set { path: String, value: Option<Value> },
 
     /// Merge object into existing value (object-only). Path may be
     /// omitted (root merge), a single first-level key, or an array of
@@ -126,10 +86,10 @@ pub enum UpdateOp {
     },
 
     /// Increment numeric value
-    Increment { path: FieldPath, by: i64 },
+    Increment { path: String, by: i64 },
 
     /// Decrement numeric value
-    Decrement { path: FieldPath, by: i64 },
+    Decrement { path: String, by: i64 },
 
     /// Append an element to an array or concatenate a string at the
     /// optional path. Path may be omitted (root append), a single
@@ -142,12 +102,12 @@ pub enum UpdateOp {
     },
 
     /// Remove a field
-    Remove { path: FieldPath },
+    Remove { path: String },
 }
 
 impl UpdateOp {
     /// Create a Set operation
-    pub fn set(path: impl Into<FieldPath>, value: impl Into<Option<Value>>) -> Self {
+    pub fn set(path: impl Into<String>, value: impl Into<Option<Value>>) -> Self {
         Self::Set {
             path: path.into(),
             value: value.into(),
@@ -155,7 +115,7 @@ impl UpdateOp {
     }
 
     /// Create an Increment operation
-    pub fn increment(path: impl Into<FieldPath>, by: i64) -> Self {
+    pub fn increment(path: impl Into<String>, by: i64) -> Self {
         Self::Increment {
             path: path.into(),
             by,
@@ -163,7 +123,7 @@ impl UpdateOp {
     }
 
     /// Create a Decrement operation
-    pub fn decrement(path: impl Into<FieldPath>, by: i64) -> Self {
+    pub fn decrement(path: impl Into<String>, by: i64) -> Self {
         Self::Decrement {
             path: path.into(),
             by,
@@ -204,7 +164,7 @@ impl UpdateOp {
     }
 
     /// Create a Remove operation
-    pub fn remove(path: impl Into<FieldPath>) -> Self {
+    pub fn remove(path: impl Into<String>) -> Self {
         Self::Remove { path: path.into() }
     }
 
@@ -518,15 +478,6 @@ mod tests {
                 other => panic!("expected root append for {raw:?}, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn append_field_path_into_merge_path_compat() {
-        // Legacy callers constructed paths via `FieldPath`; the
-        // `From<FieldPath> for MergePath` shim keeps them compiling.
-        let fp = FieldPath::new("legacy");
-        let mp: MergePath = fp.into();
-        assert_eq!(mp, MergePath::Single("legacy".to_string()));
     }
 
     #[test]
