@@ -101,7 +101,7 @@ Agent memory, traces, and function catalogs live wherever you run the engine. Fi
 
 ## Licensing
 
-The iii engine is Elastic License 2.0 (ELv2). The SDKs, CLI, console, docs, and website are Apache License 2.0. Build on the SDKs and CLI without ELv2 constraints.
+The iii engine is Elastic License 2.0 (ELv2). The SDKs, CLI, console, docs, and website are Apache License 2.0.
 
 ## Links
 
