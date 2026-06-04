@@ -60,13 +60,22 @@ Agents should follow:
 
 ## Agent skills (after onboarding)
 
-Once iii is installed and you have completed the [Quickstart](https://iii.dev/docs/quickstart), install the iii agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling):
+Once iii is installed and you have completed the [Quickstart](https://iii.dev/docs/quickstart), install the agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling). Two sources, same commands:
 
 ```bash
-npx skills add iii-hq/iii/skills
+npx skills add iii-hq/iii/skills   # all iii reference skills
+npx skills add iii-hq/workers      # one skill per published worker
 ```
 
-Install a single skill with `--skill <name>` (e.g. `--skill iii-core-primitives`). Catalog: https://github.com/iii-hq/iii/tree/main/skills
+Neither source has a root skill, so a bare add discovers and installs every skill under it. Narrow to one by name or by path:
+
+```bash
+npx skills add iii-hq/iii/skills --skill <name>   # e.g. --skill iii-core-primitives
+npx skills add iii-hq/workers --skill <worker>    # a single worker's skill
+npx skills add iii-hq/workers/<worker>/skills     # the same, by path
+```
+
+Catalogs: https://github.com/iii-hq/iii/tree/main/skills and https://github.com/iii-hq/workers
 
 ## Harness composition as a shape, not a product
 
