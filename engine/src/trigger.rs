@@ -867,4 +867,55 @@ mod tests {
         assert_eq!(deserialized.metadata, None);
         assert!(!json.contains("metadata"));
     }
+
+    fn assert_http_call_response_properties(schema: &Value) {
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("call_response_format schema has a properties object");
+        for key in ["status_code", "headers", "body"] {
+            assert!(
+                properties.contains_key(key),
+                "expected property '{key}', got: {properties:?}"
+            );
+        }
+
+        // Pin optionality: the worker (`HttpResponse::from_function_return`) treats
+        // every field as optional (status_code defaults to 200, headers to empty,
+        // body to {}), so none of them may appear in the schema's `required` array.
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for key in ["status_code", "headers", "body"] {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some(key)),
+                    "'{key}' must not be required, got required: {required:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn http_trigger_type_populates_call_response_format() {
+        let tt = make_trigger_type("http");
+        let schema = tt
+            .call_response_format
+            .expect("http trigger type sets call_response_format");
+        assert_http_call_response_properties(&schema);
+    }
+
+    #[test]
+    fn cron_trigger_type_has_no_call_response_format() {
+        let tt = make_trigger_type("cron");
+        assert!(tt.call_response_format.is_none());
+    }
+
+    #[test]
+    fn with_call_response_format_sets_schema() {
+        use crate::trigger_formats::HttpCallResponse;
+
+        let tt = make_trigger_type("cron").with_call_response_format::<HttpCallResponse>();
+        let schema = tt
+            .call_response_format
+            .expect("with_call_response_format sets call_response_format");
+        assert_http_call_response_properties(&schema);
+    }
 }
