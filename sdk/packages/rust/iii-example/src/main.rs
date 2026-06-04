@@ -2,8 +2,7 @@ use std::{thread::sleep, time::Duration};
 
 use iii_observability::OtelConfig;
 use iii_sdk::{
-    IIIError, InitOptions, RegisterFunction, TriggerRequest, UpdateBuilder, UpdateOp,
-    register_worker,
+    IIIError, InitOptions, RegisterFunction, TriggerRequest, UpdateOp, register_worker,
 };
 use serde_json::json;
 
@@ -167,13 +166,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("After multiple ops: {:?}", result);
 
-    // Example 4: Using UpdateBuilder pattern
-    println!("\n--- Example 4: UpdateBuilder Pattern ---");
-    let ops = UpdateBuilder::new()
-        .increment("counter", 1)
-        .set("status", json!("processing"))
-        .set("metadata", json!({"source": "rust-sdk", "version": "1.0"}))
-        .build();
+    // Example 4: Building a list of atomic ops
+    println!("\n--- Example 4: Atomic Update Ops ---");
+    let ops = vec![
+        UpdateOp::increment("counter", 1),
+        UpdateOp::set("status", json!("processing")),
+        UpdateOp::set("metadata", json!({"source": "rust-sdk", "version": "1.0"})),
+    ];
 
     let result = iii
         .trigger(TriggerRequest {

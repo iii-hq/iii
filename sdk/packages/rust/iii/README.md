@@ -119,7 +119,7 @@ iii.trigger(TriggerRequest {
 ### Stream Operations
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest, UpdateBuilder, UpdateOp};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, UpdateOp};
 use serde_json::json;
 
 #[tokio::main]
@@ -139,11 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout_ms: None,
     }).await?;
 
-    // Atomic update with UpdateBuilder
-    let ops = UpdateBuilder::new()
-        .increment("total", 100)
-        .set("status", json!("processing"))
-        .build();
+    // Atomic update ops
+    let ops = vec![
+        UpdateOp::increment("total", 100),
+        UpdateOp::set("status", json!("processing")),
+    ];
 
     iii.trigger(TriggerRequest {
         function_id: "stream::update".into(),
