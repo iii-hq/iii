@@ -11,7 +11,7 @@ This worker is built into the engine and is always available; no install step is
 Install the `iii` agent skill for Claude Code, Cursor, and 30+ other agents:
 
 ```bash
-npx skills add iii-hq/iii --skill iii
+npx skills add iii-hq/iii --full-depth --skill iii
 ```
 
 ## Registry name vs runtime name

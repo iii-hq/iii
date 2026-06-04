@@ -15,7 +15,7 @@ Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/)
 Install the `iii-pubsub` agent skill for Claude Code, Cursor, and 30+ other agents:
 
 ```bash
-npx skills add iii-hq/iii --skill iii-pubsub
+npx skills add iii-hq/iii --full-depth --skill iii-pubsub
 ```
 
 ## Sample Configuration
