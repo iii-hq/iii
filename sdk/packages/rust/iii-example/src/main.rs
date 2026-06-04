@@ -1,9 +1,7 @@
 use std::{thread::sleep, time::Duration};
 
 use iii_observability::OtelConfig;
-use iii_sdk::{
-    IIIError, InitOptions, RegisterFunction, TriggerRequest, UpdateOp, register_worker,
-};
+use iii_sdk::{IIIError, InitOptions, RegisterFunction, TriggerRequest, UpdateOp, register_worker};
 use serde_json::json;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
