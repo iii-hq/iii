@@ -949,6 +949,27 @@ class Sdk implements ISdk {
     }
   }
 
+  private async onUnregisterTrigger(message: {
+    trigger_type?: string
+    id: string
+    function_id?: string
+    config?: unknown
+    metadata?: Record<string, unknown>
+  }) {
+    const trigger_type = message.trigger_type
+    if (!trigger_type) return
+
+    const triggerTypeData = this.triggerTypes.get(trigger_type)
+    if (!triggerTypeData) return
+
+    const { id, function_id = '', config, metadata } = message
+    try {
+      await triggerTypeData.handler.unregisterTrigger({ id, function_id, config, metadata })
+    } catch (error) {
+      this.logError(`Error unregistering trigger ${id}`, error)
+    }
+  }
+
   private onTriggerRegistrationResult(
     message: { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
   ): void {
@@ -981,6 +1002,16 @@ class Sdk implements ISdk {
       this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> })
+    } else if (msgType === MessageType.UnregisterTrigger) {
+      this.onUnregisterTrigger(
+        message as {
+          trigger_type?: string
+          id: string
+          function_id?: string
+          config?: unknown
+          metadata?: Record<string, unknown>
+        },
+      )
     } else if (msgType === MessageType.TriggerRegistrationResult) {
       this.onTriggerRegistrationResult(
         message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },

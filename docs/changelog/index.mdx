@@ -5,6 +5,21 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.19.0" description="June 2026">
+  ## SDK: inbound `unregistertrigger` for custom trigger types
+
+  When a trigger instance is removed — via `trigger.unregister()` or because the subscribing worker disconnects — the engine notifies the worker that owns the trigger type so it can run `unregisterTrigger` and tear down listeners, routes, or subscriptions.
+
+  Node, Browser, Python, and Rust SDKs already handled inbound `registertrigger`; they now handle inbound `unregistertrigger` the same way. Custom trigger type providers (`registerTriggerType`) receive the binding `id` (and can look up stored config from their own registry keyed by that id).
+
+  **Built-in trigger types** (`http`, `cron`, `state`, `subscribe`, `durable:subscriber`, stream, and others) are unchanged: the engine calls each in-process worker’s `unregister_trigger` directly and never sends a WebSocket message to an SDK worker.
+
+  ### What this fixes
+
+  - Unregistering a trigger bound to a **custom** trigger type now invokes the provider’s `unregisterTrigger` callback instead of leaving stale bindings server-side.
+  - When the **provider worker reconnects**, the engine re-sends `registertrigger` for existing bindings (unchanged); cleanup on consumer disconnect now correctly pairs with `unregisterTrigger` on the provider.
+</Update>
+
 <Update label="0.16.0" description="May 2026">
   ## Single `register_function` entry point in the Rust SDK
 
