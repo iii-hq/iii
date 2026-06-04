@@ -22,11 +22,13 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 For **current install paths and prerequisites**, use **[iii.dev/docs/install](https://iii.dev/docs/install)**—the snippets below may lag the docs.
 
+The fastest first build is the **[Quickstart](https://iii.dev/docs/quickstart)**: it scaffolds a cross-language project (a Python worker that adds two numbers and stores the sum in state, a TypeScript worker that exposes an HTTP endpoint and calls it).
+
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii project init myapp   # scaffold a project
-cd myapp
-iii                      # start the engine
+iii project init quickstart --template quickstart   # scaffold the Quickstart
+cd quickstart
+iii                                                 # start the engine
 ```
 
 Engine **listeners, adapters, and port bindings** are defined in your project’s **`config.yaml`** (or the path you pass to the engine). Read that file and the docs; do not assume fixed port numbers from a static list.
@@ -58,7 +60,7 @@ Agents should follow:
 
 ## Agent skills (after onboarding)
 
-Once iii is installed, your first worker runs locally, and you have a Function with an HTTP Trigger working, install the iii agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling):
+Once iii is installed and you have completed the [Quickstart](https://iii.dev/docs/quickstart), install the iii agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling):
 
 ```bash
 npx skills add iii-hq/iii/skills
