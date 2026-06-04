@@ -40,8 +40,6 @@ pub use types::{
     UpdateOpError, UpdateResult,
 };
 
-pub use serde_json::Value;
-
 /// Configuration options passed to [`register_worker`].
 ///
 /// # Examples
