@@ -331,3 +331,28 @@ pub struct LogCallRequest {
     /// Instrumentation scope version
     pub instrumentation_scope_version: String,
 }
+
+// ── Trace (observability) ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TraceTriggerConfig {
+    /// Only fire for spans emitted by this service. When omitted, matches any
+    /// service. Compared case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    /// Only fire for spans with this status: `ok`, `error`, or `unset`. When
+    /// omitted, fires for every status. Compared case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Payload delivered to a `trace` trigger handler: a coalesced "traces
+/// changed" tick. Span activity is debounced and the distinct affected trace
+/// ids in the window are delivered, rather than per-span full payloads — the
+/// trigger is a "refetch soon" beat, not a span feed. Re-read details via
+/// `engine::traces::list` / `engine::traces::tree`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TraceCallRequest {
+    /// Distinct trace ids that had span activity in this coalesced window.
+    pub trace_ids: Vec<String>,
+}

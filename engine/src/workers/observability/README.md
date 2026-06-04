@@ -172,3 +172,37 @@ iii.registerTrigger({
 ```
 
 Log entry payload fields: `timestamp_unix_nano`, `observed_timestamp_unix_nano`, `severity_number`, `severity_text`, `body`, `attributes`, `trace_id`, `span_id`, `resource`, `service_name`, `instrumentation_scope_name`, `instrumentation_scope_version`.
+
+## Trigger Type: `trace`
+
+Register a function to react to span activity in the in-memory trace store, so any client — a worker or the web console — can refresh reactively instead of polling. The trigger is a **coalesced "traces changed" tick**, not a per-span feed: span activity is debounced (~300ms) and the handler receives the distinct affected trace ids for the window. Re-read details via `engine::traces::list` / `engine::traces::tree`. Requires the memory exporter (`exporter: memory` or `both`); with the OTLP-only exporter there is no in-memory store and trace triggers stay dormant.
+
+Engine-internal spans and the trigger's **own delivery spans** are excluded from firing it — delivering a trigger via `engine.call` is itself instrumented as a span, so without this exclusion the trigger would re-fire on its own output (an unbounded feedback loop). This is why a span trigger differs from the `log` trigger, whose delivery produces spans, not logs.
+
+| Config Field | Type | Description |
+|---|---|---|
+| `service_name` | string | Only fire for activity from this service. When omitted, fires for any service. Compared case-insensitively. |
+| `status` | string | Only fire when a span with this status (`ok`, `error`, or `unset`) landed in the window. When omitted, fires for any status. Compared case-insensitively. |
+
+Both filters are ANDed; omit both to fire on any span activity.
+
+### Sample Code
+
+```typescript
+const fn = iii.registerFunction(
+  'devtools::onTracesChanged',
+  async ({ trace_ids }) => {
+    // A "refetch soon" beat — re-read the traces you care about.
+    await refreshTraceViews(trace_ids)
+    return {}
+  },
+)
+
+iii.registerTrigger({
+  type: 'trace',
+  function_id: fn.id,
+  config: {}, // or { status: 'error' }
+})
+```
+
+Handler payload: `{ "trace_ids": string[] }` — the distinct trace ids with span activity in the coalesced window.

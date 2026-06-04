@@ -416,12 +416,15 @@ impl StoredSpan {
     }
 }
 
-/// In-memory span storage with circular buffer.
+/// In-memory span storage with circular buffer and broadcast channel.
 pub struct InMemorySpanStorage {
     spans: RwLock<VecDeque<StoredSpan>>,
     max_spans: usize,
     /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
     spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
+    /// Broadcast of every span as it lands, driving the `trace` trigger
+    /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
+    tx: broadcast::Sender<StoredSpan>,
 }
 
 impl std::fmt::Debug for InMemorySpanStorage {
@@ -436,10 +439,12 @@ impl std::fmt::Debug for InMemorySpanStorage {
 
 impl InMemorySpanStorage {
     pub fn new(max_spans: usize) -> Self {
+        let (tx, _) = broadcast::channel(1024);
         Self {
             spans: RwLock::new(VecDeque::with_capacity(max_spans)),
             max_spans,
             spans_by_trace_id: RwLock::new(HashMap::new()),
+            tx,
         }
     }
 
@@ -470,6 +475,13 @@ impl InMemorySpanStorage {
 
             let idx = spans.len();
             let trace_id = span.trace_id.clone();
+
+            // Broadcast to any listeners (ignore send errors if no receivers).
+            // Mirrors InMemoryLogStorage::add_logs so the `trace` trigger fans
+            // out uniformly across every ingestion path (OTLP ingest, the
+            // in-memory exporter, and the tee exporter all funnel through here).
+            let _ = self.tx.send(span.clone());
+
             spans.push_back(span);
             index.entry(trace_id).or_default().insert(idx);
         }
@@ -497,6 +509,12 @@ impl InMemorySpanStorage {
         let mut index = self.spans_by_trace_id.write().unwrap();
         spans.clear();
         index.clear();
+    }
+
+    /// Subscribe to a broadcast of every span as it lands in storage. Drives
+    /// the `trace` trigger fan-out (mirrors `InMemoryLogStorage::subscribe`).
+    pub fn subscribe(&self) -> broadcast::Receiver<StoredSpan> {
+        self.tx.subscribe()
     }
 
     pub fn len(&self) -> usize {

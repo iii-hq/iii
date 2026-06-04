@@ -23,6 +23,7 @@ pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("stream:join", "iii-stream"),
     ("stream:leave", "iii-stream"),
     ("log", "iii-observability"),
+    ("trace", "iii-observability"),
     ("configuration", "configuration"),
 ];
 
@@ -123,6 +124,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
             "stream" => Self::schema_for::<StreamTriggerConfig>(),
             "log" => Self::schema_for::<LogTriggerConfig>(),
+            "trace" => Self::schema_for::<TraceTriggerConfig>(),
             "configuration" => Self::schema_for::<ConfigurationTriggerConfig>(),
             _ => None,
         }
@@ -138,6 +140,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveCallRequest>(),
             "stream" => Self::schema_for::<StreamCallRequest>(),
             "log" => Self::schema_for::<LogCallRequest>(),
+            "trace" => Self::schema_for::<TraceCallRequest>(),
             "configuration" => Self::schema_for::<ConfigurationCallRequest>(),
             _ => None,
         }
