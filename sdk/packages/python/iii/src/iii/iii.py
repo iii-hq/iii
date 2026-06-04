@@ -438,6 +438,8 @@ class III:
             )
         elif msg_type == MessageType.REGISTER_TRIGGER.value:
             asyncio.create_task(self._handle_trigger_registration(data))
+        elif msg_type == MessageType.UNREGISTER_TRIGGER.value:
+            asyncio.create_task(self._handle_trigger_unregistration(data))
         elif msg_type == MessageType.TRIGGER_REGISTRATION_RESULT.value:
             self._handle_trigger_registration_result(data)
         elif msg_type == MessageType.WORKER_REGISTERED.value:
@@ -717,6 +719,32 @@ class III:
             trigger_type,
             message,
         )
+
+    async def _handle_trigger_unregistration(self, data: dict[str, Any]) -> None:
+        trigger_type_id = data.get("trigger_type")
+        if not trigger_type_id:
+            return
+
+        handler_data = self._trigger_types.get(trigger_type_id)
+        if not handler_data:
+            return
+
+        trigger_id = data.get("id", "")
+        function_id = data.get("function_id", "")
+        config = data.get("config")
+        metadata = data.get("metadata")
+
+        try:
+            await handler_data.handler.unregister_trigger(
+                TriggerConfig(
+                    id=trigger_id,
+                    function_id=function_id,
+                    config=config,
+                    metadata=metadata,
+                )
+            )
+        except Exception:
+            log.exception(f"Error unregistering trigger {trigger_id}")
 
     # Connection state management
 

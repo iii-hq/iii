@@ -125,54 +125,16 @@ export function buildLlmsTxt(html: string): string {
 - [Manifesto](https://iii.dev/manifesto) — paradigm argument
 - [Documentation](https://iii.dev/docs) — full documentation
 - [llms.txt](https://iii.dev/llms.txt) — this file (AI / LLM discovery)
-- [AGENTS.md](https://iii.dev/AGENTS.md) — agent-focused product and wire-level notes
+- [AGENTS.md](https://iii.dev/AGENTS.md) — build path: install, wire-level notes, and guardrails for coding agents
 - [GitHub](https://github.com/iii-hq/iii) — engine, TypeScript/Python/Rust SDKs
 
 ## Optional
 
 - [Worker registry](https://workers.iii.dev) — published workers
 
-## Install / start
+## Want to build on iii?
 
-For **current install paths and prerequisites**, see **[iii.dev/docs/installation](https://iii.dev/docs/installation)**—this file may lag the docs.
-
-\`\`\`bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii
-\`\`\`
-
-Engine **listeners, adapters, and ports** come from your project’s **\`config.yaml\`** (or the config path you pass). Read that file and the docs instead of relying on hardcoded port lists here.
-
-- \`iii console\` — launch the web observability console
-- \`iii --help\` and \`iii <subcommand> --help\` — discover CLI behavior
-- \`iii trigger\` — useful for **manual** checks; **not** the main way apps invoke functions—use SDKs in workers for integration; **don’t** script against the CLI trigger
-
-SDKs:
-
-- Rust: \`cargo add iii-sdk\`
-- Node (backend): \`npm install iii-sdk\`
-- Node (browser, RBAC-scoped): \`npm install iii-browser-sdk\`
-- Python: \`pip install iii-sdk\`
-
-## Guardrails
-
-Agents should follow:
-
-- Function IDs use \`::\` (e.g. \`orders::validate\`)
-- HTTP \`api_path\` values use a leading slash (e.g. \`/orders/validate\`)
-- Cron triggers use config field \`expression\`, not \`cron\`
-- Call functions via the SDK from workers — use \`iii trigger\` only for manual debugging
-- Engine listeners and ports come from \`config.yaml\`; use \`iii console\` for observability
-
-## Agent skills (after onboarding)
-
-After iii is installed and your first worker runs locally with a Function and HTTP Trigger, run:
-
-\`\`\`bash
-npx skills add iii-hq/iii/skills
-\`\`\`
-
-This installs iii agent skills (primitives, SDK reference, engine config, architecture patterns, error handling) so your coding agent has full iii context. See https://github.com/iii-hq/iii/tree/main/skills
+This file is for understanding iii. To install the engine and ship your first Worker, read **[AGENTS.md](https://iii.dev/AGENTS.md)** and the **[install guide](https://iii.dev/docs/install)**.
 
 Last updated: ${isoDate()}
 `.trimStart()

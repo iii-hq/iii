@@ -1433,6 +1433,9 @@ impl III {
             } => {
                 self.handle_register_trigger(id, trigger_type, function_id, config, metadata);
             }
+            Message::UnregisterTrigger { id, trigger_type } => {
+                self.handle_unregister_trigger(id, trigger_type);
+            }
             Message::Ping => {
                 let _ = self.send_message(Message::Pong);
             }
@@ -1768,6 +1771,32 @@ impl III {
             };
 
             let _ = iii.send_message(message);
+        });
+    }
+
+    fn handle_unregister_trigger(&self, id: String, trigger_type: String) {
+        let handler = self
+            .inner
+            .trigger_types
+            .lock_or_recover()
+            .get(&trigger_type)
+            .map(|data| data.handler.clone());
+
+        let Some(handler) = handler else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            let config = TriggerConfig {
+                id: id.clone(),
+                function_id: String::new(),
+                config: Value::Null,
+                metadata: None,
+            };
+
+            if let Err(err) = handler.unregister_trigger(config).await {
+                tracing::warn!(trigger_id = %id, error = %err, "Error unregistering trigger");
+            }
         });
     }
 }

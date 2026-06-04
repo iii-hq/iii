@@ -20,11 +20,15 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 ## Install / start
 
-For **current install paths and prerequisites**, use **[iii.dev/docs/installation](https://iii.dev/docs/installation)**—the snippets below may lag the docs.
+For **current install paths and prerequisites**, use **[iii.dev/docs/install](https://iii.dev/docs/install)**—the snippets below may lag the docs.
+
+The fastest first build is the **[Quickstart](https://iii.dev/docs/quickstart)**: it scaffolds a cross-language project (a Python worker that adds two numbers and stores the sum in state, a TypeScript worker that exposes an HTTP endpoint and calls it).
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii
+iii project init quickstart --template quickstart   # scaffold the Quickstart
+cd quickstart
+iii                                                 # start the engine
 ```
 
 Engine **listeners, adapters, and port bindings** are defined in your project’s **`config.yaml`** (or the path you pass to the engine). Read that file and the docs; do not assume fixed port numbers from a static list.
@@ -56,13 +60,22 @@ Agents should follow:
 
 ## Agent skills (after onboarding)
 
-Once iii is installed, your first worker runs locally, and you have a Function with an HTTP Trigger working, install the iii agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling):
+Once iii is installed and you have completed the [Quickstart](https://iii.dev/docs/quickstart), install the agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling). Two sources, same commands:
 
 ```bash
-npx skills add iii-hq/iii/skills
+npx skills add iii-hq/iii/skills   # all iii reference skills
+npx skills add iii-hq/workers      # one skill per published worker
 ```
 
-Install a single skill with `--skill <name>` (e.g. `--skill iii-core-primitives`). Catalog: https://github.com/iii-hq/iii/tree/main/skills
+Neither source has a root skill, so a bare add discovers and installs every skill under it. Narrow to one by name or by path:
+
+```bash
+npx skills add iii-hq/iii/skills --skill <name>   # e.g. --skill iii-core-primitives
+npx skills add iii-hq/workers --skill <worker>    # a single worker's skill
+npx skills add iii-hq/workers/<worker>/skills     # the same, by path
+```
+
+Catalogs: https://github.com/iii-hq/iii/tree/main/skills and https://github.com/iii-hq/workers
 
 ## Harness composition as a shape, not a product
 
@@ -88,7 +101,7 @@ Agent memory, traces, and function catalogs live wherever you run the engine. Fi
 
 ## Licensing
 
-Elastic-2.0.
+The iii engine is Elastic License 2.0 (ELv2). The SDKs, CLI, console, docs, and website are Apache License 2.0.
 
 ## Links
 

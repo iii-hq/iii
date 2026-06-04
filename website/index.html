@@ -6825,11 +6825,16 @@ iii.register_function(
   }
 
   // ============= Copy prompt (AI assistant on-ramp) =============
+  // One prompt, self-routing by reader. A chat assistant uses llms.txt to explain
+  // iii (the person wants to learn). A coding agent uses AGENTS.md to spin up a
+  // project (the person wants to build). Same paste, right behavior either place.
   const COPY_PROMPT_TEXT = [
     'Read https://iii.dev/llms.txt and https://iii.dev/AGENTS.md.',
-    'Install iii and start a worker, then help me build my first',
-    'Worker that registers a Function and binds an HTTP Trigger.',
-    'Run it locally and show a request hitting the function.'
+    "If you're a chat assistant, use llms.txt to explain iii to me —",
+    'the three primitives (Worker, Trigger, Function) and how it',
+    "compares to my stack. If you're a coding agent, use AGENTS.md to",
+    'install iii and build the Quickstart with me',
+    '(https://iii.dev/docs/quickstart), running it locally.'
   ].join('\n');
   const copyPromptBtn = document.getElementById('copy-prompt-btn');
   const copyPromptLabel = document.getElementById('copy-prompt-label');
