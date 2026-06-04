@@ -246,6 +246,46 @@ fn should_trigger_for_level(trigger_level: &str, log_level: &str) -> bool {
     trigger_level == "all" || trigger_level == log_level
 }
 
+/// Whether a span matches a `trace` trigger's optional filters. An absent
+/// filter matches anything; present filters are ANDed and compared
+/// case-insensitively. Mirrors `should_trigger_for_level` for the log trigger.
+fn should_trigger_for_span(
+    config_service: Option<&str>,
+    config_status: Option<&str>,
+    span: &otel::StoredSpan,
+) -> bool {
+    if let Some(service) = config_service
+        && !span.service_name.eq_ignore_ascii_case(service)
+    {
+        return false;
+    }
+    if let Some(status) = config_status
+        && !span.status.eq_ignore_ascii_case(status)
+    {
+        return false;
+    }
+    true
+}
+
+/// The `function_id` attribute a span was produced under, if any.
+fn span_function_id(span: &otel::StoredSpan) -> Option<&str> {
+    span.attributes
+        .iter()
+        .find(|(k, _)| k == "function_id")
+        .map(|(_, v)| v.as_str())
+}
+
+/// Engine-internal / plumbing spans, excluded from the `trace` trigger the
+/// same way `traces::list` hides them by default (`iii.function.kind=internal`
+/// or an `engine::` function id). Keeps the trigger focused on real work and
+/// is the first half of breaking the trigger's feedback loop.
+fn is_internal_span(span: &otel::StoredSpan) -> bool {
+    span.attributes.iter().any(|(k, v)| {
+        (k == "iii.function.kind" && v == "internal")
+            || (k == "function_id" && v.starts_with("engine::"))
+    })
+}
+
 // =============================================================================
 // OpenTelemetry Module
 // =============================================================================
@@ -265,6 +305,33 @@ impl Default for OtelLogTriggers {
 }
 
 impl OtelLogTriggers {
+    pub fn new() -> Self {
+        Self {
+            triggers: Arc::new(TokioRwLock::new(HashSet::new())),
+        }
+    }
+}
+
+/// Trigger type ID for span/trace events from the observability module
+pub const TRACE_TRIGGER_TYPE: &str = "trace";
+
+/// Trailing-edge coalesce window for the `trace` trigger fan-out. Spans arrive
+/// batched and at high volume; collapsing a burst into one tick keeps the
+/// fan-out (and the spans its own delivery produces) to a trickle.
+const TRACE_COALESCE_MS: u64 = 300;
+
+/// Trace (span) triggers for the OTEL module
+pub struct OtelTraceTriggers {
+    pub triggers: Arc<TokioRwLock<HashSet<Trigger>>>,
+}
+
+impl Default for OtelTraceTriggers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OtelTraceTriggers {
     pub fn new() -> Self {
         Self {
             triggers: Arc::new(TokioRwLock::new(HashSet::new())),
@@ -314,6 +381,7 @@ pub struct BaggageGetAllInput {}
 pub struct ObservabilityWorker {
     _config: config::ObservabilityWorkerConfig,
     triggers: Arc<OtelLogTriggers>,
+    trace_triggers: Arc<OtelTraceTriggers>,
     engine: Arc<Engine>,
     /// Shutdown signal sender for background tasks
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
@@ -621,6 +689,54 @@ impl ObservabilityWorker {
                     let _ = engine.call(&function_id, log_data).await;
                 });
             }
+        }
+    }
+
+    /// Invoke trace (span) triggers for a given span (static method for use in
+    /// spawned tasks). Mirrors `invoke_triggers_for_log`: every span lands on
+    /// the broadcast channel, this filters per-trigger and fans out via
+    /// `engine.call`. Fire-and-forget — handler results are ignored and a
+    /// failing handler never affects span storage.
+    /// Fan out one coalesced "traces changed" tick per matching trigger for a
+    /// batch of spans (a debounce window). Each trigger receives a light
+    /// `{ trace_ids: [...] }` payload — the distinct traces touched in the
+    /// window that match its filter — rather than per-span full payloads.
+    ///
+    /// The handler is invoked fire-and-forget via `engine.call`; results are
+    /// ignored. NOTE: that `engine.call` is itself instrumented as a span, so
+    /// the subscriber MUST exclude trigger-delivery spans before they reach
+    /// here (see `start_background_tasks`) or the trigger would re-fire on its
+    /// own delivery — an unbounded feedback loop.
+    async fn fire_trace_triggers(
+        triggers: &Arc<OtelTraceTriggers>,
+        engine: &Arc<Engine>,
+        batch: &[otel::StoredSpan],
+    ) {
+        let triggers_guard = triggers.triggers.read().await;
+
+        for trigger in triggers_guard.iter() {
+            let config_service = trigger.config.get("service_name").and_then(|v| v.as_str());
+            let config_status = trigger.config.get("status").and_then(|v| v.as_str());
+
+            let mut trace_ids: Vec<String> = batch
+                .iter()
+                .filter(|s| should_trigger_for_span(config_service, config_status, s))
+                .map(|s| s.trace_id.clone())
+                .collect();
+            trace_ids.sort();
+            trace_ids.dedup();
+
+            if trace_ids.is_empty() {
+                continue;
+            }
+
+            let payload = serde_json::json!({ "trace_ids": trace_ids });
+            let engine = engine.clone();
+            let function_id = trigger.function_id.clone();
+
+            tokio::spawn(async move {
+                let _ = engine.call(&function_id, payload).await;
+            });
         }
     }
 
@@ -1533,6 +1649,38 @@ impl TriggerRegistrator for ObservabilityWorker {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        // The worker owns both the `log` and `trace` trigger types; route by
+        // the trigger's declared type into the matching registry.
+        if trigger.trigger_type == TRACE_TRIGGER_TYPE {
+            let triggers = &self.trace_triggers.triggers;
+            let service = trigger
+                .config
+                .get("service_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("*")
+                .to_string();
+            let status = trigger
+                .config
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("*")
+                .to_string();
+
+            tracing::info!(
+                "{} trace trigger {} (service: {}, status: {}) → {}",
+                "[REGISTERED]".green(),
+                trigger.id.purple(),
+                service.cyan(),
+                status.cyan(),
+                trigger.function_id.cyan()
+            );
+
+            return Box::pin(async move {
+                triggers.write().await.insert(trigger);
+                Ok(())
+            });
+        }
+
         let triggers = &self.triggers.triggers;
         let level = trigger
             .config
@@ -1559,10 +1707,14 @@ impl TriggerRegistrator for ObservabilityWorker {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        let triggers = &self.triggers.triggers;
+        let triggers = if trigger.trigger_type == TRACE_TRIGGER_TYPE {
+            &self.trace_triggers.triggers
+        } else {
+            &self.triggers.triggers
+        };
 
         Box::pin(async move {
-            tracing::debug!(trigger_id = %trigger.id, "Unregistering log trigger");
+            tracing::debug!(trigger_id = %trigger.id, trigger_type = %trigger.trigger_type, "Unregistering trigger");
             triggers.write().await.remove(&trigger);
             Ok(())
         })
@@ -1593,6 +1745,7 @@ impl Worker for ObservabilityWorker {
         Ok(Box::new(ObservabilityWorker {
             _config: otel_config,
             triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine,
             shutdown_tx: Arc::new(shutdown_tx),
         }))
@@ -1659,8 +1812,19 @@ impl Worker for ObservabilityWorker {
 
         let _ = self.engine.register_trigger_type(log_trigger_type).await;
 
+        // Register trace (span) trigger type — lets any client react to spans
+        // as they land, mirroring the log trigger.
+        let trace_trigger_type = TriggerType::new(
+            TRACE_TRIGGER_TYPE,
+            "Trace/span event trigger",
+            Box::new(self.clone()),
+            None,
+        );
+
+        let _ = self.engine.register_trigger_type(trace_trigger_type).await;
+
         tracing::info!(
-            "{} OpenTelemetry module initialized (log, traces, metrics, logs, rollups functions available)",
+            "{} OpenTelemetry module initialized (log, trace, traces, metrics, logs, rollups functions available)",
             "[READY]".green()
         );
         Ok(())
@@ -1727,6 +1891,100 @@ impl Worker for ObservabilityWorker {
                         "[ObservabilityWorker] Log storage not available, log triggers will not work"
                     );
                 }
+            });
+        }
+
+        // Start span subscriber: coalesce span activity into periodic `trace`
+        // trigger fan-outs, excluding engine-internal spans and the trigger's
+        // OWN delivery spans. `engine.call` to a consumer fn is itself
+        // instrumented as a span, so without this exclusion the trigger would
+        // re-fire on its own output — an unbounded feedback loop that floods
+        // the consumer and fills the trace store with delivery spans.
+        {
+            let triggers = self.trace_triggers.clone();
+            let engine = self.engine.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
+
+            tokio::spawn(async move {
+                // Wait a bit for span storage to be initialized by exporter setup.
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                let Some(storage) = otel::get_span_storage() else {
+                    // Span storage is only present when the memory/both exporter
+                    // is configured; with the OTLP-only exporter there is no
+                    // in-memory store to watch, so trace triggers stay dormant.
+                    tracing::debug!(
+                        "[ObservabilityWorker] Span storage not available (memory exporter off), trace triggers will not fire"
+                    );
+                    return;
+                };
+
+                let mut rx = storage.subscribe();
+                tracing::debug!("[ObservabilityWorker] Trace trigger subscriber started");
+
+                // Snapshot of registered trigger function ids, refreshed each
+                // window — a span produced by delivering one of these is the
+                // trigger's own output and must not re-fire it.
+                let mut trigger_fns: HashSet<String> = triggers
+                    .triggers
+                    .read()
+                    .await
+                    .iter()
+                    .map(|t| t.function_id.clone())
+                    .collect();
+                let mut window: Vec<otel::StoredSpan> = Vec::new();
+                let mut ticker =
+                    tokio::time::interval(tokio::time::Duration::from_millis(TRACE_COALESCE_MS));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+                loop {
+                    tokio::select! {
+                        result = shutdown_rx.changed() => {
+                            if result.is_err() || *shutdown_rx.borrow() {
+                                tracing::debug!("[ObservabilityWorker] Trace trigger subscriber shutting down");
+                                break;
+                            }
+                        }
+                        result = rx.recv() => {
+                            match result {
+                                Ok(span) => {
+                                    // Loop-break: drop engine-internal spans and
+                                    // the trigger's own delivery spans.
+                                    if is_internal_span(&span) {
+                                        continue;
+                                    }
+                                    if span_function_id(&span).is_some_and(|f| trigger_fns.contains(f)) {
+                                        continue;
+                                    }
+                                    window.push(span);
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                    tracing::warn!(skipped, "Trace trigger subscriber lagged, some spans were skipped");
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    tracing::debug!("[ObservabilityWorker] Span broadcast channel closed");
+                                    break;
+                                }
+                            }
+                        }
+                        _ = ticker.tick() => {
+                            trigger_fns = triggers
+                                .triggers
+                                .read()
+                                .await
+                                .iter()
+                                .map(|t| t.function_id.clone())
+                                .collect();
+                            if window.is_empty() {
+                                continue;
+                            }
+                            let batch = std::mem::take(&mut window);
+                            ObservabilityWorker::fire_trace_triggers(&triggers, &engine, &batch).await;
+                        }
+                    }
+                }
+
+                tracing::debug!("[ObservabilityWorker] Trace trigger subscriber stopped");
             });
         }
 
@@ -1973,6 +2231,7 @@ mod tests {
         ObservabilityWorker {
             _config: config::ObservabilityWorkerConfig::default(),
             triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine,
             shutdown_tx: Arc::new(shutdown_tx),
         }
@@ -2758,6 +3017,146 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let triggers_set = rt.block_on(async { triggers_arc.read().await.len() });
         assert_eq!(triggers_set, 0);
+    }
+
+    // =========================================================================
+    // Trace (span) trigger tests — mirror the log trigger
+    // =========================================================================
+
+    #[test]
+    fn test_trace_trigger_type_constant() {
+        assert_eq!(TRACE_TRIGGER_TYPE, "trace");
+    }
+
+    #[test]
+    fn test_otel_trace_triggers_default_is_empty() {
+        let triggers = OtelTraceTriggers::default();
+        let triggers_arc = triggers.triggers.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let len = rt.block_on(async { triggers_arc.read().await.len() });
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn test_otel_trace_triggers_new_is_empty() {
+        let triggers = OtelTraceTriggers::new();
+        let triggers_arc = triggers.triggers.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let len = rt.block_on(async { triggers_arc.read().await.len() });
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn test_span_storage_subscribe_broadcast() {
+        let storage = otel::InMemorySpanStorage::new(100);
+        let mut rx = storage.subscribe();
+
+        let span = make_span("t1", "s1", None, "GET /", "svc", 1000, 2000, "ok", vec![]);
+        storage.add_spans(vec![span]);
+
+        // The broadcast receiver should have received the span.
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+        let received = received.unwrap();
+        assert_eq!(received.trace_id, "t1");
+        assert_eq!(received.span_id, "s1");
+    }
+
+    #[test]
+    fn test_span_storage_broadcast_one_per_span() {
+        let storage = otel::InMemorySpanStorage::new(100);
+        let mut rx = storage.subscribe();
+
+        storage.add_spans(vec![
+            make_span("t1", "s1", None, "a", "svc", 1, 2, "ok", vec![]),
+            make_span("t1", "s2", Some("s1"), "b", "svc", 1, 2, "ok", vec![]),
+        ]);
+
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err()); // exactly two, one per span
+    }
+
+    #[test]
+    fn test_should_trigger_for_span_filters() {
+        let span = make_span("t1", "s1", None, "GET /", "checkout", 1, 2, "error", vec![]);
+
+        // No filters → always fires.
+        assert!(should_trigger_for_span(None, None, &span));
+        // Matching service (case-insensitive) → fires.
+        assert!(should_trigger_for_span(Some("CHECKOUT"), None, &span));
+        // Non-matching service → suppressed.
+        assert!(!should_trigger_for_span(Some("billing"), None, &span));
+        // Matching status → fires.
+        assert!(should_trigger_for_span(None, Some("error"), &span));
+        // Non-matching status → suppressed.
+        assert!(!should_trigger_for_span(None, Some("ok"), &span));
+        // Both must match (AND).
+        assert!(should_trigger_for_span(
+            Some("checkout"),
+            Some("error"),
+            &span
+        ));
+        assert!(!should_trigger_for_span(
+            Some("checkout"),
+            Some("ok"),
+            &span
+        ));
+    }
+
+    #[test]
+    fn test_is_internal_span_and_function_id() {
+        // engine:: function id → internal (excluded from the trigger).
+        let engine_span = make_span(
+            "t",
+            "s",
+            None,
+            "n",
+            "svc",
+            1,
+            2,
+            "ok",
+            vec![("function_id", "engine::traces::list")],
+        );
+        assert!(is_internal_span(&engine_span));
+
+        // iii.function.kind=internal → internal.
+        let kind_internal = make_span(
+            "t",
+            "s",
+            None,
+            "n",
+            "svc",
+            1,
+            2,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+        assert!(is_internal_span(&kind_internal));
+
+        // A trigger-delivery span (a console fn) is NOT "internal" — it is
+        // excluded by the function-id loop-break, not by is_internal.
+        let delivery = make_span(
+            "t",
+            "s",
+            None,
+            "n",
+            "svc",
+            1,
+            2,
+            "ok",
+            vec![("function_id", "console::devtools::traces_changed::b1")],
+        );
+        assert!(!is_internal_span(&delivery));
+        assert_eq!(
+            span_function_id(&delivery),
+            Some("console::devtools::traces_changed::b1")
+        );
+
+        // No function_id attribute → None, not internal.
+        let bare = make_span("t", "s", None, "n", "svc", 1, 2, "ok", vec![]);
+        assert!(!is_internal_span(&bare));
+        assert_eq!(span_function_id(&bare), None);
     }
 
     // =========================================================================
@@ -5037,6 +5436,7 @@ mod tests {
                 ..config::ObservabilityWorkerConfig::default()
             },
             triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx),
         };
@@ -5044,12 +5444,18 @@ mod tests {
         let result = worker.initialize().await;
         assert!(result.is_ok());
 
-        // Verify the trigger type was NOT registered (early return skipped it)
+        // Verify the trigger types were NOT registered (early return skipped it)
         assert!(
             !engine
                 .trigger_registry
                 .trigger_types
                 .contains_key(LOG_TRIGGER_TYPE)
+        );
+        assert!(
+            !engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(TRACE_TRIGGER_TYPE)
         );
     }
 
@@ -5065,6 +5471,7 @@ mod tests {
                 ..config::ObservabilityWorkerConfig::default()
             },
             triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx),
         };
@@ -5072,12 +5479,18 @@ mod tests {
         let result = worker.initialize().await;
         assert!(result.is_ok());
 
-        // Verify the trigger type WAS registered (enabled: None defaults to true)
+        // Verify the trigger types WERE registered (enabled: None defaults to true)
         assert!(
             engine
                 .trigger_registry
                 .trigger_types
                 .contains_key(LOG_TRIGGER_TYPE)
+        );
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(TRACE_TRIGGER_TYPE)
         );
     }
 
@@ -5093,6 +5506,7 @@ mod tests {
                 ..config::ObservabilityWorkerConfig::default()
             },
             triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx.clone()),
         };
