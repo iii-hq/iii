@@ -1402,8 +1402,13 @@ fn load_cwd_manifest_dependencies() -> Option<std::collections::BTreeMap<String,
 /// values across incremental `iii worker add` runs).
 fn populate_manifest_hash_fields(lockfile: &mut super::lockfile::WorkerLockfile) {
     let Some(deps) = load_cwd_manifest_dependencies() else {
+        // FIX: If the manifest is missing, we MUST clear any stale lockfile 
+        // state so the engine doesn't crash expecting a ghost file.
+        lockfile.manifest_hash = None;
+        lockfile.declared_dependencies = None;
         return;
     };
+    
     lockfile.manifest_hash = Some(super::sync::compute_manifest_hash(&deps));
     lockfile.declared_dependencies = Some(deps);
 }
