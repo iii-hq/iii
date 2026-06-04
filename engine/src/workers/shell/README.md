@@ -2,6 +2,22 @@
 
 Execute shell commands as part of engine startup — building assets, running migrations, or starting long-lived processes.
 
+## Install
+
+```bash
+iii worker add iii-exec
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-exec` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --skill iii-exec
+```
+
 ## Sample Configuration
 
 ```yaml

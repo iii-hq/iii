@@ -7,6 +7,22 @@ Supports two modes:
 - **Topic-based queues** — register a consumer per topic, emit events via `iii::durable::publish`. Fan-out: every distinct function subscribed to a topic receives a copy of each message.
 - **Named queues** — define queues in config, then enqueue function calls via `TriggerAction.Enqueue`. No trigger registration needed.
 
+## Install
+
+```bash
+iii worker add iii-queue
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-queue` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --skill iii-queue
+```
+
 ## Sample Configuration
 
 ```yaml

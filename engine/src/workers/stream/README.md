@@ -7,6 +7,22 @@ When a worker triggers `stream::set`, the engine:
 2. Publishes a notification to all WebSocket clients subscribed to that stream and group
 3. Evaluates registered `stream` triggers and fires matching handlers
 
+## Install
+
+```bash
+iii worker add iii-stream
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-stream` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --skill iii-stream
+```
+
 ## Sample Configuration
 
 ```yaml

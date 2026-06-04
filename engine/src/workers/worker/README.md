@@ -2,6 +2,22 @@
 
 Mandatory engine worker that opens WebSocket listeners for SDK workers to connect to. The first `iii-worker-manager` entry in `iii-config.yaml` sets the main engine port (default `49134`); additional entries start independent listeners — typically a public RBAC listener with its own auth, middleware, and registration hooks. Channel WebSocket endpoints are mounted on every listener at `/ws/channels/{channel_id}`.
 
+## Install
+
+```bash
+iii worker add iii-worker-manager
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-worker-manager` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --skill iii-worker-manager
+```
+
 ## Sample Configuration
 
 ```yaml

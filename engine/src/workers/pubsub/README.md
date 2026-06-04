@@ -2,6 +2,22 @@
 
 Topic-based publish/subscribe messaging for broadcasting events to multiple subscribers in real time.
 
+## Install
+
+```bash
+iii worker add iii-pubsub
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-pubsub` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --skill iii-pubsub
+```
+
 ## Sample Configuration
 
 ```yaml

@@ -4,6 +4,22 @@ Schema-validated, reactive registry of named configuration entries. Workers regi
 
 The default `fs` adapter stores one YAML file per id under a configurable directory and watches it for external edits — manual edits surface as `configuration:updated` events the same way SDK calls do. The `bridge` adapter delegates to a remote III Engine and re-broadcasts its events into the local fan-out. Reads expand `${VAR:default}` placeholders against the live process env on every call, so env changes propagate without a worker restart.
 
+## Install
+
+```bash
+iii worker add configuration
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `configuration` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --skill configuration
+```
+
 ## Sample Configuration
 
 ```yaml
