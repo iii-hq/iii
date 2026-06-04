@@ -11,9 +11,26 @@ package observability
 
 import (
 	"encoding/json"
+	"math"
 
 	"go.opentelemetry.io/otel/log"
 )
+
+// maxInt64AsFloat is the largest int64 representable as a float64 without rounding past
+// the int64 range. float64 can't represent math.MaxInt64 exactly, so we compare against
+// 2^63 and treat the boundary conservatively.
+const maxInt64AsFloat = float64(math.MaxInt64)
+
+// uintToLogValue maps an unsigned integer to a log.Value without the wrap-around that
+// int64(t) would cause for values above math.MaxInt64. OTel's log.Value has no uint64
+// kind, so out-of-range values fall back to Float64, which preserves magnitude (with
+// possible precision loss) rather than turning into a negative number.
+func uintToLogValue(u uint64) log.Value {
+	if u <= math.MaxInt64 {
+		return log.Int64Value(int64(u))
+	}
+	return log.Float64Value(float64(u))
+}
 
 // jsonToLogValue converts a decoded JSON value into an OpenTelemetry log.Value so nested
 // objects and arrays are preserved as structured OTLP attributes (KeyValueList /
@@ -40,7 +57,7 @@ func jsonToLogValue(v any) log.Value {
 	case int64:
 		return log.Int64Value(t)
 	case uint:
-		return log.Int64Value(int64(t))
+		return uintToLogValue(uint64(t))
 	case uint8:
 		return log.Int64Value(int64(t))
 	case uint16:
@@ -48,13 +65,14 @@ func jsonToLogValue(v any) log.Value {
 	case uint32:
 		return log.Int64Value(int64(t))
 	case uint64:
-		return log.Int64Value(int64(t))
+		return uintToLogValue(t)
 	case float32:
 		return log.Float64Value(float64(t))
 	case float64:
 		// encoding/json decodes all numbers as float64. Preserve whole values as Int64,
-		// matching the Rust as_i64-first behavior.
-		if t == float64(int64(t)) {
+		// matching the Rust as_i64-first behavior — but only when they fit, so a large
+		// magnitude isn't silently truncated by int64(t).
+		if t == math.Trunc(t) && t >= math.MinInt64 && t <= maxInt64AsFloat {
 			return log.Int64Value(int64(t))
 		}
 		return log.Float64Value(t)

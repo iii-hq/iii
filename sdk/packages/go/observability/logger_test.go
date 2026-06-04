@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
 
 	otellog "go.opentelemetry.io/otel/log"
@@ -127,6 +128,25 @@ func TestNativeGoNumbers(t *testing.T) {
 	}
 	if v := jsonToLogValue(custom{A: 1}); v.Kind() != otellog.KindString {
 		t.Errorf("unexpected type kind = %v, want String fallback", v.Kind())
+	}
+}
+
+// TestNumericOverflowNotCorrupted guards against int64 wrap-around: a uint64 above
+// math.MaxInt64 (e.g. a large unsigned id) and a float64 beyond the int64 range must not
+// silently become a negative Int64. They fall back to Float64, preserving magnitude.
+func TestNumericOverflowNotCorrupted(t *testing.T) {
+	const big = uint64(1) << 63 // math.MaxInt64 + 1; int64(big) would be negative
+	if v := jsonToLogValue(big); v.Kind() != otellog.KindFloat64 {
+		t.Errorf("uint64 > MaxInt64 kind = %v, want Float64 (no wrap)", v.Kind())
+	}
+	// A uint64 that fits stays Int64.
+	if v := jsonToLogValue(uint64(42)); v.Kind() != otellog.KindInt64 {
+		t.Errorf("small uint64 kind = %v, want Int64", v.Kind())
+	}
+	// A whole float64 beyond int64 range must not collapse to a truncated Int64.
+	huge := math.Pow(2, 64) // > math.MaxInt64
+	if v := jsonToLogValue(huge); v.Kind() != otellog.KindFloat64 {
+		t.Errorf("float64 beyond int64 range kind = %v, want Float64", v.Kind())
 	}
 }
 
