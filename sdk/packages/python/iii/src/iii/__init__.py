@@ -28,7 +28,7 @@ from iii_observability import (
 )
 
 from .channels import ChannelReader, ChannelWriter
-from .errors import IIIForbiddenError, IIIInvocationError, IIITimeoutError
+from .errors import IIIInvocationError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
 from .iii_constants import FunctionRef, InitOptions, TelemetryOptions
@@ -106,9 +106,7 @@ __all__ = [
     "ChannelReader",
     "ChannelWriter",
     # Errors
-    "IIIForbiddenError",
     "IIIInvocationError",
-    "IIITimeoutError",
     # Core
     "FunctionRef",
     "InitOptions",
