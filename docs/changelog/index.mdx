@@ -6,6 +6,30 @@ type: "reference"
 ---
 
 <Update label="0.19.0" description="June 2026">
+  ## `engine::triggers::info` now exposes `response_schema`
+
+  Trigger types can declare the schema a bound handler must **return** when the trigger fires. `engine::triggers::info` surfaces it as a new optional `response_schema` field alongside the existing `configuration_schema` (how to configure the trigger) and `request_schema` (what the handler receives) — the full trigger contract is now discoverable from a single call:
+
+  ```json
+  {
+    "id": "http",
+    "configuration_schema": { "…": "route fields — path, method, middleware" },
+    "request_schema": { "…": "envelope your handler receives" },
+    "response_schema": {
+      "properties": {
+        "status_code": { "…": "HTTP status to send; defaults to 200 when omitted" },
+        "headers": { "…": "{ \"Header-Name\": \"value\" } map or [\"Header-Name: value\"] strings" },
+        "body": { "…": "serialized as JSON, text, or bytes per your Content-Type" }
+      }
+    },
+    "instance_count": 1
+  }
+  ```
+
+  The `http` trigger type is the first to declare a return contract: its `response_schema` is the response envelope the `iii-http` worker reads from a handler's return value — `status_code` / `headers` / `body`, every field optional. Previously, "what should my HTTP handler return" wasn't discoverable from the trigger itself: you had to inspect an already-bound handler via `engine::functions::info`, or guess field names (`status` vs `status_code` — it's `status_code`).
+
+  Trigger types that place no constraint on the handler's return omit the field entirely, so existing consumers of `engine::triggers::info` are unaffected. In-process (Rust) trigger types can declare their own contract with the new `TriggerType::with_call_response_format::<T>()` builder.
+
   ## SDK: inbound `unregistertrigger` for custom trigger types
 
   When a trigger instance is removed — via `trigger.unregister()` or because the subscribing worker disconnects — the engine notifies the worker that owns the trigger type so it can run `unregisterTrigger` and tear down listeners, routes, or subscriptions.
