@@ -263,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
-    cli::telemetry::send_cli_usage(&cli_usage_command_path(&cli_args)).await;
+    cli::telemetry::send_cli_usage(&cli_usage_command_path(&cli_args));
 
     if cli_args.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
