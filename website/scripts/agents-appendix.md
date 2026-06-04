@@ -20,11 +20,13 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 ## Install / start
 
-For **current install paths and prerequisites**, use **[iii.dev/docs/installation](https://iii.dev/docs/installation)**—the snippets below may lag the docs.
+For **current install paths and prerequisites**, use **[iii.dev/docs/install](https://iii.dev/docs/install)**—the snippets below may lag the docs.
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii
+iii project init myapp   # scaffold a project
+cd myapp
+iii                      # start the engine
 ```
 
 Engine **listeners, adapters, and port bindings** are defined in your project’s **`config.yaml`** (or the path you pass to the engine). Read that file and the docs; do not assume fixed port numbers from a static list.
@@ -88,7 +90,7 @@ Agent memory, traces, and function catalogs live wherever you run the engine. Fi
 
 ## Licensing
 
-Elastic-2.0.
+The engine runtime is Elastic License 2.0 (ELv2). The SDKs, CLI, console, docs, and website are Apache License 2.0. Build on the SDKs and CLI without ELv2 constraints.
 
 ## Links
 

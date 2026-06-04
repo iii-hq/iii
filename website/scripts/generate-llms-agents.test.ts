@@ -19,16 +19,23 @@ test('overviewBodyWithoutLeadingH1 drops duplicate H1 for llms.txt', () => {
   assert.ok(body.includes('Three primitives'))
 })
 
-test('buildLlmsTxt follows llms.txt-style shape (H1, blockquote, sections)', async () => {
+test('buildLlmsTxt is an understanding-first explainer (no spin-up instructions)', async () => {
   const html = await fs.readFile(INDEX_PATH, 'utf8')
   const text = buildLlmsTxt(html)
   assert.ok(text.startsWith('# iii\n'))
   assert.ok(text.includes('> iii turns distributed'))
+  assert.ok(text.includes('## Three primitives'))
+  assert.ok(text.includes('## How iii compares'))
   assert.ok(text.includes('## Core pages'))
   assert.ok(text.includes('[llms.txt](https://iii.dev/llms.txt)'))
-  assert.ok(text.includes('## Guardrails'))
-  assert.ok(text.includes('npx skills add iii-hq/iii/skills'))
   assert.ok(text.includes('Homepage copy (extracted'))
+  // Chat mode explains iii; it must NOT tell the reader to install / spin up iii.
+  // Those action blocks live in AGENTS.md, which llms.txt points to as the build path.
+  assert.ok(!text.includes('## Guardrails'))
+  assert.ok(!text.includes('## Install / start'))
+  assert.ok(!text.includes('npx skills add iii-hq/iii/skills'))
+  assert.ok(!text.includes('install.iii.dev'))
+  assert.ok(text.includes('[AGENTS.md](https://iii.dev/AGENTS.md)'))
 })
 
 test('buildHomepageExtractFromHtml pulls hero prose but not hello code fences', async () => {
