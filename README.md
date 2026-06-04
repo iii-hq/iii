@@ -101,6 +101,7 @@ Install new capabilities into a project with `iii worker add`:
 | Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk` |
 | Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk`                       |
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`                         |
+| Go       | [`iii`](sdk/packages/go/iii)                       | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
 
 ## Agent Skills
 
@@ -124,7 +125,7 @@ triggers, queues, traces, logs, and real-time state. See the
 | Directory  | What it is                                              | README                                 |
 | ---------- | ------------------------------------------------------- | -------------------------------------- |
 | `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
-| `sdk/`     | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)         |
+| `sdk/`     | SDKs for Node.js, Python, Rust, and Go                  | [sdk/README.md](sdk/README.md)         |
 | `console/` | Developer console (React + Rust)                        | [console/README.md](console/README.md) |
 | `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md)   |
 | `website/` | iii website                                             | [website/](website/)                   |
