@@ -333,15 +333,15 @@ pub(crate) fn apply_update_ops(
     for (op_index, op) in ops.iter().enumerate() {
         match op {
             UpdateOp::Set { path, value } => {
-                let segments = field_path_segments(&path.0);
+                let segments = field_path_segments(path);
                 if !validate_op_path("set", op_index, segments, &mut errors) {
                     continue;
                 }
-                if path.0.is_empty() {
+                if path.is_empty() {
                     current = value.clone().unwrap_or(Value::Null);
                     using_missing_default = false;
                 } else if let Value::Object(ref mut map) = current {
-                    map.insert(path.0.clone(), value.clone().unwrap_or(Value::Null));
+                    map.insert(path.clone(), value.clone().unwrap_or(Value::Null));
                     using_missing_default = false;
                 } else {
                     errors.push(err(
@@ -349,7 +349,7 @@ pub(crate) fn apply_update_ops(
                         ERR_SET_TARGET_NOT_OBJECT,
                         format!(
                             "Cannot set at path '{}': target is {}, expected object.",
-                            path_label(&path.0),
+                            path_label(path),
                             json_type_name(&current)
                         ),
                     ));
@@ -393,11 +393,11 @@ pub(crate) fn apply_update_ops(
                 }
             }
             UpdateOp::Increment { path, by } => {
-                let segments = field_path_segments(&path.0);
+                let segments = field_path_segments(path);
                 if !validate_op_path("increment", op_index, segments, &mut errors) {
                     continue;
                 }
-                if path.0.is_empty() {
+                if path.is_empty() {
                     if using_missing_default {
                         current = Value::Number(Number::from(*by));
                     } else if let Some(updated) = increment_number(&current, *by) {
@@ -408,7 +408,7 @@ pub(crate) fn apply_update_ops(
                             ERR_INCREMENT_NOT_NUMBER,
                             format!(
                                 "Expected number at path '{}', got {}.",
-                                path_label(&path.0),
+                                path_label(path),
                                 json_type_name(&current)
                             ),
                         ));
@@ -416,7 +416,7 @@ pub(crate) fn apply_update_ops(
                     }
                     using_missing_default = false;
                 } else if let Value::Object(ref mut map) = current {
-                    if let Some(existing_val) = map.get_mut(&path.0) {
+                    if let Some(existing_val) = map.get_mut(path) {
                         if let Some(updated) = increment_number(existing_val, *by) {
                             *existing_val = updated;
                         } else {
@@ -425,14 +425,14 @@ pub(crate) fn apply_update_ops(
                                 ERR_INCREMENT_NOT_NUMBER,
                                 format!(
                                     "Expected number at path '{}', got {}.",
-                                    path_label(&path.0),
+                                    path_label(path),
                                     json_type_name(existing_val)
                                 ),
                             ));
                             continue;
                         }
                     } else {
-                        map.insert(path.0.clone(), Value::Number(Number::from(*by)));
+                        map.insert(path.clone(), Value::Number(Number::from(*by)));
                     }
                     using_missing_default = false;
                 } else {
@@ -441,18 +441,18 @@ pub(crate) fn apply_update_ops(
                         ERR_INCREMENT_TARGET_NOT_OBJECT,
                         format!(
                             "Cannot increment at path '{}': target is {}, expected object.",
-                            path_label(&path.0),
+                            path_label(path),
                             json_type_name(&current)
                         ),
                     ));
                 }
             }
             UpdateOp::Decrement { path, by } => {
-                let segments = field_path_segments(&path.0);
+                let segments = field_path_segments(path);
                 if !validate_op_path("decrement", op_index, segments, &mut errors) {
                     continue;
                 }
-                if path.0.is_empty() {
+                if path.is_empty() {
                     if using_missing_default {
                         current = missing_decrement_value(*by);
                     } else if let Some(updated) = decrement_number(&current, *by) {
@@ -463,7 +463,7 @@ pub(crate) fn apply_update_ops(
                             ERR_DECREMENT_NOT_NUMBER,
                             format!(
                                 "Expected number at path '{}', got {}.",
-                                path_label(&path.0),
+                                path_label(path),
                                 json_type_name(&current)
                             ),
                         ));
@@ -471,7 +471,7 @@ pub(crate) fn apply_update_ops(
                     }
                     using_missing_default = false;
                 } else if let Value::Object(ref mut map) = current {
-                    if let Some(existing_val) = map.get_mut(&path.0) {
+                    if let Some(existing_val) = map.get_mut(path) {
                         if let Some(updated) = decrement_number(existing_val, *by) {
                             *existing_val = updated;
                         } else {
@@ -480,14 +480,14 @@ pub(crate) fn apply_update_ops(
                                 ERR_DECREMENT_NOT_NUMBER,
                                 format!(
                                     "Expected number at path '{}', got {}.",
-                                    path_label(&path.0),
+                                    path_label(path),
                                     json_type_name(existing_val)
                                 ),
                             ));
                             continue;
                         }
                     } else {
-                        map.insert(path.0.clone(), missing_decrement_value(*by));
+                        map.insert(path.clone(), missing_decrement_value(*by));
                     }
                     using_missing_default = false;
                 } else {
@@ -496,7 +496,7 @@ pub(crate) fn apply_update_ops(
                         ERR_DECREMENT_TARGET_NOT_OBJECT,
                         format!(
                             "Cannot decrement at path '{}': target is {}, expected object.",
-                            path_label(&path.0),
+                            path_label(path),
                             json_type_name(&current)
                         ),
                     ));
@@ -569,15 +569,15 @@ pub(crate) fn apply_update_ops(
                 }
             }
             UpdateOp::Remove { path } => {
-                let segments = field_path_segments(&path.0);
+                let segments = field_path_segments(path);
                 if !validate_op_path("remove", op_index, segments, &mut errors) {
                     continue;
                 }
-                if path.0.is_empty() {
+                if path.is_empty() {
                     current = Value::Null;
                     using_missing_default = false;
                 } else if let Value::Object(ref mut map) = current {
-                    map.remove(&path.0);
+                    map.remove(path);
                     using_missing_default = false;
                 } else {
                     errors.push(err(
@@ -585,7 +585,7 @@ pub(crate) fn apply_update_ops(
                         ERR_REMOVE_TARGET_NOT_OBJECT,
                         format!(
                             "Cannot remove at path '{}': target is {}, expected object.",
-                            path_label(&path.0),
+                            path_label(path),
                             json_type_name(&current)
                         ),
                     ));
@@ -656,7 +656,7 @@ fn initial_append_value(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use iii_sdk::{FieldPath, UpdateOp, types::MergePath};
+    use iii_sdk::{UpdateOp, types::MergePath};
     use serde_json::{Number, json};
 
     use super::apply_update_ops;
@@ -963,7 +963,7 @@ mod tests {
         let updated = run(
             Some(json!({ "user.name": ["A"], "user": { "name": ["B"] } })),
             &[UpdateOp::Append {
-                path: Some(FieldPath("user.name".to_string()).into()),
+                path: Some(MergePath::Single("user.name".to_string())),
                 value: json!("C"),
             }],
         );
