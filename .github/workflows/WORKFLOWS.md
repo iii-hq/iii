@@ -58,6 +58,7 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 | `sdk-node-ci` | `engine-build` | Type check, build, start engine, run SDK tests |
 | `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
 | `sdk-rust-ci` | `engine-build` | Fmt, clippy, start engine, run cargo tests |
+| `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
 | `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
 
 All SDK tests download the engine binary artifact and start a live engine instance before running.
@@ -126,7 +127,8 @@ setup (parse tag metadata, Slack notification)
   │     │
   │     ├─► sdk-npm ─────────────► _npm.yml
   │     ├─► sdk-py ──────────────► _py.yml
-  │     └─► sdk-rust ────────────► _rust-cargo.yml
+  │     ├─► sdk-rust ────────────► _rust-cargo.yml
+  │     └─► sdk-go ──────────────► _go.yml (pushes subdir-scoped module tag)
   │
   ├─► publish-builtin-workers ► _publish-engine-workers.yml
   └─► publish-worker-skills ► _publish-worker-skills.yml
@@ -207,6 +209,10 @@ Builds with `python -m build`, validates with `twine check` on dry run, publishe
 ### `_rust-cargo.yml` — Cargo Publish
 
 Publishes a Rust crate to crates.io via `cargo publish`.
+
+### `_go.yml` — Go Module Publish
+
+"Publishes" a Go module by pushing a subdirectory-scoped git tag (`sdk/packages/go/iii/vX.Y.Z`) — Go has no registry, so `go get` resolves the module from the repo via the Go proxy. No token required. Dry run runs `go build/vet/test` and `go mod verify` without tagging.
 
 ### `_rust-binary.yml` — Rust Binary Release
 

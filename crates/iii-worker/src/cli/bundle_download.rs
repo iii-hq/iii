@@ -33,12 +33,19 @@
 //!   slipping into a partially-cleaned-up state.
 //! - The final step is an atomic `std::fs::rename` from the staging dir
 //!   to `~/.iii/workers-bundle/{name}/`. Cross-filesystem renames fall
-//!   back to copy-then-delete.
+//!   back to copy-then-delete. A previous install of the same name is
+//!   parked aside as a `{name}.old.<unique>` sibling first and restored
+//!   if the new install fails (see `atomic_install`).
 //!
 //! Process-restart safety:
 //! - The `Drop` guard cannot run if the process is killed mid-install.
 //! - `sweep_orphans()` runs at engine/CLI startup and removes any
 //!   leftover staging directories. See T18.
+//! - `{name}.old.*` siblings leaked by a replacement that crashed
+//!   between rename-aside and cleanup are swept on the next SUCCESSFUL
+//!   install of the same worker (`sweep_stale_old_siblings`) — never
+//!   before, since a parked sibling with no `final_dir` is the only
+//!   remaining copy of the worker.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -788,8 +795,74 @@ pub fn extract_bundle_safely_blocking(
     Ok(())
 }
 
-/// Performs the atomic install step: rename the staging dir into its
-/// final home at `~/.iii/workers-bundle/{name}/`.
+/// Performs the atomic install step: move the staging dir into its
+/// final home at `~/.iii/workers-bundle/{name}/`, REPLACING any
+/// previous install of the same name.
+///
+/// Bundle installs are a machine-wide cache keyed by name, so an add
+/// from any project must land the freshly resolved payload rather than
+/// keep a possibly-stale one. Replacement is rename-aside: the previous
+/// install is renamed to a unique `<final_dir>.old.<unique>` sibling
+/// (same-fs, atomic), the new tree is installed via `install_fresh`,
+/// and the old sibling is removed best-effort. If the new install
+/// fails, the old sibling is renamed back so the previous install is
+/// never lost. Callers serialize per-worker through the staging fslock,
+/// so the rename-aside dance is not raced in production.
+pub fn atomic_install(staging_dir: &Path, name: &str) -> Result<PathBuf, WorkerOpError> {
+    let final_dir = super::config_file::bundle_worker_path(name);
+    if let Some(parent) = final_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| WorkerOpError::ConfigIo {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    if !final_dir.exists() {
+        // A missing final_dir with a parked `.old.*` sibling means a prior
+        // replacement crashed after its rename-aside: the parked dir is the
+        // only remaining copy of the worker. Sweep it only AFTER the new
+        // install has landed, so a failed install never destroys it.
+        let installed = install_fresh(staging_dir, &final_dir)?;
+        sweep_stale_old_siblings(&final_dir);
+        return Ok(installed);
+    }
+
+    // final_dir exists, so any `.old.*` siblings are truly stale leftovers
+    // (the live install is final_dir itself) — safe to sweep before parking.
+    sweep_stale_old_siblings(&final_dir);
+
+    // Move the previous install aside so install_fresh's final rename
+    // targets an absent `final_dir`.
+    let old_dir = sibling_old_dir(&final_dir);
+    if let Err(source) = std::fs::rename(&final_dir, &old_dir) {
+        // Nothing has moved yet — the previous install is intact.
+        return Err(WorkerOpError::ConfigIo {
+            path: final_dir,
+            source,
+        });
+    }
+
+    match install_fresh(staging_dir, &final_dir) {
+        Ok(p) => {
+            let _ = std::fs::remove_dir_all(&old_dir);
+            Ok(p)
+        }
+        Err(e) => {
+            // install_fresh only creates `final_dir` via its last atomic
+            // rename, so on failure `final_dir` is absent and the previous
+            // install can be restored. The exists() guard is defensive: a
+            // freshly-created final must never be clobbered by the old one.
+            if final_dir.exists() {
+                let _ = std::fs::remove_dir_all(&old_dir);
+            } else {
+                let _ = std::fs::rename(&old_dir, &final_dir);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Installs the staging tree into an absent `final_dir`.
 ///
 /// Same-filesystem fast path: a single `std::fs::rename` swaps the
 /// staging tree into its final location in O(1).
@@ -803,28 +876,15 @@ pub fn extract_bundle_safely_blocking(
 /// is left in place for the StagingGuard to clean — `final_dir` is
 /// never even touched, so a half-installed worker can never appear
 /// under `iii worker list`.
-pub fn atomic_install(staging_dir: &Path, name: &str) -> Result<PathBuf, WorkerOpError> {
-    let final_dir = super::config_file::bundle_worker_path(name);
-    if final_dir.exists() {
-        return Err(WorkerOpError::AlreadyExists {
-            name: name.to_string(),
-        });
-    }
-    if let Some(parent) = final_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| WorkerOpError::ConfigIo {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
-    match std::fs::rename(staging_dir, &final_dir) {
-        Ok(()) => Ok(final_dir),
+fn install_fresh(staging_dir: &Path, final_dir: &Path) -> Result<PathBuf, WorkerOpError> {
+    match std::fs::rename(staging_dir, final_dir) {
+        Ok(()) => Ok(final_dir.to_path_buf()),
         Err(e) if cross_device_or_busy(&e) => {
             // Cross-fs path: copy into a sibling of `final_dir` first,
             // then rename. This keeps the final rename inside one
             // filesystem (the bundle root's parent) so it stays atomic;
             // a partial copy can never poison `final_dir`.
-            let partial = sibling_partial_dir(&final_dir);
+            let partial = sibling_partial_dir(final_dir);
             // If a prior crashed install left a stale `*.partial.*`
             // sibling, sweep it before we begin. Best-effort — if remove
             // fails we'll surface the copy error below.
@@ -843,10 +903,10 @@ pub fn atomic_install(staging_dir: &Path, name: &str) -> Result<PathBuf, WorkerO
 
             // Same-filesystem rename: this either succeeds atomically
             // or fails without leaving `final_dir` in a half-state.
-            if let Err(source) = std::fs::rename(&partial, &final_dir) {
+            if let Err(source) = std::fs::rename(&partial, final_dir) {
                 let _ = std::fs::remove_dir_all(&partial);
                 return Err(WorkerOpError::ConfigIo {
-                    path: final_dir,
+                    path: final_dir.to_path_buf(),
                     source,
                 });
             }
@@ -855,10 +915,10 @@ pub fn atomic_install(staging_dir: &Path, name: &str) -> Result<PathBuf, WorkerO
             // StagingGuard would also do this on Drop, but doing it
             // here keeps the disk state predictable for the caller.
             let _ = std::fs::remove_dir_all(staging_dir);
-            Ok(final_dir)
+            Ok(final_dir.to_path_buf())
         }
         Err(source) => Err(WorkerOpError::ConfigIo {
-            path: final_dir,
+            path: final_dir.to_path_buf(),
             source,
         }),
     }
@@ -882,6 +942,53 @@ fn sibling_partial_dir(final_dir: &Path) -> PathBuf {
         .unwrap_or("bundle");
     let sibling_name = format!("{file_name}.partial.{ts}.{counter}");
     final_dir.with_file_name(sibling_name)
+}
+
+/// Builds a sibling path next to `final_dir` where a previous install
+/// is parked during replacement. Lives in the same parent directory so
+/// both the rename-aside and any restore are same-filesystem atomic
+/// renames. Distinct `.old.` infix keeps it from ever colliding with
+/// the cross-fs `.partial.` siblings.
+fn sibling_old_dir(final_dir: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let file_name = final_dir
+        .file_name()
+        .and_then(|os| os.to_str())
+        .unwrap_or("bundle");
+    let sibling_name = format!("{file_name}.old.{ts}.{counter}");
+    final_dir.with_file_name(sibling_name)
+}
+
+/// Best-effort sweep of `<final_dir>.old.*` siblings left behind when a
+/// previous replacement crashed between the rename-aside and its cleanup
+/// (`sweep_orphans` only covers the staging root). Runs under the
+/// per-worker install lock, so a parked dir belonging to a LIVE
+/// replacement can never be swept.
+fn sweep_stale_old_siblings(final_dir: &Path) {
+    let Some(parent) = final_dir.parent() else {
+        return;
+    };
+    let Some(file_name) = final_dir.file_name().and_then(|os| os.to_str()) else {
+        return;
+    };
+    let prefix = format!("{file_name}.old.");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with(&prefix) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn cross_device_or_busy(e: &std::io::Error) -> bool {

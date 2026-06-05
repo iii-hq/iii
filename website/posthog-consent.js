@@ -58,6 +58,14 @@
       person_profiles: 'identified_only',
       capture_pageview: true,
       capture_pageleave: true,
+      session_recording: {
+        // The hero and agent visualizations animate SVG packets every frame,
+        // emitting ~900 DOM mutations/sec. Recording those mutations pegs CPU
+        // and grows memory unbounded in the replay buffer. Block the animated
+        // layers from session replay; the live page is unaffected.
+        blockSelector:
+          '#hv-packets, #hv-edges-ephemeral, #ag-a-packets, #ag-a-edges-eph',
+      },
     });
   };
 

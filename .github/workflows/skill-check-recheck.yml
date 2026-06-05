@@ -1,0 +1,34 @@
+name: skill-check recheck
+
+# Consumer of the reusable listener at
+# iii-hq/skills-and-validation/.github/workflows/recheck-on-comment.yml.
+# Fires when a maintainer ticks the "Re-render this branch and commit
+# rendered artifacts" box in the sticky skill-check comment, re-runs
+# the action with write: true on the PR head, and commits the fresh
+# render back.
+#
+# Constraints:
+#   - This workflow file MUST live on the default branch — GitHub runs
+#     issue_comment workflows from main only (security feature). Adding
+#     it on a feature branch is a no-op for that PR.
+#   - The reusable workflow's `permissions:` block is not inherited;
+#     the caller has to grant them explicitly or the job is rejected
+#     with a startup_failure.
+
+on:
+  issue_comment:
+    types: [edited]
+
+permissions:
+  contents: write          # push the auto-render commit to the PR branch
+  pull-requests: write     # update the sticky comment
+  actions: write           # AI skip-cache (actions/cache)
+
+jobs:
+  recheck:
+    uses: iii-hq/skills-and-validation/.github/workflows/recheck-on-comment.yml@v0.4
+    with:
+      config-path: .skill-check.yaml
+      action-ref: v0.4
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

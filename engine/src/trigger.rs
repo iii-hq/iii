@@ -23,6 +23,7 @@ pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("stream:join", "iii-stream"),
     ("stream:leave", "iii-stream"),
     ("log", "iii-observability"),
+    ("trace", "iii-observability"),
     ("configuration", "configuration"),
 ];
 
@@ -62,6 +63,7 @@ pub struct TriggerType {
     pub _description: String,
     pub trigger_request_format: Option<Value>,
     pub call_request_format: Option<Value>,
+    pub call_response_format: Option<Value>,
     pub registrator: Box<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
 }
@@ -76,11 +78,13 @@ impl TriggerType {
         let id = id.into();
         let trigger_request_format = Self::trigger_request_format_for(&id);
         let call_request_format = Self::call_request_format_for(&id);
+        let call_response_format = Self::call_response_format_for(&id);
         Self {
             id,
             _description: description.into(),
             trigger_request_format,
             call_request_format,
+            call_response_format,
             registrator,
             worker_id,
         }
@@ -93,6 +97,14 @@ impl TriggerType {
 
     pub fn with_call_request_format<T: schemars::JsonSchema>(mut self) -> Self {
         self.call_request_format = Self::schema_for::<T>();
+        self
+    }
+
+    /// Schema for what a bound handler must RETURN when this trigger fires
+    /// (e.g. the HTTP response envelope). Exposed via `engine::triggers::info`
+    /// as `response_schema` so callers can discover the return contract.
+    pub fn with_call_response_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.call_response_format = Self::schema_for::<T>();
         self
     }
 
@@ -112,6 +124,7 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
             "stream" => Self::schema_for::<StreamTriggerConfig>(),
             "log" => Self::schema_for::<LogTriggerConfig>(),
+            "trace" => Self::schema_for::<TraceTriggerConfig>(),
             "configuration" => Self::schema_for::<ConfigurationTriggerConfig>(),
             _ => None,
         }
@@ -127,7 +140,21 @@ impl TriggerType {
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveCallRequest>(),
             "stream" => Self::schema_for::<StreamCallRequest>(),
             "log" => Self::schema_for::<LogCallRequest>(),
+            "trace" => Self::schema_for::<TraceCallRequest>(),
             "configuration" => Self::schema_for::<ConfigurationCallRequest>(),
+            _ => None,
+        }
+    }
+
+    /// Schema a bound handler must RETURN when this trigger fires. Only trigger
+    /// types whose handler return shape is fixed declare one. `http` returns an
+    /// `HttpCallResponse` (`status_code` / `headers` / `body`); most triggers
+    /// place no constraint on the return and report `None`.
+    fn call_response_format_for(id: &str) -> Option<Value> {
+        use crate::trigger_formats::*;
+
+        match id {
+            "http" => Self::schema_for::<HttpCallResponse>(),
             _ => None,
         }
     }
@@ -842,5 +869,56 @@ mod tests {
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.metadata, None);
         assert!(!json.contains("metadata"));
+    }
+
+    fn assert_http_call_response_properties(schema: &Value) {
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("call_response_format schema has a properties object");
+        for key in ["status_code", "headers", "body"] {
+            assert!(
+                properties.contains_key(key),
+                "expected property '{key}', got: {properties:?}"
+            );
+        }
+
+        // Pin optionality: the worker (`HttpResponse::from_function_return`) treats
+        // every field as optional (status_code defaults to 200, headers to empty,
+        // body to {}), so none of them may appear in the schema's `required` array.
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for key in ["status_code", "headers", "body"] {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some(key)),
+                    "'{key}' must not be required, got required: {required:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn http_trigger_type_populates_call_response_format() {
+        let tt = make_trigger_type("http");
+        let schema = tt
+            .call_response_format
+            .expect("http trigger type sets call_response_format");
+        assert_http_call_response_properties(&schema);
+    }
+
+    #[test]
+    fn cron_trigger_type_has_no_call_response_format() {
+        let tt = make_trigger_type("cron");
+        assert!(tt.call_response_format.is_none());
+    }
+
+    #[test]
+    fn with_call_response_format_sets_schema() {
+        use crate::trigger_formats::HttpCallResponse;
+
+        let tt = make_trigger_type("cron").with_call_response_format::<HttpCallResponse>();
+        let schema = tt
+            .call_response_format
+            .expect("with_call_response_format sets call_response_format");
+        assert_http_call_response_properties(&schema);
     }
 }

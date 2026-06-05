@@ -45,11 +45,13 @@ use iii_worker::cli::bundle_download::{
     validate_bundle_manifest,
 };
 use iii_worker::cli::config_file::{
-    ResolvedWorkerType, bundle_worker_path, bundle_workers_dir, resolve_worker_type,
+    ResolvedWorkerType, bundle_is_installed, bundle_worker_path, bundle_workers_dir,
+    resolve_worker_type,
 };
+use iii_worker::cli::managed::handle_bundle_add;
 use iii_worker::cli::registry::{
-    MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS, ResolvedEdge, ResolvedRoot, ResolvedWorker,
-    ResolvedWorkerGraph, enforce_dep_graph_bounds,
+    BundleWorkerResponse, MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS, ResolvedEdge, ResolvedRoot,
+    ResolvedWorker, ResolvedWorkerGraph, enforce_dep_graph_bounds,
 };
 use iii_worker::core::error::WorkerOpError;
 
@@ -149,6 +151,18 @@ fn write_archive(dir: &Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, bytes).unwrap();
     p
+}
+
+/// Names of `.old.*` (parked previous install) / `.partial.*` (cross-fs
+/// copy) sibling dirs leaked next to a bundle install — replacement and
+/// cross-fs installs must always clean these up.
+fn sibling_leftovers(parent: &Path) -> Vec<String> {
+    std::fs::read_dir(parent)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".old.") || n.contains(".partial."))
+        .collect()
 }
 
 fn write_manifest(dir: &Path, body: &str) {
@@ -611,22 +625,133 @@ fn dep_graph_rejects_excessive_breadth() {
 
 #[test]
 #[serial]
-fn atomic_install_refuses_existing_target() {
+fn atomic_install_replaces_existing_target() {
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::set(tmp.path());
 
-    // Pre-populate the final dir.
+    // Pre-populate the final dir with a previous install, including a
+    // file the new payload does NOT carry.
     let final_dir = bundle_worker_path("collide");
     std::fs::create_dir_all(&final_dir).unwrap();
-    std::fs::write(final_dir.join("iii.worker.yaml"), "name: collide").unwrap();
+    std::fs::write(
+        final_dir.join("iii.worker.yaml"),
+        "name: collide\nold: true\n",
+    )
+    .unwrap();
+    std::fs::write(final_dir.join("stale.txt"), "left over").unwrap();
 
     let staging = bundle_staging_root().join("collide-fresh");
     std::fs::create_dir_all(&staging).unwrap();
-    let err = atomic_install(&staging, "collide").expect_err("collision");
+    std::fs::write(
+        staging.join("iii.worker.yaml"),
+        "name: collide\nnew: true\n",
+    )
+    .unwrap();
+
+    let installed = atomic_install(&staging, "collide").expect("replace ok");
+    assert_eq!(installed, final_dir);
+
+    let manifest = std::fs::read_to_string(final_dir.join("iii.worker.yaml")).unwrap();
     assert!(
-        matches!(err, WorkerOpError::AlreadyExists { .. }),
-        "expected AlreadyExists, got {err:?}"
+        manifest.contains("new: true"),
+        "new payload landed: {manifest}"
     );
+    assert!(
+        !final_dir.join("stale.txt").exists(),
+        "old payload fully replaced, not merged"
+    );
+    assert!(!staging.exists(), "staging dir was consumed");
+
+    let leftovers = sibling_leftovers(final_dir.parent().unwrap());
+    assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
+}
+
+#[test]
+#[serial]
+fn atomic_install_restores_previous_install_on_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(tmp.path());
+
+    let final_dir = bundle_worker_path("keepme");
+    std::fs::create_dir_all(&final_dir).unwrap();
+    std::fs::write(final_dir.join("iii.worker.yaml"), "name: keepme\n").unwrap();
+
+    // Nonexistent staging: the install rename fails with ENOENT AFTER
+    // the previous install was parked aside, exercising the restore path.
+    let missing_staging = bundle_staging_root().join("keepme-missing");
+    let err = atomic_install(&missing_staging, "keepme").expect_err("install must fail");
+    assert!(matches!(err, WorkerOpError::ConfigIo { .. }), "got {err:?}");
+
+    // The previous install was restored, not lost.
+    let manifest = std::fs::read_to_string(final_dir.join("iii.worker.yaml"))
+        .expect("previous install restored at final path");
+    assert_eq!(manifest, "name: keepme\n");
+
+    let leftovers = sibling_leftovers(final_dir.parent().unwrap());
+    assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
+}
+
+#[test]
+#[serial]
+fn atomic_install_sweeps_stale_old_siblings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(tmp.path());
+
+    // A replacement that crashed between rename-aside and cleanup leaves
+    // the previous install parked as a `{name}.old.<unique>` sibling.
+    let final_dir = bundle_worker_path("crashy");
+    let parent = final_dir.parent().unwrap().to_path_buf();
+    let stale = parent.join("crashy.old.123.0");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("iii.worker.yaml"), "name: crashy\n").unwrap();
+
+    let staging = bundle_staging_root().join("crashy-fresh");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("iii.worker.yaml"), "name: crashy\n").unwrap();
+
+    atomic_install(&staging, "crashy").expect("install ok");
+
+    assert!(!stale.exists(), "stale .old sibling swept on next install");
+    let leftovers = sibling_leftovers(&parent);
+    assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
+}
+
+// Regression: when a prior replacement crashed after its rename-aside,
+// final_dir is missing and the parked `.old.*` sibling is the ONLY
+// remaining copy of the worker. A failed next install must not sweep it
+// — cleanup is deferred until an install actually lands.
+#[test]
+#[serial]
+fn atomic_install_failure_preserves_parked_old_sibling() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(tmp.path());
+
+    let final_dir = bundle_worker_path("crashed");
+    let parent = final_dir.parent().unwrap().to_path_buf();
+    let parked = parent.join("crashed.old.123.0");
+    std::fs::create_dir_all(&parked).unwrap();
+    std::fs::write(parked.join("iii.worker.yaml"), "name: crashed\n").unwrap();
+
+    // The next install fails (nonexistent staging → ENOENT on rename).
+    let missing_staging = bundle_staging_root().join("crashed-missing");
+    atomic_install(&missing_staging, "crashed").expect_err("install must fail");
+
+    // The only good copy must survive the failed install.
+    let manifest = std::fs::read_to_string(parked.join("iii.worker.yaml"))
+        .expect("parked previous install preserved");
+    assert_eq!(manifest, "name: crashed\n");
+
+    // A later successful install sweeps it.
+    let staging = bundle_staging_root().join("crashed-fresh");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("iii.worker.yaml"), "name: crashed\n").unwrap();
+    atomic_install(&staging, "crashed").expect("install ok");
+    assert!(
+        !parked.exists(),
+        "parked copy swept after a successful install"
+    );
+    let leftovers = sibling_leftovers(&parent);
+    assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
 }
 
 #[test]
@@ -643,6 +768,116 @@ fn atomic_install_renames_into_place() {
     assert_eq!(final_dir, bundle_worker_path("foo"));
     assert!(final_dir.join("iii.worker.yaml").is_file());
     assert!(!staging.exists(), "staging dir was consumed by rename");
+}
+
+#[test]
+#[serial]
+fn bundle_is_installed_detects_shared_global_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(tmp.path());
+
+    // Nothing installed yet.
+    assert!(!bundle_is_installed("harness"), "absent before any install");
+
+    // Simulate project A installing the shared bundle.
+    let dir = bundle_worker_path("harness");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("iii.worker.yaml"), "name: harness\n").unwrap();
+    assert!(
+        bundle_is_installed("harness"),
+        "detected once the manifest is on disk"
+    );
+
+    // A bare directory with no manifest must NOT count as installed,
+    // matching the resolver's bundle detection (manifest-gated).
+    let empty = bundle_worker_path("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(
+        !bundle_is_installed("empty"),
+        "empty dir without manifest is not a valid install"
+    );
+}
+
+// Regression: a bundle worker already installed by one project must be
+// REPLACED, not reused, when a second project adds it. Bundle installs are a
+// global, machine-wide cache keyed by name (~/.iii/workers-bundle/{name}/),
+// so reusing whatever is on disk would pin every project to the first
+// project's (possibly stale) payload — and `iii worker update`, which
+// funnels bundles through `handle_bundle_add`, would never refresh anything.
+// The pipeline runs fully offline here: the archive is pre-seeded into the
+// sha256-keyed download cache, so the unreachable URL is never fetched.
+#[tokio::test]
+#[serial]
+async fn bundle_add_replaces_existing_install_in_second_project() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::set(home.path());
+
+    // The freshly resolved payload, pre-seeded into the download cache so
+    // download_archive serves it without network I/O.
+    let manifest: &[u8] = b"name: harness\nscripts:\n  start: node bundle.js\n";
+    let archive = make_targz(&[
+        ("iii.worker.yaml", manifest, tar::EntryType::Regular),
+        ("bundle.js", b"// new payload\n", tar::EntryType::Regular),
+    ]);
+    let digest = sha256_hex(&archive);
+    let src = write_archive(home.path(), "src.tar.gz", &archive);
+    store_in_cache(&src, &digest).unwrap();
+
+    // Project A's earlier (now stale) install of the shared bundle.
+    let install_dir = bundle_worker_path("harness");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    std::fs::write(install_dir.join("iii.worker.yaml"), "name: harness\n").unwrap();
+    std::fs::write(install_dir.join("old-marker.txt"), "from project A").unwrap();
+
+    // Project B is a fresh working directory with no config.yaml yet.
+    let project_b = tempfile::tempdir().unwrap();
+    let _cwd = CwdGuard::set(project_b.path());
+
+    let response = BundleWorkerResponse {
+        name: "harness".to_string(),
+        version: "0.5.4".to_string(),
+        // SSRF-safe URL that is never fetched: the cache hit serves the
+        // archive before any network I/O.
+        archive_url: "https://example.invalid/harness.tar.gz".to_string(),
+        sha256: digest,
+    };
+
+    let rc = handle_bundle_add("harness", &response, true).await;
+    assert_eq!(rc, 0, "second-project add must succeed and replace");
+
+    // On-disk install was replaced with the resolved payload.
+    assert!(
+        install_dir.join("bundle.js").is_file(),
+        "new payload landed on disk"
+    );
+    assert!(
+        !install_dir.join("old-marker.txt").exists(),
+        "stale payload fully replaced, not merged"
+    );
+    let on_disk = std::fs::read_to_string(install_dir.join("iii.worker.yaml")).unwrap();
+    assert!(
+        on_disk.contains("node bundle.js"),
+        "manifest refreshed, got:\n{on_disk}"
+    );
+
+    let config = std::fs::read_to_string("config.yaml")
+        .expect("config.yaml written in project B working dir");
+    assert!(
+        config.contains("harness"),
+        "worker registered in project B config.yaml, got:\n{config}"
+    );
+    // Must be a name-only (bundle-shaped) entry: the resolver routes starts to
+    // the immutable bundle install ONLY when neither worker_path nor image is
+    // present. A regression that wrote either would break bundle dispatch at
+    // start while still passing the substring check above.
+    assert!(
+        !config.contains("worker_path:"),
+        "bundle entry must not carry worker_path, got:\n{config}"
+    );
+    assert!(
+        !config.contains("image:"),
+        "bundle entry must not carry image, got:\n{config}"
+    );
 }
 
 // StagingGuard drop semantics are covered by the in-module unit test
@@ -1047,13 +1282,15 @@ fn sweep_orphans_skips_locked_staging_dir() {
 
 #[test]
 #[serial]
-fn atomic_install_concurrent_only_one_wins() {
+fn atomic_install_concurrent_both_safe() {
     // Two threads racing into atomic_install for the same target
     // name. The fslock in production serializes this, but
     // atomic_install is a public API and must be safe on its own.
-    // Outcome: exactly one Ok, exactly one Err (AlreadyExists or the
-    // platform ENOTEMPTY/EEXIST mapped to ConfigIo — both are valid
-    // loser outcomes).
+    // With replace semantics there is no single winner: the second
+    // thread may replace the first (last-writer-wins) or lose the
+    // rename race with a platform error mapped to ConfigIo. Either
+    // way `final_dir` must end up as a complete install from ONE of
+    // the stagings, with no `.old.*`/`.partial.*` siblings leaked.
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::set(tmp.path());
 
@@ -1081,15 +1318,18 @@ fn atomic_install_concurrent_only_one_wins() {
     let r2 = t2.join().unwrap();
 
     let oks = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
-    let errs = [&r1, &r2].iter().filter(|r| r.is_err()).count();
-    assert_eq!(
-        oks, 1,
-        "exactly one race winner expected. r1={r1:?} r2={r2:?}"
+    assert!(
+        oks >= 1,
+        "at least one install must succeed. r1={r1:?} r2={r2:?}"
     );
-    assert_eq!(
-        errs, 1,
-        "exactly one race loser expected. r1={r1:?} r2={r2:?}"
-    );
+
+    let final_dir = bundle_worker_path("race");
+    let manifest = std::fs::read_to_string(final_dir.join("iii.worker.yaml"))
+        .expect("final dir holds a complete install");
+    assert_eq!(manifest, "name: race\n");
+
+    let leftovers = sibling_leftovers(final_dir.parent().unwrap());
+    assert!(leftovers.is_empty(), "sibling leftovers: {leftovers:?}");
 }
 
 #[test]
@@ -1235,6 +1475,27 @@ impl Drop for HomeGuard {
                 None => std::env::remove_var("HOME"),
             }
         }
+    }
+}
+
+/// RAII guard that switches the process working directory and restores it
+/// on drop. Process CWD is global; all callers must be `#[serial]`.
+/// Used to simulate running `iii worker add` from a second project dir.
+struct CwdGuard {
+    previous: std::path::PathBuf,
+}
+
+impl CwdGuard {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(path).unwrap();
+        Self { previous }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous);
     }
 }
 

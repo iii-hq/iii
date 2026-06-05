@@ -745,6 +745,52 @@ jobs:
         if: always()
         run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
 
+  sdk-go-ci:
+    name: SDK Go Tests
+    needs: engine-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: sdk/packages/go/iii/go.sum
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l sdk/packages/go/iii)" || { gofmt -l sdk/packages/go/iii; exit 1; }
+
+      - name: Vet
+        working-directory: sdk/packages/go/iii
+        run: go vet ./...
+
+      - name: Unit tests (race)
+        working-directory: sdk/packages/go/iii
+        run: go test -race ./...
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Integration tests
+        working-directory: sdk/packages/go/iii
+        env:
+          III_URL: ws://localhost:49199
+          III_HTTP_URL: http://localhost:3199
+        run: go test -tags integration ./tests/...
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
   # ──────────────────────────────────────────────────────────────
   # Console
   # ──────────────────────────────────────────────────────────────

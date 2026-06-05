@@ -63,6 +63,36 @@ pub struct HttpCallRequest {
     pub body: Value,
 }
 
+/// Response envelope a bound HTTP handler returns. The `iii-http` worker reads
+/// these fields from the handler's return value; **every field is optional** and
+/// any absent field uses its default. This is the contract for "what should my
+/// HTTP handler return".
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HttpCallResponse {
+    /// HTTP status code to send. Defaults to 200 when omitted, so set it
+    /// explicitly for error cases (e.g. 404 for not-found, 400 for bad input).
+    /// The field is `status_code` — not `status`.
+    pub status_code: Option<u16>,
+    /// Response headers. Accepts either a `{ "Header-Name": "value" }` map or an
+    /// array of `"Header-Name: value"` strings. Defaults to no headers when omitted.
+    pub headers: Option<HttpResponseHeaders>,
+    /// Response body. Serialized to the wire as JSON, text, or bytes according to
+    /// the `Content-Type` header you set. Defaults to an empty object when omitted.
+    pub body: Option<Value>,
+}
+
+/// The two accepted forms for HTTP response headers. The `iii-http` worker reads
+/// both: a `{ "Header-Name": "value" }` object map, or an array of
+/// `"Header-Name: value"` strings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum HttpResponseHeaders {
+    /// `{ "Header-Name": "value" }` object map.
+    Map(HashMap<String, String>),
+    /// Array of `"Header-Name: value"` strings.
+    List(Vec<String>),
+}
+
 // ── Cron ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -300,4 +330,29 @@ pub struct LogCallRequest {
     pub instrumentation_scope_name: String,
     /// Instrumentation scope version
     pub instrumentation_scope_version: String,
+}
+
+// ── Trace (observability) ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TraceTriggerConfig {
+    /// Only fire for spans emitted by this service. When omitted, matches any
+    /// service. Compared case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    /// Only fire for spans with this status: `ok`, `error`, or `unset`. When
+    /// omitted, fires for every status. Compared case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Payload delivered to a `trace` trigger handler: a coalesced "traces
+/// changed" tick. Span activity is debounced and the distinct affected trace
+/// ids in the window are delivered, rather than per-span full payloads — the
+/// trigger is a "refetch soon" beat, not a span feed. Re-read details via
+/// `engine::traces::list` / `engine::traces::tree`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TraceCallRequest {
+    /// Distinct trace ids that had span activity in this coalesced window.
+    pub trace_ids: Vec<String>,
 }
