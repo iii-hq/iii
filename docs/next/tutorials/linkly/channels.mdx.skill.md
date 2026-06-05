@@ -24,7 +24,8 @@ CSV in, and triggers `link::create` from the `link` worker for each row. Replace
 `bulk-importer/src/index.ts`:
 
 ```typescript bulk-importer/src/index.ts
-import { registerWorker, Logger } from "iii-sdk";
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "bulk-importer",
