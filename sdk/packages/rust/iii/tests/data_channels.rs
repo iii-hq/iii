@@ -31,7 +31,7 @@ async fn stream_data_from_sender_to_processor() {
                     .map(|(_, r)| r.clone())
                     .expect("missing reader channel ref");
 
-                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
+                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
                 let raw = reader.read_all().await.map_err(|e| IIIError::Handler(e.to_string()))?;
                 let records: Vec<Value> = serde_json::from_slice(&raw)
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
@@ -176,8 +176,8 @@ async fn bidirectional_streaming() {
                     .map(|(_, r)| r.clone())
                     .expect("missing writer");
 
-                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
+                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
 
                 let mut chunks: Vec<Vec<u8>> = Vec::new();
                 let mut chunk_count = 0;

@@ -141,8 +141,8 @@ async fn raw_json_request_body() {
                     .map(|(_, r)| r.clone())
                     .expect("missing reader ref");
 
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
+                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
                 let raw = reader
                     .read_all()
                     .await
@@ -427,7 +427,7 @@ async fn download_pdf_streaming() {
                     .map(|(_, r)| r.clone())
                     .expect("missing writer ref");
 
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
 
                 writer
                     .send_message(
@@ -541,8 +541,8 @@ async fn upload_pdf_streaming() {
                     .map(|(_, r)| r.clone())
                     .expect("missing reader ref");
 
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
+                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
 
                 writer
                     .send_message(
@@ -646,7 +646,7 @@ async fn sse_streaming() {
                     .map(|(_, r)| r.clone())
                     .expect("missing writer ref");
 
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
 
                 writer
                     .send_message(
@@ -786,8 +786,8 @@ async fn urlencoded_form_data() {
                     .map(|(_, r)| r.clone())
                     .expect("missing reader ref");
 
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
+                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
 
                 let raw = reader
                     .read_all()
@@ -937,8 +937,8 @@ async fn multipart_form_data() {
                     .map(|(_, r)| r.clone())
                     .expect("missing reader ref");
 
-                let writer = iii_sdk::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::ChannelReader::new(iii.address(), &reader_ref);
+                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
+                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
 
                 let raw = reader
                     .read_all()
