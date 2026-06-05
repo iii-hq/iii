@@ -141,6 +141,10 @@ distinguish categories:
 
 ## Channels
 
+Import channel types from the `iii.channel` submodule
+(`from iii.channel import ChannelReader, ChannelWriter`). They stay importable from the package root
+as deprecated re-exports.
+
 `ChannelReader` and `ChannelWriter` wrap the engine's stream WebSockets. `StreamChannelRef`
 identifies a channel:
 
