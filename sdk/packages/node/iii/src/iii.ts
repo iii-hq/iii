@@ -21,7 +21,6 @@ import {
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type StreamChannelRef,
-  type TriggerAction as TriggerActionType,
   type TriggerRegistrationResultMessage,
   type TriggerRequest,
   type WorkerRegisteredMessage,
@@ -1056,12 +1055,12 @@ export const TriggerAction = {
    * @param opts - Queue routing options.
    * @param opts.queue - Name of the target queue.
    */
-  Enqueue: (opts: { queue: string }): TriggerActionType => ({ type: 'enqueue', ...opts }),
+  Enqueue: (opts: { queue: string }) => ({ type: 'enqueue' as const, ...opts }),
   /**
    * Fire-and-forget routing. The engine forwards the invocation without
    * waiting for a response or queuing the job.
    */
-  Void: (): TriggerActionType => ({ type: 'void' }),
+  Void: () => ({ type: 'void' as const }),
 } as const
 
 /**

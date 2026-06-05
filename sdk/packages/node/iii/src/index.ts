@@ -24,11 +24,8 @@ export type {
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
   StreamChannelRef,
-  TriggerAction as TriggerActionType,
   TriggerRequest,
 } from './iii-types'
-
-export { Logger } from '@iii-dev/observability'
 
 export type { TriggerConfig, TriggerHandler } from './triggers'
 

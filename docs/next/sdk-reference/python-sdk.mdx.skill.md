@@ -126,17 +126,16 @@ TriggerAction.Enqueue(queue="math")   # route through iii-queue; returns Trigger
 
 ## Error types
 
-The base class is `IIIInvocationError`. The SDK's wire-error decoder maps engine error codes to
-two known subclasses; everything else stays on the base class:
+Every invocation failure raises `IIIInvocationError`. Inspect its `code` attribute to
+distinguish categories:
 
-| Class                | When raised                       |
-| -------------------- | --------------------------------- |
-| `IIIInvocationError` | Any engine-side invocation error. |
-| `IIIForbiddenError`  | `code == "FORBIDDEN"` (RBAC).     |
-| `IIITimeoutError`    | `code == "TIMEOUT"`.              |
+| `code`        | When raised                       |
+| ------------- | --------------------------------- |
+| `"FORBIDDEN"` | RBAC denied the invocation.       |
+| `"TIMEOUT"`   | The invocation timed out.         |
+| other         | Any other engine-side rejection.  |
 
-All three are exported. The base class has `code`, `message`, `function_id`, and `stacktrace`
-attributes.
+`IIIInvocationError` has `code`, `message`, `function_id`, and `stacktrace` attributes.
 
 ## Channels
 
@@ -155,8 +154,8 @@ Both classes are constructed with the engine's WS base URL and a `StreamChannelR
 ## Logger
 
 `Logger` exposes `info`, `warn`, `error`, and `debug`, each accepting a message and an optional
-data dict. The output integrates with the SDK's OpenTelemetry setup; see
-iii-observability for the export side.
+data dict. Import it from `iii_observability`; it is no longer re-exported from `iii`. The output
+integrates with the SDK's OpenTelemetry setup; see iii-observability for the export side.
 
 ## Info types
 

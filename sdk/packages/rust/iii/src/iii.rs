@@ -86,17 +86,6 @@ pub struct TriggerInfo {
     pub metadata: Option<Value>,
 }
 
-/// Trigger type information returned by `engine::trigger-types::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerTypeInfo {
-    pub id: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
-}
-
 /// Builder for registering a custom trigger type with optional format schemas.
 ///
 /// Type parameters:

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use iii::workers::state::adapters::{StateAdapter, kv_store::BuiltinKvStoreAdapter};
-use iii_sdk::{FieldPath, UpdateOp};
+use iii_sdk::UpdateOp;
 use serde_json::json;
 use tokio::runtime::Runtime;
 
@@ -89,7 +89,7 @@ fn state_crud_benchmark(c: &mut Criterion) {
                         "bench-scope",
                         "update-key",
                         vec![UpdateOp::Increment {
-                            path: FieldPath("counter".to_string()),
+                            path: "counter".to_string(),
                             by: 1,
                         }],
                     )

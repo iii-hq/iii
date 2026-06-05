@@ -6,13 +6,10 @@ from typing import Any
 class IIIInvocationError(Exception):
     """Raised when an invocation dispatched by the SDK fails.
 
-    Subclass by code:
-      - ``IIIForbiddenError``  (``code == 'FORBIDDEN'``)
-      - ``IIITimeoutError``    (``code == 'TIMEOUT'``)
-
-    Catch the base to handle every rejection; catch a subclass to react to
-    a specific category. ``except Exception`` continues to work because
-    ``IIIInvocationError`` inherits from ``Exception``.
+    Inspect ``err.code`` to react to a specific category (e.g.
+    ``'FORBIDDEN'`` for RBAC denials, ``'TIMEOUT'`` for timeouts). Catch
+    this class to handle every rejection. ``except Exception`` continues to
+    work because ``IIIInvocationError`` inherits from ``Exception``.
 
     Attributes are read-only after construction. ``stacktrace`` is the
     engine-side trace when the remote handler raised; it may include
@@ -36,26 +33,18 @@ class IIIInvocationError(Exception):
         self.invocation_id = invocation_id
 
 
-class IIIForbiddenError(IIIInvocationError):
-    """Raised when RBAC denies an invocation. ``code == 'FORBIDDEN'``."""
-
-
-class IIITimeoutError(IIIInvocationError):
-    """Raised when an invocation exceeds its timeout. ``code == 'TIMEOUT'``."""
-
-
 def _wrap_wire_error(
     error: Any,
     *,
     function_id: str | None,
     invocation_id: str | None,
 ) -> IIIInvocationError:
-    """Convert a wire ``ErrorBody``-shaped dict into a typed exception.
+    """Convert a wire ``ErrorBody``-shaped dict into an ``IIIInvocationError``.
 
-    Dispatches to ``IIIForbiddenError`` / ``IIITimeoutError`` based on
-    ``error['code']``. Malformed shapes (non-dict, missing fields, non-string
-    values) fall back to ``IIIInvocationError(code='UNKNOWN', ...)`` so no
-    rejection path prints as a raw dict repr.
+    The ``code`` field distinguishes categories (e.g. ``'FORBIDDEN'``,
+    ``'TIMEOUT'``). Malformed shapes (non-dict, missing fields, non-string
+    values) fall back to ``code='UNKNOWN'`` so no rejection path prints as a
+    raw dict repr.
     """
     if isinstance(error, dict):
         raw_code = error.get("code")
@@ -67,12 +56,7 @@ def _wrap_wire_error(
         raw_stacktrace = error.get("stacktrace")
         stacktrace = raw_stacktrace if isinstance(raw_stacktrace, str) else None
 
-        cls: type[IIIInvocationError] = {
-            "FORBIDDEN": IIIForbiddenError,
-            "TIMEOUT": IIITimeoutError,
-        }.get(code, IIIInvocationError)
-
-        return cls(
+        return IIIInvocationError(
             code=code,
             message=message,
             function_id=function_id,

@@ -18,7 +18,7 @@ from iii_observability import OtelConfig
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
-from .errors import IIIInvocationError, IIITimeoutError, _wrap_wire_error
+from .errors import IIIInvocationError, _wrap_wire_error
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_RECONNECTION_CONFIG,
@@ -1073,9 +1073,9 @@ class III:
             actions.
 
         Raises:
-            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
-            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
-            IIIInvocationError: For any other engine rejection.
+            IIIInvocationError: For any engine rejection. Inspect ``code``:
+                ``'TIMEOUT'`` if the invocation timed out, ``'FORBIDDEN'`` if
+                RBAC denied it.
 
         Examples:
             >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -1100,9 +1100,9 @@ class III:
             The result of the function invocation, or ``None`` for void calls.
 
         Raises:
-            IIITimeoutError: If the invocation times out. ``code == 'TIMEOUT'``.
-            IIIForbiddenError: If RBAC denies the invocation. ``code == 'FORBIDDEN'``.
-            IIIInvocationError: For any other engine rejection.
+            IIIInvocationError: For any engine rejection. Inspect ``code``:
+                ``'TIMEOUT'`` if the invocation timed out, ``'FORBIDDEN'`` if
+                RBAC denied it.
 
         Examples:
             >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
@@ -1163,7 +1163,7 @@ class III:
             return await asyncio.wait_for(future, timeout=timeout_secs)
         except asyncio.TimeoutError:
             self._pending.pop(invocation_id, None)
-            raise IIITimeoutError(
+            raise IIIInvocationError(
                 code="TIMEOUT",
                 message=f"invocation timed out after {timeout_ms}ms",
                 function_id=function_id,

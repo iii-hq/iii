@@ -19,7 +19,7 @@ async fn fresh_store() -> BuiltinKvStore {
     BuiltinKvStore::new(None)
 }
 
-fn set_op(path: impl Into<iii_sdk::FieldPath>, value: serde_json::Value) -> UpdateOp {
+fn set_op(path: impl Into<String>, value: serde_json::Value) -> UpdateOp {
     UpdateOp::Set {
         path: path.into(),
         value: Some(value),
@@ -653,7 +653,7 @@ async fn append_root_when_state_is_empty_array_pushes_value() {
             SCOPE.to_string(),
             key.clone(),
             vec![UpdateOp::Set {
-                path: iii_sdk::FieldPath::from(""),
+                path: String::new(),
                 value: Some(json!([])),
             }],
         )

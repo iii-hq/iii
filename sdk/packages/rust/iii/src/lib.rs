@@ -4,7 +4,6 @@ pub mod error;
 pub mod helpers;
 pub mod iii;
 pub mod protocol;
-pub mod stream;
 pub mod stream_provider;
 pub mod structs;
 pub mod triggers;
@@ -18,14 +17,13 @@ pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
 pub use error::IIIError;
 pub use iii::{
     FunctionInfo, FunctionRef, III, IIIConnectionState, RegisterFunction, RegisterTriggerType,
-    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata,
+    TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata,
 };
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
     Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
     RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
-pub use stream::UpdateBuilder;
 pub use stream_provider::IStream;
 pub use structs::{
     AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
@@ -34,13 +32,10 @@ pub use structs::{
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
-    ApiRequest, ApiResponse, Channel, DeleteResult, FieldPath, MergePath, SetResult,
-    StreamAuthInput, StreamAuthResult, StreamDeleteInput, StreamGetInput, StreamJoinResult,
-    StreamListGroupsInput, StreamListInput, StreamSetInput, StreamUpdateInput, UpdateOp,
-    UpdateOpError, UpdateResult,
+    ApiRequest, ApiResponse, Channel, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
+    StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput, StreamListInput,
+    StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
 };
-
-pub use serde_json::Value;
 
 /// Configuration options passed to [`register_worker`].
 ///
