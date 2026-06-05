@@ -1,6 +1,6 @@
 # iii SDKs
 
-These are iii official SDKs for Node, Python, and Rust. See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
+These are iii official SDKs for Node, Python, Rust, and Go. See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
 
 ## SDKs
 
@@ -14,6 +14,7 @@ These are iii official SDKs for Node, Python, and Rust. See the [engine README](
 | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | Node.js / TypeScript | `pnpm add iii-sdk` or `npm install iii-sdk` | [README](./packages/node/iii/README.md)   |
 | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | Python               | `pip install iii-sdk` | [README](./packages/python/iii/README.md) |
 | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Rust                 | Add to `Cargo.toml`   | [README](./packages/rust/iii/README.md)   |
+| [`iii-sdk`](./packages/go/iii)                         | Go                   | `go get github.com/iii-hq/iii/sdk/packages/go/iii` | [README](./packages/go/iii/README.md) |
 
 ## Hello World
 
@@ -86,17 +87,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Go
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+)
+
+func main() {
+	client := iii.RegisterWorker("ws://127.0.0.1:49134")
+
+	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+		var req struct {
+			Body struct {
+				Name string `json:"name"`
+			} `json:"body"`
+		}
+		_ = json.Unmarshal(data, &req)
+		return map[string]any{
+			"status_code": 200,
+			"body":        map[string]string{"message": "Hello, " + req.Body.Name + "!"},
+		}, nil
+	})
+
+	client.RegisterTrigger("hello-http", "http", "hello::greet",
+		json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`), nil)
+
+	if err := client.Connect(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+}
+```
+
 ## API
 
-| Operation                | Node.js                                              | Python                                      | Rust                                         | Description                                            |
-| ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
-| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |
+| Operation                | Node.js                                              | Python                                      | Rust                                         | Go                                          | Description                                            |
+| ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------- | ------------------------------------------------------ |
+| Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | `iii.RegisterWorker(url)`                   | Create an SDK instance and auto-connect                |
+| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | `client.RegisterFunction(id, handler)`      | Register a function that can be invoked by name        |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | `client.RegisterTrigger(id, type, fn, cfg, meta)` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | `client.Trigger(ctx, iii.TriggerRequest{...})` | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | `client.Trigger(ctx, iii.TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting |
 
-`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
+`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All four SDKs expose the same API surface — register functions and triggers, then invoke them.
 
 > `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
 

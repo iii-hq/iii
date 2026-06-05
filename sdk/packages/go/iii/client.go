@@ -625,6 +625,8 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 		c.handleInvocationResult(dec.InvocationResult)
 	case MsgRegisterTrigger:
 		go c.handleRegisterTrigger(ctx, dec.RegisterTrigger)
+	case MsgUnregisterTrigger:
+		go c.handleUnregisterTrigger(ctx, dec.UnregisterTrigger)
 	case MsgPing:
 		if frame, err := MarshalMessage(&PongMessage{}); err == nil {
 			c.enqueueOutboundDirect(frame)
@@ -776,6 +778,29 @@ func (c *Client) handleRegisterTrigger(ctx context.Context, msg *RegisterTrigger
 	if frame, err := MarshalMessage(res); err == nil {
 		c.enqueueOutboundDirect(frame)
 	}
+}
+
+// handleUnregisterTrigger routes an inbound UnregisterTrigger to the matching
+// trigger-type handler's UnregisterTrigger hook, so a custom trigger type can tear down
+// the per-instance work it started in RegisterTrigger. The engine sends this when a
+// trigger instance is removed; without dispatching it, that work would leak. Mirrors
+// handle_unregister_trigger in the Rust SDK and onUnregisterTrigger in the Node SDK.
+//
+// The wire message carries only id and an optional trigger_type. Without a trigger_type
+// we can't resolve which handler owns the instance, so we skip (matching the reference
+// SDKs, which require it). The TriggerConfig passed to the handler carries the id; the
+// handler keys its cleanup off that.
+func (c *Client) handleUnregisterTrigger(ctx context.Context, msg *UnregisterTriggerMessage) {
+	if msg.TriggerType == nil {
+		return
+	}
+	c.mu.Lock()
+	tt, ok := c.triggerTypes[*msg.TriggerType]
+	c.mu.Unlock()
+	if !ok {
+		return
+	}
+	_ = tt.handler.UnregisterTrigger(ctx, TriggerConfig{ID: msg.ID})
 }
 
 // Close shuts the client down: it stops the reconnect loop, cancels all pending Trigger

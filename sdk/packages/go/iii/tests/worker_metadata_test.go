@@ -27,11 +27,14 @@ type workerInfo struct {
 }
 
 // TestWorkerRegistersWithGoRuntime confirms the worker-metadata registration reaches the
-// engine: after connecting, engine::workers::list contains a connected worker tagged
-// runtime "go" (the engine's own builtins are runtime "engine"). The metadata register
-// is fire-and-forget, so we give it a moment to land.
+// engine: after connecting, engine::workers::list contains THIS worker tagged runtime
+// "go". The worker is created with a unique name (WithName) so the assertion correlates
+// to the worker this test opened, rather than matching any connected go worker that may
+// share the engine (which would let the test pass on the wrong worker — iii-hq/iii#1766).
+// The metadata register is fire-and-forget, so we give it a moment to land.
 func TestWorkerRegistersWithGoRuntime(t *testing.T) {
-	c := connect(t)
+	workerName := "test-worker-meta-" + uniqueSuffix(t)
+	c := connectNamed(t, workerName)
 	if err := c.RegisterFunction("test::worker_meta::go::probe", func(_ context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
@@ -53,18 +56,24 @@ func TestWorkerRegistersWithGoRuntime(t *testing.T) {
 		t.Fatalf("decode workers: %v\nraw: %s", err, res)
 	}
 
+	// Find OUR worker by its unique name, not just any connected go worker.
 	var ours *workerInfo
 	for i := range out.Workers {
 		w := &out.Workers[i]
-		if w.Runtime != nil && *w.Runtime == "go" && w.Status == "connected" {
+		if w.Name != nil && *w.Name == workerName {
 			ours = w
 			break
 		}
 	}
 	if ours == nil {
-		t.Fatalf("no connected worker with runtime \"go\" in engine::workers::list (worker metadata not registered?)")
+		t.Fatalf("this worker (%q) not found in engine::workers::list (metadata not registered?)", workerName)
 	}
-	// Sanity-check the rest of the metadata we send.
+	if ours.Runtime == nil || *ours.Runtime != "go" {
+		t.Errorf("runtime = %v, want \"go\"", ours.Runtime)
+	}
+	if ours.Status != "connected" {
+		t.Errorf("status = %q, want connected", ours.Status)
+	}
 	if ours.OS == nil || *ours.OS == "" {
 		t.Error("worker os metadata is empty")
 	}

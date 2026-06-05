@@ -61,8 +61,18 @@ func settle() { time.Sleep(300 * time.Millisecond) }
 // connect builds a client against the live engine and connects it, registering cleanup.
 // Each test gets its own client so registrations don't leak between tests.
 func connect(t *testing.T) *iii.Client {
+	return connectNamed(t, "")
+}
+
+// connectNamed is connect with an explicit worker name (iii.WithName). A unique name lets
+// a test correlate engine::workers::list entries to the worker it actually opened.
+func connectNamed(t *testing.T, name string) *iii.Client {
 	t.Helper()
-	c := iii.New(engineWSURL())
+	var opts []iii.Option
+	if name != "" {
+		opts = append(opts, iii.WithName(name))
+	}
+	c := iii.New(engineWSURL(), opts...)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := c.Connect(ctx); err != nil {
