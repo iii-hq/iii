@@ -418,6 +418,24 @@ fn collapse_wildcard_to_regex(pattern: &str) -> Result<regex::Regex, regex::Erro
     regex::Regex::new(&format!("^{}$", regex_pattern))
 }
 
+/// Engine-internal pass-through wrapper spans that are ALWAYS collapsed out of
+/// the assembled tree view, independent of user config: the state/stream trigger
+/// fan-out spans (`state_triggers`/`stream_triggers`). They carry no
+/// user-meaningful work themselves — they only parent the trigger handler
+/// invocations (e.g. `turn::on_approval`, `context-compaction::on_agent_event`),
+/// which reparent to the nearest survivor when these are collapsed. Without this
+/// they flood every trace tree (a turn step can fan out 10+ stream writes).
+fn builtin_collapse_rules() -> Vec<CompiledCollapseRule> {
+    ["state_triggers", "stream_triggers"]
+        .iter()
+        .filter_map(|name| {
+            collapse_wildcard_to_regex(name)
+                .ok()
+                .map(|name| CompiledCollapseRule { name, service: None })
+        })
+        .collect()
+}
+
 /// Compile the configured collapse rules, skipping any with invalid patterns.
 fn compile_collapse_rules(rules: &[config::SpanCollapseRule]) -> Vec<CompiledCollapseRule> {
     rules
@@ -1120,11 +1138,16 @@ impl ObservabilityWorker {
                     })));
                 }
 
-                // Collapse configured pass-through wrapper spans before building
-                // the tree (children reparent to the nearest surviving ancestor).
-                let collapse_rules = otel::get_otel_config()
-                    .map(|c| compile_collapse_rules(&c.collapse_spans))
-                    .unwrap_or_default();
+                // Collapse pass-through wrapper spans before building the tree
+                // (children reparent to the nearest surviving ancestor): the
+                // always-on engine-internal trigger fan-out wrappers, plus any
+                // user-configured rules.
+                let mut collapse_rules = builtin_collapse_rules();
+                collapse_rules.extend(
+                    otel::get_otel_config()
+                        .map(|c| compile_collapse_rules(&c.collapse_spans))
+                        .unwrap_or_default(),
+                );
                 let all_spans = collapse_spans(all_spans, &collapse_rules);
 
                 let roots = build_span_tree(all_spans);
@@ -2550,6 +2573,75 @@ mod tests {
         assert_eq!(tree[0].span.span_id, "call");
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].span.span_id, "leaf");
+    }
+
+    #[test]
+    fn test_builtin_collapse_hides_trigger_wrappers() {
+        // writer -> state_triggers (internal wrapper) -> turn::on_approval handler
+        let writer = make_span(
+            "t",
+            "w",
+            None,
+            "call approval::resolve",
+            "iii-test",
+            100,
+            500,
+            "ok",
+            vec![],
+        );
+        let state_wrapper = make_span(
+            "t",
+            "st",
+            Some("w"),
+            "state_triggers",
+            "iii-test",
+            110,
+            480,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+        let handler = make_span(
+            "t",
+            "h",
+            Some("st"),
+            "call turn::on_approval",
+            "iii-worker",
+            120,
+            470,
+            "ok",
+            vec![],
+        );
+        // a stream_triggers wrapper with no children → should simply vanish
+        let empty_stream = make_span(
+            "t",
+            "ss",
+            Some("w"),
+            "stream_triggers",
+            "iii-test",
+            130,
+            140,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+
+        let collapsed = collapse_spans(
+            vec![writer, state_wrapper, handler, empty_stream],
+            &builtin_collapse_rules(),
+        );
+
+        // Both *_triggers wrappers are gone, with no user config required.
+        assert!(!collapsed.iter().any(|s| s.name == "state_triggers"));
+        assert!(!collapsed.iter().any(|s| s.name == "stream_triggers"));
+        // The real handler survives, reparented to the writer.
+        let h = collapsed.iter().find(|s| s.span_id == "h").unwrap();
+        assert_eq!(h.parent_span_id.as_deref(), Some("w"));
+
+        // Tree stays connected: approval::resolve -> turn::on_approval.
+        let tree = build_span_tree(collapsed);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].span.span_id, "w");
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].span.span_id, "h");
     }
 
     #[test]

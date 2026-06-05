@@ -340,9 +340,21 @@ impl StreamWorker {
             return;
         }
 
-        let current_span = tracing::Span::current();
+        // The engine attaches the writer's OTel context for the stream write
+        // (even for suppressed builtins — see invocation::handle_invocation), so
+        // parent the spawned trigger fan-out to it instead of orphaning
+        // `stream_triggers` into a brand-new, disconnected trace.
+        let parent_cx = opentelemetry::Context::current();
 
         if let Ok(event_data) = serde_json::to_value(event_data) {
+            let trigger_span = {
+                let _guard = parent_cx.attach();
+                tracing::info_span!(
+                    "stream_triggers",
+                    "iii.function.kind" = "internal",
+                    otel.status_code = tracing::field::Empty
+                )
+            };
             tokio::spawn(async move {
                 let mut has_error = false;
 
@@ -409,7 +421,7 @@ impl StreamWorker {
                 } else {
                     tracing::Span::current().record("otel.status_code", "OK");
                 }
-            }.instrument(tracing::info_span!(parent: current_span, "stream_triggers", "iii.function.kind" = "internal", otel.status_code = tracing::field::Empty)));
+            }.instrument(trigger_span));
         } else {
             tracing::error!("Failed to convert event data to value");
         }

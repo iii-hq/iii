@@ -162,6 +162,12 @@ impl QueueWorker {
             }
         }
 
+        // Name the function this message will run in the propagated baggage, so
+        // the `fn_queue` consumer span (and the worker context it delivers) carry
+        // `iii.function.id = <target>` rather than the enqueuer's id that
+        // `BaggageSpanProcessor` would otherwise stamp.
+        let baggage = crate::telemetry::baggage_with_function_id(baggage.as_deref(), function_id);
+
         self.adapter
             .publish_to_function_queue(
                 queue_name,

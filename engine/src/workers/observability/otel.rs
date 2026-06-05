@@ -1068,6 +1068,44 @@ pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> Cont
     BaggagePropagator::new().extract_with_context(&ctx, &carrier)
 }
 
+/// Baggage key the `BaggageSpanProcessor` copies onto every span as the
+/// `iii.function.id` attribute (see the SDK observability crate allowlist).
+const FUNCTION_ID_BAGGAGE_KEY: &str = "iii.function.id";
+
+/// Return a context identical to `cx` but with the `iii.function.id` baggage
+/// entry set to `function_id` (all other baggage entries are preserved).
+///
+/// `BaggageSpanProcessor` stamps `iii.function.id` onto every span from the
+/// parent context's baggage, but an enqueuer's baggage names the *enqueuer*, not
+/// the function being enqueued. Rewriting it at the enqueue boundary makes the
+/// `enqueue`/`fn_queue` spans (and the baggage delivered to the target worker)
+/// carry the TARGET function id, so grouping traces by `iii.function.id`
+/// attributes those spans to the function they actually serve.
+pub fn with_function_id_baggage(cx: &Context, function_id: &str) -> Context {
+    use opentelemetry::baggage::BaggageExt;
+    // Drop any existing entry for the key, then re-add — mirrors the SDK's
+    // `set_baggage_entry` so we replace rather than duplicate.
+    let mut entries: Vec<KeyValue> = cx
+        .baggage()
+        .iter()
+        .filter(|(k, _)| k.as_str() != FUNCTION_ID_BAGGAGE_KEY)
+        .map(|(k, (v, _meta))| KeyValue::new(k.clone(), v.clone()))
+        .collect();
+    entries.push(KeyValue::new(
+        FUNCTION_ID_BAGGAGE_KEY,
+        function_id.to_string(),
+    ));
+    cx.with_baggage(entries)
+}
+
+/// W3C-header variant of [`with_function_id_baggage`] for code paths that carry
+/// baggage as a header string rather than a [`Context`] (e.g. queue messages).
+/// Always returns `Some` — at minimum the header names the target function.
+pub fn baggage_with_function_id(baggage: Option<&str>, function_id: &str) -> Option<String> {
+    let ctx = with_function_id_baggage(&extract_baggage(baggage.unwrap_or_default()), function_id);
+    inject_baggage_from_context(&ctx)
+}
+
 // =============================================================================
 // OTLP JSON Ingestion from Node SDK
 // =============================================================================
@@ -3888,6 +3926,69 @@ mod tests {
         // Note: Baggage may or may not be available depending on context state
         // This test primarily verifies the function doesn't panic and context is valid
         let _count = bag.len();
+    }
+
+    #[test]
+    fn with_function_id_baggage_overrides_key_and_preserves_others() {
+        use opentelemetry::baggage::BaggageExt;
+
+        let cx = extract_context(
+            None,
+            Some("iii.session.id=s-1,iii.message.id=m-1,iii.function.id=run::start"),
+        );
+        let updated = with_function_id_baggage(&cx, "turn::provisioning");
+        let bag = updated.baggage();
+
+        assert_eq!(
+            bag.get("iii.function.id").map(|v| v.as_str().to_string()),
+            Some("turn::provisioning".to_string()),
+            "function id must be rewritten to the target",
+        );
+        assert_eq!(
+            bag.get("iii.session.id").map(|v| v.as_str().to_string()),
+            Some("s-1".to_string()),
+            "other baggage entries must be preserved",
+        );
+        assert_eq!(
+            bag.get("iii.message.id").map(|v| v.as_str().to_string()),
+            Some("m-1".to_string()),
+        );
+        // No duplicate entry left behind for the rewritten key.
+        let fn_count = bag
+            .iter()
+            .filter(|(k, _)| k.as_str() == "iii.function.id")
+            .count();
+        assert_eq!(fn_count, 1, "exactly one iii.function.id entry");
+    }
+
+    #[test]
+    fn baggage_with_function_id_header_names_target() {
+        // Round-trips through the W3C header form (the queue-message path).
+        let header = baggage_with_function_id(
+            Some("iii.session.id=s-9,iii.function.id=turn::provisioning"),
+            "turn::assistant_streaming",
+        )
+        .expect("baggage header is always produced");
+
+        assert!(
+            header.contains("iii.function.id=turn::assistant_streaming"),
+            "header must name the target function, got: {header}",
+        );
+        assert!(
+            !header.contains("turn::provisioning"),
+            "enqueuer function id must not survive, got: {header}",
+        );
+        assert!(
+            header.contains("iii.session.id=s-9"),
+            "other baggage entries must be preserved, got: {header}",
+        );
+    }
+
+    #[test]
+    fn baggage_with_function_id_inserts_when_absent() {
+        let header = baggage_with_function_id(None, "session-tree::ensure")
+            .expect("baggage header is always produced");
+        assert!(header.contains("iii.function.id=session-tree::ensure"));
     }
 
     #[test]

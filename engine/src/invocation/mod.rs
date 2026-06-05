@@ -124,15 +124,20 @@ impl InvocationHandler {
             .with_parent_headers(traceparent.as_deref(), baggage.as_deref())
         };
 
-        // When the engine span is suppressed for a worker-routed call there is
-        // no tracing span left to carry the caller's trace context across the
-        // WS boundary to the worker. Attach the caller context as the ambient
-        // OTel context for the dispatch so the worker's own span (and its
-        // descendants) nest under the caller's trace instead of starting a new,
-        // orphaned one. `WorkerConnection::handle_function` falls back to this
-        // ambient context when the active tracing span carries none (see
-        // `worker_connections/traits.rs`).
-        let dispatch_cx = if !is_builtin && (traceparent.is_some() || baggage.is_some()) {
+        // Run the dispatch under the caller's OTel context whenever one was
+        // provided, for BOTH worker-routed and built-in calls:
+        //   - Worker-routed: the engine span is suppressed, so there is no
+        //     tracing span left to carry the caller's context across the WS
+        //     boundary. Attaching it lets the worker's own span (and its
+        //     descendants) nest under the caller's trace instead of orphaning
+        //     into a new one. `WorkerConnection::handle_function` falls back to
+        //     this ambient context (see `worker_connections/traits.rs`).
+        //   - Built-in: state/stream writes fire triggers in a spawned
+        //     `*_triggers` span. Without the caller context that span (and the
+        //     trigger handlers it invokes) would root a brand-new, disconnected
+        //     trace; attaching it nests the fan-out under the writer (e.g.
+        //     `approval::resolve` → state write → `turn::on_approval`).
+        let dispatch_cx = if traceparent.is_some() || baggage.is_some() {
             Some(crate::telemetry::extract_context(
                 traceparent.as_deref(),
                 baggage.as_deref(),
