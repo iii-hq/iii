@@ -38,13 +38,13 @@ pub use structs::{
     OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
+#[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
+pub use types::Channel;
 pub use types::{
     ApiRequest, ApiResponse, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
     StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput, StreamListInput,
     StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
 };
-#[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
-pub use types::Channel;
 
 /// Configuration options passed to [`register_worker`].
 ///
