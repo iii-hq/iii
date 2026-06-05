@@ -202,11 +202,20 @@ async function addToContributorsFile({ owner, repo, username, content, sha }) {
       body: JSON.stringify(body),
     });
   } catch (error) {
-    // 409 means the file was updated between our fetch and this write — next run will succeed
-    if (error.status !== 409) {
+    if (error.status === 409) {
+      const { content: freshContent, sha: freshSha } = await fetchContributorsFile({ owner, repo });
+      if (!isInContributorsFile(username, freshContent)) {
+        const retryContent = freshContent.trimEnd() + `\n- @${username}\n`;
+        body.content = Buffer.from(retryContent).toString('base64');
+        body.sha = freshSha;
+        await githubRequest(`/repos/${owner}/${repo}/contents/contributors.md`, {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        });
+      }
+    } else {
       throw error;
     }
-    console.log('contributors.md was updated concurrently; the next run will retry.');
   }
 }
 
