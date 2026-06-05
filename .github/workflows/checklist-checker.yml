@@ -3,17 +3,15 @@ name: License Agreement Check
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
-  issue_comment:
-    types: [created, edited, deleted]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: read
   issues: write
   statuses: write
 
 concurrency:
-  group: license-agreement-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: license-agreement-${{ github.event.pull_request.number }}
   # Let an in-flight run finish so it can post its final commit status. With
   # `cancel-in-progress: true` a synchronize event would cancel the prior run
   # mid-flight, leaving a CANCELLED check on the PR rollup even for team-member
@@ -22,7 +20,9 @@ concurrency:
 
 jobs:
   license-agreement:
-    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    if: |
+      github.actor != 'github-actions[bot]' &&
+      !contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

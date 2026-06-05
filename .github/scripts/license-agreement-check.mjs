@@ -1,108 +1,69 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-export const AGREEMENT_TEXT =
-  'I agree that my contributions in this PR to the engine code are licensed under Apache 2.0.';
-export const ACKNOWLEDGEMENT_PHRASE = AGREEMENT_TEXT;
+export const CHECKBOX_TEXT =
+  'I license my contributions to this repository under Apache 2.0, and I have all necessary rights over the code I am contributing.';
 export const STATUS_CONTEXT = 'license-agreement';
-export const STICKY_COMMENT_MARKER = '<!-- iii-license-agreement-check -->';
-export const ENGINE_PATH_PREFIX = 'engine/';
-
-const TEAM_PERMISSIONS = new Set(['write', 'maintain', 'admin']);
 const BOT_LOGINS = new Set(['github-actions[bot]']);
 
-export function normalizeAgreementText(value = '') {
-  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+export function hasCheckedCheckbox(prBody = '') {
+  return /^- \[x\] I license my contributions to this repository/im.test(prBody);
 }
 
-export function touchesEnginePaths(files = []) {
-  return files.some((file) => {
-    if (typeof file === 'string') {
-      return file.startsWith(ENGINE_PATH_PREFIX);
-    }
-    if (file?.filename?.startsWith(ENGINE_PATH_PREFIX)) {
-      return true;
-    }
-    return Boolean(file?.previous_filename?.startsWith(ENGINE_PATH_PREFIX));
-  });
+export function isInContributorsFile(username, content = '') {
+  return content
+    .split('\n')
+    .some((line) => line.trim() === `- @${username}` || line.trim().startsWith(`- @${username} `));
 }
 
-export function isTeamPermission(permission = '') {
-  return TEAM_PERMISSIONS.has(permission);
+export function evaluateAgreement({ prBody = '', inContributorsFile = false } = {}) {
+  const checkboxChecked = hasCheckedCheckbox(prBody);
+  const acknowledged = inContributorsFile || checkboxChecked;
+
+  return { acknowledged, checkboxChecked, inContributorsFile };
 }
 
-export function isAgreementComment(comment, prAuthor) {
-  if (!comment?.body || !comment?.user?.login) {
-    return false;
-  }
-
-  if (BOT_LOGINS.has(comment.user.login)) {
-    return false;
-  }
-
-  if (comment.user.login !== prAuthor) {
-    return false;
-  }
-
-  if (comment.body.includes(STICKY_COMMENT_MARKER)) {
-    return false;
-  }
-
-  return normalizeAgreementText(comment.body) === normalizeAgreementText(ACKNOWLEDGEMENT_PHRASE);
-}
-
-export function hasAgreementComment(comments = [], prAuthor) {
-  return comments.some((comment) => isAgreementComment(comment, prAuthor));
-}
-
-export function findStickyComment(comments = []) {
-  return comments.find(
-    (comment) =>
-      comment.body?.includes(STICKY_COMMENT_MARKER) && BOT_LOGINS.has(comment.user?.login),
-  );
-}
-
-export function evaluateAgreement({
-  comments = [],
-  permission = '',
-  prAuthor = '',
-  changedFiles = [],
-} = {}) {
-  const teamMember = isTeamPermission(permission);
-  const engineTouched = touchesEnginePaths(changedFiles);
-  const commentAcknowledged = hasAgreementComment(comments, prAuthor);
-  const acknowledged = !engineTouched || teamMember || commentAcknowledged;
-
-  return {
-    acknowledged,
-    engineTouched,
-    commentAcknowledged,
-    teamMember,
-  };
+export function buildCommitMessage(prAuthor) {
+  return `docs: add @${prAuthor} to contributors.md\n\n@${prAuthor} agrees to license contributions to iii under Apache 2.0.`;
 }
 
 export function buildPendingComment(prAuthor) {
   return [
-    STICKY_COMMENT_MARKER,
     '## License agreement required',
     '',
-    `@${prAuthor}, this PR touches engine code. For us to accept it, we need your explicit confirmation in this thread that you license your changes to the engine portion of the codebase under Apache 2.0.`,
+    `@${prAuthor}, to contribute to this repository please confirm that you license your changes under Apache 2.0 and that you have all necessary rights over the code you are contributing.`,
     '',
-    'Please reply with:',
+    'Copy the following into your PR description and check the box:',
     '',
-    `> ${AGREEMENT_TEXT}`,
+    '```markdown',
+    `- [ ] ${CHECKBOX_TEXT}`,
+    '```',
+    '',
+    'When you check the box, this workflow will automatically add you to [contributors.md](contributors.md) with the following commit:',
+    '',
+    '```',
+    buildCommitMessage(prAuthor),
+    '```',
+    '',
+    'Once added, all future PRs from your account will pass this check automatically.',
   ].join('\n');
 }
 
 export function buildSatisfiedComment(prAuthor) {
   return [
-    STICKY_COMMENT_MARKER,
     '## License agreement recorded',
     '',
-    `@${prAuthor}, the engine license agreement has been recorded from your PR reply.`,
-    '',
-    `> ${AGREEMENT_TEXT}`,
+    `@${prAuthor}, your agreement has been recorded and you have been added to [contributors.md](contributors.md). All future PRs from your account will pass this check automatically.`,
   ].join('\n');
+}
+
+export function findStickyComment(comments = []) {
+  return comments.find(
+    (comment) =>
+      BOT_LOGINS.has(comment.user?.login) &&
+      (comment.body?.includes('## License agreement required') ||
+        comment.body?.includes('## License agreement recorded')),
+  );
 }
 
 function getRequiredEnv(name) {
@@ -153,22 +114,6 @@ async function githubRequest(path, options = {}) {
   return response.json();
 }
 
-async function getPermission({ owner, repo, username }) {
-  try {
-    const result = await githubRequest(
-      `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(username)}/permission`,
-    );
-
-    return result.permission || 'none';
-  } catch (error) {
-    if (error.status === 404) {
-      return 'none';
-    }
-
-    throw error;
-  }
-}
-
 async function listIssueComments({ owner, repo, issueNumber }) {
   const comments = [];
 
@@ -180,21 +125,6 @@ async function listIssueComments({ owner, repo, issueNumber }) {
 
     if (batch.length < 100) {
       return comments;
-    }
-  }
-}
-
-async function listPullRequestFiles({ owner, repo, pullNumber }) {
-  const files = [];
-
-  for (let page = 1; ; page += 1) {
-    const batch = await githubRequest(
-      `/repos/${owner}/${repo}/pulls/${pullNumber}/files?per_page=100&page=${page}`,
-    );
-    files.push(...batch);
-
-    if (batch.length < 100) {
-      return files;
     }
   }
 }
@@ -232,6 +162,54 @@ async function createCommitStatus({ owner, repo, sha, state, description }) {
   });
 }
 
+async function fetchContributorsFile({ owner, repo }) {
+  try {
+    const result = await githubRequest(`/repos/${owner}/${repo}/contents/contributors.md`);
+    const content = Buffer.from(result.content, 'base64').toString('utf8');
+    return { content, sha: result.sha };
+  } catch (error) {
+    if (error.status === 404) {
+      return { content: '', sha: null };
+    }
+    throw error;
+  }
+}
+
+async function addToContributorsFile({ owner, repo, username, content, sha }) {
+  if (isInContributorsFile(username, content)) {
+    return;
+  }
+
+  const newContent = content.trimEnd() + `\n- @${username}\n`;
+  const encodedContent = Buffer.from(newContent).toString('base64');
+
+  const body = {
+    message: buildCommitMessage(username),
+    content: encodedContent,
+    committer: {
+      name: 'github-actions[bot]',
+      email: '41898282+github-actions[bot]@users.noreply.github.com',
+    },
+  };
+
+  if (sha) {
+    body.sha = sha;
+  }
+
+  try {
+    await githubRequest(`/repos/${owner}/${repo}/contents/contributors.md`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    // 409 means the file was updated between our fetch and this write — next run will succeed
+    if (error.status !== 409) {
+      throw error;
+    }
+    console.log('contributors.md was updated concurrently; the next run will retry.');
+  }
+}
+
 async function getPullRequestForEvent({ event, owner, repo }) {
   if (event.pull_request) {
     return {
@@ -263,48 +241,35 @@ export async function run() {
   const { issueNumber, pullRequest } = prContext;
   const prAuthor = pullRequest.user.login;
   const headSha = pullRequest.head.sha;
-  const changedFiles = await listPullRequestFiles({
+  const prBody = pullRequest.body || '';
+  const { content: contributorsContent, sha: contributorsSha } = await fetchContributorsFile({
     owner,
     repo,
-    pullNumber: pullRequest.number,
   });
+  const inContributorsFile = isInContributorsFile(prAuthor, contributorsContent);
 
-  if (!touchesEnginePaths(changedFiles)) {
+  if (inContributorsFile) {
     await createCommitStatus({
       owner,
       repo,
       sha: headSha,
       state: 'success',
-      description: 'PR does not touch engine code; license agreement not required.',
+      description: 'Contributor agreement on file.',
     });
-    console.log(
-      `Skipping license agreement check for PR #${pullRequest.number}; no engine files touched.`,
-    );
+    console.log(`${prAuthor} is already in contributors.md; license agreement satisfied.`);
     return;
   }
 
-  const comments = await listIssueComments({ owner, repo, issueNumber });
-  const permission = await getPermission({ owner, repo, username: prAuthor });
-  const result = evaluateAgreement({
-    comments,
-    permission,
-    prAuthor,
-    changedFiles,
-  });
-
-  if (result.teamMember) {
-    await createCommitStatus({
+  if (hasCheckedCheckbox(prBody)) {
+    await addToContributorsFile({
       owner,
       repo,
-      sha: headSha,
-      state: 'success',
-      description: 'iii team member; license agreement check skipped.',
+      username: prAuthor,
+      content: contributorsContent,
+      sha: contributorsSha,
     });
-    console.log(`Skipping license agreement prompt for ${prAuthor} with ${permission} permission.`);
-    return;
-  }
 
-  if (result.acknowledged) {
+    const comments = await listIssueComments({ owner, repo, issueNumber });
     await upsertStickyComment({
       owner,
       repo,
@@ -317,12 +282,13 @@ export async function run() {
       repo,
       sha: headSha,
       state: 'success',
-      description: 'License agreement acknowledged.',
+      description: 'License agreement recorded.',
     });
-    console.log(`License agreement acknowledged by ${prAuthor} through PR comment.`);
+    console.log(`License agreement recorded for ${prAuthor}; added to contributors.md.`);
     return;
   }
 
+  const comments = await listIssueComments({ owner, repo, issueNumber });
   await upsertStickyComment({
     owner,
     repo,
@@ -338,7 +304,7 @@ export async function run() {
     description: 'License agreement acknowledgement required.',
   });
   console.error(
-    `::error::License agreement acknowledgement required. ${prAuthor} must reply with the exact acknowledgement phrase.`,
+    `::error::License agreement required. ${prAuthor} must check the agreement box in the PR description.`,
   );
   process.exitCode = 1;
 }
