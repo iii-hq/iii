@@ -500,7 +500,7 @@ impl BuiltinKvStore {
 
 #[cfg(test)]
 mod test {
-    use iii_sdk::{FieldPath, UpdateOp};
+    use iii_sdk::UpdateOp;
 
     use super::*;
 
@@ -642,7 +642,7 @@ mod test {
                 index.to_string(),
                 key.to_string(),
                 vec![UpdateOp::Set {
-                    path: FieldPath("name".to_string()),
+                    path: "name".to_string(),
                     value: Some(serde_json::json!("B")),
                 }],
             )
@@ -658,7 +658,7 @@ mod test {
                 index.to_string(),
                 key.to_string(),
                 vec![UpdateOp::Increment {
-                    path: FieldPath("counter".to_string()),
+                    path: "counter".to_string(),
                     by: 5,
                 }],
             )
@@ -672,7 +672,7 @@ mod test {
                 index.to_string(),
                 key.to_string(),
                 vec![UpdateOp::Decrement {
-                    path: FieldPath("counter".to_string()),
+                    path: "counter".to_string(),
                     by: 2,
                 }],
             )
@@ -686,7 +686,7 @@ mod test {
                 index.to_string(),
                 key.to_string(),
                 vec![UpdateOp::Remove {
-                    path: FieldPath("name".to_string()),
+                    path: "name".to_string(),
                 }],
             )
             .await;
@@ -730,15 +730,15 @@ mod test {
                 key.to_string(),
                 vec![
                     UpdateOp::Set {
-                        path: FieldPath("name".to_string()),
+                        path: "name".to_string(),
                         value: Some(Value::String("Z".to_string())),
                     },
                     UpdateOp::Increment {
-                        path: FieldPath("counter".to_string()),
+                        path: "counter".to_string(),
                         by: 10,
                     },
                     UpdateOp::Set {
-                        path: FieldPath("status".to_string()),
+                        path: "status".to_string(),
                         value: Some(Value::String("active".to_string())),
                     },
                 ],
@@ -760,7 +760,7 @@ mod test {
                 index.to_string(),
                 key.to_string(),
                 vec![UpdateOp::Increment {
-                    path: FieldPath("counter".to_string()),
+                    path: "counter".to_string(),
                     by: 1,
                 }],
             )
@@ -912,7 +912,7 @@ mod test {
                     index.to_string(),
                     key.to_string(),
                     vec![UpdateOp::Increment {
-                        path: FieldPath("counter".to_string()),
+                        path: "counter".to_string(),
                         by: 2,
                     }],
                 );
@@ -929,7 +929,7 @@ mod test {
                         index.to_string(),
                         key.to_string(),
                         vec![UpdateOp::Set {
-                            path: FieldPath("name".to_string()),
+                            path: "name".to_string(),
                             value: Some(Value::String(name)),
                         }],
                     )
@@ -996,11 +996,11 @@ mod test {
                         key.to_string(),
                         vec![
                             UpdateOp::Increment {
-                                path: FieldPath("counter".to_string()),
+                                path: "counter".to_string(),
                                 by: 2,
                             },
                             UpdateOp::Set {
-                                path: FieldPath("name".to_string()),
+                                path: "name".to_string(),
                                 value: Some(Value::String(name)),
                             },
                         ],
@@ -1072,11 +1072,11 @@ mod test {
                         key.to_string(),
                         vec![
                             UpdateOp::Increment {
-                                path: FieldPath("counter".to_string()),
+                                path: "counter".to_string(),
                                 by: 2,
                             },
                             UpdateOp::Set {
-                                path: FieldPath("name".to_string()),
+                                path: "name".to_string(),
                                 value: Some(Value::String(name)),
                             },
                         ],

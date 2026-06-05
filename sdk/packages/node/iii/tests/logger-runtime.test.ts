@@ -43,8 +43,8 @@ beforeEach(() => emit.mockReset())
 
 it('keeps an active span context for handlers when tracer setup is disabled', async () => {
   vi.resetModules()
-  const { registerWorker, Logger } = await import('../src/index')
-  const { initOtel, shutdownOtel } = await import('@iii-dev/observability')
+  const { registerWorker } = await import('../src/index')
+  const { initOtel, shutdownOtel, Logger } = await import('@iii-dev/observability')
 
   // Register the AsyncLocalStorage context manager so that context.with
   // (used by the synthetic-span code path in iii.ts) correctly propagates

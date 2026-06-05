@@ -991,7 +991,7 @@ mod tests {
             scope: "scope".to_string(),
             key: "k".to_string(),
             ops: vec![iii_sdk::UpdateOp::Set {
-                path: iii_sdk::FieldPath("count".to_string()),
+                path: "count".to_string(),
                 value: Some(serde_json::json!(42)),
             }],
         };

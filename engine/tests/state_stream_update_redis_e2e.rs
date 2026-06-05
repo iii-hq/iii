@@ -40,7 +40,7 @@ async fn fresh_key(adapter: &StateRedisAdapter, key: &str) {
 // test (root issue from #1612 was a wire-format divergence).
 fn set_op(path: &str, value: serde_json::Value) -> UpdateOp {
     UpdateOp::Set {
-        path: iii_sdk::FieldPath::from(path),
+        path: path.to_string(),
         value: Some(value),
     }
 }

@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Instant};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::future::join_all;
 use iii::builtins::kv::BuiltinKvStore;
-use iii_sdk::{FieldPath, UpdateOp};
+use iii_sdk::UpdateOp;
 use serde_json::json;
 use tokio::runtime::Runtime;
 
@@ -92,7 +92,7 @@ fn kv_update_benchmark(c: &mut Criterion) {
                     "bench".to_string(),
                     "update-key".to_string(),
                     vec![UpdateOp::Set {
-                        path: FieldPath("name".to_string()),
+                        path: "name".to_string(),
                         value: Some(json!("B")),
                     }],
                 )
@@ -110,7 +110,7 @@ fn kv_update_benchmark(c: &mut Criterion) {
                     "bench".to_string(),
                     "update-key".to_string(),
                     vec![UpdateOp::Increment {
-                        path: FieldPath("counter".to_string()),
+                        path: "counter".to_string(),
                         by: 1,
                     }],
                 )
@@ -170,7 +170,7 @@ fn kv_contention_benchmark(c: &mut Criterion) {
                                         "bench".to_string(),
                                         "contended-key".to_string(),
                                         vec![UpdateOp::Increment {
-                                            path: FieldPath("counter".to_string()),
+                                            path: "counter".to_string(),
                                             by: 1,
                                         }],
                                     )

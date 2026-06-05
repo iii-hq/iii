@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from iii import IIIForbiddenError, IIIInvocationError, IIITimeoutError
+from iii import IIIInvocationError
 from iii.errors import _wrap_wire_error
 
 
@@ -57,34 +57,19 @@ class TestIIIInvocationError:
         assert str(err) == "TIMEOUT: gone"
 
 
-class TestSubclassHierarchy:
-    def test_forbidden_is_invocation_error(self) -> None:
-        err = IIIForbiddenError(code="FORBIDDEN", message="x")
-        assert isinstance(err, IIIInvocationError)
-        assert isinstance(err, IIIForbiddenError)
-        assert isinstance(err, Exception)
+class TestCodeDiscrimination:
+    def test_categories_discriminated_by_code(self) -> None:
+        """Categories are distinguished by ``code``, not by subclass."""
+        for code in ("FORBIDDEN", "TIMEOUT", "UNKNOWN"):
+            err = IIIInvocationError(code=code, message="x")
+            assert isinstance(err, IIIInvocationError)
+            assert isinstance(err, Exception)
+            assert err.code == code
 
-    def test_timeout_is_invocation_error(self) -> None:
-        err = IIITimeoutError(code="TIMEOUT", message="x")
-        assert isinstance(err, IIIInvocationError)
-        assert isinstance(err, IIITimeoutError)
-        assert isinstance(err, Exception)
-
-    def test_except_ordering_catches_subclass_first(self) -> None:
-        """`except IIIForbiddenError` fires before `except IIIInvocationError`."""
-        caught: str | None = None
-        try:
-            raise IIIForbiddenError(code="FORBIDDEN", message="x")
-        except IIIForbiddenError:
-            caught = "forbidden"
-        except IIIInvocationError:
-            caught = "base"
-        assert caught == "forbidden"
-
-    def test_base_catches_every_subclass(self) -> None:
+    def test_base_catches_every_category(self) -> None:
         for err in (
-            IIIForbiddenError(code="FORBIDDEN", message="x"),
-            IIITimeoutError(code="TIMEOUT", message="x"),
+            IIIInvocationError(code="FORBIDDEN", message="x"),
+            IIIInvocationError(code="TIMEOUT", message="x"),
             IIIInvocationError(code="UNKNOWN", message="x"),
         ):
             try:
@@ -95,30 +80,30 @@ class TestSubclassHierarchy:
     def test_except_exception_still_works(self) -> None:
         """Migration guarantee: existing `except Exception:` handlers still catch."""
         try:
-            raise IIIForbiddenError(code="FORBIDDEN", message="x")
+            raise IIIInvocationError(code="FORBIDDEN", message="x")
         except Exception as got:
             assert isinstance(got, IIIInvocationError)
 
 
 class TestWrapWireError:
-    def test_forbidden_dict_dispatches_to_forbidden_error(self) -> None:
+    def test_forbidden_dict_sets_forbidden_code(self) -> None:
         err = _wrap_wire_error(
             {"code": "FORBIDDEN", "message": "not allowed"},
             function_id="engine::functions::list",
             invocation_id="inv-1",
         )
-        assert isinstance(err, IIIForbiddenError)
+        assert type(err) is IIIInvocationError
         assert err.code == "FORBIDDEN"
         assert err.function_id == "engine::functions::list"
         assert err.invocation_id == "inv-1"
 
-    def test_timeout_dict_dispatches_to_timeout_error(self) -> None:
+    def test_timeout_dict_sets_timeout_code(self) -> None:
         err = _wrap_wire_error(
             {"code": "TIMEOUT", "message": "gone"},
             function_id="api::slow",
             invocation_id=None,
         )
-        assert isinstance(err, IIITimeoutError)
+        assert type(err) is IIIInvocationError
         assert err.code == "TIMEOUT"
 
     def test_unknown_code_falls_back_to_base(self) -> None:
