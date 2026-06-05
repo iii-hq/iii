@@ -4,7 +4,6 @@ pub mod error;
 pub mod helpers;
 pub mod iii;
 pub mod protocol;
-pub mod stream;
 pub mod stream_provider;
 pub mod structs;
 pub mod triggers;
@@ -25,7 +24,6 @@ pub use protocol::{
     Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
     RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
-pub use stream::UpdateBuilder;
 pub use stream_provider::IStream;
 pub use structs::{
     AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
