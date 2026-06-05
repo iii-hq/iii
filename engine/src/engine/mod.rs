@@ -1005,8 +1005,10 @@ impl Engine {
                             // `BaggageSpanProcessor` stamps this span with the
                             // target, not the caller (the `fn_queue` consumer span
                             // gets the same correction via the stored baggage).
-                            let parent_cx =
-                                crate::telemetry::with_function_id_baggage(&parent_cx, &function_id);
+                            let parent_cx = crate::telemetry::with_function_id_baggage(
+                                &parent_cx,
+                                &function_id,
+                            );
                             let _guard = parent_cx.attach();
                             tracing::info_span!(
                                 "enqueue_action",

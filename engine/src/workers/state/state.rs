@@ -191,7 +191,9 @@ impl StateWorker {
                                 condition_function_id = %condition_id,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), condition_id, event_data.clone()).await {
+                            match check_condition(engine.as_ref(), condition_id, event_data.clone())
+                                .await
+                            {
                                 Ok(true) => {}
                                 Ok(false) => {
                                     tracing::debug!(
@@ -246,7 +248,7 @@ impl StateWorker {
                         tracing::Span::current().record("otel.status_code", "OK");
                     }
                 }
-                .instrument(trigger_span)
+                .instrument(trigger_span),
             );
         } else {
             tracing::error!("Failed to convert event data to value");

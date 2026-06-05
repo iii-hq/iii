@@ -355,73 +355,80 @@ impl StreamWorker {
                     otel.status_code = tracing::field::Empty
                 )
             };
-            tokio::spawn(async move {
-                let mut has_error = false;
+            tokio::spawn(
+                async move {
+                    let mut has_error = false;
 
-                for stream_trigger in triggers_to_invoke {
-                    let trigger = &stream_trigger.trigger;
+                    for stream_trigger in triggers_to_invoke {
+                        let trigger = &stream_trigger.trigger;
 
-                    // Check condition if specified (using pre-parsed value)
-                    let condition_function_id = stream_trigger.config.condition_function_id.clone();
+                        // Check condition if specified (using pre-parsed value)
+                        let condition_function_id =
+                            stream_trigger.config.condition_function_id.clone();
 
-                    if let Some(ref condition_id) = condition_function_id {
+                        if let Some(ref condition_id) = condition_function_id {
+                            tracing::debug!(
+                                condition_function_id = %condition_id,
+                                "Checking trigger conditions"
+                            );
+                            match check_condition(engine.as_ref(), condition_id, event_data.clone())
+                                .await
+                            {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    tracing::debug!(
+                                        function_id = %trigger.function_id,
+                                        "Condition check failed, skipping handler"
+                                    );
+                                    continue;
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        condition_function_id = %condition_id,
+                                        error = ?err,
+                                        "Error invoking condition function"
+                                    );
+                                    has_error = true;
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Invoke the handler function
                         tracing::debug!(
-                            condition_function_id = %condition_id,
-                            "Checking trigger conditions"
+                            function_id = %trigger.function_id,
+                            "Invoking trigger"
                         );
-                        match check_condition(engine.as_ref(), condition_id, event_data.clone()).await {
-                            Ok(true) => {}
-                            Ok(false) => {
+
+                        let call_result =
+                            engine.call(&trigger.function_id, event_data.clone()).await;
+
+                        match call_result {
+                            Ok(_) => {
                                 tracing::debug!(
                                     function_id = %trigger.function_id,
-                                    "Condition check failed, skipping handler"
+                                    "Trigger handler invoked successfully"
                                 );
-                                continue;
                             }
                             Err(err) => {
-                                tracing::error!(
-                                    condition_function_id = %condition_id,
-                                    error = ?err,
-                                    "Error invoking condition function"
-                                );
                                 has_error = true;
-                                continue;
+                                tracing::error!(
+                                    function_id = %trigger.function_id,
+                                    error = ?err,
+                                    "Error invoking trigger handler"
+                                );
                             }
                         }
                     }
 
-                    // Invoke the handler function
-                    tracing::debug!(
-                        function_id = %trigger.function_id,
-                        "Invoking trigger"
-                    );
-
-                    let call_result = engine.call(&trigger.function_id, event_data.clone()).await;
-
-                    match call_result {
-                        Ok(_) => {
-                            tracing::debug!(
-                                function_id = %trigger.function_id,
-                                "Trigger handler invoked successfully"
-                            );
-                        }
-                        Err(err) => {
-                            has_error = true;
-                            tracing::error!(
-                                function_id = %trigger.function_id,
-                                error = ?err,
-                                "Error invoking trigger handler"
-                            );
-                        }
+                    if has_error {
+                        tracing::Span::current().record("otel.status_code", "ERROR");
+                    } else {
+                        tracing::Span::current().record("otel.status_code", "OK");
                     }
                 }
-
-                if has_error {
-                    tracing::Span::current().record("otel.status_code", "ERROR");
-                } else {
-                    tracing::Span::current().record("otel.status_code", "OK");
-                }
-            }.instrument(trigger_span));
+                .instrument(trigger_span),
+            );
         } else {
             tracing::error!("Failed to convert event data to value");
         }
