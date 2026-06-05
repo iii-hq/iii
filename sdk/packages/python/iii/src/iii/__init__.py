@@ -1,31 +1,5 @@
 """III SDK for Python."""
 
-from iii_observability import (
-    DEFAULT_ALLOWLIST,
-    REDACTED_PLACEHOLDER,
-    BaggageSpanProcessor,
-    OtelConfig,
-    ReconnectionConfig,
-    current_span_id,
-    current_span_is_recording,
-    current_trace_id,
-    execute_traced_request,
-    extract_baggage,
-    extract_traceparent,
-    flush_otel,
-    init_otel,
-    inject_baggage,
-    inject_traceparent,
-    record_span_event,
-    redact,
-    redact_and_truncate,
-    resolve_max_bytes_from_env,
-    set_current_span_attribute,
-    set_current_span_error,
-    shutdown_otel,
-    with_span,
-)
-
 from .channels import ChannelReader, ChannelWriter
 from .errors import IIIInvocationError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
@@ -79,28 +53,6 @@ from .types import (
 from .utils import http
 
 __all__ = [
-    # Telemetry helpers
-    "BaggageSpanProcessor",
-    "DEFAULT_ALLOWLIST",
-    "REDACTED_PLACEHOLDER",
-    "current_span_id",
-    "current_span_is_recording",
-    "current_trace_id",
-    "execute_traced_request",
-    "extract_baggage",
-    "extract_traceparent",
-    "flush_otel",
-    "init_otel",
-    "inject_baggage",
-    "inject_traceparent",
-    "record_span_event",
-    "redact",
-    "redact_and_truncate",
-    "resolve_max_bytes_from_env",
-    "set_current_span_attribute",
-    "set_current_span_error",
-    "shutdown_otel",
-    "with_span",
     # Channels
     "ChannelReader",
     "ChannelWriter",
@@ -109,8 +61,6 @@ __all__ = [
     # Core
     "FunctionRef",
     "InitOptions",
-    "OtelConfig",
-    "ReconnectionConfig",
     "register_worker",
     "TelemetryOptions",
     "TriggerAction",
