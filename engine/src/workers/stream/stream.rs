@@ -409,7 +409,7 @@ impl StreamWorker {
                 } else {
                     tracing::Span::current().record("otel.status_code", "OK");
                 }
-            }.instrument(tracing::info_span!(parent: current_span, "stream_triggers", otel.status_code = tracing::field::Empty)));
+            }.instrument(tracing::info_span!(parent: current_span, "stream_triggers", "iii.function.kind" = "internal", otel.status_code = tracing::field::Empty)));
         } else {
             tracing::error!("Failed to convert event data to value");
         }

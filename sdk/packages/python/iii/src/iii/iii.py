@@ -482,6 +482,7 @@ class III:
 
     async def _invoke_with_otel_context(
         self,
+        function_id: str,
         handler: Callable[[Any], Awaitable[Any]],
         data: Any,
         traceparent: str | None,
@@ -509,10 +510,16 @@ class III:
         )
         payload_max_bytes = resolve_max_bytes_from_env()
 
+        # INTERNAL and named `execute` (not `call`/`trigger`): the engine
+        # already emits the SERVER `call <fn>` span for this hop AND a
+        # `trigger <fn>` span from fire_triggers. Reusing either name would
+        # duplicate an engine span under the worker's service. `execute` is
+        # unique, so the worker handler span reads as a clean internal child
+        # of the engine's call span (and is collapsible by a single rule).
         with tracer.start_as_current_span(
-            f"call {handler.__name__}",
+            f"execute {function_id}",
             context=parent_ctx,
-            kind=trace.SpanKind.SERVER,
+            kind=trace.SpanKind.INTERNAL,
         ) as span:
             if trace_payloads and span.is_recording():
                 input_json, input_truncated = redact_and_truncate(data, payload_max_bytes)
@@ -620,7 +627,7 @@ class III:
         if not invocation_id:
             task = asyncio.create_task(
                 self._invoke_with_otel_context(
-                    func.handler, resolved_data, traceparent, baggage
+                    path, func.handler, resolved_data, traceparent, baggage
                 )
             )
             task.add_done_callback(self._log_task_exception)
@@ -628,6 +635,7 @@ class III:
 
         try:
             result, response_traceparent = await self._invoke_with_otel_context(
+                path,
                 func.handler,
                 resolved_data,
                 traceparent,

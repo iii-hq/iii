@@ -468,23 +468,14 @@ impl Engine {
         baggage: &Option<String>,
         invocation_id: Option<Uuid>,
     ) {
-        let span = {
-            // Parent context must be on `Context::current()` BEFORE span
-            // creation so `SpanProcessor::on_start` sees the baggage;
-            // `set_parent` after creation runs too late.
-            let parent_cx =
-                crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
-            let _guard = parent_cx.attach();
-            tracing::info_span!(
-                "handle_invocation",
-                otel.name = %format!("handle_invocation {}", function_id),
-                worker_id = %worker.id,
-                function_id = %function_id,
-                invocation_id = %crate::logging::display_option(&invocation_id),
-                otel.kind = "server",
-                otel.status_code = tracing::field::Empty,
-            )
-        };
+        // The canonical engine span for an invocation is the `call <fn>` span
+        // opened in `InvocationHandler::handle_invocation`. We intentionally do
+        // NOT open a separate `handle_invocation` span here: it produced a
+        // redundant second engine SERVER span for every worker-initiated call
+        // (`handle_invocation <fn>` -> `call <fn>`), doubling engine span
+        // volume. A disabled span keeps the instrumented task structure intact
+        // while emitting nothing.
+        let span = tracing::Span::none();
 
         let engine = self.clone();
         let worker = worker.clone();
@@ -503,13 +494,11 @@ impl Engine {
         };
         let incoming_traceparent = traceparent.clone();
         let incoming_baggage = baggage.clone();
-        // Derive headers from the span we just opened so the downstream
-        // `call <fn>` becomes a child of `handle_invocation`, not a
-        // sibling of the original caller.
-        let downstream_traceparent =
-            inject_traceparent_from_context(&span.context()).or_else(|| traceparent.clone());
-        let downstream_baggage =
-            inject_baggage_from_context(&span.context()).or_else(|| baggage.clone());
+        // Pass the incoming caller context straight through so the downstream
+        // `call <fn>` span nests directly under the caller's span instead of an
+        // intermediate engine wrapper.
+        let downstream_traceparent = traceparent.clone();
+        let downstream_baggage = baggage.clone();
 
         tokio::spawn(
             async move {

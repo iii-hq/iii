@@ -11,6 +11,7 @@ use opentelemetry::KeyValue;
 use serde_json::Value;
 use tokio::sync::oneshot::{self, error::RecvError};
 use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::telemetry::SpanExt;
@@ -85,28 +86,62 @@ impl InvocationHandler {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
-        let function_kind = if crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
-            "internal"
+        let is_builtin = crate::workers::telemetry::is_iii_builtin_function_id(&function_id);
+
+        // Decide whether the ENGINE emits its own `call <fn>` span here:
+        //   - Built-in functions (`state::*`, `stream::*`, `engine::*`,
+        //     `configuration::*`, `iii::*`, …) are executed in-process by the
+        //     engine and fire at high frequency — little trace value, high
+        //     volume. Suppressed by default; re-enable with
+        //     `III_OTEL_TRACE_BUILTINS=true`.
+        //   - Worker-routed (non-builtin) functions are executed by an external
+        //     worker that emits its OWN `call <fn>` span (service = that
+        //     worker). The engine's span would be a cross-service duplicate of
+        //     the same logical invocation, so suppress it and let the worker's
+        //     span be the canonical one.
+        let suppress_span = if is_builtin {
+            !crate::workers::telemetry::trace_builtins_enabled()
         } else {
-            "user"
+            true
         };
 
-        let span = tracing::info_span!(
-            "call",
-            otel.name = %format!("call {}", function_id),
-            otel.kind = "server",
-            otel.status_code = tracing::field::Empty,
-            // FAAS semantic conventions (https://opentelemetry.io/docs/specs/semconv/faas/)
-            "faas.invoked_name" = %function_id,
-            "faas.trigger" = "other",  // III Engine uses its own invocation mechanism
-            // Keep function_id for backward compatibility
-            function_id = %function_id,
-            // Tag internal vs user functions for filtering
-            "iii.function.kind" = %function_kind,
-        )
-        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+        let span = if suppress_span {
+            tracing::Span::none()
+        } else {
+            tracing::info_span!(
+                "call",
+                otel.name = %format!("call {}", function_id),
+                otel.kind = "server",
+                otel.status_code = tracing::field::Empty,
+                // FAAS semantic conventions (https://opentelemetry.io/docs/specs/semconv/faas/)
+                "faas.invoked_name" = %function_id,
+                "faas.trigger" = "other",  // III Engine uses its own invocation mechanism
+                // Keep function_id for backward compatibility
+                function_id = %function_id,
+                // Tag internal vs user functions for filtering
+                "iii.function.kind" = if is_builtin { "internal" } else { "user" },
+            )
+            .with_parent_headers(traceparent.as_deref(), baggage.as_deref())
+        };
 
-        async {
+        // When the engine span is suppressed for a worker-routed call there is
+        // no tracing span left to carry the caller's trace context across the
+        // WS boundary to the worker. Attach the caller context as the ambient
+        // OTel context for the dispatch so the worker's own span (and its
+        // descendants) nest under the caller's trace instead of starting a new,
+        // orphaned one. `WorkerConnection::handle_function` falls back to this
+        // ambient context when the active tracing span carries none (see
+        // `worker_connections/traits.rs`).
+        let dispatch_cx = if !is_builtin && (traceparent.is_some() || baggage.is_some()) {
+            Some(crate::telemetry::extract_context(
+                traceparent.as_deref(),
+                baggage.as_deref(),
+            ))
+        } else {
+            None
+        };
+
+        let invocation_fut = async {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
             let invocation = Invocation {
@@ -163,7 +198,25 @@ impl InvocationHandler {
                 }
                 FunctionResult::Failure(error) => {
                     tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, error_code = %error.code, "Function failed: {}", error.message);
-                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    let current_span = tracing::Span::current();
+                    current_span.record("otel.status_code", "ERROR");
+                    // Attach the error onto the span so the trace UI can render
+                    // detail — a bare ERROR status carries no message. The
+                    // console's error tab reads `error.message`/`error.type`
+                    // attributes and an `exception` event. No-op when the engine
+                    // span is suppressed for a worker-routed call (that worker's
+                    // own span carries the failure instead).
+                    current_span.set_attribute("error.message", error.message.clone());
+                    current_span.set_attribute("error.type", error.code.clone());
+                    let mut exception_attrs = vec![
+                        KeyValue::new("exception.message", error.message.clone()),
+                        KeyValue::new("exception.type", error.code.clone()),
+                    ];
+                    if let Some(stacktrace) = error.stacktrace.clone() {
+                        current_span.set_attribute("error.stack", stacktrace.clone());
+                        exception_attrs.push(KeyValue::new("exception.stacktrace", stacktrace));
+                    }
+                    current_span.add_event("exception", exception_attrs);
 
                     // Record metrics
                     metrics.invocations_total.add(
@@ -269,8 +322,18 @@ impl InvocationHandler {
             };
             result
         }
-        .instrument(span)
-        .await
+        .instrument(span);
+
+        match dispatch_cx {
+            // Engine span suppressed for a worker-routed call: run the dispatch
+            // under the caller's OTel context so the worker's span nests under
+            // the caller's trace instead of orphaning into a new one.
+            Some(cx) => {
+                use opentelemetry::trace::FutureExt as _;
+                invocation_fut.with_context(cx).await
+            }
+            None => invocation_fut.await,
+        }
     }
 }
 

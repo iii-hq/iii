@@ -1552,9 +1552,15 @@ impl III {
 
                 let parent_cx = extract_context(traceparent.as_deref(), baggage.as_deref());
                 let tracer = iii_observability::opentelemetry::global::tracer("iii-rust-sdk");
+                // INTERNAL and named `execute` (not `call`/`trigger`): the engine
+                // already emits the SERVER `call <fn>` span for this hop AND a
+                // `trigger <fn>` span from fire_triggers. Reusing either name would
+                // duplicate an engine span under the worker's service. `execute` is
+                // unique, so the worker handler span reads as a clean internal child
+                // of the engine's call span (and is collapsible by a single rule).
                 let span = tracer
-                    .span_builder(format!("call {}", function_id))
-                    .with_kind(SpanKind::Server)
+                    .span_builder(format!("execute {}", function_id))
+                    .with_kind(SpanKind::Internal)
                     .start_with_context(&tracer, &parent_cx);
                 parent_cx.with_span(span)
             };

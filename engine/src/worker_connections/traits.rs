@@ -82,9 +82,21 @@ impl FunctionHandler for WorkerConnection {
         input: Value,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
-        // This ensures we get the trace context from the #[tracing::instrument] span
+        // This ensures we get the trace context from the #[tracing::instrument] span.
         let current_span = Span::current();
-        let otel_context = current_span.context();
+        let span_cx = current_span.context();
+        // Fall back to the ambient OTel context when the active tracing span
+        // carries no valid span context — e.g. the engine intentionally
+        // suppressed its per-invocation `call` span for this worker-routed call
+        // (see `invocation/mod.rs`). Without this the worker invocation would
+        // inject an empty traceparent and start a new, orphaned trace instead of
+        // nesting under the caller. Every existing flow has a valid tracing
+        // span here, so this is a no-op for them.
+        let otel_context = if inject_traceparent_from_context(&span_cx).is_some() {
+            span_cx
+        } else {
+            opentelemetry::Context::current()
+        };
 
         Box::pin(async move {
             let traceparent = inject_traceparent_from_context(&otel_context);

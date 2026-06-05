@@ -364,8 +364,14 @@ class Sdk implements ISdk {
           if (getTracer()) {
             const parentContext = extractContext(traceparent, baggage)
 
+            // INTERNAL and named `execute` (not `call`/`trigger`): the engine
+            // already emits the SERVER `call <fn>` span for this hop AND a
+            // `trigger <fn>` span from fire_triggers. Reusing either name would
+            // duplicate an engine span under the worker's service. `execute` is
+            // unique, so the worker handler span reads as a clean internal child
+            // of the engine's call span (and is collapsible by a single rule).
             return context.with(parentContext, () =>
-              withSpan(`call ${functionId}`, { kind: SpanKind.SERVER }, async () => await runHandler()),
+              withSpan(`execute ${functionId}`, { kind: SpanKind.INTERNAL }, async () => await runHandler()),
             )
           }
 

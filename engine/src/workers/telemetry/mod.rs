@@ -212,6 +212,21 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         || id.starts_with("steps::")
 }
 
+/// Whether OTEL spans should be emitted for built-in framework function
+/// invocations (`state::*`, `stream::*`, `engine::*`, …).
+///
+/// Defaults to `false`: built-in calls are high-frequency and low-value in
+/// traces, so suppressing them sharply reduces span volume. Set
+/// `III_OTEL_TRACE_BUILTINS=true` (or `1`) to emit them anyway.
+pub fn trace_builtins_enabled() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("III_OTEL_TRACE_BUILTINS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
     if !config.enabled {
         return Some(DisableReason::Config);

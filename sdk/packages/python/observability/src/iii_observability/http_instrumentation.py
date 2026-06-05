@@ -7,6 +7,8 @@ traceparent into outgoing headers, and records exceptions on network errors.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 from opentelemetry import trace
 from opentelemetry.propagate import inject
@@ -18,6 +20,19 @@ _SAFE_RESPONSE_HEADERS = ("content-type",)
 
 def _span_name(method: str, path: str | None) -> str:
     return f"{method} {path}" if path else method
+
+
+def _fetch_ignore_url_patterns() -> list[str]:
+    """Substring patterns from OTEL_FETCH_IGNORE_URLS (comma-separated)."""
+    return [
+        s.strip()
+        for s in (os.environ.get("OTEL_FETCH_IGNORE_URLS") or "").split(",")
+        if s.strip()
+    ]
+
+
+def _should_ignore_fetch_url(url: str) -> bool:
+    return any(pattern in url for pattern in _fetch_ignore_url_patterns())
 
 
 async def execute_traced_request(
@@ -32,6 +47,10 @@ async def execute_traced_request(
     - Records exceptions for network-level errors.
     """
     url = request.url
+    url_str = str(url)
+    if _should_ignore_fetch_url(url_str):
+        return await client.send(request)
+
     method = request.method.upper()
     path = url.path or None
     query = url.query

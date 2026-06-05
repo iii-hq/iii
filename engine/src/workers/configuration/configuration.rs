@@ -239,7 +239,7 @@ impl ConfigurationWorker {
                     }
                 }
             }
-            .instrument(tracing::info_span!(parent: current_span, "configuration_triggers")),
+            .instrument(tracing::info_span!(parent: current_span, "configuration_triggers", "iii.function.kind" = "internal")),
         );
     }
 
