@@ -1,5 +1,5 @@
 use iii_observability::Logger;
-use iii_sdk::{III, IIIError, RegisterFunction};
+use iii_sdk::{Error, III, RegisterFunction};
 use serde_json::{Value, json};
 
 pub fn setup(iii: &III) {
@@ -22,7 +22,7 @@ pub fn setup(iii: &III) {
 
             logger.info("Request processed successfully", None);
 
-            Ok::<Value, IIIError>(json!({ "status": "ok" }))
+            Ok::<Value, Error>(json!({ "status": "ok" }))
         })
         .description("Demonstrates Logger with all log levels"),
     );

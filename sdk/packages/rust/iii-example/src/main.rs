@@ -1,7 +1,7 @@
 use std::{thread::sleep, time::Duration};
 
 use iii_observability::OtelConfig;
-use iii_sdk::{IIIError, InitOptions, RegisterFunction, TriggerRequest, UpdateOp, register_worker};
+use iii_sdk::{Error, InitOptions, RegisterFunction, TriggerRequest, UpdateOp, register_worker};
 use serde_json::json;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -12,7 +12,7 @@ struct EchoInput {
     prefix: String,
 }
 
-fn echo_message(input: EchoInput) -> Result<serde_json::Value, IIIError> {
+fn echo_message(input: EchoInput) -> Result<serde_json::Value, Error> {
     let mut result = input.message.repeat(input.repeat as usize);
     if input.uppercase {
         result = result.to_uppercase();
@@ -27,7 +27,7 @@ struct DelayEchoInput {
     suffix: String,
 }
 
-async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, IIIError> {
+async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, Error> {
     tokio::time::sleep(Duration::from_millis(input.delay_ms)).await;
     Ok(
         json!({ "echo": format!("{}{}", input.message, input.suffix), "delayed_ms": input.delay_ms }),
