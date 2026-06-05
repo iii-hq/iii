@@ -319,16 +319,15 @@
     flex:1 1 0;
     justify-content:flex-end;
   }
-  /* Centered section links. In normal flex flow between nav-left (flex:1) and
-     nav-right (flex:1) so it stays centered and can never overlap either side. */
+  /* Centered section links — nudged left of true center */
   .nav-center{
-    flex:0 1 auto;
-    min-width:0;
-    display:flex;
-    justify-content:center;
+    position:absolute;
+    left:34%;
+    top:50%;
+    transform:translate(-50%, -50%);
     pointer-events:auto;
   }
-  .nav-center .nav-links{ gap:16px; flex-wrap:nowrap; }
+  .nav-center .nav-links{ gap:18px; }
 
   /* Logo (sketch-style) */
   .logo-link{
@@ -395,64 +394,8 @@
     border-bottom:1px solid transparent;
   }
   .nav-link:hover{ color:var(--ink); border-bottom-color:transparent; }
-
-  /* Destination group: docs / blog / registry. Different in kind from the
-     in-page anchors above, so they read as boxed tabs, not text links. */
-  .nav-divider{
-    width:1px; height:16px;
-    background:var(--rule);
-    margin:0 4px;
-    flex:0 0 auto;
-  }
-  .nav-tabs{
-    display:flex; align-items:center; gap:8px;
-  }
-  .nav-tab{
-    position:relative;
-    isolation:isolate;
-    overflow:hidden;
-    display:inline-flex; align-items:center; gap:4px;
-    font-family:'Chivo Mono', ui-monospace, monospace;
-    font-weight:400; font-size:13px; letter-spacing:0;
-    color:var(--mute);
-    text-decoration:none;
-    padding:5px 11px;
-    border:1px solid var(--rule);
-    border-radius:6px;
-    transition:color .2s ease, border-color .25s ease, transform .2s ease;
-  }
-  /* Fill wipes up from the bottom on hover; text inverts to paper. */
-  .nav-tab::before{
-    content:"";
-    position:absolute; inset:0; z-index:-1;
-    background:var(--ink);
-    transform:translateY(101%);
-    transition:transform .28s cubic-bezier(.65,0,.2,1);
-  }
-  .nav-tab:hover{
-    color:var(--paper);
-    border-color:var(--ink);
-    transform:translateY(-1px);
-  }
-  .nav-tab:hover::before{ transform:translateY(0); }
-  .nav-tab:active{ transform:translateY(0); }
-  .nav-tab:focus-visible{
-    outline:2px solid var(--accent);
-    outline-offset:2px;
-  }
-  .nav-tab-ext{
-    font-size:11px;
-    line-height:1;
-    opacity:.6;
-    transition:transform .2s ease, opacity .2s ease;
-  }
-  .nav-tab:hover .nav-tab-ext{
-    opacity:1;
-    transform:translate(1px,-1px);
-  }
-  @media (prefers-reduced-motion: reduce){
-    .nav-tab, .nav-tab::before, .nav-tab-ext{ transition:none; }
-  }
+  .nav-link.docs{ color:var(--mute); }
+  .nav-link.docs:hover{ color:var(--ink); }
 
   /* Install button */
   /* reference-style install pill */
@@ -1104,61 +1047,59 @@
     fill:none;
     opacity:.65;
   }
-  /* Linear reference ghost: makes the quadratic's acceleration legible by contrast. */
-  .hv-cc-linear{
+  .hv-cc-q, .hv-cc-l, .hv-cc-f{
     fill:none;
-    stroke:var(--ink-ghost);
-    stroke-width:1;
-    stroke-dasharray:2 3.5;
-    opacity:.5;
-    vector-effect:non-scaling-stroke;
-  }
-  /* The cost curve and its area fill. Collapses as one entity per stage. */
-  .hv-cc-q{
-    fill:none;
-    stroke:var(--ink);
-    stroke-width:1.7;
     stroke-linecap:round;
     stroke-linejoin:round;
     vector-effect:non-scaling-stroke;
+    transition: opacity .45s ease, stroke-width .35s ease;
   }
-  .hv-cc-area{
-    fill:var(--ink);
-    stroke:none;
-    opacity:.05;
+  .hero-viz[data-stage="mesh"] .hv-cc-q{
+    stroke:var(--ink);
+    opacity:1;
+    stroke-width:1.35;
   }
-  .hv-cc-curve{
-    transform-box:view-box;
-    transform-origin:22px 94px;
-    transition:transform .75s cubic-bezier(.65,0,.2,1), opacity .5s ease;
+  .hero-viz[data-stage="mesh"] .hv-cc-l{
+    stroke:var(--ink-faint);
+    opacity:.32;
+    stroke-width:1;
   }
-  /* Zero line + dot: the iii punchline, revealed as the curve flattens onto it. */
-  .hv-cc-zero{
-    fill:none;
-    stroke:var(--accent);
-    stroke-width:1.7;
-    stroke-linecap:round;
-    vector-effect:non-scaling-stroke;
+  .hero-viz[data-stage="mesh"] .hv-cc-f{
+    stroke:var(--ink-ghost);
     opacity:0;
-    transition:opacity .5s ease .2s;
+    stroke-width:1;
   }
 
-  /* mesh: full quadratic, burden at max. */
-  .hero-viz[data-stage="mesh"] .hv-cc-curve{ transform:scaleY(1); opacity:1; }
-  .hero-viz[data-stage="mesh"] .hv-cc-linear{ opacity:.5; }
+  .hero-viz[data-stage="actual"] .hv-cc-q{
+    stroke:var(--ink-faint);
+    opacity:.28;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="actual"] .hv-cc-l{
+    stroke:var(--ink);
+    opacity:1;
+    stroke-width:1.35;
+  }
+  .hero-viz[data-stage="actual"] .hv-cc-f{
+    stroke:var(--ink-ghost);
+    opacity:0;
+    stroke-width:1;
+  }
 
-  /* actual: same quadratic, divided down by tolerance. Still quadratic. */
-  .hero-viz[data-stage="actual"] .hv-cc-curve{ transform:scaleY(.46); opacity:.92; }
-  .hero-viz[data-stage="actual"] .hv-cc-linear{ opacity:.38; }
-
-  /* iii: the curve collapses flat onto zero. */
-  .hero-viz[data-stage="iii"] .hv-cc-curve{ transform:scaleY(0); opacity:.22; }
-  .hero-viz[data-stage="iii"] .hv-cc-q{ stroke:var(--ink-ghost); }
-  .hero-viz[data-stage="iii"] .hv-cc-linear{ opacity:.22; }
-  .hero-viz[data-stage="iii"] .hv-cc-zero{ opacity:1; }
-
-  @media (prefers-reduced-motion: reduce){
-    .hv-cc-curve, .hv-cc-zero{ transition:none; }
+  .hero-viz[data-stage="iii"] .hv-cc-q{
+    stroke:var(--ink-faint);
+    opacity:.2;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="iii"] .hv-cc-l{
+    stroke:var(--ink-faint);
+    opacity:.22;
+    stroke-width:1;
+  }
+  .hero-viz[data-stage="iii"] .hv-cc-f{
+    stroke:var(--accent);
+    opacity:1;
+    stroke-width:1.45;
   }
 
   @media (min-width: 881px){
@@ -2072,7 +2013,7 @@
   /* tight desktop — too narrow for the icon inside install.sh, and the
      centered nav-links start overlapping it. Drop the icon, slide
      nav-links further left. */
-  @media (max-width: 1220px){
+  @media (max-width: 1100px){
     .nav-center{ display:none; }
     .nav-links{ display:none; }
     #cta-install svg{ display:none; }
@@ -4571,12 +4512,9 @@
         <a class="nav-link" href="#console">console</a>
         <a class="nav-link" href="#agents">agents</a>
         <a class="nav-link" href="/manifesto">manifesto</a>
-        <span class="nav-divider" aria-hidden="true"></span>
-        <span class="nav-tabs">
-          <a class="nav-tab" href="/docs">docs</a>
-          <a class="nav-tab" href="/blog/">blog</a>
-          <a class="nav-tab" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer" aria-label="registry, opens in a new tab">registry<span class="nav-tab-ext" aria-hidden="true">&#x2197;</span></a>
-        </span>
+        <a class="nav-link docs" href="/docs">docs</a>
+        <a class="nav-link" href="/blog/">blog</a>
+        <a class="nav-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry</a>
       </div>
     </div>
 
@@ -4762,16 +4700,12 @@
           <svg class="hv-complex-chart" viewBox="22 0 186 118" preserveAspectRatio="none" aria-hidden="true">
             <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94"/>
             <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14"/>
-            <!-- linear reference: the naive expectation. Quadratic starts below it, then overtakes. -->
-            <line class="hv-cc-linear" x1="22" y1="94" x2="208" y2="55"/>
-            <!-- The cost curve. One entity that collapses across stages: full quadratic -> damped -> zero.
-                 Sampled parabola y = 94 - 74((x-22)/186)^2 (true n^2 shape). -->
-            <g class="hv-cc-curve">
-              <path class="hv-cc-area" d="M 22 94 L 45.3 92.8 L 68.5 89.4 L 91.8 83.6 L 115 75.5 L 138.3 65.1 L 161.5 52.4 L 184.8 37.3 L 208 20 L 208 94 Z"/>
-              <path class="hv-cc-q" d="M 22 94 L 45.3 92.8 L 68.5 89.4 L 91.8 83.6 L 115 75.5 L 138.3 65.1 L 161.5 52.4 L 184.8 37.3 L 208 20"/>
-            </g>
-            <!-- O(0): the iii punchline. Revealed when the curve flattens onto it. -->
-            <path class="hv-cc-zero" d="M 22 94 L 208 94"/>
+            <!-- n(n-1)/2: full pairwise growth -->
+            <path class="hv-cc-q" d="M 22 94 Q 118 18 208 20"/>
+            <!-- (n(n-1)/2) / tolerance: proportionally damped curve -->
+            <path class="hv-cc-l" d="M 22 94 Q 118 60 208 61"/>
+            <!-- 0: constant on the axis -->
+            <path class="hv-cc-f" d="M 22 94 L 208 94"/>
           </svg>
           <div class="hv-complex-copy">
             <span class="hv-formula" id="hv-formula"><math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>&#x2212;</mo><mn>1</mn><mo>)</mo></mrow><mn>2</mn></mfrac><mo>)</mo></math></span>
@@ -6892,10 +6826,10 @@ iii.register_function(
     el.addEventListener('click', copyInstall);
   });
 
-  // Desktop nav links — internal anchors and external destination tabs
-  document.querySelectorAll('.nav-links .nav-link, .nav-tabs .nav-tab').forEach(a => {
+  // Desktop nav links — internal anchors and external destinations
+  document.querySelectorAll('.nav-links .nav-link').forEach(a => {
     a.addEventListener('click', () => {
-      const label = (a.textContent || '').replace(/↗/g, '').trim().toLowerCase().replace(/\s+/g, '_');
+      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
       iiiTrack('cta_click', {
         cta_id: 'nav_link',
         cta_location: 'nav',
