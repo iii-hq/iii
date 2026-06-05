@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { registerWorker, Logger } from '../src/index'
+import { registerWorker } from '../src/index'
 import { iii } from './utils'
 
 beforeAll(() => {
@@ -10,7 +10,6 @@ describe('Package Exports', () => {
   it('should export main SDK symbols', () => {
     expect(registerWorker).toBeDefined()
     expect(typeof registerWorker).toBe('function')
-    expect(Logger).toBeDefined()
   })
 
   it('should import stream module', async () => {
