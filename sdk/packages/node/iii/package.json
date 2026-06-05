@@ -41,6 +41,11 @@
       "types": "./dist/helpers.d.ts",
       "import": "./dist/helpers.mjs",
       "require": "./dist/helpers.cjs"
+    },
+    "./channel": {
+      "types": "./dist/channel.d.ts",
+      "import": "./dist/channel.mjs",
+      "require": "./dist/channel.cjs"
     }
   },
   "dependencies": {
