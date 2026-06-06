@@ -22,4 +22,8 @@ describe('Package Exports', () => {
     expect(stateModule.StateEventType).toBeDefined()
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
   })
+
+  it('should import the trigger subpath module', async () => {
+    await expect(import('../src/trigger')).resolves.toBeDefined()
+  })
 })

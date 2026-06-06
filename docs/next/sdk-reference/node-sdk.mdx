@@ -58,6 +58,10 @@ worker.registerTrigger(trigger: RegisterTriggerInput): Trigger;
 The returned `Trigger` carries the runtime handle. Drop the trigger with `Trigger.unregister()`;
 there is no top-level `unregisterTrigger` function.
 
+The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii-sdk/trigger`
+subpath (`import type { TriggerHandler } from 'iii-sdk/trigger'`). They stay re-exported from the
+package root as deprecated aliases.
+
 ### `registerTriggerType`
 
 Declare a new trigger type that this worker advertises so other workers can bind their functions to

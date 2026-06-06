@@ -41,6 +41,11 @@
       "types": "./dist/helpers.d.ts",
       "import": "./dist/helpers.mjs",
       "require": "./dist/helpers.cjs"
+    },
+    "./trigger": {
+      "types": "./dist/trigger.d.ts",
+      "import": "./dist/trigger.mjs",
+      "require": "./dist/trigger.cjs"
     }
   },
   "dependencies": {
