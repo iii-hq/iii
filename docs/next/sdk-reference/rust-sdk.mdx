@@ -183,6 +183,11 @@ pub enum IIIConnectionState {
 
 ## Info types
 
+The runtime/worker types (`FunctionRef`, `TriggerTypeRef`, `IIIConnectionState`, `WorkerMetadata`,
+`FunctionInfo`, `TriggerInfo`, `WorkerInfo`) are exported from the `iii_sdk::runtime` submodule
+(`use iii_sdk::runtime::FunctionInfo`). They stay reachable at the crate root as deprecated
+re-exports.
+
 The SDK re-exports the engine's structured introspection types:
 
 - `FunctionInfo`. `function_id`, optional `description`, optional `request_format` /

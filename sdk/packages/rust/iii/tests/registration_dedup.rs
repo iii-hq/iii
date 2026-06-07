@@ -19,9 +19,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{
-    III, IIIConnectionState, IIIError, InitOptions, RegisterFunction, RegisterTriggerInput,
-    RegisterTriggerType, TriggerConfig, TriggerHandler, register_worker,
+    III, IIIError, InitOptions, RegisterFunction, RegisterTriggerInput, RegisterTriggerType,
+    TriggerConfig, TriggerHandler, register_worker,
 };
 
 use common::mock_engine::{MockEngine, count_register, count_type};
