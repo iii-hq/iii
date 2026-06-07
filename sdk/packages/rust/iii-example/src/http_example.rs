@@ -1,6 +1,7 @@
 use iii_observability::{Logger, execute_traced_request};
 use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
-use iii_sdk::{ApiRequest, ApiResponse, III, IIIError, IIITrigger, RegisterFunction};
+use iii_sdk::trigger::IIITrigger;
+use iii_sdk::{ApiRequest, ApiResponse, III, IIIError, RegisterFunction};
 use serde_json::json;
 
 pub fn setup(iii: &III) {

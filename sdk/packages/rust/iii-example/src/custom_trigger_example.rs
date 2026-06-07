@@ -1,4 +1,5 @@
-use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler};
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{III, IIIError, RegisterTriggerType};
 use serde_json::json;
 
 // ── Example 1: Typed trigger with full config ───────────────────────────

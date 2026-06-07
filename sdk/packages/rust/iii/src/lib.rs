@@ -9,8 +9,16 @@ pub mod structs;
 pub mod triggers;
 pub mod types;
 
+/// Public trigger types. (Stage 1 submodule grouping.)
+pub mod trigger {
+    pub use crate::builtin_triggers::IIITrigger;
+    pub use crate::triggers::{Trigger, TriggerConfig, TriggerHandler};
+}
+
+#[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
+pub use builtin_triggers::IIITrigger;
 pub use builtin_triggers::{
-    IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
+    StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
     StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
@@ -30,6 +38,7 @@ pub use structs::{
     OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
     OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
 };
+#[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
     ApiRequest, ApiResponse, Channel, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
@@ -143,3 +152,14 @@ fn _ensure_is_channel_ref_not_top_level() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_create_channel_not_on_instance() {}
+
+// ---------------------------------------------------------------------------
+// Stage 1 trigger submodule: trigger types are reachable at their new
+// canonical path `iii_sdk::trigger`.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::trigger::{IIITrigger, Trigger, TriggerConfig, TriggerHandler};
+/// ```
+#[allow(dead_code)]
+fn _ensure_trigger_submodule_path() {}
