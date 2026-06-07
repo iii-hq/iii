@@ -33,7 +33,6 @@ export type {
   ApiRequest,
   ApiResponse,
   Channel,
-  FunctionRef,
   HttpRequest,
   HttpResponse,
   InternalHttpRequest,
@@ -44,7 +43,9 @@ export type {
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,
   Trigger,
-  TriggerTypeRef,
 } from './types'
+
+/** @deprecated Import runtime types from `iii-sdk/runtime`. */
+export type { FunctionRef, TriggerTypeRef } from './runtime'
 
 export { http } from './utils'

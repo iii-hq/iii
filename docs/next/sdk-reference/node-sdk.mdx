@@ -47,6 +47,10 @@ worker.registerFunction(
 `options` accepts `description`, `metadata`, and optional `request_format` / `response_format`
 JSON Schemas (stored alongside the function for the iii console and agent-readable skills).
 
+The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii-sdk/runtime`
+subpath (`import type { FunctionRef } from 'iii-sdk/runtime'`). They stay re-exported from the
+package root as deprecated aliases.
+
 ### `registerTrigger`
 
 Bind a registered function to a configured trigger instance.

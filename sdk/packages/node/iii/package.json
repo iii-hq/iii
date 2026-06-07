@@ -41,6 +41,11 @@
       "types": "./dist/helpers.d.ts",
       "import": "./dist/helpers.mjs",
       "require": "./dist/helpers.cjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.mjs",
+      "require": "./dist/runtime.cjs"
     }
   },
   "dependencies": {

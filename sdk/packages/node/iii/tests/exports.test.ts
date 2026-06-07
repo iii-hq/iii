@@ -22,4 +22,8 @@ describe('Package Exports', () => {
     expect(stateModule.StateEventType).toBeDefined()
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
   })
+
+  it('should import the runtime subpath module', async () => {
+    await expect(import('../src/runtime')).resolves.toBeDefined()
+  })
 })
