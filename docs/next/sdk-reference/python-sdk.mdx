@@ -58,6 +58,10 @@ def register_function(
 `request_format` / `response_format` accept either a JSON Schema dict or a `RegisterFunctionFormat`
 helper. They are stored alongside the function for the iii console and the agent-readable skills.
 
+The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii.runtime` submodule
+(`from iii.runtime import FunctionRef`). They stay importable from the package root as deprecated
+re-exports.
+
 ### `register_trigger`
 
 Bind a registered function to a configured trigger instance.
