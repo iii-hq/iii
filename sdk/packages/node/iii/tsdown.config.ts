@@ -1,7 +1,14 @@
 import { defineConfig } from 'tsdown'
 
 export default defineConfig({
-  entry: ['./src/index.ts', './src/stream.ts', './src/state.ts', './src/helpers.ts', './src/trigger.ts'],
+  entry: [
+    './src/index.ts',
+    './src/stream.ts',
+    './src/state.ts',
+    './src/helpers.ts',
+    './src/channel.ts',
+    './src/trigger.ts',
+  ],
   format: ['esm', 'cjs'],
   dts: true,
   sourcemap: true,
