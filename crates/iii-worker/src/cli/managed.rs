@@ -1397,9 +1397,9 @@ fn load_cwd_manifest_dependencies() -> Option<std::collections::BTreeMap<String,
 
 /// Populate [`super::lockfile::WorkerLockfile::manifest_hash`] and
 /// [`super::lockfile::WorkerLockfile::declared_dependencies`] from the
-/// current cwd manifest. No-ops when the manifest is absent, leaving both
-/// fields at whatever they were before (preserves previous writer's
-/// values across incremental `iii worker add` runs).
+/// current cwd manifest. When the manifest is absent (or unreadable via the
+/// downgraded loader), both fields are cleared to `None` so stale lockfile
+/// state does not survive incremental `iii worker add` runs.
 fn populate_manifest_hash_fields(lockfile: &mut super::lockfile::WorkerLockfile) {
     let Some(deps) = load_cwd_manifest_dependencies() else {
         // FIX: If the manifest is missing, we MUST clear any stale lockfile 
