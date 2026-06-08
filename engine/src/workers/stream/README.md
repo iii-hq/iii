@@ -228,6 +228,6 @@ const roomMembers = await iii.trigger({
 
 ## Client Subscriptions
 
-Browser and client subscriptions use the Browser SDK (`iii-browser-sdk`), which subscribes to `stream` changes over a single engine WebSocket and re-renders on each change event. See the [Linkly frontend tutorial](https://iii.dev/docs/tutorials/linkly/frontend) for the end-to-end pattern.
+Browser and client subscriptions use the Browser SDK (`iii-browser-sdk`), which subscribes to `stream` changes over a single engine WebSocket and re-renders on each change event. Connections are gated by the [iii-worker-manager](https://workers.iii.dev/workers/iii-worker-manager) RBAC listener. See the [Linkly frontend tutorial](https://iii.dev/docs/tutorials/linkly/frontend) for the end-to-end pattern.
 
 Connecting directly to the stream port (`ws://host:3112/stream/<stream_name>/<group_id>/`) is deprecated in favor of the Browser SDK.
