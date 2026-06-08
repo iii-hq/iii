@@ -1,0 +1,190 @@
+---
+title: "Worker manifest"
+description: "Complete field reference for iii.worker.yaml."
+owner: "devrel"
+type: "reference"
+---
+
+This page covers `iii.worker.yaml` configuration options. `iii.worker.yaml` exists at a worker's
+root and tells iii how to provision the worker's runtime, install its dependencies, start its
+process, and pass through configuration. The engine reads it when starting a worker from
+[`config.yaml`](../using-iii/engine#configuration-file-structure) and when the
+[`iii worker`](../using-iii/workers) CLI starts, stops, or restarts a managed worker.
+
+For how to connect a worker into a project once its manifest exists, see
+[Creating Workers / Workers](./workers).
+
+<Note>
+  `iii.worker.yaml` is not needed to run a worker process directly (for example `node
+  ./myworker/src/index.js`). A worker that connects to the engine with the SDK behaves identically
+  whether iii started it or not.
+</Note>
+
+## `name`
+
+Required. Must satisfy the registry's worker-name rules (the same validation the registry applies to
+published names). A worker cannot list itself in `dependencies`.
+
+## `runtime`
+
+Declares details about the worker's environment.
+
+### `base_image`
+
+Optional. Overrides the default OCI rootfs. Must be a valid OCI reference (alphanumerics plus
+`. _ - / : @ +`, max 512 characters). Invalid references are dropped with a warning and the default
+is used.
+
+```yaml
+runtime:
+  base_image: oven/bun:1 # From docker.io
+  # Or a fully-qualified registry path, e.g. GitHub Container Registry:
+  # base_image: ghcr.io/astral-sh/uv:bookworm-slim
+```
+
+## `scripts`
+
+Explicit lifecycle scripts. These define how to initialize a worker's base environment (`setup`),
+install a worker's dependencies (`install`), and run a worker whenever it is started or restarted
+(`start`).
+
+```yaml
+scripts:
+  setup: "apt-get update && apt-get install -y build-essential"
+  install: "npm install"
+  start: "npx tsx src/index.ts"
+```
+
+When `scripts` is omitted, the engine infers `install` and `start` from `runtime.kind` and
+`runtime.package_manager`. The per-field examples below show common values for each language.
+
+{/* <Note> */}
+{/* There is a special setup required for bundling workers for distribution in the iii registry at */}
+{/* [workers.iii.dev](https://workers.iii.dev). See [Registry / Bundle */}
+{/* workers](./workers-registry#bundle-workers-targz-archives). */} {/* </Note> */}
+
+### `setup`
+
+Runs once when the sandbox is provisioned. Use it for system-level packages your dependencies need
+to build.
+
+<CodeGroup>
+
+```yaml Node
+scripts:
+  setup: "apt-get update && apt-get install -y build-essential"
+```
+
+```yaml Python
+scripts:
+  setup: "apt-get update && apt-get install -y libpq-dev"
+```
+
+```yaml Rust
+scripts:
+  setup: "apt-get update && apt-get install -y pkg-config libssl-dev"
+```
+
+</CodeGroup>
+
+### `install`
+
+Installs dependencies.
+
+<CodeGroup>
+
+```yaml Node
+scripts:
+  install: "npm install"
+```
+
+```yaml Python
+scripts:
+  install: "pip install watchfiles && pip install -e ."
+```
+
+```yaml Rust
+scripts:
+  install: "cargo build"
+```
+
+</CodeGroup>
+
+### `start`
+
+Starts the worker process.
+
+<CodeGroup>
+
+```yaml Node
+scripts:
+  start: "npx tsx watch src/index.ts"
+```
+
+```yaml Python
+scripts:
+  start: "watchfiles 'python main.py'"
+```
+
+```yaml Rust
+scripts:
+  start: "cargo watch -x run"
+```
+
+</CodeGroup>
+
+## `env`
+
+Map of environment variables injected into the worker process. Keys and values must be strings. The
+keys `III_URL` and `III_ENGINE_URL` are silently filtered out; the engine sets the connection URL
+itself.
+
+```yaml
+env:
+  LOG_LEVEL: info
+  MY_API_KEY: replace-me
+```
+
+<Note>
+  Worker environment variables are set here, not under the worker's `config.yaml` entry. See [Worker
+  environment variables](../using-iii/workers).
+</Note>
+
+## `dependencies`
+
+Map of `<worker-name>: <semver range>` declaring other workers this worker depends on, resolved
+against the registry.
+
+```yaml
+dependencies:
+  iii-http: "^0.19"
+  iii-state: "^0.19"
+```
+
+Rules:
+
+- Each name must satisfy the registry's worker-name validation.
+- Each range must be a valid semver version requirement (for example `^1.2`, `~0.5.0`, `>=2 <3`).
+- Duplicate keys are an error.
+- A worker cannot depend on itself.
+- Prerelease ranges are accepted syntactically, but the default registry resolver serves only stable
+  versions, so a prerelease range surfaces as `version_not_found` at resolve time.
+
+## `resources`
+
+Optional CPU and memory requests for the worker's sandbox. Requests above the cap are clamped to the
+cap. For bundle workers this emits a `W182 BundleResourceClamped` warning at install time.
+
+```yaml
+resources:
+  cpus: 2
+  memory: 2048
+```
+
+### `cpus`
+
+Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
+
+### `memory`
+
+Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
