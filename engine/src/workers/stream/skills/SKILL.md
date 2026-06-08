@@ -12,7 +12,7 @@ The `iii-stream` worker stores real-time data as a three-level hierarchy (`strea
 
 A write persists the new value, dispatches matching `stream` triggers on a spawned task (fire-and-forget, so the originating call returns before handlers finish), and broadcasts the change to every WebSocket client subscribed to that `(stream_name, group_id)`. The `stream:join` trigger doubles as an authorization gate: returning `{ unauthorized: true }` from its handler rejects the subscription before any data flows. Pair it with the worker's `auth_function` config, which runs once per WebSocket handshake and stamps a `context` value into every join/leave event.
 
-Adapters: `kv` (default; in-memory or file-backed; single-instance only, no cross-process fan-out) or `redis` (required for multi-instance fleets that need real-time fan-out). Clients connect at `ws://host:{port}/stream/{stream_name}/{group_id}` and optionally `/{item_id}`.
+Adapters: `kv` (default; in-memory or file-backed; single-instance only, no cross-process fan-out) or `redis` (required for multi-instance fleets that need real-time fan-out). Browser and client subscriptions use the Browser SDK (`iii-browser-sdk`), which subscribes to `stream` changes over a single engine WebSocket. Connecting directly to the stream port (`ws://host:{port}/stream/{stream_name}/{group_id}`) is deprecated in favor of the Browser SDK.
 
 ## When to Use
 

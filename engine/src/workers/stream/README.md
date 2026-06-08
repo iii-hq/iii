@@ -226,4 +226,8 @@ const roomMembers = await iii.trigger({
 })
 ```
 
-Clients connect via WebSocket to `ws://host:3112/stream/presence/room-1/` and receive real-time updates when items change.
+## Client Subscriptions
+
+Browser and client subscriptions use the Browser SDK (`iii-browser-sdk`), which subscribes to `stream` changes over a single engine WebSocket and re-renders on each change event. See the [Linkly frontend tutorial](https://iii.dev/docs/tutorials/linkly/frontend) for the end-to-end pattern.
+
+Connecting directly to the stream port (`ws://host:3112/stream/<stream_name>/<group_id>/`) is deprecated in favor of the Browser SDK.
