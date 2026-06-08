@@ -64,6 +64,10 @@ pub fn register_trigger(
 Drop the trigger with `trigger.unregister()` on the returned handle. There is no free-function
 `unregister_trigger`.
 
+The `Trigger`, `TriggerConfig`, `TriggerHandler`, and `IIITrigger` types are exported from the
+`iii_sdk::trigger` submodule (`use iii_sdk::trigger::IIITrigger`). They stay reachable at the crate
+root as deprecated re-exports.
+
 ### `register_trigger_type`
 
 Declare a new trigger type that this worker advertises.

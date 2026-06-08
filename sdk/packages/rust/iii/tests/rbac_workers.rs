@@ -231,16 +231,16 @@ fn ensure_functions_registered() {
         {
             struct NoopHandler;
             #[async_trait::async_trait]
-            impl iii_sdk::TriggerHandler for NoopHandler {
+            impl iii_sdk::trigger::TriggerHandler for NoopHandler {
                 async fn register_trigger(
                     &self,
-                    _config: iii_sdk::TriggerConfig,
+                    _config: iii_sdk::trigger::TriggerConfig,
                 ) -> Result<(), iii_sdk::Error> {
                     Ok(())
                 }
                 async fn unregister_trigger(
                     &self,
-                    _config: iii_sdk::TriggerConfig,
+                    _config: iii_sdk::trigger::TriggerConfig,
                 ) -> Result<(), iii_sdk::Error> {
                     Ok(())
                 }
@@ -475,16 +475,16 @@ async fn should_deny_trigger_type_registration_via_hook() {
     {
         struct DeniedHandler;
         #[async_trait::async_trait]
-        impl iii_sdk::TriggerHandler for DeniedHandler {
+        impl iii_sdk::trigger::TriggerHandler for DeniedHandler {
             async fn register_trigger(
                 &self,
-                _config: iii_sdk::TriggerConfig,
+                _config: iii_sdk::trigger::TriggerConfig,
             ) -> Result<(), iii_sdk::Error> {
                 Ok(())
             }
             async fn unregister_trigger(
                 &self,
-                _config: iii_sdk::TriggerConfig,
+                _config: iii_sdk::trigger::TriggerConfig,
             ) -> Result<(), iii_sdk::Error> {
                 Ok(())
             }
