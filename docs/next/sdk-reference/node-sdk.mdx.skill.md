@@ -126,6 +126,10 @@ Common `code` values come from the engine: `invocation_failed` (handler threw), 
 
 ## Channels
 
+Import channel symbols from the `iii-sdk/channel` subpath
+(`import { ChannelReader, ChannelWriter } from 'iii-sdk/channel'`). They stay exported from the
+package root as deprecated re-exports.
+
 `ChannelReader` and `ChannelWriter` are runtime classes wrapping the engine's stream WebSockets.
 `StreamChannelRef` is the type passed between SDK calls to identify a channel:
 
