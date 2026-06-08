@@ -996,7 +996,12 @@ impl Worker for TelemetryWorker {
     }
 }
 
-crate::register_worker!("iii-telemetry", TelemetryWorker, mandatory);
+crate::register_worker!(
+    "iii-telemetry",
+    TelemetryWorker,
+    description = "Anonymous usage telemetry and heartbeat reporting for the engine.",
+    mandatory
+);
 
 #[cfg(test)]
 mod tests {

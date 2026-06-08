@@ -1,7 +1,7 @@
 iii: v1
 name: configuration
 type: engine
-description: Configuration worker for the iii engine.
+description: Register, store, and watch typed configuration values for the engine.
 repo: https://github.com/iii-hq/iii
 config:
   adapter:

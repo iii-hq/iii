@@ -114,6 +114,9 @@ async fn main() -> Result<()> {
         iii_sdk::InitOptions {
             metadata: Some(iii_sdk::WorkerMetadata {
                 name: "iii-console".to_string(),
+                description: Some(
+                    "Web console UI and observability dashboard for the iii engine.".to_string(),
+                ),
                 ..iii_sdk::WorkerMetadata::default()
             }),
             otel: otel_config,

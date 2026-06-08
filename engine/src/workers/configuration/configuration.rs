@@ -452,7 +452,12 @@ impl ConfigurationWorker {
     }
 }
 
-crate::register_worker!("configuration", ConfigurationWorker, mandatory);
+crate::register_worker!(
+    "configuration",
+    ConfigurationWorker,
+    description = "Register, store, and watch typed configuration values for the engine.",
+    mandatory
+);
 
 #[cfg(test)]
 mod tests {

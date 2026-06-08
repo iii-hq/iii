@@ -29,8 +29,13 @@ The injection is idempotent, so an explicit entry simply takes precedence.
 | `worker::stop`   | `StopOptions`    | `StopOutcome`    | 30s                    |
 | `worker::list`   | `ListOptions`    | `ListOutcome`    | 10s                    |
 | `worker::clear`  | `ClearOptions`   | `ClearOutcome`   | 30s                    |
+| `worker::logs`   | `LogsOptions`    | `LogsOutcome`    | 10s                    |
 
-`worker::add` rejects local-path sources via the trigger surface (W102) — local paths remain CLI-only because a sandboxed worker has no meaningful filesystem mapping to the host. Use registry names or OCI references instead.
+`worker::logs` reads a worker's recent `stdout`/`stderr` lines from the engine host (the same directories `iii worker logs` checks), so a remote caller can diagnose a worker it installed or started over the trigger. `tail` bounds the lines returned per stream (default 100, capped at 1000), and only the trailing 1 MiB of each log file is scanned. Log contents are whatever the worker printed — treat them as sensitive when exposing the daemon to untrusted callers.
+
+`worker::add` accepts local-path sources over the trigger as well as the CLI. The `path` is resolved on the engine/daemon host (not the caller's machine), and the install runs the manifest's setup/install/start scripts there — so a remote caller can only use it for code already on the host. Treat this as host-level code execution when exposing the daemon to untrusted callers; prefer registry names or OCI references for distributed workers.
+
+The `idempotent` flag reported in each op's metadata (via `engine::functions::info` / `worker::schema`) describes the default request. `worker::add` and `worker::update` are idempotent only when `force`/`reset_config` are unset — with `force: true` they stop the worker, delete artifacts, and re-run the manifest's install scripts, so retrying a forced call repeats those side effects. Retry-on-timeout is safe for the default shape, not for forced replacement.
 
 ## Example: install a peer worker from a Rust worker
 
@@ -55,7 +60,7 @@ let resp = iii.trigger(TriggerRequest {
 
 - `{ "kind": "registry", "name": "pdfkit", "version": "1.0.0" }` — registry name with optional version
 - `{ "kind": "oci", "reference": "ghcr.io/iii-hq/node:latest" }` — full OCI reference
-- `{ "kind": "local", "path": "./my-worker" }` — local path (CLI only; rejected via trigger with W102)
+- `{ "kind": "local", "path": "./my-worker" }` — local path, resolved on the engine/daemon host (works over the trigger as well as the CLI)
 
 ## Error envelope
 
@@ -75,8 +80,9 @@ Trigger errors return a flat JSON envelope mirroring the `SandboxError` pattern,
 | W-code | Variant                          | Meaning                                                  |
 |--------|----------------------------------|----------------------------------------------------------|
 | W100   | `InvalidName`                    | Worker name failed validation                             |
-| W101   | `InvalidSource`                  | Source string is malformed                                |
-| W102   | `LocalPathNotAllowedViaTrigger`  | Local-path sources are CLI-only                           |
+| W101   | `InvalidSource`                  | Reserved (superseded by W105 for malformed payloads)      |
+| W102   | `LocalPathNotAllowedViaTrigger`  | Reserved (local-path sources now work over the trigger)   |
+| W105   | `BadRequest`                     | Payload failed validation; `details.hint` names the `worker::schema` recovery call |
 | W110   | `NotFound`                       | Worker is not registered                                  |
 | W111   | `AlreadyExists`                  | Worker already installed                                  |
 | W112   | `NotInstalled`                   | Worker not present on disk                                |

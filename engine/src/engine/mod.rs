@@ -1999,6 +1999,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-state".to_string(),
             name: "iii-state".to_string(),
+            description: None,
             worker_type: "iii-state".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["state::get".to_string()],

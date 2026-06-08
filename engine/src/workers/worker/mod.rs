@@ -257,7 +257,12 @@ async fn otel_ws_handler(
     })
 }
 
-crate::register_worker!("iii-worker-manager", WorkerManager, mandatory);
+crate::register_worker!(
+    "iii-worker-manager",
+    WorkerManager,
+    description = "WebSocket listener that SDK workers connect to. Supports RBAC, middleware, registration hooks, and channels.",
+    mandatory
+);
 
 #[cfg(test)]
 mod tests {

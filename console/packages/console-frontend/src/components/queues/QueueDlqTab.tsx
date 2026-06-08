@@ -17,15 +17,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip } from '@/components/ui/tooltip'
-
-function extractErrorMessage(error: string): string {
-  // Extract human-readable message from Rust ErrorBody format:
-  // 'ErrorBody { code: "invocation_failed", message: "Simulated failure", stacktrace: ... }'
-  const msgMatch = error.match(/message:\s*"([^"]*)"/)
-  if (msgMatch) return msgMatch[1]
-  // Fallback: if it's a plain string, return as-is (truncated)
-  return error.length > 100 ? `${error.slice(0, 100)}...` : error
-}
+import { extractErrorMessage } from './dlq-error'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
