@@ -219,6 +219,7 @@
                 "pages": [
                   "creating-workers/index",
                   "creating-workers/workers",
+                  "creating-workers/worker-manifest",
                   "creating-workers/triggers",
                   "creating-workers/functions",
                   "creating-workers/channels"
