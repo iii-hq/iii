@@ -62,6 +62,10 @@ worker.registerTrigger(trigger: RegisterTriggerInput): Trigger;
 The returned `Trigger` carries the runtime handle. Drop the trigger with `Trigger.unregister()`;
 there is no top-level `unregisterTrigger` function.
 
+The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii-sdk/trigger`
+subpath (`import type { TriggerHandler } from 'iii-sdk/trigger'`). They stay re-exported from the
+package root as deprecated aliases.
+
 ### `registerTriggerType`
 
 Declare a new trigger type that this worker advertises so other workers can bind their functions to
@@ -131,6 +135,10 @@ Common `code` values come from the engine: `invocation_failed` (handler threw), 
 `FORBIDDEN` (RBAC denial).
 
 ## Channels
+
+Import channel symbols from the `iii-sdk/channel` subpath
+(`import { ChannelReader, ChannelWriter } from 'iii-sdk/channel'`). They stay exported from the
+package root as deprecated re-exports.
 
 `ChannelReader` and `ChannelWriter` are runtime classes wrapping the engine's stream WebSockets.
 `StreamChannelRef` is the type passed between SDK calls to identify a channel:
