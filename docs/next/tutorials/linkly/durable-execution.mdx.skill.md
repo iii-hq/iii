@@ -41,7 +41,8 @@ You already wrote `link::record_click` in Chapter 3, where `http::redirect` trig
 Nothing about the function changes. You only change how it's invoked. First import `TriggerAction`:
 
 ```typescript src/index.ts
-import { registerWorker, Logger, TriggerAction } from "iii-sdk";
+import { registerWorker, TriggerAction } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
 ```
 
 Then add an `action` to the existing `link::record_click` call in `http::redirect` so the
@@ -207,7 +208,8 @@ of every time that a new short link is created:
 import os
 from datetime import datetime, timezone
 
-from iii import register_worker, InitOptions, Logger
+from iii import register_worker, InitOptions
+from iii_observability import Logger
 
 worker = register_worker(
     os.environ.get("III_URL", "ws://localhost:49134"),

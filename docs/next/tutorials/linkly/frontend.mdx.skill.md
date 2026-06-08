@@ -59,7 +59,8 @@ The `auth` worker owns connection gating, so the `link` worker stays focused on 
 arbitrary context). Throw to reject. Replace the generated `auth/src/index.ts`:
 
 ```typescript auth/src/index.ts
-import { registerWorker, Logger } from "iii-sdk";
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "auth",
