@@ -492,8 +492,9 @@ func TestCloseCancelsPending(t *testing.T) {
 
 // stubTriggerHandler records register/unregister calls for assertions.
 type stubTriggerHandler struct {
-	registered chan TriggerConfig
-	failWith   error
+	registered   chan TriggerConfig
+	unregistered chan TriggerConfig
+	failWith     error
 }
 
 func (s *stubTriggerHandler) RegisterTrigger(ctx context.Context, cfg TriggerConfig) error {
@@ -503,6 +504,9 @@ func (s *stubTriggerHandler) RegisterTrigger(ctx context.Context, cfg TriggerCon
 	return s.failWith
 }
 func (s *stubTriggerHandler) UnregisterTrigger(ctx context.Context, cfg TriggerConfig) error {
+	if s.unregistered != nil {
+		s.unregistered <- cfg
+	}
 	return nil
 }
 
@@ -551,6 +555,38 @@ func TestInboundRegisterTrigger(t *testing.T) {
 	}
 	if _, hasErr := res["error"]; hasErr {
 		t.Error("successful registration must omit error")
+	}
+}
+
+// TestInboundUnregisterTrigger routes an engine UnregisterTrigger to the trigger-type
+// handler's UnregisterTrigger hook, so per-instance work can be torn down (the engine
+// sends this when an instance is removed). Mirrors the Rust/Node SDKs. Regression test
+// for the teardown leak (iii-hq/iii#1765).
+func TestInboundUnregisterTrigger(t *testing.T) {
+	m := newMockEngine(t)
+	handler := &stubTriggerHandler{unregistered: make(chan TriggerConfig, 1)}
+
+	tt := "cron"
+	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+		if messageType(msg) == string(MsgRegisterTriggerType) && messageID(msg) == "cron" {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = m.send(ctx, conn, &UnregisterTriggerMessage{ID: "inst-1", TriggerType: &tt})
+		}
+	}
+
+	c := connectClient(t, m)
+	if err := c.RegisterTriggerType("cron", "periodic", handler); err != nil {
+		t.Fatalf("RegisterTriggerType: %v", err)
+	}
+
+	select {
+	case cfg := <-handler.unregistered:
+		if cfg.ID != "inst-1" {
+			t.Errorf("UnregisterTrigger got id %q, want inst-1", cfg.ID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("UnregisterTrigger hook was not called (teardown leak)")
 	}
 }
 

@@ -2,6 +2,22 @@
 
 Schedule functions to execute at specific times using cron expressions.
 
+## Install
+
+```bash
+iii worker add iii-cron
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-cron` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii-cron
+```
+
 ## Sample Configuration
 
 ```yaml

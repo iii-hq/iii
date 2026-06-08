@@ -4,6 +4,22 @@ Distributed key-value state storage with scope-based organization and reactive t
 
 State is server-side key-value storage with trigger-based reactivity. Unlike streams, state does not push updates to WebSocket clients — it fires triggers that workers handle server-side.
 
+## Install
+
+```bash
+iii worker add iii-state
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-state` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii-state
+```
+
 ## Sample Configuration
 
 ```yaml

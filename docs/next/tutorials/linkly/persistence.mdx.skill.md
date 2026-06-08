@@ -50,8 +50,9 @@ The worker owns its schema. Build up the changes to `link/src/index.ts` in piece
 
 First add the `DB` constant near the top of the file:
 
-```typescript {3} src/index.ts
-import { registerWorker, Logger } from "iii-sdk";
+```typescript {4} src/index.ts
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
 
 const DB = "primary";
 ```

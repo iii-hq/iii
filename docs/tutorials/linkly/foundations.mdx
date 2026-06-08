@@ -131,7 +131,8 @@ pasting one large file at once.
 `index.ts` with the connection setup and a small helper that generates random short codes:
 
 ```typescript src/index.ts
-import { registerWorker, Logger } from "iii-sdk";
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "link",

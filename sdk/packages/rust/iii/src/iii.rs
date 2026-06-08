@@ -33,7 +33,7 @@ const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
-    error::IIIError,
+    error::Error,
     protocol::{
         ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterTriggerInput,
         RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
@@ -168,7 +168,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         &self,
         function_id: impl Into<String>,
         config: C,
-    ) -> Result<Trigger, IIIError> {
+    ) -> Result<Trigger, Error> {
         self.register_trigger_with_metadata(function_id, config, None)
     }
 
@@ -178,11 +178,11 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         function_id: impl Into<String>,
         config: C,
         metadata: Option<Value>,
-    ) -> Result<Trigger, IIIError> {
+    ) -> Result<Trigger, Error> {
         self.iii.register_trigger(RegisterTriggerInput {
             trigger_type: self.trigger_type_id.clone(),
             function_id: function_id.into(),
-            config: serde_json::to_value(config).map_err(|e| IIIError::Handler(e.to_string()))?,
+            config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
             metadata,
         })
     }
@@ -197,7 +197,7 @@ where
     pub fn register_function<O, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
-        F: Fn(R) -> Result<O, IIIError> + Send + Sync + 'static,
+        F: Fn(R) -> Result<O, Error> + Send + Sync + 'static,
     {
         self.iii.register_function(id, RegisterFunction::new(f))
     }
@@ -208,7 +208,7 @@ where
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
         F: Fn(R) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<O, IIIError>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<O, Error>> + Send + 'static,
     {
         self.iii
             .register_function(id, RegisterFunction::new_async(f))
@@ -341,7 +341,7 @@ enum Outbound {
     Shutdown,
 }
 
-type PendingInvocation = oneshot::Sender<Result<Value, IIIError>>;
+type PendingInvocation = oneshot::Sender<Result<Value, Error>>;
 
 // WebSocket transmitter type alias
 type WsTx = futures_util::stream::SplitSink<
@@ -401,24 +401,24 @@ pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
 
 // 1-arg sync — deserializes the entire JSON input as T.
 //
-// Error type is fixed to [`IIIError`] (instead of generic `E: Display`) so
+// Error type is fixed to [`Error`] (instead of generic `E: Display`) so
 // closures using bare `Ok(...)` infer cleanly without explicit error
 // annotations — required for ergonomic registration of `Fn(Value) -> ...`
-// handlers. Other error types convert via `From<E> for IIIError` (impls
+// handlers. Other error types convert via `From<E> for Error` (impls
 // for `String` / `&str` / `serde_json::Error` ship with the SDK).
 impl<F, T, R> IntoSyncHandler<(T, R)> for F
 where
-    F: Fn(T) -> Result<R, IIIError> + Send + Sync + 'static,
+    F: Fn(T) -> Result<R, Error> + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
         Arc::new(move |input: Value| {
             let output = serde_json::from_value::<T>(input)
-                .map_err(|e| IIIError::Serde(e.to_string()))
+                .map_err(|e| Error::Serde(e.to_string()))
                 .and_then(&self)
                 .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| IIIError::Serde(e.to_string()))
+                    serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
                 });
             Box::pin(async move { output })
         })
@@ -452,32 +452,31 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
 
 // 1-arg async — deserializes the entire JSON input as T.
 //
-// Error type is fixed to [`IIIError`] (see [`IntoSyncHandler`] for the
-// rationale). Use `From<E> for IIIError` to lift custom error types,
+// Error type is fixed to [`Error`] (see [`IntoSyncHandler`] for the
+// rationale). Use `From<E> for Error` to lift custom error types,
 // or `?` propagation in the closure body.
 impl<F, T, Fut, R> IntoAsyncHandler<(T, Fut, R)> for F
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-    Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
         Arc::new(
             move |input: Value| -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+                Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
             > {
                 match serde_json::from_value::<T>(input) {
                     Ok(arg) => {
                         let fut = (self)(arg);
                         Box::pin(async move {
                             fut.await.and_then(|val| {
-                                serde_json::to_value(&val)
-                                    .map_err(|e| IIIError::Serde(e.to_string()))
+                                serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
                             })
                         })
                     }
-                    Err(e) => Box::pin(async move { Err(IIIError::Serde(e.to_string())) }),
+                    Err(e) => Box::pin(async move { Err(Error::Serde(e.to_string())) }),
                 }
             },
         )
@@ -515,7 +514,7 @@ fn empty_message() -> RegisterFunctionMessage {
 ///
 /// Constructors:
 /// - [`RegisterFunction::new`] — sync function. Accepts both typed handlers
-///   (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, IIIError>`
+///   (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, Error>`
 ///   closures (permissive `AnyValue` schema, since `Value: JsonSchema`).
 /// - [`RegisterFunction::new_async`] — async equivalent of `new`.
 /// - [`RegisterFunction::http`] — function invoked over HTTP (Lambda,
@@ -820,7 +819,7 @@ impl III {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// use iii_sdk::{register_worker, InitOptions, IIIError, RegisterFunction};
+    /// use iii_sdk::{register_worker, InitOptions, Error, RegisterFunction};
     /// use serde::{Deserialize, Serialize};
     /// use schemars::JsonSchema;
     ///
@@ -829,7 +828,7 @@ impl III {
     /// #[derive(Serialize, JsonSchema)]
     /// struct Output { message: String }
     ///
-    /// async fn greet(input: Input) -> Result<Output, IIIError> {
+    /// async fn greet(input: Input) -> Result<Output, Error> {
     ///     Ok(Output { message: format!("Hello, {}!", input.name) })
     /// }
     ///
@@ -886,8 +885,8 @@ impl III {
     /// # struct MyHandler;
     /// # #[async_trait::async_trait]
     /// # impl iii_sdk::TriggerHandler for MyHandler {
-    /// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
-    /// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+    /// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
+    /// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
     /// # }
     /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
     /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
@@ -899,7 +898,7 @@ impl III {
     /// );
     ///
     /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
+    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::Error> {
     ///     Ok(serde_json::json!({ "data": req.data }))
     /// });
     /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
@@ -963,9 +962,9 @@ impl III {
     /// })?;
     /// // Later...
     /// trigger.unregister();
-    /// # Ok::<(), iii_sdk::IIIError>(())
+    /// # Ok::<(), iii_sdk::Error>(())
     /// ```
-    pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, IIIError> {
+    pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, Error> {
         let id = Uuid::new_v4().to_string();
         let message = RegisterTriggerMessage {
             id: id.clone(),
@@ -1007,7 +1006,7 @@ impl III {
     /// ```rust
     /// # use iii_sdk::{III, TriggerRequest, TriggerAction};
     /// # use serde_json::json;
-    /// # async fn example(iii: &III) -> Result<(), iii_sdk::IIIError> {
+    /// # async fn example(iii: &III) -> Result<(), iii_sdk::Error> {
     /// // Synchronous
     /// let result = iii.trigger(TriggerRequest {
     ///     function_id: "greet".to_string(),
@@ -1038,7 +1037,7 @@ impl III {
     pub async fn trigger(
         &self,
         request: impl Into<crate::protocol::TriggerRequest>,
-    ) -> Result<Value, IIIError> {
+    ) -> Result<Value, Error> {
         let req = request.into();
         let (tp, bg) = inject_trace_headers();
 
@@ -1076,10 +1075,10 @@ impl III {
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(IIIError::NotConnected),
+            Ok(Err(_)) => Err(Error::NotConnected),
             Err(_) => {
                 self.inner.pending.lock_or_recover().remove(&invocation_id);
-                Err(IIIError::Timeout)
+                Err(Error::Timeout)
             }
         }
     }
@@ -1122,7 +1121,7 @@ impl III {
         }
     }
 
-    fn send_message(&self, message: Message) -> Result<(), IIIError> {
+    fn send_message(&self, message: Message) -> Result<(), Error> {
         if !self.inner.running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -1130,7 +1129,7 @@ impl III {
         self.inner
             .outbound
             .send(Outbound::Message(message))
-            .map_err(|_| IIIError::NotConnected)
+            .map_err(|_| Error::NotConnected)
     }
 
     async fn run_connection(&self, mut rx: mpsc::UnboundedReceiver<Outbound>) {
@@ -1354,11 +1353,7 @@ impl III {
         *queue = deduped_rev;
     }
 
-    async fn flush_queue(
-        &self,
-        ws_tx: &mut WsTx,
-        queue: &mut Vec<Message>,
-    ) -> Result<(), IIIError> {
+    async fn flush_queue(&self, ws_tx: &mut WsTx, queue: &mut Vec<Message>) -> Result<(), Error> {
         let mut drained = Vec::new();
         std::mem::swap(queue, &mut drained);
 
@@ -1374,13 +1369,13 @@ impl III {
         Ok(())
     }
 
-    async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), IIIError> {
+    async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), Error> {
         let payload = serde_json::to_string(message)?;
         ws_tx.send(WsMessage::Text(payload.into())).await?;
         Ok(())
     }
 
-    fn handle_frame(&self, frame: WsMessage) -> Result<(), IIIError> {
+    fn handle_frame(&self, frame: WsMessage) -> Result<(), Error> {
         match frame {
             WsMessage::Text(text) => self.handle_message(&text),
             WsMessage::Binary(bytes) => {
@@ -1391,7 +1386,7 @@ impl III {
         }
     }
 
-    fn handle_message(&self, payload: &str) -> Result<(), IIIError> {
+    fn handle_message(&self, payload: &str) -> Result<(), Error> {
         let message: Message = serde_json::from_str(payload)?;
 
         match message {
@@ -1461,7 +1456,7 @@ impl III {
         let sender = self.inner.pending.lock_or_recover().remove(&invocation_id);
         if let Some(sender) = sender {
             let result = match error {
-                Some(error) => Err(IIIError::Remote {
+                Some(error) => Err(Error::Remote {
                     code: error.code,
                     message: error.message,
                     stacktrace: error.stacktrace,
@@ -1620,7 +1615,7 @@ impl III {
                     Ok(_) => span.set_status(Status::Ok),
                     Err(err) => {
                         let (exc_type, exc_message, stacktrace) = match err {
-                            IIIError::Remote {
+                            Error::Remote {
                                 code,
                                 message,
                                 stacktrace,
@@ -1671,7 +1666,7 @@ impl III {
                     },
                     Err(err) => {
                         let error_body = match err {
-                            IIIError::Remote {
+                            Error::Remote {
                                 code,
                                 message,
                                 stacktrace,
@@ -1805,7 +1800,7 @@ impl III {
 pub(crate) async fn internal_create_channel(
     iii: &III,
     buffer_size: Option<usize>,
-) -> Result<Channel, IIIError> {
+) -> Result<Channel, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::channels::create".to_string(),
@@ -1819,17 +1814,17 @@ pub(crate) async fn internal_create_channel(
         result
             .get("writer")
             .cloned()
-            .ok_or_else(|| IIIError::Serde("missing 'writer' in channel response".into()))?,
+            .ok_or_else(|| Error::Serde("missing 'writer' in channel response".into()))?,
     )
-    .map_err(|e| IIIError::Serde(e.to_string()))?;
+    .map_err(|e| Error::Serde(e.to_string()))?;
 
     let reader_ref: StreamChannelRef = serde_json::from_value(
         result
             .get("reader")
             .cloned()
-            .ok_or_else(|| IIIError::Serde("missing 'reader' in channel response".into()))?,
+            .ok_or_else(|| Error::Serde("missing 'reader' in channel response".into()))?,
     )
-    .map_err(|e| IIIError::Serde(e.to_string()))?;
+    .map_err(|e| Error::Serde(e.to_string()))?;
 
     Ok(Channel {
         writer: ChannelWriter::new(&iii.inner.address, &writer_ref),
@@ -1960,7 +1955,7 @@ mod tests {
         struct Out {
             message: String,
         }
-        async fn greet(input: In) -> Result<Out, IIIError> {
+        async fn greet(input: In) -> Result<Out, Error> {
             Ok(Out {
                 message: format!("Hello, {}!", input.name),
             })
@@ -1982,7 +1977,7 @@ mod tests {
         struct In {
             name: String,
         }
-        async fn handler(input: In) -> Result<String, IIIError> {
+        async fn handler(input: In) -> Result<String, Error> {
             Ok(input.name)
         }
 
@@ -2019,7 +2014,7 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(IIIError::Timeout)));
+        assert!(matches!(result, Err(Error::Timeout)));
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 

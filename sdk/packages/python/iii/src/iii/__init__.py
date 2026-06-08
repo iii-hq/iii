@@ -1,7 +1,9 @@
 """III SDK for Python."""
 
+from typing import Any
+
 from .channels import ChannelReader, ChannelWriter
-from .errors import IIIInvocationError
+from .errors import InvocationError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
 from .iii_constants import FunctionRef, InitOptions, TelemetryOptions
@@ -57,7 +59,7 @@ __all__ = [
     "ChannelReader",
     "ChannelWriter",
     # Errors
-    "IIIInvocationError",
+    "InvocationError",
     # Core
     "FunctionRef",
     "InitOptions",
@@ -118,3 +120,16 @@ __all__ = [
     "extract_response_format",
     "python_type_to_format",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "IIIInvocationError":
+        import warnings
+
+        warnings.warn(
+            "IIIInvocationError is deprecated; import InvocationError from iii.errors",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return InvocationError
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

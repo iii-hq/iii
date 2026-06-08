@@ -45,6 +45,10 @@ worker.registerFunction(
 `options` accepts `description`, `metadata`, and optional `request_format` / `response_format`
 JSON Schemas (stored alongside the function for the iii console and agent-readable skills).
 
+The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii-sdk/runtime`
+subpath (`import type { FunctionRef } from 'iii-sdk/runtime'`). They stay re-exported from the
+package root as deprecated aliases.
+
 ### `registerTrigger`
 
 Bind a registered function to a configured trigger instance.
@@ -55,6 +59,10 @@ worker.registerTrigger(trigger: RegisterTriggerInput): Trigger;
 
 The returned `Trigger` carries the runtime handle. Drop the trigger with `Trigger.unregister()`;
 there is no top-level `unregisterTrigger` function.
+
+The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii-sdk/trigger`
+subpath (`import type { TriggerHandler } from 'iii-sdk/trigger'`). They stay re-exported from the
+package root as deprecated aliases.
 
 ### `registerTriggerType`
 
@@ -130,6 +138,10 @@ Common `code` values come from the engine: `invocation_failed` (handler threw), 
 `FORBIDDEN` (RBAC denial).
 
 ## Channels
+
+Import channel symbols from the `iii-sdk/channel` subpath
+(`import { ChannelReader, ChannelWriter } from 'iii-sdk/channel'`). They stay exported from the
+package root as deprecated re-exports.
 
 `ChannelReader` and `ChannelWriter` are runtime classes wrapping the engine's stream WebSockets.
 `StreamChannelRef` is the type passed between SDK calls to identify a channel:
