@@ -44,8 +44,8 @@ fn init_subcommand_is_reachable() {
 /// Shared assertions for a successful language-specific scaffold.
 fn assert_lang_scaffold(
     lang_short: &str,
-    expected_manifest: &str,
-    expected_entry: &str,
+    expected_base_image: &str,
+    expected_start: &str,
     expected_files: &[&str],
 ) {
     let parent = tempdir().unwrap();
@@ -95,19 +95,25 @@ fn assert_lang_scaffold(
         "worker.ini missing language={lang_short}, got: {ini}"
     );
 
-    // iii.worker.yaml: placeholders substituted.
+    // The per-language source manifest must have been renamed away.
+    assert!(
+        !root.join(format!("iii.worker.{lang_short}.yaml")).exists(),
+        "per-language manifest iii.worker.{lang_short}.yaml should be renamed to iii.worker.yaml"
+    );
+
+    // iii.worker.yaml: name substituted, base_image + start match the language.
     let yaml = std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap();
     assert!(
         yaml.contains("name: mywkr"),
         "yaml name not templated: {yaml}"
     );
     assert!(
-        yaml.contains(&format!("language: {expected_manifest}")),
-        "yaml language wrong: {yaml}"
+        yaml.contains(expected_base_image),
+        "yaml base_image wrong: {yaml}"
     );
     assert!(
-        yaml.contains(&format!("entry: {expected_entry}")),
-        "yaml entry wrong: {yaml}"
+        yaml.contains(expected_start),
+        "yaml start script wrong: {yaml}"
     );
     assert!(
         !yaml.contains("{{"),
@@ -130,8 +136,8 @@ fn assert_lang_scaffold(
 fn init_typescript_creates_node_scaffold_with_sdk() {
     assert_lang_scaffold(
         "ts",
-        "typescript",
-        "./src/index.ts",
+        "docker.io/iiidev/node:latest",
+        "npm run start",
         &["package.json", "tsconfig.json", "src/index.ts"],
     );
     let parent = tempdir().unwrap();
@@ -160,15 +166,20 @@ fn init_typescript_creates_node_scaffold_with_sdk() {
 fn init_javascript_creates_node_scaffold() {
     assert_lang_scaffold(
         "js",
-        "javascript",
-        "./src/index.js",
+        "docker.io/iiidev/node:latest",
+        "node --watch src/index.js",
         &["package.json", "src/index.js"],
     );
 }
 
 #[test]
 fn init_python_creates_pyproject_with_sdk() {
-    assert_lang_scaffold("py", "python", "./main.py", &["pyproject.toml", "main.py"]);
+    assert_lang_scaffold(
+        "py",
+        "docker.io/iiidev/python:latest",
+        "watchfiles 'python src/main.py'",
+        &["pyproject.toml", "src/main.py"],
+    );
     let parent = tempdir().unwrap();
     let out = worker_bin()
         .args([
@@ -196,8 +207,8 @@ fn init_python_creates_pyproject_with_sdk() {
 fn init_rust_creates_cargo_with_sdk() {
     assert_lang_scaffold(
         "rust",
-        "rust",
-        "./src/main.rs",
+        "docker.io/library/rust:slim-bookworm",
+        "cargo watch -x run",
         &["Cargo.toml", "src/main.rs"],
     );
     let parent = tempdir().unwrap();

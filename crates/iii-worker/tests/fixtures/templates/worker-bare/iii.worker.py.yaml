@@ -1,0 +1,6 @@
+name: {{worker_name}}
+runtime:
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  install: pip install -e .
+  start: watchfiles 'python src/main.py'

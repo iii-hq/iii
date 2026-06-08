@@ -13,14 +13,20 @@ optional:
 
 # Enumerates every language-specific file the template ships. Each entry
 # is gated by the root manifest's `language_files` patterns so only files
-# matching the selected language land in the scaffolded dir.
+# matching the selected language land in the scaffolded dir. Each language
+# ships its own iii.worker.<lang>.yaml; `iii worker init` renames the
+# survivor to iii.worker.yaml.
 files:
+  - iii.worker.ts.yaml
+  - iii.worker.js.yaml
+  - iii.worker.py.yaml
+  - iii.worker.rust.yaml
   - package.json
   - tsconfig.json
   - src/index.ts
   - src/index.js
   - pyproject.toml
-  - main.py
+  - src/main.py
   - Cargo.toml
   - src/main.rs
 

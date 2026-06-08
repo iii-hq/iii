@@ -17,9 +17,9 @@
 //!   3. Hand off to `scaffolder_core::run` -- that drives the cliclack TUI
 //!      when interactive, or a non-interactive single-language scaffold
 //!      when languages are pre-set.
-//!   4. Post-process: substitute `{{worker_name}}` / `{{worker_language}}` /
-//!      `{{worker_entry}}` into `iii.worker.yaml`, persist `.iii/worker.ini`,
-//!      print worker-specific success message.
+//!   4. Post-process: rename the scaffolded `iii.worker.<lang>.yaml` to
+//!      `iii.worker.yaml`, substitute `{{worker_name}}`, persist
+//!      `.iii/worker.ini`, print worker-specific success message.
 
 use clap::Args;
 use colored::Colorize;
@@ -59,27 +59,14 @@ impl WorkerLanguage {
         }
     }
 
-    /// Default entry file for the language. Substituted into the scaffolded
-    /// `iii.worker.yaml` via the `{{worker_entry}}` placeholder.
+    /// Default entry file for the language. Shown in the post-init success
+    /// message ("edit <entry>").
     pub fn default_entry(&self) -> &'static str {
         match self {
             WorkerLanguage::Ts => "./src/index.ts",
             WorkerLanguage::Js => "./src/index.js",
-            WorkerLanguage::Py => "./main.py",
+            WorkerLanguage::Py => "./src/main.py",
             WorkerLanguage::Rust => "./src/main.rs",
-        }
-    }
-
-    /// Default package manager for the language. Substituted into the
-    /// scaffolded `iii.worker.yaml` via the `{{worker_package_manager}}`
-    /// placeholder. The engine only consumes this for ts/js (npm vs
-    /// yarn/pnpm/bun); for py/rust it's informational so the manifest
-    /// stays self-describing.
-    pub fn package_manager(&self) -> &'static str {
-        match self {
-            WorkerLanguage::Ts | WorkerLanguage::Js => "npm",
-            WorkerLanguage::Py => "pip",
-            WorkerLanguage::Rust => "cargo",
         }
     }
 }
@@ -290,22 +277,21 @@ pub async fn run(args: InitArgs) -> i32 {
     }
 
     // For `--language` runs we already know the language. For interactive
-    // runs, recover it by parsing the `language:` line of the scaffolded
-    // `iii.worker.yaml` (scaffolder substituted it via the shared file's
-    // `{{worker_language}}` placeholder).
+    // runs, recover it by sniffing the language-specific files the
+    // scaffolder dropped (Cargo.toml, pyproject.toml, tsconfig.json, ...).
     let final_lang = resolved_lang.or_else(|| detect_language_from_yaml(&root));
     let final_lang = match final_lang {
         Some(l) => l,
         None => {
             return print_err(
                 "could not determine the scaffolded language",
-                "iii.worker.yaml did not include a recognized language field",
+                "no recognized language-specific files were scaffolded",
                 "re-run with --language <ts|js|py|rust>",
             );
         }
     };
 
-    if let Err(e) = substitute_yaml_placeholders(&root, &worker_name, final_lang) {
+    if let Err(e) = finalize_worker_manifest(&root, &worker_name, final_lang) {
         return print_err(
             "could not write iii.worker.yaml",
             &e.to_string(),
@@ -408,61 +394,67 @@ fn restore_snapshots(
     Ok(())
 }
 
-/// Substitute `{{worker_name}}`, `{{worker_language}}`,
-/// `{{worker_package_manager}}`, `{{worker_entry}}` into
-/// `iii.worker.yaml`. No-op if the file is absent (test fixture
-/// short-circuit) or the placeholders are gone (idempotent re-run).
-fn substitute_yaml_placeholders(
+/// Finalize the scaffolded manifest: rename the language-specific
+/// `iii.worker.<lang>.yaml` to `iii.worker.yaml`, then substitute the
+/// `{{worker_name}}` placeholder.
+///
+/// Each language ships its own complete manifest (scripts + base_image);
+/// the scaffolder's language filter copies exactly one of them. Renaming
+/// it here is what turns the per-language source file into the canonical
+/// `iii.worker.yaml` the engine reads.
+///
+/// Idempotent re-init: if a user-owned `iii.worker.yaml` was restored
+/// after scaffolding, it wins — the freshly-scaffolded per-language file
+/// is discarded rather than clobbering the edited manifest.
+fn finalize_worker_manifest(
     root: &Path,
     worker_name: &str,
     lang: WorkerLanguage,
 ) -> std::io::Result<()> {
-    let path = root.join("iii.worker.yaml");
-    if !path.exists() {
+    let final_path = root.join("iii.worker.yaml");
+    let lang_path = root.join(format!("iii.worker.{}.yaml", lang.short()));
+
+    if lang_path.exists() {
+        if final_path.exists() {
+            // A restored user manifest takes precedence; drop the stray
+            // per-language source so it doesn't linger in the worker dir.
+            std::fs::remove_file(&lang_path)?;
+        } else {
+            std::fs::rename(&lang_path, &final_path)?;
+        }
+    }
+
+    // Substitute the worker name. No-op when the file is absent (test
+    // short-circuit) or the placeholder is gone (idempotent re-run).
+    if !final_path.exists() {
         return Ok(());
     }
-    let contents = std::fs::read_to_string(&path)?;
-    if !contents.contains("{{") {
+    let contents = std::fs::read_to_string(&final_path)?;
+    if !contents.contains("{{worker_name}}") {
         return Ok(());
     }
-    let replaced = contents
-        .replace("{{worker_name}}", worker_name)
-        .replace("{{worker_language}}", lang.manifest_key())
-        .replace("{{worker_package_manager}}", lang.package_manager())
-        .replace("{{worker_entry}}", lang.default_entry());
-    std::fs::write(&path, replaced)
+    std::fs::write(&final_path, contents.replace("{{worker_name}}", worker_name))
 }
 
 /// Detect the language the scaffolder picked. Two strategies:
 ///
-/// 1. Read `iii.worker.yaml`'s `language:` line. Works only when scaffolder
-///    already substituted `{{worker_language}}` (it doesn't on the
-///    interactive path; the engine substitutes post-scaffold).
+/// 1. Look for the per-language manifest the scaffolder dropped
+///    (`iii.worker.<lang>.yaml`). The language filter copies exactly one,
+///    so its suffix names the language directly.
 /// 2. Sniff language-specific files the scaffolder dropped: `Cargo.toml`
 ///    -> Rust, `pyproject.toml` -> Python, `tsconfig.json` -> TypeScript,
-///    `package.json` (without `tsconfig.json`) -> JavaScript. This is the
-///    primary signal on the interactive path because the language picker's
-///    selection ends up as file presence, not as a yaml field.
+///    `package.json` (without `tsconfig.json`) -> JavaScript. Fallback for
+///    when the manifest has already been renamed (idempotent re-run).
 fn detect_language_from_yaml(root: &Path) -> Option<WorkerLanguage> {
-    // Strategy 1: explicit `language:` field with a known value.
-    let yaml = root.join("iii.worker.yaml");
-    if let Ok(contents) = std::fs::read_to_string(&yaml) {
-        for line in contents.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix("language:") {
-                let value = rest.trim().trim_matches('"').trim_matches('\'');
-                let parsed = match value {
-                    "typescript" | "ts" => Some(WorkerLanguage::Ts),
-                    "javascript" | "js" => Some(WorkerLanguage::Js),
-                    "python" | "py" => Some(WorkerLanguage::Py),
-                    "rust" | "rs" => Some(WorkerLanguage::Rust),
-                    _ => None, // includes the un-substituted "{{worker_language}}"
-                };
-                if parsed.is_some() {
-                    return parsed;
-                }
-                break;
-            }
+    // Strategy 1: the surviving per-language manifest names the language.
+    for (lang, short) in [
+        (WorkerLanguage::Ts, "ts"),
+        (WorkerLanguage::Js, "js"),
+        (WorkerLanguage::Py, "py"),
+        (WorkerLanguage::Rust, "rust"),
+    ] {
+        if root.join(format!("iii.worker.{short}.yaml")).exists() {
+            return Some(lang);
         }
     }
 

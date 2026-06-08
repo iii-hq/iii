@@ -1,0 +1,6 @@
+name: {{worker_name}}
+runtime:
+  base_image: docker.io/iiidev/node:latest
+scripts:
+  install: npm install
+  start: npm run start

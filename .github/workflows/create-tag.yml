@@ -262,6 +262,21 @@ jobs:
           git push origin "$TAG"
           echo "Created tag: $TAG"
 
+      # Tell the templates repo to bump its iii-sdk / iii-observability pins to
+      # match this release. Stable releases only — prereleases aren't what the
+      # templates should pin to. Requires TEMPLATES_DISPATCH_TOKEN: a token with
+      # `repository_dispatch`/contents write on iii-hq/templates.
+      - name: Dispatch templates version bump
+        if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.TEMPLATES_DISPATCH_TOKEN }}
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          jq -nc --arg v "$VERSION" \
+            '{event_type: "iii-release", client_payload: {version: $v}}' \
+            | gh api repos/iii-hq/templates/dispatches --input -
+
       - name: Notify Slack
         continue-on-error: true
         uses: slackapi/slack-github-action@v2.0.0

@@ -4,13 +4,10 @@ templates:
 shared_files:
   - source: default-gitignore
     dest: .gitignore
-  - source: default-iii-worker.yaml
-    dest: iii.worker.yaml
 
 language_files:
   common:
     - '.gitignore'
-    - 'iii.worker.yaml'
     - 'README.md'
     - 'README*'
     - 'LICENSE'
@@ -18,13 +15,17 @@ language_files:
   typescript:
     - '*.ts'
     - 'tsconfig.json'
+    - 'iii.worker.ts.yaml'
   javascript:
     - '*.js'
+    - 'iii.worker.js.yaml'
   node:
     - 'package.json'
   python:
     - '*.py'
     - 'pyproject.toml'
+    - 'iii.worker.py.yaml'
   rust:
     - '*.rs'
     - 'Cargo.toml'
+    - 'iii.worker.rust.yaml'
