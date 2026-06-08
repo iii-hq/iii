@@ -136,8 +136,8 @@ TriggerAction.Enqueue(queue="math")   # route through iii-queue; returns Trigger
 
 ## Error types
 
-Every invocation failure raises `IIIInvocationError`. Inspect its `code` attribute to
-distinguish categories:
+Every invocation failure raises `InvocationError`, imported from the `iii.errors` submodule
+(`from iii.errors import InvocationError`). Inspect its `code` attribute to distinguish categories:
 
 | `code`        | When raised                       |
 | ------------- | --------------------------------- |
@@ -145,7 +145,8 @@ distinguish categories:
 | `"TIMEOUT"`   | The invocation timed out.         |
 | other         | Any other engine-side rejection.  |
 
-`IIIInvocationError` has `code`, `message`, `function_id`, and `stacktrace` attributes.
+`InvocationError` has `code`, `message`, `function_id`, and `stacktrace` attributes. The former
+name `IIIInvocationError` stays importable from the package root as a deprecated alias.
 
 ## Channels
 

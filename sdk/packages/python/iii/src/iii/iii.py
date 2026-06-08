@@ -18,7 +18,7 @@ from iii_observability import OtelConfig
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
-from .errors import IIIInvocationError, _wrap_wire_error
+from .errors import InvocationError, _wrap_wire_error
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_RECONNECTION_CONFIG,
@@ -265,7 +265,7 @@ class III:
         for invocation_id, pending in list(self._pending.items()):
             if not pending.future.done():
                 pending.future.set_exception(
-                    IIIInvocationError(
+                    InvocationError(
                         code="SHUTDOWN",
                         message="iii is shutting down",
                         function_id=pending.function_id,
@@ -1081,7 +1081,7 @@ class III:
             actions.
 
         Raises:
-            IIIInvocationError: For any engine rejection. Inspect ``code``:
+            InvocationError: For any engine rejection. Inspect ``code``:
                 ``'TIMEOUT'`` if the invocation timed out, ``'FORBIDDEN'`` if
                 RBAC denied it.
 
@@ -1108,7 +1108,7 @@ class III:
             The result of the function invocation, or ``None`` for void calls.
 
         Raises:
-            IIIInvocationError: For any engine rejection. Inspect ``code``:
+            InvocationError: For any engine rejection. Inspect ``code``:
                 ``'TIMEOUT'`` if the invocation timed out, ``'FORBIDDEN'`` if
                 RBAC denied it.
 
@@ -1171,7 +1171,7 @@ class III:
             return await asyncio.wait_for(future, timeout=timeout_secs)
         except asyncio.TimeoutError:
             self._pending.pop(invocation_id, None)
-            raise IIIInvocationError(
+            raise InvocationError(
                 code="TIMEOUT",
                 message=f"invocation timed out after {timeout_ms}ms",
                 function_id=function_id,
