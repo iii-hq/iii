@@ -264,13 +264,23 @@ jobs:
 
       # Tell the templates repo to bump its iii-sdk / iii-observability pins to
       # match this release. Stable releases only — prereleases aren't what the
-      # templates should pin to. Requires TEMPLATES_DISPATCH_TOKEN: a token with
-      # `repository_dispatch`/contents write on iii-hq/templates.
+      # templates should pin to. Uses a dedicated III_CI_APP token scoped to
+      # iii-hq/templates (the app must be installed there with Contents: write).
+      - name: Generate templates token
+        id: templates_token
+        if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: templates
+
       - name: Dispatch templates version bump
         if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.TEMPLATES_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.templates_token.outputs.token }}
           VERSION: ${{ steps.versions.outputs.version }}
         run: |
           jq -nc --arg v "$VERSION" \
