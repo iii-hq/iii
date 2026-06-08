@@ -73,6 +73,10 @@ def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Tr
 Drop the trigger with `trigger.unregister()` on the returned handle. There is no top-level
 `unregister_trigger` method.
 
+The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii.trigger`
+submodule (`from iii.trigger import TriggerHandler`). They stay importable from the package root as
+deprecated re-exports.
+
 ### `register_trigger_type`
 
 Declare a new trigger type that this worker advertises.
