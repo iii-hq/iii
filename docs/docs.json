@@ -102,6 +102,7 @@
                 "pages": [
                   "next/creating-workers/index",
                   "next/creating-workers/workers",
+                  "next/creating-workers/manifest",
                   "next/creating-workers/triggers",
                   "next/creating-workers/functions",
                   "next/creating-workers/channels"
