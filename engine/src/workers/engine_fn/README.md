@@ -4,6 +4,16 @@ iii is a WebSocket-routed worker mesh. One engine process (default port `49134`)
 
 This registry worker documents the **`engine::*`** introspection surface (implemented in-process) and the **`worker::*`** lifecycle ops (implemented by the `iii-worker-ops` sidecar). It is always present in the engine and is not configured in `config.yaml`.
 
+This worker is built into the engine and is always available; no install step is needed.
+
+## Skills
+
+Install the `iii` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii
+```
+
 ## Registry name vs runtime name
 
 | Surface | Name | Notes |

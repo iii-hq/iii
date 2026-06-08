@@ -61,7 +61,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.19.x",
+        "version": "0.20.x",
         "tag": "Next",
         "tabs": [
           {
@@ -177,7 +177,7 @@
         ]
       },
       {
-        "version": "0.18.x",
+        "version": "0.19.x",
         "tag": "Latest",
         "default": true,
         "tabs": [
@@ -260,6 +260,120 @@
                   "sdk-reference/python-sdk",
                   "sdk-reference/rust-sdk",
                   "sdk-reference/browser-sdk"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "pages": [
+                  "changelog/index"
+                ]
+              },
+              {
+                "group": "0.16.0",
+                "pages": [
+                  "changelog/0-16-0/align-rust-register-function-with-signature"
+                ]
+              },
+              {
+                "group": "0.11.0",
+                "pages": [
+                  "changelog/0-11-0/everything-is-a-worker",
+                  "changelog/0-11-0/migrating-from-motia-js",
+                  "changelog/0-11-0/migrating-from-motia-py",
+                  "changelog/0-11-0/migrated-examples"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.18.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "0-18-0/index",
+                  "0-18-0/install",
+                  "0-18-0/quickstart"
+                ]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-18-0/using-iii/workers",
+                  "0-18-0/using-iii/workers-registry",
+                  "0-18-0/using-iii/triggers",
+                  "0-18-0/using-iii/functions",
+                  "0-18-0/using-iii/engine",
+                  "0-18-0/using-iii/console",
+                  "0-18-0/using-iii/cli",
+                  "0-18-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-18-0/understanding-iii/index",
+                  "0-18-0/understanding-iii/engine",
+                  "0-18-0/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-18-0/creating-workers/index",
+                  "0-18-0/creating-workers/workers",
+                  "0-18-0/creating-workers/triggers",
+                  "0-18-0/creating-workers/functions",
+                  "0-18-0/creating-workers/channels"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "0-18-0/tutorials/linkly/overview",
+                  "0-18-0/tutorials/linkly/foundations",
+                  "0-18-0/tutorials/linkly/observability",
+                  "0-18-0/tutorials/linkly/persistence",
+                  "0-18-0/tutorials/linkly/durable-execution",
+                  "0-18-0/tutorials/linkly/streaming",
+                  "0-18-0/tutorials/linkly/channels",
+                  "0-18-0/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": [
+                  "0-18-0/sdk-reference/engine-sdk"
+                ]
+              },
+              {
+                "group": "Language SDKs",
+                "pages": [
+                  "0-18-0/sdk-reference/node-sdk",
+                  "0-18-0/sdk-reference/python-sdk",
+                  "0-18-0/sdk-reference/rust-sdk",
+                  "0-18-0/sdk-reference/browser-sdk"
                 ]
               }
             ]

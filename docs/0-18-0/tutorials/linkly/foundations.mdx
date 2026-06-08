@@ -1,0 +1,417 @@
+---
+title: "Ch. 1: Foundations"
+description: "Build the link worker with link::create and link::resolve, then expose it over HTTP."
+owner: "devrel"
+type: "tutorial"
+---
+
+In this chapter you will build the core of Linkly: a worker that creates short codes and resolves
+them back to URLs, callable first from the command line and then over HTTP. By the end you will have
+a working web service where `POST /links` mints a short code and `GET /s/:code` redirects to the
+original URL.
+
+## Create the project
+
+A iii project is a directory with a `config.yaml` file that describes your system. Create one:
+
+```bash
+iii project init linkly
+cd linkly
+```
+
+## Add the workers you'll need
+
+Later in this chapter you'll serve the `link` worker over HTTP (provided by `iii-http`) and stash
+short-code → URL mappings in a key-value store (provided by `iii-state`). Add both now so they're
+ready when the `link` worker reaches for them:
+
+```bash
+iii worker add iii-http
+iii worker add iii-state
+```
+
+If you open `config.yaml` now you'll notice both workers have been added, plus a few that iii ships
+by default and uses itself.
+
+`iii-state` keeps its store on disk by default, so links survive restarts. For this chapter, switch
+it to an in-memory store instead. Find the `iii-state` entry in `config.yaml` and set its
+`store_method`:
+
+```yaml config.yaml
+workers:
+  # ...
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: in_memory
+```
+
+Now restarting the engine clears every link. That's fine here;
+[Ch. 3: Persist everything](/tutorials/linkly/persistence) swaps in durable storage.
+
+You may also notice a iii.lock file: that's how iii tracks worker dependencies and versions so that
+iii deployments are repeatable. This is similar to lock files in other package managers.
+
+For now you don't need to edit anything in these files.
+
+## Create the link worker
+
+Scaffold a TypeScript worker inside the project. This worker will handle storing and retrieving
+short links:
+
+```bash
+iii worker init link --language typescript
+```
+
+### Configure the entrypoints
+
+A worker is a self-contained service. Here, the `link` worker is a Node package but it could be any
+language or runtime.
+
+`link/iii.worker.yaml` is the manifest that describes how the worker builds and runs itself: the
+command to install dependencies and the command to start. Update it so it looks like the below.
+
+```yaml {6-8} iii.worker.yaml
+name: link
+runtime:
+  kind: typescript
+  package_manager: npm
+  entry: src/index.ts
+scripts:
+  install: "npm install"
+  start: "npm run start"
+```
+
+<Info>
+  iii runs a worker for you from these `scripts`, but a worker is an ordinary service: you can also
+  start it yourself and let it connect to the engine over WebSocket. Learn more about the
+  [`iii.worker.yaml` manifest](/creating-workers/workers#worker-manifest).
+</Info>
+
+Replace the template's `link/package.json` with this one. Note you don't need to run npm or node
+yourself. When you start the worker later it will automatically install and start the service within
+a self-contained microvm. The `start` script uses `tsx watch`, which runs the TypeScript source
+directly and reloads the worker whenever you save a change.
+
+```json package.json
+{
+  "name": "link",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": ">=0.17.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.3",
+    "typescript": "^5.9.3",
+    "@types/node": "^24.10.1"
+  }
+}
+```
+
+### Write the worker entry point
+
+`link/src/index.ts` is the worker's entry point. You'll build it up in a few small steps rather than
+pasting one large file at once.
+
+<Info>
+  `index.ts` will already contain some example code. Replace it with the first snippet below, then
+  append each later snippet to the end of the file.
+</Info>
+
+#### Open the connection to the engine
+
+`registerWorker` opens the connection to the engine. Replace the template's example code in
+`index.ts` with the connection setup and a small helper that generates random short codes:
+
+```typescript src/index.ts
+import { registerWorker, Logger } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "link",
+});
+const logger = new Logger();
+
+const CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+function makeCode(): string {
+  let s = "";
+  for (let i = 0; i < 6; i++) s += CHARS[Math.floor(Math.random() * CHARS.length)];
+  return s;
+}
+```
+
+#### Add `link::create`
+
+`registerFunction` publishes a function under a name like `link::create` that anything else on the
+engine can call. This one stores the mapping by calling `state::set` on the `iii-state` worker
+through `worker.trigger`. Worker-to-worker calls always flow through the engine, so the `link`
+worker doesn't import anything from `iii-state`; it knows the function name. Append it:
+
+```typescript src/index.ts
+worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
+  const code = payload.code ?? makeCode();
+  // Store an absolute URL so the redirect's Location header is absolute, not
+  // resolved relative to /s/:code.
+  const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
+  await worker.trigger({
+    function_id: "state::set",
+    payload: { scope: "links", key: code, value: { url } },
+  });
+  logger.info("link created", { code, url });
+  return { code, url };
+});
+```
+
+#### Add `link::resolve`
+
+`link::resolve` looks the mapping back up with `state::get`, returning the URL or `null` when the
+code is unknown. Append it, with a final log line so you can see the worker come up:
+
+```typescript src/index.ts
+worker.registerFunction("link::resolve", async (payload: { code: string }) => {
+  const stored = await worker.trigger<{ scope: string; key: string }, { url: string } | null>({
+    function_id: "state::get",
+    payload: { scope: "links", key: payload.code },
+  });
+  return { url: stored?.url ?? null };
+});
+
+logger.info("link worker ready");
+```
+
+The `state::set` / `state::get` calls pass a `scope` (`links`) and a `key` (the short code). Scopes
+keep different kinds of data in `iii-state` from colliding; later chapters add more.
+
+## Start the engine
+
+From the project root, run `iii`. It reads `config.yaml`, and the workers register their functions
+with the engine:
+
+```bash
+iii
+```
+
+## Register the worker
+
+`iii worker init` scaffolds the worker but leaves your project untouched. To add this worker to your
+config run the following command from the root `linkly` directory (ie. where the `config.yaml` is).
+Add the `link` worker to your system by running:
+
+```bash
+iii worker add ./link
+```
+
+<Note>
+  You do not run the worker yourself: iii runs the worker's `install` script the first time it
+  starts the worker. You will see the `link` worker register `link::create` and `link::resolve`.
+  Leave the engine running and open a second terminal for the next steps.
+</Note>
+## Call the functions
+
+`iii trigger` invokes a function on the running engine. Create a link with a custom code:
+
+```bash
+iii trigger link::create url=https://iii.dev code=iii
+```
+
+```json
+{
+  "code": "iii",
+  "url": "https://iii.dev"
+}
+```
+
+Resolve it back:
+
+```bash
+iii trigger link::resolve code=iii
+```
+
+```json
+{
+  "url": "https://iii.dev"
+}
+```
+
+An unknown code resolves to `null`:
+
+```bash
+iii trigger link::resolve code=nope
+```
+
+```json
+{
+  "url": null
+}
+```
+
+<Check>
+  You have a working domain worker. `link::create` and `link::resolve` are registered with the
+  engine and callable from anywhere within your iii system. Next let's put them behind HTTP so that
+  external 3rd party systems could use them.
+</Check>
+<Info>
+  As you'll see later, unless you're supporting 3rd party systems it isn't necessary to expose
+  services over http since iii can even run browser tabs as workers.
+</Info>
+
+## Expose your functions over HTTP
+
+A function becomes an HTTP endpoint when you bind it to an `http` trigger. That trigger type is
+served by the `iii-http` worker you added at the start of the chapter.
+
+### Create a function to handle new links
+
+Add `http::create` to the bottom of `link/src/index.ts`. It validates the request body, calls
+`link::create` through the engine with `worker.trigger`, and returns the new link:
+
+```typescript src/index.ts
+worker.registerFunction("http::create", async (req) => {
+  const { url, code } = req.body ?? {};
+  if (!url) {
+    return {
+      status_code: 400,
+      body: { error: 'missing "url"' },
+      headers: { "Content-Type": "application/json" },
+    };
+  }
+  const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
+    function_id: "link::create",
+    payload: { url, code },
+  });
+  return {
+    status_code: 201,
+    body: link,
+    headers: { "Content-Type": "application/json" },
+  };
+});
+```
+
+### Bind your create function to a Trigger
+
+In the same file (`link/src/index.ts`) at the end bind `http::create` to `POST /links` with a new
+trigger. This Trigger has the `iii-http` worker listen for `POST` requests to `/links` and when it
+receives one it will run the function specified by `function_id`.
+
+```typescript src/index.ts
+worker.registerTrigger({
+  type: "http",
+  function_id: "http::create",
+  config: { api_path: "/links", http_method: "POST" },
+});
+```
+
+<Check>
+  This is the first Trigger you've registered yourself. In iii, Triggers control what causes
+  something to happen. In this case an http request causes a function to run. Learn more about
+  [Using iii / Triggers](/using-iii/triggers).
+</Check>
+
+<Info>
+  Every function registered comes with its own Trigger which is why `worker.trigger` worked earlier
+  without a declaration.
+</Info>
+
+### Mint a link over HTTP
+
+Save the file and the worker reloads with the new route registered. Now try out your new Trigger:
+
+```bash
+curl -i -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com","code":"demo"}'
+```
+
+```http
+HTTP/1.1 201 Created
+content-type: application/json
+
+{"code":"demo","url":"https://example.com"}
+```
+
+The link sits in `iii-state` now, but `GET /s/demo` has nowhere to go yet. There's no handler; add
+one next.
+
+### Create a function to handle redirects
+
+Add `http::redirect` to the bottom of `link/src/index.ts`. It looks up the short code via
+`link::resolve`, returns a 404 when there's no match, and a 302 to the original URL otherwise:
+
+```typescript src/index.ts
+worker.registerFunction("http::redirect", async (req) => {
+  const code = req.path_params.code;
+  const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
+    function_id: "link::resolve",
+    payload: { code },
+  });
+  if (!url) {
+    return {
+      status_code: 404,
+      body: { error: "link not found" },
+      headers: { "Content-Type": "application/json" },
+    };
+  }
+  return { status_code: 302, headers: { Location: url } };
+});
+```
+
+### Bind your redirect function to a Trigger
+
+Like before, bind `http::redirect` to `GET /s/:code` with a new Trigger:
+
+```typescript src/index.ts
+worker.registerTrigger({
+  type: "http",
+  function_id: "http::redirect",
+  config: { api_path: "/s/:code", http_method: "GET" },
+});
+```
+
+### Follow the short code
+
+`iii-state` is in-memory in this chapter, so each time the engine restarts the previous link is
+gone. Chapter 3 swaps in durable storage. For now create a fresh link and try it out:
+
+```bash
+curl -i -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"http://iii.dev/docs/understanding-iii","code":"learn-iii"}'
+```
+
+```bash
+curl -i http://127.0.0.1:3111/s/learn-iii
+```
+
+```http
+HTTP/1.1 302 Found
+location: http://iii.dev/docs/understanding-iii
+```
+
+An unknown code returns `404`:
+
+```bash
+curl -i http://127.0.0.1:3111/s/missing
+```
+
+```http
+HTTP/1.1 404 Not Found
+
+{"error":"link not found"}
+```
+
+## Conclusion
+
+You have built a real link shortener: a domain worker exposed over HTTP, where the same
+`link::create` and `link::resolve` functions serve both the command line and the web. Restarting the
+engine still clears every link, though: `iii-state` is in-memory until Chapter 3 swaps it for
+durable storage.
+
+Next, in [Ch. 2: Observe everything](/tutorials/linkly/observability), you will add logs and traces
+and watch invocations flow through the engine in the console.
