@@ -3,6 +3,8 @@ export { ChannelReader, ChannelWriter } from './channel'
 /** @deprecated Import `Channel` / `StreamChannelRef` from `iii-sdk/channel`. */
 export type { Channel, StreamChannelRef } from './channel'
 
+export { InvocationError, type InvocationErrorInit } from './errors'
+/** @deprecated Renamed; import `InvocationError` / `InvocationErrorInit` from `iii-sdk/errors`. */
 export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
 
 export { type InitOptions, registerWorker, TriggerAction } from './iii'

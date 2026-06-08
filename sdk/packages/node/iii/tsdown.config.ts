@@ -9,6 +9,7 @@ export default defineConfig({
     './src/channel.ts',
     './src/trigger.ts',
     './src/runtime.ts',
+    './src/errors.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,

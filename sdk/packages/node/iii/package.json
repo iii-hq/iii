@@ -56,6 +56,11 @@
       "types": "./dist/runtime.d.ts",
       "import": "./dist/runtime.mjs",
       "require": "./dist/runtime.cjs"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.mjs",
+      "require": "./dist/errors.cjs"
     }
   },
   "dependencies": {

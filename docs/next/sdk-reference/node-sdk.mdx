@@ -117,18 +117,23 @@ The underlying type is the discriminated union `{ type: "enqueue"; queue: string
 
 ## Error type
 
-`IIIInvocationError extends Error`. Every failure that crosses the SDK boundary is thrown as an
+`InvocationError extends Error`. Every failure that crosses the SDK boundary is thrown as an
 instance of this class with a `code: string`, a `message: string`, an optional `function_id`, and
-an optional `stacktrace`.
+an optional `stacktrace`. Import it from the `iii-sdk/errors` subpath:
 
 ```typescript
-class IIIInvocationError extends Error {
+import { InvocationError } from "iii-sdk/errors";
+
+class InvocationError extends Error {
   code: string;
   message: string;
   function_id?: string;
   stacktrace?: string;
 }
 ```
+
+The former name `IIIInvocationError` is still exported from the package root as a deprecated alias.
+Prefer `InvocationError` from `iii-sdk/errors`.
 
 Common `code` values come from the engine: `invocation_failed` (handler threw), `invocation_stopped`
 (engine timeout), `function_not_found`, `function_not_invokable`, `TIMEOUT` (client-side timeout),
