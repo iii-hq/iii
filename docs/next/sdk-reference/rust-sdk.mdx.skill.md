@@ -56,7 +56,7 @@ Bind a registered function to a configured trigger instance.
 pub fn register_trigger(
     &self,
     input: RegisterTriggerInput,
-) -> Result<Trigger, IIIError>;
+) -> Result<Trigger, Error>;
 ```
 
 Drop the trigger with `trigger.unregister()` on the returned handle. There is no free-function
@@ -93,7 +93,7 @@ Invoke a registered function. Always async; await the future to receive the resu
 pub async fn trigger(
     &self,
     request: impl Into<TriggerRequest>,
-) -> Result<serde_json::Value, IIIError>;
+) -> Result<serde_json::Value, Error>;
 ```
 
 The returned `Value` is the function's return JSON for synchronous calls, an `EnqueueResult`-shaped
@@ -123,11 +123,13 @@ Pass it in `TriggerRequest::action` as `Some(TriggerAction::Void)` or
 
 ## Error type
 
-`IIIError` is the public error enum. Most invocation failures arrive on the `Remote` or `Runtime`
-variants.
+`Error` is the public error enum, reachable at its canonical path `iii_sdk::errors::Error`. Most
+invocation failures arrive on the `Remote` or `Runtime` variants.
 
 ```rust
-pub enum IIIError {
+use iii_sdk::errors::Error;
+
+pub enum Error {
     NotConnected,
     Timeout,
     Runtime(String),
@@ -138,8 +140,11 @@ pub enum IIIError {
 }
 ```
 
+The former name `IIIError` stays reachable at the crate root as a deprecated alias; prefer
+`iii_sdk::errors::Error`.
+
 `ErrorBody` carries the engine's `{ code, message, stacktrace? }` payload; match on
-`IIIError::Remote(body) => body.code.as_str()` to branch on engine error codes
+`Error::Remote(body) => body.code.as_str()` to branch on engine error codes
 (`invocation_failed`, `invocation_stopped`, `function_not_found`, `FORBIDDEN`, `TIMEOUT`, etc.).
 
 ## Channels

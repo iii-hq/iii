@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{IIIError, RegisterFunction, TriggerRequest};
+use iii_sdk::{Error, RegisterFunction, TriggerRequest};
 
 #[tokio::test]
 async fn stream_data_from_sender_to_processor() {
@@ -32,9 +32,9 @@ async fn stream_data_from_sender_to_processor() {
                     .expect("missing reader channel ref");
 
                 let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
-                let raw = reader.read_all().await.map_err(|e| IIIError::Handler(e.to_string()))?;
+                let raw = reader.read_all().await.map_err(|e| Error::Handler(e.to_string()))?;
                 let records: Vec<Value> = serde_json::from_slice(&raw)
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let values: Vec<f64> = records
                     .iter()
@@ -69,20 +69,20 @@ async fn stream_data_from_sender_to_processor() {
                 let records = input["records"].clone();
                 let channel = iii_sdk::helpers::create_channel(&iii, None)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let payload =
-                    serde_json::to_vec(&records).map_err(|e| IIIError::Handler(e.to_string()))?;
+                    serde_json::to_vec(&records).map_err(|e| Error::Handler(e.to_string()))?;
                 channel
                     .writer
                     .write(&payload)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
                 channel
                     .writer
                     .close()
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let result = iii
                     .trigger(TriggerRequest {
@@ -95,7 +95,7 @@ async fn stream_data_from_sender_to_processor() {
                         timeout_ms: None,
                     })
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 Ok(result)
             }
@@ -185,7 +185,7 @@ async fn bidirectional_streaming() {
                 while let Some(chunk) = reader
                     .next_binary()
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?
+                    .map_err(|e| Error::Handler(e.to_string()))?
                 {
                     chunks.push(chunk);
                     chunk_count += 1;
@@ -198,7 +198,7 @@ async fn bidirectional_streaming() {
                             .unwrap(),
                         )
                         .await
-                        .map_err(|e| IIIError::Handler(e.to_string()))?;
+                        .map_err(|e| Error::Handler(e.to_string()))?;
                 }
 
                 let full_data: Vec<u8> = chunks.iter().flatten().copied().collect();
@@ -215,21 +215,21 @@ async fn bidirectional_streaming() {
                         .unwrap(),
                     )
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let result_json = serde_json::to_vec(&json!({
                     "words": &words[..5.min(words.len())],
                     "total": words.len(),
                 }))
-                .map_err(|e| IIIError::Handler(e.to_string()))?;
+                .map_err(|e| Error::Handler(e.to_string()))?;
                 writer
                     .write(&result_json)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
                 writer
                     .close()
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 Ok(json!({"status": "done"}))
             }
@@ -247,10 +247,10 @@ async fn bidirectional_streaming() {
 
                 let input_channel = iii_sdk::helpers::create_channel(&iii, None)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
                 let output_channel = iii_sdk::helpers::create_channel(&iii, None)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let messages: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
                 let msgs_clone = messages.clone();
@@ -303,18 +303,18 @@ async fn bidirectional_streaming() {
                     .reader
                     .read_all()
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 write_handle
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
                 let worker_result = call_handle
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let binary_result: Value = serde_json::from_slice(&result_data)
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 // Give a moment for async message callbacks to settle
                 tokio::time::sleep(Duration::from_millis(100)).await;

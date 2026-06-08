@@ -8,8 +8,8 @@ import pytest
 from iii import (
     AuthInput,
     AuthResult,
-    IIIInvocationError,
     InitOptions,
+    InvocationError,
     MiddlewareFunctionInput,
     OnFunctionRegistrationInput,
     OnFunctionRegistrationResult,
@@ -349,7 +349,7 @@ class TestRbacWorkers:
             iii_client.shutdown()
 
     def test_forbidden_wrapped_as_typed_error(self, iii_server):
-        """FORBIDDEN rejections surface as IIIInvocationError (code='FORBIDDEN')
+        """FORBIDDEN rejections surface as InvocationError (code='FORBIDDEN')
         with function_id set and the engine's remediation phrase in the message."""
         iii_client = register_worker(
             EW_URL,
@@ -357,7 +357,7 @@ class TestRbacWorkers:
         )
 
         try:
-            with pytest.raises(IIIInvocationError) as excinfo:
+            with pytest.raises(InvocationError) as excinfo:
                 iii_client.trigger({
                     "function_id": "test::ew::private",
                     "payload": {},
@@ -430,7 +430,7 @@ class TestRbacWorkers:
         try:
             def handler(data: dict) -> dict:
                 # If the carve-out regresses, this nested trigger surfaces
-                # IIIInvocationError (code='FORBIDDEN') and the handler propagates it as a failure.
+                # InvocationError (code='FORBIDDEN') and the handler propagates it as a failure.
                 iii_client.trigger({
                     "function_id": "engine::log::info",
                     "payload": {
@@ -471,7 +471,7 @@ class TestRbacWorkers:
 
         try:
             # No exception == carve-out is working. If this raises
-            # IIIInvocationError (code='FORBIDDEN'), the carve-out regressed.
+            # InvocationError (code='FORBIDDEN'), the carve-out regressed.
             iii_client.trigger({
                 "function_id": "engine::log::info",
                 "payload": {"message": "carve-out direct invocation"},

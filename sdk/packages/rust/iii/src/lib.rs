@@ -15,13 +15,23 @@ pub mod channel {
     pub use crate::types::Channel;
 }
 
+/// Public error types. (Stage 1 submodule grouping.)
+pub mod errors {
+    pub use crate::error::Error;
+}
+
 pub use builtin_triggers::{
     IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
     StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-pub use error::IIIError;
+pub use error::Error;
+#[deprecated(
+    since = "0.19.0",
+    note = "renamed to Error; import from iii_sdk::errors"
+)]
+pub use error::Error as IIIError;
 pub use iii::{
     FunctionInfo, FunctionRef, III, IIIConnectionState, RegisterFunction, RegisterTriggerType,
     TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata,
@@ -163,3 +173,15 @@ fn _ensure_create_channel_not_on_instance() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_channel_submodule_path() {}
+
+// ---------------------------------------------------------------------------
+// Stage 1 errors submodule: the renamed error type is reachable at its new
+// canonical path `iii_sdk::errors::Error`.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::errors::Error;
+/// fn _takes(_e: Error) {}
+/// ```
+#[allow(dead_code)]
+fn _ensure_errors_submodule_path() {}
