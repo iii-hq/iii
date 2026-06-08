@@ -18,14 +18,28 @@ function truncate(s: string): string {
 export function extractErrorMessage(error: string): string {
   const msgMatch = error.match(/message:\s*"((?:[^"\\]|\\.)*)"/)
   if (msgMatch) {
-    const unescaped = msgMatch[1].replace(/\\(.)/g, '$1')
-    return truncate(humanizeEnvelope(unescaped))
+    return truncate(humanizeEnvelope(unescapeJsonString(msgMatch[1])))
   }
   // The error may already be the bare JSON envelope (no Debug wrapper).
   const direct = humanizeEnvelope(error)
   if (direct !== error) return truncate(direct)
   // Fallback: a plain string, returned as-is (capped).
   return truncate(error)
+}
+
+/**
+ * Decode the escape sequences captured from the Rust Debug `message: "..."`
+ * field. The capture is the raw inner content (escapes intact), so parsing it
+ * as a JSON string preserves `\n`, `\t`, `\uXXXX` instead of stripping the
+ * backslash from every escape. Malformed input falls back to a minimal
+ * quote-unescape so we never throw on worker-supplied text.
+ */
+function unescapeJsonString(inner: string): string {
+  try {
+    return JSON.parse(`"${inner}"`) as string
+  } catch {
+    return inner.replace(/\\"/g, '"')
+  }
 }
 
 /** If `raw` is a worker-op JSON envelope, surface `code: message`; otherwise return it unchanged. */

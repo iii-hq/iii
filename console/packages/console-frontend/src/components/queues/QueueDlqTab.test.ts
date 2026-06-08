@@ -17,6 +17,12 @@ describe('extractErrorMessage', () => {
     expect(result).not.toContain('"type"')
   })
 
+  it('decodes escape sequences (newline, tab, unicode) instead of stripping backslashes', () => {
+    const raw =
+      'ErrorBody { code: "invocation_failed", message: "line1\\nline2\\ttabbed \\u2713", stacktrace: None }'
+    expect(extractErrorMessage(raw)).toBe('line1\nline2\ttabbed ✓')
+  })
+
   it('humanizes a bare JSON envelope without the Debug wrapper', () => {
     const raw =
       '{"type":"WorkerOpError","code":"W110","message":"worker \\"x\\" not found","details":{"name":"x"}}'

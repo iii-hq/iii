@@ -67,8 +67,14 @@ impl MockEngine {
                                 return;
                             }
                             out = out_rx.recv() => {
-                                if let Ok(text) = out {
-                                    let _ = tx.send(Message::Text(text.into())).await;
+                                match out {
+                                    Ok(text) => {
+                                        if tx.send(Message::Text(text.into())).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                                 }
                             }
                             msg = rx.next() => {
