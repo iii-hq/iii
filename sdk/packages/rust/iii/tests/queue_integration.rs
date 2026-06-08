@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerAction, TriggerRequest};
+use iii_sdk::{Error, RegisterFunction, RegisterTriggerInput, TriggerAction, TriggerRequest};
 
 fn unique_topic(prefix: &str) -> String {
     let ts = std::time::SystemTime::now()
@@ -79,14 +79,14 @@ async fn enqueue_to_unknown_queue_returns_error() {
         .await;
 
     match result {
-        Err(IIIError::Remote { code, message, .. }) => {
+        Err(Error::Remote { code, message, .. }) => {
             assert_eq!(
                 code, "enqueue_error",
                 "expected enqueue_error code, got: {code}"
             );
             assert!(!message.is_empty(), "error message should not be empty");
         }
-        Err(other) => panic!("expected IIIError::Remote with enqueue_error code, got: {other:?}"),
+        Err(other) => panic!("expected Error::Remote with enqueue_error code, got: {other:?}"),
         Ok(val) => panic!("expected error, got success: {val}"),
     }
 }
@@ -155,7 +155,7 @@ async fn enqueue_fifo_missing_group_field_returns_error() {
         .await;
 
     match result {
-        Err(IIIError::Remote { code, message, .. }) => {
+        Err(Error::Remote { code, message, .. }) => {
             assert_eq!(
                 code, "enqueue_error",
                 "expected enqueue_error code, got: {code}"
@@ -165,7 +165,7 @@ async fn enqueue_fifo_missing_group_field_returns_error() {
                 "error message should mention the missing field 'transaction_id', got: {message}"
             );
         }
-        Err(other) => panic!("expected IIIError::Remote with enqueue_error code, got: {other:?}"),
+        Err(other) => panic!("expected Error::Remote with enqueue_error code, got: {other:?}"),
         Ok(val) => panic!("expected error for missing group field, got success: {val}"),
     }
 }
@@ -298,7 +298,7 @@ async fn chained_enqueue() {
                     timeout_ms: None,
                 })
                 .await
-                .map_err(|e| IIIError::Handler(e.to_string()))?;
+                .map_err(|e| Error::Handler(e.to_string()))?;
 
                 Ok(json!({ "step": "a_done" }))
             }
