@@ -11,6 +11,14 @@ release_version=""
 init_install_failed=""
 worker_install_failed=""
 
+# curl wrapper that retries transient network failures (504/502/503/timeouts).
+# Uses only flags available since curl 7.12.3 (2005); avoids --retry-all-errors
+# (7.71) so the script stays portable to old curl. HTTP 5xx is treated as a
+# transient error by --retry across all curl versions.
+curl_retry() {
+  curl --retry 5 --retry-delay 2 --retry-max-time 120 --connect-timeout 10 "$@"
+}
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -112,13 +120,13 @@ iii_emit_event() {
 
 github_api() {
   if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl -fsSL \
+    curl_retry -fsSL \
       -H "Accept:application/vnd.github+json" \
       -H "X-GitHub-Api-Version:2022-11-28" \
       -H "Authorization:Bearer $GITHUB_TOKEN" \
       "$1"
   else
-    curl -fsSL \
+    curl_retry -fsSL \
       -H "Accept:application/vnd.github+json" \
       -H "X-GitHub-Api-Version:2022-11-28" \
       "$1"
@@ -591,10 +599,10 @@ idx=1
 # Main binary (critical)
 printf '[%d/%d] downloading %s...\n' "$idx" "$total" "$asset_name"
 if [ -t 2 ]; then
-  curl -fL --progress-bar "$asset_url" -o "$main_tarball" \
+  curl_retry -fL --progress-bar "$asset_url" -o "$main_tarball" \
     || err "download" "failed to download $asset_url"
 else
-  curl -fsSL "$asset_url" -o "$main_tarball" \
+  curl_retry -fsSL "$asset_url" -o "$main_tarball" \
     || err "download" "failed to download $asset_url"
 fi
 
@@ -603,10 +611,10 @@ if [ -n "$init_url" ]; then
   idx=$((idx + 1))
   printf '[%d/%d] downloading %s...\n' "$idx" "$total" "$(basename "$init_tarball")"
   if [ -t 2 ]; then
-    curl -fL --progress-bar "$init_url" -o "$init_tarball" \
+    curl_retry -fL --progress-bar "$init_url" -o "$init_tarball" \
       || { warn "iii-init: download failed"; init_install_failed="1"; rm -f "$init_tarball"; init_tarball=""; }
   else
-    curl -fsSL "$init_url" -o "$init_tarball" \
+    curl_retry -fsSL "$init_url" -o "$init_tarball" \
       || { warn "iii-init: download failed"; init_install_failed="1"; rm -f "$init_tarball"; init_tarball=""; }
   fi
 fi
@@ -616,10 +624,10 @@ if [ -n "$worker_url" ]; then
   idx=$((idx + 1))
   printf '[%d/%d] downloading %s...\n' "$idx" "$total" "$(basename "$worker_tarball")"
   if [ -t 2 ]; then
-    curl -fL --progress-bar "$worker_url" -o "$worker_tarball" \
+    curl_retry -fL --progress-bar "$worker_url" -o "$worker_tarball" \
       || { warn "iii-worker: download failed"; worker_install_failed="1"; rm -f "$worker_tarball"; worker_tarball=""; }
   else
-    curl -fsSL "$worker_url" -o "$worker_tarball" \
+    curl_retry -fsSL "$worker_url" -o "$worker_tarball" \
       || { warn "iii-worker: download failed"; worker_install_failed="1"; rm -f "$worker_tarball"; worker_tarball=""; }
   fi
 fi
