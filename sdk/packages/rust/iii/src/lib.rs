@@ -31,7 +31,7 @@ pub mod channel {
 
 /// Public error types. (Stage 1 submodule grouping.)
 pub mod errors {
-    pub use crate::error::Error;
+    pub use crate::error::{Error, InvocationError};
 }
 
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
@@ -42,12 +42,12 @@ pub use builtin_triggers::{
 };
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-pub use error::Error;
 #[deprecated(
     since = "0.19.0",
     note = "renamed to Error; import from iii_sdk::errors"
 )]
 pub use error::Error as IIIError;
+pub use error::{Error, InvocationError};
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
 pub use iii::{
     FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
@@ -229,3 +229,10 @@ fn _ensure_channel_submodule_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_errors_submodule_path() {}
+
+/// ```rust,no_run
+/// use iii_sdk::errors::InvocationError;
+/// fn _takes(_e: InvocationError) {}
+/// ```
+#[allow(dead_code)]
+fn _ensure_invocation_error_path() {}
