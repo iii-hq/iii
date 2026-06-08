@@ -35,7 +35,6 @@ export type { Trigger, TriggerConfig, TriggerHandler } from './trigger'
 export type {
   ApiRequest,
   ApiResponse,
-  FunctionRef,
   HttpRequest,
   HttpResponse,
   InternalHttpRequest,
@@ -45,7 +44,9 @@ export type {
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,
-  TriggerTypeRef,
 } from './types'
+
+/** @deprecated Import runtime types from `iii-sdk/runtime`. */
+export type { FunctionRef, TriggerTypeRef } from './runtime'
 
 export { http } from './utils'

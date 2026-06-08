@@ -51,6 +51,11 @@
       "types": "./dist/trigger.d.ts",
       "import": "./dist/trigger.mjs",
       "require": "./dist/trigger.cjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.mjs",
+      "require": "./dist/runtime.cjs"
     }
   },
   "dependencies": {

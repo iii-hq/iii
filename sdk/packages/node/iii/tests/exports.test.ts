@@ -35,4 +35,8 @@ describe('Package Exports', () => {
   it('should import the trigger subpath module', async () => {
     await expect(import('../src/trigger')).resolves.toBeDefined()
   })
+
+  it('should import the runtime subpath module', async () => {
+    await expect(import('../src/runtime')).resolves.toBeDefined()
+  })
 })
