@@ -39,4 +39,9 @@ describe('Package Exports', () => {
   it('should import the runtime subpath module', async () => {
     await expect(import('../src/runtime')).resolves.toBeDefined()
   })
+
+  it('exposes the TelemetryOptions type via the barrel', async () => {
+    // Type-only; presence is enforced by tsc. This asserts the module resolves.
+    await expect(import('../src/index')).resolves.toBeDefined()
+  })
 })
