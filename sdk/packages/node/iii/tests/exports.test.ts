@@ -22,4 +22,13 @@ describe('Package Exports', () => {
     expect(stateModule.StateEventType).toBeDefined()
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
   })
+
+  it('should export channel symbols from the subpath and keep the deprecated root shim', async () => {
+    const ch = await import('../src/channel')
+    expect(ch.ChannelReader).toBeDefined()
+    expect(ch.ChannelWriter).toBeDefined()
+    const root = await import('../src/index')
+    expect(root.ChannelReader).toBe(ch.ChannelReader)
+    expect(root.ChannelWriter).toBe(ch.ChannelWriter)
+  })
 })
