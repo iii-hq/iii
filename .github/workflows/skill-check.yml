@@ -3,15 +3,15 @@ name: Skill check
 on:
   pull_request:
     paths:
-      - "docs/next/*.md"
-      - "docs/next/*.mdx"
+      - "docs/next/**/*.md"
+      - "docs/next/**/*.mdx"
       - ".skill-check.yaml"
       - ".github/workflows/skill-check.yml"
   push:
     branches: [main]
     paths:
-      - "docs/next/*.md"
-      - "docs/next/*.mdx"
+      - "docs/next/**/*.md"
+      - "docs/next/**/*.mdx"
       - ".skill-check.yaml"
       - ".github/workflows/skill-check.yml"
 
