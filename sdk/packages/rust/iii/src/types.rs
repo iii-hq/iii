@@ -7,13 +7,13 @@ use serde_json::Value;
 
 use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
-    error::IIIError,
+    error::Error,
     protocol::{RegisterFunctionMessage, RegisterTriggerTypeMessage},
     triggers::TriggerHandler,
 };
 
 pub type RemoteFunctionHandler =
-    Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync>;
+    Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, Error>> + Send + Sync>;
 
 // ============================================================================
 // Stream Update Types
