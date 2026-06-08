@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{
-    Error, III, InitOptions, RegisterFunction, RegisterTriggerInput, RegisterTriggerType,
+    Error, IIIClient, InitOptions, RegisterFunction, RegisterTriggerInput, RegisterTriggerType,
     TriggerConfig, TriggerHandler, register_worker,
 };
 
@@ -75,7 +75,7 @@ async fn assert_stable(
     snap
 }
 
-async fn shutdown(iii: &III) {
+async fn shutdown(iii: &IIIClient) {
     iii.shutdown_async().await;
 }
 
