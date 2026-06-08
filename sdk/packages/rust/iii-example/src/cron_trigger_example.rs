@@ -1,5 +1,6 @@
 use iii_sdk::builtin_triggers::*;
-use iii_sdk::{Error, III, IIITrigger, RegisterFunction};
+use iii_sdk::trigger::IIITrigger;
+use iii_sdk::{Error, III, RegisterFunction};
 use serde_json::json;
 
 /// Examples using built-in trigger types with the typed `IIITrigger` enum.
