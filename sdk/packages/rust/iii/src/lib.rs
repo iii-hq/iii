@@ -17,12 +17,29 @@ pub mod runtime {
     };
 }
 
+/// Public channel types. (Stage 1 submodule grouping.)
+pub mod channel {
+    pub use crate::channels::{ChannelReader, ChannelWriter, StreamChannelRef};
+    pub use crate::types::Channel;
+}
+
+/// Public error types. (Stage 1 submodule grouping.)
+pub mod errors {
+    pub use crate::error::Error;
+}
+
 pub use builtin_triggers::{
     IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
     StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
+#[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-pub use error::IIIError;
+pub use error::Error;
+#[deprecated(
+    since = "0.19.0",
+    note = "renamed to Error; import from iii_sdk::errors"
+)]
+pub use error::Error as IIIError;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
 pub use iii::{
     FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
@@ -41,8 +58,10 @@ pub use structs::{
     OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
+#[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
+pub use types::Channel;
 pub use types::{
-    ApiRequest, ApiResponse, Channel, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
+    ApiRequest, ApiResponse, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
     StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput, StreamListInput,
     StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
 };
@@ -167,3 +186,26 @@ fn _ensure_create_channel_not_on_instance() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_runtime_submodule_path() {}
+
+// ---------------------------------------------------------------------------
+// Stage 1 channel submodule: channel types are reachable at their new
+// canonical path `iii_sdk::channel`.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::channel::{Channel, ChannelReader, ChannelWriter, StreamChannelRef};
+/// ```
+#[allow(dead_code)]
+fn _ensure_channel_submodule_path() {}
+
+// ---------------------------------------------------------------------------
+// Stage 1 errors submodule: the renamed error type is reachable at its new
+// canonical path `iii_sdk::errors::Error`.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::errors::Error;
+/// fn _takes(_e: Error) {}
+/// ```
+#[allow(dead_code)]
+fn _ensure_errors_submodule_path() {}

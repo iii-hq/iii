@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{
-    III, IIIError, InitOptions, RegisterFunction, RegisterTriggerInput, RegisterTriggerType,
+    Error, III, InitOptions, RegisterFunction, RegisterTriggerInput, RegisterTriggerType,
     TriggerConfig, TriggerHandler, register_worker,
 };
 
@@ -32,7 +32,7 @@ struct GreetInput {
     name: String,
 }
 
-fn greet(input: GreetInput) -> Result<String, IIIError> {
+fn greet(input: GreetInput) -> Result<String, Error> {
     Ok(format!("Hello, {}", input.name))
 }
 
@@ -41,7 +41,7 @@ struct EchoInput {
     payload: Value,
 }
 
-fn echo(input: EchoInput) -> Result<Value, IIIError> {
+fn echo(input: EchoInput) -> Result<Value, Error> {
     Ok(input.payload)
 }
 
@@ -49,10 +49,10 @@ struct NoopHandler;
 
 #[async_trait::async_trait]
 impl TriggerHandler for NoopHandler {
-    async fn register_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+    async fn register_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> {
         Ok(())
     }
-    async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+    async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> {
         Ok(())
     }
 }
