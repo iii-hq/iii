@@ -46,6 +46,11 @@
       "types": "./dist/channel.d.ts",
       "import": "./dist/channel.mjs",
       "require": "./dist/channel.cjs"
+    },
+    "./trigger": {
+      "types": "./dist/trigger.d.ts",
+      "import": "./dist/trigger.mjs",
+      "require": "./dist/trigger.cjs"
     }
   },
   "dependencies": {

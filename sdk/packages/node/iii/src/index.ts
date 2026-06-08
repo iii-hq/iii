@@ -29,7 +29,8 @@ export type {
   TriggerRequest,
 } from './iii-types'
 
-export type { TriggerConfig, TriggerHandler } from './triggers'
+/** @deprecated Import trigger types from `iii-sdk/trigger`. */
+export type { Trigger, TriggerConfig, TriggerHandler } from './trigger'
 
 export type {
   ApiRequest,
@@ -44,7 +45,6 @@ export type {
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,
-  Trigger,
   TriggerTypeRef,
 } from './types'
 

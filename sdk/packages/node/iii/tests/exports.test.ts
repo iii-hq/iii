@@ -31,4 +31,8 @@ describe('Package Exports', () => {
     expect(root.ChannelReader).toBe(ch.ChannelReader)
     expect(root.ChannelWriter).toBe(ch.ChannelWriter)
   })
+
+  it('should import the trigger subpath module', async () => {
+    await expect(import('../src/trigger')).resolves.toBeDefined()
+  })
 })
