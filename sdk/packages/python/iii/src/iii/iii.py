@@ -1235,7 +1235,7 @@ class III:
             ),
         }
 
-        return {
+        metadata: dict[str, Any] = {
             "runtime": "python",
             "version": sdk_version,
             "name": worker_name,
@@ -1244,6 +1244,11 @@ class III:
             "isolation": os.environ.get("III_ISOLATION") or None,
             "telemetry": telemetry,
         }
+        # Optional, like the other SDKs: only send `description` when set so the
+        # engine's `#[serde(default)]` field stays absent otherwise.
+        if self._options.worker_description:
+            metadata["description"] = self._options.worker_description
+        return metadata
 
     def _register_worker_metadata(self) -> None:
         msg = InvokeFunctionMessage(

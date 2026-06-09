@@ -14,33 +14,42 @@ const CONFIG_NAME: &str = "iii.config.yaml";
 const CONFIG_CANDIDATES: &[&str] = &["iii.config.yaml", "config.yaml"];
 
 /// RAII guard for the project-wide install/lifecycle mutex.
+///
+/// Backed by a kernel advisory lock (`flock(2)`), so the lock dies with the
+/// process: a SIGKILLed or crashed holder can never strand the project the
+/// way the previous pidfile scheme did (a dead pid in `.iii-worker.lock`
+/// returned W120 forever until the file was removed by hand). The lockfile
+/// itself persists across acquisitions — unlinking a flocked path would let
+/// a new acquirer lock a fresh inode while a stale holder still owns the
+/// old one — and only carries the holder pid as W120 diagnostics.
 #[derive(Debug)]
 pub struct ProjectOperationLock {
-    path: PathBuf,
-    /// Exact bytes this guard wrote into the lockfile. `Drop` only unlinks
-    /// when the file's current contents still match — otherwise another
-    /// owner (recreated after a stale guard was reaped) keeps its lock.
-    marker: String,
+    _lock: nix::fcntl::Flock<fs::File>,
 }
 
 impl ProjectOperationLock {
     pub fn acquire(root: &Path) -> Result<Self, WorkerOpError> {
         let path = root.join(LOCKFILE_NAME);
-        match fs::OpenOptions::new()
+        let file = fs::OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
-        {
-            Ok(mut file) => {
+            .map_err(|source| WorkerOpError::LockIo {
+                path: path.clone(),
+                source,
+            })?;
+        match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => {
                 let marker = format!("pid={}\n", std::process::id());
-                file.write_all(marker.as_bytes())
-                    .map_err(|source| WorkerOpError::LockIo {
-                        path: path.clone(),
-                        source,
-                    })?;
-                Ok(Self { path, marker })
+                (&*lock)
+                    .set_len(0)
+                    .and_then(|_| (&*lock).write_all(marker.as_bytes()))
+                    .map_err(|source| WorkerOpError::LockIo { path, source })?;
+                Ok(Self { _lock: lock })
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err((_, nix::errno::Errno::EWOULDBLOCK)) => {
                 let holder_pid = fs::read_to_string(&path).ok().and_then(|s| {
                     s.lines()
                         .find_map(|l| l.strip_prefix("pid="))
@@ -48,18 +57,10 @@ impl ProjectOperationLock {
                 });
                 Err(WorkerOpError::LockBusy { holder_pid })
             }
-            Err(e) => Err(WorkerOpError::LockIo { path, source: e }),
-        }
-    }
-}
-
-impl Drop for ProjectOperationLock {
-    fn drop(&mut self) {
-        // Compare current contents to our marker so we never unlink a
-        // lockfile belonging to a different acquirer (e.g. one that
-        // recreated the file after we became a stale guard).
-        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.marker.as_str()) {
-            let _ = fs::remove_file(&self.path);
+            Err((_, errno)) => Err(WorkerOpError::LockIo {
+                path,
+                source: errno.into(),
+            }),
         }
     }
 }
@@ -115,7 +116,22 @@ mod tests {
         let ctx = ProjectCtx::open(dir.path().to_path_buf()).unwrap();
         assert!(dir.path().join(".iii-worker.lock").exists());
         drop(ctx);
-        assert!(!dir.path().join(".iii-worker.lock").exists());
+        // The file persists (flock semantics) but the lock must be released:
+        // a fresh acquisition succeeds immediately.
+        ProjectCtx::open(dir.path().to_path_buf())
+            .expect("lock must be released when the guard drops");
+    }
+
+    #[test]
+    fn stale_lockfile_from_dead_process_does_not_block() {
+        // Regression: a holder that died without cleanup (SIGKILL, crash)
+        // used to strand the project with W120 forever — the pidfile scheme
+        // never checked holder liveness. With flock, an unheld lockfile is
+        // just a file: acquisition must succeed no matter what pid it names.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".iii-worker.lock"), "pid=98708\n").unwrap();
+        ProjectCtx::open(dir.path().to_path_buf())
+            .expect("an orphaned lockfile must not block acquisition");
     }
 
     #[test]

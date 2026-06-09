@@ -880,7 +880,12 @@ impl ConfigurableWorker for QueueWorker {
     }
 }
 
-crate::register_worker!("iii-queue", QueueWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-queue",
+    QueueWorker,
+    description = "Async job processing with named queues, retries, and dead-letter support.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

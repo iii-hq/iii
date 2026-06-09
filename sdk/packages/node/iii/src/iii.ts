@@ -92,6 +92,11 @@ export type TelemetryOptions = {
 export type InitOptions = {
   /** Display name for this worker. Defaults to `hostname:pid`. */
   workerName?: string
+  /**
+   * One-line, human/LLM-readable summary of what this worker does.
+   * Surfaces in `engine::workers::list` / `engine::workers::info`.
+   */
+  workerDescription?: string
   /** Enable worker metrics via OpenTelemetry. Defaults to `true`. */
   enableMetricsReporting?: boolean
   /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
@@ -122,6 +127,7 @@ class Sdk implements ISdk {
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: Record<string, unknown>[] = []
   private workerName: string
+  private workerDescription?: string
   private workerId?: string
   private reconnectTimeout?: NodeJS.Timeout
   private metricsReportingEnabled: boolean
@@ -136,6 +142,7 @@ class Sdk implements ISdk {
     private readonly options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? getDefaultWorkerName()
+    this.workerDescription = options?.workerDescription
     this.metricsReportingEnabled = options?.enableMetricsReporting ?? true
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
@@ -527,6 +534,7 @@ class Sdk implements ISdk {
         runtime: 'node',
         version: SDK_VERSION,
         name: this.workerName,
+        description: this.workerDescription,
         os: getOsInfo(),
         pid: process.pid,
         isolation: process.env.III_ISOLATION || null,

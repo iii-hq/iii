@@ -136,30 +136,7 @@ pub struct ResolvedRoot {
 /// `iii worker remove .locks` -> delete_worker_artifacts wipe every per-worker
 /// fslock system-wide. We blanket-reject leading-dot names so the rule is
 /// stable even as new internal directories are added.
-pub fn validate_worker_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("Worker name cannot be empty".into());
-    }
-    if name.contains("..") {
-        return Err(format!("Worker name '{}' contains '..' sequence", name));
-    }
-    if name.starts_with('.') {
-        return Err(format!(
-            "Worker name '{}' cannot start with '.' (reserved for internal control directories)",
-            name
-        ));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err(format!(
-            "Worker name '{}' contains invalid characters. Only alphanumeric, dash, underscore, and dot are allowed.",
-            name
-        ));
-    }
-    Ok(())
-}
+pub use crate::core::types::validate_worker_name;
 
 /// Parse "name@version" into (name, Some(version)) or just (name, None).
 pub fn parse_worker_input(input: &str) -> (String, Option<String>) {

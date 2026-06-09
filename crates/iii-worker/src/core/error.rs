@@ -15,6 +15,7 @@ pub enum WorkerOpErrorKind {
     LocalPathNotAllowedViaTrigger, // W102
     MissingTarget,                 // W103
     ConsentRequired,               // W104
+    BadRequest,                    // W105
     NotFound,                      // W110
     AlreadyExists,                 // W111
     NotInstalled,                  // W112
@@ -47,6 +48,7 @@ impl WorkerOpErrorKind {
             Self::LocalPathNotAllowedViaTrigger => "W102",
             Self::MissingTarget => "W103",
             Self::ConsentRequired => "W104",
+            Self::BadRequest => "W105",
             Self::NotFound => "W110",
             Self::AlreadyExists => "W111",
             Self::NotInstalled => "W112",
@@ -78,9 +80,15 @@ pub enum WorkerOpError {
     #[error("invalid worker name {name:?}: {reason}")]
     InvalidName { name: String, reason: String },
 
+    /// Reserved. No production path constructs this since malformed
+    /// payloads moved to `BadRequest` (W105); kept for wire-code stability
+    /// because W101 is documented as a published code.
     #[error("invalid worker source {input:?}: {reason}")]
     InvalidSource { input: String, reason: String },
 
+    /// Reserved. Local-path installs are now permitted over the trigger
+    /// surface, so this is no longer constructed by any production path.
+    /// Kept for wire-code stability because W102 is a published code.
     #[error("local path {path:?} is not allowed via the worker::* trigger surface")]
     LocalPathNotAllowedViaTrigger { path: String },
 
@@ -89,6 +97,9 @@ pub enum WorkerOpError {
 
     #[error("{op:?} requires confirmation: pass yes:true")]
     ConsentRequired { op: String },
+
+    #[error("invalid payload for {function_id:?}: {reason}")]
+    BadRequest { function_id: String, reason: String },
 
     #[error("worker {name:?} not found")]
     NotFound { name: String },
@@ -192,6 +203,7 @@ impl WorkerOpError {
             Self::LocalPathNotAllowedViaTrigger { .. } => K::LocalPathNotAllowedViaTrigger,
             Self::MissingTarget { .. } => K::MissingTarget,
             Self::ConsentRequired { .. } => K::ConsentRequired,
+            Self::BadRequest { .. } => K::BadRequest,
             Self::NotFound { .. } => K::NotFound,
             Self::AlreadyExists { .. } => K::AlreadyExists,
             Self::NotInstalled { .. } => K::NotInstalled,
@@ -229,6 +241,20 @@ impl WorkerOpError {
             Self::LocalPathNotAllowedViaTrigger { path } => json!({ "path": path }),
             Self::MissingTarget { op, reason } => json!({ "op": op, "reason": reason }),
             Self::ConsentRequired { op } => json!({ "op": op }),
+            Self::BadRequest {
+                function_id,
+                reason,
+            } => {
+                json!({
+                    "function_id": function_id,
+                    "reason": reason,
+                    // LLM/automation recovery path: the request schema is one
+                    // call away and names every required field.
+                    "hint": format!(
+                        "call worker::schema {{ \"function_id\": {function_id:?} }} for the request schema"
+                    ),
+                })
+            }
             Self::NotFound { name }
             | Self::AlreadyExists { name }
             | Self::NotInstalled { name }
@@ -383,6 +409,27 @@ mod tests {
         let payload = err.to_payload();
         assert_eq!(payload["code"], "W170");
         assert_eq!(payload["details"], json!({}));
+    }
+
+    #[test]
+    fn bad_request_payload_carries_function_id_and_schema_hint() {
+        let err = WorkerOpError::BadRequest {
+            function_id: "worker::add".into(),
+            reason: "missing field `source`".into(),
+        };
+        let payload = err.to_payload();
+        assert_eq!(payload["code"], "W105");
+        assert_eq!(payload["details"]["function_id"], "worker::add");
+        assert_eq!(payload["details"]["reason"], "missing field `source`");
+        let hint = payload["details"]["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("worker::schema") && hint.contains("worker::add"),
+            "hint must point the caller at worker::schema for this function: {hint}"
+        );
+        assert!(
+            err.to_string().starts_with("invalid payload for"),
+            "BadRequest must not reuse InvalidSource's 'invalid worker source' stem"
+        );
     }
 
     #[test]

@@ -2358,7 +2358,12 @@ impl Worker for ObservabilityWorker {
     }
 }
 
-crate::register_worker!("iii-observability", ObservabilityWorker, mandatory);
+crate::register_worker!(
+    "iii-observability",
+    ObservabilityWorker,
+    description = "OpenTelemetry-based traces, metrics, logs, alerts, and sampling.",
+    mandatory
+);
 
 #[cfg(test)]
 mod tests {

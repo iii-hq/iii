@@ -901,7 +901,12 @@ impl StreamWorker {
     }
 }
 
-crate::register_worker!("iii-stream", StreamWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-stream",
+    StreamWorker,
+    description = "Build durable streams for real-time data subscriptions.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

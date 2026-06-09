@@ -428,7 +428,12 @@ impl StateWorker {
     }
 }
 
-crate::register_worker!("iii-state", StateWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-state",
+    StateWorker,
+    description = "Distributed key-value state management with reactive change triggers.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

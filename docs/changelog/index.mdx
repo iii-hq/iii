@@ -6,6 +6,17 @@ type: "reference"
 ---
 
 <Update label="0.19.0" description="June 2026">
+  ## `worker::*` management API is self-describing — and `kind: "local"` now works over the trigger
+
+  Every `worker::*` op (`add`/`remove`/`update`/`start`/`stop`/`list`/`clear`/`schema`) now publishes its request JSON Schema, a description, and `default_timeout_ms` / `idempotent` metadata through `engine::functions::info` and `worker::schema`, so an LLM or automation caller can discover the full contract without out-of-band docs. Workers can also report a one-line `description` (Node, Go, Rust, and Python SDKs) that surfaces in `engine::workers::list` / `engine::workers::info`.
+
+  **Breaking — error codes on the wire:**
+
+  - Malformed `worker::*` payloads now return **W105** (`BadRequest`) instead of **W101** (`InvalidSource`). The envelope's `details.hint` names the `worker::schema` call that returns the request schema. **W101** and **W102** are now reserved (documented but never emitted) — consumers matching `W101` for malformed payloads should match `W105`.
+  - `worker::*` op failures now surface the **W-code** as the transport `ErrorBody.code` (previously the generic `"invocation_failed"`, with the W-code only inside the message envelope). Consumers that matched `code == "invocation_failed"` to detect worker-op failures should match the W-code instead.
+
+  **Breaking — `worker::add { kind: "local" }` over the trigger:** the identical request that previously returned **W102** (rejection) now **succeeds**. The `path` resolves on the engine/daemon host and the install runs the manifest's `setup`/`install`/`start` scripts there. Because the engine does not authenticate worker identity, treat a daemon reachable by untrusted workers as a host-level code-execution surface — prefer registry names or OCI references for distributed workers, and lock down the daemon when exposing it.
+
   ## `engine::triggers::info` now exposes `response_schema`
 
   Trigger types can declare the schema a bound handler must **return** when the trigger fires. `engine::triggers::info` surfaces it as a new optional `response_schema` field alongside the existing `configuration_schema` (how to configure the trigger) and `request_schema` (what the handler receives) — the full trigger contract is now discoverable from a single call:

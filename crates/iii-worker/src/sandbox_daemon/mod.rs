@@ -122,6 +122,10 @@ pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()
             otel: Some(OtelConfig::default()),
             metadata: Some(WorkerMetadata {
                 name: "iii-sandbox".to_string(),
+                description: Some(
+                    "Launch and manage isolated worker sandboxes (create, exec, stop, list)."
+                        .to_string(),
+                ),
                 ..Default::default()
             }),
             ..Default::default()

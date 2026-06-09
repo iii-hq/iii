@@ -47,6 +47,18 @@ def test_get_worker_metadata_forwards_iii_isolation_env_var(
     assert metadata["isolation"] == "docker"
 
 
+def test_get_worker_metadata_omits_description_when_unset() -> None:
+    metadata = _call_metadata_method()
+
+    assert "description" not in metadata
+
+
+def test_get_worker_metadata_includes_worker_description_when_set() -> None:
+    metadata = _call_metadata_method(InitOptions(worker_description="resizes images"))
+
+    assert metadata["description"] == "resizes images"
+
+
 @requires_tomllib
 def test_detect_project_name_reads_pyproject_name(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "my-pkg"\n')
