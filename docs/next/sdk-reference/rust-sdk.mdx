@@ -153,6 +153,12 @@ The former name `IIIError` stays reachable at the crate root as a deprecated ali
 `Error::Remote(body) => body.code.as_str()` to branch on engine error codes
 (`invocation_failed`, `invocation_stopped`, `function_not_found`, `FORBIDDEN`, `TIMEOUT`, etc.).
 
+`InvocationError` is the structured form of a remote invocation failure (`code`, `message`,
+optional `function_id`, optional `stacktrace`), mirroring the Node and Python SDKs. Obtain it from
+an `Error` with `err.invocation_error()`, which returns `Some(InvocationError)` for `Error::Remote`
+and `None` for transport, serde, or handler errors. Exported as `iii_sdk::InvocationError` and
+`iii_sdk::errors::InvocationError`.
+
 ## Channels
 
 Import channel types from the `iii_sdk::channel` submodule
