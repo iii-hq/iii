@@ -50,6 +50,9 @@ pub use error::Error;
 pub use error::Error as IIIError;
 #[deprecated(since = "0.20.0", note = "renamed to IIIClient")]
 pub use iii::IIIClient as III;
+pub use iii::TelemetryOptions;
+#[deprecated(since = "0.20.0", note = "renamed to TelemetryOptions")]
+pub use iii::TelemetryOptions as WorkerTelemetryMeta;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
 pub use iii::{
     FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,

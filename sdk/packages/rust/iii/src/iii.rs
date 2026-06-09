@@ -217,7 +217,7 @@ where
 
 /// Telemetry metadata provided by the SDK to the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkerTelemetryMeta {
+pub struct TelemetryOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,7 +238,7 @@ pub struct WorkerMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<WorkerTelemetryMeta>,
+    pub telemetry: Option<TelemetryOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
 }
@@ -270,7 +270,7 @@ impl Default for WorkerMetadata {
             name: format!("{}:{}", hostname, pid),
             os: os_info,
             pid: Some(pid),
-            telemetry: Some(WorkerTelemetryMeta {
+            telemetry: Some(TelemetryOptions {
                 language,
                 project_name,
                 ..Default::default()

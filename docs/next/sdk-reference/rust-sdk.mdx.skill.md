@@ -207,10 +207,11 @@ The SDK re-exports the engine's structured introspection types:
 - `WorkerInfo`. `id`, `name`, runtime / version / OS fields, IP, `status`, `connected_at_ms`,
   `function_count`, registered `functions`, `active_invocations`, optional `isolation`.
 - `WorkerMetadata`. The structured metadata a worker reports about itself: `runtime`, `version`,
-  `name`, `os`, `pid`, `telemetry` (an optional `WorkerTelemetryMeta` carrying language /
+  `name`, `os`, `pid`, `telemetry` (an optional `TelemetryOptions` carrying language /
   framework / project labels plus an Amplitude key, used by iii-telemetry for anonymous usage
   reporting; distinct from the OpenTelemetry observability surfaces owned by iii-observability),
-  `isolation`. Rust is the only SDK that surfaces this as a distinct type today.
+  `isolation`. `TelemetryOptions` is exported at the crate root (matching Node and Python);
+  the former name `WorkerTelemetryMeta` stays as a deprecated alias.
 
 ## `MessageType`
 
