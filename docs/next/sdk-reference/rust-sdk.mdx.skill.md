@@ -216,3 +216,14 @@ The SDK re-exports the engine's structured introspection types:
 
 Not part of this SDK. Wire frames are typed via the protocol module's `Message` enum, which is
 internal to the SDK.
+
+## `EngineFunctions` / `EngineTriggers`
+
+Engine function and trigger ids for internal operations, with string values matching the Node SDK.
+Both are exported at the crate root (`iii_sdk::EngineFunctions`, `iii_sdk::EngineTriggers`) as unit
+structs carrying associated `&'static str` constants.
+
+- `EngineFunctions`: `LIST_FUNCTIONS`, `INFO_FUNCTIONS`, `LIST_WORKERS`, `INFO_WORKERS`,
+  `LIST_TRIGGERS`, `INFO_TRIGGERS`, `LIST_REGISTERED_TRIGGERS`, `INFO_REGISTERED_TRIGGERS`,
+  `REGISTER_WORKER`.
+- `EngineTriggers`: `FUNCTIONS_AVAILABLE`, `LOG`.
