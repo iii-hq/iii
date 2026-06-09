@@ -113,8 +113,9 @@ func WithName(name string) Option {
 	return func(cl *Client) { cl.name = name }
 }
 
-// New creates a Client for the engine at url (e.g. DefaultEngineURL). It does not
-// connect; call Connect to start the connection lifecycle.
+// New creates a [Client] for the engine at url (e.g. [DefaultEngineURL]). It does not
+// connect; call [Client.Connect] to start the connection lifecycle, or use
+// [RegisterWorker] to create and connect in one step.
 func New(url string, opts ...Option) *Client {
 	c := &Client{
 		url:          url,
@@ -136,15 +137,16 @@ func New(url string, opts ...Option) *Client {
 	return c
 }
 
-// RegisterWorker creates a Client for the engine at url and starts the connection
+// RegisterWorker creates a [Client] for the engine at url and starts the connection
 // lifecycle in the background, returning immediately. It is the idiomatic entry point,
 // matching registerWorker in the Node SDK and register_worker in the Rust SDK. Register
 // functions and triggers on the returned client; they are (re)sent on each connection.
-// Call Close to stop.
+// Call [Client.Close] to stop.
 //
-// To wait for the first connection (or fail fast on a bad URL), call Connect instead of
-// — or after — RegisterWorker; Connect blocks until connected, ctx is done, or the
-// reconnect budget is exhausted.
+// To wait for the first connection (or fail fast on a bad URL), call [Client.Connect]
+// instead of — or after — RegisterWorker; it blocks until connected, ctx is done, or the
+// reconnect budget is exhausted. Use [New] if you want to build a client without starting
+// the connection.
 func RegisterWorker(url string, opts ...Option) *Client {
 	c := New(url, opts...)
 	c.startSupervisor()
@@ -227,9 +229,9 @@ func (c *Client) RegisterTrigger(id, triggerType, functionID string, config, met
 	return nil
 }
 
-// TriggerRequest is the input to Trigger. Exactly the Action field selects the
-// delivery semantics: nil/await (default) waits for the result; VoidAction is
-// fire-and-forget; EnqueueAction routes through a named queue and awaits its receipt.
+// TriggerRequest is the input to [Client.Trigger]. The Action field selects the delivery
+// semantics: nil/await (default) waits for the result; [VoidAction] is fire-and-forget;
+// [EnqueueAction] routes through a named queue and awaits its receipt.
 type TriggerRequest struct {
 	// FunctionID is the engine function to invoke (e.g. an EngineFunctions constant).
 	FunctionID string
@@ -237,17 +239,17 @@ type TriggerRequest struct {
 	Data json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *TriggerAction
-	// Timeout overrides DefaultInvocationTimeout for an await/enqueue call.
+	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
 	Timeout time.Duration
 }
 
 // Trigger invokes a function on the engine. With the default (nil) or an enqueue action
-// it waits for the matching InvocationResult and returns its result, mapping a remote
-// error to *InvocationError and a missed deadline to ErrTimeout. With a void action it
-// is fire-and-forget and returns immediately with a nil result.
+// it waits for the matching invocation result and returns it, mapping a remote error to
+// [InvocationError] and a missed deadline to [ErrTimeout]. With a [VoidAction] it is
+// fire-and-forget and returns immediately with a nil result.
 //
-// ctx bounds the wait independently of Timeout: if ctx is cancelled first, its error is
-// returned and the pending entry is reclaimed.
+// ctx bounds the wait independently of [TriggerRequest.Timeout]: if ctx is cancelled
+// first, its error is returned and the pending entry is reclaimed.
 func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error) {
 	data := req.Data
 	if data == nil {

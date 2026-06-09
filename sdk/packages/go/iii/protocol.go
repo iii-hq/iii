@@ -1,11 +1,6 @@
-// Package iii is a Go SDK for the iii worker protocol. A process becomes an iii
-// "worker" by opening a single WebSocket to the engine and registering functions
-// and triggers; the engine invokes those functions and the worker replies over
-// the same socket.
-//
 // This file is the wire protocol: the message envelope and every message variant,
-// ported from the engine's source of truth at engine/src/protocol.rs. The Rust
-// engine declares its Message enum as:
+// ported from the engine's source of truth at engine/src/protocol.rs. The package
+// overview lives in doc.go. The Rust engine declares its Message enum as:
 //
 //	#[serde(tag = "type", rename_all = "lowercase")]
 //
@@ -224,9 +219,12 @@ type WorkerRegisteredMessage struct {
 	WorkerID string `json:"worker_id"`
 }
 
-// Ping and Pong are the two payloadless variants. They serialize to {"type":"ping"} /
-// {"type":"pong"} (engine/src/protocol.rs:121-122).
+// PingMessage is the payloadless keepalive the engine sends; it serializes to
+// {"type":"ping"} (engine/src/protocol.rs:121-122). The client replies with a PongMessage.
 type PingMessage struct{}
+
+// PongMessage is the payloadless reply to a PingMessage; it serializes to
+// {"type":"pong"} (engine/src/protocol.rs:121-122).
 type PongMessage struct{}
 
 // marshalEnvelope serializes a variant struct into a single tagged JSON object by
