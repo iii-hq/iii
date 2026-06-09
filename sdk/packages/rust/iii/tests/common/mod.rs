@@ -5,10 +5,10 @@ pub mod mock_engine;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use iii_sdk::{III, InitOptions, register_worker};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 
 static SHARED_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-static SHARED_III: OnceLock<III> = OnceLock::new();
+static SHARED_III: OnceLock<IIIClient> = OnceLock::new();
 
 #[ctor::dtor]
 fn shutdown() {
@@ -32,7 +32,7 @@ pub fn http_client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
-pub fn shared_iii() -> &'static III {
+pub fn shared_iii() -> &'static IIIClient {
     SHARED_III.get_or_init(|| {
         let rt = SHARED_RT.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()

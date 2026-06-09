@@ -1,5 +1,5 @@
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, III, RegisterTriggerType, TriggerRequest};
+use iii_sdk::{Error, IIIClient, RegisterTriggerType, TriggerRequest};
 use serde::Deserialize;
 
 /// Minimal deserialization target for `engine::triggers::list` rows used
@@ -58,7 +58,7 @@ impl TriggerHandler for WebhookHandler {
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     // Register trigger type — returns a typed handle
     let webhook = iii.register_trigger_type(
         RegisterTriggerType::new("webhook", "Incoming webhook trigger", WebhookHandler)
@@ -92,7 +92,7 @@ fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, Error>
 
 // ── List trigger types example ──────────────────────────────────────────
 
-pub async fn print_trigger_type_catalog(iii: &III) {
+pub async fn print_trigger_type_catalog(iii: &IIIClient) {
     println!("\n--- Listing all trigger types ---");
 
     // `engine::trigger-types::list` was retired in favor of

@@ -189,6 +189,16 @@ middleware; rarely needed by callers.
 The Python-only helper for declaring a function's request or response schema in a structured way.
 Accepts either a JSON Schema dict directly or constructed values; both forms reach `register_function`.
 
+## `EngineFunctions` / `EngineTriggers`
+
+Engine function and trigger ids for internal operations, with string values matching the Node SDK.
+Both are exported from the package root.
+
+- `EngineFunctions`: `LIST_FUNCTIONS`, `INFO_FUNCTIONS`, `LIST_WORKERS`, `INFO_WORKERS`,
+  `LIST_TRIGGERS`, `INFO_TRIGGERS`, `LIST_REGISTERED_TRIGGERS`, `INFO_REGISTERED_TRIGGERS`,
+  `REGISTER_WORKER`.
+- `EngineTriggers`: `FUNCTIONS_AVAILABLE`, `LOG`.
+
 ## Connection state
 
 `IIIConnectionState` is the literal-type alias `"disconnected" | "connecting" | "connected" |

@@ -6,7 +6,13 @@ from .channels import ChannelReader, ChannelWriter
 from .errors import InvocationError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
-from .iii_constants import FunctionRef, InitOptions, TelemetryOptions
+from .iii_constants import (
+    EngineFunctions,
+    EngineTriggers,
+    FunctionRef,
+    InitOptions,
+    TelemetryOptions,
+)
 from .iii_types import (
     AuthInput,
     AuthResult,
@@ -66,6 +72,9 @@ __all__ = [
     "register_worker",
     "TelemetryOptions",
     "TriggerAction",
+    # Engine
+    "EngineFunctions",
+    "EngineTriggers",
     # RBAC types
     "AuthInput",
     "AuthResult",
