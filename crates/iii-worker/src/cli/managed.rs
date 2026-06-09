@@ -5206,10 +5206,16 @@ workers:
                 "binary worker should be installed on disk"
             );
             let hits = recorded.lock().unwrap().clone();
-            let expected = format!("/download/{worker_name}?version=1.0.0");
+            // `with_download_query` appends `ci=true` when a CI env var (CI,
+            // GITHUB_ACTIONS, ...) is present, so match on path + version and
+            // tolerate extra query params instead of full-string equality.
+            let expected_path = format!("/download/{worker_name}");
             assert!(
-                hits.iter().any(|p| p == &expected),
-                "expected GET {expected} telemetry hit, got: {hits:?}"
+                hits.iter().any(|hit| {
+                    let (path, query) = hit.split_once('?').unwrap_or((hit.as_str(), ""));
+                    path == expected_path && query.split('&').any(|pair| pair == "version=1.0.0")
+                }),
+                "expected GET {expected_path}?version=1.0.0 telemetry hit, got: {hits:?}"
             );
             server.abort();
         })
