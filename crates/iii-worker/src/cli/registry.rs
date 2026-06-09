@@ -23,6 +23,39 @@ pub(crate) static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("Failed to create HTTP client")
 });
 
+/// Returns true when any standard CI environment variable is present.
+/// Matches the list used by engine telemetry and scaffolder-core.
+pub(crate) fn is_ci_environment() -> bool {
+    const CI_ENV_VARS: &[&str] = &[
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "JENKINS_URL",
+        "TRAVIS",
+        "BUILDKITE",
+        "TF_BUILD",
+        "CODEBUILD_BUILD_ID",
+        "BITBUCKET_BUILD_NUMBER",
+        "DRONE",
+        "TEAMCITY_VERSION",
+    ];
+
+    CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
+}
+
+/// Append `version` and, when in CI, `ci=true` to a `GET /download/{slug}` request.
+pub(crate) fn with_download_query(
+    request: reqwest::RequestBuilder,
+    version: &str,
+) -> reqwest::RequestBuilder {
+    let mut request = request.query(&[("version", version)]);
+    if is_ci_environment() {
+        request = request.query(&[("ci", "true")]);
+    }
+    request
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct BinaryInfo {
     pub url: String,
@@ -196,7 +229,9 @@ pub async fn fetch_worker_info(
 
         let mut request = HTTP_CLIENT.get(&url);
         if let Some(v) = version {
-            request = request.query(&[("version", v)]);
+            request = with_download_query(request, v);
+        } else if is_ci_environment() {
+            request = request.query(&[("ci", "true")]);
         }
 
         let resp = request
@@ -369,8 +404,119 @@ pub fn enforce_dep_graph_bounds(
 }
 
 #[cfg(test)]
+pub(crate) fn clear_ci_env_vars_for_test() {
+    const CI_ENV_VARS: &[&str] = &[
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "JENKINS_URL",
+        "TRAVIS",
+        "BUILDKITE",
+        "TF_BUILD",
+        "CODEBUILD_BUILD_ID",
+        "BITBUCKET_BUILD_NUMBER",
+        "DRONE",
+        "TEAMCITY_VERSION",
+    ];
+    for var in CI_ENV_VARS {
+        // SAFETY: test-only; serialized by TEST_ENV_LOCK in callers.
+        unsafe { std::env::remove_var(var) };
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_ci_environment_false_when_no_ci_vars() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_ci_env_vars_for_test();
+        assert!(!is_ci_environment());
+    }
+
+    #[test]
+    fn is_ci_environment_detects_ci_var() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_ci_env_vars_for_test();
+        // SAFETY: test-only; serialized by TEST_ENV_LOCK.
+        unsafe { std::env::set_var("CI", "true") };
+        assert!(is_ci_environment());
+        unsafe { std::env::remove_var("CI") };
+    }
+
+    #[test]
+    fn is_ci_environment_detects_github_actions() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_ci_env_vars_for_test();
+        // SAFETY: test-only; serialized by TEST_ENV_LOCK.
+        unsafe { std::env::set_var("GITHUB_ACTIONS", "true") };
+        assert!(is_ci_environment());
+        unsafe { std::env::remove_var("GITHUB_ACTIONS") };
+    }
+
+    #[tokio::test]
+    async fn fetch_worker_info_appends_ci_true_in_ci_environment() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_ci_env_vars_for_test();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut buf = [0_u8; 4096];
+            let n = stream.read(&mut buf).await.expect("read request");
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_string();
+            let _ = tx.send(path);
+            let _ = stream
+                .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n")
+                .await;
+        });
+
+        // SAFETY: test-only; serialized by TEST_ENV_LOCK.
+        unsafe { std::env::set_var("III_API_URL", &base_url) };
+        unsafe { std::env::set_var("CI", "true") };
+
+        let result = fetch_worker_info("iii-exec", Some("latest")).await;
+
+        unsafe { std::env::remove_var("III_API_URL") };
+        unsafe { std::env::remove_var("CI") };
+
+        assert!(
+            result.is_ok(),
+            "fetch_worker_info should succeed: {result:?}"
+        );
+        let path = rx.await.expect("request captured");
+        assert!(
+            path.contains("ci=true"),
+            "expected ci=true in download request, got: {path}"
+        );
+        assert!(
+            path.contains("version=latest"),
+            "expected version=latest in download request, got: {path}"
+        );
+        server.abort();
+    }
 
     #[tokio::test]
     async fn fetch_worker_info_binary_via_file() {
