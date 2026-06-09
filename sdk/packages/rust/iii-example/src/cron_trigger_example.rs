@@ -1,10 +1,10 @@
 use iii_sdk::builtin_triggers::*;
 use iii_sdk::trigger::IIITrigger;
-use iii_sdk::{Error, III, RegisterFunction};
+use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// Examples using built-in trigger types with the typed `IIITrigger` enum.
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     // ── Cron trigger ────────────────────────────────────────────────
     iii.register_function(
         "example::scheduled_cleanup",

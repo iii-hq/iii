@@ -1,10 +1,10 @@
 use iii_observability::{Logger, execute_traced_request};
 use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
 use iii_sdk::trigger::IIITrigger;
-use iii_sdk::{ApiRequest, ApiResponse, Error, III, RegisterFunction};
+use iii_sdk::{ApiRequest, ApiResponse, Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     let client = reqwest::Client::new();
 
     let get_client = client.clone();

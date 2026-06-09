@@ -7,7 +7,7 @@ export { InvocationError, type InvocationErrorInit } from './errors'
 /** @deprecated Renamed; import `InvocationError` / `InvocationErrorInit` from `iii-sdk/errors`. */
 export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
 
-export { type InitOptions, registerWorker, TriggerAction } from './iii'
+export { type InitOptions, registerWorker, type TelemetryOptions, TriggerAction } from './iii'
 
 export { EngineFunctions, EngineTriggers } from './iii-constants'
 
@@ -39,14 +39,17 @@ export type {
   ApiResponse,
   HttpRequest,
   HttpResponse,
+  IIIClient,
   InternalHttpRequest,
-  ISdk,
   RegisterFunctionInput,
   RegisterFunctionOptions,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,
 } from './types'
+
+/** @deprecated Renamed to `IIIClient`. */
+export type { ISdk } from './types'
 
 /** @deprecated Import runtime types from `iii-sdk/runtime`. */
 export type { FunctionRef, TriggerTypeRef } from './runtime'
