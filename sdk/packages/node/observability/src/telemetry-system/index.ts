@@ -125,9 +125,23 @@ export function initOtel(config: OtelConfig = {}): void {
   // registration order, so baggage entries are materialized as span
   // attributes before the batch exporter reads them.
   const spanExporter = new EngineSpanExporter(sharedConnection)
+  // Without an explicit scheduledDelayMillis, BatchSpanProcessor inherits the
+  // OpenTelemetry default of 5000ms, so an ended span sits in the buffer up to
+  // 5s before it is flushed to the engine — the dominant reason traces show up
+  // seconds after the action that produced them. Mirror the logs path
+  // (BatchLogRecordProcessor below) with a small flush delay. maxExportBatchSize
+  // stays at the OTel default so a burst of spans from one turn still coalesces
+  // into a single frame rather than one frame per span.
+  const spansScheduledDelayMillis =
+    config.spansFlushIntervalMs ??
+    parseNumberEnv(process.env.OTEL_SPANS_FLUSH_INTERVAL_MS, 0) ??
+    DEFAULT_OTEL_CONFIG.spansFlushIntervalMs
   tracerProvider = new NodeTracerProvider({
     resource,
-    spanProcessors: [new BaggageSpanProcessor(), new BatchSpanProcessor(spanExporter)],
+    spanProcessors: [
+      new BaggageSpanProcessor(),
+      new BatchSpanProcessor(spanExporter, { scheduledDelayMillis: spansScheduledDelayMillis }),
+    ],
   })
 
   // Register W3C Trace Context and Baggage propagators

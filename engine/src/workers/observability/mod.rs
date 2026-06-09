@@ -518,6 +518,75 @@ fn collapse_spans(
         .collect()
 }
 
+/// From a trace's corrected (post prune+collapse) spans and the ids that just
+/// arrived in this coalesce window, select the spans to push on the detail
+/// stream: each arrived survivor plus its corrected ancestor chain, walked to
+/// the root.
+///
+/// Including the chain is what re-attaches a span whose nearest real parent is a
+/// KEPT internal wrapper (e.g. `stream_triggers`) that the raw window omitted —
+/// without it the consumer treats the span's absent parent as a new depth-0 root
+/// (the console/web "phantom root" bug). Walking to the root keeps every frame
+/// self-contained, so it survives a dropped earlier frame the same way the feed
+/// already self-heals on reconnect; the cost is re-emitting ancestors, which is
+/// safe because the detail feed is upsert-by-`span_id`. Returned spans carry
+/// their CORRECTED `parent_span_id`, so the consumer's `buildSpanTree` nests
+/// them identically to `traces::tree` instead of re-rooting.
+fn detail_stream_spans(
+    corrected: &[otel::StoredSpan],
+    arrived_ids: &HashSet<String>,
+) -> Vec<otel::StoredSpan> {
+    let parent_of: HashMap<&str, Option<&str>> = corrected
+        .iter()
+        .map(|s| (s.span_id.as_str(), s.parent_span_id.as_deref()))
+        .collect();
+
+    let mut emit_ids: HashSet<String> = HashSet::new();
+    for span in corrected {
+        // Start only from spans that actually arrived this window AND survived
+        // the pipeline; a collapsed/pruned arrival simply contributes nothing.
+        if !arrived_ids.contains(&span.span_id) {
+            continue;
+        }
+        let mut cursor: Option<&str> = Some(span.span_id.as_str());
+        let mut guard = 0usize;
+        while let Some(id) = cursor {
+            // Already walked this id (and therefore its ancestors) — stop.
+            if !emit_ids.insert(id.to_string()) {
+                break;
+            }
+            cursor = parent_of.get(id).copied().flatten();
+            guard += 1;
+            if guard > 100_000 {
+                break; // cycle guard, mirrors collapse_spans
+            }
+        }
+    }
+
+    corrected
+        .iter()
+        .filter(|s| emit_ids.contains(&s.span_id))
+        .cloned()
+        .collect()
+}
+
+/// Build the detail-stream payload for one trace: run the same prune+collapse
+/// pipeline `traces::tree` uses over the FULL raw trace, then keep each arrived
+/// span and its corrected ancestor chain (see [`detail_stream_spans`]).
+///
+/// The full trace — not just the window — is required because the surviving
+/// ancestor a span must reparent to may have arrived in an earlier window.
+/// Pure over its inputs so the correction is unit-testable without span storage.
+fn corrected_detail_spans(
+    full_trace: Vec<otel::StoredSpan>,
+    arrived_ids: &HashSet<String>,
+    rules: &[CompiledCollapseRule],
+) -> Vec<otel::StoredSpan> {
+    let pruned = prune_empty_trigger_spans(full_trace);
+    let corrected = collapse_spans(pruned, rules);
+    detail_stream_spans(&corrected, arrived_ids)
+}
+
 fn build_span_tree(spans: Vec<otel::StoredSpan>) -> Vec<SpanTreeNode> {
     let mut children_map: HashMap<String, Vec<otel::StoredSpan>> = HashMap::new();
     let mut roots: Vec<otel::StoredSpan> = Vec::new();
@@ -873,13 +942,20 @@ impl ObservabilityWorker {
 
     /// Push the coalesce window's spans onto the live trace streams via
     /// ephemeral `stream::send`: root rows (internal/plumbing excluded) to the
-    /// global list stream, and every span grouped by `trace_id` to that trace's
-    /// detail stream. Fire-and-forget — the in-memory store stays authoritative
-    /// (re-read once on reconnect), so a dropped frame self-heals rather than
-    /// corrupting client state.
+    /// global list stream, and — per trace touched this window — tree-corrected
+    /// spans to that trace's detail stream. The detail payload is rebuilt from
+    /// the FULL trace in storage with the same prune+collapse pipeline as
+    /// `traces::tree` (see `corrected_detail_spans`), so the live feed is
+    /// directly appendable and never re-orphans a span whose real parent was an
+    /// internal wrapper the window filtered out. Fire-and-forget — the in-memory
+    /// store stays authoritative (re-read once on reconnect), so a dropped frame
+    /// self-heals rather than corrupting client state.
     ///
-    /// Loop-safe by construction: the `batch` is the post-filter window, which
-    /// already excludes engine-internal spans (`is_internal_span`) — and
+    /// Loop-safe by construction: spans only ENTER the feed through the
+    /// subscriber's post-filter window, which already excludes engine-internal
+    /// spans (`is_internal_span`) and the trigger's own delivery spans. The
+    /// detail payload may re-read KEPT internal wrappers from storage to repair
+    /// causality, but those are existing stored spans, not new ones — and
     /// `stream::send` plus the `iii::console::*` consumer handlers are all
     /// builtins (`iii.function.kind=internal`), so neither delivery re-enters
     /// the feed (see the subscriber loop's loop-break + consumer contract).
@@ -914,16 +990,42 @@ impl ObservabilityWorker {
             );
         }
 
-        // Detail: every (non-internal) span grouped by trace_id, to that
-        // trace's group. Only a subscriber that joined this `trace_id` receives
-        // it (engine-side fan-out filter), so a trace nobody is viewing costs
-        // just the no-match early-out in `stream::invoke_triggers`.
-        let mut by_trace: HashMap<&str, Vec<&otel::StoredSpan>> = HashMap::new();
+        // Detail: tree-corrected spans grouped by trace_id, to that trace's
+        // group. The raw window is structurally lossy — its spans' parents point
+        // at engine-internal wrappers (`stream_triggers` etc.) the subscriber
+        // already filtered out, so a naive push re-orphans every span whose real
+        // parent was such a wrapper. Instead, per touched trace, recompute
+        // structure from the FULL trace in storage with the SAME pipeline as
+        // `traces::tree`, then push each arrived span with its corrected ancestor
+        // chain. Only a subscriber that joined this `trace_id` receives it
+        // (engine-side fan-out filter), so a trace nobody is viewing costs just
+        // the no-match early-out in `stream::invoke_triggers`.
+        //
+        // Cost: one in-memory `get_spans_by_trace_id` + prune/collapse per
+        // distinct trace per coalesce tick (bounded by the 300ms window and the
+        // set of traces actively streaming). Acceptable; a future optimization
+        // could memoize the corrected parent map per trace.
+        let Some(storage) = otel::get_span_storage() else {
+            return; // No in-memory store → nothing to correct against.
+        };
+        let collapse_rules = otel::get_otel_config()
+            .map(|c| compile_collapse_rules(&c.collapse_spans))
+            .unwrap_or_default();
+
+        let mut arrived_by_trace: HashMap<&str, HashSet<String>> = HashMap::new();
         for span in batch {
-            by_trace.entry(&span.trace_id).or_default().push(span);
+            arrived_by_trace
+                .entry(&span.trace_id)
+                .or_default()
+                .insert(span.span_id.clone());
         }
-        for (trace_id, spans) in by_trace {
-            if let Ok(spans) = serde_json::to_value(&spans) {
+
+        for (trace_id, arrived_ids) in arrived_by_trace {
+            let full_trace = storage.get_spans_by_trace_id(trace_id);
+            let to_send = corrected_detail_spans(full_trace, &arrived_ids, &collapse_rules);
+            if !to_send.is_empty()
+                && let Ok(spans) = serde_json::to_value(&to_send)
+            {
                 send(engine, TRACE_SPANS_STREAM, trace_id.to_string(), spans);
             }
         }
@@ -2364,7 +2466,7 @@ crate::register_worker!("iii-observability", ObservabilityWorker, mandatory);
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     // =========================================================================
     // Helper: create a StoredSpan with configurable fields
@@ -2584,6 +2686,191 @@ mod tests {
         assert_eq!(tree[0].span.span_id, "call");
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].span.span_id, "leaf");
+    }
+
+    // =========================================================================
+    // detail stream correction tests (corrected_detail_spans)
+    // =========================================================================
+
+    #[test]
+    fn test_corrected_detail_spans_reattaches_under_kept_wrapper() {
+        // turn -> steering_check -> stream_triggers (internal wrapper) -> leaf.
+        // Only `leaf` arrives this window — the wrapper is internal, so the span
+        // subscriber filtered it out of the batch. The OLD feed pushed just
+        // `leaf` pointing at the absent wrapper → phantom depth-0 root. The
+        // corrected payload must KEEP the wrapper (it has a child) and emit the
+        // whole chain so `leaf` nests under it, matching `traces::tree`.
+        let turn = make_span("t", "turn", None, "turn", "harness", 100, 900, "ok", vec![]);
+        let steering = make_span(
+            "t",
+            "steer",
+            Some("turn"),
+            "steering_check",
+            "harness",
+            110,
+            880,
+            "ok",
+            vec![],
+        );
+        let wrapper = make_span(
+            "t",
+            "wrap",
+            Some("steer"),
+            "stream_triggers",
+            "harness",
+            120,
+            870,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+        let leaf = make_span(
+            "t",
+            "leaf",
+            Some("wrap"),
+            "context-compaction::on_agent_event",
+            "ctx",
+            130,
+            860,
+            "ok",
+            vec![],
+        );
+
+        let full = vec![turn, steering, wrapper, leaf];
+        let arrived: HashSet<String> = ["leaf".to_string()].into_iter().collect();
+
+        let sent = corrected_detail_spans(full, &arrived, &[]);
+        let ids: HashSet<&str> = sent.iter().map(|s| s.span_id.as_str()).collect();
+
+        // Kept internal wrapper + the spine are emitted so nothing re-roots.
+        assert!(
+            ids.contains("wrap"),
+            "kept internal wrapper must be streamed so the leaf has a present parent"
+        );
+        assert!(ids.contains("leaf"));
+        assert!(ids.contains("steer"));
+        assert!(ids.contains("turn"));
+
+        // The leaf still parents to the wrapper, not to a phantom root.
+        let leaf = sent.iter().find(|s| s.span_id == "leaf").unwrap();
+        assert_eq!(leaf.parent_span_id.as_deref(), Some("wrap"));
+
+        // The chain is intact: building the tree yields a single root.
+        let tree = build_span_tree(sent);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].span.span_id, "turn");
+    }
+
+    #[test]
+    fn test_corrected_detail_spans_drops_childless_wrapper() {
+        // steering_check has a childless `stream_triggers` (no-op fan-out) plus a
+        // real `leaf`. The childless wrapper is pruned and never streamed; the
+        // leaf streams under the surviving `steering_check`.
+        let steering = make_span(
+            "t",
+            "steer",
+            None,
+            "steering_check",
+            "harness",
+            100,
+            500,
+            "ok",
+            vec![],
+        );
+        let empty_wrapper = make_span(
+            "t",
+            "wrap",
+            Some("steer"),
+            "stream_triggers",
+            "harness",
+            110,
+            200,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+        let leaf = make_span(
+            "t",
+            "leaf",
+            Some("steer"),
+            "models::get",
+            "models",
+            120,
+            480,
+            "ok",
+            vec![],
+        );
+
+        let full = vec![steering, empty_wrapper, leaf];
+        let arrived: HashSet<String> = ["leaf".to_string()].into_iter().collect();
+
+        let sent = corrected_detail_spans(full, &arrived, &[]);
+        let ids: HashSet<&str> = sent.iter().map(|s| s.span_id.as_str()).collect();
+
+        assert!(
+            !ids.contains("wrap"),
+            "childless trigger wrapper must be pruned, not streamed"
+        );
+        assert!(ids.contains("leaf"));
+        assert!(ids.contains("steer"));
+        let leaf = sent.iter().find(|s| s.span_id == "leaf").unwrap();
+        assert_eq!(leaf.parent_span_id.as_deref(), Some("steer"));
+    }
+
+    #[test]
+    fn test_corrected_detail_spans_applies_collapse_reparent() {
+        // call -> trigger (collapse rule) -> leaf. The collapsed wrapper is
+        // removed and the leaf reparents to `call` on the stream, just as in
+        // `traces::tree`.
+        let call = make_span(
+            "t",
+            "call",
+            None,
+            "call h::trigger",
+            "iii-test",
+            100,
+            500,
+            "ok",
+            vec![],
+        );
+        let wrapper = make_span(
+            "t",
+            "trig",
+            Some("call"),
+            "trigger h::trigger",
+            "harness",
+            110,
+            480,
+            "ok",
+            vec![],
+        );
+        let leaf = make_span(
+            "t",
+            "leaf",
+            Some("trig"),
+            "harness.h::trigger",
+            "harness",
+            120,
+            470,
+            "ok",
+            vec![],
+        );
+
+        let rules = compile_collapse_rules(&[config::SpanCollapseRule {
+            name: "trigger *".to_string(),
+            service: Some("harness".to_string()),
+        }]);
+        let full = vec![call, wrapper, leaf];
+        let arrived: HashSet<String> = ["leaf".to_string()].into_iter().collect();
+
+        let sent = corrected_detail_spans(full, &arrived, &rules);
+        let ids: HashSet<&str> = sent.iter().map(|s| s.span_id.as_str()).collect();
+
+        assert!(
+            !ids.contains("trig"),
+            "collapsed wrapper must not be streamed"
+        );
+        assert!(ids.contains("call"));
+        let leaf = sent.iter().find(|s| s.span_id == "leaf").unwrap();
+        assert_eq!(leaf.parent_span_id.as_deref(), Some("call"));
     }
 
     #[test]
