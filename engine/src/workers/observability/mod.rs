@@ -447,6 +447,19 @@ fn prune_empty_trigger_spans(mut spans: Vec<otel::StoredSpan>) -> Vec<otel::Stor
     spans
 }
 
+/// Compiled collapse rules for the global config, cached after first use.
+/// `GLOBAL_OTEL_CONFIG` is a set-once `OnceLock`, so the compiled form never
+/// changes; callers on the hot path (one per coalesce tick / REST request)
+/// must not recompile the regexes each time. Returns an empty slice — without
+/// poisoning the cache — if the config is not set yet.
+fn cached_collapse_rules() -> &'static [CompiledCollapseRule] {
+    static RULES: std::sync::OnceLock<Vec<CompiledCollapseRule>> = std::sync::OnceLock::new();
+    match otel::get_otel_config() {
+        Some(config) => RULES.get_or_init(|| compile_collapse_rules(&config.collapse_spans)),
+        None => &[],
+    }
+}
+
 /// Compile the configured collapse rules, skipping any with invalid patterns.
 fn compile_collapse_rules(rules: &[config::SpanCollapseRule]) -> Vec<CompiledCollapseRule> {
     rules
@@ -549,17 +562,13 @@ fn detail_stream_spans(
             continue;
         }
         let mut cursor: Option<&str> = Some(span.span_id.as_str());
-        let mut guard = 0usize;
         while let Some(id) = cursor {
             // Already walked this id (and therefore its ancestors) — stop.
+            // This also terminates parent cycles: a cycle must revisit an id.
             if !emit_ids.insert(id.to_string()) {
                 break;
             }
             cursor = parent_of.get(id).copied().flatten();
-            guard += 1;
-            if guard > 100_000 {
-                break; // cycle guard, mirrors collapse_spans
-            }
         }
     }
 
@@ -570,9 +579,23 @@ fn detail_stream_spans(
         .collect()
 }
 
-/// Build the detail-stream payload for one trace: run the same prune+collapse
-/// pipeline `traces::tree` uses over the FULL raw trace, then keep each arrived
-/// span and its corrected ancestor chain (see [`detail_stream_spans`]).
+/// Shared trace-correction pipeline: drop no-op trigger fan-out wrappers
+/// (childless state_triggers/stream_triggers — wrappers that actually invoked
+/// a handler are kept so trigger→handler causality stays visible), then
+/// collapse user-configured pass-through spans, reparenting children to the
+/// nearest survivor. Both `traces::tree` and the live detail stream go through
+/// this one function so the live feed can never disagree with the REST tree.
+fn correct_trace_spans(
+    spans: Vec<otel::StoredSpan>,
+    rules: &[CompiledCollapseRule],
+) -> Vec<otel::StoredSpan> {
+    collapse_spans(prune_empty_trigger_spans(spans), rules)
+}
+
+/// Build the detail-stream payload for one trace: run the same
+/// [`correct_trace_spans`] pipeline `traces::tree` uses over the FULL raw
+/// trace, then keep each arrived span and its corrected ancestor chain (see
+/// [`detail_stream_spans`]).
 ///
 /// The full trace — not just the window — is required because the surviving
 /// ancestor a span must reparent to may have arrived in an earlier window.
@@ -582,8 +605,7 @@ fn corrected_detail_spans(
     arrived_ids: &HashSet<String>,
     rules: &[CompiledCollapseRule],
 ) -> Vec<otel::StoredSpan> {
-    let pruned = prune_empty_trigger_spans(full_trace);
-    let corrected = collapse_spans(pruned, rules);
+    let corrected = correct_trace_spans(full_trace, rules);
     detail_stream_spans(&corrected, arrived_ids)
 }
 
@@ -1008,9 +1030,7 @@ impl ObservabilityWorker {
         let Some(storage) = otel::get_span_storage() else {
             return; // No in-memory store → nothing to correct against.
         };
-        let collapse_rules = otel::get_otel_config()
-            .map(|c| compile_collapse_rules(&c.collapse_spans))
-            .unwrap_or_default();
+        let collapse_rules = cached_collapse_rules();
 
         let mut arrived_by_trace: HashMap<&str, HashSet<String>> = HashMap::new();
         for span in batch {
@@ -1022,7 +1042,7 @@ impl ObservabilityWorker {
 
         for (trace_id, arrived_ids) in arrived_by_trace {
             let full_trace = storage.get_spans_by_trace_id(trace_id);
-            let to_send = corrected_detail_spans(full_trace, &arrived_ids, &collapse_rules);
+            let to_send = corrected_detail_spans(full_trace, &arrived_ids, collapse_rules);
             if !to_send.is_empty()
                 && let Ok(spans) = serde_json::to_value(&to_send)
             {
@@ -1251,17 +1271,7 @@ impl ObservabilityWorker {
                     })));
                 }
 
-                // Drop no-op trigger fan-out wrappers (childless
-                // state_triggers/stream_triggers); wrappers that actually invoked
-                // a handler are kept so the trigger→handler causality stays visible.
-                let all_spans = prune_empty_trigger_spans(all_spans);
-
-                // Collapse user-configured pass-through wrapper spans before
-                // building the tree (children reparent to the nearest survivor).
-                let collapse_rules = otel::get_otel_config()
-                    .map(|c| compile_collapse_rules(&c.collapse_spans))
-                    .unwrap_or_default();
-                let all_spans = collapse_spans(all_spans, &collapse_rules);
+                let all_spans = correct_trace_spans(all_spans, cached_collapse_rules());
 
                 let roots = build_span_tree(all_spans);
 

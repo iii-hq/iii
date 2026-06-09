@@ -41,7 +41,7 @@ import { SharedEngineConnection } from './connection'
 import { EngineSpanExporter, EngineMetricsExporter, EngineLogExporter } from './exporters'
 import { extractTraceparent } from './context'
 import { patchGlobalFetch, unpatchGlobalFetch } from './fetch-instrumentation'
-import { parseIntegerEnv, parseNumberEnv } from './utils'
+import { parseIntegerEnv, resolveFlushIntervalMs } from './utils'
 
 // Re-export everything from submodules
 export * from './types'
@@ -131,11 +131,15 @@ export function initOtel(config: OtelConfig = {}): void {
   // seconds after the action that produced them. Mirror the logs path
   // (BatchLogRecordProcessor below) with a small flush delay. maxExportBatchSize
   // stays at the OTel default so a burst of spans from one turn still coalesces
-  // into a single frame rather than one frame per span.
-  const spansScheduledDelayMillis =
-    config.spansFlushIntervalMs ??
-    parseNumberEnv(process.env.OTEL_SPANS_FLUSH_INTERVAL_MS, 0) ??
-    DEFAULT_OTEL_CONFIG.spansFlushIntervalMs
+  // into a single frame rather than one frame per span. The standard
+  // OTEL_BSP_SCHEDULE_DELAY stays in the fallback chain because the OTel SDK
+  // ignores it once an explicit value is passed.
+  const spansScheduledDelayMillis = resolveFlushIntervalMs(
+    config.spansFlushIntervalMs,
+    process.env.OTEL_SPANS_FLUSH_INTERVAL_MS,
+    process.env.OTEL_BSP_SCHEDULE_DELAY,
+    DEFAULT_OTEL_CONFIG.spansFlushIntervalMs,
+  )
   tracerProvider = new NodeTracerProvider({
     resource,
     spanProcessors: [
@@ -201,10 +205,12 @@ export function initOtel(config: OtelConfig = {}): void {
 
   // Initialize logs (always enabled when OTEL is enabled)
   const logExporter = new EngineLogExporter(sharedConnection)
-  const logsScheduledDelayMillis =
-    config.logsFlushIntervalMs ??
-    parseNumberEnv(process.env.OTEL_LOGS_FLUSH_INTERVAL_MS, 0) ??
-    DEFAULT_OTEL_CONFIG.logsFlushIntervalMs
+  const logsScheduledDelayMillis = resolveFlushIntervalMs(
+    config.logsFlushIntervalMs,
+    process.env.OTEL_LOGS_FLUSH_INTERVAL_MS,
+    process.env.OTEL_BLRP_SCHEDULE_DELAY,
+    DEFAULT_OTEL_CONFIG.logsFlushIntervalMs,
+  )
   const logsMaxExportBatchSize =
     config.logsBatchSize ?? parseIntegerEnv(process.env.OTEL_LOGS_BATCH_SIZE, 1) ?? DEFAULT_OTEL_CONFIG.logsBatchSize
 

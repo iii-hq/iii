@@ -1,8 +1,12 @@
 /**
  * Parse a numeric environment variable with optional minimum bound.
+ *
+ * An empty or whitespace-only string is treated as unset: `Number('')` is 0,
+ * so without this check a variable set-but-blank (common in .env files) would
+ * silently resolve to 0 instead of falling through to the default.
  */
 export function parseNumberEnv(value: string | undefined, minimum: number = 0): number | undefined {
-  if (value === undefined) return undefined
+  if (value === undefined || value.trim() === '') return undefined
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < minimum) return undefined
   return parsed
@@ -18,4 +22,19 @@ export function parseIntegerEnv(
   const parsed = parseNumberEnv(value, minimum)
   if (parsed === undefined || !Number.isInteger(parsed)) return undefined
   return parsed
+}
+
+/**
+ * Resolve a batch-processor flush delay: explicit config wins, then the
+ * III-specific env var, then the standard OTel env var (which the OTel SDK
+ * stops honoring once we pass an explicit `scheduledDelayMillis`), then the
+ * III default.
+ */
+export function resolveFlushIntervalMs(
+  configValue: number | undefined,
+  iiiEnvValue: string | undefined,
+  otelEnvValue: string | undefined,
+  defaultValue: number,
+): number {
+  return configValue ?? parseNumberEnv(iiiEnvValue, 0) ?? parseNumberEnv(otelEnvValue, 0) ?? defaultValue
 }
