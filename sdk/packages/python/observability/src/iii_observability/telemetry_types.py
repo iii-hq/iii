@@ -30,6 +30,13 @@ class OtelConfig:
     fetch_instrumentation_enabled: bool = True
     """Auto-instrument urllib HTTP calls via URLLibInstrumentor. Defaults to True."""
 
+    spans_flush_interval_ms: int | None = None
+    """Span processor flush delay in milliseconds. Defaults to 100ms when not set.
+
+    The OpenTelemetry default of 5000ms is what makes traces appear seconds
+    after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS.
+    """
+
     logs_enabled: bool | None = None
     """Enable OTel log export via EngineLogExporter. Defaults to True when OTel is enabled."""
 

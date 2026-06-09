@@ -23,7 +23,9 @@ use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{BatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::trace::{
+    BatchConfigBuilder as SpanBatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider,
+};
 use tokio::sync::Mutex;
 
 use self::connection::SharedEngineConnection;
@@ -289,11 +291,37 @@ pub async fn init_otel(config: OtelConfig) -> bool {
     // registration order, so baggage entries are materialized as span
     // attributes before the batch exporter reads them.
     let span_exporter = EngineSpanExporter::new(connection.clone());
+
+    // Without an explicit scheduled delay, the batch span processor inherits the
+    // OpenTelemetry default of ~5000ms, so an ended span sits in the buffer up to
+    // 5s before reaching the engine — the dominant reason traces appear seconds
+    // late. Mirror the logs path: resolve config > custom env var > 100ms default.
+    let spans_flush_ms = config
+        .spans_flush_interval_ms
+        .or_else(|| {
+            std::env::var("OTEL_SPANS_FLUSH_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+        })
+        .unwrap_or(100);
+
+    let span_batch_config = SpanBatchConfigBuilder::default()
+        .with_scheduled_delay(std::time::Duration::from_millis(spans_flush_ms))
+        .build();
+    let span_processor = BatchSpanProcessor::builder(span_exporter)
+        .with_batch_config(span_batch_config)
+        .build();
+
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
         .with_span_processor(baggage_span_processor::BaggageSpanProcessor::default())
-        .with_batch_exporter(span_exporter)
+        .with_span_processor(span_processor)
         .build();
+
+    tracing::debug!(
+        flush_interval_ms = spans_flush_ms,
+        "Span provider configured"
+    );
 
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 

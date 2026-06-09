@@ -131,13 +131,10 @@ export function initOtel(config: OtelConfig = {}): void {
   // seconds after the action that produced them. Mirror the logs path
   // (BatchLogRecordProcessor below) with a small flush delay. maxExportBatchSize
   // stays at the OTel default so a burst of spans from one turn still coalesces
-  // into a single frame rather than one frame per span. The standard
-  // OTEL_BSP_SCHEDULE_DELAY stays in the fallback chain because the OTel SDK
-  // ignores it once an explicit value is passed.
+  // into a single frame rather than one frame per span.
   const spansScheduledDelayMillis = resolveFlushIntervalMs(
     config.spansFlushIntervalMs,
     process.env.OTEL_SPANS_FLUSH_INTERVAL_MS,
-    process.env.OTEL_BSP_SCHEDULE_DELAY,
     DEFAULT_OTEL_CONFIG.spansFlushIntervalMs,
   )
   tracerProvider = new NodeTracerProvider({
@@ -208,7 +205,6 @@ export function initOtel(config: OtelConfig = {}): void {
   const logsScheduledDelayMillis = resolveFlushIntervalMs(
     config.logsFlushIntervalMs,
     process.env.OTEL_LOGS_FLUSH_INTERVAL_MS,
-    process.env.OTEL_BLRP_SCHEDULE_DELAY,
     DEFAULT_OTEL_CONFIG.logsFlushIntervalMs,
   )
   const logsMaxExportBatchSize =

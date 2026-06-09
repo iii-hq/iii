@@ -48,26 +48,23 @@ describe('parseIntegerEnv', () => {
 
 describe('resolveFlushIntervalMs', () => {
   it('prefers the explicit config value over everything', () => {
-    expect(resolveFlushIntervalMs(50, '200', '300', 100)).toBe(50)
+    expect(resolveFlushIntervalMs(50, '200', 100)).toBe(50)
   })
 
   it('respects an explicit config value of 0', () => {
-    expect(resolveFlushIntervalMs(0, '200', '300', 100)).toBe(0)
+    expect(resolveFlushIntervalMs(0, '200', 100)).toBe(0)
   })
 
   it('falls back to the III-specific env var next', () => {
-    expect(resolveFlushIntervalMs(undefined, '200', '300', 100)).toBe(200)
+    expect(resolveFlushIntervalMs(undefined, '200', 100)).toBe(200)
   })
 
-  it('falls back to the standard OTel env var when the III one is unset', () => {
-    expect(resolveFlushIntervalMs(undefined, undefined, '300', 100)).toBe(300)
-  })
-
-  it('uses the default when nothing else is set', () => {
-    expect(resolveFlushIntervalMs(undefined, undefined, undefined, 100)).toBe(100)
+  it('uses the default when config and env are unset', () => {
+    expect(resolveFlushIntervalMs(undefined, undefined, 100)).toBe(100)
   })
 
   it('falls through past empty or invalid env values to the default', () => {
-    expect(resolveFlushIntervalMs(undefined, '', 'abc', 100)).toBe(100)
+    expect(resolveFlushIntervalMs(undefined, '', 100)).toBe(100)
+    expect(resolveFlushIntervalMs(undefined, 'abc', 100)).toBe(100)
   })
 })

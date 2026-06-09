@@ -26,15 +26,18 @@ export function parseIntegerEnv(
 
 /**
  * Resolve a batch-processor flush delay: explicit config wins, then the
- * III-specific env var, then the standard OTel env var (which the OTel SDK
- * stops honoring once we pass an explicit `scheduledDelayMillis`), then the
- * III default.
+ * III-specific env var, then the III default.
+ *
+ * III SDKs deliberately expose a single OTEL_*_FLUSH_INTERVAL_MS knob and do
+ * NOT honor the standard OTel OTEL_BSP_SCHEDULE_DELAY / OTEL_BLRP_SCHEDULE_DELAY
+ * vars, for cross-SDK consistency (the Node, Python, and Rust SDKs all resolve
+ * the same way). Passing an explicit `scheduledDelayMillis` to the processor
+ * already makes the OTel SDK ignore those standard vars regardless.
  */
 export function resolveFlushIntervalMs(
   configValue: number | undefined,
-  iiiEnvValue: string | undefined,
-  otelEnvValue: string | undefined,
+  envValue: string | undefined,
   defaultValue: number,
 ): number {
-  return configValue ?? parseNumberEnv(iiiEnvValue, 0) ?? parseNumberEnv(otelEnvValue, 0) ?? defaultValue
+  return configValue ?? parseNumberEnv(envValue, 0) ?? defaultValue
 }

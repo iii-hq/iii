@@ -68,6 +68,10 @@ pub struct OtelConfig {
     /// `ReconnectionConfig::max_pending_messages` to absorb bursts during
     /// normal operation while limiting stale data across reconnects.
     pub channel_capacity: Option<usize>,
+    /// Span processor flush delay in milliseconds. Defaults to 100ms when not
+    /// set. The OpenTelemetry default of 5000ms is what makes traces appear
+    /// seconds after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS.
+    pub spans_flush_interval_ms: Option<u64>,
     /// Whether to enable the log exporter (default: true)
     pub logs_enabled: Option<bool>,
     /// Log processor flush delay in milliseconds. Defaults to 100ms when not set.

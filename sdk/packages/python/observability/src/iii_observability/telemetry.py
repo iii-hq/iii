@@ -115,7 +115,21 @@ def init_otel(
     from .baggage_span_processor import BaggageSpanProcessor
 
     provider.add_span_processor(BaggageSpanProcessor())
-    provider.add_span_processor(BatchSpanProcessor(span_exporter))  # type: ignore[arg-type]
+    # Without an explicit schedule_delay_millis, BatchSpanProcessor inherits the
+    # OpenTelemetry default of 5000ms, so an ended span sits in the buffer up to
+    # 5s before reaching the engine — the dominant reason traces appear seconds
+    # late. Mirror the logs path with a small flush delay.
+    spans_flush_interval_ms = _resolve_int(
+        cfg.spans_flush_interval_ms,
+        "OTEL_SPANS_FLUSH_INTERVAL_MS",
+        default=100,
+    )
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            span_exporter,  # type: ignore[arg-type]
+            schedule_delay_millis=spans_flush_interval_ms,
+        )
+    )
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("iii-python-sdk")
 
