@@ -273,7 +273,11 @@ impl ConfigurableWorker for CustomQueueModule {
     }
 }
 
-iii::register_worker!("my::CustomQueueModule", CustomQueueModule);
+iii::register_worker!(
+    "my::CustomQueueModule",
+    CustomQueueModule,
+    description = "Example queue worker backed by a custom adapter."
+);
 
 impl FunctionHandler for CustomQueueModule {
     fn handle_function(

@@ -74,6 +74,9 @@ pub type WorkerFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Worke
 
 pub struct WorkerRegistration {
     pub name: &'static str,
+    /// One-line, human/LLM-readable summary of what this worker does.
+    /// Surfaces in `engine::workers::list` / `engine::workers::info`.
+    pub description: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> WorkerFuture,
     pub is_default: bool,
     pub mandatory: bool,
@@ -81,30 +84,33 @@ pub struct WorkerRegistration {
 
 #[macro_export]
 macro_rules! register_worker {
-    ($name:expr, $worker:ty, mandatory) => {
+    ($name:expr, $worker:ty, description = $description:expr, mandatory) => {
         ::inventory::submit! {
             $crate::workers::registry::WorkerRegistration {
                 name: $name,
+                description: $description,
                 factory: < $worker as $crate::workers::traits::Worker >::make_worker,
                 is_default: true,
                 mandatory: true,
             }
         }
     };
-    ($name:expr, $worker:ty, enabled_by_default = $enabled_by_default:expr) => {
+    ($name:expr, $worker:ty, description = $description:expr, enabled_by_default = $enabled_by_default:expr) => {
         ::inventory::submit! {
             $crate::workers::registry::WorkerRegistration {
                 name: $name,
+                description: $description,
                 factory: < $worker as $crate::workers::traits::Worker >::make_worker,
                 is_default: $enabled_by_default,
                 mandatory: false,
             }
         }
     };
-    ($name:expr, $worker:ty) => {
+    ($name:expr, $worker:ty, description = $description:expr) => {
         ::inventory::submit! {
             $crate::workers::registry::WorkerRegistration {
                 name: $name,
+                description: $description,
                 factory: < $worker as $crate::workers::traits::Worker >::make_worker,
                 is_default: false,
                 mandatory: false,
@@ -146,11 +152,13 @@ mod tests {
     fn worker_registration_fields() {
         let reg = WorkerRegistration {
             name: "test-worker",
+            description: "A test worker.",
             factory: dummy_worker_factory,
             is_default: true,
             mandatory: false,
         };
         assert_eq!(reg.name, "test-worker");
+        assert_eq!(reg.description, "A test worker.");
         assert!(reg.is_default);
         assert!(!reg.mandatory);
     }

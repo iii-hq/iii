@@ -32,9 +32,10 @@ import (
 // A Client is safe for concurrent use. Register* may be called before or after Connect;
 // registrations are kept in memory and (re)sent to the engine on every (re)connection.
 type Client struct {
-	url       string
-	reconnect ReconnectConfig
-	name      string
+	url         string
+	reconnect   ReconnectConfig
+	name        string
+	description string
 
 	// outbound carries already-marshaled frames to the single writer goroutine. It is
 	// the only path to the socket, so writes are serialized without a write mutex.
@@ -99,6 +100,12 @@ type Option func(*Client)
 // WithReconnectConfig overrides the default reconnect schedule.
 func WithReconnectConfig(c ReconnectConfig) Option {
 	return func(cl *Client) { cl.reconnect = c }
+}
+
+// WithDescription sets a one-line, human/LLM-readable summary of what this
+// worker does. Surfaces in engine::workers::list / engine::workers::info.
+func WithDescription(description string) Option {
+	return func(c *Client) { c.description = description }
 }
 
 // WithName sets the worker name reported to the engine (default: "hostname:pid").
@@ -537,11 +544,12 @@ func (c *Client) onConnect() {
 func (c *Client) registerWorkerMetadata() {
 	pid := os.Getpid()
 	meta := workerMetadata{
-		Runtime: runtimeTag,
-		Version: sdkVersion,
-		Name:    c.name,
-		OS:      fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH),
-		PID:     &pid,
+		Runtime:     runtimeTag,
+		Version:     sdkVersion,
+		Name:        c.name,
+		Description: c.description,
+		OS:          fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH),
+		PID:         &pid,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -566,11 +574,12 @@ func (c *Client) registerWorkerMetadata() {
 // open question #3 in iii-hq/iii#1719). Optional fields use omitempty to match the
 // engine's skip_serializing_if discipline.
 type workerMetadata struct {
-	Runtime string `json:"runtime"`
-	Version string `json:"version"`
-	Name    string `json:"name"`
-	OS      string `json:"os"`
-	PID     *int   `json:"pid,omitempty"`
+	Runtime     string `json:"runtime"`
+	Version     string `json:"version"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	OS          string `json:"os"`
+	PID         *int   `json:"pid,omitempty"`
 }
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release

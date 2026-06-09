@@ -13,7 +13,9 @@
 use iii_worker::cli::host_shim::{
     classify_handler_error, resolve_clear_targets, resolve_remove_targets,
 };
-use iii_worker::cli::worker_manager_daemon::{bad_request_payload, err_payload, op_metadata};
+use iii_worker::cli::worker_manager_daemon::{
+    bad_request_payload, err_payload, op_description, op_metadata,
+};
 use iii_worker::core::{
     AddOptions, ClearOptions, ListOptions, RemoveOptions, StartOptions, StopOptions, UpdateOptions,
     WorkerOpError, WorkerOpErrorKind, WorkerSource,
@@ -44,24 +46,24 @@ fn parse_envelope(envelope: &str) -> (String, String, Value) {
     (code, type_, details)
 }
 
-/// Try to deserialize `payload` as `T`. On failure, return the W101 envelope
+/// Try to deserialize `payload` as `T`. On failure, return the W105 envelope
 /// the daemon would emit. Mirrors `register_*` handler body.
 fn try_deserialize<T: serde::de::DeserializeOwned>(op: &str, payload: Value) -> Result<T, String> {
     serde_json::from_value(payload).map_err(|e| bad_request_payload(op, &e))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. WorkerSource adversarial serde — every malformed shape lands on W101
+// 1. WorkerSource adversarial serde — every malformed shape lands on W105
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn worker_source_missing_kind_is_w101() {
+fn worker_source_missing_kind_is_w105() {
     let err =
         try_deserialize::<AddOptions>("worker::add", json!({"source": {"name": "x"}})).unwrap_err();
     let (code, type_, details) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
     assert_eq!(type_, "WorkerOpError");
-    assert_eq!(details["input"], "worker::add");
+    assert_eq!(details["function_id"], "worker::add");
     assert!(
         details["reason"].as_str().unwrap().contains("kind"),
         "details.reason mentions the missing field"
@@ -69,18 +71,18 @@ fn worker_source_missing_kind_is_w101() {
 }
 
 #[test]
-fn worker_source_unknown_kind_is_w101() {
+fn worker_source_unknown_kind_is_w105() {
     let err = try_deserialize::<AddOptions>(
         "worker::add",
         json!({"source": {"kind": "magic", "name": "x"}}),
     )
     .unwrap_err();
     let (code, _, _) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
 }
 
 #[test]
-fn worker_source_capitalized_kind_is_w101() {
+fn worker_source_capitalized_kind_is_w105() {
     // Tag enum is `rename_all = "snake_case"` — Registry must be rejected.
     let err = try_deserialize::<AddOptions>(
         "worker::add",
@@ -88,29 +90,29 @@ fn worker_source_capitalized_kind_is_w101() {
     )
     .unwrap_err();
     let (code, _, _) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
 }
 
 #[test]
-fn worker_source_registry_without_name_is_w101() {
+fn worker_source_registry_without_name_is_w105() {
     let err = try_deserialize::<AddOptions>("worker::add", json!({"source": {"kind": "registry"}}))
         .unwrap_err();
     let (code, _, details) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
     assert!(details["reason"].as_str().unwrap().contains("name"));
 }
 
 #[test]
-fn worker_source_oci_without_reference_is_w101() {
+fn worker_source_oci_without_reference_is_w105() {
     let err = try_deserialize::<AddOptions>("worker::add", json!({"source": {"kind": "oci"}}))
         .unwrap_err();
     let (code, _, details) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
     assert!(details["reason"].as_str().unwrap().contains("reference"));
 }
 
 #[test]
-fn worker_source_oci_with_name_field_is_w101() {
+fn worker_source_oci_with_name_field_is_w105() {
     // `name` is the registry-variant field; OCI variant requires `reference`.
     let err = try_deserialize::<AddOptions>(
         "worker::add",
@@ -118,81 +120,81 @@ fn worker_source_oci_with_name_field_is_w101() {
     )
     .unwrap_err();
     let (code, _, details) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
     assert!(details["reason"].as_str().unwrap().contains("reference"));
 }
 
 #[test]
-fn worker_source_local_without_path_is_w101() {
+fn worker_source_local_without_path_is_w105() {
     let err = try_deserialize::<AddOptions>("worker::add", json!({"source": {"kind": "local"}}))
         .unwrap_err();
     let (code, _, details) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
     assert!(details["reason"].as_str().unwrap().contains("path"));
 }
 
 #[test]
-fn add_payload_with_no_source_is_w101() {
+fn add_payload_with_no_source_is_w105() {
     let err = try_deserialize::<AddOptions>("worker::add", json!({})).unwrap_err();
     let (code, _, details) = parse_envelope(&err);
-    assert_eq!(code, "W101");
+    assert_eq!(code, "W105");
     assert!(details["reason"].as_str().unwrap().contains("source"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. Type strictness — wrong primitive types map to W101
+// 2. Type strictness — wrong primitive types map to W105
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn source_as_string_is_w101() {
+fn source_as_string_is_w105() {
     let err =
         try_deserialize::<AddOptions>("worker::add", json!({"source": "iii-state"})).unwrap_err();
-    assert_eq!(parse_envelope(&err).0, "W101");
+    assert_eq!(parse_envelope(&err).0, "W105");
 }
 
 #[test]
-fn yes_as_string_is_w101() {
+fn yes_as_string_is_w105() {
     let err = try_deserialize::<StopOptions>(
         "worker::stop",
         json!({"name": "image-resize", "yes": "true"}),
     )
     .unwrap_err();
-    assert_eq!(parse_envelope(&err).0, "W101");
+    assert_eq!(parse_envelope(&err).0, "W105");
 }
 
 #[test]
-fn names_as_string_is_w101() {
+fn names_as_string_is_w105() {
     let err =
         try_deserialize::<RemoveOptions>("worker::remove", json!({"names": "x", "yes": true}))
             .unwrap_err();
-    assert_eq!(parse_envelope(&err).0, "W101");
+    assert_eq!(parse_envelope(&err).0, "W105");
 }
 
 #[test]
-fn all_as_string_is_w101() {
+fn all_as_string_is_w105() {
     let err = try_deserialize::<ClearOptions>("worker::clear", json!({"all": "yes", "yes": true}))
         .unwrap_err();
-    assert_eq!(parse_envelope(&err).0, "W101");
+    assert_eq!(parse_envelope(&err).0, "W105");
 }
 
 #[test]
-fn wait_as_number_is_w101() {
+fn wait_as_number_is_w105() {
     let err = try_deserialize::<AddOptions>(
         "worker::add",
         json!({"source": {"kind": "registry", "name": "x"}, "wait": 1}),
     )
     .unwrap_err();
-    assert_eq!(parse_envelope(&err).0, "W101");
+    assert_eq!(parse_envelope(&err).0, "W105");
 }
 
 #[test]
-fn registry_name_null_is_w101() {
+fn registry_name_null_is_w105() {
     let err = try_deserialize::<AddOptions>(
         "worker::add",
         json!({"source": {"kind": "registry", "name": null}}),
     )
     .unwrap_err();
-    assert_eq!(parse_envelope(&err).0, "W101");
+    assert_eq!(parse_envelope(&err).0, "W105");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,6 +393,7 @@ fn every_kind_has_distinct_code() {
         LocalPathNotAllowedViaTrigger,
         MissingTarget,
         ConsentRequired,
+        BadRequest,
         NotFound,
         AlreadyExists,
         NotInstalled,
@@ -427,6 +430,9 @@ fn every_kind_has_distinct_code() {
     }
 }
 
+// W102 is reserved: local-path installs are now allowed over the trigger,
+// so nothing produces this variant in practice. This pins its wire envelope
+// shape in case the code is ever re-used.
 #[test]
 fn local_path_not_allowed_via_trigger_envelope_carries_path() {
     let err = WorkerOpError::LocalPathNotAllowedViaTrigger {
@@ -495,6 +501,26 @@ fn remove_options_every_field_has_description() {
     assert!(
         missing.is_empty(),
         "RemoveOptions fields missing description: {missing:?}"
+    );
+}
+
+#[test]
+fn logs_options_every_field_has_description() {
+    let schema = serde_json::to_value(schema_for!(iii_worker::core::LogsOptions)).unwrap();
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "LogsOptions fields missing description: {missing:?}"
+    );
+}
+
+#[test]
+fn logs_outcome_every_field_has_description() {
+    let schema = serde_json::to_value(schema_for!(iii_worker::core::LogsOutcome)).unwrap();
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "LogsOutcome fields missing description: {missing:?}"
     );
 }
 
@@ -591,8 +617,20 @@ const ALL_OPS: &[&str] = &[
     "worker::stop",
     "worker::list",
     "worker::clear",
+    "worker::logs",
     "worker::schema",
 ];
+
+#[test]
+fn every_op_has_nonempty_description() {
+    for op in ALL_OPS {
+        assert!(
+            !op_description(op).is_empty(),
+            "{op} has an empty description — it would surface blank in \
+             engine::functions::info and worker::schema"
+        );
+    }
+}
 
 #[test]
 fn every_op_has_positive_timeout() {
@@ -628,6 +666,7 @@ fn read_only_ops_are_idempotent() {
         "worker::list",
         "worker::schema",
         "worker::clear",
+        "worker::logs",
     ] {
         let (_, idempotent) = op_metadata(op);
         assert!(idempotent, "{op} should be declared idempotent");
@@ -693,6 +732,78 @@ fn list_options_null_or_missing_defaults_cleanly() {
     assert!(!opts.running_only);
 }
 
+#[test]
+fn list_wire_path_option_wrapper_preserves_leniency_and_w105() {
+    // The daemon's list handler deserializes `Option<ListOptions>` through
+    // the SDK typed path and falls back to defaults. Pin the wire behavior:
+    // null / {} / [] stay lenient, valid objects parse, and malformed shapes
+    // produce the same W105 reason text the bare `ListOptions` path did.
+    for payload in [json!(null), json!({}), json!([])] {
+        let opts = try_deserialize::<Option<ListOptions>>("worker::list", payload.clone())
+            .unwrap_or_else(|e| panic!("payload {payload} must stay lenient, got {e}"))
+            .unwrap_or_default();
+        assert!(!opts.running_only);
+    }
+
+    let opts =
+        try_deserialize::<Option<ListOptions>>("worker::list", json!({"running_only": true}))
+            .unwrap()
+            .unwrap_or_default();
+    assert!(opts.running_only);
+
+    for payload in [
+        json!({"running_only": "yes"}),
+        json!("hello"),
+        json!([1, 2]),
+    ] {
+        let bare_err = serde_json::from_value::<ListOptions>(payload.clone()).unwrap_err();
+        let envelope = try_deserialize::<Option<ListOptions>>("worker::list", payload).unwrap_err();
+        let (code, _, details) = parse_envelope(&envelope);
+        assert_eq!(code, "W105");
+        // `Option<T>` forwards non-null payloads to T's deserializer
+        // verbatim, so the W105 reason matches the pre-typed-handler text.
+        assert_eq!(
+            details.get("reason").and_then(|r| r.as_str()),
+            Some(bare_err.to_string().as_str())
+        );
+    }
+}
+
+#[test]
+fn typed_handler_draft07_extraction_matches_schema_for_bytes() {
+    // The daemon's request schemas now come from the SDK's typed-handler
+    // auto-extraction (SchemaSettings::draft07), while worker::schema serves
+    // schemars::schema_for! output. Pin that the two generators agree for
+    // every options struct so the two introspection surfaces never drift.
+    fn draft07<T: schemars::JsonSchema>() -> Value {
+        serde_json::to_value(
+            schemars::r#gen::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<T>(),
+        )
+        .unwrap()
+    }
+    macro_rules! assert_schema_parity {
+        ($($t:ty),+ $(,)?) => {$(
+            assert_eq!(
+                serde_json::to_value(schema_for!($t)).unwrap(),
+                draft07::<$t>(),
+                concat!("schema drift for ", stringify!($t)),
+            );
+        )+};
+    }
+    assert_schema_parity!(
+        AddOptions,
+        RemoveOptions,
+        UpdateOptions,
+        StartOptions,
+        StopOptions,
+        ClearOptions,
+        ListOptions,
+        iii_worker::core::LogsOptions,
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 9. WorkerSource serde round-trips (happy path)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -730,7 +841,7 @@ fn worker_source_local_round_trips() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 10. bad_request_payload produces parseable W101 for arbitrary serde failures
+// 10. bad_request_payload produces parseable W105 for arbitrary serde failures
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -739,8 +850,8 @@ fn bad_request_payload_is_always_valid_json() {
     let envelope = bad_request_payload("worker::add", &err);
     let parsed: Value = serde_json::from_str(&envelope).expect("envelope is JSON");
     assert_eq!(parsed["type"], "WorkerOpError");
-    assert_eq!(parsed["code"], "W101");
-    assert_eq!(parsed["details"]["input"], "worker::add");
+    assert_eq!(parsed["code"], "W105");
+    assert_eq!(parsed["details"]["function_id"], "worker::add");
     assert!(parsed["details"]["reason"].is_string());
 }
 
@@ -749,7 +860,7 @@ fn bad_request_payload_propagates_op_label() {
     let err = serde_json::from_value::<StopOptions>(json!({})).unwrap_err();
     let envelope = bad_request_payload("worker::stop", &err);
     let parsed: Value = serde_json::from_str(&envelope).unwrap();
-    assert_eq!(parsed["details"]["input"], "worker::stop");
+    assert_eq!(parsed["details"]["function_id"], "worker::stop");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

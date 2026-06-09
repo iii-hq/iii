@@ -275,7 +275,11 @@ impl Worker for BridgeClientWorker {
     }
 }
 
-crate::register_worker!("iii-bridge", BridgeClientWorker);
+crate::register_worker!(
+    "iii-bridge",
+    BridgeClientWorker,
+    description = "Connect to another iii instance over iii-sdk to expose and forward functions."
+);
 
 #[cfg(test)]
 mod tests {

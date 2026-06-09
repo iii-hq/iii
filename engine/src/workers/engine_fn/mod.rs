@@ -29,6 +29,34 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 /// Maximum length of `config_summary` strings produced by
 /// `engine::registered-triggers::list`.
 const CONFIG_SUMMARY_MAX_LEN: usize = 80;
+/// Self-reported worker descriptions are untrusted free text rendered by
+/// consoles, CLIs, and LLM agents — cap the length and strip control
+/// characters at the ingest boundary.
+const WORKER_DESCRIPTION_MAX_LEN: usize = 280;
+
+/// True for characters untrusted worker text must never carry onto a
+/// console/terminal/LLM display surface: C0/C1/DEL control chars, plus the
+/// Unicode bidirectional override/isolate range (U+202A–202E, U+2066–2069 —
+/// the Trojan-Source / CVE-2021-42574 class) and the line/paragraph
+/// separators U+2028/U+2029.
+fn is_unsafe_display_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}')
+}
+
+fn sanitize_worker_text(raw: String) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !is_unsafe_display_char(*c))
+        .take(WORKER_DESCRIPTION_MAX_LEN)
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
@@ -228,8 +256,10 @@ pub struct RegisteredTriggerDetail {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct WorkerSummary {
     pub name: Option<String>,
-    /// Always `null` for engine-side workers; carried as a shared core
-    /// field so a parser can walk both the engine and registry surfaces.
+    /// One-line summary self-reported by the worker via
+    /// `engine::workers::register`. `null` when the worker did not provide
+    /// one; carried as a shared core field so a parser can walk both the
+    /// engine and registry surfaces.
     pub description: Option<String>,
     pub version: Option<String>,
     pub id: String,
@@ -313,6 +343,10 @@ pub struct RegisterWorkerInput {
     pub version: Option<String>,
     /// Friendly worker name used in dashboards and logs.
     pub name: Option<String>,
+    /// One-line summary of what the worker does. Surfaces in
+    /// `engine::workers::list` / `engine::workers::info`.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Worker host operating system.
     pub os: Option<String>,
     /// Telemetry metadata reported by the worker (anonymous device id,
@@ -420,23 +454,29 @@ impl EngineFunctionsWorker {
         Self::first_segment(function_id)
     }
 
-    /// Resolves the worker name that owns a trigger type. Tries, in order:
-    /// the `worker_id` Uuid on the `TriggerType` (populated only by
-    /// WebSocket-connected workers), the static `BUILTIN_TRIGGER_TYPES` map
-    /// (used for in-process workers, which always register with
-    /// `worker_id: None`), and finally the first `::` segment of the id.
-    fn worker_name_for_trigger_type(&self, tt_id: &str) -> String {
-        if let Some(tt) = self.engine.trigger_registry.trigger_types.get(tt_id)
-            && let Some(worker_id) = tt.worker_id
-            && let Some(worker) = self.engine.worker_registry.get_worker(&worker_id)
-            && let Some(name) = worker.name
+    /// Resolves the worker name that owns a trigger type from an
+    /// already-fetched `TriggerType`. Tries, in order: the `worker_id` Uuid
+    /// (populated only by WebSocket-connected workers), the static
+    /// `BUILTIN_TRIGGER_TYPES` map (used for in-process workers, which
+    /// always register with `worker_id: None`), and finally the first `::`
+    /// segment of the id.
+    ///
+    /// Takes the borrowed `TriggerType` instead of an id on purpose: callers
+    /// usually sit inside `trigger_types` iteration or a `.get()` guard, and
+    /// a by-id variant would re-enter the same DashMap — a re-entrant
+    /// same-shard read can deadlock against a queued writer (parking_lot
+    /// RwLocks are writer-fair). Only `worker_registry` (a different map) is
+    /// touched here.
+    fn owner_name_for_trigger_type(&self, tt: &crate::trigger::TriggerType) -> String {
+        if let Some(worker_id) = tt.worker_id
+            && let Some(name) = self.engine.worker_registry.get_worker_name(&worker_id)
         {
             return name;
         }
-        if let Some(name) = builtin_trigger_type_owner(tt_id) {
+        if let Some(name) = builtin_trigger_type_owner(&tt.id) {
             return name.to_string();
         }
-        Self::first_segment(tt_id)
+        Self::first_segment(&tt.id)
     }
 
     fn instance_count_for_type(&self, tt_id: &str) -> usize {
@@ -493,7 +533,8 @@ impl EngineFunctionsWorker {
                 let tt = entry.value();
                 TriggerTypeSummary {
                     id: tt.id.clone(),
-                    worker_name: self.worker_name_for_trigger_type(&tt.id),
+                    // Guard-safe: we're inside `trigger_types.iter()`.
+                    worker_name: self.owner_name_for_trigger_type(tt),
                     description: tt._description.clone(),
                 }
             })
@@ -542,7 +583,7 @@ impl EngineFunctionsWorker {
 
             worker_summaries.push(WorkerSummary {
                 name: w.name.clone(),
-                description: None,
+                description: w.description.clone(),
                 version: w.version.clone(),
                 id: worker_id,
                 runtime: w.runtime.clone(),
@@ -566,7 +607,7 @@ impl EngineFunctionsWorker {
             let functions = runtime_worker.function_ids.clone();
             worker_summaries.push(WorkerSummary {
                 name: Some(runtime_worker.name.clone()),
-                description: None,
+                description: runtime_worker.description.clone(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 id: runtime_worker.id.clone(),
                 runtime: Some("engine".to_string()),
@@ -614,7 +655,8 @@ impl EngineFunctionsWorker {
         let tt = self.engine.trigger_registry.trigger_types.get(tt_id)?;
         Some(TriggerTypeDetail {
             id: tt.id.clone(),
-            worker_name: self.worker_name_for_trigger_type(&tt.id),
+            // Guard-safe: we hold the `.get()` guard on this entry.
+            worker_name: self.owner_name_for_trigger_type(tt.value()),
             description: tt._description.clone(),
             configuration_schema: tt.trigger_request_format.clone(),
             request_schema: tt.call_request_format.clone(),
@@ -659,7 +701,7 @@ impl EngineFunctionsWorker {
     ) -> WorkerDetailEnvelope {
         WorkerDetailEnvelope {
             name: w.name.clone(),
-            description: None,
+            description: w.description.clone(),
             version: w.version.clone(),
             id: w.id.to_string(),
             runtime: w.runtime.clone(),
@@ -680,7 +722,7 @@ impl EngineFunctionsWorker {
         let functions = w.function_ids.clone();
         WorkerDetailEnvelope {
             name: Some(w.name.clone()),
-            description: None,
+            description: w.description.clone(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             id: w.id.clone(),
             runtime: Some("engine".to_string()),
@@ -735,7 +777,6 @@ impl EngineFunctionsWorker {
             return None;
         }
 
-        let worker_id = envelope.id.clone();
         let worker_name = envelope.name.clone();
         let index = self.function_owner_index().await;
         let mut functions: Vec<FunctionSummary> = function_ids
@@ -756,34 +797,35 @@ impl EngineFunctionsWorker {
             .trigger_registry
             .trigger_types
             .iter()
-            .filter(|entry| {
+            .filter_map(|entry| {
+                // Attribute by resolved owner NAME — the same index
+                // `engine::triggers::list` uses — so the two surfaces cannot
+                // disagree. Id-based attribution diverged whenever several
+                // connections shared one worker name (e.g. a stale
+                // `iii-worker-ops` daemon reconnecting next to a fresh one):
+                // the name resolved to one connection's id while the trigger
+                // type stayed pinned to another, and the type silently
+                // vanished from `workers::info`.
+                //
+                // Trust caveat: worker names are self-reported, so a worker
+                // that adopts another worker's name will have its trigger
+                // types merged into that name's view here — exactly as
+                // `triggers::list` already behaves. The engine does not
+                // authenticate worker identity today (a connected worker can
+                // likewise shadow function ids); fixing that is identity/auth
+                // work, not attribution logic.
                 let tt = entry.value();
-                // WebSocket workers attribute via `worker_id` Uuid.
-                if let Some(wid) = tt.worker_id {
-                    return self
-                        .engine
-                        .worker_registry
-                        .get_worker(&wid)
-                        .map(|w| w.id.to_string())
-                        .as_deref()
-                        == Some(&worker_id);
+                // Guard-safe resolution: we're inside `trigger_types.iter()`,
+                // and the owner is resolved exactly once per entry.
+                let owner = self.owner_name_for_trigger_type(tt);
+                if worker_name.as_deref() != Some(owner.as_str()) {
+                    return None;
                 }
-                // In-process workers register trigger types with
-                // `worker_id: None`, so fall back to the static
-                // BUILTIN_TRIGGER_TYPES map keyed by trigger-type id.
-                worker_name
-                    .as_deref()
-                    .zip(builtin_trigger_type_owner(&tt.id))
-                    .map(|(name, owner)| name == owner)
-                    .unwrap_or(false)
-            })
-            .map(|entry| {
-                let tt = entry.value();
-                TriggerTypeSummary {
+                Some(TriggerTypeSummary {
                     id: tt.id.clone(),
-                    worker_name: self.worker_name_for_trigger_type(&tt.id),
+                    worker_name: owner,
                     description: tt._description.clone(),
-                }
+                })
             })
             .collect();
         trigger_types.sort_by(|a, b| a.id.cmp(&b.id));
@@ -834,7 +876,8 @@ impl EngineFunctionsWorker {
             &worker_id,
             runtime,
             input.version,
-            input.name,
+            input.name.and_then(sanitize_worker_text),
+            input.description.and_then(sanitize_worker_text),
             input.os,
             input.telemetry,
             input.pid,
@@ -1290,7 +1333,12 @@ impl EngineFunctionsWorker {
     }
 }
 
-crate::register_worker!("iii-engine-functions", EngineFunctionsWorker, mandatory);
+crate::register_worker!(
+    "iii-engine-functions",
+    EngineFunctionsWorker,
+    description = "Core engine introspection (engine::*) and platform authoring reference.",
+    mandatory
+);
 
 #[cfg(test)]
 mod tests {
@@ -1458,6 +1506,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-state".to_string(),
             name: "iii-state".to_string(),
+            description: None,
             worker_type: "iii-state".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["state::get".to_string()],
@@ -1566,6 +1615,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-state".to_string(),
             name: "iii-state".to_string(),
+            description: Some("Distributed key-value state management.".to_string()),
             worker_type: "iii-state".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["state::get".to_string(), "state::set".to_string()],
@@ -1580,8 +1630,10 @@ mod tests {
         assert_eq!(workers[0].isolation.as_deref(), Some("in-process"));
         assert_eq!(workers[0].status, "available");
         assert_eq!(workers[0].function_count, 2);
-        // Description is always null on the engine surface.
-        assert!(workers[0].description.is_none());
+        assert_eq!(
+            workers[0].description.as_deref(),
+            Some("Distributed key-value state management.")
+        );
     }
 
     #[tokio::test]
@@ -1594,6 +1646,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-stream".to_string(),
             name: "iii-stream".to_string(),
+            description: None,
             worker_type: "iii-stream".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["stream::list".to_string()],
@@ -1615,6 +1668,7 @@ mod tests {
             runtime: Some("node".to_string()),
             version: Some("1.0".to_string()),
             name: Some("test-worker".to_string()),
+            description: None,
             os: Some("linux".to_string()),
             telemetry: None,
             pid: None,
@@ -1636,6 +1690,7 @@ mod tests {
             runtime: None,
             version: Some("2.0".to_string()),
             name: Some("my-worker".to_string()),
+            description: None,
             os: Some("darwin".to_string()),
             telemetry: None,
             pid: None,
@@ -2013,6 +2068,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-state".to_string(),
             name: "iii-state".to_string(),
+            description: None,
             worker_type: "iii-state".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["state::get".to_string()],
@@ -2456,6 +2512,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-state".to_string(),
             name: "iii-state".to_string(),
+            description: None,
             worker_type: "iii-state".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["state::get".to_string()],
@@ -2464,6 +2521,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-queue".to_string(),
             name: "iii-queue".to_string(),
+            description: None,
             worker_type: "iii-queue".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec![],
@@ -2512,6 +2570,7 @@ mod tests {
         engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
             id: "iii-state".to_string(),
             name: "iii-state".to_string(),
+            description: None,
             worker_type: "iii-state".to_string(),
             connected_at: chrono::Utc::now(),
             function_ids: vec!["state::get".to_string(), "state::set".to_string()],
@@ -2539,6 +2598,156 @@ mod tests {
                 assert_eq!(detail.registered_triggers.len(), 1);
                 assert_eq!(detail.registered_triggers[0].id, "trg-state");
                 assert!(detail.worker.internal == false);
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workers_info_attributes_ws_trigger_types_like_triggers_list() {
+        let (engine, module) = setup_engine_and_module();
+
+        // The name resolves to a runtime entry first…
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "ops-worker".to_string(),
+            name: "ops-worker".to_string(),
+            description: None,
+            worker_type: "ops-worker".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec![],
+            internal: false,
+        });
+
+        // …while the trigger type is pinned to a same-named WS connection's
+        // Uuid (the stale-daemon / duplicate-name scenario). Id-based
+        // attribution dropped the type here; name-based attribution — the
+        // index `engine::triggers::list` uses — must keep it.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let conn = crate::worker_connections::WorkerConnection::new(tx);
+        let conn_id = conn.id;
+        engine.worker_registry.register_worker(conn);
+        engine.worker_registry.update_worker_metadata(
+            &conn_id,
+            "rust".to_string(),
+            Some("1.0.0".to_string()),
+            Some("ops-worker".to_string()),
+            None,
+            Some("linux".to_string()),
+            None,
+            None,
+            None,
+        );
+        let tt = crate::trigger::TriggerType::new(
+            "worker",
+            "Worker lifecycle events",
+            Box::new(module.clone()),
+            Some(conn_id),
+        );
+        engine
+            .trigger_registry
+            .register_trigger_type(tt)
+            .await
+            .unwrap();
+
+        let result = module
+            .workers_info(WorkerInfoInput {
+                name: "ops-worker".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                let ids: Vec<&str> = detail.trigger_types.iter().map(|t| t.id.as_str()).collect();
+                assert_eq!(
+                    ids,
+                    vec!["worker"],
+                    "workers::info must attribute WS-registered trigger types by \
+                     owner name, matching engine::triggers::list"
+                );
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[test]
+    fn sanitize_worker_text_strips_controls_and_caps_length() {
+        assert_eq!(
+            sanitize_worker_text("ok\u{1b}[31m text\u{7f}".to_string()),
+            Some("ok[31m text".to_string()),
+            "ESC/C0/C1 control chars are stripped, printable remainder kept"
+        );
+        assert_eq!(sanitize_worker_text("  \u{1b}\u{0007} ".to_string()), None);
+        let long = "x".repeat(WORKER_DESCRIPTION_MAX_LEN + 50);
+        assert_eq!(
+            sanitize_worker_text(long).map(|s| s.chars().count()),
+            Some(WORKER_DESCRIPTION_MAX_LEN)
+        );
+        // Cap is by char, not byte: a multibyte input must truncate on a char
+        // boundary (no panic, valid UTF-8) and yield exactly MAX chars.
+        let multibyte = "\u{1f600}".repeat(WORKER_DESCRIPTION_MAX_LEN + 10);
+        let out = sanitize_worker_text(multibyte).unwrap();
+        assert_eq!(out.chars().count(), WORKER_DESCRIPTION_MAX_LEN);
+        // Trojan-Source bidi overrides/isolates are stripped (CVE-2021-42574).
+        assert_eq!(
+            sanitize_worker_text("a\u{202e}b\u{2066}c".to_string()),
+            Some("abc".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn workers_info_excludes_trigger_types_owned_by_other_workers() {
+        let (engine, module) = setup_engine_and_module();
+
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "ops-worker".to_string(),
+            name: "ops-worker".to_string(),
+            description: None,
+            worker_type: "ops-worker".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec![],
+            internal: false,
+        });
+
+        // A trigger type pinned to a DIFFERENT worker name must never be
+        // attributed to the queried worker (guards against an over-broad
+        // attribution regression — e.g. matching everything).
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let conn = crate::worker_connections::WorkerConnection::new(tx);
+        let conn_id = conn.id;
+        engine.worker_registry.register_worker(conn);
+        engine.worker_registry.update_worker_metadata(
+            &conn_id,
+            "rust".to_string(),
+            Some("1.0.0".to_string()),
+            Some("other-worker".to_string()),
+            None,
+            Some("linux".to_string()),
+            None,
+            None,
+            None,
+        );
+        let tt = crate::trigger::TriggerType::new(
+            "foreign",
+            "Owned by other-worker",
+            Box::new(module.clone()),
+            Some(conn_id),
+        );
+        engine
+            .trigger_registry
+            .register_trigger_type(tt)
+            .await
+            .unwrap();
+
+        let result = module
+            .workers_info(WorkerInfoInput {
+                name: "ops-worker".to_string(),
+            })
+            .await;
+        match result {
+            FunctionResult::Success(detail) => {
+                assert!(
+                    detail.trigger_types.iter().all(|t| t.id != "foreign"),
+                    "workers::info must not attribute another worker's trigger type"
+                );
             }
             _ => panic!("expected success"),
         }
@@ -2575,6 +2784,7 @@ mod tests {
             "node".to_string(),
             Some("1.0.0".to_string()),
             Some("named-worker".to_string()),
+            None,
             Some("linux".to_string()),
             None,
             Some(4242),
@@ -2685,6 +2895,7 @@ mod tests {
                 runtime: Some("node".to_string()),
                 version: Some("1.0.0".to_string()),
                 name: Some("my-worker".to_string()),
+                description: None,
                 os: Some("linux".to_string()),
                 telemetry: None,
                 pid: None,

@@ -166,7 +166,12 @@ impl ConfigurableWorker for CronWorker {
     }
 }
 
-crate::register_worker!("iii-cron", CronWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-cron",
+    CronWorker,
+    description = "Schedule functions with cron expressions.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

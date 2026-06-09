@@ -526,7 +526,12 @@ impl TriggerRegistrator for HttpWorker {
     }
 }
 
-crate::register_worker!("iii-http", HttpWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-http",
+    HttpWorker,
+    description = "Expose functions as HTTP endpoints.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

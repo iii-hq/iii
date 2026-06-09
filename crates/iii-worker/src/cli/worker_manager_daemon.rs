@@ -18,10 +18,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::{
     AddOptions, AddOutcome, ClearOptions, ClearOutcome, EventSink, ListOptions, ListOutcome,
-    NullSink, ProjectCtx, RemoveOptions, RemoveOutcome, StartOptions, StartOutcome, StopOptions,
-    StopOutcome, UpdateOptions, UpdateOutcome, WorkerOpError, add as core_add, clear as core_clear,
-    list as core_list, remove as core_remove, start as core_start, stop as core_stop,
-    update as core_update,
+    LogsOptions, LogsOutcome, NullSink, ProjectCtx, RemoveOptions, RemoveOutcome, StartOptions,
+    StartOutcome, StopOptions, StopOutcome, UpdateOptions, UpdateOutcome, WorkerOpError,
+    WorkerOpErrorKind, add as core_add, clear as core_clear, list as core_list, logs as core_logs,
+    remove as core_remove, start as core_start, stop as core_stop, update as core_update,
 };
 use iii_observability::OtelConfig;
 use iii_sdk::{
@@ -29,7 +29,7 @@ use iii_sdk::{
     register_worker,
 };
 use schemars::{JsonSchema, schema_for};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::cli::app::WorkerManagerDaemonArgs;
 use crate::cli::host_shim::CliHostShim;
@@ -53,6 +53,12 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
             otel: Some(OtelConfig::default()),
             metadata: Some(WorkerMetadata {
                 name: "iii-worker-ops".to_string(),
+                description: Some(
+                    "Manages installed workers: add/remove/update/start/stop/list/clear/logs, \
+                     plus worker::schema introspection and the `worker` lifecycle \
+                     trigger type."
+                        .to_string(),
+                ),
                 ..Default::default()
             }),
             ..Default::default()
@@ -94,31 +100,79 @@ pub fn err_payload(e: &WorkerOpError) -> String {
     serde_json::to_string(&e.to_payload()).unwrap_or_else(|_| e.to_string())
 }
 
-/// Map a serde failure into the W101 envelope so bad payloads return the
-/// same `{ type, code, details }` shape as handler-level errors.
+/// Map a serde failure into the W105 envelope so bad payloads return the
+/// same `{ type, code, details }` shape as handler-level errors. The
+/// envelope carries a `hint` pointing at `worker::schema` so callers (LLMs
+/// included) can self-correct without out-of-band docs.
 #[doc(hidden)]
-pub fn bad_request_payload(input_label: &str, e: &serde_json::Error) -> String {
-    let err = WorkerOpError::InvalidSource {
-        input: input_label.into(),
+pub fn bad_request_payload(function_id: &str, e: &serde_json::Error) -> String {
+    let err = WorkerOpError::BadRequest {
+        function_id: function_id.into(),
         reason: e.to_string(),
     };
     err_payload(&err)
 }
 
-fn handler_error(payload: String) -> IIIError {
-    IIIError::Handler(payload)
-}
-
+/// Surface op failures as `IIIError::Remote` so the wire `ErrorBody.code`
+/// is the stable W-code (instead of the generic `invocation_failed`) and no
+/// dispatch-loop backtrace gets attached to an expected error.
 fn op_error(e: &WorkerOpError) -> IIIError {
-    handler_error(err_payload(e))
+    IIIError::Remote {
+        code: e.kind().code().to_string(),
+        message: err_payload(e),
+        stacktrace: None,
+    }
 }
 
-fn bad_request_error(input_label: &str, e: &serde_json::Error) -> IIIError {
-    handler_error(bad_request_payload(input_label, e))
+fn bad_request_error(function_id: &str, e: &serde_json::Error) -> IIIError {
+    IIIError::Remote {
+        code: WorkerOpErrorKind::BadRequest.code().to_string(),
+        message: bad_request_payload(function_id, e),
+        stacktrace: None,
+    }
 }
 
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
+}
+
+/// One-line description per op. Single source of truth shared by the
+/// function registrations (surfaced via `engine::functions::info`) and the
+/// `worker::schema` response.
+#[doc(hidden)]
+pub fn op_description(function_id: &str) -> &'static str {
+    match function_id {
+        "worker::add" => "Install a worker from registry name or OCI ref",
+        "worker::remove" => "Uninstall workers and clear their artifacts",
+        "worker::update" => "Reinstall workers preserving config",
+        "worker::start" => "Start a configured worker",
+        "worker::stop" => "Stop a running worker",
+        "worker::list" => "List installed workers",
+        "worker::clear" => "Wipe worker artifacts",
+        "worker::logs" => {
+            "Read a worker's recent stdout/stderr log lines from the engine host. \
+             `tail` bounds lines per stream (default 100, max 1000)."
+        }
+        "worker::schema" => {
+            "Introspect request/response schemas for worker::* triggers. \
+             Optional `function_id` filters to a single trigger."
+        }
+        _ => "",
+    }
+}
+
+/// Stamp the standard introspection contract onto a registration:
+/// description plus timeout/idempotency metadata. The request/response JSON
+/// Schemas come from the SDK's typed-handler auto-extraction (the handlers
+/// take the typed options structs directly), so together with this stamp
+/// `engine::functions::info { function_id: "worker::add" }` is
+/// self-sufficient for callers that have never seen this API.
+fn describe_op(rf: RegisterFunction, function_id: &str) -> RegisterFunction {
+    let (default_timeout_ms, idempotent) = op_metadata(function_id);
+    rf.description(op_description(function_id)).metadata(json!({
+        "default_timeout_ms": default_timeout_ms,
+        "idempotent": idempotent,
+    }))
 }
 
 fn register_all(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
@@ -129,6 +183,7 @@ fn register_all(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     register_stop(iii, project_root.clone(), sink.clone());
     register_list(iii, project_root.clone());
     register_clear(iii, project_root, sink);
+    register_logs(iii);
     register_schema(iii);
 }
 
@@ -151,8 +206,16 @@ struct SchemaEntry {
     idempotent: bool,
 }
 
-/// (default_timeout_ms, idempotent). Mirrors the table in
-/// `docs/workers/worker-management-triggers.mdx`.
+/// (default_timeout_ms, idempotent). Mirrors the table in the
+/// worker-management-triggers doc (currently
+/// `docs/0-11-0/workers/worker-management-triggers.mdx`).
+///
+/// `idempotent` describes the DEFAULT request: `worker::add`/`worker::update`
+/// are idempotent only when `force`/`reset_config` are unset. With `force:
+/// true` they stop the worker, delete artifacts, and re-run the manifest's
+/// install scripts — so an automation/LLM that retries a forced call based on
+/// this flag re-runs those side effects. Retry-on-timeout is safe for the
+/// default shape, not for forced replacement.
 #[doc(hidden)]
 pub fn op_metadata(function_id: &str) -> (u64, bool) {
     match function_id {
@@ -163,6 +226,7 @@ pub fn op_metadata(function_id: &str) -> (u64, bool) {
         "worker::stop" => (30_000, false),
         "worker::list" => (10_000, true),
         "worker::clear" => (30_000, true),
+        "worker::logs" => (10_000, true),
         "worker::schema" => (10_000, true),
         _ => (30_000, false),
     }
@@ -173,85 +237,105 @@ struct SchemaResponse {
     schemas: Vec<SchemaEntry>,
 }
 
-fn register_schema(iii: &III) {
-    let _ = iii.register_function(
-        "worker::schema",
-        RegisterFunction::new_async(|payload: Value| async move {
-            let req: SchemaRequest = serde_json::from_value(payload)
-                .map_err(|e| bad_request_error("worker::schema", &e))?;
-            let all = vec![
+/// The 9 worker::* (function_id, request, response) schema triples, built
+/// once via schemars reflection and reused on every `worker::schema` call.
+/// Regenerating all 16 schemas per invocation was wasted CPU/allocation on
+/// an endpoint LLM/automation callers hit repeatedly; only the matched
+/// entries are cloned per request.
+fn schema_table() -> &'static [(&'static str, Option<Value>, Option<Value>)] {
+    static TABLE: std::sync::LazyLock<Vec<(&'static str, Option<Value>, Option<Value>)>> =
+        std::sync::LazyLock::new(|| {
+            vec![
                 (
                     "worker::add",
-                    "Install a worker from registry name or OCI ref",
                     schema_for_value::<AddOptions>(),
                     schema_for_value::<AddOutcome>(),
                 ),
                 (
                     "worker::remove",
-                    "Uninstall workers and clear their artifacts",
                     schema_for_value::<RemoveOptions>(),
                     schema_for_value::<RemoveOutcome>(),
                 ),
                 (
                     "worker::update",
-                    "Reinstall workers preserving config",
                     schema_for_value::<UpdateOptions>(),
                     schema_for_value::<UpdateOutcome>(),
                 ),
                 (
                     "worker::start",
-                    "Start a configured worker",
                     schema_for_value::<StartOptions>(),
                     schema_for_value::<StartOutcome>(),
                 ),
                 (
                     "worker::stop",
-                    "Stop a running worker",
                     schema_for_value::<StopOptions>(),
                     schema_for_value::<StopOutcome>(),
                 ),
                 (
                     "worker::list",
-                    "List installed workers",
                     schema_for_value::<ListOptions>(),
                     schema_for_value::<ListOutcome>(),
                 ),
                 (
                     "worker::clear",
-                    "Wipe worker artifacts",
                     schema_for_value::<ClearOptions>(),
                     schema_for_value::<ClearOutcome>(),
                 ),
                 (
+                    "worker::logs",
+                    schema_for_value::<LogsOptions>(),
+                    schema_for_value::<LogsOutcome>(),
+                ),
+                (
                     "worker::schema",
-                    "Introspect request/response schemas for worker::* triggers",
                     schema_for_value::<SchemaRequest>(),
                     schema_for_value::<SchemaResponse>(),
                 ),
-            ];
+            ]
+        });
+    &TABLE
+}
+
+fn register_logs(iii: &III) {
+    let _ =
+        iii.register_function(
+            "worker::logs",
+            describe_op(
+                RegisterFunction::new_async_with_bad_request(
+                    |opts: LogsOptions| async move {
+                        core_logs::run(opts).await.map_err(|e| op_error(&e))
+                    },
+                    |e| bad_request_error("worker::logs", &e),
+                ),
+                "worker::logs",
+            ),
+        );
+}
+
+fn register_schema(iii: &III) {
+    let rf = RegisterFunction::new_async_with_bad_request(
+        |req: SchemaRequest| async move {
             let filter = req.function_id.as_deref();
-            let schemas: Vec<SchemaEntry> = all
-                .into_iter()
-                .filter(|(id, _, _, _)| filter.is_none_or(|f| f == *id))
-                .map(|(id, desc, req, resp)| {
+            let schemas: Vec<SchemaEntry> = schema_table()
+                .iter()
+                .filter(|(id, _, _)| filter.is_none_or(|f| f == *id))
+                .map(|(id, req, resp)| {
                     let (timeout_ms, idempotent) = op_metadata(id);
                     SchemaEntry {
-                        function_id: id.into(),
-                        description: desc.into(),
-                        request: req.unwrap_or(Value::Null),
-                        response: resp.unwrap_or(Value::Null),
+                        function_id: (*id).into(),
+                        description: op_description(id).into(),
+                        request: req.clone().unwrap_or(Value::Null),
+                        response: resp.clone().unwrap_or(Value::Null),
                         default_timeout_ms: timeout_ms,
                         idempotent,
                     }
                 })
                 .collect();
             Ok::<_, IIIError>(SchemaResponse { schemas })
-        })
-        .description(
-            "Introspect request/response schemas for worker::* triggers. \
-             Optional `function_id` filters to a single trigger.",
-        ),
+        },
+        |e| bad_request_error("worker::schema", &e),
     );
+    let _ = iii.register_function("worker::schema", describe_op(rf, "worker::schema"));
 }
 
 fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {
@@ -264,144 +348,158 @@ fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {
 fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::add",
-        RegisterFunction::new_async(move |payload: Value| {
-            let project_root = project_root.clone();
-            let sink = sink.clone();
-            async move {
-                let opts: AddOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_error("worker::add", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                core_add::run(
-                    opts,
-                    &ctx,
-                    sink_ref(&sink),
-                    &CliHostShim,
-                    core_add::CallerMode::Trigger,
-                )
-                .await
-                .map_err(|e| op_error(&e))
-            }
-        })
-        .description("Install a worker from registry name or OCI ref"),
+        describe_op(
+            RegisterFunction::new_async_with_bad_request(
+                move |opts: AddOptions| {
+                    let project_root = project_root.clone();
+                    let sink = sink.clone();
+                    async move {
+                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                        core_add::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                            .await
+                            .map_err(|e| op_error(&e))
+                    }
+                },
+                |e| bad_request_error("worker::add", &e),
+            ),
+            "worker::add",
+        ),
     );
 }
 
 fn register_remove(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::remove",
-        RegisterFunction::new_async(move |payload: Value| {
-            let project_root = project_root.clone();
-            let sink = sink.clone();
-            async move {
-                let opts: RemoveOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_error("worker::remove", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                core_remove::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                    .await
-                    .map_err(|e| op_error(&e))
-            }
-        })
-        .description("Uninstall workers and clear their artifacts"),
+        describe_op(
+            RegisterFunction::new_async_with_bad_request(
+                move |opts: RemoveOptions| {
+                    let project_root = project_root.clone();
+                    let sink = sink.clone();
+                    async move {
+                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                        core_remove::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                            .await
+                            .map_err(|e| op_error(&e))
+                    }
+                },
+                |e| bad_request_error("worker::remove", &e),
+            ),
+            "worker::remove",
+        ),
     );
 }
 
 fn register_update(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::update",
-        RegisterFunction::new_async(move |payload: Value| {
-            let project_root = project_root.clone();
-            let sink = sink.clone();
-            async move {
-                let opts: UpdateOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_error("worker::update", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                core_update::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                    .await
-                    .map_err(|e| op_error(&e))
-            }
-        })
-        .description("Reinstall workers preserving config"),
+        describe_op(
+            RegisterFunction::new_async_with_bad_request(
+                move |opts: UpdateOptions| {
+                    let project_root = project_root.clone();
+                    let sink = sink.clone();
+                    async move {
+                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                        core_update::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                            .await
+                            .map_err(|e| op_error(&e))
+                    }
+                },
+                |e| bad_request_error("worker::update", &e),
+            ),
+            "worker::update",
+        ),
     );
 }
 
 fn register_start(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::start",
-        RegisterFunction::new_async(move |payload: Value| {
-            let project_root = project_root.clone();
-            let sink = sink.clone();
-            async move {
-                let opts: StartOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_error("worker::start", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                core_start::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                    .await
-                    .map_err(|e| op_error(&e))
-            }
-        })
-        .description("Start a configured worker"),
+        describe_op(
+            RegisterFunction::new_async_with_bad_request(
+                move |opts: StartOptions| {
+                    let project_root = project_root.clone();
+                    let sink = sink.clone();
+                    async move {
+                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                        core_start::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                            .await
+                            .map_err(|e| op_error(&e))
+                    }
+                },
+                |e| bad_request_error("worker::start", &e),
+            ),
+            "worker::start",
+        ),
     );
 }
 
 fn register_stop(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::stop",
-        RegisterFunction::new_async(move |payload: Value| {
-            let project_root = project_root.clone();
-            let sink = sink.clone();
-            async move {
-                let opts: StopOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_error("worker::stop", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                core_stop::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                    .await
-                    .map_err(|e| op_error(&e))
-            }
-        })
-        .description("Stop a running worker"),
+        describe_op(
+            RegisterFunction::new_async_with_bad_request(
+                move |opts: StopOptions| {
+                    let project_root = project_root.clone();
+                    let sink = sink.clone();
+                    async move {
+                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                        core_stop::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                            .await
+                            .map_err(|e| op_error(&e))
+                    }
+                },
+                |e| bad_request_error("worker::stop", &e),
+            ),
+            "worker::stop",
+        ),
     );
 }
 
 fn register_list(iii: &III, project_root: PathBuf) {
-    let _ = iii.register_function(
-        "worker::list",
-        RegisterFunction::new_async(move |payload: Value| {
+    // `Option<ListOptions>` keeps the lenient default: a `null` payload
+    // deserializes to `None` (→ defaults) and `{}` to `Some(default)`, while
+    // any other malformed shape still fails deserialization and returns the
+    // W105 envelope so the caller can tell typos apart from "no args".
+    let rf = RegisterFunction::new_async_with_bad_request(
+        move |opts: Option<ListOptions>| {
             let project_root = project_root.clone();
             async move {
-                // Lenient default only for null or empty object. Other shapes
-                // must deserialize cleanly or return the W101 envelope so the
-                // caller can tell typos apart from "no args".
-                let opts: ListOptions = match &payload {
-                    Value::Null => ListOptions::default(),
-                    Value::Object(map) if map.is_empty() => ListOptions::default(),
-                    _ => serde_json::from_value(payload)
-                        .map_err(|e| bad_request_error("worker::list", &e))?,
-                };
                 let ctx = ProjectCtx::open_unlocked(project_root);
-                core_list::run(opts, &ctx, &NullSink, &CliHostShim)
+                core_list::run(opts.unwrap_or_default(), &ctx, &NullSink, &CliHostShim)
                     .await
                     .map_err(|e| op_error(&e))
             }
-        })
-        .description("List installed workers"),
+        },
+        |e| bad_request_error("worker::list", &e),
     );
+    // `Option<T>` auto-extracts a nullable wrapper schema; override with the
+    // plain `ListOptions` schema so `engine::functions::info` serves the same
+    // bytes as `worker::schema`.
+    let mut rf = describe_op(rf, "worker::list");
+    if let Some(schema) = schema_for_value::<ListOptions>() {
+        rf = rf.request_format(schema);
+    }
+    let _ = iii.register_function("worker::list", rf);
 }
 
 fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::clear",
-        RegisterFunction::new_async(move |payload: Value| {
-            let project_root = project_root.clone();
-            let sink = sink.clone();
-            async move {
-                let opts: ClearOptions = serde_json::from_value(payload)
-                    .map_err(|e| bad_request_error("worker::clear", &e))?;
-                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                core_clear::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                    .await
-                    .map_err(|e| op_error(&e))
-            }
-        })
-        .description("Wipe worker artifacts"),
+        describe_op(
+            RegisterFunction::new_async_with_bad_request(
+                move |opts: ClearOptions| {
+                    let project_root = project_root.clone();
+                    let sink = sink.clone();
+                    async move {
+                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                        core_clear::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                            .await
+                            .map_err(|e| op_error(&e))
+                    }
+                },
+                |e| bad_request_error("worker::clear", &e),
+            ),
+            "worker::clear",
+        ),
     );
 }

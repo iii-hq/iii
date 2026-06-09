@@ -18,6 +18,7 @@ pub mod events;
 pub use events::{CapturingSink, EventSink, NullSink, WorkerOpEvent};
 
 pub mod add;
+pub mod logs;
 
 pub mod remove;
 
