@@ -4760,10 +4760,10 @@
           <svg class="hv-complex-chart" viewBox="22 0 186 118" preserveAspectRatio="none" aria-hidden="true">
             <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94"/>
             <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14"/>
-            <!-- n(n-1)/2: full pairwise growth -->
-            <path class="hv-cc-q" d="M 22 94 Q 118 18 208 20"/>
-            <!-- (n(n-1)/2) / tolerance: proportionally damped curve -->
-            <path class="hv-cc-l" d="M 22 94 Q 118 60 208 61"/>
+            <!-- n(n-1)/2: full pairwise growth. True parabola y = 94 - 74((x-22)/186)^2. -->
+            <path class="hv-cc-q" d="M 22 94 L 45.3 92.8 L 68.5 89.4 L 91.8 83.6 L 115 75.5 L 138.3 65.1 L 161.5 52.4 L 184.8 37.3 L 208 20"/>
+            <!-- (n(n-1)/2) / tolerance: same parabola, proportionally damped (k=34). -->
+            <path class="hv-cc-l" d="M 22 94 L 45.3 93.5 L 68.5 91.9 L 91.8 89.2 L 115 85.5 L 138.3 80.7 L 161.5 74.9 L 184.8 67.9 L 208 60"/>
             <!-- 0: constant on the axis -->
             <path class="hv-cc-f" d="M 22 94 L 208 94"/>
           </svg>
