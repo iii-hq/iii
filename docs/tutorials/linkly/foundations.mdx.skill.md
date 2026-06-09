@@ -33,7 +33,7 @@ by default and uses itself.
 it to an in-memory store instead. Find the `iii-state` entry in `config.yaml` and set its
 `store_method`:
 
-```yaml config.yaml
+```yaml {8-9} config.yaml
 workers:
   # ...
   - name: iii-state
@@ -42,10 +42,11 @@ workers:
         name: kv
         config:
           store_method: in_memory
+#         file_path: ./data/state_store.db
 ```
 
-Now restarting the engine clears every link. That's fine here;
-[Ch. 3: Persist everything](/tutorials/linkly/persistence) swaps in durable storage.
+Since we're using an in-memory store every restart will clear the data we're storing. That's fine
+here; [Ch. 3: Persist everything](/tutorials/linkly/persistence) swaps in durable storage.
 
 You may also notice a iii.lock file: that's how iii tracks worker dependencies and versions so that
 iii deployments are repeatable. This is similar to lock files in other package managers.
@@ -101,7 +102,8 @@ directly and reloads the worker whenever you save a change.
     "start": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": ">=0.17.0"
+    "iii-sdk": "^0.19.0",
+    "@iii-dev/observability": "^0.19.0"
   },
   "devDependencies": {
     "tsx": "^4.22.3",
