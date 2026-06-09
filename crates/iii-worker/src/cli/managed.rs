@@ -4108,8 +4108,11 @@ mod tests {
                         .split_whitespace();
                     let method = parts.next().unwrap_or_default();
                     let path = parts.next().unwrap_or("/");
-                    let keyed = format!("{method} {path}");
-                    let response = routes.get(&keyed).or_else(|| routes.get(path));
+                    // Strip query string so routes keyed as `GET /download/foo`
+                    // still match when the client appends `?version=…&ci=true`.
+                    let path_only = path.split('?').next().unwrap_or(path);
+                    let keyed = format!("{method} {path_only}");
+                    let response = routes.get(&keyed).or_else(|| routes.get(path_only));
 
                     let (status, content_type, body) = match response {
                         Some(response) => (
