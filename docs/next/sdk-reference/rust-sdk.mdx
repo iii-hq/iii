@@ -27,11 +27,11 @@ Imported as `iii_sdk`.
 Connect a worker to a running iii engine and return its handle.
 
 ```rust
-pub fn register_worker(address: &str, options: InitOptions) -> III;
+pub fn register_worker(address: &str, options: InitOptions) -> IIIClient;
 ```
 
-The returned `III` carries every method below. Spawned async tasks are driven on the SDK's
-internal tokio runtime.
+The returned `IIIClient` carries every method below. Spawned async tasks are driven on the SDK's
+internal tokio runtime. (`III` remains as a deprecated alias for `IIIClient`.)
 
 ### `register_function`
 
@@ -153,6 +153,12 @@ The former name `IIIError` stays reachable at the crate root as a deprecated ali
 `Error::Remote(body) => body.code.as_str()` to branch on engine error codes
 (`invocation_failed`, `invocation_stopped`, `function_not_found`, `FORBIDDEN`, `TIMEOUT`, etc.).
 
+`InvocationError` is the structured form of a remote invocation failure (`code`, `message`,
+optional `function_id`, optional `stacktrace`), mirroring the Node and Python SDKs. Obtain it from
+an `Error` with `err.invocation_error()`, which returns `Some(InvocationError)` for `Error::Remote`
+and `None` for transport, serde, or handler errors. Exported as `iii_sdk::InvocationError` and
+`iii_sdk::errors::InvocationError`.
+
 ## Channels
 
 Import channel types from the `iii_sdk::channel` submodule
@@ -209,12 +215,24 @@ The SDK re-exports the engine's structured introspection types:
 - `WorkerInfo`. `id`, `name`, runtime / version / OS fields, IP, `status`, `connected_at_ms`,
   `function_count`, registered `functions`, `active_invocations`, optional `isolation`.
 - `WorkerMetadata`. The structured metadata a worker reports about itself: `runtime`, `version`,
-  `name`, `os`, `pid`, `telemetry` (an optional `WorkerTelemetryMeta` carrying language /
+  `name`, `os`, `pid`, `telemetry` (an optional `TelemetryOptions` carrying language /
   framework / project labels plus an Amplitude key, used by iii-telemetry for anonymous usage
   reporting; distinct from the OpenTelemetry observability surfaces owned by iii-observability),
-  `isolation`. Rust is the only SDK that surfaces this as a distinct type today.
+  `isolation`. `TelemetryOptions` is exported at the crate root (matching Node and Python);
+  the former name `WorkerTelemetryMeta` stays as a deprecated alias.
 
 ## `MessageType`
 
 Not part of this SDK. Wire frames are typed via the protocol module's `Message` enum, which is
 internal to the SDK.
+
+## `EngineFunctions` / `EngineTriggers`
+
+Engine function and trigger ids for internal operations, with string values matching the Node SDK.
+Both are exported at the crate root (`iii_sdk::EngineFunctions`, `iii_sdk::EngineTriggers`) as unit
+structs carrying associated `&'static str` constants.
+
+- `EngineFunctions`: `LIST_FUNCTIONS`, `INFO_FUNCTIONS`, `LIST_WORKERS`, `INFO_WORKERS`,
+  `LIST_TRIGGERS`, `INFO_TRIGGERS`, `LIST_REGISTERED_TRIGGERS`, `INFO_REGISTERED_TRIGGERS`,
+  `REGISTER_WORKER`.
+- `EngineTriggers`: `FUNCTIONS_AVAILABLE`, `LOG`.

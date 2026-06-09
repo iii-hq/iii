@@ -1,5 +1,6 @@
 pub mod builtin_triggers;
 pub mod channels;
+pub mod engine;
 pub mod error;
 pub mod helpers;
 pub mod iii;
@@ -31,7 +32,7 @@ pub mod channel {
 
 /// Public error types. (Stage 1 submodule grouping.)
 pub mod errors {
-    pub use crate::error::Error;
+    pub use crate::error::{Error, InvocationError};
 }
 
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
@@ -46,18 +47,24 @@ pub use builtin_triggers::{
 };
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-pub use error::Error;
+pub use engine::{EngineFunctions, EngineTriggers};
 #[deprecated(
     since = "0.19.0",
     note = "renamed to Error; import from iii_sdk::errors"
 )]
 pub use error::Error as IIIError;
+pub use error::{Error, InvocationError};
+#[deprecated(since = "0.20.0", note = "renamed to IIIClient")]
+pub use iii::IIIClient as III;
+pub use iii::TelemetryOptions;
+#[deprecated(since = "0.20.0", note = "renamed to TelemetryOptions")]
+pub use iii::TelemetryOptions as WorkerTelemetryMeta;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
 pub use iii::{
     FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
     WorkerMetadata,
 };
-pub use iii::{III, RegisterFunction, RegisterTriggerType};
+pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
     Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
@@ -101,7 +108,7 @@ pub struct InitOptions {
 /// established automatically in a dedicated background thread with its own
 /// tokio runtime.
 ///
-/// Call [`III::shutdown`] before the end of `main` to cleanly stop the
+/// Call [`IIIClient::shutdown`] before the end of `main` to cleanly stop the
 /// connection and join the background thread. In Rust the process exits
 /// when `main` returns, terminating all threads — so `shutdown()` must be
 /// called while `main` is still running.
@@ -118,7 +125,7 @@ pub struct InitOptions {
 /// // register functions, handle events, etc.
 /// iii.shutdown(); // cleanly stops the connection thread
 /// ```
-pub fn register_worker(address: &str, options: InitOptions) -> III {
+pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
     let InitOptions {
         metadata,
         headers,
@@ -126,9 +133,9 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
     } = options;
 
     let iii = if let Some(metadata) = metadata {
-        III::with_metadata(address, metadata)
+        IIIClient::with_metadata(address, metadata)
     } else {
-        III::new(address)
+        IIIClient::new(address)
     };
 
     if let Some(h) = headers {
@@ -176,11 +183,11 @@ fn _ensure_is_channel_ref_not_top_level() {}
 
 // ---------------------------------------------------------------------------
 // Compile-fail doctest: enforces that `create_channel` (relocated to
-// `helpers`) is no longer callable on `III`.
+// `helpers`) is no longer callable on `IIIClient`.
 // ---------------------------------------------------------------------------
 
 /// ```compile_fail
-/// let iii = iii_sdk::III::new("ws://x");
+/// let iii = iii_sdk::IIIClient::new("ws://x");
 /// iii.create_channel(None);
 /// ```
 #[allow(dead_code)]
@@ -240,3 +247,17 @@ fn _ensure_errors_submodule_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_stream_event_names() {}
+
+/// ```rust,no_run
+/// use iii_sdk::{EngineFunctions, EngineTriggers};
+/// let _ = (EngineFunctions::LIST_FUNCTIONS, EngineTriggers::LOG);
+/// ```
+#[allow(dead_code)]
+fn _ensure_engine_constants_path() {}
+
+/// ```rust,no_run
+/// use iii_sdk::errors::InvocationError;
+/// fn _takes(_e: InvocationError) {}
+/// ```
+#[allow(dead_code)]
+fn _ensure_invocation_error_path() {}

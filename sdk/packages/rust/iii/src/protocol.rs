@@ -206,7 +206,7 @@ impl RegisterTriggerTypeMessage {
     }
 }
 
-/// Input for [`III::register_trigger`](crate::III::register_trigger).
+/// Input for [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// The `id` is auto-generated internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterTriggerInput {
