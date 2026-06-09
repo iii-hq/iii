@@ -30,14 +30,15 @@ type TypedHandler[Req any, Resp any] func(ctx context.Context, req Req) (Resp, e
 
 // RegisterFunctionTyped registers a function whose request and response schemas are
 // inferred from the Req and Resp type parameters and advertised to the engine. It is the
-// schema-aware counterpart of Client.RegisterFunction; reach for it when you want the
+// schema-aware counterpart of [Client.RegisterFunction]; reach for it when you want the
 // engine (and its dashboard / typed callers) to know the function's contract.
 //
 //	iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::create",
 //	    func(ctx context.Context, req CreateOrderRequest) (OrderResult, error) { ... })
 //
-// Use Client.RegisterFunction directly for schemaless functions or when you need to hand
-// the engine a hand-written schema.
+// Use [Client.RegisterFunction] directly for schemaless functions or when you need to
+// hand the engine a hand-written schema. See [InferSchema] to obtain a type's schema on
+// its own.
 func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp]) error {
 	if handler == nil {
 		return fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)

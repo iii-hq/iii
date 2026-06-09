@@ -38,7 +38,7 @@ const channelFlushDelay = 10 * time.Millisecond
 
 // Channel is a freshly created channel: a live writer/reader plus the refs for each end.
 // Pass WriterRef or ReaderRef to another worker (in a trigger payload) so it opens the
-// opposite end with OpenReader / OpenWriter.
+// opposite end with [OpenReader] / [OpenWriter]. Created by [Client.CreateChannel].
 type Channel struct {
 	Writer    *ChannelWriter
 	Reader    *ChannelReader
