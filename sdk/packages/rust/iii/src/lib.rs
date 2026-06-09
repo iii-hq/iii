@@ -36,8 +36,12 @@ pub mod errors {
 
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
 pub use builtin_triggers::IIITrigger;
+#[deprecated(since = "0.20.0", note = "renamed to StreamChangeEvent")]
+pub use builtin_triggers::StreamChangeEvent as StreamCallRequest;
+#[deprecated(since = "0.20.0", note = "renamed to StreamJoinLeaveEvent")]
+pub use builtin_triggers::StreamJoinLeaveEvent as StreamJoinLeaveCallRequest;
 pub use builtin_triggers::{
-    StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
+    StreamChangeEvent, StreamEventDetail, StreamEventType, StreamJoinLeaveEvent,
     StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
@@ -229,3 +233,10 @@ fn _ensure_channel_submodule_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_errors_submodule_path() {}
+
+/// ```rust,no_run
+/// use iii_sdk::{StreamChangeEvent, StreamJoinLeaveEvent};
+/// fn _takes(_a: StreamChangeEvent, _b: StreamJoinLeaveEvent) {}
+/// ```
+#[allow(dead_code)]
+fn _ensure_stream_event_names() {}
