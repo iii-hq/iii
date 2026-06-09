@@ -69,7 +69,7 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
-/** @internal */
+/** Telemetry labels reported by the worker (language, framework, project). */
 export type TelemetryOptions = {
   language?: string
   project_name?: string

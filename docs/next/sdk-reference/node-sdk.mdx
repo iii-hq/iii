@@ -32,6 +32,9 @@ Pass the engine's SDK WebSocket URL (e.g. `process.env.III_URL`) as `address`. `
 worker identity, timeouts, reconnection, and OpenTelemetry. The returned `IIIClient` carries every
 method below. (`ISdk` remains as a deprecated alias for `IIIClient`.)
 
+`TelemetryOptions` is the public type for the worker's telemetry labels (`language`, `project_name`,
+`framework`, `amplitude_api_key`), exported from `iii-sdk` to match the Python and Rust SDKs.
+
 ### `registerFunction`
 
 Register a callable function on this worker.
