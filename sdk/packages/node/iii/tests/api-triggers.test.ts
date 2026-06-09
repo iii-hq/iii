@@ -2,7 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { http, type ApiResponse, type HttpRequest } from '../src'
 import type { HttpResponse } from '../src/types'
 import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
@@ -547,5 +547,55 @@ describe('API Triggers', () => {
 
     fn.unregister()
     trigger.unregister()
+  })
+
+  it('should reject a conflicting route structure without crashing the engine', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const handler = async (_req: HttpRequest): Promise<ApiResponse> => ({
+      status_code: 200,
+      body: { ok: true },
+    })
+
+    // First route registers normally.
+    const fnA = iii.registerFunction('test.api.conflict.a', handler)
+    const triggerA = iii.registerTrigger({
+      type: 'http',
+      function_id: fnA.id,
+      config: {
+        api_path: 'test/node/conflict/:listId/:userId',
+        http_method: 'GET',
+      },
+    })
+
+    // Second route has the same axum shape with swapped param names -> conflict.
+    const fnB = iii.registerFunction('test.api.conflict.b', handler)
+    const triggerB = iii.registerTrigger({
+      type: 'http',
+      function_id: fnB.id,
+      config: {
+        api_path: 'test/node/conflict/:userId/:listId',
+        http_method: 'GET',
+      },
+    })
+
+    await sleep(500)
+
+    // Engine stayed alive and the first route still serves — no panic.
+    const response = await execute(async () =>
+      httpRequest('GET', '/test/node/conflict/list1/user1'),
+    )
+    expect(response.status).toBe(200)
+    expect(response.data).toEqual({ ok: true })
+
+    // The conflicting registration was surfaced as an error.
+    const formatted = errorSpy.mock.calls.map((args) => args.join(' ')).join('\n')
+    expect(formatted.toLowerCase()).toContain('conflict')
+    errorSpy.mockRestore()
+
+    fnA.unregister()
+    triggerA.unregister()
+    fnB.unregister()
+    triggerB.unregister()
   })
 })

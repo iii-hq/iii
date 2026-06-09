@@ -217,6 +217,29 @@ impl HttpWorker {
         format!("{}:{}", method, path)
     }
 
+    /// Structural signature of a route, used to detect axum matcher conflicts.
+    ///
+    /// Axum matches routes by position, not by parameter name, so
+    /// `/sessions/{listId}/{userId}` and `/sessions/{userId}/{listId}` are the
+    /// same route to its matcher and inserting both panics. Two routes share
+    /// this signature exactly when they would collide: same method and same
+    /// shape with every path parameter collapsed to a positional placeholder.
+    fn route_signature(http_method: &str, http_path: &str) -> String {
+        let axum_path = Self::build_router_for_axum(&http_path.to_string());
+        let shape = axum_path
+            .split('/')
+            .map(|segment| {
+                if segment.starts_with('{') && segment.ends_with('}') {
+                    "{}".to_string()
+                } else {
+                    segment.to_string()
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("/");
+        format!("{}:{}", http_method.to_uppercase(), shape)
+    }
+
     /// Updates the router with all routes from the registry and configurations
     async fn update_routes(&self) -> anyhow::Result<()> {
         // Build CORS layer
@@ -292,10 +315,25 @@ impl HttpWorker {
 
         let mut router = Router::new();
 
-        for entry in routers_registry.iter() {
-            let path = Self::build_router_for_axum(&entry.http_path);
+        // Defense in depth: `register_router` already rejects conflicting
+        // routes, but skip any colliding signature here too so a stray
+        // duplicate can never panic axum and crash the HTTP worker thread.
+        let mut seen_signatures = std::collections::HashSet::new();
 
+        for entry in routers_registry.iter() {
             let method = entry.http_method.to_ascii_uppercase();
+
+            let signature = Self::route_signature(&method, &entry.http_path);
+            if !seen_signatures.insert(signature) {
+                tracing::warn!(
+                    "Skipping route {} {} — conflicts with a previously registered route of the same structure",
+                    method.purple(),
+                    entry.http_path.purple()
+                );
+                continue;
+            }
+
+            let path = Self::build_router_for_axum(&entry.http_path);
             let path_for_extension = entry.http_path.clone();
             router = match method.as_str() {
                 "GET" => router.route(
@@ -398,6 +436,32 @@ impl HttpWorker {
         let http_path = router.http_path.clone();
         let method = router.http_method.to_uppercase();
         let key = Self::build_router_key(&method, &router.http_path);
+
+        // Reject routes that collide with an already-registered route of the
+        // same shape but different path-parameter names. Axum's matcher would
+        // panic on such an insert, taking down the whole HTTP worker thread, so
+        // we fail this single registration gracefully instead.
+        let signature = Self::route_signature(&method, &http_path);
+        let conflict = self
+            .routers_registry
+            .iter()
+            .find(|entry| {
+                entry.key() != &key
+                    && Self::route_signature(&entry.http_method, &entry.http_path) == signature
+            })
+            .map(|entry| entry.http_path.clone());
+        if let Some(existing_path) = conflict {
+            anyhow::bail!(
+                "Route '{} {}' conflicts with already-registered route '{} {}': \
+                 routes with identical structure but different path-parameter \
+                 names are not supported",
+                method,
+                http_path,
+                method,
+                existing_path
+            );
+        }
+
         tracing::debug!("Registering router {}", key.purple());
         self.routers_registry.insert(key, router);
 
@@ -635,6 +699,38 @@ mod tests {
     fn build_router_key_root_with_different_methods() {
         assert_eq!(HttpWorker::build_router_key("GET", "/"), "GET:/");
         assert_eq!(HttpWorker::build_router_key("POST", "/"), "POST:/");
+    }
+
+    // ---- route_signature tests ----
+
+    #[test]
+    fn route_signature_collapses_param_names() {
+        // Same shape, swapped param names -> identical signature (would collide).
+        let a = HttpWorker::route_signature("GET", "sessions/:listId/:userId/calls/:contactId");
+        let b = HttpWorker::route_signature("GET", "sessions/:userId/:listId/calls/:contactId");
+        assert_eq!(a, b);
+        assert_eq!(a, "GET:/sessions/{}/{}/calls/{}");
+    }
+
+    #[test]
+    fn route_signature_distinguishes_method() {
+        let get = HttpWorker::route_signature("GET", "items/:id");
+        let post = HttpWorker::route_signature("POST", "items/:id");
+        assert_ne!(get, post);
+    }
+
+    #[test]
+    fn route_signature_distinguishes_literal_segments() {
+        let a = HttpWorker::route_signature("GET", "sessions/:id/calls");
+        let b = HttpWorker::route_signature("GET", "sessions/:id/messages");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn route_signature_distinguishes_param_vs_literal() {
+        let param = HttpWorker::route_signature("GET", "users/:id");
+        let literal = HttpWorker::route_signature("GET", "users/me");
+        assert_ne!(param, literal);
     }
 
     // ---- build_router_for_axum tests ----
