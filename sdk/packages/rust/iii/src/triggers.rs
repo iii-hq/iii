@@ -20,7 +20,7 @@ pub struct TriggerConfig {
 }
 
 /// Handler trait for custom trigger types. Implement this and pass to
-/// [`III::register_trigger_type`](crate::III::register_trigger_type).
+/// [`IIIClient::register_trigger_type`](crate::IIIClient::register_trigger_type).
 #[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.
@@ -29,7 +29,7 @@ pub trait TriggerHandler: Send + Sync {
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error>;
 }
 
-/// Handle returned by [`III::register_trigger`](crate::III::register_trigger).
+/// Handle returned by [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// Call [`unregister`](Trigger::unregister) to remove the trigger from the engine.
 #[derive(Clone)]
 pub struct Trigger {

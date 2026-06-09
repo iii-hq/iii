@@ -25,11 +25,11 @@ Imported as `iii_sdk`.
 Connect a worker to a running iii engine and return its handle.
 
 ```rust
-pub fn register_worker(address: &str, options: InitOptions) -> III;
+pub fn register_worker(address: &str, options: InitOptions) -> IIIClient;
 ```
 
-The returned `III` carries every method below. Spawned async tasks are driven on the SDK's
-internal tokio runtime.
+The returned `IIIClient` carries every method below. Spawned async tasks are driven on the SDK's
+internal tokio runtime. (`III` remains as a deprecated alias for `IIIClient`.)
 
 ### `register_function`
 
