@@ -17,10 +17,12 @@ concurrency:
 
 jobs:
   license-agreement:
+    # Skip bot-authored PRs. Org membership is NOT gated here: the event payload's
+    # author_association conceals private org members, so membership is checked
+    # authoritatively in the script using the App token (which can see them).
     if: |
       github.actor != 'github-actions[bot]' &&
-      github.event.pull_request.user.type != 'Bot' &&
-      !contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     # SECURITY: this is a `pull_request_target` job, so it runs in the base repo
     # context with access to secrets (APP_PRIVATE_KEY). It is safe ONLY because it

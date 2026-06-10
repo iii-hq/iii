@@ -229,6 +229,22 @@ async function addToContributorsFile({ owner, repo, username, content, sha }) {
   }
 }
 
+// Whether `username` belongs to the `org`. Uses an authenticated call so it sees
+// private (concealed) members too, which the event payload's `author_association`
+// does not. Requires the token's App to have organization `Members: read`.
+// Returns false when the repo owner is a user account rather than an org.
+async function isOrgMember({ org, username }) {
+  try {
+    await githubRequest(`/orgs/${org}/members/${encodeURIComponent(username)}`);
+    return true;
+  } catch (error) {
+    if (error.status === 404 || error.status === 302) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function getPullRequestForEvent({ event, owner, repo }) {
   if (event.pull_request) {
     return {
@@ -261,6 +277,19 @@ export async function run() {
   const prAuthor = pullRequest.user.login;
   const headSha = pullRequest.head.sha;
   const prBody = pullRequest.body || "";
+
+  if (await isOrgMember({ org: owner, username: prAuthor })) {
+    await createCommitStatus({
+      owner,
+      repo,
+      sha: headSha,
+      state: "success",
+      description: "Org member; license agreement not required.",
+    });
+    console.log(`${prAuthor} is a member of ${owner}; license agreement skipped.`);
+    return;
+  }
+
   const { content: contributorsContent, sha: contributorsSha } = await fetchContributorsFile({
     owner,
     repo,
