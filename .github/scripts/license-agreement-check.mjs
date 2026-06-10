@@ -41,13 +41,15 @@ export function buildPendingComment(prAuthor) {
     "",
     `@${prAuthor}, to contribute to this repository please confirm that you license your changes under Apache 2.0 and that you have all necessary rights over the code you are contributing.`,
     "",
+    "Your agreement also signifies that you have read and agree to CONTRIBUTING.md located in the root of this repository",
+    "",
     "Copy the following into your PR description and check the box:",
     "",
     "```markdown",
     `- [ ] ${CHECKBOX_TEXT}`,
     "```",
     "",
-    "When you check the box, this workflow will automatically add you to [contributors.md](contributors.md) with the following commit:",
+    "When you check the box, this workflow will automatically add you to contributors.md with the following commit:",
     "",
     "```",
     buildCommitMessage(prAuthor),
@@ -63,7 +65,7 @@ export function buildSatisfiedComment(prAuthor) {
   return [
     "## License agreement recorded",
     "",
-    `@${prAuthor}, your agreement has been recorded and you have been added to [contributors.md](contributors.md). All future PRs from your account will pass this check automatically.`,
+    `@${prAuthor}, your agreement has been recorded and you have been added to contributors.md. All future PRs from your account will pass this check automatically.`,
   ].join("\n");
 }
 
