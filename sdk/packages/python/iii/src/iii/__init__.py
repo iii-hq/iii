@@ -57,6 +57,8 @@ from .types import (
     IIIClient,
     InternalHttpRequest,
     RemoteFunctionHandler,
+    StreamRequest,
+    StreamResponse,
 )
 from .utils import http
 
@@ -114,6 +116,8 @@ __all__ = [
     "IIIClient",
     "InternalHttpRequest",
     "RemoteFunctionHandler",
+    "StreamRequest",
+    "StreamResponse",
     # Stream
     "IStream",
     "StreamChangeEvent",

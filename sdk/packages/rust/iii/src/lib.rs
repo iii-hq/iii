@@ -83,7 +83,8 @@ pub use types::Channel;
 pub use types::{
     ApiRequest, ApiResponse, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
     StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput, StreamListInput,
-    StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
+    StreamRequest, StreamResponse, StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError,
+    UpdateResult,
 };
 
 /// Configuration options passed to [`register_worker`].
@@ -261,3 +262,10 @@ fn _ensure_engine_constants_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_invocation_error_path() {}
+
+/// ```rust,no_run
+/// use iii_sdk::{StreamRequest, StreamResponse};
+/// fn _takes(_req: StreamRequest, _res: StreamResponse) {}
+/// ```
+#[allow(dead_code)]
+fn _ensure_stream_request_response_path() {}

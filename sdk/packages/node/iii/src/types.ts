@@ -323,11 +323,11 @@ export type InternalHttpRequest<TBody = unknown> = {
 }
 
 /**
- * Response object passed to HTTP function handlers. Use `status()` and
+ * Response object passed to streaming function handlers. Use `status()` and
  * `headers()` to set response metadata, write to `stream` for streaming
  * responses, and call `close()` when done.
  */
-export type HttpResponse = {
+export type StreamResponse = {
   /** Set the HTTP status code. */
   status: (statusCode: number) => void
   /** Set response headers. */
@@ -338,19 +338,25 @@ export type HttpResponse = {
   close: () => void
 }
 
-/**
- * Incoming HTTP request received by a function registered with an HTTP trigger.
- *
- * @typeParam TBody - Type of the parsed request body.
- */
-export type HttpRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
+/** @deprecated Renamed to `StreamResponse`. */
+export type HttpResponse = StreamResponse
 
 /**
- * Alias for {@link HttpRequest}. Represents an incoming API request.
+ * Incoming streaming request received by a function registered with a stream trigger.
  *
  * @typeParam TBody - Type of the parsed request body.
  */
-export type ApiRequest<TBody = unknown> = HttpRequest<TBody>
+export type StreamRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
+
+/** @deprecated Renamed to `StreamRequest`. */
+export type HttpRequest<TBody = unknown> = StreamRequest<TBody>
+
+/**
+ * Alias for {@link StreamRequest}. Represents an incoming API request.
+ *
+ * @typeParam TBody - Type of the parsed request body.
+ */
+export type ApiRequest<TBody = unknown> = StreamRequest<TBody>
 
 /**
  * Structured API response returned from HTTP function handlers.
