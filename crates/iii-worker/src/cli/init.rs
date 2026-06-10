@@ -398,42 +398,54 @@ fn restore_snapshots(
 /// `iii.worker.<lang>.yaml` to `iii.worker.yaml`, then substitute the
 /// `{{worker_name}}` placeholder.
 ///
-/// Each language ships its own complete manifest (scripts + base_image);
-/// the scaffolder's language filter copies exactly one of them. Renaming
-/// it here is what turns the per-language source file into the canonical
-/// `iii.worker.yaml` the engine reads.
+/// Some template files differ per language but share a destination name, so
+/// they ship language-tagged (`iii.worker.<lang>.yaml`, and for node
+/// `package.<lang>.json` — TS needs tsx/typescript, JS doesn't). The
+/// scaffolder's language filter copies exactly one of each; renaming it here
+/// is what turns the tagged source into the canonical file the tooling reads.
 ///
-/// Idempotent re-init: if a user-owned `iii.worker.yaml` was restored
-/// after scaffolding, it wins — the freshly-scaffolded per-language file
-/// is discarded rather than clobbering the edited manifest.
+/// Idempotent re-init: if a user-owned destination file was restored after
+/// scaffolding, it wins — the freshly-scaffolded tagged file is discarded
+/// rather than clobbering the edited one.
 fn finalize_worker_manifest(
     root: &Path,
     worker_name: &str,
     lang: WorkerLanguage,
 ) -> std::io::Result<()> {
-    let final_path = root.join("iii.worker.yaml");
-    let lang_path = root.join(format!("iii.worker.{}.yaml", lang.short()));
-
-    if lang_path.exists() {
-        if final_path.exists() {
-            // A restored user manifest takes precedence; drop the stray
-            // per-language source so it doesn't linger in the worker dir.
-            std::fs::remove_file(&lang_path)?;
+    let short = lang.short();
+    // (tagged source, canonical destination). Sources that weren't scaffolded
+    // for this language (e.g. package.<lang>.json for py/rust) simply don't
+    // exist and are skipped.
+    let renames = [
+        (format!("iii.worker.{short}.yaml"), "iii.worker.yaml"),
+        (format!("package.{short}.json"), "package.json"),
+    ];
+    for (tagged, canonical) in &renames {
+        let src = root.join(tagged);
+        if !src.exists() {
+            continue;
+        }
+        let dst = root.join(canonical);
+        if dst.exists() {
+            // A restored user file takes precedence; drop the stray tagged
+            // source so it doesn't linger in the worker dir.
+            std::fs::remove_file(&src)?;
         } else {
-            std::fs::rename(&lang_path, &final_path)?;
+            std::fs::rename(&src, &dst)?;
         }
     }
 
-    // Substitute the worker name. No-op when the file is absent (test
-    // short-circuit) or the placeholder is gone (idempotent re-run).
-    if !final_path.exists() {
+    // Substitute the worker name in the manifest. No-op when the file is absent
+    // (test short-circuit) or the placeholder is gone (idempotent re-run).
+    let manifest = root.join("iii.worker.yaml");
+    if !manifest.exists() {
         return Ok(());
     }
-    let contents = std::fs::read_to_string(&final_path)?;
+    let contents = std::fs::read_to_string(&manifest)?;
     if !contents.contains("{{worker_name}}") {
         return Ok(());
     }
-    std::fs::write(&final_path, contents.replace("{{worker_name}}", worker_name))
+    std::fs::write(&manifest, contents.replace("{{worker_name}}", worker_name))
 }
 
 /// Detect the language the scaffolder picked. Two strategies:

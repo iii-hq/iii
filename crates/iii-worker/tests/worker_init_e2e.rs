@@ -155,10 +155,19 @@ fn init_typescript_creates_node_scaffold_with_sdk() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    let pkg = std::fs::read_to_string(parent.path().join("ts-wkr").join("package.json")).unwrap();
+    let root = parent.path().join("ts-wkr");
+    let pkg = std::fs::read_to_string(root.join("package.json")).unwrap();
     assert!(
         pkg.contains("iii-sdk"),
         "package.json must pin iii-sdk, got: {pkg}"
+    );
+    // TS scaffold carries the TypeScript toolchain.
+    assert!(pkg.contains("typescript"), "ts package.json needs typescript: {pkg}");
+    assert!(pkg.contains("tsx"), "ts package.json needs tsx: {pkg}");
+    // The language-tagged source must be renamed away.
+    assert!(
+        !root.join("package.ts.json").exists() && !root.join("package.js.json").exists(),
+        "tagged package.<lang>.json should be renamed to package.json"
     );
 }
 
@@ -169,6 +178,25 @@ fn init_javascript_creates_node_scaffold() {
         "docker.io/iiidev/node:latest",
         "node --watch src/index.js",
         &["package.json", "src/index.js"],
+    );
+    // A JS worker must NOT inherit the TypeScript toolchain or tsconfig.
+    let parent = tempdir().unwrap();
+    let out = worker_bin()
+        .args(["init", "js-wkr", "--language", "js", "--skip-iii", "--template-dir"])
+        .arg(fixtures())
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let root = parent.path().join("js-wkr");
+    let pkg = std::fs::read_to_string(root.join("package.json")).unwrap();
+    assert!(pkg.contains("iii-sdk"), "js package.json must pin iii-sdk: {pkg}");
+    assert!(!pkg.contains("typescript"), "js package.json must not include typescript: {pkg}");
+    assert!(!pkg.contains("tsx"), "js package.json must not include tsx: {pkg}");
+    assert!(!root.join("tsconfig.json").exists(), "js scaffold must not include tsconfig.json");
+    assert!(
+        !root.join("package.ts.json").exists() && !root.join("package.js.json").exists(),
+        "tagged package.<lang>.json should be renamed to package.json"
     );
 }
 

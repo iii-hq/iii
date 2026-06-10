@@ -21,7 +21,8 @@ files:
   - iii.worker.js.yaml
   - iii.worker.py.yaml
   - iii.worker.rust.yaml
-  - package.json
+  - package.ts.json
+  - package.js.json
   - tsconfig.json
   - src/index.ts
   - src/index.js

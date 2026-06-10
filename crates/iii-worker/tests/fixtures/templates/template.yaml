@@ -16,9 +16,11 @@ language_files:
     - '*.ts'
     - 'tsconfig.json'
     - 'iii.worker.ts.yaml'
+    - 'package.ts.json'
   javascript:
     - '*.js'
     - 'iii.worker.js.yaml'
+    - 'package.js.json'
   node:
     - 'package.json'
   python:
