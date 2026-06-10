@@ -58,7 +58,10 @@ export function useTraceData({
         limit: DEFAULT_TRACE_LIMIT,
         include_internal: showSystem,
       }),
-    refetchInterval: isPaused ? false : 3000,
+    // Interim: poll every 1s (was 3s) so freshly emitted spans surface sooner.
+    // The real fix is to subscribe to the engine's reactive trace-rows feed
+    // over the existing streams WebSocket instead of polling at all.
+    refetchInterval: isPaused ? false : 1000,
     staleTime: 1000,
   })
 

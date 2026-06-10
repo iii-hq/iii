@@ -60,7 +60,14 @@ export interface OtelConfig {
   metricsEnabled?: boolean
   /** Metrics export interval in milliseconds. Defaults to 60000 (60 seconds). */
   metricsExportIntervalMs?: number
-  /** Log processor flush delay in milliseconds. Defaults to 100ms. */
+  /**
+   * Span processor flush delay in milliseconds. Defaults to 100ms. This is how
+   * long an ended span waits in the batch buffer before it is flushed to the
+   * engine — the OpenTelemetry default of 5000ms is what makes traces appear
+   * seconds after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS.
+   */
+  spansFlushIntervalMs?: number
+  /** Log processor flush delay in milliseconds. Defaults to 100ms. Env override: OTEL_LOGS_FLUSH_INTERVAL_MS. */
   logsFlushIntervalMs?: number
   /** Maximum number of log records exported per batch. Defaults to 1. */
   logsBatchSize?: number
@@ -78,6 +85,7 @@ export const DEFAULT_OTEL_CONFIG = {
   engineWsUrl: 'ws://localhost:49134',
   metricsEnabled: true,
   metricsExportIntervalMs: 60000,
+  spansFlushIntervalMs: 100,
   logsFlushIntervalMs: 100,
   logsBatchSize: 1,
   fetchInstrumentationEnabled: true,
