@@ -150,7 +150,10 @@ fn engine_gone_breadcrumb_records_engine_pid_and_spawn_parent() {
 
     let (armed, log) =
         wait_for_log_line(&logfile, "engine exit-watch armed", Duration::from_secs(10));
-    assert!(armed, "daemon never armed the engine-pid watch; log:\n{log}");
+    assert!(
+        armed,
+        "daemon never armed the engine-pid watch; log:\n{log}"
+    );
 
     let _ = fake_engine.0.kill();
     let _ = fake_engine.0.wait();
@@ -194,7 +197,11 @@ fn signal_exit_writes_no_breadcrumb() {
     let tmp = tempfile::tempdir().unwrap();
     let logfile = tmp.path().join("daemon.log");
 
-    let mut daemon = KillOnDrop(daemon_cmd(tmp.path(), &logfile).spawn().expect("spawn daemon"));
+    let mut daemon = KillOnDrop(
+        daemon_cmd(tmp.path(), &logfile)
+            .spawn()
+            .expect("spawn daemon"),
+    );
     let pid = daemon.0.id() as i32;
 
     let (armed, log) =
@@ -230,12 +237,14 @@ fn lifeline_eof_exits_daemon_even_while_declared_engine_alive() {
 
     let mut cmd = daemon_cmd(tmp.path(), &logfile);
     cmd.env("III_ENGINE_PID", engine_pid.to_string());
-    let lifeline =
-        iii_worker::daemon_exit::attach_lifeline_std(&mut cmd).expect("attach lifeline");
+    let lifeline = iii_worker::daemon_exit::attach_lifeline_std(&mut cmd).expect("attach lifeline");
     let mut daemon = KillOnDrop(cmd.spawn().expect("spawn daemon"));
 
-    let (armed, log) =
-        wait_for_log_line(&logfile, "lifeline exit-watch armed", Duration::from_secs(10));
+    let (armed, log) = wait_for_log_line(
+        &logfile,
+        "lifeline exit-watch armed",
+        Duration::from_secs(10),
+    );
     assert!(armed, "daemon never armed the lifeline watch; log:\n{log}");
 
     // Lifeline held + engine alive → must keep running across at least one
@@ -291,8 +300,11 @@ fn spawner_pid_backstop_covers_leaked_lifeline_write_end() {
 
     // Both watches must be armed before we kill anything: the lifeline (which
     // will never fire here) and the pid backstop (which must).
-    let (armed, log) =
-        wait_for_log_line(&logfile, "lifeline exit-watch armed", Duration::from_secs(10));
+    let (armed, log) = wait_for_log_line(
+        &logfile,
+        "lifeline exit-watch armed",
+        Duration::from_secs(10),
+    );
     assert!(armed, "daemon never armed the lifeline watch; log:\n{log}");
     let (armed, log) =
         wait_for_log_line(&logfile, "engine exit-watch armed", Duration::from_secs(10));
@@ -502,7 +514,11 @@ fn reaper_kills_running_binary_worker_on_engine_gone() {
     }
 
     let status = wait_for_exit(&mut daemon, EXIT_DEADLINE, &logfile, "daemon");
-    assert_eq!(status.code(), Some(0), "daemon exit after reap must be graceful");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "daemon exit after reap must be graceful"
+    );
 
     let final_log = std::fs::read_to_string(&logfile).unwrap_or_default();
     assert!(
@@ -550,7 +566,10 @@ fn sandbox_daemon_exits_when_engine_dies() {
 
     let (armed, log) =
         wait_for_log_line(&logfile, "engine exit-watch armed", Duration::from_secs(10));
-    assert!(armed, "sandbox-daemon never armed the engine watch; log:\n{log}");
+    assert!(
+        armed,
+        "sandbox-daemon never armed the engine watch; log:\n{log}"
+    );
 
     // Engine alive → daemon stays up across at least one completed pid poll
     // (attributes the exit below to engine death, not a first-tick misfire).

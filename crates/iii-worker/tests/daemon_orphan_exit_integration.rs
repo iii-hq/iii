@@ -147,7 +147,8 @@ fn daemon_exits_when_orphaned_from_engine() {
     // Deterministic readiness: wait for the daemon's own log line proving it
     // snapshotted its parent and armed the watch WHILE sh was still alive —
     // no blind startup sleep, no arming race under CI load.
-    let (armed, log) = wait_for_log_line(&logfile, "parent exit-watch armed", Duration::from_secs(10));
+    let (armed, log) =
+        wait_for_log_line(&logfile, "parent exit-watch armed", Duration::from_secs(10));
     assert!(armed, "daemon never armed its exit watch; log:\n{log}");
 
     // Negative path: with its parent alive, the daemon must SURVIVE at least
@@ -205,12 +206,14 @@ fn daemon_exits_when_lifeline_drops() {
         .env_remove("III_ENGINE_PID")
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_err));
-    let lifeline =
-        iii_worker::daemon_exit::attach_lifeline_std(&mut cmd).expect("attach lifeline");
+    let lifeline = iii_worker::daemon_exit::attach_lifeline_std(&mut cmd).expect("attach lifeline");
     let mut daemon = cmd.spawn().expect("spawn daemon");
 
-    let (armed, log) =
-        wait_for_log_line(&logfile, "lifeline exit-watch armed", Duration::from_secs(10));
+    let (armed, log) = wait_for_log_line(
+        &logfile,
+        "lifeline exit-watch armed",
+        Duration::from_secs(10),
+    );
     if !armed {
         let _ = daemon.kill();
         panic!("daemon never armed the lifeline watch; log:\n{log}");
@@ -344,7 +347,10 @@ fn daemon_survives_orphaning_when_declared_engine_alive() {
 
     let (armed, log) =
         wait_for_log_line(&logfile, "engine exit-watch armed", Duration::from_secs(10));
-    assert!(armed, "daemon never armed the engine-pid watch; log:\n{log}");
+    assert!(
+        armed,
+        "daemon never armed the engine-pid watch; log:\n{log}"
+    );
 
     // Orphan the daemon (kill its direct parent). The declared engine (us)
     // is alive, so the daemon must keep running through multiple polls.
@@ -414,7 +420,11 @@ fn watch_source_exits_when_engine_pid_dies() {
         }
         std::thread::sleep(PROBE_INTERVAL);
     };
-    assert_eq!(status.code(), Some(0), "engine-gone watcher exit is graceful");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "engine-gone watcher exit is graceful"
+    );
 }
 
 /// Session-reaper wiring: on engine-gone the daemon must run the

@@ -544,4 +544,3 @@ fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
         ),
     );
 }
-
