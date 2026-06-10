@@ -1022,6 +1022,19 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
                 handle.trigger();
             });
         }
+        // Engine anchor: managed-worker VMs are detached from their
+        // (transient) spawner by design, but nothing the engine started may
+        // outlive the engine — a real `killall -9 iii` left worker VMs
+        // running. III_ENGINE_PID flows down the whole spawn tree env, so
+        // watch it directly; hand-run VMs (no engine env) stay unwatched.
+        if let Some(pid) = crate::daemon_exit::engine_pid_from_env() {
+            let handle = vm.exit_handle();
+            std::thread::spawn(move || {
+                crate::daemon_exit::blocking_wait_pid_gone(pid);
+                eprintln!("vm-boot: engine pid {pid} exited; shutting down VM");
+                handle.trigger();
+            });
+        }
     }
 
     let vcpu_label = if args.vcpus == 1 { "vCPU" } else { "vCPUs" };

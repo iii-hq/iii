@@ -93,13 +93,47 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
     tracing::info!("worker-manager-daemon ready");
 
     // Exit on SIGINT/SIGTERM/SIGHUP or engine death — see crate::daemon_exit
-    // for the full design (PID handshake + hardened reparent fallback).
-    // shutdown_async is a best-effort flush; the connection thread is not
-    // joined before exit.
+    // for the full design (lifeline pipe + PID handshake + hardened reparent
+    // fallback). shutdown_async is a best-effort flush; the connection
+    // thread is not joined before exit.
     let reason = exit_watch.wait("worker-manager-daemon").await;
     tracing::info!(reason, "worker-manager-daemon shutting down");
+    if reason == "engine-gone" {
+        // Session reaper: nothing the engine started may outlive it. The
+        // engine cannot kill its tree post-mortem (no macOS PDEATHSIG, and
+        // workers are setsid'd session leaders), but THIS daemon notices
+        // engine death and still has the full host-side stop machinery —
+        // handle_managed_stop kills the VM (or binary worker process) AND
+        // its source-watcher sidecar per worker, no engine required. VMs
+        // also self-watch the engine pid as defense for the case where this
+        // daemon was killed first.
+        reap_managed_workers().await;
+    }
     iii.shutdown_async().await;
     0
+}
+
+/// Stop every config.yaml worker, each bounded so one wedged stop can't
+/// stall the daemon's own exit. Best-effort by design: the daemon is going
+/// down either way, and per-worker failures are logged, not fatal.
+async fn reap_managed_workers() {
+    let names = crate::cli::config_file::list_worker_names();
+    tracing::warn!(
+        count = names.len(),
+        "engine gone — reaping managed workers before exit"
+    );
+    for name in names {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::cli::managed::handle_managed_stop(&name),
+        )
+        .await
+        {
+            Ok(rc) if rc == 0 => tracing::info!(worker = %name, "reaped"),
+            Ok(rc) => tracing::warn!(worker = %name, rc, "reap stop returned nonzero"),
+            Err(_) => tracing::warn!(worker = %name, "reap stop timed out after 10s"),
+        }
+    }
 }
 
 #[doc(hidden)]

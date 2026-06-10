@@ -532,12 +532,27 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::WatchSource(args) => {
             let project = std::path::PathBuf::from(&args.project);
             let worker = args.worker.clone();
-            iii_worker::cli::source_watcher::watch_and_restart(
+            let watch = iii_worker::cli::source_watcher::watch_and_restart(
                 worker,
                 project,
                 iii_worker::cli::source_watcher::restart_via_cli,
-            )
-            .await?;
+            );
+            // Engine anchor: the watcher sidecar must not outlive the engine
+            // that (transitively) spawned it — `killall -9 iii` previously
+            // left one per dev worker running forever.
+            match iii_worker::daemon_exit::engine_pid_from_env() {
+                Some(pid) => {
+                    tokio::select! {
+                        r = watch => { r?; }
+                        _ = tokio::task::spawn_blocking(move || {
+                            iii_worker::daemon_exit::blocking_wait_pid_gone(pid)
+                        }) => {
+                            eprintln!("watch-source: engine pid {pid} exited; stopping");
+                        }
+                    }
+                }
+                None => watch.await?,
+            }
             0
         }
     };

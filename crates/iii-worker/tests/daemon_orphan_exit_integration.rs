@@ -359,6 +359,123 @@ fn daemon_survives_orphaning_when_declared_engine_alive() {
     // ProcGuard::drop kills the (intentionally surviving) daemon.
 }
 
+/// Engine anchor for the `__watch-source` sidecar: with III_ENGINE_PID
+/// declared, the watcher must exit when that pid dies — a real
+/// `killall -9 iii` previously left one watcher per dev worker running
+/// forever (their direct spawner is transient, so reparenting tells them
+/// nothing).
+#[test]
+fn watch_source_exits_when_engine_pid_dies() {
+    let bin = env!("CARGO_BIN_EXE_iii-worker");
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    std::fs::create_dir(&project).unwrap();
+
+    let mut fake_engine = Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("spawn fake engine");
+    let engine_pid = fake_engine.id() as i32;
+
+    let logfile = tmp.path().join("watcher.log");
+    let log = std::fs::File::create(&logfile).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut watcher = Command::new(bin)
+        .args(["__watch-source", "--worker", "w", "--project"])
+        .arg(&project)
+        .env("RUST_LOG", "info")
+        .env("HOME", tmp.path())
+        .env("III_ENGINE_PID", engine_pid.to_string())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err))
+        .spawn()
+        .expect("spawn watcher");
+
+    // Alive while the declared engine is alive.
+    std::thread::sleep(ARMED_SURVIVAL_WINDOW);
+    if watcher.try_wait().expect("try_wait").is_some() {
+        let _ = fake_engine.kill();
+        let log = std::fs::read_to_string(&logfile).unwrap_or_default();
+        panic!("watcher exited while its engine was alive; log:\n{log}");
+    }
+
+    let _ = fake_engine.kill();
+    let _ = fake_engine.wait();
+
+    let deadline = Instant::now() + EXIT_DEADLINE;
+    let status = loop {
+        if let Some(s) = watcher.try_wait().expect("try_wait") {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = watcher.kill();
+            let log = std::fs::read_to_string(&logfile).unwrap_or_default();
+            panic!("watcher ignored engine death; log:\n{log}");
+        }
+        std::thread::sleep(PROBE_INTERVAL);
+    };
+    assert_eq!(status.code(), Some(0), "engine-gone watcher exit is graceful");
+}
+
+/// Session-reaper wiring: on engine-gone the daemon must run the
+/// reap-managed-workers pass (observable via its log line) before exiting —
+/// this is what kills VMs, watcher sidecars, and binary workers that the
+/// dead engine started.
+#[test]
+fn daemon_reaps_managed_workers_on_engine_gone() {
+    let bin = env!("CARGO_BIN_EXE_iii-worker");
+    let tmp = tempfile::tempdir().unwrap();
+    let logfile = tmp.path().join("daemon.log");
+
+    let mut fake_engine = Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("spawn fake engine");
+    let engine_pid = fake_engine.id() as i32;
+
+    let log = std::fs::File::create(&logfile).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut daemon = Command::new(bin)
+        .args(["worker-manager-daemon", "--engine", "ws://127.0.0.1:1"])
+        .current_dir(tmp.path()) // empty project: zero workers to reap
+        .env("RUST_LOG", "info")
+        .env("HOME", tmp.path())
+        .env("III_ENGINE_PID", engine_pid.to_string())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err))
+        .spawn()
+        .expect("spawn daemon");
+
+    let (armed, log) =
+        wait_for_log_line(&logfile, "engine exit-watch armed", Duration::from_secs(10));
+    if !armed {
+        let _ = daemon.kill();
+        let _ = fake_engine.kill();
+        panic!("daemon never armed; log:\n{log}");
+    }
+
+    let _ = fake_engine.kill();
+    let _ = fake_engine.wait();
+
+    let deadline = Instant::now() + EXIT_DEADLINE;
+    loop {
+        if daemon.try_wait().expect("try_wait").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = daemon.kill();
+            let final_log = std::fs::read_to_string(&logfile).unwrap_or_default();
+            panic!("daemon ignored engine death; log:\n{final_log}");
+        }
+        std::thread::sleep(PROBE_INTERVAL);
+    }
+    let final_log = std::fs::read_to_string(&logfile).unwrap_or_default();
+    assert!(
+        final_log.contains("reaping managed workers"),
+        "engine-gone exit must run the reaper; log:\n{final_log}"
+    );
+}
+
 /// The engine's kill_child sends SIGTERM; SIGINT is the hand-run Ctrl-C path.
 /// Both must exit GRACEFULLY through wait_for_exit (process exits with code
 /// 0). Pre-fix, SIGTERM killed via default disposition: terminated-by-signal,

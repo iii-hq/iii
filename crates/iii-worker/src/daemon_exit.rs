@@ -130,6 +130,19 @@ pub fn blocking_wait_pid_gone(pid: i32) {
     }
 }
 
+/// Read-only engine pid from the env. Deliberately NOT scrubbed — unlike the
+/// lifeline fd, [`ENGINE_PID_ENV`] flows down the entire spawn tree so that
+/// detached processes (managed-worker `__vm-boot` VMs, `__watch-source`
+/// sidecars) can anchor to ENGINE lifetime regardless of how many transient
+/// spawners sit in between. Absent (e.g. a hand-run `iii worker start` in a
+/// terminal) means "not engine-rooted": no watch, the process is the user's.
+pub fn engine_pid_from_env() -> Option<i32> {
+    std::env::var(ENGINE_PID_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|p| *p > 1)
+}
+
 /// How often the engine-liveness watch polls. The orphan-exit integration
 /// test's deadline is sized against this value.
 #[cfg(unix)]
@@ -340,10 +353,7 @@ impl ExitWatch {
     pub fn arm_at_startup() -> Self {
         #[cfg(unix)]
         {
-            let engine_pid = std::env::var(ENGINE_PID_ENV)
-                .ok()
-                .and_then(|v| v.trim().parse::<i32>().ok())
-                .filter(|p| *p > 1);
+            let engine_pid = engine_pid_from_env();
             Self {
                 spawn_parent: nix::unistd::getppid().as_raw(),
                 engine_pid,
