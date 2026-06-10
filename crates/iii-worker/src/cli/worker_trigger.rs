@@ -42,8 +42,7 @@ pub enum WorkerOperation {
 }
 
 /// Lifecycle stage attached to every event. Each [`WorkerOperation`]
-/// emits a fixed sequence — see the stage matrix in
-/// [new_skills/worker/skills/worker/events.md](../../../../new_skills/worker/skills/worker/events.md).
+/// emits a fixed sequence of these stages.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerStage {

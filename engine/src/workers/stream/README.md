@@ -7,6 +7,22 @@ When a worker triggers `stream::set`, the engine:
 2. Publishes a notification to all WebSocket clients subscribed to that stream and group
 3. Evaluates registered `stream` triggers and fires matching handlers
 
+## Install
+
+```bash
+iii worker add iii-stream
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-stream` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii-stream
+```
+
 ## Sample Configuration
 
 ```yaml
@@ -210,4 +226,8 @@ const roomMembers = await iii.trigger({
 })
 ```
 
-Clients connect via WebSocket to `ws://host:3112/stream/presence/room-1/` and receive real-time updates when items change.
+## Client Subscriptions
+
+Browser and client subscriptions use the Browser SDK (`iii-browser-sdk`), which subscribes to `stream` changes over a single engine WebSocket and re-renders on each change event. Connections are gated by the [iii-worker-manager](https://workers.iii.dev/workers/iii-worker-manager) RBAC listener. See the [Linkly frontend tutorial](https://iii.dev/docs/tutorials/linkly/frontend) for the end-to-end pattern.
+
+Connecting directly to the stream port (`ws://host:3112/stream/<stream_name>/<group_id>/`) is deprecated in favor of the Browser SDK.

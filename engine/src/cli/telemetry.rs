@@ -105,6 +105,12 @@ fn send_fire_and_forget(event: AmplitudeEvent) {
     });
 }
 
+fn send_fire_and_forget_with_timeout(event: AmplitudeEvent, timeout: std::time::Duration) {
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(timeout, send_direct(event)).await;
+    });
+}
+
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {
     let install_method = properties
         .get("install_method")
@@ -132,9 +138,9 @@ fn build_cli_usage_event(command_path: &str) -> Option<AmplitudeEvent> {
     )
 }
 
-pub async fn send_cli_usage(command_path: &str) {
+pub fn send_cli_usage(command_path: &str) {
     if let Some(event) = build_cli_usage_event(command_path) {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), send_direct(event)).await;
+        send_fire_and_forget_with_timeout(event, std::time::Duration::from_secs(3));
     }
 }
 

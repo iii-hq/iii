@@ -156,6 +156,24 @@ pub struct SamplingRule {
     pub rate: f64,
 }
 
+/// Rule for collapsing spans in the trace-tree view. Matching spans are
+/// removed and their children reparented to the nearest surviving ancestor,
+/// so the tree stays connected. Use to hide redundant pass-through wrapper
+/// spans (e.g. an SDK handler wrapper that duplicates the engine's invocation
+/// span) without changing worker code.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpanCollapseRule {
+    /// Span name pattern (supports wildcards like `trigger *`). Required.
+    pub name: String,
+
+    /// Optional `service.name` pattern. When set, only spans whose service
+    /// matches are collapsed — disambiguates same-named spans across services
+    /// (e.g. a worker `trigger *` vs the engine's own `trigger *`).
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
 /// Advanced sampling configuration
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -284,6 +302,13 @@ pub struct ObservabilityWorkerConfig {
     /// Log format: "default" for human-readable, "json" for structured JSON
     #[serde(default)]
     pub format: Option<String>,
+
+    /// Trace-view span collapse rules. Matching spans are hidden from the
+    /// trace tree and their children reparented to the nearest surviving
+    /// ancestor. Hides redundant pass-through wrapper spans without touching
+    /// worker code. Empty by default (no collapsing).
+    #[serde(default)]
+    pub collapse_spans: Vec<SpanCollapseRule>,
 }
 
 impl Default for ObservabilityWorkerConfig {
@@ -314,6 +339,7 @@ impl Default for ObservabilityWorkerConfig {
             alerts: Vec::new(),
             level: None,
             format: None,
+            collapse_spans: Vec::new(),
         }
     }
 }

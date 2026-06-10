@@ -1,9 +1,8 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! `worker::add` orchestrator. Validates inputs, applies trigger-mode
-//! policies (e.g. local-path rejection), and delegates to a `WorkerHostShim`.
-//! Lock acquisition is the caller's responsibility.
+//! `worker::add` orchestrator. Validates inputs and delegates to a
+//! `WorkerHostShim`. Lock acquisition is the caller's responsibility.
 
 use crate::core::error::WorkerOpError;
 use crate::core::events::{EventSink, WorkerOpEvent};
@@ -11,6 +10,16 @@ use crate::core::host::WorkerHostShim;
 use crate::core::project::ProjectCtx;
 use crate::core::types::{AddOptions, AddOutcome, WorkerSource};
 
+/// Provenance of a worker op. Carried into `WorkerOpEvent`s so subscribers
+/// can tell a CLI invocation from a bus-triggered one.
+///
+/// NOTE: this no longer gates `kind: "local"`. Local installs used to be
+/// rejected over the trigger surface (W102); that guard was removed on
+/// purpose so `worker::add { source: { kind: "local", path } }` works over
+/// the bus. The path resolves on the DAEMON host and the install runs the
+/// manifest's setup/install/start scripts there — same trust as the CLI,
+/// now reachable by any connected caller. Keep that in mind before exposing
+/// the daemon to untrusted workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerMode {
     Cli,
@@ -22,15 +31,7 @@ pub async fn run(
     ctx: &ProjectCtx,
     events: &dyn EventSink,
     shim: &dyn WorkerHostShim,
-    mode: CallerMode,
 ) -> Result<AddOutcome, WorkerOpError> {
-    if mode == CallerMode::Trigger
-        && let WorkerSource::Local { path } = &opts.source
-    {
-        return Err(WorkerOpError::local_path_not_allowed_via_trigger(
-            path.display().to_string(),
-        ));
-    }
     let label = source_label(&opts.source);
     events.emit(WorkerOpEvent::Started {
         op: "add",
@@ -154,7 +155,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_mode_rejects_local_path() {
+    async fn local_source_installs() {
+        // Local-path installs are allowed regardless of caller. The W102
+        // trigger-surface rejection was removed on purpose; `run` no longer
+        // takes a CallerMode and never rejects `kind: "local"`.
         let dir = TempDir::new().unwrap();
         let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
         let sink = CapturingSink::new();
@@ -166,29 +170,7 @@ mod tests {
             reset_config: false,
             wait: true,
         };
-        let res = run(opts, &ctx, &sink, &StubShim, CallerMode::Trigger).await;
-        assert!(matches!(
-            res,
-            Err(WorkerOpError::LocalPathNotAllowedViaTrigger { .. })
-        ));
-    }
-
-    #[tokio::test]
-    async fn cli_mode_allows_local_path() {
-        let dir = TempDir::new().unwrap();
-        let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
-        let sink = CapturingSink::new();
-        let opts = AddOptions {
-            source: WorkerSource::Local {
-                path: "./my-worker".into(),
-            },
-            force: false,
-            reset_config: false,
-            wait: true,
-        };
-        let outcome = run(opts, &ctx, &sink, &StubShim, CallerMode::Cli)
-            .await
-            .unwrap();
+        let outcome = run(opts, &ctx, &sink, &StubShim).await.unwrap();
         assert_eq!(outcome.status, AddStatus::Installed);
     }
 
@@ -206,9 +188,7 @@ mod tests {
             reset_config: false,
             wait: true,
         };
-        let outcome = run(opts, &ctx, &sink, &StubShim, CallerMode::Trigger)
-            .await
-            .unwrap();
+        let outcome = run(opts, &ctx, &sink, &StubShim).await.unwrap();
         assert_eq!(outcome.name, "pdfkit");
     }
 
@@ -226,9 +206,7 @@ mod tests {
             reset_config: false,
             wait: true,
         };
-        let _ = run(opts, &ctx, &sink, &StubShim, CallerMode::Cli)
-            .await
-            .unwrap();
+        let _ = run(opts, &ctx, &sink, &StubShim).await.unwrap();
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 4, "expected 4 events on success: {events:?}");
         assert!(matches!(
@@ -332,7 +310,7 @@ mod tests {
             reset_config: false,
             wait: true,
         };
-        let res = run(opts, &ctx, &sink, &FailingShim, CallerMode::Trigger).await;
+        let res = run(opts, &ctx, &sink, &FailingShim).await;
         assert!(matches!(res, Err(WorkerOpError::NotFound { .. })));
 
         let events = sink.events.lock().unwrap();

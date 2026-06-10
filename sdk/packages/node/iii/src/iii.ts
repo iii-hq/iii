@@ -92,6 +92,11 @@ export type TelemetryOptions = {
 export type InitOptions = {
   /** Display name for this worker. Defaults to `hostname:pid`. */
   workerName?: string
+  /**
+   * One-line, human/LLM-readable summary of what this worker does.
+   * Surfaces in `engine::workers::list` / `engine::workers::info`.
+   */
+  workerDescription?: string
   /** Enable worker metrics via OpenTelemetry. Defaults to `true`. */
   enableMetricsReporting?: boolean
   /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
@@ -122,6 +127,7 @@ class Sdk implements ISdk {
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: Record<string, unknown>[] = []
   private workerName: string
+  private workerDescription?: string
   private workerId?: string
   private reconnectTimeout?: NodeJS.Timeout
   private metricsReportingEnabled: boolean
@@ -136,6 +142,7 @@ class Sdk implements ISdk {
     private readonly options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? getDefaultWorkerName()
+    this.workerDescription = options?.workerDescription
     this.metricsReportingEnabled = options?.enableMetricsReporting ?? true
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
@@ -363,8 +370,14 @@ class Sdk implements ISdk {
           if (getTracer()) {
             const parentContext = extractContext(traceparent, baggage)
 
+            // INTERNAL and named `execute` (not `call`/`trigger`): the engine
+            // already emits the SERVER `call <fn>` span for this hop AND a
+            // `trigger <fn>` span from fire_triggers. Reusing either name would
+            // duplicate an engine span under the worker's service. `execute` is
+            // unique, so the worker handler span reads as a clean internal child
+            // of the engine's call span (and is collapsible by a single rule).
             return context.with(parentContext, () =>
-              withSpan(`call ${functionId}`, { kind: SpanKind.SERVER }, async () => await runHandler()),
+              withSpan(`execute ${functionId}`, { kind: SpanKind.INTERNAL }, async () => await runHandler()),
             )
           }
 
@@ -521,6 +534,7 @@ class Sdk implements ISdk {
         runtime: 'node',
         version: SDK_VERSION,
         name: this.workerName,
+        description: this.workerDescription,
         os: getOsInfo(),
         pid: process.pid,
         isolation: process.env.III_ISOLATION || null,

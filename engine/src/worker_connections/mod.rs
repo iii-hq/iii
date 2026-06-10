@@ -33,6 +33,9 @@ pub struct WorkerConnectionTelemetryMeta {
 pub struct RuntimeWorkerInfo {
     pub id: String,
     pub name: String,
+    /// One-line summary of what this builtin worker does, sourced from its
+    /// `WorkerRegistration`. Surfaces in `engine::workers::list` / `info`.
+    pub description: Option<String>,
     pub worker_type: String,
     pub connected_at: DateTime<Utc>,
     pub function_ids: Vec<String>,
@@ -63,6 +66,13 @@ impl WorkerConnectionRegistry {
 
     pub fn get_worker(&self, id: &Uuid) -> Option<WorkerConnection> {
         self.workers.get(id).map(|w| w.value().clone())
+    }
+
+    /// Name-only lookup. Avoids cloning the whole `WorkerConnection`
+    /// (function-id sets, telemetry, session) when callers just attribute
+    /// ownership by name.
+    pub fn get_worker_name(&self, id: &Uuid) -> Option<String> {
+        self.workers.get(id).and_then(|w| w.value().name.clone())
     }
 
     pub fn register_worker(&self, worker: WorkerConnection) {
@@ -130,6 +140,7 @@ impl WorkerConnectionRegistry {
         runtime: String,
         version: Option<String>,
         name: Option<String>,
+        description: Option<String>,
         os: Option<String>,
         telemetry: Option<WorkerConnectionTelemetryMeta>,
         pid: Option<u32>,
@@ -140,6 +151,9 @@ impl WorkerConnectionRegistry {
             worker.version = version;
             if name.is_some() {
                 worker.name = name;
+            }
+            if description.is_some() {
+                worker.description = description;
             }
             if os.is_some() {
                 worker.os = os;
@@ -218,6 +232,8 @@ pub struct WorkerConnection {
     pub version: Option<String>,
     pub connected_at: DateTime<Utc>,
     pub name: Option<String>,
+    /// One-line summary reported by the worker via `engine::workers::register`.
+    pub description: Option<String>,
     pub os: Option<String>,
     pub status: WorkerConnectionStatus,
     pub telemetry: Option<WorkerConnectionTelemetryMeta>,
@@ -239,6 +255,7 @@ impl WorkerConnection {
             version: None,
             connected_at: Utc::now(),
             name: None,
+            description: None,
             os: None,
             status: WorkerConnectionStatus::Connected,
             telemetry: None,
@@ -260,6 +277,7 @@ impl WorkerConnection {
             version: None,
             connected_at: Utc::now(),
             name: None,
+            description: None,
             os: None,
             status: WorkerConnectionStatus::Connected,
             telemetry: None,
@@ -477,6 +495,7 @@ mod tests {
             "node".to_string(),
             Some("1.0.0".to_string()),
             Some("worker-a".to_string()),
+            None,
             Some("linux".to_string()),
             Some(telemetry.clone()),
             None,
@@ -516,6 +535,7 @@ mod tests {
             &worker_id,
             "node".to_string(),
             Some("18.0.0".to_string()),
+            None,
             None,
             None,
             None,

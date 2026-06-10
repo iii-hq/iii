@@ -2,6 +2,22 @@
 
 Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance metrics, alert rules, and trace sampling — all queryable via built-in functions.
 
+## Install
+
+```bash
+iii worker add iii-observability
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-observability` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii-observability
+```
+
 ## Sample Configuration
 
 ```yaml

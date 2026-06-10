@@ -68,7 +68,8 @@ a `clicks` stream with `stream::set`. A `stream::set` both stores the item and p
 WebSocket subscribed to that stream and group. Replace the generated `click-streamer/src/index.ts`:
 
 ```typescript click-streamer/src/index.ts
-import { registerWorker, Logger } from "iii-sdk";
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "click-streamer",

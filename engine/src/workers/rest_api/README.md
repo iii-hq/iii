@@ -2,6 +2,22 @@
 
 The HTTP Worker exposes registered functions as HTTP endpoints.
 
+## Install
+
+```bash
+iii worker add iii-http
+```
+
+Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+
+## Skills
+
+Install the `iii-http` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii-http
+```
+
 ## Sample Configuration
 
 ```yaml

@@ -4,6 +4,16 @@ iii is a WebSocket-routed worker mesh. One engine process (default port `49134`)
 
 This registry worker documents the **`engine::*`** introspection surface (implemented in-process) and the **`worker::*`** lifecycle ops (implemented by the `iii-worker-ops` sidecar). It is always present in the engine and is not configured in `config.yaml`.
 
+This worker is built into the engine and is always available; no install step is needed.
+
+## Skills
+
+Install the `iii` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/iii --full-depth --skill iii
+```
+
 ## Registry name vs runtime name
 
 | Surface | Name | Notes |
@@ -71,7 +81,7 @@ For exact parameter and response shapes, call `engine::functions::info { functio
 | `worker::clear` | Delete cached artifacts under `~/.iii/managed/{name}/`. Requires `yes: true`. Does not touch config or lock. |
 | `worker::schema` | JSON Schemas for every op plus `default_timeout_ms` and `idempotent` hints. |
 
-> **Note:** `worker::add` with `source.kind: "local"` works on the CLI only (returns **W102** via the trigger surface). Destructive ops (`remove`, `stop`, `clear`) require `yes: true` (boolean, not string).
+> **Note:** `worker::add` with `source.kind: "local"` works over the trigger as well as the CLI; the `path` is resolved on the engine/daemon host (not the caller). Destructive ops (`remove`, `stop`, `clear`) require `yes: true` (boolean, not string).
 
 Merge `worker::list` with `engine::workers::list` by `name` for a complete worker picture — daemon-managed providers such as `iii-http` may not appear in `engine::workers::list` even when serving traffic.
 

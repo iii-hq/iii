@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[schemars(
-    description = "Where to fetch the worker from. Use `registry` for the public iii worker registry, `oci` for an arbitrary container image, or `local` for a developer machine path (CLI-only; rejected via trigger with W102)."
+    description = "Where to fetch the worker from. Use `registry` for the public iii worker registry, `oci` for an arbitrary container image, or `local` for a filesystem path on the engine/daemon host (works over the trigger too; the path is resolved on the host, not the caller)."
 )]
 pub enum WorkerSource {
     Registry {
@@ -27,7 +27,7 @@ pub enum WorkerSource {
     },
     Local {
         #[schemars(
-            description = "Local filesystem path. Trigger surface rejects this with W102; CLI-only."
+            description = "Filesystem path on the engine/daemon host (NOT the caller's machine). Installs run the manifest's setup/install/start scripts on the host. Works over the trigger as well as the CLI."
         )]
         path: PathBuf,
     },
@@ -212,6 +212,69 @@ pub struct ListOptions {
 
 fn list_options_example() -> serde_json::Value {
     serde_json::json!({"running_only": false})
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(example = "logs_options_example")]
+pub struct LogsOptions {
+    #[schemars(description = "Worker whose logs to read, e.g. \"pdfkit\".")]
+    pub name: String,
+    #[serde(default = "default_logs_tail")]
+    #[schemars(
+        description = "Trailing lines to return per stream. Default 100, capped at 1000. Only the last 1 MiB of each log file is scanned."
+    )]
+    pub tail: usize,
+}
+
+fn default_logs_tail() -> usize {
+    100
+}
+
+fn logs_options_example() -> serde_json::Value {
+    serde_json::json!({"name": "pdfkit", "tail": 100})
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LogsOutcome {
+    #[schemars(description = "Worker whose logs were read.")]
+    pub name: String,
+    #[schemars(
+        description = "Host directory the logs were read from. Null when the worker has no log directory yet (never started on this host, or logs were cleared)."
+    )]
+    pub logs_dir: Option<String>,
+    #[schemars(description = "Trailing stdout lines — the worker/guest console stream.")]
+    pub stdout: Vec<String>,
+    #[schemars(
+        description = "Trailing stderr lines — host-side boot/runtime messages; during startup these chronologically precede stdout."
+    )]
+    pub stderr: Vec<String>,
+}
+
+/// Reject names that could escape the per-worker directories these names
+/// are joined into (`~/.iii/logs/<name>`, `~/.iii/workers/<name>`, …).
+pub fn validate_worker_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Worker name cannot be empty".into());
+    }
+    if name.contains("..") {
+        return Err(format!("Worker name '{}' contains '..' sequence", name));
+    }
+    if name.starts_with('.') {
+        return Err(format!(
+            "Worker name '{}' cannot start with '.' (reserved for internal control directories)",
+            name
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "Worker name '{}' contains invalid characters. Only alphanumeric, dash, underscore, and dot are allowed.",
+            name
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

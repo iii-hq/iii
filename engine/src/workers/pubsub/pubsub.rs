@@ -192,7 +192,12 @@ impl ConfigurableWorker for PubSubWorker {
     }
 }
 
-crate::register_worker!("iii-pubsub", PubSubWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-pubsub",
+    PubSubWorker,
+    description = "Topic-based publish/subscribe messaging for real-time event distribution.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

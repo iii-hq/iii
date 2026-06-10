@@ -435,6 +435,13 @@ fn mandatory_worker_names() -> HashSet<&'static str> {
         .collect()
 }
 
+fn builtin_worker_description(worker_type: &str) -> Option<&'static str> {
+    inventory::iter::<WorkerRegistration>
+        .into_iter()
+        .find(|registration| registration.name == worker_type)
+        .map(|registration| registration.description)
+}
+
 pub(crate) fn runtime_worker_info_from_registration(
     entry: &WorkerEntry,
     worker: &dyn Worker,
@@ -452,6 +459,7 @@ pub(crate) fn runtime_worker_info_from_registration(
     Some(crate::worker_connections::RuntimeWorkerInfo {
         id: entry.name.clone(),
         name: worker_type.clone(),
+        description: builtin_worker_description(&worker_type).map(|s| s.to_string()),
         worker_type: worker_type.clone(),
         connected_at: chrono::Utc::now(),
         function_ids,
@@ -1870,6 +1878,10 @@ modules:
         assert_eq!(listed.worker_type, "test::Listed");
         assert_eq!(listed.function_ids, vec!["listed::fn"]);
         assert!(!listed.internal);
+        assert!(
+            listed.description.is_none(),
+            "non-inventory workers have no builtin description"
+        );
 
         builder.destroy().await.expect("destroy engine");
 
@@ -1877,6 +1889,30 @@ modules:
             engine.list_runtime_workers().is_empty(),
             "runtime snapshots should be removed on destroy"
         );
+    }
+
+    #[test]
+    fn every_builtin_worker_registration_has_description() {
+        let mut seen = 0;
+        for registration in inventory::iter::<WorkerRegistration> {
+            seen += 1;
+            assert!(
+                !registration.description.trim().is_empty(),
+                "builtin worker '{}' must have a non-empty description",
+                registration.name
+            );
+            assert_eq!(
+                builtin_worker_description(registration.name),
+                Some(registration.description),
+                "description lookup must resolve builtin worker '{}'",
+                registration.name
+            );
+        }
+        assert!(
+            seen > 0,
+            "expected builtin worker registrations in inventory"
+        );
+        assert!(builtin_worker_description("not-a-builtin").is_none());
     }
 
     #[tokio::test]

@@ -5,7 +5,8 @@ Go SDK for the [iii engine](https://github.com/iii-hq/iii). A process becomes an
 **triggers**; the engine invokes those functions and the worker replies over the same
 socket.
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../../../LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/iii-hq/iii/sdk/packages/go/iii.svg)](https://pkg.go.dev/github.com/iii-hq/iii/sdk/packages/go/iii)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ## Install
 
@@ -13,7 +14,7 @@ socket.
 go get github.com/iii-hq/iii/sdk/packages/go/iii
 ```
 
-Requires Go 1.23+.
+Requires Go 1.24+.
 
 ## Hello World
 

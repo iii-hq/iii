@@ -87,8 +87,7 @@ async fn main() -> anyhow::Result<()> {
                 // user sees as extra noise that scrolls real progress
                 // off-screen. Keep the sink quiet on the CLI path.
                 let sink = StderrSink::new(true);
-                let result =
-                    core_add::run(opts, &ctx, &sink, &CliHostShim, core_add::CallerMode::Cli).await;
+                let result = core_add::run(opts, &ctx, &sink, &CliHostShim).await;
 
                 if let Err(e) = result {
                     eprintln!("error: [{}] {}", e.kind().code(), e);
@@ -173,9 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 // policy so we don't duplicate Stage events on top of
                 // the inner handler's progress output.
                 let sink = StderrSink::new(true);
-                if let Err(e) =
-                    core_add::run(opts, &ctx, &sink, &CliHostShim, core_add::CallerMode::Cli).await
-                {
+                if let Err(e) = core_add::run(opts, &ctx, &sink, &CliHostShim).await {
                     eprintln!("error: [{}] {}", e.kind().code(), e);
                     fail_count += 1;
                 }

@@ -65,7 +65,12 @@ impl Worker for ExecWorker {
     }
 }
 
-crate::register_worker!("iii-exec", ExecWorker, enabled_by_default = false);
+crate::register_worker!(
+    "iii-exec",
+    ExecWorker,
+    description = "Execute shell commands as part of engine startup.",
+    enabled_by_default = false
+);
 
 #[cfg(test)]
 mod tests {

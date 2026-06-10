@@ -319,15 +319,16 @@
     flex:1 1 0;
     justify-content:flex-end;
   }
-  /* Centered section links — nudged left of true center */
+  /* Centered section links. In normal flex flow between nav-left (flex:1) and
+     nav-right (flex:1) so it stays centered and can never overlap either side. */
   .nav-center{
-    position:absolute;
-    left:34%;
-    top:50%;
-    transform:translate(-50%, -50%);
+    flex:0 1 auto;
+    min-width:0;
+    display:flex;
+    justify-content:center;
     pointer-events:auto;
   }
-  .nav-center .nav-links{ gap:18px; }
+  .nav-center .nav-links{ gap:16px; flex-wrap:nowrap; }
 
   /* Logo (sketch-style) */
   .logo-link{
@@ -394,8 +395,64 @@
     border-bottom:1px solid transparent;
   }
   .nav-link:hover{ color:var(--ink); border-bottom-color:transparent; }
-  .nav-link.docs{ color:var(--mute); }
-  .nav-link.docs:hover{ color:var(--ink); }
+
+  /* Destination group: docs / blog / registry. Different in kind from the
+     in-page anchors above, so they read as boxed tabs, not text links. */
+  .nav-divider{
+    width:1px; height:16px;
+    background:var(--rule);
+    margin:0 4px;
+    flex:0 0 auto;
+  }
+  .nav-tabs{
+    display:flex; align-items:center; gap:8px;
+  }
+  .nav-tab{
+    position:relative;
+    isolation:isolate;
+    overflow:hidden;
+    display:inline-flex; align-items:center; gap:4px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:400; font-size:13px; letter-spacing:0;
+    color:var(--mute);
+    text-decoration:none;
+    padding:5px 11px;
+    border:1px solid var(--rule);
+    border-radius:6px;
+    transition:color .2s ease, border-color .25s ease, transform .2s ease;
+  }
+  /* Fill wipes up from the bottom on hover; text inverts to paper. */
+  .nav-tab::before{
+    content:"";
+    position:absolute; inset:0; z-index:-1;
+    background:var(--ink);
+    transform:translateY(101%);
+    transition:transform .28s cubic-bezier(.65,0,.2,1);
+  }
+  .nav-tab:hover{
+    color:var(--paper);
+    border-color:var(--ink);
+    transform:translateY(-1px);
+  }
+  .nav-tab:hover::before{ transform:translateY(0); }
+  .nav-tab:active{ transform:translateY(0); }
+  .nav-tab:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+  .nav-tab-ext{
+    font-size:11px;
+    line-height:1;
+    opacity:.6;
+    transition:transform .2s ease, opacity .2s ease;
+  }
+  .nav-tab:hover .nav-tab-ext{
+    opacity:1;
+    transform:translate(1px,-1px);
+  }
+  @media (prefers-reduced-motion: reduce){
+    .nav-tab, .nav-tab::before, .nav-tab-ext{ transition:none; }
+  }
 
   /* Install button */
   /* reference-style install pill */
@@ -2013,7 +2070,7 @@
   /* tight desktop — too narrow for the icon inside install.sh, and the
      centered nav-links start overlapping it. Drop the icon, slide
      nav-links further left. */
-  @media (max-width: 1100px){
+  @media (max-width: 1220px){
     .nav-center{ display:none; }
     .nav-links{ display:none; }
     #cta-install svg{ display:none; }
@@ -4512,9 +4569,12 @@
         <a class="nav-link" href="#console">console</a>
         <a class="nav-link" href="#agents">agents</a>
         <a class="nav-link" href="/manifesto">manifesto</a>
-        <a class="nav-link docs" href="/docs">docs</a>
-        <a class="nav-link" href="/blog/">blog</a>
-        <a class="nav-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry</a>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <span class="nav-tabs">
+          <a class="nav-tab" href="/docs">docs</a>
+          <a class="nav-tab" href="/blog/">blog</a>
+          <a class="nav-tab" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer" aria-label="registry, opens in a new tab">registry<span class="nav-tab-ext" aria-hidden="true">&#x2197;</span></a>
+        </span>
       </div>
     </div>
 
@@ -4700,10 +4760,10 @@
           <svg class="hv-complex-chart" viewBox="22 0 186 118" preserveAspectRatio="none" aria-hidden="true">
             <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94"/>
             <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14"/>
-            <!-- n(n-1)/2: full pairwise growth -->
-            <path class="hv-cc-q" d="M 22 94 Q 118 18 208 20"/>
-            <!-- (n(n-1)/2) / tolerance: proportionally damped curve -->
-            <path class="hv-cc-l" d="M 22 94 Q 118 60 208 61"/>
+            <!-- n(n-1)/2: full pairwise growth. True parabola y = 94 - 74((x-22)/186)^2. -->
+            <path class="hv-cc-q" d="M 22 94 L 45.3 92.8 L 68.5 89.4 L 91.8 83.6 L 115 75.5 L 138.3 65.1 L 161.5 52.4 L 184.8 37.3 L 208 20"/>
+            <!-- (n(n-1)/2) / tolerance: same parabola, proportionally damped (k=34). -->
+            <path class="hv-cc-l" d="M 22 94 L 45.3 93.5 L 68.5 91.9 L 91.8 89.2 L 115 85.5 L 138.3 80.7 L 161.5 74.9 L 184.8 67.9 L 208 60"/>
             <!-- 0: constant on the axis -->
             <path class="hv-cc-f" d="M 22 94 L 208 94"/>
           </svg>
@@ -6826,10 +6886,10 @@ iii.register_function(
     el.addEventListener('click', copyInstall);
   });
 
-  // Desktop nav links — internal anchors and external destinations
-  document.querySelectorAll('.nav-links .nav-link').forEach(a => {
+  // Desktop nav links — internal anchors and external destination tabs
+  document.querySelectorAll('.nav-links .nav-link, .nav-tabs .nav-tab').forEach(a => {
     a.addEventListener('click', () => {
-      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      const label = (a.textContent || '').replace(/↗/g, '').trim().toLowerCase().replace(/\s+/g, '_');
       iiiTrack('cta_click', {
         cta_id: 'nav_link',
         cta_location: 'nav',

@@ -28,8 +28,9 @@ Connect a worker to a running iii engine and return its handle.
 def register_worker(address: str, options: InitOptions | None = None) -> III: ...
 ```
 
-`address` is the engine's SDK WebSocket URL. `options` configures worker identity and
-reconnection. The returned `III` instance carries every method below.
+`address` is the engine's SDK WebSocket URL. `options` configures worker identity (`worker_name`, plus an optional
+`worker_description`, a one-line summary surfaced in `engine::workers::list` /
+`engine::workers::info`) and reconnection. The returned `III` instance carries every method below.
 
 <Note>
   The SDK's OpenTelemetry hookup is wired through `options` as well; the export and rollup side is

@@ -27,7 +27,8 @@ function registerWorker(address: string, options?: InitOptions): ISdk;
 ```
 
 Pass the engine's SDK WebSocket URL (e.g. `process.env.III_URL`) as `address`. `options` configures
-worker identity, timeouts, reconnection, and OpenTelemetry. The returned `ISdk` carries every
+worker identity (`workerName`, plus an optional `workerDescription`, a one-line summary surfaced
+in `engine::workers::list` / `engine::workers::info`), timeouts, reconnection, and OpenTelemetry. The returned `ISdk` carries every
 method below.
 
 ### `registerFunction`
@@ -155,8 +156,10 @@ The SDK re-exports the structured types the engine returns when listing system s
 - `FunctionInfo`. `function_id`, optional `description`, optional `request_format` /
   `response_format`, optional `metadata`.
 - `TriggerInfo`. `id`, `trigger_type`, `function_id`, optional `config`, optional `metadata`.
-- `WorkerInfo`. `id`, `name`, runtime/version/OS fields, IP, `status`, `connected_at_ms`,
-  `function_count`, registered `functions`, `active_invocations`, optional `isolation`.
+- `WorkerInfo`. `id`, `name`, optional `description` (the worker's self-reported one-line
+  summary; every engine builtin ships one), runtime/version/OS fields, IP, `status`,
+  `connected_at_ms`, `function_count`, registered `functions`, `active_invocations`, optional
+  `isolation`.
 
 `WorkerMetadata` is not part of this SDK; use `WorkerInfo` for worker-side metadata.
 

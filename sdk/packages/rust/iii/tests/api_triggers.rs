@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::sync::Mutex;
 
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest};
 use tokio::time::sleep;
 
 fn test_pdf_path() -> PathBuf {
@@ -1046,4 +1046,88 @@ async fn multipart_form_data() {
     assert!(data["has_description"].as_bool().unwrap_or(false));
     assert!(data["has_filename"].as_bool().unwrap_or(false));
     assert!(data["body_size"].as_u64().unwrap_or(0) > original_pdf.len() as u64);
+}
+
+#[tokio::test]
+#[serial]
+async fn conflicting_route_structure_is_rejected() {
+    let iii = common::shared_iii();
+
+    // First route registers normally.
+    iii.register_function(
+        "test::api::conflict::a::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
+            Ok(json!({"status_code": 200, "body": {"ok": true}}))
+        }),
+    );
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".to_string(),
+        function_id: "test::api::conflict::a::rs".to_string(),
+        config: json!({
+            "api_path": "test/rs/conflict/:listId/:userId",
+            "http_method": "GET",
+        }),
+        metadata: None,
+    })
+    .expect("register trigger a");
+
+    // Second route has the same axum shape with swapped param names -> conflict.
+    iii.register_function(
+        "test::api::conflict::b::rs",
+        RegisterFunction::new_async(|_input: Value| async move {
+            Ok(json!({"status_code": 200, "body": {"ok": true}}))
+        }),
+    );
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".to_string(),
+        function_id: "test::api::conflict::b::rs".to_string(),
+        config: json!({
+            "api_path": "test/rs/conflict/:userId/:listId",
+            "http_method": "GET",
+        }),
+        metadata: None,
+    })
+    .expect("register trigger b");
+
+    common::settle().await;
+    sleep(Duration::from_millis(500)).await;
+
+    // Engine stayed alive and the first route still serves — no panic.
+    let resp = common::http_client()
+        .get(format!(
+            "{}/test/rs/conflict/list1/user1",
+            common::engine_http_url()
+        ))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(resp.status().as_u16(), 200);
+    let data: Value = resp.json().await.expect("json parse");
+    assert_eq!(data["ok"], true);
+
+    // Exactly one of the two routes survives: the engine rejects whichever conflicting
+    // registration it processes second (the order over the wire is not guaranteed), so
+    // the loser never becomes an active registered trigger.
+    let mut registered = 0;
+    for function_id in ["test::api::conflict::a::rs", "test::api::conflict::b::rs"] {
+        let listed = iii
+            .trigger(TriggerRequest {
+                function_id: "engine::registered-triggers::list".to_string(),
+                payload: json!({ "function_id": function_id }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .expect("registered-triggers::list request should succeed");
+        let rows = listed
+            .get("registered_triggers")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        registered += rows;
+    }
+    assert_eq!(
+        registered, 1,
+        "exactly one conflicting route must be registered, found {registered}"
+    );
 }

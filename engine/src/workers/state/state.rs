@@ -163,9 +163,22 @@ impl StateWorker {
         let engine = self.engine.clone();
         let event_type = event_data.event_type.clone();
 
-        let current_span = tracing::Span::current();
+        // The engine attaches the writer's OTel context for the state write
+        // (even for suppressed builtins — see invocation::handle_invocation), so
+        // parent the spawned trigger fan-out to it. Otherwise `state_triggers`
+        // (and the handlers it invokes, e.g. turn::on_approval) would root a new
+        // trace disconnected from the writer (e.g. approval::resolve).
+        let parent_cx = opentelemetry::Context::current();
 
         if let Ok(event_data) = serde_json::to_value(event_data) {
+            let trigger_span = {
+                let _guard = parent_cx.attach();
+                tracing::info_span!(
+                    "state_triggers",
+                    "iii.function.kind" = "internal",
+                    otel.status_code = tracing::field::Empty
+                )
+            };
             tokio::spawn(
                 async move {
                     tracing::debug!("Invoking triggers for event type {:?}", event_type);
@@ -178,7 +191,9 @@ impl StateWorker {
                                 condition_function_id = %condition_id,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), condition_id, event_data.clone()).await {
+                            match check_condition(engine.as_ref(), condition_id, event_data.clone())
+                                .await
+                            {
                                 Ok(true) => {}
                                 Ok(false) => {
                                     tracing::debug!(
@@ -233,7 +248,7 @@ impl StateWorker {
                         tracing::Span::current().record("otel.status_code", "OK");
                     }
                 }
-                .instrument(tracing::info_span!(parent: current_span, "state_triggers", otel.status_code = tracing::field::Empty))
+                .instrument(trigger_span),
             );
         } else {
             tracing::error!("Failed to convert event data to value");
@@ -413,7 +428,12 @@ impl StateWorker {
     }
 }
 
-crate::register_worker!("iii-state", StateWorker, enabled_by_default = true);
+crate::register_worker!(
+    "iii-state",
+    StateWorker,
+    description = "Distributed key-value state management with reactive change triggers.",
+    enabled_by_default = true
+);
 
 #[cfg(test)]
 mod tests {

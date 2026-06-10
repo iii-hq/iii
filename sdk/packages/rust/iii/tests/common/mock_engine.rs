@@ -20,6 +20,7 @@ pub struct MockEngine {
     received: Arc<Mutex<Vec<Value>>>,
     new_message: Arc<Notify>,
     close_active: broadcast::Sender<()>,
+    to_client: broadcast::Sender<String>,
     accept_task: AbortHandle,
 }
 
@@ -37,10 +38,12 @@ impl MockEngine {
         let received = Arc::new(Mutex::new(Vec::<Value>::new()));
         let new_message = Arc::new(Notify::new());
         let (close_active, _) = broadcast::channel::<()>(16);
+        let (to_client, _) = broadcast::channel::<String>(16);
 
         let received_acc = received.clone();
         let new_message_acc = new_message.clone();
         let close_active_acc = close_active.clone();
+        let to_client_acc = to_client.clone();
 
         let accept_task = tokio::spawn(async move {
             loop {
@@ -52,6 +55,7 @@ impl MockEngine {
                 };
                 let (mut tx, mut rx) = ws.split();
                 let mut close_rx = close_active_acc.subscribe();
+                let mut out_rx = to_client_acc.subscribe();
                 let received = received_acc.clone();
                 let new_message = new_message_acc.clone();
 
@@ -61,6 +65,17 @@ impl MockEngine {
                             _ = close_rx.recv() => {
                                 let _ = tx.close().await;
                                 return;
+                            }
+                            out = out_rx.recv() => {
+                                match out {
+                                    Ok(text) => {
+                                        if tx.send(Message::Text(text.into())).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                                }
                             }
                             msg = rx.next() => {
                                 match msg {
@@ -96,6 +111,7 @@ impl MockEngine {
             received,
             new_message,
             close_active,
+            to_client,
             accept_task,
         }
     }
@@ -113,6 +129,12 @@ impl MockEngine {
     /// mock will accept the next handshake on the same listener.
     pub fn close_active_connection(&self) {
         let _ = self.close_active.send(());
+    }
+
+    /// Push a frame to every currently connected client (the SDK under
+    /// test). Lets tests drive engine→worker flows like `invokefunction`.
+    pub fn send_to_client(&self, frame: Value) {
+        let _ = self.to_client.send(frame.to_string());
     }
 
     /// Wait until `predicate` returns true on the current message list,

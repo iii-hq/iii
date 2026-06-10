@@ -39,11 +39,16 @@ use std::path::{Path, PathBuf};
 
 pub use super::local_worker::{handle_local_add, is_local_path, start_local_worker};
 
-/// Fire `GET /download/{name}` for an engine worker so the registry increments
-/// its telemetry counters. The endpoint returns 204 (no artifact); errors are
-/// logged as warnings and never block the install.
-async fn fire_engine_telemetry(name: &str, version: &str) {
-    use super::registry::HTTP_CLIENT;
+/// Fire `GET /download/{name}` for a resolved worker so the registry increments
+/// its telemetry counters. Used for every worker type installed via `/resolve`
+/// (engine workers have no artifact; binary/image/bundle workers fetch their
+/// artifacts from external URLs the registry never sees, so this is the only
+/// install signal it gets). When a CI environment is detected, `ci=true` is
+/// also sent so the registry increments parallel `ci_count` columns. The
+/// endpoint returns 204 (no artifact); errors are logged as warnings and never
+/// block the install.
+async fn fire_worker_telemetry(name: &str, version: &str) {
+    use super::registry::{HTTP_CLIENT, with_download_query};
 
     let api_url =
         std::env::var("III_API_URL").unwrap_or_else(|_| "https://api.workers.iii.dev".to_string());
@@ -52,7 +57,7 @@ async fn fire_engine_telemetry(name: &str, version: &str) {
 
     match tokio::time::timeout(
         timeout,
-        HTTP_CLIENT.get(&url).query(&[("version", version)]).send(),
+        with_download_query(HTTP_CLIENT.get(&url), version).send(),
     )
     .await
     {
@@ -491,44 +496,12 @@ enum PreparedLockedWorker {
     },
 }
 
-struct ProjectOperationLock {
-    path: PathBuf,
-}
-
-impl ProjectOperationLock {
-    fn acquire() -> Result<Self, String> {
-        let path = PathBuf::from(".iii-worker.lock");
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                use std::io::Write as _;
-                let _ = writeln!(file, "pid={}", std::process::id());
-                Ok(Self { path })
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
-                "another iii worker operation is active (lock: {}). Wait for it to finish, \
-                 or remove the lock if the process crashed.",
-                path.display()
-            )),
-            Err(e) => Err(format!(
-                "failed to acquire iii worker operation lock {}: {e}",
-                path.display()
-            )),
-        }
-    }
-}
-
-impl Drop for ProjectOperationLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
+/// Per-worker install mutex. Kernel advisory lock (`flock(2)`), so a
+/// crashed installer can never strand the worker — see
+/// `core::project::ProjectOperationLock` for the rationale. The lockfile
+/// persists; only the kernel lock state matters.
 struct WorkerActivationLock {
-    path: PathBuf,
+    _lock: nix::fcntl::Flock<std::fs::File>,
 }
 
 impl WorkerActivationLock {
@@ -538,31 +511,29 @@ impl WorkerActivationLock {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("failed to create worker install directory: {e}"))?;
         let path = dir.join(format!(".{name}.lock"));
-        match std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
-        {
-            Ok(mut file) => {
+            .map_err(|e| format!("failed to acquire activation lock for worker `{name}`: {e}"))?;
+        match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => {
                 use std::io::Write as _;
-                let _ = writeln!(file, "pid={}", std::process::id());
-                Ok(Self { path })
+                let _ = (&*lock).set_len(0);
+                let _ = writeln!(&*lock, "pid={}", std::process::id());
+                Ok(Self { _lock: lock })
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
+            Err((_, nix::errno::Errno::EWOULDBLOCK)) => Err(format!(
                 "worker `{name}` is being installed by another process (lock: {}). Wait and rerun \
                  `iii worker sync`.",
                 path.display()
             )),
-            Err(e) => Err(format!(
-                "failed to acquire activation lock for worker `{name}`: {e}"
+            Err((_, errno)) => Err(format!(
+                "failed to acquire activation lock for worker `{name}`: {errno}"
             )),
         }
-    }
-}
-
-impl Drop for WorkerActivationLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -670,13 +641,17 @@ pub async fn handle_worker_sync(frozen: bool) -> i32 {
     }
     let skipped_unmanaged = skipped_unmanaged_config_workers(&lockfile, &config_names);
 
-    let _operation_lock = match ProjectOperationLock::acquire() {
-        Ok(lock) => lock,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
 
     match replay_lockfile(&lockfile).await {
         Ok(mut summary) => {
@@ -1462,8 +1437,9 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     for node in &graph.graph {
         let rc = match node.worker_type.as_str() {
             "engine" => {
-                // Engine workers are baked into the iii binary — nothing to download.
-                // Fire GET /download/{name} anyway so the registry can count installs.
+                // Engine workers are baked into the iii binary — nothing to
+                // download. Telemetry still fires for them below, alongside
+                // every other resolved worker type.
                 let config_yaml = binary_config_yaml(&node.config);
                 if let Err(e) =
                     super::config_file::append_worker(&node.name, config_yaml.as_deref())
@@ -1472,7 +1448,6 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
                     config_snapshot.restore_after_failure();
                     return 1;
                 }
-                fire_engine_telemetry(&node.name, &node.version).await;
                 if !brief {
                     eprintln!("  {} {} (engine, built-in)", "✓".green(), node.name.bold());
                 }
@@ -1550,6 +1525,12 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
             config_snapshot.restore_after_failure();
             return rc;
         }
+
+        // Every successfully-installed resolved node increments the registry's
+        // per-worker download counter. Engine workers have no artifact; binary/
+        // image/bundle workers fetch artifacts from external URLs the registry
+        // never sees, so this GET /download/{name} is the only install signal.
+        fire_worker_telemetry(&node.name, &node.version).await;
     }
 
     for (name, worker) in graph_lockfile.workers {
@@ -1828,7 +1809,7 @@ pub async fn handle_managed_add(
         // or binary to watch. The Phase machinery would loop on Queued until
         // timeout, so skip wait_for_ready for builtins even when wait=true.
         // Fire telemetry so the registry can count this activation.
-        fire_engine_telemetry(&name, builtin_version).await;
+        fire_worker_telemetry(&name, builtin_version).await;
         return 0;
     }
 
@@ -3590,28 +3571,6 @@ fn resolve_orphan_type(
 
 /// Pick the log directory with the most recently modified, non-empty log file.
 /// Returns `None` when no candidate contains any usable log content.
-fn pick_best_logs_dir(candidates: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
-    let mut best: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-
-    for dir in candidates {
-        let latest = ["stdout.log", "stderr.log"]
-            .iter()
-            .map(|f| dir.join(f))
-            .filter_map(|p| std::fs::metadata(&p).ok().map(|m| (p, m)))
-            .filter(|(_, m)| m.len() > 0)
-            .filter_map(|(_, m)| m.modified().ok())
-            .max();
-
-        if let Some(modified) = latest
-            && best.as_ref().is_none_or(|(_, t)| modified > *t)
-        {
-            best = Some((dir.clone(), modified));
-        }
-    }
-
-    best.map(|(dir, _)| dir)
-}
-
 fn file_len(path: &std::path::Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -3717,19 +3676,11 @@ pub async fn handle_managed_logs(
     let home = dirs::home_dir().unwrap_or_default();
 
     // Check all possible log locations and prefer the one with the most
-    // recently modified, non-empty log files. This avoids picking a stale
-    // directory (e.g. ~/.iii/logs/ from a binary worker) over the active
-    // one (e.g. ~/.iii/managed/ from a libkrun OCI worker).
-    let unified_logs_dir = home.join(".iii/logs").join(worker_name);
-    let legacy_managed_dir = home.join(".iii/managed").join(worker_name).join("logs");
-    let legacy_binary_dir = home.join(".iii/workers/logs").join(worker_name);
-
-    let logs_dir = pick_best_logs_dir(&[
-        unified_logs_dir.clone(),
-        legacy_managed_dir,
-        legacy_binary_dir,
-    ])
-    .unwrap_or(unified_logs_dir);
+    // recently modified, non-empty log files. Shared with the daemon's
+    // `worker::logs` trigger so both surfaces read the same directory.
+    let candidates = crate::core::logs::candidate_log_dirs(&home, worker_name);
+    let unified_logs_dir = candidates[0].clone();
+    let logs_dir = crate::core::logs::pick_best_logs_dir(&candidates).unwrap_or(unified_logs_dir);
 
     let worker_dir = logs_dir.clone();
 
@@ -4097,8 +4048,11 @@ mod tests {
                         .split_whitespace();
                     let method = parts.next().unwrap_or_default();
                     let path = parts.next().unwrap_or("/");
-                    let keyed = format!("{method} {path}");
-                    let response = routes.get(&keyed).or_else(|| routes.get(path));
+                    // Strip query string so routes keyed as `GET /download/foo`
+                    // still match when the client appends `?version=…&ci=true`.
+                    let path_only = path.split('?').next().unwrap_or(path);
+                    let keyed = format!("{method} {path_only}");
+                    let response = routes.get(&keyed).or_else(|| routes.get(path_only));
 
                     let (status, content_type, body) = match response {
                         Some(response) => (
@@ -5003,11 +4957,13 @@ workers:
     }
 
     #[tokio::test]
-    async fn fire_engine_telemetry_percent_encodes_version_query() {
+    async fn fire_worker_telemetry_percent_encodes_version_query() {
         let _env_guard = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        crate::cli::registry::clear_ci_env_vars_for_test();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -5032,11 +4988,178 @@ workers:
                 .await;
         });
 
-        fire_engine_telemetry("iii-http", "1.2.3+build.5").await;
+        fire_worker_telemetry("iii-http", "1.2.3+build.5").await;
 
         let path = rx.await.expect("request captured");
         assert_eq!(path, "/download/iii-http?version=1.2.3%2Bbuild.5");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn fire_worker_telemetry_appends_ci_true_in_ci_environment() {
+        let _env_guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        crate::cli::registry::clear_ci_env_vars_for_test();
+        let _ci_guard = set_env_var_for_test("CI", "true");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let _api_guard = set_env_var_for_test("III_API_URL", &base_url);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut buf = [0_u8; 4096];
+            let n = stream.read(&mut buf).await.expect("read request");
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_string();
+            let _ = tx.send(path);
+            let _ = stream
+                .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n")
+                .await;
+        });
+
+        fire_worker_telemetry("iii-http", "1.0.0").await;
+
+        let path = rx.await.expect("request captured");
+        assert!(
+            path.contains("ci=true"),
+            "expected ci=true in download telemetry request, got: {path}"
+        );
+        assert!(
+            path.contains("version=1.0.0"),
+            "expected version=1.0.0 in download telemetry request, got: {path}"
+        );
+        server.abort();
+    }
+
+    /// Regression: a `binary` node installed via the `/resolve` path must fire
+    /// `GET /download/{name}` telemetry, not just engine workers. Before the
+    /// fix this only ran for the `"engine"` arm, so binary/image/bundle installs
+    /// were invisible to the registry's per-worker counter. Drives a real
+    /// binary install against a recording server and asserts the download
+    /// endpoint was hit.
+    #[tokio::test]
+    async fn handle_resolved_graph_add_binary_node_fires_download_telemetry() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            use std::sync::{Arc, Mutex};
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let worker_name = "telemetry-binary";
+            let archive = binary_archive(worker_name);
+            let archive_sha = sha256_hex(&archive);
+            let target = binary_download::current_target();
+
+            // Recording TCP server: serves the binary artifact + the /download
+            // telemetry endpoint, and records every request path so the test
+            // can assert GET /download/{name} was actually hit.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind test server");
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let recorded_srv = Arc::clone(&recorded);
+            let archive_srv = archive.clone();
+            let download_path = format!("/download/{worker_name}");
+            let archive_path = format!("/{worker_name}.tar.gz");
+            let server = tokio::spawn(async move {
+                loop {
+                    let Ok((mut stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let recorded = Arc::clone(&recorded_srv);
+                    let archive = archive_srv.clone();
+                    let download_path = download_path.clone();
+                    let archive_path = archive_path.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0_u8; 4096];
+                        let Ok(n) = stream.read(&mut buf).await else {
+                            return;
+                        };
+                        let request = String::from_utf8_lossy(&buf[..n]);
+                        let path = request
+                            .lines()
+                            .next()
+                            .and_then(|line| line.split_whitespace().nth(1))
+                            .unwrap_or_default()
+                            .to_string();
+                        recorded.lock().unwrap().push(path.clone());
+
+                        let path_only = path.split('?').next().unwrap_or(path.as_str());
+                        if path_only == archive_path {
+                            let headers = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/gzip\r\nconnection: close\r\n\r\n",
+                                archive.len()
+                            );
+                            let _ = stream.write_all(headers.as_bytes()).await;
+                            let _ = stream.write_all(&archive).await;
+                        } else if path_only == download_path {
+                            let _ = stream
+                                .write_all(
+                                    b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                                )
+                                .await;
+                        } else {
+                            let _ = stream
+                                .write_all(
+                                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                                )
+                                .await;
+                        }
+                    });
+                }
+            });
+
+            let _api_guard = set_env_var_for_test("III_API_URL", &base_url);
+
+            let mut binaries = StdHashMap::new();
+            binaries.insert(
+                target.to_string(),
+                cli_registry::BinaryInfo {
+                    url: format!("{base_url}/{worker_name}.tar.gz"),
+                    sha256: archive_sha,
+                },
+            );
+            let graph = graph_with(resolved_binary_worker(worker_name, "1.0.0", binaries));
+
+            let rc = handle_resolved_graph_add(&graph, true).await;
+
+            assert_eq!(rc, 0, "binary resolve add should succeed");
+            assert!(
+                home.join(".iii/workers").join(worker_name).exists(),
+                "binary worker should be installed on disk"
+            );
+            let hits = recorded.lock().unwrap().clone();
+            // `with_download_query` appends `ci=true` when a CI env var (CI,
+            // GITHUB_ACTIONS, ...) is present, so match on path + version and
+            // tolerate extra query params instead of full-string equality.
+            let expected_path = format!("/download/{worker_name}");
+            assert!(
+                hits.iter().any(|hit| {
+                    let (path, query) = hit.split_once('?').unwrap_or((hit.as_str(), ""));
+                    path == expected_path && query.split('&').any(|pair| pair == "version=1.0.0")
+                }),
+                "expected GET {expected_path}?version=1.0.0 telemetry hit, got: {hits:?}"
+            );
+            server.abort();
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -5173,10 +5296,10 @@ dependencies:
             assert_eq!(rc, 0);
             assert!(home.join(".iii/workers").join(worker_name).exists());
             assert_eq!(std::fs::read_to_string("config.yaml").unwrap(), config);
-            assert!(
-                !std::path::Path::new(".iii-worker.lock").exists(),
-                "project operation lock should be removed after sync"
-            );
+            // The lockfile persists (flock semantics); the lock itself must
+            // be released so a fresh acquisition succeeds.
+            crate::core::ProjectOperationLock::acquire(std::path::Path::new("."))
+                .expect("project operation lock should be released after sync");
             server.abort();
         })
         .await;
@@ -5653,53 +5776,6 @@ dependencies:
     async fn read_new_bytes_missing_file_returns_offset() {
         let offset = read_new_bytes(std::path::Path::new("/no/such/file.log"), 42, false).await;
         assert_eq!(offset, 42);
-    }
-
-    #[test]
-    fn pick_best_logs_dir_prefers_most_recent() {
-        let root = tempfile::tempdir().unwrap();
-
-        // Create two candidate dirs, both with stdout.log
-        let stale_dir = root.path().join("stale");
-        let fresh_dir = root.path().join("fresh");
-        std::fs::create_dir_all(&stale_dir).unwrap();
-        std::fs::create_dir_all(&fresh_dir).unwrap();
-
-        std::fs::write(stale_dir.join("stdout.log"), "old content\n").unwrap();
-        // Ensure a time gap so the modification times differ
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        std::fs::write(fresh_dir.join("stdout.log"), "new content\n").unwrap();
-
-        let result = pick_best_logs_dir(&[stale_dir.clone(), fresh_dir.clone()]).unwrap();
-        assert_eq!(result, fresh_dir);
-    }
-
-    #[test]
-    fn pick_best_logs_dir_skips_empty_files() {
-        let root = tempfile::tempdir().unwrap();
-        let empty_dir = root.path().join("empty");
-        let content_dir = root.path().join("content");
-        std::fs::create_dir_all(&empty_dir).unwrap();
-        std::fs::create_dir_all(&content_dir).unwrap();
-
-        std::fs::write(empty_dir.join("stdout.log"), "").unwrap();
-        std::fs::write(content_dir.join("stdout.log"), "data\n").unwrap();
-
-        let result = pick_best_logs_dir(&[empty_dir.clone(), content_dir.clone()]).unwrap();
-        assert_eq!(result, content_dir);
-    }
-
-    #[test]
-    fn pick_best_logs_dir_returns_none_when_no_content() {
-        let root = tempfile::tempdir().unwrap();
-        let dir_a = root.path().join("a");
-        let dir_b = root.path().join("b");
-        std::fs::create_dir_all(&dir_a).unwrap();
-        // dir_b doesn't even exist
-
-        std::fs::write(dir_a.join("stdout.log"), "").unwrap();
-
-        assert!(pick_best_logs_dir(&[dir_a, dir_b]).is_none());
     }
 
     #[tokio::test]

@@ -32,13 +32,23 @@ import (
 // A Client is safe for concurrent use. Register* may be called before or after Connect;
 // registrations are kept in memory and (re)sent to the engine on every (re)connection.
 type Client struct {
-	url       string
-	reconnect ReconnectConfig
-	name      string
+	url         string
+	reconnect   ReconnectConfig
+	name        string
+	description string
 
-	// outbound carries already-marshaled frames to the single writer goroutine. It is
-	// the only path to the socket, so writes are serialized without a write mutex.
+	// outbound carries connection-AGNOSTIC frames (registrations + offline-buffered
+	// invokes) to the single writer goroutine. It is shared across the client's lifetime
+	// and its contents are meant to (re)send on whichever connection is live.
 	outbound chan []byte
+
+	// reply is the per-connection channel for connection-SCOPED replies (pong,
+	// InvocationResult, TriggerRegistrationResult): frames that are only meaningful on the
+	// socket that prompted them. A fresh channel is created per connection and discarded on
+	// teardown, so a reply can never leak onto the next connection (iii-hq/iii#1749).
+	// Guarded by replyMu; nil when there is no live connection.
+	replyMu sync.Mutex
+	reply   chan []byte
 
 	mu       sync.Mutex
 	state    ConnectionState
@@ -101,13 +111,20 @@ func WithReconnectConfig(c ReconnectConfig) Option {
 	return func(cl *Client) { cl.reconnect = c }
 }
 
+// WithDescription sets a one-line, human/LLM-readable summary of what this
+// worker does. Surfaces in engine::workers::list / engine::workers::info.
+func WithDescription(description string) Option {
+	return func(c *Client) { c.description = description }
+}
+
 // WithName sets the worker name reported to the engine (default: "hostname:pid").
 func WithName(name string) Option {
 	return func(cl *Client) { cl.name = name }
 }
 
-// New creates a Client for the engine at url (e.g. DefaultEngineURL). It does not
-// connect; call Connect to start the connection lifecycle.
+// New creates a [Client] for the engine at url (e.g. [DefaultEngineURL]). It does not
+// connect; call [Client.Connect] to start the connection lifecycle, or use
+// [RegisterWorker] to create and connect in one step.
 func New(url string, opts ...Option) *Client {
 	c := &Client{
 		url:          url,
@@ -129,15 +146,16 @@ func New(url string, opts ...Option) *Client {
 	return c
 }
 
-// RegisterWorker creates a Client for the engine at url and starts the connection
+// RegisterWorker creates a [Client] for the engine at url and starts the connection
 // lifecycle in the background, returning immediately. It is the idiomatic entry point,
 // matching registerWorker in the Node SDK and register_worker in the Rust SDK. Register
 // functions and triggers on the returned client; they are (re)sent on each connection.
-// Call Close to stop.
+// Call [Client.Close] to stop.
 //
-// To wait for the first connection (or fail fast on a bad URL), call Connect instead of
-// — or after — RegisterWorker; Connect blocks until connected, ctx is done, or the
-// reconnect budget is exhausted.
+// To wait for the first connection (or fail fast on a bad URL), call [Client.Connect]
+// instead of — or after — RegisterWorker; it blocks until connected, ctx is done, or the
+// reconnect budget is exhausted. Use [New] if you want to build a client without starting
+// the connection.
 func RegisterWorker(url string, opts ...Option) *Client {
 	c := New(url, opts...)
 	c.startSupervisor()
@@ -220,9 +238,9 @@ func (c *Client) RegisterTrigger(id, triggerType, functionID string, config, met
 	return nil
 }
 
-// TriggerRequest is the input to Trigger. Exactly the Action field selects the
-// delivery semantics: nil/await (default) waits for the result; VoidAction is
-// fire-and-forget; EnqueueAction routes through a named queue and awaits its receipt.
+// TriggerRequest is the input to [Client.Trigger]. The Action field selects the delivery
+// semantics: nil/await (default) waits for the result; [VoidAction] is fire-and-forget;
+// [EnqueueAction] routes through a named queue and awaits its receipt.
 type TriggerRequest struct {
 	// FunctionID is the engine function to invoke (e.g. an EngineFunctions constant).
 	FunctionID string
@@ -230,17 +248,17 @@ type TriggerRequest struct {
 	Data json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *TriggerAction
-	// Timeout overrides DefaultInvocationTimeout for an await/enqueue call.
+	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
 	Timeout time.Duration
 }
 
 // Trigger invokes a function on the engine. With the default (nil) or an enqueue action
-// it waits for the matching InvocationResult and returns its result, mapping a remote
-// error to *InvocationError and a missed deadline to ErrTimeout. With a void action it
-// is fire-and-forget and returns immediately with a nil result.
+// it waits for the matching invocation result and returns it, mapping a remote error to
+// [InvocationError] and a missed deadline to [ErrTimeout]. With a [VoidAction] it is
+// fire-and-forget and returns immediately with a nil result.
 //
-// ctx bounds the wait independently of Timeout: if ctx is cancelled first, its error is
-// returned and the pending entry is reclaimed.
+// ctx bounds the wait independently of [TriggerRequest.Timeout]: if ctx is cancelled
+// first, its error is returned and the pending entry is reclaimed.
 func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error) {
 	data := req.Data
 	if data == nil {
@@ -452,15 +470,23 @@ func (c *Client) runConnection() error {
 	// The engine can send large registration payloads; lift the default read limit.
 	conn.SetReadLimit(-1)
 
+	// A reply channel owned by THIS connection. Connection-scoped replies go here so they
+	// can never be drained by a later connection's writer (iii-hq/iii#1749).
+	reply := make(chan []byte, 64)
+	c.replyMu.Lock()
+	c.reply = reply
+	c.replyMu.Unlock()
+
 	c.mu.Lock()
 	c.conn = conn
 	c.state = StateConnected
 	c.mu.Unlock()
 
-	// Start the single writer for this connection.
+	// Start the single writer for this connection. It drains the shared outbound channel
+	// and this connection's own reply channel.
 	writerDone := make(chan struct{})
 	c.writerWG.Add(1)
-	go c.writeLoop(connCtx, conn, writerDone)
+	go c.writeLoop(connCtx, conn, reply, writerDone)
 
 	// Signal the first successful connection to Connect's caller.
 	c.connOnce.Do(func() { close(c.connected) })
@@ -472,7 +498,12 @@ func (c *Client) runConnection() error {
 	// Read loop runs until the socket errors or closes.
 	readErr := c.readLoop(connCtx, conn)
 
-	// Tear down this connection: stop the writer, close the socket, clear conn.
+	// Tear down this connection: stop the writer, close the socket, clear conn. Detach the
+	// reply channel first so any reply enqueued during teardown is dropped (it has no live
+	// socket to go to) rather than lingering for the next connection.
+	c.replyMu.Lock()
+	c.reply = nil
+	c.replyMu.Unlock()
 	cancel()
 	<-writerDone
 	_ = conn.CloseNow()
@@ -537,11 +568,12 @@ func (c *Client) onConnect() {
 func (c *Client) registerWorkerMetadata() {
 	pid := os.Getpid()
 	meta := workerMetadata{
-		Runtime: runtimeTag,
-		Version: sdkVersion,
-		Name:    c.name,
-		OS:      fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH),
-		PID:     &pid,
+		Runtime:     runtimeTag,
+		Version:     sdkVersion,
+		Name:        c.name,
+		Description: c.description,
+		OS:          fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH),
+		PID:         &pid,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -566,21 +598,25 @@ func (c *Client) registerWorkerMetadata() {
 // open question #3 in iii-hq/iii#1719). Optional fields use omitempty to match the
 // engine's skip_serializing_if discipline.
 type workerMetadata struct {
-	Runtime string `json:"runtime"`
-	Version string `json:"version"`
-	Name    string `json:"name"`
-	OS      string `json:"os"`
-	PID     *int   `json:"pid,omitempty"`
+	Runtime     string `json:"runtime"`
+	Version     string `json:"version"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	OS          string `json:"os"`
+	PID         *int   `json:"pid,omitempty"`
 }
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release
 // process can wire this to the module version later.
 const sdkVersion = "0.1.0"
 
-// writeLoop is the single writer for one connection: it drains outbound until the
-// connection context is cancelled. Routing every send through here keeps the socket
+// writeLoop is the single writer for one connection. It drains the shared outbound
+// channel (connection-agnostic frames) and this connection's own reply channel
+// (connection-scoped replies) until the connection context is cancelled. reply is passed
+// in (not read from c.reply) so this loop only ever touches its own connection's replies,
+// even if a reconnect swaps c.reply. Routing every send through here keeps the socket
 // single-writer, as coder/websocket requires.
-func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn, done chan struct{}) {
+func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn, reply <-chan []byte, done chan struct{}) {
 	defer c.writerWG.Done()
 	defer close(done)
 	for {
@@ -592,6 +628,10 @@ func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn, done chan 
 		case frame := <-c.outbound:
 			if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
 				return // write failure ends the connection; supervisor reconnects
+			}
+		case frame := <-reply:
+			if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+				return
 			}
 		}
 	}
@@ -625,6 +665,8 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 		c.handleInvocationResult(dec.InvocationResult)
 	case MsgRegisterTrigger:
 		go c.handleRegisterTrigger(ctx, dec.RegisterTrigger)
+	case MsgUnregisterTrigger:
+		go c.handleUnregisterTrigger(ctx, dec.UnregisterTrigger)
 	case MsgPing:
 		if frame, err := MarshalMessage(&PongMessage{}); err == nil {
 			c.enqueueOutboundDirect(frame)
@@ -637,12 +679,21 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 	}
 }
 
-// enqueueOutboundDirect sends a frame to the writer without the offline-buffering path —
-// used for protocol replies (pong, invocation results) that are only meaningful on the
-// connection they answer.
+// enqueueOutboundDirect sends a connection-scoped reply (pong, InvocationResult,
+// TriggerRegistrationResult) on the current connection's reply channel. If there is no
+// live connection, the reply is dropped: it answers a request that arrived on a socket
+// that is now gone, so there is nowhere valid to send it (the engine re-drives on
+// reconnect if it still wants the work). This is what keeps a stale reply from leaking
+// onto the next connection (iii-hq/iii#1749).
 func (c *Client) enqueueOutboundDirect(frame []byte) {
+	c.replyMu.Lock()
+	reply := c.reply
+	c.replyMu.Unlock()
+	if reply == nil {
+		return
+	}
 	select {
-	case c.outbound <- frame:
+	case reply <- frame:
 	case <-c.shutdown:
 	}
 }
@@ -776,6 +827,29 @@ func (c *Client) handleRegisterTrigger(ctx context.Context, msg *RegisterTrigger
 	if frame, err := MarshalMessage(res); err == nil {
 		c.enqueueOutboundDirect(frame)
 	}
+}
+
+// handleUnregisterTrigger routes an inbound UnregisterTrigger to the matching
+// trigger-type handler's UnregisterTrigger hook, so a custom trigger type can tear down
+// the per-instance work it started in RegisterTrigger. The engine sends this when a
+// trigger instance is removed; without dispatching it, that work would leak. Mirrors
+// handle_unregister_trigger in the Rust SDK and onUnregisterTrigger in the Node SDK.
+//
+// The wire message carries only id and an optional trigger_type. Without a trigger_type
+// we can't resolve which handler owns the instance, so we skip (matching the reference
+// SDKs, which require it). The TriggerConfig passed to the handler carries the id; the
+// handler keys its cleanup off that.
+func (c *Client) handleUnregisterTrigger(ctx context.Context, msg *UnregisterTriggerMessage) {
+	if msg.TriggerType == nil {
+		return
+	}
+	c.mu.Lock()
+	tt, ok := c.triggerTypes[*msg.TriggerType]
+	c.mu.Unlock()
+	if !ok {
+		return
+	}
+	_ = tt.handler.UnregisterTrigger(ctx, TriggerConfig{ID: msg.ID})
 }
 
 // Close shuts the client down: it stops the reconnect loop, cancels all pending Trigger

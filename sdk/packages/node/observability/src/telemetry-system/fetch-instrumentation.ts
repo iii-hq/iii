@@ -26,6 +26,21 @@ const SAFE_RESPONSE_HEADERS = ['content-type'] as const
 let originalFetch: typeof globalThis.fetch | null = null
 
 /**
+ * Substring patterns from `OTEL_FETCH_IGNORE_URLS` (comma-separated). A fetch
+ * whose URL contains any pattern is executed WITHOUT creating a span — use it
+ * to drop noisy/high-frequency calls (health checks, polling, internal
+ * endpoints) that would otherwise flood traces.
+ */
+const FETCH_IGNORE_URL_PATTERNS: string[] = (process.env.OTEL_FETCH_IGNORE_URLS ?? '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+
+function shouldIgnoreFetchUrl(url: string): boolean {
+  return FETCH_IGNORE_URL_PATTERNS.some(pattern => url.includes(pattern))
+}
+
+/**
  * Patch globalThis.fetch to create OTel CLIENT spans for every HTTP request.
  */
 export function patchGlobalFetch(tracer: Tracer): void {
@@ -39,6 +54,12 @@ export function patchGlobalFetch(tracer: Tracer): void {
     init?: RequestInit,
   ): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
+
+    // Skip tracing entirely for ignored URLs (no span, no context injection).
+    if (shouldIgnoreFetchUrl(url)) {
+      return capturedFetch(input, init)
+    }
+
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
 
     let host: string | undefined

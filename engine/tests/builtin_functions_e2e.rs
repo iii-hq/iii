@@ -238,9 +238,12 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
         worker.get("name").and_then(|v| v.as_str()),
         Some("iii-state")
     );
-    // description is shared core: always serialized, always null on engine.
-    assert!(worker.get("description").is_some());
-    assert!(worker.get("description").unwrap().is_null());
+    // description is shared core: builtin workers self-describe via their
+    // WorkerRegistration.
+    assert_eq!(
+        worker.get("description").and_then(|v| v.as_str()),
+        Some("Distributed key-value state management with reactive change triggers.")
+    );
     // internal is always present on the info envelope.
     assert!(worker.get("internal").and_then(|v| v.as_bool()).is_some());
 

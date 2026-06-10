@@ -320,6 +320,17 @@ pub const TRACE_TRIGGER_TYPE: &str = "trace";
 /// fan-out (and the spans its own delivery produces) to a trickle.
 const TRACE_COALESCE_MS: u64 = 300;
 
+/// Live span streams the observability worker pushes onto each coalesce tick,
+/// consumed by the console Traces view (and any iii client) as a real-time
+/// append feed instead of refetching `engine::traces::*`. Ephemeral
+/// `stream::send`: the in-memory store stays the source of truth and is
+/// re-read once on (re)connect, so a dropped frame self-heals.
+const TRACE_ROWS_STREAM: &str = "iii:devtools:trace-rows";
+const TRACE_SPANS_STREAM: &str = "iii:devtools:trace-spans";
+/// The single group every list subscriber joins — the list is a global
+/// firehose, not per-trace. Detail subscribers join the `trace_id` group.
+const TRACE_ROWS_GROUP: &str = "all";
+
 /// Trace (span) triggers for the OTEL module
 pub struct OtelTraceTriggers {
     pub triggers: Arc<TokioRwLock<HashSet<Trigger>>>,
@@ -385,6 +396,126 @@ pub struct ObservabilityWorker {
     engine: Arc<Engine>,
     /// Shutdown signal sender for background tasks
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+/// A compiled [`config::SpanCollapseRule`] with precompiled regex patterns.
+struct CompiledCollapseRule {
+    name: regex::Regex,
+    service: Option<regex::Regex>,
+}
+
+impl CompiledCollapseRule {
+    fn matches(&self, name: &str, service: &str) -> bool {
+        self.name.is_match(name) && self.service.as_ref().map_or(true, |s| s.is_match(service))
+    }
+}
+
+/// Convert a `*`/`?` wildcard pattern into an anchored regex (mirrors the
+/// sampler's wildcard handling).
+fn collapse_wildcard_to_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    let escaped = regex::escape(pattern);
+    let regex_pattern = escaped.replace(r"\*", ".*").replace(r"\?", ".");
+    regex::Regex::new(&format!("^{}$", regex_pattern))
+}
+
+/// True for the engine-internal trigger fan-out wrapper spans
+/// (`state_triggers`/`stream_triggers`).
+fn is_trigger_wrapper(name: &str) -> bool {
+    name == "state_triggers" || name == "stream_triggers"
+}
+
+/// Drop NO-OP trigger fan-out wrappers from the assembled tree: a
+/// `state_triggers`/`stream_triggers` span with no children fanned out to a
+/// handler that produced nothing traceable (e.g. the suppressed devtools stream
+/// consumers) — pure noise, and a turn step emits many. Wrappers that DID invoke
+/// a handler are kept, so the "ran because of a state/stream write" causality
+/// stays visible. Iterates to a fixpoint so a wrapper left childless by pruning a
+/// nested wrapper also drops. Childless spans have nothing to reparent, so the
+/// tree stays connected without rewriting any parent links.
+fn prune_empty_trigger_spans(mut spans: Vec<otel::StoredSpan>) -> Vec<otel::StoredSpan> {
+    loop {
+        let has_child: std::collections::HashSet<String> = spans
+            .iter()
+            .filter_map(|s| s.parent_span_id.clone())
+            .collect();
+        let before = spans.len();
+        spans.retain(|s| !(is_trigger_wrapper(&s.name) && !has_child.contains(&s.span_id)));
+        if spans.len() == before {
+            break;
+        }
+    }
+    spans
+}
+
+/// Compile the configured collapse rules, skipping any with invalid patterns.
+fn compile_collapse_rules(rules: &[config::SpanCollapseRule]) -> Vec<CompiledCollapseRule> {
+    rules
+        .iter()
+        .filter_map(|r| {
+            let name = collapse_wildcard_to_regex(&r.name).ok()?;
+            let service = match &r.service {
+                Some(p) => Some(collapse_wildcard_to_regex(p).ok()?),
+                None => None,
+            };
+            Some(CompiledCollapseRule { name, service })
+        })
+        .collect()
+}
+
+/// Remove spans matching any collapse rule, reparenting each surviving span to
+/// its nearest non-collapsed ancestor so the trace tree stays connected.
+///
+/// Operates on the full set of spans for a trace, so reparenting is exact
+/// regardless of span arrival order. Raw spans in storage / exported to the
+/// collector are untouched — this only affects the assembled tree view.
+fn collapse_spans(
+    spans: Vec<otel::StoredSpan>,
+    rules: &[CompiledCollapseRule],
+) -> Vec<otel::StoredSpan> {
+    if rules.is_empty() {
+        return spans;
+    }
+
+    let collapsed: std::collections::HashSet<String> = spans
+        .iter()
+        .filter(|s| rules.iter().any(|r| r.matches(&s.name, &s.service_name)))
+        .map(|s| s.span_id.clone())
+        .collect();
+
+    if collapsed.is_empty() {
+        return spans;
+    }
+
+    let parent_of: HashMap<String, Option<String>> = spans
+        .iter()
+        .map(|s| (s.span_id.clone(), s.parent_span_id.clone()))
+        .collect();
+
+    // Walk up the chain of collapsed ancestors to the first survivor (or root).
+    let resolve = |start: Option<String>| -> Option<String> {
+        let mut pid = start;
+        let mut guard = 0usize;
+        while let Some(id) = pid.clone() {
+            if !collapsed.contains(&id) {
+                break;
+            }
+            pid = parent_of.get(&id).cloned().flatten();
+            guard += 1;
+            if guard > 100_000 {
+                break; // cycle guard
+            }
+        }
+        pid
+    };
+
+    spans
+        .into_iter()
+        .filter(|s| !collapsed.contains(&s.span_id))
+        .map(|mut s| {
+            s.parent_span_id = resolve(s.parent_span_id.take());
+            s
+        })
+        .collect()
 }
 
 fn build_span_tree(spans: Vec<otel::StoredSpan>) -> Vec<SpanTreeNode> {
@@ -740,6 +871,64 @@ impl ObservabilityWorker {
         }
     }
 
+    /// Push the coalesce window's spans onto the live trace streams via
+    /// ephemeral `stream::send`: root rows (internal/plumbing excluded) to the
+    /// global list stream, and every span grouped by `trace_id` to that trace's
+    /// detail stream. Fire-and-forget — the in-memory store stays authoritative
+    /// (re-read once on reconnect), so a dropped frame self-heals rather than
+    /// corrupting client state.
+    ///
+    /// Loop-safe by construction: the `batch` is the post-filter window, which
+    /// already excludes engine-internal spans (`is_internal_span`) — and
+    /// `stream::send` plus the `iii::console::*` consumer handlers are all
+    /// builtins (`iii.function.kind=internal`), so neither delivery re-enters
+    /// the feed (see the subscriber loop's loop-break + consumer contract).
+    async fn push_trace_streams(engine: &Arc<Engine>, batch: &[otel::StoredSpan]) {
+        fn send(engine: &Arc<Engine>, stream_name: &str, group_id: String, spans: Value) {
+            let payload = serde_json::json!({
+                "stream_name": stream_name,
+                "group_id": group_id,
+                "type": "spans",
+                "data": { "spans": spans },
+            });
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                let _ = engine.call("stream::send", payload).await;
+            });
+        }
+
+        // List: one row per root span, internal/plumbing excluded (the same
+        // view `traces::list` shows), to the single group every list view joins.
+        let rows: Vec<&otel::StoredSpan> = batch
+            .iter()
+            .filter(|s| s.parent_span_id.is_none() && !is_internal_span(s))
+            .collect();
+        if !rows.is_empty()
+            && let Ok(spans) = serde_json::to_value(&rows)
+        {
+            send(
+                engine,
+                TRACE_ROWS_STREAM,
+                TRACE_ROWS_GROUP.to_string(),
+                spans,
+            );
+        }
+
+        // Detail: every (non-internal) span grouped by trace_id, to that
+        // trace's group. Only a subscriber that joined this `trace_id` receives
+        // it (engine-side fan-out filter), so a trace nobody is viewing costs
+        // just the no-match early-out in `stream::invoke_triggers`.
+        let mut by_trace: HashMap<&str, Vec<&otel::StoredSpan>> = HashMap::new();
+        for span in batch {
+            by_trace.entry(&span.trace_id).or_default().push(span);
+        }
+        for (trace_id, spans) in by_trace {
+            if let Ok(spans) = serde_json::to_value(&spans) {
+                send(engine, TRACE_SPANS_STREAM, trace_id.to_string(), spans);
+            }
+        }
+    }
+
     // =========================================================================
     // Traces Functions
     // =========================================================================
@@ -959,6 +1148,18 @@ impl ObservabilityWorker {
                         "roots": [],
                     })));
                 }
+
+                // Drop no-op trigger fan-out wrappers (childless
+                // state_triggers/stream_triggers); wrappers that actually invoked
+                // a handler are kept so the trigger→handler causality stays visible.
+                let all_spans = prune_empty_trigger_spans(all_spans);
+
+                // Collapse user-configured pass-through wrapper spans before
+                // building the tree (children reparent to the nearest survivor).
+                let collapse_rules = otel::get_otel_config()
+                    .map(|c| compile_collapse_rules(&c.collapse_spans))
+                    .unwrap_or_default();
+                let all_spans = collapse_spans(all_spans, &collapse_rules);
 
                 let roots = build_span_tree(all_spans);
 
@@ -1980,6 +2181,7 @@ impl Worker for ObservabilityWorker {
                             }
                             let batch = std::mem::take(&mut window);
                             ObservabilityWorker::fire_trace_triggers(&triggers, &engine, &batch).await;
+                            ObservabilityWorker::push_trace_streams(&engine, &batch).await;
                         }
                     }
                 }
@@ -2156,7 +2358,12 @@ impl Worker for ObservabilityWorker {
     }
 }
 
-crate::register_worker!("iii-observability", ObservabilityWorker, mandatory);
+crate::register_worker!(
+    "iii-observability",
+    ObservabilityWorker,
+    description = "OpenTelemetry-based traces, metrics, logs, alerts, and sampling.",
+    mandatory
+);
 
 #[cfg(test)]
 mod tests {
@@ -2325,6 +2532,205 @@ mod tests {
         assert_eq!(tree[0].span.name, "root");
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].span.name, "child");
+    }
+
+    #[test]
+    fn test_collapse_spans_removes_and_reparents() {
+        // call (engine) -> trigger (worker wrapper) -> harness.<fn> (handler)
+        let root = make_span(
+            "t",
+            "call",
+            None,
+            "call h::trigger",
+            "iii-test",
+            100,
+            500,
+            "ok",
+            vec![],
+        );
+        let wrapper = make_span(
+            "t",
+            "trig",
+            Some("call"),
+            "trigger h::trigger",
+            "harness",
+            110,
+            480,
+            "ok",
+            vec![],
+        );
+        let leaf = make_span(
+            "t",
+            "leaf",
+            Some("trig"),
+            "harness.h::trigger",
+            "harness",
+            120,
+            470,
+            "ok",
+            vec![],
+        );
+
+        let rules = compile_collapse_rules(&[config::SpanCollapseRule {
+            name: "trigger *".to_string(),
+            service: Some("harness".to_string()),
+        }]);
+        let collapsed = collapse_spans(vec![root, wrapper, leaf], &rules);
+
+        // wrapper removed, leaf reparented to the wrapper's parent (call)
+        assert_eq!(collapsed.len(), 2);
+        assert!(!collapsed.iter().any(|s| s.span_id == "trig"));
+        let leaf = collapsed.iter().find(|s| s.span_id == "leaf").unwrap();
+        assert_eq!(leaf.parent_span_id.as_deref(), Some("call"));
+
+        // tree stays connected: call -> leaf
+        let tree = build_span_tree(collapsed);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].span.span_id, "call");
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].span.span_id, "leaf");
+    }
+
+    #[test]
+    fn test_prune_empty_trigger_wrappers() {
+        // writer -> state_triggers -> turn::on_approval: a trigger that RAN a fn.
+        let writer = make_span(
+            "t",
+            "w",
+            None,
+            "call approval::resolve",
+            "iii-test",
+            100,
+            500,
+            "ok",
+            vec![],
+        );
+        let ran = make_span(
+            "t",
+            "st",
+            Some("w"),
+            "state_triggers",
+            "iii-test",
+            110,
+            480,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+        let handler = make_span(
+            "t",
+            "h",
+            Some("st"),
+            "call turn::on_approval",
+            "iii-worker",
+            120,
+            470,
+            "ok",
+            vec![],
+        );
+        // a stream_triggers wrapper with no children → no-op fan-out (noise).
+        let empty = make_span(
+            "t",
+            "ss",
+            Some("w"),
+            "stream_triggers",
+            "iii-test",
+            130,
+            140,
+            "ok",
+            vec![("iii.function.kind", "internal")],
+        );
+
+        let pruned = prune_empty_trigger_spans(vec![writer, ran, handler, empty]);
+
+        // Empty wrapper dropped; the one that ran a function is KEPT.
+        assert!(
+            !pruned.iter().any(|s| s.span_id == "ss"),
+            "childless stream_triggers should be pruned",
+        );
+        assert!(
+            pruned.iter().any(|s| s.span_id == "st"),
+            "state_triggers that invoked a handler should be kept",
+        );
+        assert!(
+            pruned.iter().any(|s| s.span_id == "h"),
+            "the handler survives"
+        );
+
+        // Tree stays connected: approval::resolve -> state_triggers -> turn::on_approval.
+        let tree = build_span_tree(pruned);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].span.span_id, "w");
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].span.span_id, "st");
+        assert_eq!(tree[0].children[0].children[0].span.span_id, "h");
+    }
+
+    #[test]
+    fn test_collapse_spans_service_scoping() {
+        // The engine's own `trigger *` (service iii-test) must survive; only the
+        // worker's `trigger *` (service harness) collapses.
+        let engine_trigger = make_span(
+            "t",
+            "et",
+            None,
+            "trigger foo",
+            "iii-test",
+            100,
+            500,
+            "ok",
+            vec![],
+        );
+        let worker_trigger = make_span(
+            "t",
+            "wt",
+            Some("et"),
+            "trigger foo",
+            "harness",
+            110,
+            480,
+            "ok",
+            vec![],
+        );
+        let leaf = make_span(
+            "t",
+            "leaf",
+            Some("wt"),
+            "foo.body",
+            "harness",
+            120,
+            470,
+            "ok",
+            vec![],
+        );
+
+        let rules = compile_collapse_rules(&[config::SpanCollapseRule {
+            name: "trigger *".to_string(),
+            service: Some("harness".to_string()),
+        }]);
+        let collapsed = collapse_spans(vec![engine_trigger, worker_trigger, leaf], &rules);
+
+        assert!(
+            collapsed.iter().any(|s| s.span_id == "et"),
+            "engine trigger survives"
+        );
+        assert!(
+            !collapsed.iter().any(|s| s.span_id == "wt"),
+            "worker trigger collapsed"
+        );
+        let leaf = collapsed.iter().find(|s| s.span_id == "leaf").unwrap();
+        assert_eq!(
+            leaf.parent_span_id.as_deref(),
+            Some("et"),
+            "leaf reparented past the collapsed worker trigger"
+        );
+    }
+
+    #[test]
+    fn test_collapse_spans_no_rules_is_noop() {
+        let a = make_span("t", "a", None, "x", "svc", 1, 2, "ok", vec![]);
+        let b = make_span("t", "b", Some("a"), "y", "svc", 1, 2, "ok", vec![]);
+        let out = collapse_spans(vec![a, b], &[]);
+        assert_eq!(out.len(), 2);
     }
 
     #[test]

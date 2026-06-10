@@ -26,6 +26,22 @@ use reqwest::{Client, Request, Response};
 const SAFE_REQUEST_HEADERS: &[&str] = &["content-type", "accept"];
 const SAFE_RESPONSE_HEADERS: &[&str] = &["content-type"];
 
+fn fetch_ignore_url_patterns() -> Vec<String> {
+    std::env::var("OTEL_FETCH_IGNORE_URLS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn should_ignore_fetch_url(url: &str) -> bool {
+    fetch_ignore_url_patterns()
+        .iter()
+        .any(|pattern| url.contains(pattern.as_str()))
+}
+
 /// Build a span name matching the Node.js convention: `{METHOD} {path}` or `{METHOD}`.
 fn span_name(method: &str, path: Option<&str>) -> String {
     match path {
@@ -49,6 +65,11 @@ pub async fn execute_traced_request(
     mut request: Request,
 ) -> Result<Response, reqwest::Error> {
     let url = request.url().clone();
+    let url_str = url.to_string();
+    if should_ignore_fetch_url(&url_str) {
+        return client.execute(request).await;
+    }
+
     let method = request.method().as_str().to_uppercase();
 
     let host = url.host_str().map(String::from);

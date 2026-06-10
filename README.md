@@ -79,14 +79,21 @@ trace.
   <img src=".github/assets/iii-intro-preview.gif" alt="Watch the iii intro (click to play)" width="720"/>
 </a>
 
+Install `iii`:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+```
+
+Then scaffold and start a project:
+
 ```bash
 iii project init myapp    # scaffold a project
 cd myapp
 iii                       # start the engine
 ```
 
-Need to install `iii` first? Full walkthrough at the
-[Quickstart guide](https://iii.dev/docs/quickstart).
+Full walkthrough at the [Quickstart guide](https://iii.dev/docs/quickstart).
 
 ## Add Workers
 
@@ -101,17 +108,32 @@ Install new capabilities into a project with `iii worker add`:
 | Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk` |
 | Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk`                       |
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`                         |
+| Go       | [`iii-sdk`](sdk/packages/go/iii)                       | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
 
 ## Agent Skills
 
-Install iii's agent-readable reference material:
+Install iii's agent-readable reference material for the engine primitives:
 
 ```bash
 npx skills add iii-hq/iii/skills
 ```
 
-Skills cover every iii primitive: HTTP endpoints, queues, cron, state, streams, custom triggers, and
+These cover every iii primitive: HTTP endpoints, queues, cron, state, streams, custom triggers, and
 more. See [skills/](skills/) for the full list.
+
+Each worker in [iii-hq/workers](https://github.com/iii-hq/workers) also ships its own skill. Install
+them alongside the worker itself:
+
+```bash
+npx skills add iii-hq/workers --list        # list available worker skills
+npx skills add iii-hq/workers --skill database # one worker
+npx skills add iii-hq/workers --all         # every worker skill
+```
+
+The engine's built-in workers (`iii-queue`, `iii-state`, `iii-pubsub`, `iii-stream`, `iii-cron`,
+`iii-http`, `iii-observability`, `iii-bridge`, `iii-exec`, `iii-worker-manager`) ship their skills in
+this repo. Install one with `npx skills add iii-hq/iii --full-depth --skill <name>`; each worker's README under
+[`engine/src/workers/`](engine/src/workers/) lists the exact `iii worker add` and skill command.
 
 ## Console
 
@@ -124,7 +146,7 @@ triggers, queues, traces, logs, and real-time state. See the
 | Directory  | What it is                                              | README                                 |
 | ---------- | ------------------------------------------------------- | -------------------------------------- |
 | `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
-| `sdk/`     | SDKs for Node.js, Python, and Rust                      | [sdk/README.md](sdk/README.md)         |
+| `sdk/`     | SDKs for Node.js, Python, Rust, and Go                  | [sdk/README.md](sdk/README.md)         |
 | `console/` | Developer console (React + Rust)                        | [console/README.md](console/README.md) |
 | `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md)   |
 | `website/` | iii website                                             | [website/](website/)                   |

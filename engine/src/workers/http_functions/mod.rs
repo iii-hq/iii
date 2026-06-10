@@ -174,7 +174,11 @@ impl Worker for HttpFunctionsWorker {
     }
 }
 
-crate::register_worker!("iii-http-functions", HttpFunctionsWorker);
+crate::register_worker!(
+    "iii-http-functions",
+    HttpFunctionsWorker,
+    description = "Expose external HTTP endpoints from config as callable functions."
+);
 
 #[cfg(test)]
 mod tests {

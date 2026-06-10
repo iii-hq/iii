@@ -673,30 +673,108 @@ impl SpanExporter for TeeSpanExporter {
 
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
-/// Global OTLP exporter for forwarding SDK-ingested spans to the collector.
-/// `SpanExporter::export` takes `&self`, so no Mutex is needed.
-static SDK_SPAN_FORWARDER: OnceLock<Arc<opentelemetry_otlp::SpanExporter>> = OnceLock::new();
+/// OTLP collector endpoint used to lazily build per-service SDK span forwarders.
+static SDK_FORWARDER_ENDPOINT: OnceLock<String> = OnceLock::new();
 
-/// Build a second OTLP span exporter and store it in the global `SDK_SPAN_FORWARDER`
-/// so that SDK-ingested spans can be forwarded to the collector.
-fn init_sdk_span_forwarder(endpoint: &str) {
+/// Per-`service.name` OTLP span exporters for forwarding SDK-ingested (worker)
+/// spans to the collector. Keyed by service name so each worker's spans are
+/// exported under their OWN resource (`service.name`) instead of being stripped
+/// to the OTLP default identity (`unknown_service`).
+static SDK_SPAN_FORWARDERS: OnceLock<
+    RwLock<HashMap<String, Arc<opentelemetry_otlp::SpanExporter>>>,
+> = OnceLock::new();
+
+/// Sampler applied to forwarded worker spans so collector volume honors the
+/// engine's `sampling_ratio`. Worker SDKs export to the engine at 100%, so
+/// without this the engine sampler would only govern engine-origin spans.
+static SDK_FORWARD_SAMPLER: OnceLock<Sampler> = OnceLock::new();
+
+/// Record the collector endpoint + sampler so SDK-ingested spans can later be
+/// forwarded to the collector, per-service and sampled.
+fn init_sdk_span_forwarder(endpoint: &str, config: &OtelConfig) {
+    let _ = SDK_FORWARDER_ENDPOINT.set(endpoint.to_string());
+    let _ = SDK_SPAN_FORWARDERS.set(RwLock::new(HashMap::new()));
+    let _ = SDK_FORWARD_SAMPLER.set(build_sampler(config));
+}
+
+/// Build a `Resource` from an OTLP resource payload, preserving the worker's
+/// own attributes (notably `service.name`) so forwarded spans are correctly
+/// attributed at the collector rather than landing under `unknown_service`.
+fn build_forward_resource(resource: &Option<OtlpResource>) -> Resource {
+    let attrs: Vec<KeyValue> = resource
+        .as_ref()
+        .map(|r| {
+            r.attributes
+                .iter()
+                .filter_map(otlp_kv_to_key_value)
+                .collect()
+        })
+        .unwrap_or_default();
+    Resource::builder_empty().with_attributes(attrs).build()
+}
+
+/// Get (or lazily build) the OTLP forwarder for a given worker `service.name`,
+/// with the worker's `Resource` attached via `set_resource` so the collector
+/// sees the right service identity.
+fn get_or_build_forwarder(
+    service_name: &str,
+    resource: &Resource,
+) -> Option<Arc<opentelemetry_otlp::SpanExporter>> {
+    let endpoint = SDK_FORWARDER_ENDPOINT.get()?;
+    let forwarders = SDK_SPAN_FORWARDERS.get()?;
+
+    // Fast path under a read lock. The explicit block guarantees the read guard
+    // is released before the write lock is taken below (std `RwLock` is not
+    // reentrant), independent of temporary-drop timing.
+    {
+        let map = forwarders.read().ok()?;
+        if let Some(existing) = map.get(service_name) {
+            return Some(existing.clone());
+        }
+    }
+
+    let mut map = forwarders.write().ok()?;
+    // Re-check under the write lock in case another task built it meanwhile.
+    if let Some(existing) = map.get(service_name) {
+        return Some(existing.clone());
+    }
     match opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
-        .with_endpoint(endpoint)
+        .with_endpoint(endpoint.as_str())
         .build()
     {
-        Ok(forwarder) => {
-            if SDK_SPAN_FORWARDER.set(Arc::new(forwarder)).is_err() {
-                tracing::debug!("SDK span forwarder already initialized");
-            }
+        Ok(mut exporter) => {
+            exporter.set_resource(resource);
+            let arc = Arc::new(exporter);
+            map.insert(service_name.to_string(), arc.clone());
+            Some(arc)
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "Failed to create SDK span forwarder, SDK spans will not be exported to collector"
+                service_name = %service_name,
+                "Failed to create SDK span forwarder; spans will not be exported to collector"
             );
+            None
         }
     }
+}
+
+/// Whether the engine sampler keeps a forwarded worker span. The trace-id ratio
+/// is deterministic per trace, so an entire trace is kept or dropped
+/// consistently regardless of which service produced a given span.
+fn forward_span_is_sampled(sampler: &Sampler, sd: &SpanData) -> bool {
+    use opentelemetry::trace::SamplingDecision;
+    use opentelemetry_sdk::trace::ShouldSample;
+    let result = sampler.should_sample(
+        None,
+        sd.span_context.trace_id(),
+        sd.name.as_ref(),
+        &sd.span_kind,
+        &sd.attributes,
+        &sd.links.links,
+    );
+    matches!(result.decision, SamplingDecision::RecordAndSample)
 }
 
 /// Initialize OpenTelemetry with the given configuration.
@@ -749,7 +827,7 @@ where
                 .build()
             {
                 Ok(exporter) => {
-                    init_sdk_span_forwarder(&config.endpoint);
+                    init_sdk_span_forwarder(&config.endpoint, config);
 
                     // Initialize in-memory storage for SDK span ingestion (API access)
                     let memory_storage =
@@ -811,7 +889,7 @@ where
                 .build()
             {
                 Ok(otlp_exporter) => {
-                    init_sdk_span_forwarder(&config.endpoint);
+                    init_sdk_span_forwarder(&config.endpoint, config);
 
                     // Create tee exporter that sends to both
                     let tee_exporter = TeeSpanExporter::new(
@@ -988,6 +1066,44 @@ pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> Cont
     // aligned with the SDK helper when one header is invalid or absent.
     let ctx = TraceContextPropagator::new().extract(&carrier);
     BaggagePropagator::new().extract_with_context(&ctx, &carrier)
+}
+
+/// Baggage key the `BaggageSpanProcessor` copies onto every span as the
+/// `iii.function.id` attribute (see the SDK observability crate allowlist).
+const FUNCTION_ID_BAGGAGE_KEY: &str = "iii.function.id";
+
+/// Return a context identical to `cx` but with the `iii.function.id` baggage
+/// entry set to `function_id` (all other baggage entries are preserved).
+///
+/// `BaggageSpanProcessor` stamps `iii.function.id` onto every span from the
+/// parent context's baggage, but an enqueuer's baggage names the *enqueuer*, not
+/// the function being enqueued. Rewriting it at the enqueue boundary makes the
+/// `enqueue`/`fn_queue` spans (and the baggage delivered to the target worker)
+/// carry the TARGET function id, so grouping traces by `iii.function.id`
+/// attributes those spans to the function they actually serve.
+pub fn with_function_id_baggage(cx: &Context, function_id: &str) -> Context {
+    use opentelemetry::baggage::BaggageExt;
+    // Drop any existing entry for the key, then re-add — mirrors the SDK's
+    // `set_baggage_entry` so we replace rather than duplicate.
+    let mut entries: Vec<KeyValue> = cx
+        .baggage()
+        .iter()
+        .filter(|(k, _)| k.as_str() != FUNCTION_ID_BAGGAGE_KEY)
+        .map(|(k, (v, _meta))| KeyValue::new(k.clone(), v.clone()))
+        .collect();
+    entries.push(KeyValue::new(
+        FUNCTION_ID_BAGGAGE_KEY,
+        function_id.to_string(),
+    ));
+    cx.with_baggage(entries)
+}
+
+/// W3C-header variant of [`with_function_id_baggage`] for code paths that carry
+/// baggage as a header string rather than a [`Context`] (e.g. queue messages).
+/// Always returns `Some` — at minimum the header names the target function.
+pub fn baggage_with_function_id(baggage: Option<&str>, function_id: &str) -> Option<String> {
+    let ctx = with_function_id_baggage(&extract_baggage(baggage.unwrap_or_default()), function_id);
+    inject_baggage_from_context(&ctx)
 }
 
 // =============================================================================
@@ -1468,7 +1584,24 @@ fn otlp_kv_to_key_value(kv: &OtlpKeyValue) -> Option<KeyValue> {
 }
 
 /// Convert parsed OTLP spans to SpanData for export via the OTel SDK pipeline.
+///
+/// Production forwarding goes through [`convert_resource_span_to_span_data`]
+/// one resource at a time (see `ingest_otlp_json`); this whole-request wrapper
+/// is retained for unit tests that assert over a full OTLP request.
+#[cfg(test)]
 fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<SpanData> {
+    request
+        .resource_spans
+        .iter()
+        .flat_map(convert_resource_span_to_span_data)
+        .collect()
+}
+
+/// Convert a single OTLP `resource_span` group (one worker `service.name`) to
+/// `SpanData`. Split out from [`convert_otlp_to_span_data`] so the SDK span
+/// forwarder can process one resource at a time and attach the matching
+/// `Resource` before exporting to the collector.
+fn convert_resource_span_to_span_data(resource_span: &OtlpResourceSpans) -> Vec<SpanData> {
     use opentelemetry::trace::{
         Event, Link, SpanContext, SpanKind, Status, TraceFlags, TraceState,
     };
@@ -1479,7 +1612,7 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
 
     let mut span_data_vec = Vec::new();
 
-    for resource_span in &request.resource_spans {
+    {
         for scope_span in &resource_span.scope_spans {
             let scope = scope_span
                 .scope
@@ -1783,14 +1916,35 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
         }
     }
 
-    // Forward to OTLP collector if forwarder is available
-    if let Some(forwarder) = SDK_SPAN_FORWARDER.get() {
-        let span_data = convert_otlp_to_span_data(&request);
-        if !span_data.is_empty() {
+    // Forward to the OTLP collector, one resource (worker service.name) at a
+    // time so each batch carries the correct service identity, and honoring the
+    // engine sampler so forwarded volume matches `sampling_ratio` (worker SDKs
+    // export to the engine at 100%).
+    if SDK_FORWARDER_ENDPOINT.get().is_some() {
+        let sampler = SDK_FORWARD_SAMPLER.get();
+        for resource_span in &request.resource_spans {
+            let mut span_data = convert_resource_span_to_span_data(resource_span);
+            if let Some(sampler) = sampler {
+                span_data.retain(|sd| forward_span_is_sampled(sampler, sd));
+            }
+            if span_data.is_empty() {
+                continue;
+            }
+
+            let service_name = extract_service_name(&resource_span.resource);
+            let resource = build_forward_resource(&resource_span.resource);
+            let Some(forwarder) = get_or_build_forwarder(&service_name, &resource) else {
+                continue;
+            };
+
             let count = span_data.len();
             match forwarder.export(span_data).await {
                 Ok(()) => {
-                    tracing::debug!(span_count = count, "Forwarded SDK spans to OTLP collector");
+                    tracing::debug!(
+                        span_count = count,
+                        service_name = %service_name,
+                        "Forwarded SDK spans to OTLP collector"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(error = ?e, "Failed to forward SDK spans to OTLP collector");
@@ -3775,6 +3929,69 @@ mod tests {
     }
 
     #[test]
+    fn with_function_id_baggage_overrides_key_and_preserves_others() {
+        use opentelemetry::baggage::BaggageExt;
+
+        let cx = extract_context(
+            None,
+            Some("iii.session.id=s-1,iii.message.id=m-1,iii.function.id=run::start"),
+        );
+        let updated = with_function_id_baggage(&cx, "turn::provisioning");
+        let bag = updated.baggage();
+
+        assert_eq!(
+            bag.get("iii.function.id").map(|v| v.as_str().to_string()),
+            Some("turn::provisioning".to_string()),
+            "function id must be rewritten to the target",
+        );
+        assert_eq!(
+            bag.get("iii.session.id").map(|v| v.as_str().to_string()),
+            Some("s-1".to_string()),
+            "other baggage entries must be preserved",
+        );
+        assert_eq!(
+            bag.get("iii.message.id").map(|v| v.as_str().to_string()),
+            Some("m-1".to_string()),
+        );
+        // No duplicate entry left behind for the rewritten key.
+        let fn_count = bag
+            .iter()
+            .filter(|(k, _)| k.as_str() == "iii.function.id")
+            .count();
+        assert_eq!(fn_count, 1, "exactly one iii.function.id entry");
+    }
+
+    #[test]
+    fn baggage_with_function_id_header_names_target() {
+        // Round-trips through the W3C header form (the queue-message path).
+        let header = baggage_with_function_id(
+            Some("iii.session.id=s-9,iii.function.id=turn::provisioning"),
+            "turn::assistant_streaming",
+        )
+        .expect("baggage header is always produced");
+
+        assert!(
+            header.contains("iii.function.id=turn::assistant_streaming"),
+            "header must name the target function, got: {header}",
+        );
+        assert!(
+            !header.contains("turn::provisioning"),
+            "enqueuer function id must not survive, got: {header}",
+        );
+        assert!(
+            header.contains("iii.session.id=s-9"),
+            "other baggage entries must be preserved, got: {header}",
+        );
+    }
+
+    #[test]
+    fn baggage_with_function_id_inserts_when_absent() {
+        let header = baggage_with_function_id(None, "session-tree::ensure")
+            .expect("baggage header is always produced");
+        assert!(header.contains("iii.function.id=session-tree::ensure"));
+    }
+
+    #[test]
     fn test_extract_context_with_both() {
         // Test extracting context with both traceparent and baggage
         let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
@@ -4712,6 +4929,76 @@ mod tests {
         assert!(matches!(sd.status, opentelemetry::trace::Status::Ok));
         assert_eq!(sd.attributes.len(), 1);
         assert_eq!(sd.attributes[0].key.as_str(), "http.method");
+    }
+
+    #[test]
+    fn test_build_forward_resource_preserves_service_name() {
+        // DUP-3: a worker's OTLP resource (service.name=harness) must survive
+        // into the forwarder `Resource` so the collector attributes spans
+        // correctly instead of bucketing them under `unknown_service`.
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "harness"}},
+                        {"key": "service.version", "value": {"stringValue": "1.2.3"}}
+                    ]
+                },
+                "scopeSpans": []
+            }]
+        }"#;
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let rs = &request.resource_spans[0];
+
+        let resource = build_forward_resource(&rs.resource);
+        let svc = resource
+            .get(&opentelemetry::Key::from_static_str("service.name"))
+            .map(|v| v.as_str().to_string());
+        assert_eq!(svc.as_deref(), Some("harness"));
+        // The per-service forwarder is keyed by this same extraction.
+        assert_eq!(extract_service_name(&rs.resource), "harness");
+    }
+
+    #[test]
+    fn test_forward_span_sampling_respects_sampler() {
+        // VOL-3: forwarded worker spans must pass through the engine sampler
+        // rather than being exported unconditionally.
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "harness"}
+                    }]
+                },
+                "scopeSpans": [{
+                    "scope": {"name": "test-scope", "version": "1.0.0"},
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "sampled-span",
+                        "kind": 1,
+                        "startTimeUnixNano": "1704067200000000000",
+                        "endTimeUnixNano": "1704067201000000000",
+                        "status": {"code": 1, "message": ""}
+                    }]
+                }]
+            }]
+        }"#;
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+        let sd = &span_data[0];
+
+        assert!(
+            forward_span_is_sampled(&Sampler::AlwaysOn, sd),
+            "AlwaysOn must keep forwarded spans"
+        );
+        assert!(
+            !forward_span_is_sampled(&Sampler::AlwaysOff, sd),
+            "AlwaysOff must drop forwarded spans"
+        );
     }
 
     #[test]

@@ -137,6 +137,64 @@ async def test_raw_json_request_body(engine_http_url, iii_client: III):
 
 
 @pytest.mark.asyncio
+async def test_conflicting_route_structure_is_rejected(engine_http_url, iii_client: III, caplog):
+    """Two routes with identical structure but swapped path-param names must not
+    crash the engine: the first keeps serving and the second is rejected with a
+    logged registration error."""
+    caplog.set_level("ERROR", logger="iii")
+
+    def handler(input_data):
+        return {"status_code": 200, "body": {"ok": True}}
+
+    # First route registers normally.
+    fn_a = iii_client.register_function("test.api.conflict.a.py", handler)
+    trig_a = iii_client.register_trigger(
+        {
+            "type": "http",
+            "function_id": "test.api.conflict.a.py",
+            "config": {
+                "api_path": "test/py/conflict/:listId/:userId",
+                "http_method": "GET",
+            },
+        }
+    )
+
+    # Second route has the same axum shape with swapped param names -> conflict.
+    fn_b = iii_client.register_function("test.api.conflict.b.py", handler)
+    trig_b = iii_client.register_trigger(
+        {
+            "type": "http",
+            "function_id": "test.api.conflict.b.py",
+            "config": {
+                "api_path": "test/py/conflict/:userId/:listId",
+                "http_method": "GET",
+            },
+        }
+    )
+
+    # Give the engine time to process both registrations and reply.
+    time.sleep(0.5)
+
+    # Engine stayed alive and the first route still serves — no panic.
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{engine_http_url}/test/py/conflict/list1/user1") as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+
+    # The conflicting registration was surfaced as an error. The engine rejects
+    # whichever route it processes second (wire order is not guaranteed), so assert on
+    # the conflict message rather than a specific route or the random trigger id.
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("conflicts with already-registered route" in m for m in messages), messages
+
+    fn_a.unregister()
+    trig_a.unregister()
+    fn_b.unregister()
+    trig_b.unregister()
+
+
+@pytest.mark.asyncio
 async def test_path_parameters(engine_http_url, iii_client: III):
     """Verify path parameters are extracted correctly."""
 
