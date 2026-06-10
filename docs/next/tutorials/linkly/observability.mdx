@@ -142,14 +142,20 @@ The per-span timing shows where the request spends its time.
 To compare many requests, list the redirect spans sorted by duration, slowest first:
 
 ```bash
-iii trigger engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 | jq -c '[.spans[] |
-  ((.end_time_unix_nano - .start_time_unix_nano) / 1e6 * 1000 | round / 1000)]'
+iii trigger engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 \
+  | jq -r '.spans[]
+      | "\(((.end_time_unix_nano - .start_time_unix_nano) / 1e6 * 1000 | round) / 1000) ms  \(.trace_id)"'
+```
+
+Each line pairs a duration with its `trace_id`, slowest first:
+
+```text
+2.044 ms  6b20e1fe001742c25bb7dc570b57fe42
+1.700 ms  797d427e4d0c3491cfc45f0d40c4e1b1
 ```
 
 The slowest redirects rise to the top; open any one's `trace_id` with `engine::traces::tree` to see
 which hop is responsible.
-
-{/* TODO(validation): sort_by=duration_ms is currently inverted/unsorted; re-verify the ordering once the engine fix lands. */}
 
 ## Conclusion
 
